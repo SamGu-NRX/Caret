@@ -30,6 +30,7 @@ The current app asks for Accessibility, then shows a blue asterisk beside suppor
 | History and run state | `packages/screenpipe`, `caret/store.py` | Context owner: Screenpipe retrieval; workflow owner: external effect IDs |
 | Computer use | `packages/computer-use-jev`, `packages/skyvern` | Native AX execution and browser execution, respectively; stop before payment |
 | Gmail and calendar | `docs/integrations.md` | Implement the documented source and action contracts |
+| Landing site | `sites/landing` | Static showcase with interactive sample workflows; maintained in its own repository |
 
 The Python CLI exposes JSON preview/hold/confirm operations for the UI bridge to reconnect. There is no server, container or web frontend in the default run. SQLite data stays in ignored `.local/` files. `python3 -m caret workflows` lists the seeds. Sam owns the choice and definitions of the two demo workflows.
 
@@ -56,6 +57,18 @@ Start with the Austin–Dallas corridor. Before the live demo, connect one relia
 Open a real thread, invoke Caret, and inspect its filled request. Enter produces up to three supported options and evidence. Sending the approved draft creates tentative calendar holds. A labeled staged reply selects one option; one confirmation keeps it and removes only this workflow's other holds. The booking workflow uses the browser and stops at the payment page.
 
 Drop options when source calls fail. Never ask a model to invent missing availability, travel times or fares. Do not add multi-party polling, hotel search or ticket purchases to this build. The three seeds are Book a flight, Book a calendar link and Revise; only meeting previews currently execute.
+
+## Landing site
+
+The first-party landing page is a separate Git submodule at `sites/landing`. Its browser demos use sample data and do not call the native app or external accounts.
+
+```sh
+git submodule update --init sites/landing
+cd sites/landing
+npm ci
+npm run dev
+# npm run build writes the static site to dist/
+```
 
 ## Checks
 
