@@ -1,224 +1,273 @@
 import AppKit
-import Carbon
+import ApplicationServices
 import SwiftUI
 
-struct MeetingOption: Decodable, Identifiable {
+struct MemoryItem: Identifiable {
     let id: String
-    let start: String
-    let end: String
-    let source: String
+    let text: String
+    let sourceApp: String?
 }
 
-struct Preview: Decodable {
-    let run_id: String
-    let subject: String
-    let thread_body: String
-    let options: [MeetingOption]
-    let draft: String
-    let evidence: [String]
-    let notice: String
+struct CaretAction: Identifiable {
+    let id: String
+    let title: String
 }
 
 @MainActor
 final class Model: ObservableObject {
-    @Published var preview: Preview?
-    @Published var selection = ""
-    @Published var busy = false
-    @Published var message = ""
-    @Published var held = false
-    @Published var confirmed = false
-    private let root: String
+    @Published var selectedText = ""
+    @Published var sourceApp: String?
+    var memories: [MemoryItem] = []
+    var onRun: ((CaretAction) -> Void)?
 
-    init(root: String) { self.root = root }
+    let actions: [CaretAction] = [
+        CaretAction(id: "book-flight", title: "Action 1"),
+        CaretAction(id: "book-calendar-link", title: "Action 2"),
+        CaretAction(id: "revise", title: "Action 3"),
+    ]
 
-    func load() {
-        execute(["preview", "--fixture", "fixtures/meeting.json"]) { data in
-            self.preview = try JSONDecoder().decode(Preview.self, from: data)
-            self.selection = self.preview?.options.first?.id ?? ""
-            self.held = false
-            self.confirmed = false
-            self.message = ""
-        }
-    }
-
-    func hold() {
-        guard let preview else { return }
-        execute(["hold", preview.run_id]) { _ in
-            self.held = true
-            self.message = "Tentative holds saved in local SQLite. Your calendar is unchanged."
-        }
-    }
-
-    func confirm() {
-        guard let preview, !selection.isEmpty else { return }
-        execute(["confirm", preview.run_id, selection]) { _ in
-            self.held = false
-            self.confirmed = true
-            self.message = "Selected local hold confirmed; the other local holds were released."
-        }
-    }
-
-    private func execute(_ arguments: [String], completion: @escaping (Data) throws -> Void) {
-        guard !busy else { return }
-        busy = true
-        let root = root
-        let python = Bundle.main.object(forInfoDictionaryKey: "CaretPythonExecutable") as? String
-        Task {
-            do {
-                let data = try await Task.detached {
-                    let process = Process()
-                    process.executableURL = URL(fileURLWithPath: python ?? "/usr/bin/env")
-                    process.arguments = (python == nil ? ["python3"] : []) + ["-m", "caret"] + arguments
-                    process.currentDirectoryURL = URL(fileURLWithPath: root)
-                    let output = Pipe()
-                    process.standardOutput = output
-                    process.standardError = output
-                    try process.run()
-                    let data = output.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    guard process.terminationStatus == 0 else {
-                        throw NSError(domain: "Caret", code: Int(process.terminationStatus), userInfo: [
-                            NSLocalizedDescriptionKey: String(data: data, encoding: .utf8) ?? "The local core failed."
-                        ])
-                    }
-                    return data
-                }.value
-                try completion(data)
-            } catch {
-                self.message = error.localizedDescription
-            }
-            self.busy = false
-        }
+    func run(_ action: CaretAction) {
+        NSLog(
+            "[Caret] action=%@ memories=%d selection=%@ app=%@",
+            action.id,
+            memories.count,
+            selectedText.replacingOccurrences(of: "\n", with: " "),
+            sourceApp ?? "-"
+        )
+        onRun?(action)
     }
 }
 
-struct CaretView: View {
+struct ActionsView: View {
     @ObservedObject var model: Model
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Image(systemName: "cursorarrow.rays")
-                Text("Caret").font(.headline)
-                Spacer()
-                Text("Sample workspace").font(.caption).foregroundStyle(.secondary)
-            }
-            Text("Find three times to meet, with room for travel.")
-                .font(.title3).fontWeight(.medium)
-            if let preview = model.preview {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text(preview.notice).font(.caption).foregroundStyle(.secondary)
-                        ForEach(preview.options) { option in
-                            Button {
-                                model.selection = option.id
-                            } label: {
-                                HStack(alignment: .top, spacing: 12) {
-                                    Image(systemName: model.selection == option.id ? "largecircle.fill.circle" : "circle")
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(option.start).fontWeight(.medium)
-                                        Text("Until \(option.end)").font(.caption)
-                                        Text(option.source).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                }.padding(10).contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                                .accessibilityValue(model.selection == option.id ? "Selected" : "Not selected")
-                                .disabled(model.confirmed || model.busy)
-                        }
-                        Divider()
-                        Text("Draft").font(.headline)
-                        Text(preview.draft.isEmpty ? "No supported options. No draft was created." : preview.draft)
-                            .textSelection(.enabled)
-                        DisclosureGroup("Evidence") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(preview.subject).fontWeight(.medium)
-                                Text(preview.thread_body)
-                                ForEach(preview.evidence, id: \.self) { Text($0) }
-                            }.font(.caption).padding(.top, 8).textSelection(.enabled)
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(model.actions) { action in
+                ActionRow(title: action.title) {
+                    model.run(action)
                 }
-                HStack {
-                    Button("Send email") {}.disabled(true).help("Gmail is not connected in this starter.")
-                    Spacer()
-                    if model.confirmed {
-                        Text("Local choice confirmed").foregroundStyle(.secondary)
-                    } else if model.held {
-                        Button("Confirm local choice", action: model.confirm).keyboardShortcut(.return, modifiers: [])
-                    } else {
-                        Button("Save local holds", action: model.hold)
-                            .disabled(preview.options.isEmpty).keyboardShortcut(.return, modifiers: [])
-                    }
-                }.disabled(model.busy)
-            } else {
-                Text("Open the sample thread, calculate available slots and inspect the evidence.")
-                    .foregroundStyle(.secondary)
-                Button("Preview sample", action: model.load).keyboardShortcut(.return, modifiers: []).disabled(model.busy)
-            }
-            if model.busy { ProgressView().controlSize(.small) }
-            if !model.message.isEmpty { Text(model.message).font(.caption).textSelection(.enabled) }
-            HStack {
-                Text("⌃⌥Space to open · Esc to dismiss").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Quit") { NSApp.terminate(nil) }.keyboardShortcut("q")
             }
         }
-        .padding(24).frame(width: 560, height: model.preview == nil ? 260 : 680)
-        .onExitCommand { NSApp.keyWindow?.orderOut(nil) }
+        .padding(10)
+        .frame(width: 220)
+    }
+}
+
+private struct ActionRow: View {
+    let title: String
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(isHovered ? 0.12 : 0))
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
 
 final class CaretPanel: NSPanel {
     override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    func present(at point: CGPoint) {
+        setFrame(frame(near: point), display: true)
+        orderFrontRegardless()
+        makeKey()
+    }
+
+    private func frame(near point: CGPoint) -> NSRect {
+        let size = frame.size.width > 1 ? frame.size : CGSize(width: 280, height: 160)
+        let screen = AXHelpers.screen(containing: point)
+        let visible = screen?.visibleFrame ?? NSRect(origin: .zero, size: size)
+        let margin: CGFloat = 12
+        var origin = CGPoint(x: point.x + 16, y: point.y - size.height / 2)
+        if origin.x + size.width > visible.maxX - margin {
+            origin.x = point.x - size.width - 16
+        }
+        origin.x = min(max(origin.x, visible.minX + margin), visible.maxX - size.width - margin)
+        origin.y = min(max(origin.y, visible.minY + margin), visible.maxY - size.height - margin)
+        return NSRect(origin: origin, size: size)
+    }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var panel: NSPanel?
-    private var hotKey: EventHotKeyRef?
-    private var statusItem: NSStatusItem?
+    private var panel: CaretPanel?
+    private var permissionPanel: NSPanel?
+    private var model: Model?
+    private var trustTimer: Timer?
+    private var lastTarget: SelectionTarget?
+    private var clickMonitor: Any?
+    private var escapeMonitor: Any?
+    private let hotKey = HotKeyManager()
+    private let trigger = TriggerButtonController()
+    private let monitor = SelectionMonitor()
+    private let statusBar = StatusBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let root = CommandLine.arguments.dropFirst().first
-            ?? Bundle.main.object(forInfoDictionaryKey: "CaretProjectRoot") as? String
-            ?? FileManager.default.currentDirectoryPath
-        let model = Model(root: root)
-        let panel = CaretPanel(contentRect: .zero, styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
-        panel.title = "Caret"
-        panel.titlebarAppearsTransparent = true
+        let model = Model()
+        self.model = model
+
+        let panel = CaretPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 280, height: 160),
+            styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
         panel.isReleasedWhenClosed = false
+        panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = NSHostingView(rootView: CaretView(model: model))
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hidesOnDeactivate = false
+        model.onRun = { [weak self] _ in
+            self?.hidePanel()
+        }
+        let hosting = NSHostingView(rootView: ActionsView(model: model).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous)))
+        hosting.sizingOptions = [.intrinsicContentSize]
+        panel.contentView = hosting
         self.panel = panel
 
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "Caret"
-        item.button?.target = self
-        item.button?.action = #selector(show)
-        statusItem = item
-
-        var event = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            Task { @MainActor in (NSApp.delegate as? AppDelegate)?.show() }
-            return noErr
-        }, 1, &event, nil, nil)
-        let keyStatus = RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x43525431, id: 1), GetApplicationEventTarget(), 0, &hotKey)
-        if handlerStatus != noErr || keyStatus != noErr {
-            model.message = "The shortcut could not be registered. Open Caret from its menu bar item."
+        statusBar.onOpen = { [weak self] in
+            self?.togglePanel(at: NSEvent.mouseLocation)
         }
-        show()
+        statusBar.install()
+
+        hotKey.onHotKey = { [weak self] point in
+            Task { @MainActor in
+                self?.togglePanel(at: point)
+            }
+        }
+        hotKey.register()
+
+        trigger.onClick = { [weak self] in
+            guard let self else { return }
+            self.togglePanel(at: CGPoint(x: self.trigger.buttonFrame.maxX, y: self.trigger.buttonFrame.midY))
+        }
+
+        monitor.onChange = { [weak self] target in
+            Task { @MainActor in
+                guard let self, let model = self.model else { return }
+                self.lastTarget = target
+                model.selectedText = target?.selectedText ?? ""
+                model.sourceApp = target?.sourceApp
+                if self.panel?.isVisible == true {
+                    self.trigger.hide()
+                } else {
+                    self.trigger.update(target: target)
+                }
+            }
+        }
+
+        requestAccessibilityAndStart()
     }
 
-    @objc func show() {
-        panel?.center()
-        panel?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    func togglePanel(at point: CGPoint) {
+        if panel?.isVisible == true {
+            hidePanel()
+        } else {
+            showPanel(at: point)
+        }
+    }
+
+    private func showPanel(at point: CGPoint) {
+        trigger.hide()
+        panel?.present(at: point)
+        installClickOutside()
+    }
+
+    private func hidePanel() {
+        panel?.orderOut(nil)
+        removeClickOutside()
+        trigger.update(target: lastTarget)
+    }
+
+    private func installClickOutside() {
+        removeClickOutside()
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in
+                self?.hidePanel()
+            }
+        }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            if event.keyCode == 53 {
+                Task { @MainActor in
+                    self?.hidePanel()
+                }
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removeClickOutside() {
+        if let clickMonitor {
+            NSEvent.removeMonitor(clickMonitor)
+            self.clickMonitor = nil
+        }
+        if let escapeMonitor {
+            NSEvent.removeMonitor(escapeMonitor)
+            self.escapeMonitor = nil
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if let hotKey { UnregisterEventHotKey(hotKey) }
+        hotKey.unregister()
+        monitor.stop()
+        trustTimer?.invalidate()
+        removeClickOutside()
+    }
+
+    private func requestAccessibilityAndStart() {
+        AXHelpers.requestPermissions()
+        if AXIsProcessTrusted() {
+            monitor.start()
+            return
+        }
+        showPermissionWindow()
+        trustTimer?.invalidate()
+        trustTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] timer in
+            guard AXIsProcessTrusted() else { return }
+            timer.invalidate()
+            Task { @MainActor in
+                self?.trustTimer = nil
+                self?.permissionPanel?.orderOut(nil)
+                self?.permissionPanel = nil
+                self?.monitor.start()
+            }
+        }
+    }
+
+    private func showPermissionWindow() {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 260),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Caret"
+        panel.isReleasedWhenClosed = false
+        panel.level = .floating
+        panel.contentView = NSHostingView(rootView: PermissionView {
+            AXHelpers.openAccessibilitySettings()
+        })
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        permissionPanel = panel
     }
 }
 

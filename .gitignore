@@ -2,6 +2,12 @@
 .build/
 .swiftpm/
 .local/
+xcuserdata/
+DerivedData/
+build/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
 .venv/
 __pycache__/
 **/.summem/__pycache__/

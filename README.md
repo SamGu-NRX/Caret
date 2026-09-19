@@ -14,15 +14,15 @@ make demo
 make app
 ```
 
-The app opens a native popup. Press Enter to preview the sample meeting, inspect the evidence, then save and confirm local holds. Control–Option–Space reopens it; Escape dismisses it. Quit stops the app and unregisters the shortcut.
+Caret asks for Accessibility on first launch, then shows a blue asterisk button only next to text fields and text selections. Command–Option or the button opens a list of actions. Memories stay in the background and are used when an action runs.
 
-**This is a contributor starter, not the finished ninety-second demo.** The sample thread, busy intervals and buffers are explicitly synthetic. Preview calculation and SQLite hold transitions run for real. Gmail, Google Calendar, Jev inference, background capture and browser execution are not connected. The app cannot send email, create external events or purchase anything. It does not monitor your computer.
+**This is a contributor starter, not the finished ninety-second demo.** The sample thread, busy intervals and buffers are explicitly synthetic. Preview calculation and SQLite hold transitions run for real. Gmail, Google Calendar, Jev inference, background capture and browser execution are not connected. The app cannot send email, create external events or purchase anything. Accessibility is used only to place the Caret button beside the current field or selection.
 
 ## Where to work
 
 | Component | Location | First integration |
 | --- | --- | --- |
-| Mac popup and evidence pane | `apps/mac` | Capture current selection/thread, preserve host focus, accept natural input |
+| Mac popup and evidence pane | `Caret.xcodeproj`, `apps/mac` | Capture current selection/thread beside the cursor, preserve host focus, accept natural input |
 | Workflows | `caret/workflows.json`, `caret/planner.py` | Connect Jev routing and source-backed parameter extraction |
 | Memory and run state | `caret/store.py` | Add source timestamps/IDs and external calendar event IDs |
 | Computer use | `packages/jev-ultrafast`, `packages/skyvern` | Choose one browser executor and stop before payment |
