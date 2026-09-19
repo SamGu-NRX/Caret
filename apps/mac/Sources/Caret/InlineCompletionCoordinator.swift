@@ -227,6 +227,26 @@ final class InlineCompletionCoordinator {
                 fontPointSize: InlineCaretGeometry.fontPointSize(for: reading.element)
             )
         )
+        announce(offer)
+    }
+
+    /// Ghost text is pixels only, so a VoiceOver user would otherwise have no
+    /// way to know a suggestion exists or that Tab now means something new.
+    ///
+    /// Low priority on purpose: this fires while the user is typing, and an
+    /// announcement that interrupts speech mid-word would make the feature
+    /// worse than silence. The completion text is spoken because a suggestion
+    /// the user cannot hear is not one they can decide about.
+    private func announce(_ offer: InlineOffer) {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        NSAccessibility.post(
+            element: NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: "Suggestion: \(offer.replacement). Press Tab to accept.",
+                .priority: NSAccessibilityPriorityLevel.low.rawValue,
+            ]
+        )
     }
 
     private func dismissVisible(reason: InlineCancelReason) {
