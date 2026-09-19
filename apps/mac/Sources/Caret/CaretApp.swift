@@ -1163,9 +1163,9 @@ struct CaretActionOfferRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(offer.title.isEmpty ? offer.workflowID : offer.title)
+                Text(offer.displayTitle)
                     .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
+                    .lineLimit(offer.isLocalMeetingDemo ? nil : 1)
                 Spacer(minLength: 4)
                 statusBadge
             }
@@ -1173,7 +1173,20 @@ struct CaretActionOfferRow: View {
                 Text(offer.effect)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(offer.isLocalMeetingDemo ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if offer.isLocalMeetingDemo {
+                Text("Local demo using synthetic data. Accepting writes only local demo holds. No message is sent and no external calendar is changed.")
+                    .font(.system(size: 11, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                if case .offered = offer.state {
+                    ForEach(Array(offer.evidence.enumerated()), id: \.offset) { _, item in
+                        Text(item)
+                            .font(.system(size: 11))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             detail
         }
@@ -1188,13 +1201,13 @@ struct CaretActionOfferRow: View {
     @ViewBuilder private var statusBadge: some View {
         switch offer.state {
         case .offered:
-            Text(offer.isExecutable ? "Ready" : "Unavailable")
+            Text(offer.isExecutable ? (offer.isLocalMeetingDemo ? "Local demo ready" : "Ready") : "Unavailable")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(offer.isExecutable ? .secondary : .tertiary)
         case .running:
             // No spinner animation: this row appears on the keyboard path and
             // a spinner starting mid-keystroke reads as lag.
-            Text("Running…")
+            Text(offer.isLocalMeetingDemo ? "Running local demo…" : "Running…")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
         case .succeeded(_, _, let scope):

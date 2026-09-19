@@ -46,11 +46,13 @@ struct CaretActionOffer: Identifiable, Equatable {
     enum CompletionScope: Equatable {
         case externalEffect
         case draftOnly
+        case localDemo
 
         var label: String {
             switch self {
             case .externalEffect: return "Done"
             case .draftOnly: return "Draft ready"
+            case .localDemo: return "Demo holds created"
             }
         }
     }
@@ -72,14 +74,23 @@ struct CaretActionOffer: Identifiable, Equatable {
     /// shown as unavailable rather than offered, because presenting it as a
     /// choice would promise an execution that cannot happen.
     var isExecutable: Bool {
-        guard !sampleOnly, missingInputs.isEmpty else { return false }
+        isExecutable(demoMeetingEnabled: CoreLaunchSettings.demoMeetingEnabled)
+    }
+
+    var isLocalMeetingDemo: Bool {
+        sampleOnly && workflowID == "book-calendar-link" && executionMethod == "local-sample-planner"
+    }
+
+    func isExecutable(demoMeetingEnabled: Bool) -> Bool {
+        guard missingInputs.isEmpty else { return false }
+        guard !sampleOnly || (demoMeetingEnabled && isLocalMeetingDemo) else { return false }
         let method = executionMethod.trimmingCharacters(in: .whitespaces).lowercased()
         return !method.isEmpty && !Self.placeholderExecutionMethods.contains(method)
     }
 
     var unavailabilityText: String? {
         let method = executionMethod.trimmingCharacters(in: .whitespaces).lowercased()
-        if sampleOnly {
+        if sampleOnly && !(isLocalMeetingDemo && CoreLaunchSettings.demoMeetingEnabled) {
             return "Sample only. \(displayTitle) has no live executor yet."
         }
         if method.isEmpty || Self.placeholderExecutionMethods.contains(method) {
@@ -101,11 +112,12 @@ struct CaretActionOffer: Identifiable, Equatable {
     /// reason the user does not mistake a draft for a booking. Dropping it to
     /// keep a row count tidy would undo the disclosure.
     static func visibleEvidence(_ evidence: [String], scope: CompletionScope) -> [String] {
-        scope == .draftOnly ? evidence : Array(evidence.prefix(4))
+        scope == .externalEffect ? Array(evidence.prefix(4)) : evidence
     }
 
     var completionScope: CompletionScope {
-        Self.draftOnlyExecutionMethods.contains(executionMethod.trimmingCharacters(in: .whitespaces).lowercased())
+        if isLocalMeetingDemo { return .localDemo }
+        return Self.draftOnlyExecutionMethods.contains(executionMethod.trimmingCharacters(in: .whitespaces).lowercased())
             ? .draftOnly
             : .externalEffect
     }
