@@ -100,23 +100,11 @@ enum AXHelpers {
         NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
     }
 
-    static func requestPermissions() {
-        guard !AXIsProcessTrusted() else { return }
-        let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        let options = [prompt: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+    static func isTrusted() -> Bool {
+        AccessibilityTrust.isTrusted()
     }
 
     static func openAccessibilitySettings() {
-        let urls = [
-            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        ]
-        for string in urls {
-            if let url = URL(string: string) {
-                NSWorkspace.shared.open(url)
-                return
-            }
-        }
+        AccessibilityTrust.openSettings()
     }
 }

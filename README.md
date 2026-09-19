@@ -11,7 +11,8 @@ git clone https://github.com/theodorexli/hackathon-2026-09-19.git
 cd hackathon-2026-09-19
 make test
 make demo
-make app
+make install    # Release Caret.app → /Applications
+# make dmg      # also writes dist/Caret.dmg
 ```
 
 Caret asks for Accessibility on first launch, then shows a blue asterisk button only next to text fields and text selections. Command–Option or the button opens a list of actions. Memories stay in the background and are used when an action runs.

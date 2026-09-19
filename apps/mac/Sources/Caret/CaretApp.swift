@@ -8,7 +8,7 @@ struct MemoryItem: Identifiable {
     let sourceApp: String?
 }
 
-struct CaretAction: Identifiable {
+struct CaretAction: Identifiable, Equatable {
     let id: String
     let title: String
 }
@@ -17,14 +17,59 @@ struct CaretAction: Identifiable {
 final class Model: ObservableObject {
     @Published var selectedText = ""
     @Published var sourceApp: String?
+    @Published private(set) var pinStore: PinnedActionsStore
+
     var memories: [MemoryItem] = []
     var onRun: ((CaretAction) -> Void)?
+    var onPinsChanged: (() -> Void)?
 
     let actions: [CaretAction] = [
-        CaretAction(id: "book-flight", title: "Action 1"),
-        CaretAction(id: "book-calendar-link", title: "Action 2"),
-        CaretAction(id: "revise", title: "Action 3"),
+        CaretAction(id: "book-flight", title: "Book flight"),
+        CaretAction(id: "book-calendar-link", title: "Calendar link"),
+        CaretAction(id: "revise", title: "Revise draft"),
+        CaretAction(id: "summarize", title: "Summarize"),
+        CaretAction(id: "translate", title: "Translate"),
+        CaretAction(id: "follow-up", title: "Draft follow-up"),
+        CaretAction(id: "extract-tasks", title: "Extract tasks"),
+        CaretAction(id: "tone-polite", title: "Make polite"),
     ]
+
+    init(pinStore: PinnedActionsStore = .load()) {
+        self.pinStore = pinStore
+    }
+
+    func action(id: String) -> CaretAction? {
+        actions.first { $0.id == id }
+    }
+
+    var pinnedActions: [CaretAction] {
+        pinStore.orderedActionIDs.compactMap { action(id: $0) }
+    }
+
+    var pinnedChips: [PinnedActionChip] {
+        pinnedActions.compactMap { action in
+            guard let slot = pinStore.slot(for: action.id) else { return nil }
+            return PinnedActionChip(id: action.id, title: action.title, slot: slot)
+        }
+    }
+
+    func shortcutLabel(for action: CaretAction) -> String? {
+        guard let slot = pinStore.slot(for: action.id) else { return nil }
+        return PinnedShortcutFormatting.menuLabel(slot: slot)
+    }
+
+    func canPin(_ action: CaretAction) -> Bool {
+        pinStore.isPinned(action.id) || pinStore.orderedActionIDs.count < PinnedActionsStore.maxPinned
+    }
+
+    func togglePin(_ action: CaretAction) {
+        let changed = pinStore.togglePin(actionID: action.id)
+        if changed || pinStore.isPinned(action.id) {
+            pinStore.save()
+            objectWillChange.send()
+            onPinsChanged?()
+        }
+    }
 
     func run(_ action: CaretAction) {
         NSLog(
@@ -36,43 +81,83 @@ final class Model: ObservableObject {
         )
         onRun?(action)
     }
+
+    func runPinnedSlot(_ slot: Int) {
+        guard let id = pinStore.actionID(forSlot: slot), let action = action(id: id) else { return }
+        run(action)
+    }
 }
 
 struct ActionsView: View {
     @ObservedObject var model: Model
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(model.actions) { action in
-                ActionRow(title: action.title) {
-                    model.run(action)
-                }
+                ActionRow(
+                    title: action.title,
+                    shortcut: model.shortcutLabel(for: action),
+                    isPinned: model.pinStore.isPinned(action.id),
+                    canPin: model.canPin(action),
+                    onPin: { model.togglePin(action) },
+                    onRun: { model.run(action) }
+                )
             }
         }
-        .padding(10)
-        .frame(width: 220)
+        .padding(.vertical, 4)
+        .frame(width: 260)
     }
 }
 
 private struct ActionRow: View {
     let title: String
-    let action: () -> Void
+    let shortcut: String?
+    let isPinned: Bool
+    let canPin: Bool
+    let onPin: () -> Void
+    let onRun: () -> Void
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(isHovered ? 0.12 : 0))
-                )
+        HStack(spacing: 6) {
+            Button(action: onRun) {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if let shortcut {
+                        Text(shortcut)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+                .padding(.leading, 12)
+                .padding(.trailing, 8)
+                .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onPin) {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isPinned ? Color.accentColor : .secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canPin && !isPinned)
+            .help(isPinned ? "Unpin" : (canPin ? "Pin next to Caret icon" : "Unpin one action first (max 3)"))
+            .padding(.trailing, 6)
         }
-        .buttonStyle(.plain)
+        .frame(height: 24)
+        .background(
+            Rectangle()
+                .fill(Color.primary.opacity(isHovered ? 0.08 : 0))
+        )
         .onHover { isHovered = $0 }
     }
 }
@@ -136,13 +221,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onRun = { [weak self] _ in
             self?.hidePanel()
         }
-        let hosting = NSHostingView(rootView: ActionsView(model: model).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous)))
+        model.onPinsChanged = { [weak self] in
+            self?.syncPinnedTriggerUI()
+        }
+        let hosting = NSHostingView(rootView: ActionsView(model: model).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous)))
         hosting.sizingOptions = [.intrinsicContentSize]
         panel.contentView = hosting
         self.panel = panel
 
         statusBar.onOpen = { [weak self] in
             self?.togglePanel(at: NSEvent.mouseLocation)
+        }
+        statusBar.onFixAccessibility = { [weak self] in
+            self?.showPermissionWindow()
         }
         statusBar.install()
 
@@ -151,12 +242,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.togglePanel(at: point)
             }
         }
+        hotKey.onPinnedHotKey = { [weak self] slot in
+            Task { @MainActor in
+                self?.runPinnedAction(slot: slot)
+            }
+        }
         hotKey.register()
 
         trigger.onClick = { [weak self] in
             guard let self else { return }
             self.togglePanel(at: CGPoint(x: self.trigger.buttonFrame.maxX, y: self.trigger.buttonFrame.midY))
         }
+        trigger.onPinnedAction = { [weak self] chip in
+            Task { @MainActor in
+                self?.runPinnedAction(id: chip.id)
+            }
+        }
+
+        syncPinnedTriggerUI()
 
         monitor.onChange = { [weak self] target in
             Task { @MainActor in
@@ -173,6 +276,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         requestAccessibilityAndStart()
+    }
+
+    private func syncPinnedTriggerUI() {
+        trigger.setPinnedActions(model?.pinnedChips ?? [])
+        if panel?.isVisible != true {
+            trigger.update(target: lastTarget)
+        }
+    }
+
+    private func runPinnedAction(slot: Int) {
+        guard let model else { return }
+        model.runPinnedSlot(slot)
+    }
+
+    private func runPinnedAction(id: String) {
+        guard let model, let action = model.action(id: id) else { return }
+        model.run(action)
     }
 
     func togglePanel(at point: CGPoint) {
@@ -232,17 +352,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestAccessibilityAndStart() {
-        AXHelpers.requestPermissions()
-        if AXIsProcessTrusted() {
+        if AXHelpers.isTrusted() {
+            AccessibilityTrust.noteTrustedIfNeeded()
             monitor.start()
             return
         }
-        showPermissionWindow()
+
+        if AccessibilityTrust.needsRepairPrompt() {
+            showPermissionWindow()
+        }
+
         trustTimer?.invalidate()
-        trustTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] timer in
-            guard AXIsProcessTrusted() else { return }
+        trustTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard AXHelpers.isTrusted() else { return }
             timer.invalidate()
             Task { @MainActor in
+                AccessibilityTrust.noteTrustedIfNeeded()
                 self?.trustTimer = nil
                 self?.permissionPanel?.orderOut(nil)
                 self?.permissionPanel = nil
@@ -251,9 +376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func showPermissionWindow() {
+    func showPermissionWindow() {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 260),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 320),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -261,12 +386,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.title = "Caret"
         panel.isReleasedWhenClosed = false
         panel.level = .floating
-        panel.contentView = NSHostingView(rootView: PermissionView {
-            AXHelpers.openAccessibilitySettings()
-        })
+        panel.contentView = NSHostingView(rootView: PermissionView(
+            executablePath: AccessibilityTrust.executablePath,
+            onOpenSettings: { AXHelpers.openAccessibilitySettings() },
+            onDismiss: { [weak self] in
+                AccessibilityTrust.dismissRepairPromptForCurrentBuild()
+                self?.permissionPanel?.orderOut(nil)
+                self?.permissionPanel = nil
+            }
+        ))
         panel.center()
         panel.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
         permissionPanel = panel
     }
 }
