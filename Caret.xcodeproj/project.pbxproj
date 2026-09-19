@@ -64,6 +64,9 @@
 		B1000000000000000000001A /* ApplicationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ApplicationServices.framework; path = System/Library/Frameworks/ApplicationServices.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
+		B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFrameworksBuildPhase section */
 		B10000000000000000000005 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
@@ -80,6 +83,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+							B100000000000000000000A2 /* CaretCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -183,6 +187,9 @@
 			name = Caret;
 			productName = Caret;
 			productReference = B1000000000000000000000F /* Caret.app */;
+			packageProductDependencies = (
+				B100000000000000000000A1 /* CaretCore */,
+			);
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -240,6 +247,9 @@
 				en,
 				Base,
 			);
+			packageReferences = (
+				B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */,
+			);
 			mainGroup = B1000000000000000000000C;
 			productRefGroup = B1000000000000000000000D /* Products */;
 			projectDirPath = "";
@@ -286,6 +296,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = apps/mac;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B100000000000000000000A1 /* CaretCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CaretCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		B10000000000000000000008 /* Debug */ = {
@@ -345,7 +369,7 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.caret.hackathon;
 				PRODUCT_NAME = Caret;
-				SYMROOT = "$(SRCROOT)/.local/build";
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -375,7 +399,7 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.caret.hackathon;
 				PRODUCT_NAME = Caret;
-				SYMROOT = "$(SRCROOT)/.local/build";
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
