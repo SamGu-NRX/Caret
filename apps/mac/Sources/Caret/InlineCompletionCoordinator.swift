@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CaretCore
 import os
 
 /// Joins the pieces: reads the field, asks the backend at a bounded rate,
@@ -22,12 +23,15 @@ final class InlineCompletionCoordinator {
     private let tap = InlineKeyTap()
     private let preview = InlinePreviewWindow()
     private var provider: InlineCompletionProviding?
+    /// The single capture that mints the element and window tokens the guard
+    /// later compares. A second instance would mint different tokens and every
+    /// acceptance would be rejected as a moved target.
+    private let capture: FocusedTargetCapture
 
     private var pollTimer: Timer?
     private var lastRequestAt: Date?
-    private var lastRequestedRevision: String?
-    /// Text the offer was computed against, retained so insertion can check
-    /// live content equality rather than trusting a hash convention.
+    /// Unused since InsertionGuard owns validation; kept nil to make the
+    /// retained-text path unreachable.
     private var offerBaseText: String?
     private var acceptTask: Task<Void, Never>?
 
@@ -37,8 +41,9 @@ final class InlineCompletionCoordinator {
     private(set) var status: InlineDisabledReason?
     var onStatusChange: ((InlineDisabledReason?) -> Void)?
 
-    init(provider: InlineCompletionProviding? = nil) {
+    init(provider: InlineCompletionProviding? = nil, capture: FocusedTargetCapture) {
         self.provider = provider
+        self.capture = capture
         wire()
     }
 
@@ -89,10 +94,6 @@ final class InlineCompletionCoordinator {
     // MARK: - Lifecycle
 
     func start() {
-        guard AXHelpers.isTrusted() else {
-            setStatus(.accessibilityDenied)
-            return
-        }
         guard let provider else {
             // Criterion 6: no backend means no completions and a visible
             // reason. Nothing is mocked here.
@@ -130,62 +131,73 @@ final class InlineCompletionCoordinator {
     // MARK: - Capture
 
     private func poll() {
-        guard AXHelpers.isTrusted() else {
-            setStatus(.accessibilityDenied)
-            store.updateTarget(nil)
-            return
-        }
-        guard let reading = InlineFieldAccess.readFocusedField() else {
-            store.updateTarget(nil)
-            return
-        }
-        if reading.secure {
-            setStatus(.secureField)
-            store.updateTarget(nil)
-            return
-        }
-        guard InlineFieldAccess.isEditable(role: reading.role) else {
-            store.updateTarget(nil)
-            return
-        }
-        if status == .secureField || status == .excludedApp { setStatus(nil) }
+        guard let provider else { return }
 
-        store.updateTarget(reading.target)
-        maybeRequest(reading)
+        switch capture.capture(now: Date()) {
+        case .unchanged:
+            // Nothing new to judge and any live offer is still about the text
+            // in front of the user.
+            return
+
+        case .suppressed(let suppression, let invalidatesPriorContext):
+            if invalidatesPriorContext {
+                // The user is no longer in the field the offer was about. This
+                // includes the composing case, where whether a composition is
+                // in progress is not observable: an offer that might land
+                // inside one is taken down rather than left up.
+                store.cancel(reason: .focusChanged)
+            }
+            setStatus(Self.status(for: suppression))
+
+        case .captured(let snapshot):
+            setStatus(nil)
+            let target = InlineTarget(snapshot.target)
+            store.updateTarget(target)
+            maybeRequest(snapshot, target: target, provider: provider)
+        }
     }
 
-    /// Bounded request rate. Skipped entirely when the text and caret have not
-    /// moved since the last request, so an idle caret costs nothing.
-    private func maybeRequest(_ reading: InlineFieldReading) {
-        guard status == nil, let provider else { return }
+    /// Only the reasons a user can act on become visible status. A field that
+    /// simply is not a text field is not a problem to report.
+    private static func status(for suppression: FocusedTargetCapture.Suppression) -> InlineDisabledReason? {
+        switch suppression {
+        case .accessibilityNotTrusted: return .accessibilityDenied
+        case .secureField: return .secureField
+        case .appExcluded: return .excludedApp
+        case .imeCompositionUnobservable: return .composing
+        case .noFocusedApplication, .noFocusedElement, .unsupportedRole,
+             .valueUnreadable, .selectionUnreadable, .processMismatch,
+             .windowUnavailable, .nearbyTextUnbounded:
+            return nil
+        }
+    }
+
+    /// Bounded request rate. The capture already suppressed an unchanged
+    /// reading, so reaching here means the text or caret actually moved.
+    private func maybeRequest(_ snapshot: InputSnapshot, target: InlineTarget, provider: InlineCompletionProviding) {
+        guard status == nil else { return }
         guard store.visibleOffer == nil, !store.acceptanceInFlight else { return }
-
-        let revision = reading.target.elementRevision
-        guard revision != lastRequestedRevision else { return }
         if let lastRequestAt, Date().timeIntervalSince(lastRequestAt) < Self.requestInterval { return }
-        // Only complete at a collapsed caret at the end of a word; completing
-        // into the middle of a selection is a different feature.
-        guard reading.selection.length == 0 else { return }
+        // Completing into the middle of a selection is a different feature.
+        guard snapshot.selection.isEmpty else { return }
 
-        lastRequestedRevision = revision
         lastRequestAt = Date()
+        offerBaseText = nil
 
-        let window = InlineWindowBuilder.window(text: reading.text, caret: reading.selection.location)
         let request = InlineCompletionRequest(
             generation: store.generation,
-            revision: store.generation,
-            target: reading.target,
-            role: reading.role,
-            nearbyText: window.text,
-            textOffset: window.offset,
-            caret: reading.selection.location,
-            selection: reading.selection,
-            secure: reading.secure,
-            imeComposing: false,
-            appExcluded: false,
-            valueLength: reading.text.utf16.count
+            revision: snapshot.revision,
+            target: target,
+            role: snapshot.role,
+            nearbyText: snapshot.nearbyText,
+            textOffset: snapshot.textOffset,
+            caret: snapshot.caret,
+            selection: NSRange(location: snapshot.caret, length: 0),
+            secure: snapshot.secure,
+            imeComposing: snapshot.imeComposing,
+            appExcluded: snapshot.appExcluded,
+            valueLength: snapshot.valueLength ?? UTF16Text.length(snapshot.nearbyText)
         )
-        offerBaseText = reading.text
 
         Task { [weak self] in
             do {
@@ -209,14 +221,12 @@ final class InlineCompletionCoordinator {
     }
 
     private func showPreview(for offer: InlineOffer) {
-        guard let reading = InlineFieldAccess.readFocusedField(),
-              reading.target == offer.target
-        else {
+        guard let element = InlineFieldAccess.focusedElement(forPID: offer.target.pid) else {
             store.cancel(reason: .staleTarget)
             return
         }
-        let caretRect = InlineCaretGeometry.caretRect(for: reading.element, caretUTF16: offer.replaceEnd)
-        let fieldRect = AXHelpers.frame(reading.element) ?? .zero
+        let caretRect = InlineCaretGeometry.caretRect(for: element, caretUTF16: offer.replaceEnd)
+        let fieldRect = AXHelpers.frame(element) ?? .zero
         preview.show(
             InlinePreviewPresentation(
                 text: offer.replacement,
@@ -224,7 +234,7 @@ final class InlineCompletionCoordinator {
                 fieldRect: fieldRect,
                 placement: InlineCaretGeometry.placement(caretRect: caretRect, fieldRect: fieldRect),
                 acceptHint: InlineKeyTap.acceptHint,
-                fontPointSize: InlineCaretGeometry.fontPointSize(for: reading.element)
+                fontPointSize: InlineCaretGeometry.fontPointSize(for: element)
             )
         )
         announce(offer)
@@ -264,16 +274,17 @@ final class InlineCompletionCoordinator {
         guard let claim = store.claimAcceptance(proposalID: proposalID) else { return }
         preview.hide()
 
-        guard let baseText = offerBaseText else {
-            store.finishAcceptance(success: false)
-            return
-        }
-
-        // First revalidation: the field as it is at the keystroke.
-        guard let before = InlineFieldAccess.readFocusedField(),
-              InlineFieldAccess.validate(reading: before, against: claim.offer, expectedText: baseText) == nil
+        // First revalidation, at the keystroke: refuse before asking the core
+        // if the field already moved.
+        guard let coreEdit = claim.offer.coreEdit,
+              let live = capture.liveTarget(),
+              case .success = InsertionGuard.approve(
+                  edit: coreEdit,
+                  live: live,
+                  createdAt: claim.offer.createdAt
+              )
         else {
-            log.info("inline acceptance refused: target changed before request")
+            log.info("inline acceptance refused before request")
             store.finishAcceptance(success: false)
             return
         }
@@ -287,7 +298,7 @@ final class InlineCompletionCoordinator {
                     revision: claim.offer.revision,
                     target: claim.offer.target
                 )
-                await MainActor.run { self.applyAccepted(edit, base: baseText, generation: claim.generation) }
+                await MainActor.run { self.applyAccepted(edit, generation: claim.generation) }
             } catch {
                 await MainActor.run {
                     self.log.error("inline acceptance rejected by core")
@@ -297,35 +308,47 @@ final class InlineCompletionCoordinator {
         }
     }
 
-    private func applyAccepted(_ edit: InlineAcceptedEdit, base: String, generation: Int) {
-        // The answer is only allowed to act if nothing invalidated the offer
-        // while it was in flight.
+    private func applyAccepted(_ edit: InlineAcceptedEdit, generation: Int) {
         guard generation == store.generation, store.acceptanceInFlight else {
             log.info("inline edit dropped: superseded while in flight")
             store.finishAcceptance(success: false)
             return
         }
 
-        let offer = InlineOffer(
+        // Second revalidation, on the reply: the user kept typing while the
+        // request was in flight, so the field is read again, not remembered.
+        guard let live = capture.liveTarget() else {
+            store.finishAcceptance(success: false)
+            return
+        }
+        guard let coreEdit = InlineEditBuilder.make(
             proposalID: edit.proposalID,
-            revision: 0,
-            target: edit.target,
+            target: edit.target.identity,
             replaceStart: edit.replaceStart,
             replaceEnd: edit.replaceEnd,
             replacement: edit.replacement,
-            originalDigest: edit.originalDigest,
-            createdAt: Date()
-        )
-
-        // Second revalidation, inside apply(): reads the live field again and
-        // refuses if the user moved on. Never inserts into a newly focused
-        // field.
-        switch InlineFieldAccess.apply(offer: offer, expectedText: base) {
-        case .success:
-            store.finishAcceptance(success: true)
-        case .failure(let failure):
-            log.error("inline insert refused: \(String(describing: failure), privacy: .public)")
+            originalDigest: edit.originalDigest
+        ) else {
             store.finishAcceptance(success: false)
+            return
+        }
+        switch InsertionGuard.approve(edit: coreEdit, live: live, createdAt: Date()) {
+        case .failure(let rejection):
+            log.error("inline insert refused: \(rejection.shortReason, privacy: .public)")
+            store.finishAcceptance(success: false)
+        case .success(let approved):
+            guard let element = InlineFieldAccess.focusedElement(forPID: approved.target.pid) else {
+                store.finishAcceptance(success: false)
+                return
+            }
+            switch InlineFieldAccess.apply(approved, to: element) {
+            case .success:
+                capture.invalidate()
+                store.finishAcceptance(success: true)
+            case .failure(let failure):
+                log.error("inline insert failed: \(String(describing: failure), privacy: .public)")
+                store.finishAcceptance(success: false)
+            }
         }
     }
 

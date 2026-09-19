@@ -131,7 +131,7 @@ final class InlineOfferStoreTests: XCTestCase {
         InlineTarget(pid: 42, bundleID: "com.apple.TextEdit", windowID: "w", elementID: element, elementRevision: revision)
     }
 
-    private func offer(_ target: InlineTarget, id: String = "p1", text: String = " team") -> InlineOffer {
+    private func offer(_ target: InlineTarget, id: String = "p1", text: String = " team") -> Caret.InlineOffer {
         InlineOffer(
             proposalID: id, revision: 1, target: target,
             replaceStart: 5, replaceEnd: 5, replacement: text,
@@ -219,7 +219,7 @@ final class InlineOfferStoreTests: XCTestCase {
 }
 
 final class InlineTextTests: XCTestCase {
-    private func offer(start: Int, end: Int, text: String) -> InlineOffer {
+    private func offer(start: Int, end: Int, text: String) -> Caret.InlineOffer {
         InlineOffer(
             proposalID: "p", revision: 1,
             target: InlineTarget(pid: 1, bundleID: "b", windowID: "w", elementID: "e", elementRevision: "r"),
@@ -264,62 +264,9 @@ final class InlineTextTests: XCTestCase {
     }
 
     // Criterion 3: a changed field fails validation rather than being edited.
-    func testValidationRejectsChangedText() {
-        let t = InlineTarget(pid: 1, bundleID: "b", windowID: "w", elementID: "e", elementRevision: "r")
-        let reading = InlineFieldReading(
-            element: AXUIElementCreateSystemWide(), target: t,
-            text: "hello there", selection: NSRange(location: 5, length: 0),
-            role: "AXTextArea", secure: false
-        )
-        XCTAssertEqual(
-            InlineFieldAccess.validate(reading: reading, against: offer(start: 5, end: 5, text: "!"), expectedText: "hello"),
-            .textChanged
-        )
-    }
 
-    func testValidationRejectsMovedCaret() {
-        let t = InlineTarget(pid: 1, bundleID: "b", windowID: "w", elementID: "e", elementRevision: "r")
-        let reading = InlineFieldReading(
-            element: AXUIElementCreateSystemWide(), target: t,
-            text: "hello", selection: NSRange(location: 2, length: 0),
-            role: "AXTextArea", secure: false
-        )
-        XCTAssertEqual(
-            InlineFieldAccess.validate(reading: reading, against: offer(start: 5, end: 5, text: "!"), expectedText: "hello"),
-            .selectionMoved
-        )
-    }
 
-    func testValidationRejectsSecureField() {
-        let t = InlineTarget(pid: 1, bundleID: "b", windowID: "w", elementID: "e", elementRevision: "r")
-        let reading = InlineFieldReading(
-            element: AXUIElementCreateSystemWide(), target: t,
-            text: "hello", selection: NSRange(location: 5, length: 0),
-            role: "AXTextField", secure: true
-        )
-        XCTAssertEqual(
-            InlineFieldAccess.validate(reading: reading, against: offer(start: 5, end: 5, text: "!"), expectedText: "hello"),
-            .secureField
-        )
-    }
 
-    func testWindowKeepsCaretInsideAndReportsAbsoluteOffset() {
-        let text = String(repeating: "a", count: 10_000)
-        let window = InlineWindowBuilder.window(text: text, caret: 9_000, limit: 4_000)
-        XCTAssertEqual(window.text.utf16.count, 4_000)
-        XCTAssertLessThanOrEqual(window.offset, 9_000)
-        XCTAssertGreaterThanOrEqual(window.offset + window.text.utf16.count, 9_000, "window must contain the caret")
-    }
 
-    func testShortTextIsSentWhole() {
-        let window = InlineWindowBuilder.window(text: "hello", caret: 5, limit: 4_000)
-        XCTAssertEqual(window.offset, 0)
-        XCTAssertEqual(window.text, "hello")
-    }
 
-    func testDigestShapeMatchesBridgeSample() {
-        // docs/bridge-protocol.md shows e3b0c44298fc1c14, the first 16 hex
-        // characters of SHA-256 over the empty string.
-        XCTAssertEqual(InlineFieldAccess.digest(of: ""), "e3b0c44298fc1c14")
-    }
 }
