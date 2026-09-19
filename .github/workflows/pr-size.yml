@@ -22,7 +22,7 @@ jobs:
       # This workflow runs with a write token. It reads the base branch and fetches
       # the PR head only as Git data. Do not run PR scripts or install dependencies here.
       - name: Checkout base repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Sync PR size label
