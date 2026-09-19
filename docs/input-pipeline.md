@@ -1,6 +1,6 @@
 # Input routing and package ownership
 
-This is the approved implementation contract for the input, UI, workflow and context agents. Sam approved implementation on September 19. The judge and text insertion are not implemented by this documentation change.
+This is the approved implementation contract for the input, UI, workflow and context agents. Sam approved implementation on September 19. The shared core described here is now implemented in `caret/` and reachable over a process boundary; see [What is implemented](#what-is-implemented) for the line between that and the work still owned by the app and the executors. The wire format is in [bridge-protocol.md](bridge-protocol.md).
 
 ## Five upstream packages
 
@@ -69,26 +69,26 @@ Hover reveals an action without requiring a click. Keep the host field focused f
 
 ## Contracts between owners
 
-Keep these names consistent when implementing the bridge; they describe required data rather than existing types.
+These records now exist. The table names where each one lives so a change is made in one place.
 
-| Record | Required information |
-| --- | --- |
-| `InputSnapshot` | Revision, capture time, app PID/bundle ID, window and element identity, role/security status, caret/selection in UTF-16 offsets, bounded nearby text and digest, relevant source references |
-| `ContextFrame` | Current input snapshot, permitted clipboard content, retrieved Screenpipe context and recent computer observations/results, each with freshness and availability |
-| `RouteDecision` | Snapshot revision, ABSTAIN/INLINE/ACTION, model result and decision timing; no executable code or invented selectors |
-| `InlineProposal` | Snapshot revision, exact replacement range, replacement text, original-value digest |
-| `ActionProposal` | Snapshot revision, stable proposal/workflow IDs, visible title and effect, required inputs, evidence, supported execution method |
-| `WorkflowRun` | Accepted proposal, original target, current stage, recorded effects/remote IDs, cancellation state and completion evidence |
+| Record | Required information | Implemented as |
+| --- | --- | --- |
+| `InputSnapshot` | Revision, capture time, app PID/bundle ID, window and element identity, role/security status, caret/selection in UTF-16 offsets, bounded nearby text and digest, relevant source references | `caret.context.InputSnapshot` |
+| `ContextFrame` | Current input snapshot, permitted clipboard content, retrieved Screenpipe context and recent computer observations/results, each with freshness and availability | `caret.context.ContextFrame` |
+| `RouteDecision` | Snapshot revision, ABSTAIN/INLINE/ACTION, model result and decision timing; no executable code or invented selectors | `caret.judge.Verdict` |
+| `InlineProposal` | Snapshot revision, exact replacement range, replacement text, original-value digest | `caret.router.Offer` (`kind="inline"`) |
+| `ActionProposal` | Snapshot revision, stable proposal/workflow IDs, visible title and effect, required inputs, evidence, supported execution method | `caret.router.Offer` (`kind="action"`) |
+| `WorkflowRun` | Accepted proposal, original target, current stage, recorded effects/remote IDs, cancellation state and completion evidence | `caret.registry.ExecutionResult`; remote IDs still unused |
 
 Screenpipe owns history retrieval and retention. The app owns live target identity and keyboard handling. A model's confidence is not permission to act, and confidence cutoffs need task-specific evaluation before anyone calls them calibrated.
 
 ### Workflow handoff
 
-Sam's workflow registry supplies each workflow's stable ID, description, required inputs and supported operations. Paul has proposed `jev-scheduler/` in PR #1; this is a teammate, distinct from the author of `paulsmith/computer-use-jev`. Its `runPipeline()` currently loads sample files and may post to a configured webhook. Treat it as an explicit sample workflow until it accepts live context and separates preparation from effects. Adapt its actual interface without duplicating its planner. The judge selects only registered, available choices. Each workflow exposes preparation from a context frame, execution of an accepted proposal, and cancellation. Preparation returns the visible effect, inputs still needed and evidence; missing inputs produce a request for those inputs rather than execution.
+Sam's workflow registry supplies each workflow's stable ID, description, required inputs and supported operations. Paul has proposed `jev-scheduler/` in PR #1; this is a teammate, distinct from the author of `paulsmith/computer-use-jev`. Its `runPipeline()` takes no arguments, resolves its input files from the process working directory, and posts to `SCHEDULE_WEBHOOK_URL` when that variable is set. So it cannot be ambient preparation and cannot be handed live context. It is registered as an opt-in sample workflow instead: `caret.adapters.paul_scheduler` describes the run during preparation and starts his code only after an acceptance, in a separate Node process with the webhook variable removed and his Jev client in its own mock mode. His directory is not copied here and his planner is not reimplemented. The judge selects only registered, available choices. Each workflow exposes preparation from a context frame, execution of an accepted proposal, and cancellation. Preparation returns the visible effect, inputs still needed and evidence; missing inputs produce a request for those inputs rather than execution.
 
 Execution returns its status, recorded effects and source-backed results to the shared context. A workflow can ask the same judge to select its next allowed step when that step needs judgment. Fixed steps remain ordinary code. Skyvern or the native executor runs a selected step and returns an observation; neither starts a competing ambient loop. The workflow owns execution until completion, cancellation or user interruption.
 
-The first implementation slice connects a changed context frame to a real Jev decision, returns a typed offer to Teddy's app boundary, and hands an accepted action to a registered workflow. Verify abstention, stale-response rejection, one acceptance causing one execution, and an actual returned result. Inline insertion and each executor need their own supported-app proof when connected. While Paul finishes his directory, implement the shared contract and exercise the existing labeled sample workflow; report that as local integration evidence, not a live workflow result.
+The first implementation slice is done: a changed context frame reaches a real Jev decision, a typed offer returns over the bridge, and an accepted action runs a registered workflow that returns a structured result. Abstention, stale-response rejection, one acceptance causing one execution and an actual returned result are covered by tests. Inline insertion and each executor still need their own supported-app proof when connected.
 
 ## Accessibility onboarding is part of the product
 
@@ -103,6 +103,61 @@ The UI owner should make permission status recoverable without terminal commands
 
 Current UI review targets for Teddy: `Model.run` logs raw selected text; `SelectionMonitor.publish` excludes selection contents and field identity from its dedupe signature. Remove raw text logging and introduce snapshot identity before attaching model calls. These are source-review findings, not changes made to the UI in this branch.
 
+## What is implemented
+
+The shared core runs today. The app boundary, the executors and history
+retrieval do not.
+
+**In `caret/`, with tests:**
+
+| Piece | Module | What it does |
+| --- | --- | --- |
+| Context records | `caret/context.py` | Typed snapshot, clipboard, history, observations and source availability, with UTF-16 offsets and bounds |
+| Shared judge | `caret/judge.py` | One interface for both decisions; an answer outside the supplied choice IDs is rejected |
+| Jev client | `caret/providers/jev.py` | Real `POST /v1/systemone` Choice question, verified against the pinned `computer-use-jev` client |
+| Groq client | `caret/providers/groq.py` | Real chat-completions call for inline text |
+| Scheduling | `caret/router.py` | Two-second cadence, one in-flight evaluation, latest snapshot wins, staleness, suppression, single-use acceptance |
+| Two decisions | `caret/engine.py` | Route, then the workflow question only on ACTION, then execution on acceptance |
+| Workflow seam | `caret/registry.py`, `caret/adapters/` | Availability, preparation, execution, cancellation |
+| Process boundary | `caret/bridge.py` | Persistent JSON-lines stdio bridge; see [bridge-protocol.md](bridge-protocol.md) |
+
+A second judge exists for one reason: to make the loop runnable on a machine
+with no Jev key. `caret/providers/gateway.py` reaches Vercel AI Gateway with one
+variable, `AI_GATEWAY_API_KEY`, and supplies both a writer and a classifier, so
+`--judge gateway --writer gateway` exercises routing, generation, workflow
+selection and acceptance end to end. That classifier is a general chat model
+asked for JSON naming one of the choice IDs, which is weaker than a typed
+decision service: it can ignore the schema, and only `validate_choice` stops a
+made-up answer. Jev remains the product judge and the default, and nothing falls
+back to the Gateway; it is selected only when a caller names it. No live call
+has been made to Vercel AI Gateway, Jev or Groq from this branch. Both Gateway
+clients are written against Vercel's published documentation and covered by
+tests with a fake transport, and the CI job that would call the service runs on
+manual dispatch only.
+
+Two workflows are registered and available: the existing sample planner, which
+writes local SQLite holds on labeled synthetic data, and the opt-in
+`jev-scheduler` adapter. `book-flight` and `revise` register as unavailable with
+their reason, so the judge is never offered them.
+
+**Not implemented here, and not started by this slice:**
+
+- **No Swift code calls the bridge.** Teddy owns the app side: building a
+  context frame from the live AX read, showing the returned offer, and the
+  scoped Tab and Command shortcuts. The core proposes a replacement range; the
+  app performs the insertion, owns undo and owns the clipboard.
+- **No capture wiring.** The core consumes supplied clipboard text, Screenpipe
+  results and computer-use observations. Nothing retrieves them yet, and the
+  core cannot: it never reads the screen, the pasteboard or the permission
+  database. `secure`, `ime_composing`, `app_excluded`, `accessibility` and
+  `workflow_active` are all caller-supplied, so suppression is only as good as
+  what the app reports.
+- **No executor.** Skyvern and Computer Use Jev have no adapter. An unsupported
+  workflow is an unavailable choice, never a fabricated result.
+- **No live provider run recorded.** The clients are written against the pinned
+  upstream source and the published docs, and are covered by tests with a fake
+  transport. No call has been made to any of the three services from this branch.
+
 ## Work split and acceptance
 
 - **Teddy / UI:** hoverable, inline presentation, scoped Tab/Command shortcuts, focus restoration and permission onboarding. Preserve the new UI rather than replacing it with the older sample popup.
@@ -112,4 +167,4 @@ Current UI review targets for Teddy: `Model.run` logs raw selected text; `Select
 
 First prove the loop in one supported text app: correct offer, Tab inserts once, undo works, and a focus switch makes an old response unusable. Then connect one real workflow to Teddy's cards. Exercise continuous typing, IME input, secure fields, permission denial/revocation, duplicate keypresses and user interruption. Measure offer acceptance, unwanted interruptions, latency and calls per active minute before tuning the interval or confidence rules.
 
-The reviewed app commit `827a387` has a cursor-adjacent trigger, a pinned action strip, a scrollable menu, install packaging and Accessibility reconnection. Its current pinned shortcuts use Command–Option–1/2/3; the product keyboard contract above remains the integration target. Action selection logs and closes the panel; it does not execute the Python planner. The local CLI still supports sample preview/hold/confirm. Inline completion, the two routers, live workflows, Screenpipe and both execution adapters remain integration work.
+The reviewed app commit `827a387` has a cursor-adjacent trigger, a pinned action strip, a scrollable menu, install packaging and Accessibility reconnection. Its current pinned shortcuts use Command–Option–1/2/3; the product keyboard contract above remains the integration target. Action selection logs and closes the panel; it does not execute the Python planner. The local CLI still supports sample preview/hold/confirm. The two routers now exist behind `python3 -m caret.bridge`, but no Swift code calls it yet. Inline insertion, live workflows, Screenpipe retrieval and both execution adapters remain integration work.

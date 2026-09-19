@@ -26,7 +26,7 @@ On a reply, match the selected option with its original evidence. Show a confirm
 
 The application owns allowed operations. Jev selects a workflow ID or an operation/target from current observations. A generative model supplies text. Dates, money and target freshness are checked in code. Retrieved email and page text are evidence, not instructions that can redefine the workflow.
 
-Use Skyvern for browser execution and the selected Computer Use Jev pipeline for native Mac actions. Neither is wired into the starter. Do not keep a second browser executor. The browser adapter must reobserve after navigation and handle frames/new tabs where checkout requires them. Stop before submitting payment. A prompt saying "stop" alone is not an execution guard.
+Use Skyvern for browser execution and the selected Computer Use Jev pipeline for native Mac actions. Neither is wired into the starter. The judge that would select between them does exist: `caret.providers.jev` and the registry seam in `caret.registry`, reachable over [the bridge](bridge-protocol.md). An executor that is not connected registers as an unavailable choice, so the judge is never offered it. Do not keep a second browser executor. The browser adapter must reobserve after navigation and handle frames/new tabs where checkout requires them. Stop before submitting payment. A prompt saying "stop" alone is not an execution guard.
 
 Revise should bind its preview to the original app, window, element, selection and text. Revalidate those immediately before insertion. Adopt KeyType packages selectively and verify native undo in the supported app.
 
