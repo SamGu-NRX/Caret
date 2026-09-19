@@ -52,8 +52,6 @@ enum CaretCLI {
         guard process.terminationStatus == 0 else {
             throw Error.nonZeroExit(process.terminationStatus, err.isEmpty ? out : err)
         }
-        let trimmed = out.trimmingCharacters(in: .newlines)
-        guard !trimmed.isEmpty else { throw Error.emptyResponse }
-        return trimmed
+        return out.trimmingCharacters(in: .newlines)
     }
 }

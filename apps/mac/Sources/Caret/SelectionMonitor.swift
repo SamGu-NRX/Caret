@@ -35,6 +35,19 @@ struct SelectionTarget {
     var sourceApp: String?
     var fieldContext: FieldTextContext?
     var focusedProcessID: pid_t?
+    var axRole: String?
+    var axSubrole: String?
+
+    var typingSessionKey: String {
+        let pid = focusedProcessID ?? 0
+        let role = axRole ?? ""
+        let sub = axSubrole ?? ""
+        return "\(pid)-\(role)-\(sub)"
+    }
+
+    func effectivePrefix(captured: String) -> String {
+        TypingPrefixLogic.effectivePrefix(axPrefix: fieldContext?.prefix, capturedPrefix: captured)
+    }
 
     var anchor: CGPoint {
         if screenRect.width > 2, screenRect.height > 2 {
@@ -60,6 +73,8 @@ final class SelectionMonitor {
         "AXSearchField",
         "AXTextInput",
         "AXEditableText",
+        "AXWebArea",
+        "AXCodeEditor",
     ]
 
     func start() {
@@ -93,6 +108,7 @@ final class SelectionMonitor {
 
     private func inspect() {
         guard AXHelpers.isTrusted() else {
+            TypingPrefixCapture.shared.setActiveSession(nil)
             publish(nil)
             return
         }
@@ -100,12 +116,13 @@ final class SelectionMonitor {
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier
         else {
+            TypingPrefixCapture.shared.setActiveSession(nil)
             publish(nil)
             return
         }
 
         let mouse = lastMouse
-        let element = AXHelpers.focusedElement(in: app)
+        let element = AXHelpers.focusedTextElement(in: app)
         let role = element.flatMap { AXHelpers.stringValue($0, kAXRoleAttribute as CFString) } ?? ""
         let subrole = element.flatMap { AXHelpers.stringValue($0, kAXSubroleAttribute as CFString) } ?? ""
 
@@ -118,7 +135,12 @@ final class SelectionMonitor {
         let selectionBounds = element.flatMap { AXHelpers.selectedTextBounds($0) }
         let frame = element.flatMap { AXHelpers.frame($0) }
 
-        let fieldContext = element.flatMap { Self.fieldContext(from: $0) }
+        let fieldContext = element.flatMap { AXHelpers.makeFieldContext(from: $0) }
+        let sessionKey = "\(app.processIdentifier)-\(role)-\(subrole)"
+        TypingPrefixCapture.shared.setActiveSession(sessionKey)
+        if let prefix = fieldContext?.prefix {
+            TypingPrefixCapture.shared.mergeAXPrefix(prefix, sessionKey: sessionKey)
+        }
 
         if !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             publish(
@@ -129,26 +151,33 @@ final class SelectionMonitor {
                     mouseLocation: mouse,
                     sourceApp: app.localizedName,
                     fieldContext: fieldContext,
-                    focusedProcessID: app.processIdentifier
+                    focusedProcessID: app.processIdentifier,
+                    axRole: role,
+                    axSubrole: subrole
                 )
             )
             return
         }
 
         if isTextInput(role: role, subrole: subrole, element: element) {
+            let caret = element.flatMap { AXHelpers.caretBounds($0) }
             publish(
                 SelectionTarget(
                     kind: .input,
                     selectedText: "",
-                    screenRect: frame ?? CGRect(x: mouse.x, y: mouse.y, width: 1, height: 1),
+                    screenRect: caret ?? frame ?? CGRect(x: mouse.x, y: mouse.y, width: 1, height: 1),
                     mouseLocation: mouse,
                     sourceApp: app.localizedName,
                     fieldContext: fieldContext,
-                    focusedProcessID: app.processIdentifier
+                    focusedProcessID: app.processIdentifier,
+                    axRole: role,
+                    axSubrole: subrole
                 )
             )
             return
         }
+
+        TypingPrefixCapture.shared.setActiveSession(nil)
 
         publish(nil)
     }
@@ -165,22 +194,15 @@ final class SelectionMonitor {
             || description.contains("search field")
             || description.contains("combo box")
             || description.contains("editor")
-    }
-
-    private static func fieldContext(from element: AXUIElement) -> FieldTextContext? {
-        guard let value = AXHelpers.fieldValue(element) else { return nil }
-        guard let range = AXHelpers.selectedTextRange(element) else { return nil }
-        return FieldTextContext(
-            fullText: value,
-            selectedRangeLocation: range.location,
-            selectedRangeLength: range.length
-        )
+            || subrole.lowercased().contains("editor")
     }
 
     private func publish(_ target: SelectionTarget?) {
         let signature = target.map {
-            let digest = $0.fieldContext?.digest ?? "-"
-            return "\($0.kind)-\(Int($0.anchor.x))-\(Int($0.anchor.y))-\($0.sourceApp ?? "")-\(digest)"
+            let captured = TypingPrefixCapture.shared.prefix(for: $0.typingSessionKey)
+            let effective = $0.effectivePrefix(captured: captured)
+            let tail = effective.suffix(48)
+            return "\($0.kind)-\(Int($0.anchor.x))-\(Int($0.anchor.y))-\($0.typingSessionKey)-\(tail.hashValue)"
         } ?? "nil"
 
         if signature == lastSignature { return }

@@ -53,13 +53,38 @@ final class Model: ObservableObject {
     }
 
     var actionSkillItems: [ActionSkillItem] {
-        allActions.map { action in
-            ActionSkillItem(action: action, note: skillNotes.first { $0.id == action.id })
+        allActions
+            .filter { !TabCompletions.legacyActionIDs.contains($0.id) }
+            .map { action in
+                ActionSkillItem(action: action, note: skillNotes.first { $0.id == action.id })
+            }
+    }
+
+    var tabCompletionsItem: ActionSkillItem {
+        if let note = skillNotes.first(where: { $0.id == TabCompletions.actionID }) {
+            return ActionSkillItem(
+                action: CaretAction(id: note.id, title: note.title),
+                note: note
+            )
         }
+        return ActionSkillItem(
+            action: CaretAction(id: TabCompletions.actionID, title: TabCompletions.defaultTitle),
+            note: nil
+        )
+    }
+
+    var regularActionSkillItems: [ActionSkillItem] {
+        actionSkillItems.filter { $0.action.id != TabCompletions.actionID }
+    }
+
+    func tabCompletionsConfiguration() -> (instructions: String, excludedApps: [String]) {
+        let note = skillNotes.first(where: { $0.id == TabCompletions.actionID })
+        return (note?.body ?? "", note?.excludedApps ?? [])
     }
 
     func reloadNotes() {
         CaretPaths.bootstrapNotesStore()
+        try? noteRepository.ensureTabCompletionsNote()
         skillNotes = noteRepository.listSkillNotes()
         memoryNotes = noteRepository.listMemoryNotes()
         storedMemories = memoryRepository.load()
@@ -70,22 +95,27 @@ final class Model: ObservableObject {
         onPinsChanged?()
     }
 
-    @discardableResult
-    func saveSkillNote(actionID: String, title: String, icon: String, body: String, apps: [String] = []) -> Bool {
+    func saveSkillNote(
+        actionID: String,
+        title: String,
+        icon: String,
+        body: String,
+        apps: [String] = [],
+        excludedApps: [String] = []
+    ) {
         do {
             _ = try noteRepository.saveSkillNote(
                 actionID: actionID,
                 title: title,
                 icon: icon,
                 body: body,
-                apps: apps
+                apps: apps,
+                excludedApps: excludedApps
             )
             reloadNotes()
             onPinsChanged?()
-            return true
         } catch {
             NSLog("[Caret] save skill note failed: %@", String(describing: error))
-            return false
         }
     }
 
@@ -162,8 +192,8 @@ final class Model: ObservableObject {
         }
     }
 
-    @discardableResult
-    func deleteSkill(actionID: String) -> Bool {
+    func deleteSkill(actionID: String) {
+        guard !TabCompletions.isTabCompletionsAction(actionID) else { return }
         do {
             try noteRepository.deleteSkillNote(actionID: actionID)
             try skillRepository.deleteActionDirectory(actionID: actionID)
@@ -172,10 +202,8 @@ final class Model: ObservableObject {
             }
             reloadCustomActions()
             reloadNotes()
-            return true
         } catch {
             NSLog("[Caret] delete skill failed: %@", String(describing: error))
-            return false
         }
     }
 
@@ -258,7 +286,8 @@ final class Model: ObservableObject {
     }
 
     func canPin(_ action: CaretAction) -> Bool {
-        pinStore.isPinned(action.id) || pinStore.orderedActionIDs.count < PinnedActionsStore.maxPinned
+        if TabCompletions.isTabCompletionsAction(action.id) { return false }
+        return pinStore.isPinned(action.id) || pinStore.orderedActionIDs.count < PinnedActionsStore.maxPinned
     }
 
     func togglePin(_ action: CaretAction) {
@@ -792,8 +821,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let hotKey = HotKeyManager()
     private var trigger: TriggerButtonController!
     private let monitor = SelectionMonitor()
-    /// Owns inline Tab completion: capture, preview, key ownership, insertion.
-    /// Kept as one object so the rest of the delegate is unaware of it.
+    /// Teddy's controller is the sole owner of inline completion and the Tab
+    /// key. It runs its own CGEvent tap on keyCode 48, so nothing else in the
+    /// app may claim Tab -- two taps on the same key is a race, not a
+    /// fallback.
+    private let tabCompletions = TabCompletionsController()
+    /// Drives actions only: context capture, the core bridge, and Caret's own
+    /// Cmd-1..3 choices. It does not touch Tab.
     private var inlineCompletion: InlineCompletionCoordinator?
     /// One capture and one bridge for the whole app: the capture mints the AX
     /// tokens the insertion guard compares, so a second one would make every
@@ -897,6 +931,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         syncPinnedTriggerUI()
 
+        tabCompletions.configuration = { [weak model] in
+            model?.tabCompletionsConfiguration() ?? ("", [])
+        }
+
         monitor.onChange = { [weak self] target in
             Task { @MainActor in
                 guard let self, let model = self.model else { return }
@@ -904,8 +942,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 model.selectedText = target?.selectedText ?? ""
                 model.sourceApp = target?.sourceApp
                 if self.panel?.isVisible == true {
+                    self.tabCompletions.clearOffer()
                     self.trigger.hide()
                 } else {
+                    self.tabCompletions.update(target: target)
                     self.trigger.update(target: target)
                 }
             }
@@ -1081,7 +1121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func requestAccessibilityAndStart() {
         if AXHelpers.isTrusted() {
             AccessibilityTrust.noteTrustedIfNeeded()
-            monitor.start()
+            startInputCaptureAndMonitor()
             return
         }
 
@@ -1098,9 +1138,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.trustTimer = nil
                 self?.permissionPanel?.orderOut(nil)
                 self?.permissionPanel = nil
-                self?.monitor.start()
+                self?.startInputCaptureAndMonitor()
             }
         }
+    }
+
+    private func startInputCaptureAndMonitor() {
+        TypingPrefixCapture.shared.onChange = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.panel?.isVisible != true else { return }
+                self.tabCompletions.update(target: self.lastTarget)
+            }
+        }
+        TypingPrefixCapture.shared.start()
+        monitor.start()
     }
 
     func showSettingsWindow() {
