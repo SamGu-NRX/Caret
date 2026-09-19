@@ -9,6 +9,7 @@ root = Path(__file__).resolve().parent.parent
 if sys.version_info < (3, 11):
     raise SystemExit("Caret requires Python 3.11 or newer. Run this script with a supported interpreter.")
 
+derived_data = root / ".local" / "DerivedData"
 subprocess.run(
     [
         "xcodebuild",
@@ -20,12 +21,14 @@ subprocess.run(
         "Debug",
         "-destination",
         "platform=macOS",
+        "-derivedDataPath",
+        str(derived_data),
         "CODE_SIGN_IDENTITY=-",
         "build",
     ],
     check=True,
 )
-bundle = root / ".local/build/Debug/Caret.app"
+bundle = derived_data / "Build" / "Products" / "Debug" / "Caret.app"
 plist = bundle / "Contents" / "Info.plist"
 if plist.is_file():
     subprocess.run(

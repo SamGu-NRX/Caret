@@ -541,6 +541,13 @@ enum ActionsMenuMetrics {
     static let width: CGFloat = 300
     static let gatewayWidth: CGFloat = 400
     static let gatewayMinHeight: CGFloat = 300
+    /// Fixed floating-panel height for gateway skills (header + scroll body).
+    static let gatewayPanelHeight: CGFloat = gatewayMinHeight + 24
+    static let gatewayHeaderHeight: CGFloat = 50
+    static let gatewayBodyPadding: CGFloat = 14
+    static var gatewayBodyHeight: CGFloat {
+        gatewayPanelHeight - gatewayHeaderHeight - (gatewayBodyPadding * 2)
+    }
 
     static var maxScrollHeight: CGFloat {
         rowHeightWithSubtitle * maxVisibleRows + 8
@@ -582,7 +589,7 @@ struct SkillPickerView: View {
             }
         }
         .frame(width: panelWidth, alignment: .topLeading)
-        .fixedSize(horizontal: true, vertical: true)
+        .modifier(GatewayPanelSizing(isGateway: gatewayScopedAction != nil))
     }
 
     private var browsePanel: some View {
@@ -710,6 +717,20 @@ struct SkillPickerView: View {
     }
 }
 
+/// Gateway panels use a fixed height so the header never compresses when the body scrolls.
+private struct GatewayPanelSizing: ViewModifier {
+    let isGateway: Bool
+
+    func body(content: Content) -> some View {
+        if isGateway {
+            content
+                .frame(height: ActionsMenuMetrics.gatewayPanelHeight, alignment: .topLeading)
+        } else {
+            content.fixedSize(horizontal: true, vertical: true)
+        }
+    }
+}
+
 private struct GatewayActionPanel: View {
     @ObservedObject var model: Model
     let action: CaretAction
@@ -733,39 +754,48 @@ private struct GatewayActionPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Button(action: onBack) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Back to actions")
-
-                Text(action.title)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
-
+            header
             Divider().opacity(0.25)
-
             resultCard
-                .padding(14)
+                .padding(ActionsMenuMetrics.gatewayBodyPadding)
+                .frame(height: ActionsMenuMetrics.gatewayBodyHeight, alignment: .topLeading)
         }
-        .frame(width: ActionsMenuMetrics.gatewayWidth, alignment: .topLeading)
-        .frame(minHeight: ActionsMenuMetrics.gatewayMinHeight, alignment: .top)
+        .frame(
+            width: ActionsMenuMetrics.gatewayWidth,
+            height: ActionsMenuMetrics.gatewayPanelHeight,
+            alignment: .topLeading
+        )
+        .clipped()
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button(action: onBack) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back to actions")
+
+            Text(action.title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: ActionsMenuMetrics.gatewayHeaderHeight, alignment: .leading)
+        .background(.ultraThinMaterial)
+        .zIndex(1)
     }
 
     @ViewBuilder
     private var resultCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Group {
             if isRunning {
                 VStack(spacing: 12) {
                     ProgressView()
@@ -775,7 +805,7 @@ private struct GatewayActionPanel: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
-                .frame(maxWidth: .infinity, minHeight: 200, maxHeight: 280)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if hasResult {
                 ScrollView(.vertical, showsIndicators: true) {
                     Text(resultText)
@@ -786,16 +816,17 @@ private struct GatewayActionPanel: View {
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .padding(14)
                 }
-                .frame(minHeight: 200, maxHeight: 280)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Text(idleHint)
                     .font(.subheadline)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, minHeight: 200, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(14)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color.primary.opacity(0.05))
@@ -990,7 +1021,7 @@ final class CaretPanel: NSPanel {
 
     private func frame(near point: CGPoint, width: CGFloat) -> NSRect {
         let minHeight = width >= ActionsMenuMetrics.gatewayWidth
-            ? ActionsMenuMetrics.gatewayMinHeight + 24
+            ? ActionsMenuMetrics.gatewayPanelHeight
             : 280
         let height = max(frame.size.height, minHeight)
         let size = CGSize(width: width, height: height)

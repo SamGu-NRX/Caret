@@ -7,7 +7,8 @@ import sys
 
 
 root = Path(__file__).resolve().parent.parent
-bundle = root / ".local/build/Release/Caret.app"
+derived_data = root / ".local" / "DerivedData"
+bundle = derived_data / "Build" / "Products" / "Release" / "Caret.app"
 dist_app = root / "dist/Caret.app"
 dmg = root / "dist/Caret.dmg"
 
@@ -23,6 +24,7 @@ def build() -> None:
         "-scheme", "Caret",
         "-configuration", "Release",
         "-destination", "platform=macOS",
+        "-derivedDataPath", str(derived_data),
         "CODE_SIGN_IDENTITY=-",
         "build",
     ])
