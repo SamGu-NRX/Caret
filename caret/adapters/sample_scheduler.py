@@ -87,6 +87,10 @@ class SampleSchedulerWorkflow:
             evidence=tuple(preview["evidence"])
             + (
                 f"Sample fixture: {self.fixture_path}",
+                "Draft preview (synthetic):\n" + preview["draft"],
+                "Local hold preview:\n" + "\n".join(
+                    f"{item['id']}: {item['hold_start']} to {item['hold_end']}" for item in options
+                ),
                 f"Dropped candidates: {', '.join(preview['dropped']) or 'none'}",
                 "Synthetic development data. These times are not a real offer.",
             ),
@@ -119,7 +123,10 @@ class SampleSchedulerWorkflow:
             status="completed",
             summary=f"Recorded {len(holds)} tentative local holds for run {run_id}",
             effects=(f"sqlite:{self.database_path}#run={run_id}",),
-            evidence=preparation.evidence,
+            evidence=preparation.evidence + tuple(
+                f"SQLite readback {row['option_id']}: {row['start']} to {row['end']} ({row['status']})"
+                for row in holds
+            ),
             data={
                 "run_id": run_id,
                 "holds": holds,
