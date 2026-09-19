@@ -28,6 +28,7 @@ final class InlineCompletionCoordinator {
     /// acceptance would be rejected as a moved target.
     private let capture: FocusedTargetCapture
 
+    private var lastCaptureDiagnostic: String?
     private var pollTimer: Timer?
     private var lastRequestAt: Date?
     /// Unused since InsertionGuard owns validation; kept nil to make the
@@ -177,6 +178,11 @@ final class InlineCompletionCoordinator {
             return
 
         case .suppressed(let suppression, let invalidatesPriorContext):
+            let diagnostic = String(describing: suppression)
+            if lastCaptureDiagnostic != diagnostic {
+                log.info("Context capture suppressed: \(diagnostic, privacy: .public)")
+                lastCaptureDiagnostic = diagnostic
+            }
             if invalidatesPriorContext {
                 onContextInvalidated?()
                 // The user is no longer in the field the offer was about. This
@@ -188,6 +194,8 @@ final class InlineCompletionCoordinator {
             setStatus(Self.status(for: suppression))
 
         case .captured(let snapshot):
+            lastCaptureDiagnostic = nil
+            log.info("Context captured, revision \(snapshot.revision)")
             setStatus(nil)
             let target = InlineTarget(snapshot.target)
             store.updateTarget(target)
