@@ -1,4 +1,5 @@
 import XCTest
+@testable import Caret
 
 final class PinnedActionsStoreTests: XCTestCase {
     func testPinUpToThreeInOrder() {

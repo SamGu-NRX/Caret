@@ -598,6 +598,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let hotKey = HotKeyManager()
     private var trigger: TriggerButtonController!
     private let monitor = SelectionMonitor()
+    /// Owns inline Tab completion: capture, preview, key ownership, insertion.
+    /// Kept as one object so the rest of the delegate is unaware of it.
+    private var inlineCompletion: InlineCompletionCoordinator?
     private let statusBar = StatusBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -707,6 +710,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         requestAccessibilityAndStart()
+        startInlineCompletion(model: model)
+    }
+
+    /// The provider stays nil until the native core bridge lands. That leaves
+    /// the feature visibly unconfigured rather than silently faked: with no
+    /// provider the coordinator reports `.noProvider`, never arms the event
+    /// tap, and never touches a keystroke.
+    private func startInlineCompletion(model: Model) {
+        let coordinator = InlineCompletionCoordinator(provider: nil)
+        coordinator.onStatusChange = { [weak self] reason in
+            self?.statusBar.setInlineStatus(reason?.statusText)
+        }
+        coordinator.onSelectChoice = { [weak self] index in
+            Task { @MainActor in self?.runVisibleChoice(index: index) }
+        }
+        coordinator.start()
+        inlineCompletion = coordinator
+    }
+
+    /// Cmd-1..3 while Caret's own picker is showing choices. Bound only for as
+    /// long as those choices are visible, so the host app keeps the chord the
+    /// rest of the time.
+    private func runVisibleChoice(index: Int) {
+        guard panel?.isVisible == true, let model else { return }
+        let choices = model.filteredActions
+        guard index < choices.count else { return }
+        model.run(choices[index])
     }
 
     private func syncPinnedTriggerUI() {
@@ -733,11 +763,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model?.preparePanel(scopedActionID: scopedActionID)
         trigger.hide()
         panel?.present(at: point)
+        inlineCompletion?.setVisibleChoiceCount(min(3, model?.filteredActions.count ?? 0))
         installClickOutside()
     }
 
     private func hidePanel() {
         panel?.orderOut(nil)
+        inlineCompletion?.setVisibleChoiceCount(0)
         removeClickOutside()
         model?.clearPanelScope()
         trigger.update(target: lastTarget)
@@ -780,6 +812,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         hotKey.unregister()
         monitor.stop()
+        inlineCompletion?.stop()
         trustTimer?.invalidate()
         removeClickOutside()
     }
