@@ -707,6 +707,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         requestAccessibilityAndStart()
+        ScreenpipeSupervisor.start(projectRoot: CaretPaths.projectRoot)
     }
 
     private func syncPinnedTriggerUI() {
@@ -782,6 +783,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         monitor.stop()
         trustTimer?.invalidate()
         removeClickOutside()
+        ScreenpipeSupervisor.stop()
     }
 
     private func requestAccessibilityAndStart() {
