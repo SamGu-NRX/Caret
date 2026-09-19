@@ -61,7 +61,7 @@ isolated so they can be deleted rather than reconciled:
 |---------------------------------------|---------------------------------------|
 | `InlineFieldAccess.readFocusedField`  | `FocusedTargetCapture.capture` / `.liveTarget()` |
 | `InlineFieldAccess.validate`          | `InsertionGuard.approve`              |
-| `InlineFieldAccess.revisionToken`, `elementID` | `AXIdentityRegistry`         |
+| `InlineFieldAccess.revisionToken`, `elementID` | `target.elementID` / `.windowID` as handed to you |
 | `InlineWindowBuilder.window`          | `NearbyTextWindow.around`             |
 | `InlineFieldAccess.digest`            | `UTF16Text.digest`                    |
 
@@ -72,6 +72,29 @@ app-side by nature and have no bridge counterpart.
 `InsertionGuard.approve` is stricter than the local check in one useful way --
 it rejects a range that splits a surrogate pair -- so adopting it is a net
 gain, not a lateral move.
+
+**Do not instantiate `AXIdentityRegistry`.** It is internal to CaretCore and
+its tokens are counter values scoped to one registry instance, so a second
+instance mints a colliding `el-1` for a different element and every guard then
+fails with `targetMoved`. The tokens arrive already minted on the target you
+are handed -- `InputSnapshot.target` from `capture()`, and
+`InsertionGuard.LiveField.target` from `liveTarget()`. Treat them as opaque
+and compare only for equality.
+
+### Driving the poll from capture()
+
+The coordinator currently runs its own 0.2 s AX poll and derives change
+detection locally. Whoever writes the conforming type should drive it from
+`FocusedTargetCapture.capture()` instead and map the outcomes:
+
+- `.captured` -> send the frame.
+- `.unchanged` -> send nothing, and leave a live offer alone.
+- `.suppressed(_, invalidatesPriorContext: false)` -> skip this tick, leave the
+  offer standing. This is the IME and unbounded-window case.
+- `.suppressed(_, invalidatesPriorContext: true)` -> the user left the field:
+  `InlineOfferStore.cancel(reason: .focusChanged)`.
+
+Only the last one cancels.
 
 ## Caret geometry limits
 
