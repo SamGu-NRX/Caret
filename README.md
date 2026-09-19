@@ -27,6 +27,7 @@ The app opens a native popup. Press Enter to preview the sample meeting, inspect
 | Memory and run state | `caret/store.py` | Add source timestamps/IDs and external calendar event IDs |
 | Computer use | `packages/jev-ultrafast`, `packages/skyvern` | Choose one browser executor and stop before payment |
 | Gmail and calendar | `docs/integrations.md` | Implement the documented source and action contracts |
+| Jev scheduler demo (Vercel) | `jev-scheduler` | Sample thread + synthetic computer history through Jev; verified options, tentative holds, draft. See its README for quick start, architecture, provenance and limits |
 
 The Mac app invokes the Python CLI with argument arrays, receiving JSON. There is no server, container or web frontend in the default run. SQLite data stays in ignored `.local/` files. `python3 -m caret workflows` lists the seeds. `python3 -m caret --help` lists local operations.
 
