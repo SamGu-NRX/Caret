@@ -13,7 +13,8 @@ enum InputRectPlacement {
 
         guard isPlausible(caret, near: mouse) else { return fallback }
         if caret.width <= 2 {
-            return CGRect(x: caret.minX - 8, y: caret.midY - 14, width: 16, height: 28)
+            let centerX = abs(mouse.y - caret.midY) <= 60 ? mouse.x : caret.minX
+            return CGRect(x: centerX - 8, y: caret.midY - 14, width: 16, height: 28)
         }
         return caret
     }
