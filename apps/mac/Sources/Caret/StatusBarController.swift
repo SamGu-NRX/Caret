@@ -4,6 +4,7 @@ import ApplicationServices
 final class StatusBarController: NSObject, NSMenuDelegate {
     var onOpen: (() -> Void)?
     var onSettings: (() -> Void)?
+    var onDebug: (() -> Void)?
     var onFixAccessibility: (() -> Void)?
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -57,6 +58,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         inlineItem.isHidden = true
         menu.addItem(inlineItem)
         inlineStatusItem = inlineItem
+        let debugItem = NSMenuItem(title: "Debug…", action: #selector(openDebug), keyEquivalent: "")
+        debugItem.target = self
+        menu.addItem(debugItem)
+
+        menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit Caret", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -95,6 +101,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func fixAccessibility() {
         onFixAccessibility?()
+    }
+
+    @objc private func openDebug() {
+        onDebug?()
     }
 
     @objc private func quit() {
