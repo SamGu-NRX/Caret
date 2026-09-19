@@ -1,0 +1,1 @@
+make install requires packages/keytype checkout (CompletionUI); empty submodule dir makes xcodebuild resolve fail with 74

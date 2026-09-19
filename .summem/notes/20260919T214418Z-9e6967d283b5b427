@@ -1,0 +1,1 @@
+vercel-api-gateway-key is a bare token file (not KEY=value); CoreLaunchSettings envFile is the KV path for AI_GATEWAY_API_KEY / GROQ_API_KEY.
