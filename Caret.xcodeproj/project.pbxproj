@@ -31,6 +31,18 @@
 		B1000000000000000000002E /* PinnedActionsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* PinnedActionsStoreTests.swift */; };
 		B10000000000000000000028 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* Assets.xcassets */; };
 		B1000000000000000000002A /* ApplicationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* ApplicationServices.framework */; };
+		C80000000000000000000000 /* CoreBridgeProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000000 /* CoreBridgeProvider.swift */; };
+		C80000000000000000000001 /* CoreLaunchSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000001 /* CoreLaunchSettings.swift */; };
+		C80000000000000000000002 /* InlineCaretGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000002 /* InlineCaretGeometry.swift */; };
+		C80000000000000000000003 /* InlineCompletionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000003 /* InlineCompletionCoordinator.swift */; };
+		C80000000000000000000004 /* InlineCompletionProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000004 /* InlineCompletionProvider.swift */; };
+		C80000000000000000000005 /* InlineCompletionTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000005 /* InlineCompletionTypes.swift */; };
+		C80000000000000000000006 /* InlineCoreBridging.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000006 /* InlineCoreBridging.swift */; };
+		C80000000000000000000007 /* InlineFieldAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000007 /* InlineFieldAccess.swift */; };
+		C80000000000000000000008 /* InlineKeyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000008 /* InlineKeyDecision.swift */; };
+		C80000000000000000000009 /* InlineKeyTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000009 /* InlineKeyTap.swift */; };
+		C8000000000000000000000A /* InlineOfferStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7000000000000000000000A /* InlineOfferStore.swift */; };
+		C8000000000000000000000B /* InlinePreviewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7000000000000000000000B /* InlinePreviewWindow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -69,6 +81,18 @@
 		B1000000000000000000001F /* CaretTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CaretTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000018 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B1000000000000000000001A /* ApplicationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ApplicationServices.framework; path = System/Library/Frameworks/ApplicationServices.framework; sourceTree = SDKROOT; };
+		C70000000000000000000000 /* CoreBridgeProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreBridgeProvider.swift; sourceTree = "<group>"; };
+		C70000000000000000000001 /* CoreLaunchSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreLaunchSettings.swift; sourceTree = "<group>"; };
+		C70000000000000000000002 /* InlineCaretGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCaretGeometry.swift; sourceTree = "<group>"; };
+		C70000000000000000000003 /* InlineCompletionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionCoordinator.swift; sourceTree = "<group>"; };
+		C70000000000000000000004 /* InlineCompletionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionProvider.swift; sourceTree = "<group>"; };
+		C70000000000000000000005 /* InlineCompletionTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionTypes.swift; sourceTree = "<group>"; };
+		C70000000000000000000006 /* InlineCoreBridging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCoreBridging.swift; sourceTree = "<group>"; };
+		C70000000000000000000007 /* InlineFieldAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineFieldAccess.swift; sourceTree = "<group>"; };
+		C70000000000000000000008 /* InlineKeyDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineKeyDecision.swift; sourceTree = "<group>"; };
+		C70000000000000000000009 /* InlineKeyTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineKeyTap.swift; sourceTree = "<group>"; };
+		C7000000000000000000000A /* InlineOfferStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineOfferStore.swift; sourceTree = "<group>"; };
+		C7000000000000000000000B /* InlinePreviewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlinePreviewWindow.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 		B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
@@ -120,6 +144,18 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000011 /* CaretApp.swift */,
+				C7000000000000000000000B /* InlinePreviewWindow.swift */,
+				C7000000000000000000000A /* InlineOfferStore.swift */,
+				C70000000000000000000009 /* InlineKeyTap.swift */,
+				C70000000000000000000008 /* InlineKeyDecision.swift */,
+				C70000000000000000000007 /* InlineFieldAccess.swift */,
+				C70000000000000000000006 /* InlineCoreBridging.swift */,
+				C70000000000000000000005 /* InlineCompletionTypes.swift */,
+				C70000000000000000000004 /* InlineCompletionProvider.swift */,
+				C70000000000000000000003 /* InlineCompletionCoordinator.swift */,
+				C70000000000000000000002 /* InlineCaretGeometry.swift */,
+				C70000000000000000000001 /* CoreLaunchSettings.swift */,
+				C70000000000000000000000 /* CoreBridgeProvider.swift */,
 				B10000000000000000000012 /* AXHelpers.swift */,
 				B10000000000000000000013 /* HotKeyManager.swift */,
 				B10000000000000000000014 /* PermissionView.swift */,
@@ -289,6 +325,18 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000000000000000000021 /* CaretApp.swift in Sources */,
+				C8000000000000000000000B /* InlinePreviewWindow.swift in Sources */,
+				C8000000000000000000000A /* InlineOfferStore.swift in Sources */,
+				C80000000000000000000009 /* InlineKeyTap.swift in Sources */,
+				C80000000000000000000008 /* InlineKeyDecision.swift in Sources */,
+				C80000000000000000000007 /* InlineFieldAccess.swift in Sources */,
+				C80000000000000000000006 /* InlineCoreBridging.swift in Sources */,
+				C80000000000000000000005 /* InlineCompletionTypes.swift in Sources */,
+				C80000000000000000000004 /* InlineCompletionProvider.swift in Sources */,
+				C80000000000000000000003 /* InlineCompletionCoordinator.swift in Sources */,
+				C80000000000000000000002 /* InlineCaretGeometry.swift in Sources */,
+				C80000000000000000000001 /* CoreLaunchSettings.swift in Sources */,
+				C80000000000000000000000 /* CoreBridgeProvider.swift in Sources */,
 				B10000000000000000000022 /* AXHelpers.swift in Sources */,
 				B10000000000000000000023 /* HotKeyManager.swift in Sources */,
 				B10000000000000000000024 /* PermissionView.swift in Sources */,
@@ -332,6 +380,10 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
+				/* Local Swift package products stay in BUILD_DIR even when the app output is redirected. */
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
+				SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
+				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_TESTABILITY = YES;
@@ -351,6 +403,10 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
+				/* Local Swift package products stay in BUILD_DIR even when the app output is redirected. */
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
+				SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
+				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -366,7 +422,6 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -383,7 +438,6 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.caret.hackathon;
 				PRODUCT_NAME = Caret;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -396,7 +450,6 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -413,7 +466,6 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.caret.hackathon;
 				PRODUCT_NAME = Caret;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -424,7 +476,6 @@
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -440,7 +491,6 @@
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
