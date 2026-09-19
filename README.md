@@ -4,6 +4,30 @@
 
 A native Mac assistant with two interaction modes: inline completion accepted with Tab, and a nearby action hoverable. Jev chooses whether to abstain, offer a small text edit or propose an action; a second query selects the workflow or computer task. A fast Groq-hosted model generates inline text. This is the target behavior, with integration still in progress.
 
+## From the site
+
+Frames from the [interactive landing page](https://caret-landing-ebon.vercel.app/). These are browser demos with synthetic data, not recordings of the native app or live account actions.
+
+### Complete a reply in context
+
+![A browser reply with Caret suggesting the next words beside the cursor](docs/images/landing/browser-typing.png)
+
+### Read the current frame
+
+![The numbered explainer showing the active app, reply field and recent tabs](docs/images/landing/how-it-works.png)
+
+### Preview a rewrite
+
+![Selected notes alongside a rewrite preview before replacing the text](docs/images/landing/revise.png)
+
+### Stop before payment
+
+![The sample flight workflow stopped at checkout without buying a ticket](docs/images/landing/flight.png)
+
+### Propose meeting times
+
+![Three sample meeting times shown in a preview before sending a draft or placing holds](docs/images/landing/meeting.png)
+
 ## Start here
 
 The starter needs Python 3.11+ and macOS 14+. `make app` requires full Xcode; SwiftPM checks can use the Command Line Tools. The local core has no third-party Python dependencies. The selected native executor uses Go 1.26 and a Swift worker when integrated; upstream services have separate setup requirements.

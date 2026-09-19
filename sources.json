@@ -37,7 +37,7 @@
   {
     "path": "sites/landing",
     "url": "https://github.com/SamGu-NRX/caret-landing.git",
-    "commit": "f95355771007ae533949cdd698f988d317b37591",
+    "commit": "6032cda6a94cb363c32801ea69498a122ad2f73a",
     "license": "No license declared",
     "role": "First-party static Caret landing site with interactive sample workflows"
   }
