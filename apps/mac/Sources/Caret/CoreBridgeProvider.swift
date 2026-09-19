@@ -293,7 +293,7 @@ final class CoreBridgeProvider: InlineCompletionProviding {
         // action can rewrite the user's text, so sending a saved target
         // unchecked risks acting on a field they have left. Revalidate against
         // the live field first and refuse on any mismatch.
-        guard let live = capture.liveTarget() else {
+        guard let live = capture.liveTarget(allowingCaretPanelForPID: offer.target.pid) else {
             finish(proposalID, .unavailable(reason: "Caret can no longer read the field this action was prepared for."))
             return
         }

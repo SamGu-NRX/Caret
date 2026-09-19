@@ -518,13 +518,17 @@ struct SkillPickerView: View {
                 // B-01: offered / running / succeeded / failed, with the
                 // core's own summary and evidence. Never synthesized.
                 if !model.actionOffers.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(model.actionOffers) { offer in
-                            CaretActionOfferRow(offer: offer) {
-                                model.runOfferedAction(offer)
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(model.actionOffers) { offer in
+                                CaretActionOfferRow(offer: offer) {
+                                    model.runOfferedAction(offer)
+                                }
                             }
                         }
                     }
+                    // Keep evidence scrollable without pushing the action menu off screen.
+                    .frame(maxHeight: 220)
                 }
 
                 if !model.backendStatus.isEmpty {

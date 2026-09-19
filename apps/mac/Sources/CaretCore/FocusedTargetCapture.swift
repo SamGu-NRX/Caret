@@ -107,8 +107,8 @@ public final class FocusedTargetCapture {
     /// to `InsertionGuard`. Tokens come from the same registries the offer's
     /// target was built with, so a different field that merely looks the same
     /// carries a different token and the guard rejects it.
-    public func liveTarget() -> InsertionGuard.LiveField? {
-        guard case .success(let field) = resolveFocusedField() else { return nil }
+    public func liveTarget(allowingCaretPanelForPID hostPID: pid_t? = nil) -> InsertionGuard.LiveField? {
+        guard case .success(let field) = resolveFocusedField(hostPIDWhenCaretIsFrontmost: hostPID) else { return nil }
         return InsertionGuard.LiveField(
             target: TargetIdentity(
                 pid: field.pid,
@@ -157,9 +157,17 @@ public final class FocusedTargetCapture {
         }
     }
 
-    private func resolveFocusedField() -> Result<FocusedField, Suppression> {
+    private func resolveFocusedField(hostPIDWhenCaretIsFrontmost hostPID: pid_t? = nil) -> Result<FocusedField, Suppression> {
         guard AXIsProcessTrusted() else { return .failure(.accessibilityNotTrusted) }
-        guard let app = NSWorkspace.shared.frontmostApplication else { return .failure(.noFocusedApplication) }
+        guard var app = NSWorkspace.shared.frontmostApplication else { return .failure(.noFocusedApplication) }
+        // The action picker owns focus during acceptance. Read the original host
+        // only in that case; a switch to any other app must still fail validation.
+        if app.processIdentifier == ProcessInfo.processInfo.processIdentifier, let hostPID {
+            guard let host = NSRunningApplication(processIdentifier: hostPID), !host.isTerminated else {
+                return .failure(.noFocusedApplication)
+            }
+            app = host
+        }
         let frontmostPID = app.processIdentifier
         let bundleID = app.bundleIdentifier ?? ""
         if configuration.excludedBundleIDs.contains(bundleID) { return .failure(.appExcluded(bundleID)) }
