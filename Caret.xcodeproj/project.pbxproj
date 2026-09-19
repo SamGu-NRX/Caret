@@ -7,13 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D20000000000000000000001 /* NoteEditorSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* NoteEditorSession.swift */; };
 		B10000000000000000000021 /* CaretApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* CaretApp.swift */; };
 		B10000000000000000000022 /* AXHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* AXHelpers.swift */; };
 		B10000000000000000000023 /* HotKeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* HotKeyManager.swift */; };
 		B10000000000000000000024 /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* PermissionView.swift */; };
 		B10000000000000000000025 /* SelectionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* SelectionMonitor.swift */; };
-				B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
-B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
+		B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
+		B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
 		B1000000000000000000A100 /* InlineCompletionTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B100 /* InlineCompletionTypes.swift */; };
 		B1000000000000000000A101 /* InlineKeyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B101 /* InlineKeyDecision.swift */; };
 		B1000000000000000000A102 /* InlineOfferStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B102 /* InlineOfferStore.swift */; };
@@ -71,6 +72,7 @@ B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBX
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D20000000000000000000002 /* NoteEditorSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorSession.swift; sourceTree = "<group>"; };
 		B1000000000000000000000F /* Caret.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Caret.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000011 /* CaretApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* AXHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AXHelpers.swift; sourceTree = "<group>"; };
@@ -193,6 +195,7 @@ B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBX
 				B10000000000000000000020 /* SkillRepository.swift */,
 				B1000000000000000000003C /* ModifierChordState.swift */,
 				B1000000000000000000003D /* CaretSettingsView.swift */,
+				D20000000000000000000002 /* NoteEditorSession.swift */,
 				B10000000000000000000040 /* MemoryRepository.swift */,
 				B10000000000000000000042 /* CaretNote.swift */,
 				B10000000000000000000050 /* ScreenpipeSupervisor.swift */,
@@ -388,6 +391,7 @@ B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBX
 				B1000000000000000000003A /* SkillRepository.swift in Sources */,
 				B1000000000000000000003B /* ModifierChordState.swift in Sources */,
 				B1000000000000000000003E /* CaretSettingsView.swift in Sources */,
+				D20000000000000000000001 /* NoteEditorSession.swift in Sources */,
 				B1000000000000000000003F /* MemoryRepository.swift in Sources */,
 				B10000000000000000000041 /* CaretNote.swift in Sources */,
 				B10000000000000000000051 /* ScreenpipeSupervisor.swift in Sources */,
@@ -427,6 +431,9 @@ B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBX
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
+				/* Swift package products remain in BUILD_DIR when app output is redirected. */
+				SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
+				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -443,6 +450,9 @@ B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBX
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
 				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
+				/* Swift package products remain in BUILD_DIR when app output is redirected. */
+				SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
+				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;

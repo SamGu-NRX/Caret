@@ -31,6 +31,7 @@ final class NoteEditorSession: ObservableObject {
     @Published var draft = NoteEditorSnapshot(title: "", icon: "doc.text", body: "", apps: [])
     @Published private(set) var target: NoteEditorTarget?
     @Published private(set) var status: NoteSaveStatus = .idle
+    private var defaultTitle: String?
     private var baseline: NoteEditorSnapshot?
     private var pendingSave: Task<Void, Never>?
 
@@ -42,7 +43,7 @@ final class NoteEditorSession: ObservableObject {
     }
 
     @discardableResult
-    func load(_ next: NoteEditorTarget, snapshot: NoteEditorSnapshot, using write: Writer) -> Bool {
+    func load(_ next: NoteEditorTarget, snapshot: NoteEditorSnapshot, defaultTitle: String? = nil, using write: Writer) -> Bool {
         // A view refresh must not replace a draft, including one whose save failed.
         guard next != target else {
             if !hasUnsavedChanges {
@@ -52,6 +53,7 @@ final class NoteEditorSession: ObservableObject {
             return true
         }
         guard save(using: write) else { return false }
+        self.defaultTitle = defaultTitle
         target = next
         draft = snapshot
         baseline = snapshot
@@ -80,12 +82,16 @@ final class NoteEditorSession: ObservableObject {
         pendingSave?.cancel()
         pendingSave = nil
         guard hasUnsavedChanges, let target else { return true }
-        guard !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        var savedDraft = draft
+        if savedDraft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let defaultTitle {
+            savedDraft.title = defaultTitle
+        }
+        guard !savedDraft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             status = .failed("Add a title before saving. Your changes are still here.")
             return false
         }
         do {
-            try write(target, draft)
+            try write(target, savedDraft)
             baseline = draft
             status = .saved
             return true
@@ -110,6 +116,7 @@ final class NoteEditorSession: ObservableObject {
         pendingSave = nil
         target = nil
         baseline = nil
+        defaultTitle = nil
         draft = NoteEditorSnapshot(title: "", icon: "doc.text", body: "", apps: [])
         status = .idle
     }

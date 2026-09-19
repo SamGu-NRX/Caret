@@ -64,6 +64,23 @@ struct NoteEditorSessionChecks {
         precondition(!session.load(.skill("b"), snapshot: second, using: failingWriter))
         session.discard()
         precondition(session.load(.skill("b"), snapshot: second, using: writer))
+        session.discard()
+        let shell = NoteEditorSnapshot(title: "", icon: "sparkle", body: "", apps: [])
+        precondition(session.load(.skill("new"), snapshot: shell, defaultTitle: "Untitled skill", using: writer))
+        session.draft.body = "Instructions without a title"
+        precondition(!session.save(using: failingWriter))
+        precondition(session.draft.body == "Instructions without a title" && session.hasUnsavedChanges)
+        precondition(session.save(using: writer))
+        precondition(writes.last?.1.title == "Untitled skill")
+        session.discard()
+        let exclusions = NoteEditorSnapshot(title: "Tab completions", icon: "sparkle", body: "", apps: ["com.apple.Terminal"])
+        precondition(session.load(.skill("tab-completions"), snapshot: exclusions, using: writer))
+        session.draft.apps.append("com.apple.Safari")
+        precondition(!session.load(.memory("next"), snapshot: first, using: failingWriter))
+        precondition(session.draft.apps == ["com.apple.Terminal", "com.apple.Safari"])
+        precondition(session.load(.memory("next"), snapshot: first, using: writer))
+        precondition(writes.last?.0 == .skill("tab-completions"))
+        precondition(writes.last?.1.apps == ["com.apple.Terminal", "com.apple.Safari"])
         print("Note editor checks passed: destination, refresh, failure, retry, validation, deletion")
     }
 }

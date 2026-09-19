@@ -95,6 +95,7 @@ final class Model: ObservableObject {
         onPinsChanged?()
     }
 
+    @discardableResult
     func saveSkillNote(
         actionID: String,
         title: String,
@@ -102,7 +103,7 @@ final class Model: ObservableObject {
         body: String,
         apps: [String] = [],
         excludedApps: [String] = []
-    ) {
+    ) -> Bool {
         do {
             _ = try noteRepository.saveSkillNote(
                 actionID: actionID,
@@ -114,8 +115,10 @@ final class Model: ObservableObject {
             )
             reloadNotes()
             onPinsChanged?()
+            return true
         } catch {
             NSLog("[Caret] save skill note failed: %@", String(describing: error))
+            return false
         }
     }
 
@@ -192,8 +195,9 @@ final class Model: ObservableObject {
         }
     }
 
-    func deleteSkill(actionID: String) {
-        guard !TabCompletions.isTabCompletionsAction(actionID) else { return }
+    @discardableResult
+    func deleteSkill(actionID: String) -> Bool {
+        guard !TabCompletions.isTabCompletionsAction(actionID) else { return false }
         do {
             try noteRepository.deleteSkillNote(actionID: actionID)
             try skillRepository.deleteActionDirectory(actionID: actionID)
@@ -202,8 +206,10 @@ final class Model: ObservableObject {
             }
             reloadCustomActions()
             reloadNotes()
+            return true
         } catch {
             NSLog("[Caret] delete skill failed: %@", String(describing: error))
+            return false
         }
     }
 

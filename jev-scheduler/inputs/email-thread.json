@@ -1,0 +1,25 @@
+{
+  "source": "Mail export (PDF) fixtures/zurich-thread.pdf, parsed 2026-09-19",
+  "user_email": "paul@psi-gmbh.ch",
+  "subject": "Contract renewal",
+  "messages": [
+    {
+      "id": "m1",
+      "from": "Paul <paul@psi-gmbh.ch>",
+      "to": ["Anna Keller <anna.keller@helvetia-parts.ch>"],
+      "cc": [],
+      "date": "2026-09-16T09:10:00+02:00",
+      "subject": "Contract renewal",
+      "body": "Hi Anna,\nRather than going back and forth on the renewal terms by email, shall we sit down for an hour or two? I can come to you.\nRegards, Paul"
+    },
+    {
+      "id": "m2",
+      "from": "Anna Keller <anna.keller@helvetia-parts.ch>",
+      "to": ["Paul <paul@psi-gmbh.ch>"],
+      "cc": [],
+      "date": "2026-09-17T16:42:00+02:00",
+      "subject": "RE: Contract renewal",
+      "body": "Hi Paul,\nAgreed, this is better done in person. Happy to host at our office - early October would suit, though not Fridays. Should legal join?\nBest, Anna\n\nAnna Keller | Head of Procurement | Helvetia Parts AG\nHardturmstrasse 101, 8005 Zürich"
+    }
+  ]
+}

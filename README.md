@@ -30,6 +30,7 @@ The current app asks for Accessibility, then shows a blue asterisk beside suppor
 | History and run state | `packages/screenpipe`, `caret/store.py` | Context owner: Screenpipe retrieval; workflow owner: external effect IDs |
 | Computer use | `packages/computer-use-jev`, `packages/skyvern` | Native AX execution and browser execution, respectively; stop before payment |
 | Gmail and calendar | `docs/integrations.md` | Implement the documented source and action contracts |
+| Jev scheduler demo (Vercel) | `jev-scheduler` | Sample thread + synthetic computer history through Jev; verified options, tentative holds, draft. See its README for quick start, architecture, provenance and limits |
 | Landing site | `sites/landing` | Static showcase with interactive sample workflows; maintained in its own repository |
 
 The Python CLI exposes JSON preview/hold/confirm operations for the UI bridge to reconnect. There is no server, container or web frontend in the default run. SQLite data stays in ignored `.local/` files. `python3 -m caret workflows` lists the seeds. Sam owns the choice and definitions of the two demo workflows.
