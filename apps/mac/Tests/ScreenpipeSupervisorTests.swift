@@ -1,5 +1,6 @@
 import Darwin
 import XCTest
+@testable import Caret
 
 final class ScreenpipeSupervisorTests: XCTestCase {
     func testLeaseURLAndPinEndpoint() throws {

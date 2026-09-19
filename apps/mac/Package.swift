@@ -28,6 +28,13 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "CaretTests",
+            dependencies: ["Caret"],
+            path: "Tests",
+            // The core's own tests live in their own target below.
+            exclude: ["CaretCoreTests"]
+        ),
+        .testTarget(
             name: "CaretCoreTests",
             dependencies: ["CaretCore"],
             path: "Tests/CaretCoreTests"

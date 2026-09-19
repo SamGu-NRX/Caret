@@ -8,6 +8,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var accessibilityItem: NSMenuItem?
+    /// Why Tab completion is off right now, or nil when it is working. Shows
+    /// the reason only; it never carries field text or keystrokes.
+    private var inlineStatusItem: NSMenuItem?
+
+    /// `nil` means inline completion is working and the row disappears.
+    func setInlineStatus(_ text: String?) {
+        guard let inlineStatusItem else { return }
+        inlineStatusItem.title = text ?? ""
+        inlineStatusItem.isHidden = text == nil
+    }
 
     func install() {
         if let button = statusItem.button {
@@ -41,6 +51,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(repairItem)
 
         menu.addItem(.separator())
+
+        let inlineItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        inlineItem.isEnabled = false
+        inlineItem.isHidden = true
+        menu.addItem(inlineItem)
+        inlineStatusItem = inlineItem
 
         let quitItem = NSMenuItem(title: "Quit Caret", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self

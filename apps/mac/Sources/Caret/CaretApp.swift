@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CaretCore
 import SwiftUI
 
 struct MemoryItem: Identifiable {
@@ -23,6 +24,13 @@ final class Model: ObservableObject {
     @Published private(set) var skillsVersion = 0
     @Published private(set) var customActions: [CaretAction] = []
     @Published private(set) var storedMemories: [StoredMemory] = []
+    /// Live action offers and what happened to them. B-01: selecting an action
+    /// used to close the panel with no result at all.
+    @Published private(set) var actionOffers: [CaretActionOffer] = []
+    /// Why actions are unavailable right now, shown verbatim. Empty when the
+    /// backend is healthy.
+    @Published var backendStatus: String = ""
+    var onRunAction: ((String) -> Void)?
     var memories: [MemoryItem] = []
     var onRun: ((CaretAction) -> Void)?
     var onPinsChanged: (() -> Void)?
@@ -332,20 +340,60 @@ final class Model: ObservableObject {
     }
 
     func run(_ action: CaretAction, skill: CaretSkill? = nil) {
+        // Length, not content. This line runs for every action in whatever
+        // app the user is in, so logging the selection would copy their mail,
+        // messages and passwords into the system log.
         NSLog(
-            "[Caret] action=%@ skill=%@ memories=%d selection=%@ app=%@",
+            "[Caret] action=%@ skill=%@ memories=%d selection_units=%d app=%@",
             action.id,
             skill?.id ?? "-",
             memories.count,
-            selectedText.replacingOccurrences(of: "\n", with: " "),
+            selectedText.utf16.count,
             sourceApp ?? "-"
         )
         onRun?(action)
     }
 
+    /// Runs a prepared offer. An action with no prepared offer is reported as
+    /// needing one rather than silently doing nothing, and no fixture is
+    /// substituted for a real result.
+    func runOfferedAction(_ offer: CaretActionOffer) {
+        guard offer.isExecutable else {
+            updateActionState(offer.proposalID, .unavailable(
+                reason: offer.unavailabilityText ?? "This action has no executor."
+            ))
+            return
+        }
+        onRunAction?(offer.proposalID)
+    }
+
+    /// What to say when the user picked an action for which the core has not
+    /// produced a runnable offer. Names the gap instead of inventing output.
+    func unavailabilityText(for action: CaretAction) -> String {
+        if !backendStatus.isEmpty { return backendStatus }
+        if let offer = actionOffers.first(where: { $0.workflowID == action.id }),
+           let text = offer.unavailabilityText {
+            return text
+        }
+        return "No prepared offer for \(action.title) yet. Put the caret in a text field so Caret can read the context it needs."
+    }
+
     func run(skill: CaretSkill) {
         guard let action = action(id: skill.actionID) else { return }
         run(action, skill: skill)
+    }
+
+    func setActionOffers(_ offers: [CaretActionOffer]) { actionOffers = offers }
+
+    func updateActionState(_ proposalID: String, _ state: CaretActionOffer.State) {
+        guard let index = actionOffers.firstIndex(where: { $0.proposalID == proposalID }) else { return }
+        actionOffers[index].state = state
+    }
+
+    /// The offers the user can actually run, in the order Cmd-1..3 address
+    /// them. A catalog entry with no executor is not in this list.
+    var runnableOffers: [CaretActionOffer] {
+        actionOffers.filter { $0.isExecutable }
     }
 
     func runPinnedSlot(_ slot: Int) {
@@ -398,6 +446,26 @@ struct SkillPickerView: View {
                     .buttonStyle(.plain)
                 }
 
+                // B-01: offered / running / succeeded / failed, with the
+                // core's own summary and evidence. Never synthesized.
+                if !model.actionOffers.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(model.actionOffers) { offer in
+                            CaretActionOfferRow(offer: offer) {
+                                model.runOfferedAction(offer)
+                            }
+                        }
+                    }
+                }
+
+                if !model.backendStatus.isEmpty {
+                    CaretActionStatusRow(
+                        title: "Actions unavailable",
+                        detail: model.backendStatus,
+                        tone: .unavailable
+                    )
+                }
+
                 PanelSearchField(
                     text: $model.panelQuery,
                     placeholder: searchPlaceholder,
@@ -444,6 +512,17 @@ struct SkillPickerView: View {
                         }
                     } else {
                         let _ = model.skillsVersion
+                        // B-05: a scope with no skills used to render nothing
+                        // at all, leaving no next step. Say what is actually
+                        // available before offering to create anything.
+                        if model.filteredSkills.isEmpty, model.trimmedPanelQuery.isEmpty {
+                            CaretActionStatusRow(
+                                title: "Nothing ready to run here",
+                                detail: model.scopedAction.map { model.unavailabilityText(for: $0) }
+                                    ?? "Type a name to create a skill for this action.",
+                                tone: .unavailable
+                            )
+                        }
                         if model.filteredSkills.isEmpty, !model.trimmedPanelQuery.isEmpty {
                             EmptyResultsHint(text: "No matching skills")
                         }
@@ -678,6 +757,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let hotKey = HotKeyManager()
     private var trigger: TriggerButtonController!
     private let monitor = SelectionMonitor()
+    /// Owns inline Tab completion: capture, preview, key ownership, insertion.
+    /// Kept as one object so the rest of the delegate is unaware of it.
+    private var inlineCompletion: InlineCompletionCoordinator?
+    /// One capture and one bridge for the whole app: the capture mints the AX
+    /// tokens the insertion guard compares, so a second one would make every
+    /// acceptance fail as a moved target.
+    private let capture = FocusedTargetCapture()
+    private var bridge: CoreBridgeProvider?
     private let statusBar = StatusBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -788,6 +875,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         requestAccessibilityAndStart()
         ScreenpipeSupervisor.start(projectRoot: CaretPaths.projectRoot)
+        startInlineCompletion(model: model)
+    }
+
+    /// Starts the one bridge process and points both inline completion and
+    /// actions at it. A launch failure is surfaced, never replaced by a mock.
+    private func startInlineCompletion(model: Model) {
+        let provider = CoreBridgeProvider(capture: capture)
+        provider.onActionOffer = { [weak self] _ in
+            Task { @MainActor in self?.syncActionOffers() }
+        }
+        provider.onActionStateChange = { [weak self] proposalID, state in
+            Task { @MainActor in
+                self?.model?.updateActionState(proposalID, state)
+            }
+        }
+        bridge = provider
+
+        model.onRunAction = { [weak self] proposalID in
+            self?.bridge?.runAction(proposalID: proposalID)
+        }
+
+        let coordinator = InlineCompletionCoordinator(provider: provider, capture: capture)
+        coordinator.onStatusChange = { [weak self] (reason: InlineDisabledReason?) in
+            guard let self else { return }
+            let text = self.bridge?.unavailableText ?? reason?.statusText
+            self.statusBar.setInlineStatus(text)
+            self.model?.backendStatus = text ?? ""
+        }
+        coordinator.onSelectChoice = { [weak self] index in
+            Task { @MainActor in self?.runVisibleChoice(index: index) }
+        }
+        coordinator.start()
+        inlineCompletion = coordinator
+    }
+
+    private func syncActionOffers() {
+        guard let bridge, let model else { return }
+        model.setActionOffers(bridge.visibleExecutableActions)
+        // Cmd-1..3 bind only to offers that are both visible and runnable.
+        inlineCompletion?.setVisibleChoiceCount(min(3, model.runnableOffers.count))
+    }
+
+    /// Cmd-1..3 while Caret's own picker is showing choices. Bound only for as
+    /// long as those choices are visible, so the host app keeps the chord the
+    /// rest of the time.
+    private func runVisibleChoice(index: Int) {
+        guard let model else { return }
+        let choices = model.runnableOffers
+        // The tap only consumed the key because this many choices were
+        // visible; if that changed in between, the host should have had it.
+        guard index < choices.count else { return }
+        model.runOfferedAction(choices[index])
     }
 
     private func syncPinnedTriggerUI() {
@@ -797,9 +936,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// B-04: the pinned chord used to run an action outright, with no visible
+    /// offer and no way to suppress the host's own shortcut. It now opens the
+    /// scoped panel -- the same thing clicking the pinned icon does -- so the
+    /// keyboard and mouse paths agree and nothing executes without the user
+    /// seeing a prepared offer first.
     private func runPinnedAction(slot: Int) {
-        guard let model else { return }
-        model.runPinnedSlot(slot)
+        guard let model, let actionID = model.pinStore.actionID(forSlot: slot) else { return }
+        showPanel(
+            at: CGPoint(x: trigger.buttonFrame.maxX, y: trigger.buttonFrame.midY),
+            scopedActionID: actionID
+        )
     }
 
     func togglePanel(at point: CGPoint) {
@@ -814,11 +961,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model?.preparePanel(scopedActionID: scopedActionID)
         trigger.hide()
         panel?.present(at: point)
+        syncActionOffers()
         installClickOutside()
     }
 
     private func hidePanel() {
         panel?.orderOut(nil)
+        inlineCompletion?.setVisibleChoiceCount(0)
         removeClickOutside()
         model?.clearPanelScope()
         trigger.update(target: lastTarget)
@@ -861,6 +1010,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         hotKey.unregister()
         monitor.stop()
+        inlineCompletion?.stop()
+        let bridge = self.bridge
+        Task { await bridge?.shutdown() }
         trustTimer?.invalidate()
         removeClickOutside()
         ScreenpipeSupervisor.stop()
@@ -950,5 +1102,127 @@ struct CaretMain {
         application.setActivationPolicy(.accessory)
         application.delegate = delegate
         withExtendedLifetime(delegate) { application.run() }
+    }
+}
+
+
+/// One action offer and its outcome.
+///
+/// Running is shown the moment acceptance is claimed, so the panel never looks
+/// dead while a workflow is in flight, and a result only ever repeats what the
+/// core reported.
+struct CaretActionOfferRow: View {
+    let offer: CaretActionOffer
+    let run: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(offer.title.isEmpty ? offer.workflowID : offer.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                statusBadge
+            }
+            if !offer.effect.isEmpty {
+                Text(offer.effect)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            detail
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { if offer.isExecutable { run() } }
+    }
+
+    @ViewBuilder private var statusBadge: some View {
+        switch offer.state {
+        case .offered:
+            Text(offer.isExecutable ? "Ready" : "Unavailable")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(offer.isExecutable ? .secondary : .tertiary)
+        case .running:
+            // No spinner animation: this row appears on the keyboard path and
+            // a spinner starting mid-keystroke reads as lag.
+            Text("Running…")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+        case .succeeded:
+            Label("Done", systemImage: "checkmark")
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.green)
+        case .failed:
+            Label("Failed", systemImage: "exclamationmark.triangle")
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.orange)
+        case .unavailable:
+            Text("Unavailable")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch offer.state {
+        case .succeeded(let summary, let evidence):
+            Text(summary)
+                .font(.system(size: 11))
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+            ForEach(Array(evidence.prefix(3).enumerated()), id: \.offset) { _, item in
+                Text(item)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        case .failed(let summary):
+            Text(summary)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        case .unavailable(let reason):
+            Text(reason)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        case .offered:
+            if let text = offer.unavailabilityText {
+                Text(text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        case .running:
+            EmptyView()
+        }
+    }
+}
+
+/// A plain explanatory row. Used where the panel would otherwise be blank.
+struct CaretActionStatusRow: View {
+    enum Tone { case unavailable }
+
+    let title: String
+    let detail: String
+    let tone: Tone
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 12, weight: .medium))
+            Text(detail)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
