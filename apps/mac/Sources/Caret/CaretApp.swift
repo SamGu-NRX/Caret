@@ -1184,16 +1184,22 @@ struct CaretActionOfferRow: View {
             Text("Running…")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
-        case .succeeded:
-            Label("Done", systemImage: "checkmark")
+        case .succeeded(_, _, let scope):
+            // "Draft ready" and "Done" are different claims. A draft-only run
+            // completed its own job without sending or scheduling anything.
+            Label(scope.label, systemImage: scope == .draftOnly ? "doc.text" : "checkmark")
                 .labelStyle(.titleAndIcon)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.green)
+                .foregroundStyle(scope == .draftOnly ? Color.secondary : Color.green)
         case .failed:
             Label("Failed", systemImage: "exclamationmark.triangle")
                 .labelStyle(.titleAndIcon)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.orange)
+        case .cancelled:
+            Text("Stopped")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
         case .unavailable:
             Text("Unavailable")
                 .font(.system(size: 10, weight: .medium))
@@ -1203,16 +1209,26 @@ struct CaretActionOfferRow: View {
 
     @ViewBuilder private var detail: some View {
         switch offer.state {
-        case .succeeded(let summary, let evidence):
+        case .cancelled(let summary):
+            Text(summary)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        case .succeeded(let summary, let evidence, let scope):
             Text(summary)
                 .font(.system(size: 11))
                 .foregroundStyle(.primary)
-                .lineLimit(3)
-            ForEach(Array(evidence.prefix(3).enumerated()), id: \.offset) { _, item in
+                .fixedSize(horizontal: false, vertical: true)
+            let rows = CaretActionOffer.visibleEvidence(evidence, scope: scope)
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, item in
+                // Wraps rather than truncating. The adapter's no-effect
+                // disclosure runs past 100 characters, and a single clipped
+                // line would cut it mid-sentence -- exactly the sentence that
+                // stops a draft reading as a booking.
                 Text(item)
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .foregroundStyle(scope == .draftOnly ? Color.primary.opacity(0.75) : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         case .failed(let summary):
             Text(summary)
