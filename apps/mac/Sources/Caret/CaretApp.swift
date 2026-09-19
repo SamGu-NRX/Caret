@@ -1048,7 +1048,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var model: Model?
     private var trustTimer: Timer?
     private var lastTarget: SelectionTarget?
-    /// Last target that still had selected text (kept after Caret steals focus).
+    /// Selection or input captured when the panel opens, before Caret becomes frontmost.
+    private var panelContextTarget: SelectionTarget?
     private var lastPanelPoint: CGPoint = NSEvent.mouseLocation
     private var clickMonitor: Any?
     private var escapeMonitor: Any?
@@ -1311,8 +1312,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// Live AX snapshot only — no sticky selection from earlier actions.
     private func freshTargetForGatewayAction() -> SelectionTarget? {
+        if panel?.isVisible == true,
+           let panelContextTarget,
+           SkillActionRunner.hasInput(panelContextTarget) {
+            return panelContextTarget
+        }
         monitor.refreshNow()
         guard let target = lastTarget, SkillActionRunner.hasInput(target) else { return nil }
         return target
@@ -1339,6 +1344,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func showPanel(at point: CGPoint, scopedActionID: String?) {
         lastPanelPoint = point
+        if let target = lastTarget, SkillActionRunner.hasInput(target) {
+            panelContextTarget = target
+        }
         model?.preparePanel(scopedActionID: scopedActionID)
         trigger.hide()
         // Pause before presenting: presenting makes Caret frontmost, and the
@@ -1370,6 +1378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel?.resignKey()
         removeClickOutside()
         model?.clearPanelScope()
+        panelContextTarget = nil
         restoreTypingAppFocus()
         monitor.refreshNow()
         trigger.update(target: lastTarget)

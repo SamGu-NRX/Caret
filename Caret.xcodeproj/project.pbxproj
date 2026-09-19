@@ -51,6 +51,10 @@
 		B1000000000000000000006C /* TextTyping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000006B /* TextTyping.swift */; };
 		B1000000000000000000006E /* TypingPrefixCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000006D /* TypingPrefixCapture.swift */; };
 		B10000000000000000000070 /* TypingPrefixLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000006F /* TypingPrefixLogic.swift */; };
+		B1000000000000000000007B /* SelectionRectPlacement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000007C /* SelectionRectPlacement.swift */; };
+		B1000000000000000000007F /* InputRectPlacement.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000080 /* InputRectPlacement.swift */; };
+		B10000000000000000000081 /* InputRectPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000082 /* InputRectPlacementTests.swift */; };
+		B1000000000000000000007D /* SelectionRectPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000007E /* SelectionRectPlacementTests.swift */; };
 		B10000000000000000000072 /* TypingPrefixLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000071 /* TypingPrefixLogicTests.swift */; };
 		B1000000000000000000002D /* PinnedActionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* PinnedActionsStore.swift */; };
 		B1000000000000000000002E /* PinnedActionsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* PinnedActionsStoreTests.swift */; };
@@ -119,6 +123,10 @@
 		B1000000000000000000006B /* TextTyping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextTyping.swift; sourceTree = "<group>"; };
 		B1000000000000000000006D /* TypingPrefixCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingPrefixCapture.swift; sourceTree = "<group>"; };
 		B1000000000000000000006F /* TypingPrefixLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingPrefixLogic.swift; sourceTree = "<group>"; };
+		B1000000000000000000007C /* SelectionRectPlacement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionRectPlacement.swift; sourceTree = "<group>"; };
+		B10000000000000000000080 /* InputRectPlacement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputRectPlacement.swift; sourceTree = "<group>"; };
+		B10000000000000000000082 /* InputRectPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputRectPlacementTests.swift; sourceTree = "<group>"; };
+		B1000000000000000000007E /* SelectionRectPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionRectPlacementTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000071 /* TypingPrefixLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingPrefixLogicTests.swift; sourceTree = "<group>"; };
 		B1000000000000000000001E /* PinnedActionsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedActionsStoreTests.swift; sourceTree = "<group>"; };
 		B1000000000000000000001F /* CaretTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CaretTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -224,6 +232,8 @@
 				B1000000000000000000006B /* TextTyping.swift */,
 				B1000000000000000000006D /* TypingPrefixCapture.swift */,
 				B1000000000000000000006F /* TypingPrefixLogic.swift */,
+				B1000000000000000000007C /* SelectionRectPlacement.swift */,
+				B10000000000000000000080 /* InputRectPlacement.swift */,
 				B10000000000000000000018 /* Assets.xcassets */,
 			);
 			name = Caret;
@@ -245,6 +255,8 @@
 				B10000000000000000000053 /* ScreenpipeSupervisorTests.swift */,
 				B10000000000000000000065 /* HistoryDebugTests.swift */,
 				B10000000000000000000071 /* TypingPrefixLogicTests.swift */,
+				B1000000000000000000007E /* SelectionRectPlacementTests.swift */,
+				B10000000000000000000082 /* InputRectPlacementTests.swift */,
 			);
 			name = CaretTests;
 			path = apps/mac/Tests;
@@ -312,6 +324,8 @@
 				B10000000000000000000054 /* ScreenpipeSupervisorTests.swift in Sources */,
 				B10000000000000000000066 /* HistoryDebugTests.swift in Sources */,
 				B10000000000000000000072 /* TypingPrefixLogicTests.swift in Sources */,
+				B1000000000000000000007D /* SelectionRectPlacementTests.swift in Sources */,
+				B10000000000000000000081 /* InputRectPlacementTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -422,6 +436,8 @@
 				B1000000000000000000006C /* TextTyping.swift in Sources */,
 				B1000000000000000000006E /* TypingPrefixCapture.swift in Sources */,
 				B10000000000000000000070 /* TypingPrefixLogic.swift in Sources */,
+				B1000000000000000000007B /* SelectionRectPlacement.swift in Sources */,
+				B1000000000000000000007F /* InputRectPlacement.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
