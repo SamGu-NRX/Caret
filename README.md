@@ -42,7 +42,14 @@ make install    # Release Caret.app → /Applications
 make dmg        # writes dist/Caret.dmg locally (gitignored)
 ```
 
-**Prebuilt DMG (no Xcode):** open [GitHub Releases](https://github.com/theodorexli/hackathon-2026-09-19/releases), download `Caret.dmg`, drag Caret into Applications. Gateway skills and Tab completions that call the Python core still need a clone of this repo and `~/.config/caret/dev.json` with `"root"` set to that path (or `CARET_PROJECT_ROOT`). Notes and skills seed from the app bundle into Application Support on first run.
+**Prebuilt DMG (no Xcode):** open [GitHub Releases](https://github.com/theodorexli/hackathon-2026-09-19/releases), download `Caret.dmg`, drag Caret into Applications. The build is ad-hoc signed (not notarized). If macOS says Caret is “damaged,” clear the download quarantine, then open again:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Caret.app
+open /Applications/Caret.app
+```
+
+Gateway skills and Tab completions that call the Python core still need a clone of this repo and `~/.config/caret/dev.json` with `"root"` set to that path (or `CARET_PROJECT_ROOT`). Notes and skills seed from the app bundle into Application Support on first run.
 
 Maintainers: push a tag `v*` or run the **Release Caret.dmg** workflow (Actions → workflow_dispatch) to upload a fresh `Caret.dmg` to Releases.
 

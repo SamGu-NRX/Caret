@@ -41,6 +41,7 @@ def build() -> None:
             shutil.rmtree(seed_dst)
         shutil.copytree(seed_src, seed_dst)
     stamp_project_root(dist_app, root=root, release=_release_mode())
+    adhoc_sign(dist_app)
     print(f"Built {dist_app}")
 
 
@@ -68,6 +69,27 @@ def stamp_project_root(dist_app: Path, *, root: Path, release: bool) -> None:
         ["/usr/libexec/PlistBuddy", "-c", f"Add :CaretProjectRoot string {root}", str(plist)],
         check=False,
     )
+
+
+def adhoc_sign(dist_app: Path) -> None:
+    """Re-seal after post-build edits (Info.plist, NotesSeed). Without this,
+    Gatekeeper reports the app as damaged on download."""
+    run([
+        "codesign",
+        "--force",
+        "--deep",
+        "--sign", "-",
+        str(dist_app),
+    ])
+    verify = subprocess.run(
+        ["codesign", "--verify", "--deep", "--strict", str(dist_app)],
+        capture_output=True,
+        text=True,
+    )
+    if verify.returncode != 0:
+        raise SystemExit(
+            f"codesign verify failed for {dist_app}:\n{verify.stderr or verify.stdout}"
+        )
 
 
 def make_dmg() -> None:
