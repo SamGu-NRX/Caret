@@ -35,27 +35,43 @@ The adapter converts `InlineTarget` <-> `TargetIdentity` (same five fields) and
 maps `CoreEvent.offer(.inline)` -> `InlineOffer`, `.invalidated` -> a cancel,
 `.failed` -> `InlineDisabledReason.providerError`. No other conversion exists.
 
-## Two open contract questions
+## Both open questions are now answered by the bridge
 
-**1. `original_digest` covers an unspecified string.** `docs/bridge-protocol.md`
-shows `e3b0c44298fc1c14`, which is SHA-256 of the empty string truncated to 16
-hex characters, so the algorithm is clear but the input is not: the full field
-value, or the bounded `nearby_text` window. Rather than guess, the app gates
-insertion on live content equality against the exact text the offer was
-computed from (`InlineFieldAccess.validate`). That is strictly stronger than
-comparing a 64-bit hash, so a wrong guess here cannot produce a wrong edit --
-it would only ever refuse one. `InlineFieldAccess.digest` implements the
-inferred rule and is checked against the documented sample in the tests; point
-it at the right input once the core says which.
+Resolved by reading the bridge worktree on 2026-09-19. Those files are still
+uncommitted there, so this records the mapping rather than depending on it.
 
-**2. `element_revision` has no producer yet.** The bridge calls it "a change
-token for the element's value" but the native capture that mints it is still
-being written. The app currently derives its own
-(`InlineFieldAccess.revisionToken`: text digest + caret offset + length).
-Staleness detection is entirely local, so this works standalone, but the app
-and the capture owner must agree on one token before offers round-trip
-correctly. If capture mints a different token, delete `revisionToken` and take
-it from the snapshot.
+**`original_digest` covers the replaced slice**, not the whole value and not
+`nearby_text`: `InsertionGuard.approve` digests
+`UTF16Text.slice(live.value, start: replaceStart, end: replaceEnd)`. For a
+caret insertion the two ends are equal, so the digest is SHA-256 of the empty
+string -- which is why the sample in `bridge-protocol.md` looked like a
+placeholder and was not one. `InlineFieldAccess.digest` already implements the
+identical algorithm; only its input needs pointing at the slice.
+
+**`element_revision` is minted by `AXIdentityRegistry`**, and
+`InsertionGuard.approve` compares it directly, so the app must stop deriving
+its own. Delete `InlineFieldAccess.revisionToken` at integration.
+
+### What the app should hand over at integration
+
+The app built local equivalents while the bridge was unlanded, deliberately
+isolated so they can be deleted rather than reconciled:
+
+| App (delete)                          | Bridge (use)                          |
+|---------------------------------------|---------------------------------------|
+| `InlineFieldAccess.readFocusedField`  | `FocusedTargetCapture.capture` / `.liveTarget()` |
+| `InlineFieldAccess.validate`          | `InsertionGuard.approve`              |
+| `InlineFieldAccess.revisionToken`, `elementID` | `AXIdentityRegistry`         |
+| `InlineWindowBuilder.window`          | `NearbyTextWindow.around`             |
+| `InlineFieldAccess.digest`            | `UTF16Text.digest`                    |
+
+What does **not** move: the event tap, the key router, the offer store's
+generation fencing, the preview, and the `kAXSelectedText` write. Those are
+app-side by nature and have no bridge counterpart.
+
+`InsertionGuard.approve` is stricter than the local check in one useful way --
+it rejects a range that splits a surrogate pair -- so adopting it is a net
+gain, not a lateral move.
 
 ## Caret geometry limits
 
