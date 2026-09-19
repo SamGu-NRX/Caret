@@ -4,7 +4,10 @@ import PackageDescription
 let package = Package(
     name: "Caret",
     platforms: [.macOS(.v14)],
-    products: [.executable(name: "Caret", targets: ["Caret"])],
+    products: [
+        .executable(name: "Caret", targets: ["Caret"]),
+        .library(name: "CaretCore", targets: ["CaretCore"]),
+    ],
     targets: [
         // Transport to the Python core plus focused-field capture. Separate
         // from the app target so the protocol logic is testable without a

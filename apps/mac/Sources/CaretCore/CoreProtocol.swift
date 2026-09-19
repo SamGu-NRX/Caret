@@ -387,7 +387,9 @@ public struct ContextUpdateResult: Decodable, Equatable, Sendable {
 
 public struct InlineEdit: Decodable, Equatable, Sendable {
     public var proposalID: String
-    public var status: String
+    /// Present on an `offer.accept` result ("ready_to_insert"); absent on the
+    /// offer event, which carries the same range fields without it.
+    public var status: String?
     public var target: TargetIdentity
     public var replaceStart: Int
     public var replaceEnd: Int

@@ -47,8 +47,11 @@ public final class CoreProcessTransport: CoreTransport {
 
     private var process: Process?
     private var stdinPipe: Pipe?
+    private var stdoutPipe: Pipe?
     private var accumulator = LineAccumulator()
     private var terminated = false
+    private var lineSink: ((String) -> Void)?
+    private var stderrLineCount = 0
 
     public init(configuration: CoreLaunchConfiguration) {
         self.configuration = configuration
@@ -77,6 +80,10 @@ public final class CoreProcessTransport: CoreTransport {
         process.standardOutput = stdout
         process.standardError = stderr
 
+        lock.lock()
+        lineSink = onLine
+        lock.unlock()
+
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             guard let self else { return }
             let chunk = handle.availableData
@@ -91,14 +98,14 @@ public final class CoreProcessTransport: CoreTransport {
             for line in lines { onLine(line) }
         }
 
-        // The core writes diagnostics here. We keep the last lines for an exit
-        // message and log them; they are the core's own text, never field
-        // content, because a frame's text never leaves the app in a log.
+        // A provider failure can echo upstream response text, and that text may
+        // contain whatever the user was typing. stderr is therefore counted,
+        // never logged and never put in a termination reason.
         stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
             guard let self else { return }
             let chunk = handle.availableData
             guard !chunk.isEmpty, let text = String(data: chunk, encoding: .utf8) else { return }
-            self.recordStderr(text)
+            self.countStderr(text)
         }
 
         process.terminationHandler = { [weak self] finished in
@@ -115,6 +122,7 @@ public final class CoreProcessTransport: CoreTransport {
         lock.lock()
         self.process = process
         self.stdinPipe = stdin
+        self.stdoutPipe = stdout
         self.terminated = false
         lock.unlock()
         log.info("core process started")
@@ -149,15 +157,11 @@ public final class CoreProcessTransport: CoreTransport {
 
     // MARK: - Private
 
-    private var stderrTail: [String] = []
-
-    private func recordStderr(_ text: String) {
-        let lines = text.split(separator: "\n").map(String.init)
+    private func countStderr(_ text: String) {
+        let count = text.split(separator: "\n").count
         lock.lock()
-        stderrTail.append(contentsOf: lines)
-        if stderrTail.count > 10 { stderrTail.removeFirst(stderrTail.count - 10) }
+        stderrLineCount += count
         lock.unlock()
-        for line in lines { log.error("core stderr: \(line, privacy: .public)") }
     }
 
     private func currentStatus() -> Int32 {
@@ -174,16 +178,27 @@ public final class CoreProcessTransport: CoreTransport {
             return
         }
         terminated = true
-        let trailing = accumulator.flush()
-        let detail = stderrTail.suffix(3).joined(separator: " / ")
+        let handle = stdoutPipe?.fileHandleForReading
+        let sink = lineSink
+        let suppressed = stderrLineCount
         lock.unlock()
-        if trailing != nil { log.error("core stdout ended mid-line") }
-        let annotated: CoreTerminationReason
-        if case .exited(let status) = reason, !detail.isEmpty {
-            annotated = status == 0 ? .exited(status: status) : .failed("exit \(status): \(detail)")
-        } else {
-            annotated = reason
+
+        // Drain whatever stdout still holds before anyone is told the core is
+        // gone. A reply can be sitting in the pipe when the process exits, and
+        // failing its waiter first would lose an answer we already have.
+        if let handle, let sink {
+            let remaining = (try? handle.readToEnd()) ?? Data()
+            lock.lock()
+            var lines = accumulator.append(remaining)
+            if let trailing = accumulator.flush() { lines.append(trailing) }
+            lock.unlock()
+            for line in lines { sink(line) }
         }
-        onTermination(annotated)
+
+        if suppressed > 0 {
+            // The count is safe to record; the text is not.
+            log.error("core wrote \(suppressed, privacy: .public) diagnostic line(s) before exiting")
+        }
+        onTermination(reason)
     }
 }

@@ -12,6 +12,12 @@ final class FakeTransport: CoreTransport {
     private(set) var sentLines: [String] = []
     private(set) var stopCount = 0
     var sendError: Error?
+    /// Fires the termination callback from inside `send`, so the core is gone
+    /// before the caller's continuation can be resumed normally.
+    var terminatesDuringSend = false
+    /// Swallows the request instead of recording it, standing in for a child
+    /// that accepts the write and never answers.
+    var dropsRequests = false
 
     func start(onLine: @escaping (String) -> Void, onTermination: @escaping (CoreTerminationReason) -> Void) throws {
         lock.lock()
@@ -23,8 +29,10 @@ final class FakeTransport: CoreTransport {
     func send(line: String) throws {
         if let sendError { throw sendError }
         lock.lock()
-        sentLines.append(line)
+        if !dropsRequests { sentLines.append(line) }
+        let terminates = terminatesDuringSend
         lock.unlock()
+        if terminates { terminate(status: 9) }
     }
 
     func stop() {

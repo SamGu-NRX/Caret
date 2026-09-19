@@ -29,9 +29,7 @@ public struct LineAccumulator {
     private var buffer = Data()
     private let maxLineBytes: Int
 
-    /// The core's own bound on a frame is 4,000 UTF-16 units, so a line far past
-    /// that is a stuck stream rather than a large reply. We stop buffering
-    /// instead of growing without limit.
+    /// A cap so a stream that never sends a newline cannot grow without limit.
     public init(maxLineBytes: Int = 8 * 1024 * 1024) {
         self.maxLineBytes = maxLineBytes
     }
