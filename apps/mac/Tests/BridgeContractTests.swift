@@ -88,4 +88,43 @@ final class BridgeContractTests: XCTestCase {
         XCTAssertTrue(offer.isExecutable)
         XCTAssertNil(offer.unavailabilityText)
     }
+
+    /// The codes mean different things to a user: a refused acceptance means
+    /// nothing ran, a workflow error means it ran and failed, and
+    /// internal_error means the core itself broke. Collapsing them would tell
+    /// the user a workflow failed when it never started.
+    func testErrorCodesMapToDistinctStates() {
+        func state(_ code: String, _ message: String = "boom") -> CaretActionOffer.State {
+            CoreBridgeProvider.actionState(for: BridgeError.core(code: code, message: message))
+        }
+
+        guard case .unavailable = state("acceptance_rejected") else {
+            return XCTFail("a refused acceptance must not read as a failed run")
+        }
+        guard case .failed(let workflow) = state("workflow_error") else {
+            return XCTFail("workflow_error is a failed run")
+        }
+        XCTAssertEqual(workflow, "boom")
+
+        guard case .failed(let internalSummary) = state("internal_error") else {
+            return XCTFail("internal_error displays as a failure")
+        }
+        XCTAssertTrue(
+            internalSummary.contains("unexpected"),
+            "internal_error should say the core broke, not blame a provider"
+        )
+
+        guard case .failed = state("provider_error") else {
+            return XCTFail("provider_error is a failed run")
+        }
+    }
+
+    /// A transport death is not a core error code and must not be reported as
+    /// one.
+    func testTransportFailureIsNotACoreCode() {
+        guard case .failed(let summary) = CoreBridgeProvider.actionState(for: BridgeError.notRunning) else {
+            return XCTFail("expected a failure")
+        }
+        XCTAssertTrue(summary.contains("stopped responding"))
+    }
 }

@@ -204,7 +204,7 @@ final class CoreBridgeProvider: InlineCompletionProviding {
                     self.finish(proposalID, .failed(summary: "The core answered with a text edit, not a run."))
                 }
             } catch let error as BridgeError {
-                self.finish(proposalID, Self.state(from: error))
+                self.finish(proposalID, Self.actionState(for: error))
             } catch {
                 self.finish(proposalID, .failed(summary: "The run could not be completed."))
             }
@@ -213,7 +213,7 @@ final class CoreBridgeProvider: InlineCompletionProviding {
 
     /// The core's own status words decide the state. `needs_input` and an
     /// unknown status are not successes.
-    private static func state(from execution: WorkflowExecution) -> CaretActionOffer.State {
+    nonisolated private static func state(from execution: WorkflowExecution) -> CaretActionOffer.State {
         let summary = execution.summary.isEmpty ? "The workflow returned no summary." : execution.summary
         switch execution.status.lowercased() {
         case "succeeded", "success", "ok", "completed":
@@ -225,20 +225,32 @@ final class CoreBridgeProvider: InlineCompletionProviding {
         }
     }
 
-    /// `acceptance_rejected` means nothing ran, which is a different thing to
-    /// tell the user than a run that failed.
-    private static func state(from error: BridgeError) -> CaretActionOffer.State {
-        if case .core(let code, let message) = error {
-            switch code {
-            case "acceptance_rejected":
-                return .unavailable(reason: "That suggestion is no longer current, so nothing ran.")
-            case "workflow_error", "provider_error":
-                return .failed(summary: message)
-            default:
-                return .failed(summary: message)
-            }
+    /// The core's error codes mean materially different things to a user, so
+    /// they are not collapsed into one failure string.
+    ///
+    /// `acceptance_rejected` means the core refused the acceptance as stale,
+    /// duplicate or expired and *nothing ran*. `workflow_error` and
+    /// `provider_error` mean it did run and failed. `internal_error` is the
+    /// core's catch-all for an unhandled exception: it displays like a
+    /// failure, but it means the core hit something unexpected rather than a
+    /// provider misbehaving, so it is worth saying so and worth its own log
+    /// line when someone goes looking.
+    nonisolated static func actionState(for error: BridgeError) -> CaretActionOffer.State {
+        guard case .core(let code, let message) = error else {
+            return .failed(summary: "The backend stopped responding.")
         }
-        return .failed(summary: "The backend stopped responding.")
+        switch code {
+        case "acceptance_rejected":
+            return .unavailable(reason: "That suggestion is no longer current, so nothing ran.")
+        case "internal_error":
+            return .failed(summary: message.isEmpty
+                ? "The core hit an unexpected error."
+                : "The core hit an unexpected error: \(message)")
+        case "workflow_error", "provider_error":
+            return .failed(summary: message)
+        default:
+            return .failed(summary: message)
+        }
     }
 
     private func finish(_ proposalID: String, _ state: CaretActionOffer.State) {
@@ -282,6 +294,9 @@ final class CoreBridgeProvider: InlineCompletionProviding {
             log.info("core invalidated a proposal: \(reason, privacy: .public)")
 
         case .failed(_, let reason):
+            // The core reached us, so this is a provider or internal fault
+            // rather than a dead process; either way nothing is retried here.
+            // The next context change schedules the next attempt.
             unavailableText = "The completion backend failed: \(reason)"
             onUnavailable?(.providerError)
 
