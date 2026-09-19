@@ -1,0 +1,32 @@
+# Dispatch-only on purpose. This is the one workflow that spends money and the
+# one that hands a provider key to a running job:
+#
+#   * Every run makes billed model calls through Vercel AI Gateway, so it must
+#     not fire on a push or a pull request, where a busy branch would bill once
+#     per commit.
+#   * It reads the repository secret. A pull_request trigger would expose that
+#     key to the workflow file in the head branch, which a fork can rewrite.
+#
+# It proves the providers answer. The transport, the scheduling rules and the
+# workflow seam are already covered by ci.yml with no keys and no network.
+name: Live provider smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    name: Vercel AI Gateway loop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.VERCEL_API_GATEWAY_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - run: python3 scripts/caret_bridge_example.py --providers live-gateway

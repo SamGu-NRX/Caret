@@ -1,5 +1,8 @@
 import Darwin
 import XCTest
+#if SWIFT_PACKAGE
+@testable import Caret
+#endif
 
 final class ScreenpipeSupervisorTests: XCTestCase {
     override func tearDown() {

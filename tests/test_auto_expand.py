@@ -70,6 +70,27 @@ class AutoExpandTests(unittest.TestCase):
         self.assertTrue(should_offer_tab_completion("Thanks for", instructions))
         self.assertFalse(should_offer_tab_completion("Hello", instructions))
 
+    def test_normalize_preserves_insertion_space(self):
+        self.assertEqual(normalize_continuation(" by tomorrow.\n", "Send it"), " by tomorrow.")
+
+    def test_native_tab_uses_groq_and_keeps_instructions(self):
+        from types import SimpleNamespace
+        with patch.dict("os.environ", {"GROQ_API_KEY": "test-key", "CARET_INLINE_PROVIDER": "groq"}), patch(
+            "caret.providers.openai_chat.OpenAIChatClient.send",
+            return_value=SimpleNamespace(content=" by tomorrow."),
+        ) as send, patch("caret.auto_expand.complete_text") as gateway:
+            self.assertEqual(complete_auto_expand(prefix="Send it", instructions="Keep it brief."), " by tomorrow.")
+        self.assertIn("Keep it brief.", send.call_args.args[0][0]["content"])
+        gateway.assert_not_called()
+
+    def test_cli_leaves_model_selection_to_inline_provider(self):
+        from caret.__main__ import main
+        with patch("sys.argv", ["caret", "auto-expand", "--prefix", "Send it"]), patch(
+            "caret.__main__.complete_auto_expand", return_value=" tomorrow."
+        ) as complete, patch("sys.stdout"):
+            self.assertEqual(main(), 0)
+        self.assertIsNone(complete.call_args.kwargs["model"])
+
     def test_normalize_empty_when_only_repeats_prefix(self):
         self.assertEqual(
             normalize_continuation("Thanks for the update", "Thanks for the update"),

@@ -1,0 +1,51 @@
+{
+  "corridor": "Basel SBB <-> Zürich HB",
+  "operator": "SBB",
+  "source": {
+    "name": "SBB online timetable (sbb.ch/en), Half Fare price display, read from the results list",
+    "url": "https://www.sbb.ch/en",
+    "fetched_at": "2026-09-19T12:40:00+02:00",
+    "method": "Manual lookup per date and time window; only rows actually displayed were recorded."
+  },
+  "timezone": "Europe/Zurich",
+  "utc_offset": "+02:00",
+  "note": "Coverage is limited to the queried windows below. A query outside a covered window is a failed source, not an empty result.",
+  "coverage": [
+    {"from": "Basel SBB", "to": "Zürich HB", "date": "2026-10-06", "departures_from": "08:30", "departures_to": "09:07"},
+    {"from": "Zürich HB", "to": "Basel SBB", "date": "2026-10-06", "departures_from": "14:30", "departures_to": "15:10"},
+    {"from": "Basel SBB", "to": "Zürich HB", "date": "2026-10-07", "departures_from": "11:30", "departures_to": "12:07"},
+    {"from": "Basel SBB", "to": "Zürich HB", "date": "2026-10-08", "departures_from": "07:00", "departures_to": "07:43"},
+    {"from": "Zürich HB", "to": "Basel SBB", "date": "2026-10-08", "departures_from": "11:30", "departures_to": "12:10"}
+  ],
+  "connections": [
+    {"date": "2026-10-06", "from": "Basel SBB", "to": "Zürich HB", "depart": "08:33", "arrive": "09:26", "service": "IC 3", "platform": "11", "changes": 0},
+    {"date": "2026-10-06", "from": "Basel SBB", "to": "Zürich HB", "depart": "08:36", "arrive": "09:49", "service": "IR 36", "platform": "5", "changes": 0},
+    {"date": "2026-10-06", "from": "Basel SBB", "to": "Zürich HB", "depart": "08:43", "arrive": "09:52", "service": "IR 37", "platform": "9", "changes": 0},
+    {"date": "2026-10-06", "from": "Basel SBB", "to": "Zürich HB", "depart": "09:07", "arrive": "10:00", "service": "ICE", "platform": "5", "changes": 0},
+    {"date": "2026-10-06", "from": "Basel SBB", "to": "Zürich HB", "depart": "09:07", "arrive": "10:24", "service": "IR 36", "platform": "11", "changes": 0},
+    {"date": "2026-10-06", "from": "Zürich HB", "to": "Basel SBB", "depart": "14:34", "arrive": "15:26", "service": "EC", "platform": "12", "changes": 0},
+    {"date": "2026-10-06", "from": "Zürich HB", "to": "Basel SBB", "depart": "14:36", "arrive": "15:52", "service": "IR 36", "platform": "16", "changes": 0},
+    {"date": "2026-10-06", "from": "Zürich HB", "to": "Basel SBB", "depart": "14:59", "arrive": "15:52", "service": "IC 3", "platform": "17", "changes": 0},
+    {"date": "2026-10-06", "from": "Zürich HB", "to": "Basel SBB", "depart": "15:08", "arrive": "16:16", "service": "IR 37", "platform": "15", "changes": 0},
+    {"date": "2026-10-06", "from": "Zürich HB", "to": "Basel SBB", "depart": "15:10", "arrive": "16:23", "service": "IR 36", "platform": "32", "changes": 0},
+    {"date": "2026-10-07", "from": "Basel SBB", "to": "Zürich HB", "depart": "11:33", "arrive": "12:26", "service": "IC 3", "platform": "9", "changes": 0},
+    {"date": "2026-10-07", "from": "Basel SBB", "to": "Zürich HB", "depart": "11:36", "arrive": "12:49", "service": "IR 36", "platform": "5", "changes": 0},
+    {"date": "2026-10-07", "from": "Basel SBB", "to": "Zürich HB", "depart": "11:43", "arrive": "12:52", "service": "IR 37", "platform": "10", "changes": 0},
+    {"date": "2026-10-07", "from": "Basel SBB", "to": "Zürich HB", "depart": "12:07", "arrive": "13:00", "service": "ICE", "platform": "4", "changes": 0},
+    {"date": "2026-10-08", "from": "Basel SBB", "to": "Zürich HB", "depart": "07:07", "arrive": "08:00", "service": "IC 3", "platform": "5", "changes": 0},
+    {"date": "2026-10-08", "from": "Basel SBB", "to": "Zürich HB", "depart": "07:07", "arrive": "08:24", "service": "IR 36", "platform": "11", "changes": 0},
+    {"date": "2026-10-08", "from": "Basel SBB", "to": "Zürich HB", "depart": "07:33", "arrive": "08:26", "service": "IC 3", "platform": "5", "changes": 0},
+    {"date": "2026-10-08", "from": "Basel SBB", "to": "Zürich HB", "depart": "07:36", "arrive": "08:49", "service": "IR 36", "platform": "8", "changes": 0},
+    {"date": "2026-10-08", "from": "Basel SBB", "to": "Zürich HB", "depart": "07:43", "arrive": "08:52", "service": "IR 37", "platform": "10", "changes": 0},
+    {"date": "2026-10-08", "from": "Zürich HB", "to": "Basel SBB", "depart": "11:34", "arrive": "12:26", "service": "TGV", "platform": "15", "changes": 0},
+    {"date": "2026-10-08", "from": "Zürich HB", "to": "Basel SBB", "depart": "11:36", "arrive": "12:52", "service": "IR 36", "platform": "17", "changes": 0},
+    {"date": "2026-10-08", "from": "Zürich HB", "to": "Basel SBB", "depart": "11:59", "arrive": "12:52", "service": "IC 3", "platform": "16", "changes": 0},
+    {"date": "2026-10-08", "from": "Zürich HB", "to": "Basel SBB", "depart": "12:08", "arrive": "13:16", "service": "IR 37", "platform": "12", "changes": 0},
+    {"date": "2026-10-08", "from": "Zürich HB", "to": "Basel SBB", "depart": "12:10", "arrive": "13:23", "service": "IR 36", "platform": "32", "changes": 0}
+  ],
+  "holidays": {
+    "source": "swisscalendar.com/2026 and iamexpat.ch Swiss public holidays, checked 2026-09-19",
+    "finding": "No national or cantonal (ZH, BS) public holiday between 28 Sep and 12 Oct 2026",
+    "dates": []
+  }
+}

@@ -1,0 +1,1 @@
+Router backs off RouterConfig.failure_backoff_seconds (10s) after a failed evaluation; router tests advance a fake clock rather than expecting an immediate retry. Provider presets patch their own module's post_json in tests.

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 
-from caret.completions import ChatMessage, complete_text
+from caret.completions import ChatMessage, CompletionError, complete_text
 
 _PATTERN_LINE = re.compile(r"^\s*(?:\d+\.|[-*])\s+(.+)$")
 MIN_TYPED_CHARACTERS = 5
@@ -119,9 +120,11 @@ def should_offer_tab_completion(prefix: str, instructions: str) -> bool:
 
 
 def normalize_continuation(raw: str, prefix: str) -> str:
-    text = raw.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        text = text[1:-1].strip()
+    # Leading spaces belong to the insertion; stripping them joins words.
+    text = raw.lstrip("\r\n").rstrip()
+    quoted = text.strip()
+    if len(quoted) >= 2 and quoted[0] == quoted[-1] and quoted[0] in "\"'":
+        text = quoted[1:-1]
     if not text:
         return ""
     if prefix and text.startswith(prefix):
@@ -147,9 +150,25 @@ def complete_auto_expand(
     if model:
         kwargs["model"] = model
     messages = build_auto_expand_messages(prefix=prefix, instructions=instructions)
-    raw = complete_text(
-        messages[1]["content"],
-        system=messages[0]["content"],
-        **kwargs,
-    )
+    # The native Tab path uses the same Groq client as the shared core. Gateway
+    # remains an explicit option for installations configured for that service.
+    provider = os.environ.get("CARET_INLINE_PROVIDER", "groq")
+    if provider == "groq":
+        from caret.providers.groq import GroqWriter
+        from caret.providers.http import post_json
+
+        from caret.engine import ProviderFailure
+        from caret.providers.openai_chat import ChatError
+
+        try:
+            writer = GroqWriter.from_env()
+            if model:
+                writer.client.model = model
+            raw = writer.client.send(messages, post_json).content
+        except (ProviderFailure, ChatError) as error:
+            raise CompletionError(str(error)) from None
+    elif provider == "gateway":
+        raw = complete_text(messages[1]["content"], system=messages[0]["content"], **kwargs)
+    else:
+        raise CompletionError(f"Unknown CARET_INLINE_PROVIDER: {provider}; choose groq or gateway")
     return normalize_continuation(raw, prefix)

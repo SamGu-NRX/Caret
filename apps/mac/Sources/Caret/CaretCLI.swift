@@ -30,13 +30,19 @@ enum CaretCLI {
     }
 
     private static func runCommand(subcommand: String, arguments: [String]) throws -> String {
-        guard let root = CaretPaths.projectRoot else {
-            throw Error.missingProjectRoot
-        }
+        let config = CoreLaunchSettings.DeveloperConfig.load()
+        let parentEnvironment = ProcessInfo.processInfo.environment
+        let configuredRoot = parentEnvironment["CARET_CORE_ROOT"] ?? config.root
+        guard let root = configuredRoot.map({ URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) })
+            ?? CaretPaths.projectRoot else { throw Error.missingProjectRoot }
+        let python = parentEnvironment["CARET_PYTHON"] ?? config.python ?? Self.pythonExecutable()
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: Self.pythonExecutable())
+        process.executableURL = URL(fileURLWithPath: (python as NSString).expandingTildeInPath)
         process.currentDirectoryURL = root
-        var environment = ProcessInfo.processInfo.environment
+        var environment = CoreLaunchSettings.environment(
+            fromEnvFileAt: parentEnvironment["CARET_ENV_FILE"] ?? config.envFile
+        )
+        environment.merge(parentEnvironment) { _, parent in parent }
         environment["CARET_PROJECT_ROOT"] = root.path
         environment["CARET_NOTES_ROOT"] = CaretPaths.notesRoot.path
         environment["CARET_SUPPORT_ROOT"] = CaretPaths.applicationSupportRoot.path
@@ -77,6 +83,7 @@ enum CaretCLI {
 
     private static func pythonExecutable() -> String {
         let candidates = [
+            "/opt/homebrew/bin/python3.14",
             "/opt/homebrew/bin/python3.13",
             "/opt/homebrew/bin/python3.12",
             "/usr/local/bin/python3.12",

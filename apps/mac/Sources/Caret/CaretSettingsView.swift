@@ -1,39 +1,31 @@
 import SwiftUI
 
-private enum SaveStatus {
-    case idle
-    case saving
-    case saved
-}
-
-private struct EditorSnapshot: Equatable {
-    let title: String
-    let icon: String
-    let body: String
-    let apps: [String]
-}
-
 struct CaretSettingsView: View {
     @ObservedObject var model: Model
     @State private var tab: SettingsTab = .skills
     @State private var selectedSkillActionID: String?
     @State private var selectedMemoryNoteID: String?
     @State private var sidebarCollapsed = false
+    @State private var showingDiscardConfirmation = false
+    @State private var deletionFailed = false
 
-    @State private var editTitle = ""
-    @State private var editIcon = "doc.text"
-    @State private var editBody = ""
-    @State private var editApps = ""
-    @State private var suppressAutosave = false
-    @State private var autosaveTask: Task<Void, Never>?
-    @State private var saveStatus: SaveStatus = .idle
-    @State private var editorBaseline: EditorSnapshot?
-    /// After + New, keep an empty detail shell until the user edits or picks another row.
+    @ObservedObject private var editor: NoteEditorSession
+
+    init(model: Model) {
+        self.model = model
+        self.editor = model.noteEditor
+    }
+
+    private var appsBinding: Binding<String> {
+        Binding(
+            get: { editor.draft.apps.joined(separator: ", ") },
+            set: { editor.draft.apps = normalizedApps(parseApps($0)) }
+        )
+    }
     @State private var composeShellSkillID: String?
     @State private var composeShellMemoryID: String?
 
     private let accentBlue = Color(red: 0.26, green: 0.52, blue: 0.98)
-    private let autosaveDelayNs: UInt64 = 450_000_000
     private let sidebarIdealWidth: CGFloat = 268
 
     enum SettingsTab: String, CaseIterable, Identifiable {
@@ -64,6 +56,26 @@ struct CaretSettingsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+                if case .failed(let message) = editor.status {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(message, systemImage: "exclamationmark.triangle")
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            Button("Retry save") { flushAutosave() }
+                            Button("Copy draft") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(
+                                    editor.draft.title + "\n\n" + editor.draft.body, forType: .string
+                                )
+                            }
+                            Spacer()
+                            Button("Discard changes") { showingDiscardConfirmation = true }
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.orange.opacity(0.1))
+                }
                 footer
             }
             .frame(minWidth: 720, minHeight: 520)
@@ -73,6 +85,20 @@ struct CaretSettingsView: View {
                     SidebarCollapseToggle(collapsed: $sidebarCollapsed)
                 }
             }
+        }
+        .confirmationDialog("Discard unsaved changes?", isPresented: $showingDiscardConfirmation) {
+            Button("Discard changes", role: .destructive) {
+                editor.discard()
+                refreshSelection()
+            }
+            Button("Keep editing", role: .cancel) {}
+        } message: {
+            Text("Your unsaved edits will be lost. The saved note will not be changed.")
+        }
+        .alert("Couldn't delete this note", isPresented: $deletionFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Check storage access and try again.")
         }
         .onAppear {
             refreshSelection()
@@ -84,7 +110,6 @@ struct CaretSettingsView: View {
             if newID == composeShellSkillID { return }
             composeShellSkillID = nil
             guard let item = skillItem(for: newID) else { return }
-            flushAutosave()
             applySkillEditor(item: item)
         }
         .onChange(of: selectedMemoryNoteID) { _, newID in
@@ -92,18 +117,14 @@ struct CaretSettingsView: View {
             if newID == composeShellMemoryID { return }
             composeShellMemoryID = nil
             guard let note = model.memoryNotes.first(where: { $0.id == newID }) else { return }
-            flushAutosave()
             applyMemoryEditor(note: note)
         }
-        .onChange(of: editTitle) { _, _ in scheduleAutosave() }
-        .onChange(of: editIcon) { _, _ in scheduleAutosave() }
-        .onChange(of: editBody) { _, newBody in
+        .onChange(of: editor.draft) { _, draft in
             if let id = selectedSkillActionID {
-                model.setLiveSkillInstructions(actionID: id, body: newBody)
+                model.setLiveSkillInstructions(actionID: id, body: draft.body)
             }
-            scheduleAutosave()
+            editor.scheduleSave(using: writeSnapshot)
         }
-        .onChange(of: editApps) { _, _ in scheduleAutosave() }
         .onDisappear { flushAutosave() }
     }
 
@@ -190,7 +211,7 @@ struct CaretSettingsView: View {
                 .textCase(.uppercase)
             ForEach(SettingsTab.allCases) { section in
                 Button {
-                    flushAutosave()
+                    guard flushAutosave() else { return }
                     tab = section
                     if section == .skills {
                         syncSkillSelection()
@@ -265,6 +286,7 @@ struct CaretSettingsView: View {
                 .textCase(.uppercase)
             Spacer()
             Button {
+                guard flushAutosave() else { return }
                 if tab == .skills {
                     beginNewSkill()
                 } else {
@@ -311,11 +333,11 @@ struct CaretSettingsView: View {
                     action: item.action,
                     note: item.note,
                     accent: CaretNotePalette.accent(for: item.action.id),
-                    title: $editTitle,
-                    icon: $editIcon,
-                    bodyText: $editBody,
-                    appsText: $editApps,
-                    saveStatus: saveStatus,
+                    title: $editor.draft.title,
+                    icon: $editor.draft.icon,
+                    bodyText: $editor.draft.body,
+                    appsText: appsBinding,
+                    saveStatus: editor.status,
                     iconChoices: CaretSymbolChoices.skillIcons,
                     appsMode: TabCompletions.isTabCompletionsAction(item.action.id) ? .exclude : .include,
                     titleIsEditable: !TabCompletions.isTabCompletionsAction(item.action.id),
@@ -341,12 +363,12 @@ struct CaretSettingsView: View {
                 MemoryNoteEditor(
                     note: note,
                     accent: CaretNotePalette.accent(for: note.id),
-                    title: $editTitle,
-                    icon: $editIcon,
-                    bodyText: $editBody,
-                    saveStatus: saveStatus,
+                    title: $editor.draft.title,
+                    icon: $editor.draft.icon,
+                    bodyText: $editor.draft.body,
+                    saveStatus: editor.status,
                     iconChoices: CaretSymbolChoices.memoryIcons,
-                    onDelete: { model.deleteMemoryNote(id: note.id) }
+                    onDelete: { removeMemory(note.id) }
                 )
                 .id(note.id)
             } else {
@@ -369,6 +391,13 @@ struct CaretSettingsView: View {
     }
 
     private func refreshSelection() {
+        // Reopening Settings restores the retained draft, including a failed save.
+        if let target = editor.target {
+            switch target {
+            case .skill(let id): tab = .skills; selectedSkillActionID = id
+            case .memory(let id): tab = .memories; selectedMemoryNoteID = id
+            }
+        }
         model.reloadNotes()
         syncSkillSelection()
         syncMemorySelection()
@@ -393,7 +422,7 @@ struct CaretSettingsView: View {
                 && selectedSkillActionID != TabCompletions.actionID) {
             selectedSkillActionID = TabCompletions.actionID
         }
-        guard selectedSkillActionID != previous,
+        guard tab == .skills, selectedSkillActionID != previous,
               let id = selectedSkillActionID,
               let item = skillItem(for: id)
         else { return }
@@ -415,7 +444,7 @@ struct CaretSettingsView: View {
         if selectedMemoryNoteID == nil || !model.memoryNotes.contains(where: { $0.id == selectedMemoryNoteID }) {
             selectedMemoryNoteID = model.memoryNotes.first?.id
         }
-        guard selectedMemoryNoteID != previous,
+        guard tab == .memories, selectedMemoryNoteID != previous,
               let id = selectedMemoryNoteID,
               let note = model.memoryNotes.first(where: { $0.id == id })
         else { return }
@@ -423,127 +452,59 @@ struct CaretSettingsView: View {
     }
 
     private func applySkillEditor(item: ActionSkillItem) {
-        autosaveTask?.cancel()
-        autosaveTask = nil
-        suppressAutosave = true
-        let title = item.note?.title ?? item.action.title
-        let icon = item.note?.icon ?? CaretActionIcons.icon(for: item.action.id)
-        let body = item.note?.body ?? ""
-        let apps = TabCompletions.isTabCompletionsAction(item.action.id)
-            ? normalizedApps(item.note?.excludedApps ?? [])
-            : normalizedApps(item.note?.apps ?? [])
-        editTitle = TabCompletions.isTabCompletionsAction(item.action.id) ? TabCompletions.defaultTitle : title
-        editIcon = icon
-        editBody = body
-        model.setLiveSkillInstructions(actionID: item.action.id, body: body)
-        editApps = apps.joined(separator: ", ")
-        editorBaseline = EditorSnapshot(title: title, icon: icon, body: body, apps: apps)
-        saveStatus = .idle
-        suppressAutosave = false
+        let loaded = editor.load(.skill(item.action.id), snapshot: NoteEditorSnapshot(
+            title: TabCompletions.isTabCompletionsAction(item.action.id) ? TabCompletions.defaultTitle : (item.note?.title ?? item.action.title),
+            icon: item.note?.icon ?? CaretActionIcons.icon(for: item.action.id),
+            body: item.note?.body ?? "",
+            apps: normalizedApps(TabCompletions.isTabCompletionsAction(item.action.id) ? (item.note?.excludedApps ?? []) : (item.note?.apps ?? []))
+        ), using: writeSnapshot)
+        if !loaded { restoreEditorSelection() }
+        else { model.setLiveSkillInstructions(actionID: item.action.id, body: editor.draft.body) }
     }
 
     private func applyMemoryEditor(note: CaretNote) {
-        autosaveTask?.cancel()
-        autosaveTask = nil
-        suppressAutosave = true
-        editTitle = note.title
-        editIcon = note.icon
-        editBody = note.body
-        editApps = ""
-        editorBaseline = EditorSnapshot(
-            title: note.title,
-            icon: note.icon,
-            body: note.body,
-            apps: []
-        )
-        saveStatus = .idle
-        suppressAutosave = false
+        let loaded = editor.load(.memory(note.id), snapshot: NoteEditorSnapshot(
+            title: note.title, icon: note.icon, body: note.body, apps: []
+        ), using: writeSnapshot)
+        if !loaded { restoreEditorSelection() }
     }
 
-    private func scheduleAutosave() {
-        guard !suppressAutosave else { return }
-        autosaveTask?.cancel()
-        guard hasUnsavedEdits() else {
-            saveStatus = .idle
-            return
-        }
-        saveStatus = .saving
-        autosaveTask = Task {
-            try? await Task.sleep(nanoseconds: autosaveDelayNs)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                persistCurrentEdits()
-            }
+    private func restoreEditorSelection() {
+        switch editor.target {
+        case .skill(let id): tab = .skills; selectedSkillActionID = id
+        case .memory(let id): tab = .memories; selectedMemoryNoteID = id
+        case nil: break
         }
     }
 
-    private func flushAutosave() {
-        autosaveTask?.cancel()
-        autosaveTask = nil
-        guard !suppressAutosave else { return }
-        persistCurrentEdits()
+    @discardableResult
+    private func flushAutosave() -> Bool {
+        editor.save(using: writeSnapshot)
     }
 
-    private func persistCurrentEdits() {
-        guard hasUnsavedEdits() else {
-            saveStatus = .idle
-            return
+    private func writeSnapshot(_ target: NoteEditorTarget, _ draft: NoteEditorSnapshot) throws {
+        let saved: Bool
+        switch target {
+        case .skill(let id):
+            guard skillItem(for: id) != nil else {
+                throw NoteEditorWriteError.noteUnavailable
+            }
+            saved = model.saveSkillNote(actionID: id, title: draft.title, icon: draft.icon,
+                                        body: draft.body,
+                                        apps: TabCompletions.isTabCompletionsAction(id) ? [] : draft.apps,
+                                        excludedApps: TabCompletions.isTabCompletionsAction(id) ? draft.apps : [])
+        case .memory(let id):
+            guard model.memoryNotes.contains(where: { $0.id == id }) else {
+                throw NoteEditorWriteError.noteUnavailable
+            }
+            saved = model.saveMemoryNote(noteID: id, title: draft.title, icon: draft.icon,
+                                         body: draft.body, apps: []) != nil
         }
-        switch tab {
-        case .skills:
-            guard let id = selectedSkillActionID else { return }
-            let title = resolvedSkillTitle(for: id)
-            if TabCompletions.isTabCompletionsAction(id) {
-                model.saveSkillNote(
-                    actionID: id,
-                    title: TabCompletions.defaultTitle,
-                    icon: editIcon,
-                    body: editBody,
-                    apps: [],
-                    excludedApps: normalizedApps(parseApps(editApps))
-                )
-            } else {
-                model.saveSkillNote(
-                    actionID: id,
-                    title: title,
-                    icon: editIcon,
-                    body: editBody,
-                    apps: normalizedApps(parseApps(editApps))
-                )
-            }
-            if id == composeShellSkillID {
-                composeShellSkillID = nil
-            }
-        case .memories:
-            guard let id = selectedMemoryNoteID else { return }
-            let title = resolvedMemoryTitle(for: id)
-            model.saveMemoryNote(
-                noteID: id,
-                title: title,
-                icon: editIcon,
-                body: editBody,
-                apps: []
-            )
-            if id == composeShellMemoryID {
-                composeShellMemoryID = nil
-            }
+        guard saved else { throw NoteEditorWriteError.saveFailed }
+        switch target {
+        case .skill(let id): if composeShellSkillID == id { composeShellSkillID = nil }
+        case .memory(let id): if composeShellMemoryID == id { composeShellMemoryID = nil }
         }
-        editorBaseline = currentEditorSnapshot()
-        saveStatus = .saved
-    }
-
-    private func currentEditorSnapshot() -> EditorSnapshot {
-        EditorSnapshot(
-            title: editTitle,
-            icon: editIcon,
-            body: editBody,
-            apps: normalizedApps(parseApps(editApps))
-        )
-    }
-
-    private func hasUnsavedEdits() -> Bool {
-        guard let editorBaseline else { return false }
-        return currentEditorSnapshot() != editorBaseline
     }
 
     private func parseApps(_ text: String) -> [String] {
@@ -555,53 +516,36 @@ struct CaretSettingsView: View {
     }
 
     private func beginNewSkill() {
-        flushAutosave()
+        guard flushAutosave() else { return }
         composeShellMemoryID = nil
         guard let id = model.createBlankSkill() else { return }
         tab = .skills
         composeShellSkillID = id
         selectedSkillActionID = id
-        applyComposeShell(defaultIcon: "sparkle")
+        applyComposeShell(target: .skill(id), defaultIcon: "sparkle", defaultTitle: "Untitled skill")
     }
 
     private func beginNewMemory() {
-        flushAutosave()
+        guard flushAutosave() else { return }
         composeShellSkillID = nil
         guard let id = model.createBlankMemory() else { return }
         tab = .memories
         composeShellMemoryID = id
         selectedMemoryNoteID = id
-        applyComposeShell(defaultIcon: "tray.full")
+        applyComposeShell(target: .memory(id), defaultIcon: "tray.full", defaultTitle: "Untitled")
     }
 
-    private func applyComposeShell(defaultIcon: String) {
-        autosaveTask?.cancel()
-        autosaveTask = nil
-        suppressAutosave = true
-        editTitle = ""
-        editIcon = defaultIcon
-        editBody = ""
-        editApps = ""
-        editorBaseline = EditorSnapshot(title: "", icon: defaultIcon, body: "", apps: [])
-        saveStatus = .idle
-        suppressAutosave = false
-    }
-
-    private func resolvedSkillTitle(for actionID: String) -> String {
-        let trimmed = editTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        return model.skillNotes.first(where: { $0.id == actionID })?.title ?? "Untitled skill"
-    }
-
-    private func resolvedMemoryTitle(for noteID: String) -> String {
-        let trimmed = editTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        return model.memoryNotes.first(where: { $0.id == noteID })?.title ?? "Untitled"
+    private func applyComposeShell(target: NoteEditorTarget, defaultIcon: String, defaultTitle: String) {
+        editor.load(target, snapshot: NoteEditorSnapshot(title: "", icon: defaultIcon, body: "", apps: []),
+                    defaultTitle: defaultTitle, using: writeSnapshot)
     }
 
     private func removeSkill(_ actionID: String) {
-        flushAutosave()
-        model.deleteSkill(actionID: actionID)
+        guard flushAutosave() else { return }
+        guard editor.delete(.skill(actionID), using: { _ in model.deleteSkill(actionID: actionID) }) else {
+            deletionFailed = true
+            return
+        }
         if selectedSkillActionID == actionID {
             selectedSkillActionID = TabCompletions.actionID
             if let id = selectedSkillActionID,
@@ -619,17 +563,20 @@ struct CaretSettingsView: View {
         }
     }
 
+    private func removeMemory(_ id: String) {
+        guard flushAutosave() else { return }
+        guard editor.delete(.memory(id), using: { _ in model.deleteMemoryNote(id: id) }) else {
+            deletionFailed = true
+            return
+        }
+        syncMemorySelection()
+    }
+
     private func deleteMemoryRows(at offsets: IndexSet) {
-        flushAutosave()
-        for index in offsets {
-            guard model.memoryNotes.indices.contains(index) else { continue }
-            model.deleteMemoryNote(id: model.memoryNotes[index].id)
+        let ids = offsets.compactMap { index in
+            model.memoryNotes.indices.contains(index) ? model.memoryNotes[index].id : nil
         }
-        selectedMemoryNoteID = model.memoryNotes.first?.id
-        if let id = selectedMemoryNoteID,
-           let note = model.memoryNotes.first(where: { $0.id == id }) {
-            applyMemoryEditor(note: note)
-        }
+        for id in ids { removeMemory(id) }
     }
 }
 
@@ -847,7 +794,7 @@ private struct SidebarCollapseToggle: View {
 
 private struct NoteDetailUpdatedLine: View {
     let updatedAt: Date?
-    let status: SaveStatus
+    let status: NoteSaveStatus
 
     var body: some View {
         HStack(spacing: 6) {
@@ -856,6 +803,10 @@ private struct NoteDetailUpdatedLine: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Saving")
+            } else if case .failed = status {
+                Text("Not saved")
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
             } else if let updatedAt {
                 Text("Updated \(updatedAt.formatted(date: .complete, time: .shortened))")
                     .font(.subheadline)
@@ -1007,7 +958,7 @@ private struct SkillNoteEditor: View {
     @Binding var icon: String
     @Binding var bodyText: String
     @Binding var appsText: String
-    let saveStatus: SaveStatus
+    let saveStatus: NoteSaveStatus
     let iconChoices: [String]
     var appsMode: SkillAppsFieldMode = .include
     var titleIsEditable: Bool = true
@@ -1368,7 +1319,7 @@ private struct MemoryNoteEditor: View {
     @Binding var title: String
     @Binding var icon: String
     @Binding var bodyText: String
-    let saveStatus: SaveStatus
+    let saveStatus: NoteSaveStatus
     let iconChoices: [String]
     let onDelete: () -> Void
 

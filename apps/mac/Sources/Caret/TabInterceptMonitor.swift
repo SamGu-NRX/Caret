@@ -23,7 +23,9 @@ final class TabInterceptMonitor {
             guard type == .keyDown else { return Unmanaged.passUnretained(event) }
             guard let refcon else { return Unmanaged.passUnretained(event) }
             let monitor = Unmanaged<TabInterceptMonitor>.fromOpaque(refcon).takeUnretainedValue()
-            guard event.getIntegerValueField(.keyboardEventKeycode) == 48 else {
+            // Shift-Tab and app shortcuts retain their normal navigation behavior.
+            guard event.flags.intersection([.maskShift, .maskControl, .maskAlternate, .maskCommand]).isEmpty,
+                  event.getIntegerValueField(.keyboardEventKeycode) == 48 else {
                 return Unmanaged.passUnretained(event)
             }
             var consumed = false
