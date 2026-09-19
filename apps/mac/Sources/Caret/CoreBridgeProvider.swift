@@ -71,6 +71,14 @@ struct CaretActionOffer: Identifiable, Equatable {
     /// A catalog entry is something the core can describe but not run. It is
     /// shown as unavailable rather than offered, because presenting it as a
     /// choice would promise an execution that cannot happen.
+    ///
+    /// A core-minted offer already implies availability: the engine filters
+    /// the registry to available adapters, validates the judge's answer
+    /// against exactly those ids, then re-checks the selected adapter's
+    /// availability before building the offer. That is availability AT MINT
+    /// TIME ONLY. It is not a promise the adapter is still runnable when the
+    /// user presses the key, which is why an acceptance failure stays visible
+    /// rather than being treated as impossible.
     var isExecutable: Bool {
         guard !sampleOnly, missingInputs.isEmpty else { return false }
         let method = executionMethod.trimmingCharacters(in: .whitespaces).lowercased()
