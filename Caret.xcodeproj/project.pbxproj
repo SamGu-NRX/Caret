@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D20000000000000000000001 /* NoteEditorSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* NoteEditorSession.swift */; };
 		B10000000000000000000021 /* CaretApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* CaretApp.swift */; };
 		B10000000000000000000022 /* AXHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* AXHelpers.swift */; };
 		B10000000000000000000023 /* HotKeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* HotKeyManager.swift */; };
@@ -60,6 +61,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D20000000000000000000002 /* NoteEditorSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorSession.swift; sourceTree = "<group>"; };
 		B1000000000000000000000F /* Caret.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Caret.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000011 /* CaretApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* AXHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AXHelpers.swift; sourceTree = "<group>"; };
@@ -174,6 +176,7 @@
 				B10000000000000000000020 /* SkillRepository.swift */,
 				B1000000000000000000003C /* ModifierChordState.swift */,
 				B1000000000000000000003D /* CaretSettingsView.swift */,
+				D20000000000000000000002 /* NoteEditorSession.swift */,
 				B10000000000000000000040 /* MemoryRepository.swift */,
 				B10000000000000000000042 /* CaretNote.swift */,
 				B10000000000000000000050 /* ScreenpipeSupervisor.swift */,
@@ -360,6 +363,7 @@
 				B1000000000000000000003A /* SkillRepository.swift in Sources */,
 				B1000000000000000000003B /* ModifierChordState.swift in Sources */,
 				B1000000000000000000003E /* CaretSettingsView.swift in Sources */,
+				D20000000000000000000001 /* NoteEditorSession.swift in Sources */,
 				B1000000000000000000003F /* MemoryRepository.swift in Sources */,
 				B10000000000000000000041 /* CaretNote.swift in Sources */,
 				B10000000000000000000051 /* ScreenpipeSupervisor.swift in Sources */,
