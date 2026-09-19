@@ -13,8 +13,8 @@
 		B10000000000000000000023 /* HotKeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* HotKeyManager.swift */; };
 		B10000000000000000000024 /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* PermissionView.swift */; };
 		B10000000000000000000025 /* SelectionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* SelectionMonitor.swift */; };
-				B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
-B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
+		B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
+		B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
 		B1000000000000000000A100 /* InlineCompletionTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B100 /* InlineCompletionTypes.swift */; };
 		B1000000000000000000A101 /* InlineKeyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B101 /* InlineKeyDecision.swift */; };
 		B1000000000000000000A102 /* InlineOfferStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B102 /* InlineOfferStore.swift */; };
