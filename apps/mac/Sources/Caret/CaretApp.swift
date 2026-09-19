@@ -80,6 +80,7 @@ final class Model: ObservableObject {
                 apps: apps
             )
             reloadNotes()
+            onPinsChanged?()
         } catch {
             NSLog("[Caret] save skill note failed: %@", String(describing: error))
         }
@@ -216,10 +217,11 @@ final class Model: ObservableObject {
     var pinnedChips: [PinnedActionChip] {
         pinnedActions.compactMap { action in
             guard let slot = pinStore.slot(for: action.id) else { return nil }
+            let note = skillNotes.first(where: { $0.id == action.id })
             return PinnedActionChip(
                 id: action.id,
-                title: action.title,
-                icon: noteRepository.skillIcon(actionID: action.id),
+                title: note?.title ?? action.title,
+                icon: note?.icon ?? CaretActionIcons.icon(for: action.id),
                 slot: slot
             )
         }

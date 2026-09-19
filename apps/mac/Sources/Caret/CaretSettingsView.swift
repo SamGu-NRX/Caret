@@ -141,12 +141,20 @@ struct CaretSettingsView: View {
                 case .skills:
                     List(selection: $selectedSkillActionID) {
                         ForEach(builtInSkillItems) { item in
-                            SkillActionRow(item: item, isLocked: true)
+                            SkillActionRow(
+                                item: item,
+                                isLocked: true,
+                                isPinned: model.pinStore.isPinned(item.action.id)
+                            )
                                 .tag(item.action.id)
                                 .sidebarListRowStyle
                         }
                         ForEach(customSkillItems) { item in
-                            SkillActionRow(item: item, isLocked: false)
+                            SkillActionRow(
+                                item: item,
+                                isLocked: false,
+                                isPinned: model.pinStore.isPinned(item.action.id)
+                            )
                                 .tag(item.action.id)
                                 .sidebarListRowStyle
                                 .contextMenu {
@@ -283,6 +291,7 @@ struct CaretSettingsView: View {
             if let id = selectedSkillActionID,
                let item = model.actionSkillItems.first(where: { $0.action.id == id }) {
                 SkillNoteEditor(
+                    model: model,
                     action: item.action,
                     note: item.note,
                     accent: CaretNotePalette.accent(for: item.action.id),
@@ -533,8 +542,10 @@ struct CaretSettingsView: View {
 }
 
 private enum SidebarListMetrics {
-    static let rowInsets = EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8)
-    static let rowMinHeight: CGFloat = 36
+    static let rowInsets = EdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10)
+    static let rowMinHeight: CGFloat = 44
+    static let rowIconSize: CGFloat = 28
+    static let rowContentSpacing: CGFloat = 12
 }
 
 private extension View {
@@ -556,32 +567,42 @@ private extension View {
 private struct SkillActionRow: View {
     let item: ActionSkillItem
     var isLocked: Bool = false
+    var isPinned: Bool = false
 
     var body: some View {
         let icon = item.note?.icon ?? CaretActionIcons.icon(for: item.action.id)
         let accent = CaretNotePalette.accent(for: item.action.id)
         let subtitle = item.note?.updatedAt.formatted(date: .abbreviated, time: .shortened) ?? " "
-        HStack(spacing: 10) {
-            NoteIconBadge(systemName: icon, accent: accent, size: 26)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: SidebarListMetrics.rowContentSpacing) {
+            NoteIconBadge(systemName: icon, accent: accent, size: SidebarListMetrics.rowIconSize)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(item.note?.title ?? item.action.title)
                     .font(.body.weight(.medium))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .opacity(item.note == nil ? 0 : 1)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if isLocked {
-                Image(systemName: "lock.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .accessibilityLabel("Built-in skill")
+            HStack(spacing: 6) {
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityLabel("Pinned to Caret bar")
+                }
+                if isLocked {
+                    Image(systemName: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityLabel("Built-in skill")
+                }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, minHeight: SidebarListMetrics.rowMinHeight - 10, alignment: .leading)
     }
 }
 
@@ -591,15 +612,15 @@ private struct NoteRow: View {
     let accent: Color
 
     var body: some View {
-        HStack(spacing: 10) {
-            NoteIconBadge(systemName: note.icon, accent: accent, size: 26)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: SidebarListMetrics.rowContentSpacing) {
+            NoteIconBadge(systemName: note.icon, accent: accent, size: SidebarListMetrics.rowIconSize)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(note.title)
                     .font(.body.weight(.medium))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(note.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if showApps, !note.apps.isEmpty {
@@ -612,7 +633,8 @@ private struct NoteRow: View {
             }
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, minHeight: SidebarListMetrics.rowMinHeight - 10, alignment: .leading)
     }
 }
 
@@ -750,6 +772,49 @@ private struct InlineTitleField: View {
     }
 }
 
+private struct SkillDetailPinButton: View {
+    let isPinned: Bool
+    let canPin: Bool
+    let shortcutLabel: String?
+    let onToggle: () -> Void
+
+    private var helpText: String {
+        if isPinned {
+            return "Unpin from Caret bar (\(shortcutLabel ?? ""))"
+        }
+        if canPin {
+            return "Pin next to Caret bar (max \(PinnedActionsStore.maxPinned))"
+        }
+        return "Unpin another action first (max \(PinnedActionsStore.maxPinned))"
+    }
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 5) {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.body.weight(.semibold))
+                if isPinned, let shortcutLabel {
+                    Text(shortcutLabel)
+                        .font(.caption.weight(.semibold))
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(isPinned ? Color.accentColor : (canPin ? Color.secondary : Color.secondary.opacity(0.45)))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(isPinned ? 0.1 : 0.05))
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isPinned && !canPin)
+        .help(helpText)
+        .accessibilityLabel(isPinned ? "Pinned" : "Pin action")
+    }
+}
+
 private enum NoteDetailMetrics {
     static let horizontalPadding: CGFloat = 20
     static let headerBottomSpacing: CGFloat = 14
@@ -789,6 +854,7 @@ private struct ExpandingInstructionsEditor: View {
 }
 
 private struct SkillNoteEditor: View {
+    @ObservedObject var model: Model
     let action: CaretAction
     let note: CaretNote?
     let accent: Color
@@ -799,13 +865,24 @@ private struct SkillNoteEditor: View {
     let saveStatus: SaveStatus
     let iconChoices: [String]
 
+    private var isPinned: Bool { model.pinStore.isPinned(action.id) }
+    private var canPin: Bool { model.canPin(action) }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .center, spacing: 14) {
                     IconPickerBadge(icon: $icon, accent: accent, choices: iconChoices, size: 52)
                     VStack(alignment: .leading, spacing: 4) {
-                        InlineTitleField(text: $title, placeholder: action.title)
+                        HStack(alignment: .center, spacing: 10) {
+                            InlineTitleField(text: $title, placeholder: action.title)
+                            SkillDetailPinButton(
+                                isPinned: isPinned,
+                                canPin: canPin,
+                                shortcutLabel: model.shortcutLabel(for: action),
+                                onToggle: { model.togglePin(action) }
+                            )
+                        }
                         NoteDetailUpdatedLine(updatedAt: note?.updatedAt, status: saveStatus)
                     }
                 }
