@@ -63,29 +63,28 @@ enum CaretPaths {
                 copyMarkdown(from: repo.appendingPathComponent("skills"), to: skillsNotesDir)
             }
         }
-        migrateFollowUpSkillToAutoExpand()
+        migrateLegacySkillsToTabCompletions()
     }
 
-    /// One-time rename: seeded `follow-up` skill → `auto-expand`.
-    private static func migrateFollowUpSkillToAutoExpand() {
+    /// Collapse legacy follow-up / auto-expand notes into `tab-completions.md`.
+    private static func migrateLegacySkillsToTabCompletions() {
         let fm = FileManager.default
-        let legacy = skillsNotesDir.appendingPathComponent("follow-up.md")
-        let renamed = skillsNotesDir.appendingPathComponent("auto-expand.md")
-        guard fm.fileExists(atPath: legacy.path) else { return }
-
-        if !fm.fileExists(atPath: renamed.path) {
-            if let seed = bundleSeedNotesRoot?.appendingPathComponent("skills/auto-expand.md"),
-               fm.fileExists(atPath: seed.path) {
-                try? fm.copyItem(at: seed, to: renamed)
-            } else if let repo = repoNotesRoot?.appendingPathComponent("skills/auto-expand.md"),
-                      fm.fileExists(atPath: repo.path) {
-                try? fm.copyItem(at: repo, to: renamed)
-            } else {
-                try? fm.moveItem(at: legacy, to: renamed)
-                return
+        let target = skillsNotesDir.appendingPathComponent("\(TabCompletions.actionID).md")
+        for legacyID in TabCompletions.legacyActionIDs {
+            let legacy = skillsNotesDir.appendingPathComponent("\(legacyID).md")
+            guard fm.fileExists(atPath: legacy.path) else { continue }
+            if !fm.fileExists(atPath: target.path) {
+                try? fm.copyItem(at: legacy, to: target)
             }
+            try? fm.removeItem(at: legacy)
         }
-        try? fm.removeItem(at: legacy)
+        let autoExpand = skillsNotesDir.appendingPathComponent("auto-expand.md")
+        if fm.fileExists(atPath: autoExpand.path) {
+            if !fm.fileExists(atPath: target.path) {
+                try? fm.copyItem(at: autoExpand, to: target)
+            }
+            try? fm.removeItem(at: autoExpand)
+        }
     }
 
     private static var bundleSeedNotesRoot: URL? {

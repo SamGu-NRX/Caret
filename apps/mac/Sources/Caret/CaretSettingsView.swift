@@ -83,7 +83,7 @@ struct CaretSettingsView: View {
             guard tab == .skills, let newID else { return }
             if newID == composeShellSkillID { return }
             composeShellSkillID = nil
-            guard let item = model.actionSkillItems.first(where: { $0.action.id == newID }) else { return }
+            guard let item = skillItem(for: newID) else { return }
             flushAutosave()
             applySkillEditor(item: item)
         }
@@ -124,33 +124,35 @@ struct CaretSettingsView: View {
             Divider()
                 .padding(.horizontal, 10)
 
-            sidebarListHeader
-                .padding(.horizontal, 14)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
-
             Group {
                 switch tab {
                 case .skills:
-                    List(selection: $selectedSkillActionID) {
-                        ForEach(model.actionSkillItems) { item in
-                            SkillActionRow(
-                                item: item,
-                                isPinned: model.pinStore.isPinned(item.action.id),
-                                canPin: model.canPin(item.action),
-                                onTogglePin: { model.togglePin(item.action) }
-                            )
-                                .tag(item.action.id)
-                                .sidebarListRowStyle
-                                .contextMenu {
-                                    Button("Remove skill", role: .destructive) {
-                                        removeSkill(item.action.id)
+                    VStack(spacing: 0) {
+                        tabCompletionsSidebarSection
+                        sidebarListHeader
+                            .padding(.horizontal, 14)
+                            .padding(.top, 8)
+                            .padding(.bottom, 4)
+                        List(selection: $selectedSkillActionID) {
+                            ForEach(model.regularActionSkillItems) { item in
+                                SkillActionRow(
+                                    item: item,
+                                    isPinned: model.pinStore.isPinned(item.action.id),
+                                    canPin: model.canPin(item.action),
+                                    onTogglePin: { model.togglePin(item.action) }
+                                )
+                                    .tag(item.action.id)
+                                    .sidebarListRowStyle
+                                    .contextMenu {
+                                        Button("Remove skill", role: .destructive) {
+                                            removeSkill(item.action.id)
+                                        }
                                     }
-                                }
+                            }
+                            .onDelete(perform: deleteSkillRows)
                         }
-                        .onDelete(perform: deleteSkillRows)
+                        .sidebarListStyle
                     }
-                    .sidebarListStyle
                 case .memories:
                     List(selection: $selectedMemoryNoteID) {
                         if model.memoryNotes.isEmpty {
@@ -188,7 +190,7 @@ struct CaretSettingsView: View {
                     if section == .skills {
                         syncSkillSelection()
                         if let id = selectedSkillActionID,
-                           let item = model.actionSkillItems.first(where: { $0.action.id == id }) {
+                           let item = skillItem(for: id) {
                             applySkillEditor(item: item)
                         }
                     } else {
@@ -223,6 +225,30 @@ struct CaretSettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var tabCompletionsSidebarSection: some View {
+        let item = model.tabCompletionsItem
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Tab completions")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+            List(selection: $selectedSkillActionID) {
+                SkillActionRow(
+                    item: item,
+                    isPinned: false,
+                    canPin: false,
+                    onTogglePin: {}
+                )
+                .tag(TabCompletions.actionID)
+                .sidebarListRowStyle
+            }
+            .sidebarListStyle
+            .frame(height: SidebarListMetrics.rowMinHeight + 12)
+        }
     }
 
     @ViewBuilder
@@ -274,7 +300,7 @@ struct CaretSettingsView: View {
         switch tab {
         case .skills:
             if let id = selectedSkillActionID,
-               let item = model.actionSkillItems.first(where: { $0.action.id == id }) {
+               let item = skillItem(for: id) {
                 SkillNoteEditor(
                     model: model,
                     action: item.action,
@@ -286,7 +312,9 @@ struct CaretSettingsView: View {
                     appsText: $editApps,
                     saveStatus: saveStatus,
                     iconChoices: CaretSymbolChoices.skillIcons,
-                    canDelete: true,
+                    appsMode: TabCompletions.isTabCompletionsAction(item.action.id) ? .exclude : .include,
+                    titleIsEditable: !TabCompletions.isTabCompletionsAction(item.action.id),
+                    canDelete: !TabCompletions.isTabCompletionsAction(item.action.id),
                     onDelete: { removeSkill(item.action.id) }
                 )
                 .id(item.action.id)
@@ -341,7 +369,7 @@ struct CaretSettingsView: View {
         syncMemorySelection()
         if tab == .skills,
            let id = selectedSkillActionID,
-           let item = model.actionSkillItems.first(where: { $0.action.id == id }) {
+           let item = skillItem(for: id) {
             applySkillEditor(item: item)
         } else if tab == .memories,
                   let id = selectedMemoryNoteID,
@@ -355,14 +383,23 @@ struct CaretSettingsView: View {
             return
         }
         let previous = selectedSkillActionID
-        if selectedSkillActionID == nil || !model.actionSkillItems.contains(where: { $0.action.id == selectedSkillActionID }) {
-            selectedSkillActionID = model.actionSkillItems.first?.action.id
+        if selectedSkillActionID == nil
+            || (!model.actionSkillItems.contains(where: { $0.action.id == selectedSkillActionID })
+                && selectedSkillActionID != TabCompletions.actionID) {
+            selectedSkillActionID = TabCompletions.actionID
         }
         guard selectedSkillActionID != previous,
               let id = selectedSkillActionID,
-              let item = model.actionSkillItems.first(where: { $0.action.id == id })
+              let item = skillItem(for: id)
         else { return }
         applySkillEditor(item: item)
+    }
+
+    private func skillItem(for actionID: String) -> ActionSkillItem? {
+        if actionID == TabCompletions.actionID {
+            return model.tabCompletionsItem
+        }
+        return model.actionSkillItems.first(where: { $0.action.id == actionID })
     }
 
     private func syncMemorySelection() {
@@ -387,8 +424,10 @@ struct CaretSettingsView: View {
         let title = item.note?.title ?? item.action.title
         let icon = item.note?.icon ?? CaretActionIcons.icon(for: item.action.id)
         let body = item.note?.body ?? ""
-        let apps = normalizedApps(item.note?.apps ?? [])
-        editTitle = title
+        let apps = TabCompletions.isTabCompletionsAction(item.action.id)
+            ? normalizedApps(item.note?.excludedApps ?? [])
+            : normalizedApps(item.note?.apps ?? [])
+        editTitle = TabCompletions.isTabCompletionsAction(item.action.id) ? TabCompletions.defaultTitle : title
         editIcon = icon
         editBody = body
         editApps = apps.joined(separator: ", ")
@@ -448,13 +487,24 @@ struct CaretSettingsView: View {
         case .skills:
             guard let id = selectedSkillActionID else { return }
             let title = resolvedSkillTitle(for: id)
-            model.saveSkillNote(
-                actionID: id,
-                title: title,
-                icon: editIcon,
-                body: editBody,
-                apps: normalizedApps(parseApps(editApps))
-            )
+            if TabCompletions.isTabCompletionsAction(id) {
+                model.saveSkillNote(
+                    actionID: id,
+                    title: TabCompletions.defaultTitle,
+                    icon: editIcon,
+                    body: editBody,
+                    apps: [],
+                    excludedApps: normalizedApps(parseApps(editApps))
+                )
+            } else {
+                model.saveSkillNote(
+                    actionID: id,
+                    title: title,
+                    icon: editIcon,
+                    body: editBody,
+                    apps: normalizedApps(parseApps(editApps))
+                )
+            }
             if id == composeShellSkillID {
                 composeShellSkillID = nil
             }
@@ -547,9 +597,9 @@ struct CaretSettingsView: View {
         flushAutosave()
         model.deleteSkill(actionID: actionID)
         if selectedSkillActionID == actionID {
-            selectedSkillActionID = model.actionSkillItems.first?.action.id
+            selectedSkillActionID = TabCompletions.actionID
             if let id = selectedSkillActionID,
-               let item = model.actionSkillItems.first(where: { $0.action.id == id }) {
+               let item = skillItem(for: id) {
                 applySkillEditor(item: item)
             }
         }
@@ -937,6 +987,11 @@ private struct ExpandingInstructionsEditor: View {
     }
 }
 
+private enum SkillAppsFieldMode {
+    case include
+    case exclude
+}
+
 private struct SkillNoteEditor: View {
     @ObservedObject var model: Model
     let action: CaretAction
@@ -948,6 +1003,8 @@ private struct SkillNoteEditor: View {
     @Binding var appsText: String
     let saveStatus: SaveStatus
     let iconChoices: [String]
+    var appsMode: SkillAppsFieldMode = .include
+    var titleIsEditable: Bool = true
     var canDelete: Bool = false
     var onDelete: (() -> Void)?
 
@@ -961,13 +1018,21 @@ private struct SkillNoteEditor: View {
                     IconPickerBadge(icon: $icon, accent: accent, choices: iconChoices, size: 52)
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .center, spacing: 8) {
-                            InlineTitleField(text: $title, placeholder: "Skill name")
-                            SkillDetailPinButton(
-                                isPinned: isPinned,
-                                canPin: canPin,
-                                shortcutLabel: model.shortcutLabel(for: action),
-                                onToggle: { model.togglePin(action) }
-                            )
+                            if titleIsEditable {
+                                InlineTitleField(text: $title, placeholder: "Skill name")
+                            } else {
+                                Text(title)
+                                    .font(.title2.weight(.semibold))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            if canPin {
+                                SkillDetailPinButton(
+                                    isPinned: isPinned,
+                                    canPin: canPin,
+                                    shortcutLabel: model.shortcutLabel(for: action),
+                                    onToggle: { model.togglePin(action) }
+                                )
+                            }
                             if canDelete, let onDelete {
                                 SkillDetailDeleteButton(action: onDelete)
                             }
@@ -975,7 +1040,7 @@ private struct SkillNoteEditor: View {
                         NoteDetailUpdatedLine(updatedAt: note?.updatedAt, status: saveStatus)
                     }
                 }
-                SkillAppsField(appsText: $appsText)
+                SkillAppsField(appsText: $appsText, mode: appsMode)
             }
             .padding(.horizontal, NoteDetailMetrics.horizontalPadding)
             .padding(.top, 16)
@@ -995,6 +1060,7 @@ private struct SkillNoteEditor: View {
 
 private struct SkillAppsField: View {
     @Binding var appsText: String
+    var mode: SkillAppsFieldMode = .include
     @State private var showingPicker = false
     @State private var searchText = ""
     @State private var installedApps: [InstalledAppReference] = []
@@ -1013,16 +1079,26 @@ private struct SkillAppsField: View {
         return installedApps.filter { $0.name.localizedCaseInsensitiveContains(needle) }
     }
 
+    private var sectionTitle: String {
+        mode == .exclude ? "Does not work in" : "Apps"
+    }
+
+    private var emptyHelp: String {
+        mode == .exclude
+            ? "Tab completions stay off in these apps. Everywhere else, ghost text appears when your typing matches the instructions."
+            : "Apps Caret can open or focus when running this skill."
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Apps")
+            Text(sectionTitle)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
                 .textCase(.uppercase)
 
             VStack(alignment: .leading, spacing: 10) {
                 if selectedApps.isEmpty {
-                    Text("Apps Caret can open or focus when running this skill.")
+                    Text(emptyHelp)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 } else {
