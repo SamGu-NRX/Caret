@@ -22,6 +22,7 @@ let package = Package(
         .executableTarget(
             name: "Caret",
             dependencies: ["CaretCore"],
+            exclude: ["Info.plist"],
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
             ]
