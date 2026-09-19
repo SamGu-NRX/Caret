@@ -95,12 +95,10 @@ final class InlinePreviewWindow {
         // has typed past it or pressed Escape, which reads as a suggestion that
         // will not go away.
         panel.orderOut(nil)
-        // Replaces any in-flight appearance fade with a zero-duration one, so a
-        // stale animation cannot drive alpha back down on the next show.
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            panel.animator().alphaValue = 1
-        }
+        // The window is off screen first, so an appearance fade that has not
+        // finished is no longer visible; `show(_:)` sets alpha explicitly on
+        // every path, so it cannot inherit a partial value either.
+        panel.alphaValue = 1
     }
 
     // MARK: - Layout
@@ -272,7 +270,7 @@ private final class InlineGhostTextView: NSView {
         let chipSize = hint.isEmpty ? .zero : hintSize(label: hint, fontSize: chipFontSize)
         let reserve = hint.isEmpty ? 0 : chipSize.width + InlinePreviewMetrics.hintGap
 
-        guard let text = Self.layoutText(
+        guard let laid = Self.layoutText(
             text,
             font: font,
             width: max(InlinePreviewMetrics.minTextWidth, maxWidth - reserve),
@@ -282,9 +280,9 @@ private final class InlineGhostTextView: NSView {
         // Everything below is measured in points above the first baseline, so
         // the hint and the text can be combined without either one moving the
         // baseline the caller is about to align to the caret.
-        let spread = text.baselineDrops.last ?? 0
-        var contentTop = text.ascentFirst
-        var contentBottom = -(spread + text.descentLast)
+        let spread = laid.baselineDrops.last ?? 0
+        var contentTop = laid.ascentFirst
+        var contentBottom = -(spread + laid.descentLast)
 
         var chipFrame = CGRect.zero
         if !hint.isEmpty {
@@ -297,7 +295,7 @@ private final class InlineGhostTextView: NSView {
             contentTop = max(contentTop, chipCenter + chipSize.height / 2)
             contentBottom = min(contentBottom, chipCenter - chipSize.height / 2)
             chipFrame = CGRect(
-                x: (text.lastLineWidth + InlinePreviewMetrics.hintGap).rounded(),
+                x: (laid.lastLineWidth + InlinePreviewMetrics.hintGap).rounded(),
                 y: chipCenter - chipSize.height / 2,
                 width: chipSize.width,
                 height: chipSize.height
@@ -309,7 +307,7 @@ private final class InlineGhostTextView: NSView {
         // panel origin instead, where it keeps the alignment exact.
         let baseline = (-contentBottom).rounded(.up)
         let height = contentTop.rounded(.up) + baseline
-        let width = max(text.widestLineWidth, hint.isEmpty ? 0 : chipFrame.maxX).rounded(.up)
+        let width = max(laid.widestLineWidth, hint.isEmpty ? 0 : chipFrame.maxX).rounded(.up)
 
         hintHost.isHidden = hint.isEmpty
         if !hint.isEmpty {
@@ -319,8 +317,8 @@ private final class InlineGhostTextView: NSView {
         }
 
         layout = Layout(
-            lines: text.lines,
-            baselineDrops: text.baselineDrops,
+            lines: laid.lines,
+            baselineDrops: laid.baselineDrops,
             firstBaselineFromBottom: baseline
         )
         needsDisplay = true
