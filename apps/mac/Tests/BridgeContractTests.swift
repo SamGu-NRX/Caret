@@ -327,11 +327,18 @@ final class CoreLaunchSettingsTests: XCTestCase {
         XCTAssertTrue(CoreLaunchSettings.Unavailable.noInterpreter.statusText.contains("dev.json"))
     }
 
-    func testDiscoveredPythonPrefersExistingSystemBinary() {
-        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/python3") else {
-            throw XCTSkip("No system python3 on this runner")
+    func testDiscoveredPythonUsesFirstExecutableInDocumentedPriority() throws {
+        let documentedPriority = [
+            "/opt/homebrew/bin/python3.14",
+            "/opt/homebrew/bin/python3.13",
+            "/opt/homebrew/bin/python3.12",
+            "/usr/local/bin/python3.12",
+            "/usr/bin/python3",
+        ]
+        guard let expected = documentedPriority.first(where: FileManager.default.isExecutableFile) else {
+            throw XCTSkip("No documented Python installation on this runner")
         }
-        XCTAssertEqual(CoreLaunchSettings.discoveredPythonExecutable(), "/usr/bin/python3")
+        XCTAssertEqual(CoreLaunchSettings.discoveredPythonExecutable(), expected)
     }
 }
 
