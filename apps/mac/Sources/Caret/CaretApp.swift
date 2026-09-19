@@ -1012,11 +1012,16 @@ final class CaretPanel: NSPanel {
         height: CGFloat = ActionsMenuMetrics.browsePanelMinHeight,
         makeKey: Bool = true
     ) {
-        setFrame(frame(near: point, width: width, height: height), display: true)
+        setFrame(near: point, width: width, height: height)
         orderFrontRegardless()
         if makeKey {
             self.makeKey()
         }
+    }
+
+    /// Resize an already-visible panel without re-keying Caret (keeps host focus for Tab completions).
+    func setFrame(near point: CGPoint, width: CGFloat, height: CGFloat) {
+        setFrame(frame(near: point, width: width, height: height), display: true)
     }
 
     private func frame(near point: CGPoint, width: CGFloat, height: CGFloat) -> NSRect {
@@ -1195,18 +1200,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         monitor.onChange = { [weak self] target in
-            Task { @MainActor in
-                guard let self, let model = self.model else { return }
-                self.lastTarget = target
-                model.selectedText = target?.selectedText ?? ""
-                model.sourceApp = target?.sourceApp
-                if self.panel?.isVisible == true {
-                    self.tabCompletions.clearOffer()
-                    self.trigger.hide()
-                } else {
-                    self.tabCompletions.update(target: target)
-                    self.trigger.update(target: target)
-                }
+            guard let self, let model = self.model else { return }
+            self.lastTarget = target
+            model.selectedText = target?.selectedText ?? ""
+            model.sourceApp = target?.sourceApp
+            if self.panel?.isVisible == true {
+                self.tabCompletions.clearOffer()
+                self.trigger.hide()
+            } else {
+                self.tabCompletions.update(target: target)
+                self.trigger.update(target: target)
             }
         }
 
@@ -1327,12 +1330,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard panel?.isVisible == true else { return }
         let scopedActionID = model?.scopedActionID
         let dimensions = Self.panelDimensions(scopedActionID: scopedActionID)
-        let stealsFocus = scopedActionID.map { GatewaySkillActions.contains($0) } != true
-        panel?.present(
-            at: lastPanelPoint,
+        panel?.setFrame(
+            near: lastPanelPoint,
             width: dimensions.width,
-            height: dimensions.height,
-            makeKey: stealsFocus
+            height: dimensions.height
         )
     }
 
@@ -1370,6 +1371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         removeClickOutside()
         model?.clearPanelScope()
         restoreTypingAppFocus()
+        monitor.refreshNow()
         trigger.update(target: lastTarget)
         tabCompletions.update(target: lastTarget)
     }
@@ -1480,6 +1482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let self, self.panel?.isVisible != true else { return }
                 self.monitor.refreshNow()
                 self.tabCompletions.update(target: self.lastTarget)
+                self.trigger.update(target: self.lastTarget)
             }
         }
         TypingPrefixCapture.shared.start()

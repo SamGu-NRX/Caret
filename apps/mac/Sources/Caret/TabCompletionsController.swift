@@ -33,6 +33,11 @@ final class TabCompletionsController {
             return
         }
         guard let target, target.kind == .input else {
+            // Caret's own UI can briefly become frontmost and drop the AX snapshot
+            // while a ghost suffix is still showing over the host field.
+            if case .ghostOverlay? = offer?.presentation {
+                return
+            }
             clearOffer()
             return
         }
