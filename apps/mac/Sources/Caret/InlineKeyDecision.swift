@@ -123,10 +123,13 @@ enum InlineKeyRouter {
         guard event.modifiers.isEmpty else { return .passThrough }
 
         if context.acceptanceInFlight {
-            // The edit from the first Tab has not landed yet. Swallowing the
-            // repeats keeps one physical hold from also indenting the field,
-            // and the store refuses a second acceptance regardless.
-            return event.isAutorepeat ? .swallowDuplicate : .swallowDuplicate
+            // The edit from the first Tab has not landed yet. Swallow the key
+            // whether or not it is an autorepeat: a held Tab and a fast second
+            // press are indistinguishable to the user, and neither should
+            // indent a field that is about to be completed. The store refuses
+            // the second acceptance regardless, so this only decides what the
+            // host sees.
+            return .swallowDuplicate
         }
 
         guard let proposalID = context.visibleProposalID else {

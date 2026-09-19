@@ -160,15 +160,12 @@ final class InlineOfferStore {
     }
 
     func cancel(reason: InlineCancelReason) {
-        guard case .idle = state else {
-            state = .idle
-            bumpGeneration()
-            onDismiss?(reason)
-            publishContext()
-            return
-        }
-        // Still bump: an in-flight request for the old text must not show up.
+        let hadSomethingVisible = state != .idle
+        state = .idle
+        // Bump even when nothing was on screen: a request already in flight
+        // for the old text must not be allowed to show up later.
         bumpGeneration()
+        if hadSomethingVisible { onDismiss?(reason) }
         publishContext()
     }
 
