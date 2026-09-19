@@ -30,4 +30,4 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
-      - run: swift build --package-path apps/mac
+      - run: swift test --package-path apps/mac
