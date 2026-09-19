@@ -1,0 +1,7 @@
+PASS
+
+Level 1 caret-xcodeproj-id-collision. Implementation is acceptable as-is.
+
+origin/main already removed the B100…55 collision (Info.plist is B100…62; B100…57 is TabCompletions). Local tree matches that pbxproj. SettingsMainMenu stays a Sources PBXBuildFile. tests/test_xcodeproj.py catches duplicate commented IDs and a FileRef in a Sources list; both tests pass.
+
+Advisories (do not block): uniqueness regex skips the uncommented root group B100…0C; the contract test is not on origin/main yet (collision fix already is).

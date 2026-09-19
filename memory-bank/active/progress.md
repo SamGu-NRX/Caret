@@ -62,3 +62,23 @@ Repair the duplicate object ID in `Caret.xcodeproj` so `make install` can read t
     - The remaining shippable change is the contract test
 * Insights
     - `B100…57` is TabCompletions on current main; do not reuse it for Info.plist
+
+## 2026-09-19 - QA - COMPLETE (PASS)
+
+* Work completed
+    - Reviewed rebased pbxproj and `tests/test_xcodeproj.py` against the brief
+    - Confirmed Info.plist is `B100…62`, SettingsMainMenu `B100…55` is a Sources `PBXBuildFile`, and no object-ID collision remains
+    - Both xcodeproj contract tests pass; pbxproj matches `origin/main`
+* Decisions made
+    - PASS: implementation is acceptable as-is
+    - Do not send Build back for the uncommented-root-group parser gap
+* Insights
+    - The uniqueness regex requires a `/* comment */`, so root group `B100…0C` is invisible; the original bug was two commented IDs and would still fail these tests
+
+## 2026-09-19 - WRAP-UP - COMPLETE
+
+* Work completed
+    - Reconciled persistent files: techContext notes the xcodeproj contract test
+    - Collision itself already on `origin/main`; remaining push is the test plus memory-bank
+* Decisions made
+    - productContext and systemPatterns unchanged

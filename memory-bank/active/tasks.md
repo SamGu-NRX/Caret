@@ -15,4 +15,4 @@
 
 ## QA
 
-Previous FAIL (Info.plist remapped to `…57` while origin used that ID for TabCompletions). Build reworked. Ready for QA rerun.
+PASS. Collision fix matches `origin/main` (Info.plist `B100…62`; `…57` is TabCompletions). `tests/test_xcodeproj.py` accepted. Advisories: uniqueness regex skips uncommented root group `B100…0C`; test not yet on origin.

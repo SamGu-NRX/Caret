@@ -18,7 +18,7 @@ Native Mac UI in Swift, local workflow core in Python 3.11+ with stdlib only, ru
 
 ## Testing Process
 
-- Python: `unittest` discovery under `tests/` (`make test`). Checks should cover scheduling arithmetic, failed-source handling, hold transitions, and duplicate external effects — see `CONTRIBUTING.md`.
+- Python: `unittest` discovery under `tests/` (`make test`). Checks should cover scheduling arithmetic, failed-source handling, hold transitions, and duplicate external effects — see `CONTRIBUTING.md`. `tests/test_xcodeproj.py` requires unique `Caret.xcodeproj` object IDs and that every Sources `files` entry is a `PBXBuildFile`; a FileRef in that list makes xcodebuild refuse the project.
 - Pin lockstep: `scripts/check_sources.py` requires `sources.json`, `.gitmodules`, and staged submodule SHAs to match.
 - Full Mac gate: `make check` (tests + pin check + `swift build`). CI splits this: Linux runs tests, the pin check, and a fixture preview; macOS builds the Swift package (`.github/workflows/ci.yml`).
 - Mac CI SDK: the Mac job runs on `macos-26` because Tahoe APIs such as `glassEffect` need the Xcode 26 SDK. `macos-15` defaults to Xcode 16.4 and will not compile those symbols. `#available(macOS 26.0, *)` is a **runtime** check — the compiler still type-checks both branches against the current SDK. New Apple APIs need a compile-time gate (`#if compiler(>=6.2)` or equivalent) **and** an SDK that has the symbol. Do not move the Mac job back to default Xcode 16.
