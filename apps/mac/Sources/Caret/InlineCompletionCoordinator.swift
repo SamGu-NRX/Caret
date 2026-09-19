@@ -114,6 +114,8 @@ final class InlineCompletionCoordinator {
             setStatus(.providerError)
             return
         }
+        // The tap is armed for Caret's own Cmd-1..3 choices only; the router
+        // passes Tab through to Teddy's controller.
         guard tap.start() else { return }
         setStatus(nil)
 

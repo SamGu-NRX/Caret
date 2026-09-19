@@ -12,7 +12,20 @@
 		B10000000000000000000023 /* HotKeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* HotKeyManager.swift */; };
 		B10000000000000000000024 /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* PermissionView.swift */; };
 		B10000000000000000000025 /* SelectionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* SelectionMonitor.swift */; };
-		B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
+				B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
+B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
+		B1000000000000000000A100 /* InlineCompletionTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B100 /* InlineCompletionTypes.swift */; };
+		B1000000000000000000A101 /* InlineKeyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B101 /* InlineKeyDecision.swift */; };
+		B1000000000000000000A102 /* InlineOfferStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B102 /* InlineOfferStore.swift */; };
+		B1000000000000000000A103 /* InlineFieldAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B103 /* InlineFieldAccess.swift */; };
+		B1000000000000000000A104 /* InlineKeyTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B104 /* InlineKeyTap.swift */; };
+		B1000000000000000000A105 /* InlineCompletionProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B105 /* InlineCompletionProvider.swift */; };
+		B1000000000000000000A106 /* InlineCompletionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B106 /* InlineCompletionCoordinator.swift */; };
+		B1000000000000000000A107 /* InlineCoreBridging.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B107 /* InlineCoreBridging.swift */; };
+		B1000000000000000000A108 /* InlinePreviewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B108 /* InlinePreviewWindow.swift */; };
+		B1000000000000000000A109 /* InlineCaretGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B109 /* InlineCaretGeometry.swift */; };
+		B1000000000000000000A10A /* CoreBridgeProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B10A /* CoreBridgeProvider.swift */; };
+		B1000000000000000000A10B /* CoreLaunchSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B10B /* CoreLaunchSettings.swift */; };
 		B10000000000000000000027 /* TriggerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* TriggerButton.swift */; };
 		B1000000000000000000002B /* AccessibilityTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* AccessibilityTrust.swift */; };
 		B1000000000000000000002C /* PinnedActionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* PinnedActionsStore.swift */; };
@@ -65,6 +78,18 @@
 		B10000000000000000000014 /* PermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionView.swift; sourceTree = "<group>"; };
 		B10000000000000000000015 /* SelectionMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionMonitor.swift; sourceTree = "<group>"; };
 		B10000000000000000000016 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
+		B1000000000000000000B100 /* InlineCompletionTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionTypes.swift; sourceTree = "<group>"; };
+		B1000000000000000000B101 /* InlineKeyDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineKeyDecision.swift; sourceTree = "<group>"; };
+		B1000000000000000000B102 /* InlineOfferStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineOfferStore.swift; sourceTree = "<group>"; };
+		B1000000000000000000B103 /* InlineFieldAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineFieldAccess.swift; sourceTree = "<group>"; };
+		B1000000000000000000B104 /* InlineKeyTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineKeyTap.swift; sourceTree = "<group>"; };
+		B1000000000000000000B105 /* InlineCompletionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionProvider.swift; sourceTree = "<group>"; };
+		B1000000000000000000B106 /* InlineCompletionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionCoordinator.swift; sourceTree = "<group>"; };
+		B1000000000000000000B107 /* InlineCoreBridging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCoreBridging.swift; sourceTree = "<group>"; };
+		B1000000000000000000B108 /* InlinePreviewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlinePreviewWindow.swift; sourceTree = "<group>"; };
+		B1000000000000000000B109 /* InlineCaretGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCaretGeometry.swift; sourceTree = "<group>"; };
+		B1000000000000000000B10A /* CoreBridgeProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreBridgeProvider.swift; sourceTree = "<group>"; };
+		B1000000000000000000B10B /* CoreLaunchSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreLaunchSettings.swift; sourceTree = "<group>"; };
 		B10000000000000000000017 /* TriggerButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TriggerButton.swift; sourceTree = "<group>"; };
 		B1000000000000000000001C /* AccessibilityTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityTrust.swift; sourceTree = "<group>"; };
 		B1000000000000000000001D /* PinnedActionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedActionsStore.swift; sourceTree = "<group>"; };
@@ -104,6 +129,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B100000000000000000000A2 /* CaretCore in Frameworks */,
 				B1000000000000000000002A /* ApplicationServices.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -149,6 +175,18 @@
 				B10000000000000000000014 /* PermissionView.swift */,
 				B10000000000000000000015 /* SelectionMonitor.swift */,
 				B10000000000000000000016 /* StatusBarController.swift */,
+				B1000000000000000000B100 /* InlineCompletionTypes.swift */,
+				B1000000000000000000B101 /* InlineKeyDecision.swift */,
+				B1000000000000000000B102 /* InlineOfferStore.swift */,
+				B1000000000000000000B103 /* InlineFieldAccess.swift */,
+				B1000000000000000000B104 /* InlineKeyTap.swift */,
+				B1000000000000000000B105 /* InlineCompletionProvider.swift */,
+				B1000000000000000000B106 /* InlineCompletionCoordinator.swift */,
+				B1000000000000000000B107 /* InlineCoreBridging.swift */,
+				B1000000000000000000B108 /* InlinePreviewWindow.swift */,
+				B1000000000000000000B109 /* InlineCaretGeometry.swift */,
+				B1000000000000000000B10A /* CoreBridgeProvider.swift */,
+				B1000000000000000000B10B /* CoreLaunchSettings.swift */,
 				B10000000000000000000017 /* TriggerButton.swift */,
 				B1000000000000000000001C /* AccessibilityTrust.swift */,
 				B1000000000000000000001D /* PinnedActionsStore.swift */,
@@ -219,6 +257,9 @@
 			name = CaretTests;
 			productName = CaretTests;
 			productReference = B1000000000000000000001F /* CaretTests.xctest */;
+			packageProductDependencies = (
+				B100000000000000000000A1 /* CaretCore */,
+			);
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		B10000000000000000000002 /* Caret */ = {
@@ -295,6 +336,9 @@
 			);
 			mainGroup = B1000000000000000000000C;
 			productRefGroup = B1000000000000000000000D /* Products */;
+			packageReferences = (
+				B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -326,6 +370,18 @@
 				B10000000000000000000024 /* PermissionView.swift in Sources */,
 				B10000000000000000000025 /* SelectionMonitor.swift in Sources */,
 				B10000000000000000000026 /* StatusBarController.swift in Sources */,
+				B1000000000000000000A100 /* InlineCompletionTypes.swift in Sources */,
+				B1000000000000000000A101 /* InlineKeyDecision.swift in Sources */,
+				B1000000000000000000A102 /* InlineOfferStore.swift in Sources */,
+				B1000000000000000000A103 /* InlineFieldAccess.swift in Sources */,
+				B1000000000000000000A104 /* InlineKeyTap.swift in Sources */,
+				B1000000000000000000A105 /* InlineCompletionProvider.swift in Sources */,
+				B1000000000000000000A106 /* InlineCompletionCoordinator.swift in Sources */,
+				B1000000000000000000A107 /* InlineCoreBridging.swift in Sources */,
+				B1000000000000000000A108 /* InlinePreviewWindow.swift in Sources */,
+				B1000000000000000000A109 /* InlineCaretGeometry.swift in Sources */,
+				B1000000000000000000A10A /* CoreBridgeProvider.swift in Sources */,
+				B1000000000000000000A10B /* CoreLaunchSettings.swift in Sources */,
 				B10000000000000000000027 /* TriggerButton.swift in Sources */,
 				B1000000000000000000002B /* AccessibilityTrust.swift in Sources */,
 				B1000000000000000000002C /* PinnedActionsStore.swift in Sources */,
@@ -370,6 +426,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -385,6 +442,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;
@@ -396,7 +454,6 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -413,7 +470,6 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.caret.hackathon;
 				PRODUCT_NAME = Caret;
-				SYMROOT = "$(SRCROOT)/.local/build";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -426,7 +482,6 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -443,7 +498,6 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.caret.hackathon;
 				PRODUCT_NAME = Caret;
-				SYMROOT = "$(SRCROOT)/.local/build";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -454,7 +508,6 @@
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -470,7 +523,6 @@
 			buildSettings = {
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -482,6 +534,20 @@
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = apps/mac;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B100000000000000000000A1 /* CaretCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CaretCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCConfigurationList section */
 		B10000000000000000000006 /* Build configuration list for PBXProject "Caret" */ = {
