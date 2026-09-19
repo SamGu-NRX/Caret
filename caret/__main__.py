@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 
+from .completions import DEFAULT_MODEL, CompletionError, complete_text
 from .planner import plan
 from .screenpipe import last_n_minutes, last_n_windows
 from .skills import create_skill, filter_skills, list_skills
@@ -38,6 +39,10 @@ def main() -> int:
     windows = commands.add_parser("history-windows")
     windows.add_argument("--windows", type=int, default=3)
     windows.add_argument("--lease", type=Path, default=None)
+    complete_cmd = commands.add_parser("complete", help="Gemini 2.5 Flash via Vercel AI Gateway")
+    complete_cmd.add_argument("--prompt", required=True)
+    complete_cmd.add_argument("--system", default="")
+    complete_cmd.add_argument("--model", default=DEFAULT_MODEL)
     args = parser.parse_args()
     if args.command == "history-minutes":
         try:
@@ -55,6 +60,18 @@ def main() -> int:
             return 1
     if args.command == "workflows":
         print(Path(__file__).with_name("workflows.json").read_text())
+        return 0
+    if args.command == "complete":
+        try:
+            text = complete_text(
+                args.prompt,
+                system=args.system or None,
+                model=args.model,
+            )
+        except CompletionError as error:
+            print(json.dumps({"error": str(error)}), file=sys.stderr)
+            return 1
+        print(text)
         return 0
     if args.command == "skills":
         if args.skills_command == "list":
