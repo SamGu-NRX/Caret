@@ -88,24 +88,37 @@ final class Model: ObservableObject {
     }
 }
 
+enum ActionsMenuMetrics {
+    static let rowHeight: CGFloat = 24
+    static let maxVisibleRows: CGFloat = 8
+    static let width: CGFloat = 260
+
+    static var maxScrollHeight: CGFloat {
+        rowHeight * maxVisibleRows + 8
+    }
+}
+
 struct ActionsView: View {
     @ObservedObject var model: Model
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(model.actions) { action in
-                ActionRow(
-                    title: action.title,
-                    shortcut: model.shortcutLabel(for: action),
-                    isPinned: model.pinStore.isPinned(action.id),
-                    canPin: model.canPin(action),
-                    onPin: { model.togglePin(action) },
-                    onRun: { model.run(action) }
-                )
+        ScrollView(.vertical, showsIndicators: true) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(model.actions) { action in
+                    ActionRow(
+                        title: action.title,
+                        shortcut: model.shortcutLabel(for: action),
+                        isPinned: model.pinStore.isPinned(action.id),
+                        canPin: model.canPin(action),
+                        onPin: { model.togglePin(action) },
+                        onRun: { model.run(action) }
+                    )
+                }
             }
+            .padding(.vertical, 4)
         }
-        .padding(.vertical, 4)
-        .frame(width: 260)
+        .frame(width: ActionsMenuMetrics.width)
+        .frame(maxHeight: ActionsMenuMetrics.maxScrollHeight)
     }
 }
 
@@ -153,11 +166,14 @@ private struct ActionRow: View {
             .help(isPinned ? "Unpin" : (canPin ? "Pin next to Caret icon" : "Unpin one action first (max 3)"))
             .padding(.trailing, 6)
         }
-        .frame(height: 24)
-        .background(
-            Rectangle()
-                .fill(Color.primary.opacity(isHovered ? 0.08 : 0))
-        )
+        .frame(height: ActionsMenuMetrics.rowHeight)
+        .padding(.horizontal, 4)
+        .background {
+            if isHovered {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color.primary.opacity(0.1))
+            }
+        }
         .onHover { isHovered = $0 }
     }
 }

@@ -3,10 +3,10 @@ import SwiftUI
 
 enum CaretPillMetrics {
     static let sparkleSize = NSSize(width: 40, height: 40)
-    static let pinChipHeight: CGFloat = 28
-    static let pinChipMinWidth: CGFloat = 28
-    static let pinChipMaxWidth: CGFloat = 120
-    static let clusterSpacing: CGFloat = 6
+    static let clusterHeight: CGFloat = 40
+    static let pinLabelMaxWidth: CGFloat = 58
+    static let clusterSpacing: CGFloat = 4
+    static let stripCornerRadius: CGFloat = clusterHeight / 2
 }
 
 struct PinnedActionChip: Identifiable, Equatable {
@@ -36,6 +36,12 @@ final class TriggerButtonController {
         panel.layoutIfNeeded()
         if let size = panel.contentView?.fittingSize, size.width > 1 {
             panel.setContentSize(NSSize(width: size.width, height: max(size.height, CaretPillMetrics.sparkleSize.height)))
+        }
+        if panel.isVisible, lastRect != .zero {
+            var frame = lastRect
+            frame.size = panel.frame.size
+            lastRect = frame
+            panel.setFrame(frame, display: true)
         }
     }
 
@@ -118,47 +124,94 @@ struct TriggerClusterView: View {
     let onPinnedTap: (PinnedActionChip) -> Void
     let onSparkleTap: () -> Void
 
-    private let blue = Color(red: 0.26, green: 0.52, blue: 0.98)
-
     var body: some View {
-        HStack(spacing: CaretPillMetrics.clusterSpacing) {
-            ForEach(pinnedActions) { chip in
-                PinnedChipView(chip: chip, blue: blue) {
-                    onPinnedTap(chip)
-                }
-            }
+        HStack(alignment: .center, spacing: CaretPillMetrics.clusterSpacing) {
             TriggerButtonView(onClick: onSparkleTap)
+            if !pinnedActions.isEmpty {
+                PinnedGlassStrip(actions: pinnedActions, onTap: onPinnedTap)
+            }
         }
-        .padding(.horizontal, 2)
-        .padding(.vertical, 2)
+        .frame(height: CaretPillMetrics.clusterHeight)
     }
 }
 
-private struct PinnedChipView: View {
+private struct PinnedGlassStrip: View {
+    let actions: [PinnedActionChip]
+    let onTap: (PinnedActionChip) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(actions.enumerated()), id: \.element.id) { index, chip in
+                if index > 0 {
+                    Rectangle()
+                        .fill(.primary.opacity(0.12))
+                        .frame(width: 1, height: 14)
+                }
+                PinnedStripCell(
+                    chip: chip,
+                    isFirst: index == 0,
+                    isLast: index == actions.count - 1
+                ) {
+                    onTap(chip)
+                }
+            }
+        }
+        .frame(height: CaretPillMetrics.clusterHeight)
+        .caretGlassCapsule()
+    }
+}
+
+private struct PinnedStripCell: View {
     let chip: PinnedActionChip
-    let blue: Color
+    let isFirst: Bool
+    let isLast: Bool
     let action: () -> Void
     @State private var isHovered = false
+
+    private var hoverShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: isFirst ? CaretPillMetrics.stripCornerRadius : 0,
+            bottomLeadingRadius: isFirst ? CaretPillMetrics.stripCornerRadius : 0,
+            bottomTrailingRadius: isLast ? CaretPillMetrics.stripCornerRadius : 0,
+            topTrailingRadius: isLast ? CaretPillMetrics.stripCornerRadius : 0,
+            style: .continuous
+        )
+    }
 
     var body: some View {
         Button(action: action) {
             Text(chip.title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 10, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: CaretPillMetrics.pinLabelMaxWidth)
                 .padding(.horizontal, 8)
-                .frame(minWidth: CaretPillMetrics.pinChipMinWidth, maxWidth: CaretPillMetrics.pinChipMaxWidth)
-                .frame(height: CaretPillMetrics.pinChipHeight)
-                .background(
-                    Capsule()
-                        .fill(blue.opacity(isHovered ? 0.95 : 0.82))
-                )
-                .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
+                .frame(maxHeight: .infinity)
+                .background {
+                    if isHovered {
+                        hoverShape.fill(Color.primary.opacity(0.1))
+                    }
+                }
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .help("\(chip.title) (\(PinnedShortcutFormatting.menuLabel(slot: chip.slot)))")
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func caretGlassCapsule() -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            background(Capsule(style: .continuous).fill(.ultraThinMaterial))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
+                }
+        }
     }
 }
 
