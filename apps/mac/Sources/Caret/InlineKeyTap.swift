@@ -54,6 +54,8 @@ final class InlineKeyTap {
 
     // MARK: - Lifecycle
 
+    var isRunning: Bool { tap != nil }
+
     @discardableResult
     func start() -> Bool {
         guard tap == nil else { return true }

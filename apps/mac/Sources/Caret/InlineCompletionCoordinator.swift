@@ -31,6 +31,7 @@ final class InlineCompletionCoordinator {
     private var lastCaptureDiagnostic: String?
     private var pollTimer: Timer?
     private var lastRequestAt: Date?
+    private var lastTapAttempt: Date?
     /// Unused since InsertionGuard owns validation; kept nil to make the
     /// retained-text path unreachable.
     private var offerBaseText: String?
@@ -139,8 +140,10 @@ final class InlineCompletionCoordinator {
         }
         // The tap is armed for Caret's own Cmd-1..3 choices only; the router
         // passes Tab through to Teddy's controller.
-        guard tap.start() else { return }
-        setStatus(nil)
+        lastTapAttempt = Date()
+        if tap.start() { setStatus(nil) }
+        // Keep capture alive while permission is pending. Otherwise granting
+        // Accessibility later starts Teddy's monitor but leaves actions stopped.
 
         let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
@@ -170,6 +173,10 @@ final class InlineCompletionCoordinator {
         // While the panel is up, Caret is frontmost. Capturing would only
         // report Caret's own focus and invalidate the visible offers.
         guard !isPaused else { return }
+        if !tap.isRunning, Date().timeIntervalSince(lastTapAttempt ?? .distantPast) >= 1 {
+            lastTapAttempt = Date()
+            _ = tap.start()
+        }
 
         switch capture.capture(now: Date()) {
         case .unchanged:

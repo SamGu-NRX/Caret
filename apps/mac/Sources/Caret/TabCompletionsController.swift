@@ -103,6 +103,7 @@ final class TabCompletionsController {
             return
         }
         do {
+            await GatewayKeySync.syncFromGitHubIfNeeded(projectRoot: CaretPaths.projectRoot)
             let suffix = try await CaretCLI.autoExpand(prefix: prefix, instructions: instructions)
             guard !Task.isCancelled, !suffix.isEmpty else {
                 clearOffer()

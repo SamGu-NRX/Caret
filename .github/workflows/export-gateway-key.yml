@@ -1,0 +1,11 @@
+name: Gateway key configuration
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  configure-locally:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          echo "Configure VERCEL_API_GATEWAY_KEY or AI_GATEWAY_API_KEY locally. Secrets are never exported as artifacts."
+          exit 1

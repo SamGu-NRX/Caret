@@ -32,7 +32,7 @@ final class Model: ObservableObject {
     @Published var backendStatus: String = ""
     var onRunAction: ((String) -> Void)?
     var memories: [MemoryItem] = []
-    var onRun: ((CaretAction) -> Void)?
+    var onRun: ((CaretAction, CaretSkill?) -> Void)?
     var onPinsChanged: (() -> Void)?
     var onOpenAccessibility: (() -> Void)?
     var onReconnectAccessibility: (() -> Void)?
@@ -45,6 +45,10 @@ final class Model: ObservableObject {
 
     @Published private(set) var skillNotes: [CaretNote] = []
     @Published private(set) var memoryNotes: [CaretNote] = []
+    @Published private(set) var skillPreviewByActionID: [String: String] = [:]
+    @Published var skillPreviewRunningActionID: String?
+
+    private var liveSkillInstructionsByActionID: [String: String] = [:]
 
     init(pinStore: PinnedActionsStore = .load()) {
         self.pinStore = pinStore
@@ -80,6 +84,37 @@ final class Model: ObservableObject {
     func tabCompletionsConfiguration() -> (instructions: String, excludedApps: [String]) {
         let note = skillNotes.first(where: { $0.id == TabCompletions.actionID })
         return (note?.body ?? "", note?.excludedApps ?? [])
+    }
+
+    func setLiveSkillInstructions(actionID: String, body: String) {
+        liveSkillInstructionsByActionID[actionID] = body
+    }
+
+    func resolvedSkillInstructions(actionID: String) -> String? {
+        if let live = liveSkillInstructionsByActionID[actionID]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !live.isEmpty {
+            return live
+        }
+        return skillNotes.first(where: { $0.id == actionID })?.body
+    }
+
+    func skillPreviewText(actionID: String) -> String {
+        skillPreviewByActionID[actionID] ?? ""
+    }
+
+    func beginSkillPreview(actionID: String) {
+        skillPreviewRunningActionID = actionID
+    }
+
+    func finishSkillPreview(actionID: String, output: String) {
+        skillPreviewByActionID[actionID] = output
+        skillPreviewRunningActionID = nil
+    }
+
+    func failSkillPreview(actionID: String, message: String) {
+        skillPreviewByActionID[actionID] = message
+        skillPreviewRunningActionID = nil
     }
 
     func reloadNotes() {
@@ -383,6 +418,15 @@ final class Model: ObservableObject {
         panelQuery = ""
     }
 
+    /// Gateway actions use the skill note in Settings (`caret/notes/skills/*.md`), not JSON variants.
+    func selectActionFromPanel(_ action: CaretAction) {
+        if GatewaySkillActions.contains(action.id) {
+            run(action, skill: nil)
+            return
+        }
+        selectActionForSkills(action)
+    }
+
     func submitCreateFromQuery() {
         let name = trimmedPanelQuery
         guard !name.isEmpty else { return }
@@ -409,18 +453,7 @@ final class Model: ObservableObject {
     }
 
     func run(_ action: CaretAction, skill: CaretSkill? = nil) {
-        // Length, not content. This line runs for every action in whatever
-        // app the user is in, so logging the selection would copy their mail,
-        // messages and passwords into the system log.
-        NSLog(
-            "[Caret] action=%@ skill=%@ memories=%d selection_units=%d app=%@",
-            action.id,
-            skill?.id ?? "-",
-            memories.count,
-            selectedText.utf16.count,
-            sourceApp ?? "-"
-        )
-        onRun?(action)
+        onRun?(action, skill)
     }
 
     /// Runs a prepared offer. An action with no prepared offer is reported as
@@ -449,6 +482,10 @@ final class Model: ObservableObject {
 
     func run(skill: CaretSkill) {
         guard let action = action(id: skill.actionID) else { return }
+        if GatewaySkillActions.contains(action.id) {
+            run(action, skill: nil)
+            return
+        }
         run(action, skill: skill)
     }
 
@@ -467,6 +504,10 @@ final class Model: ObservableObject {
 
     func runPinnedSlot(_ slot: Int) {
         guard let id = pinStore.actionID(forSlot: slot), let action = action(id: id) else { return }
+        if GatewaySkillActions.contains(action.id) {
+            run(action, skill: nil)
+            return
+        }
         let skills = skillRepository.list(actionID: id)
         if let first = skills.first {
             run(action, skill: first)
@@ -577,12 +618,15 @@ struct SkillPickerView: View {
                                 isPinned: model.pinStore.isPinned(action.id),
                                 canPin: model.canPin(action),
                                 onPin: { model.togglePin(action) },
-                                onSelect: { model.selectActionForSkills(action) }
+                                onSelect: { model.selectActionFromPanel(action) }
                             )
                         }
                         if model.showCreateRow {
                             CreateRow(model: model)
                         }
+                    } else if let action = model.scopedAction,
+                              GatewaySkillActions.contains(action.id) {
+                        GatewayPanelResultView(model: model, action: action)
                     } else {
                         let _ = model.skillsVersion
                         // B-05: a scope with no skills used to render nothing
@@ -611,7 +655,7 @@ struct SkillPickerView: View {
                 }
                 .padding(.vertical, 4)
             }
-            .frame(maxHeight: ActionsMenuMetrics.maxScrollHeight)
+            .frame(maxHeight: gatewayPanelScrollHeight)
         }
         .frame(width: ActionsMenuMetrics.width)
         .onAppear {
@@ -620,6 +664,56 @@ struct SkillPickerView: View {
         .onChange(of: model.scopedActionID) { _, _ in
             searchFocused = true
         }
+    }
+
+    private var gatewayPanelScrollHeight: CGFloat {
+        if model.scopedAction.map({ GatewaySkillActions.contains($0.id) }) == true {
+            return 360
+        }
+        return ActionsMenuMetrics.maxScrollHeight
+    }
+}
+
+private struct GatewayPanelResultView: View {
+    @ObservedObject var model: Model
+    let action: CaretAction
+
+    private var isRunning: Bool {
+        model.skillPreviewRunningActionID == action.id
+    }
+
+    private var bodyText: String {
+        let text = model.skillPreviewText(actionID: action.id)
+        if !text.isEmpty { return text }
+        if isRunning { return "" }
+        return "Select text or copy to the clipboard, then run this action."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(GatewaySkillActions.previewLabel(for: action.id))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            if isRunning {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Calling Vercel…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(bodyText)
+                    .font(.body)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(minHeight: 140, maxHeight: 320)
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
     }
 }
 
@@ -825,6 +919,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var model: Model?
     private var trustTimer: Timer?
     private var lastTarget: SelectionTarget?
+    private var lastPanelPoint: CGPoint = NSEvent.mouseLocation
     private var clickMonitor: Any?
     private var escapeMonitor: Any?
     private let chordState = ModifierChordState()
@@ -844,6 +939,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// acceptance fail as a moved target.
     private let capture = FocusedTargetCapture()
     private var bridge: CoreBridgeProvider?
+    private let skillActionRunner = SkillActionRunner()
     private let statusBar = StatusBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -864,8 +960,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hidesOnDeactivate = false
-        model.onRun = { [weak self] _ in
-            self?.hidePanel()
+        model.onRun = { [weak self] action, skill in
+            guard let self, let model = self.model else { return }
+            let target = self.lastTarget
+            if GatewaySkillActions.contains(action.id) {
+                model.scopedActionID = action.id
+                model.panelQuery = ""
+                if self.panel?.isVisible != true {
+                    self.showPanel(at: self.lastPanelPoint, scopedActionID: action.id)
+                }
+            } else {
+                self.hidePanel()
+            }
+            self.skillActionRunner.run(
+                action: action,
+                skill: skill,
+                target: target,
+                model: model
+            )
         }
         model.onPinsChanged = { [weak self] in
             self?.syncPinnedTriggerUI()
@@ -932,6 +1044,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         trigger.onPinnedAction = { [weak self] chip in
             Task { @MainActor in
                 guard let self else { return }
+                if GatewaySkillActions.contains(chip.id) {
+                    self.showPanel(
+                        at: CGPoint(x: self.trigger.buttonFrame.maxX, y: self.trigger.buttonFrame.midY),
+                        scopedActionID: chip.id
+                    )
+                    return
+                }
                 self.showPanel(
                     at: CGPoint(x: self.trigger.buttonFrame.maxX, y: self.trigger.buttonFrame.midY),
                     scopedActionID: chip.id
@@ -1060,6 +1179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func showPanel(at point: CGPoint, scopedActionID: String?) {
+        lastPanelPoint = point
         model?.preparePanel(scopedActionID: scopedActionID)
         trigger.hide()
         // Pause before presenting: presenting makes Caret frontmost, and the
@@ -1069,6 +1189,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel?.present(at: point)
         syncActionOffers()
         installClickOutside()
+        if let id = scopedActionID,
+           GatewaySkillActions.contains(id),
+           let action = model?.action(id: id),
+           let model {
+            model.run(action, skill: nil)
+        }
     }
 
     private func hidePanel() {

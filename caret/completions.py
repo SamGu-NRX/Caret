@@ -37,6 +37,9 @@ class CompletionResult:
 
 def gateway_api_key() -> str:
     """Resolve the Vercel AI Gateway bearer token from the environment."""
+    from caret.gateway_env import inject_gateway_api_key_from_files
+
+    inject_gateway_api_key_from_files()
     for name in (VERCEL_API_GATEWAY_KEY_ENV, AI_GATEWAY_API_KEY_ENV):
         value = os.environ.get(name, "").strip()
         if value:
