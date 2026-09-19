@@ -90,9 +90,9 @@ final class Model: ObservableObject {
     }
 
     @discardableResult
-    func saveMemoryNote(noteID: String, title: String, icon: String, body: String, apps: [String]) -> Bool {
+    func saveMemoryNote(noteID: String, title: String, icon: String, body: String, apps: [String]) -> String? {
         do {
-            _ = try noteRepository.saveMemoryNote(
+            let note = try noteRepository.saveMemoryNote(
                 noteID: noteID,
                 title: title,
                 icon: icon,
@@ -100,10 +100,10 @@ final class Model: ObservableObject {
                 apps: apps
             )
             reloadNotes()
-            return true
+            return note.id
         } catch {
             NSLog("[Caret] save memory note failed: %@", String(describing: error))
-            return false
+            return nil
         }
     }
 
@@ -180,7 +180,18 @@ final class Model: ObservableObject {
     }
 
     @discardableResult
-    func createSkill(named title: String) -> String? {
+    func createBlankSkill() -> String? {
+        createSkill(named: uniqueDraftTitle(base: "Untitled skill", existing: skillNotes.map(\.title)))
+    }
+
+    @discardableResult
+    func createBlankMemory() -> String? {
+        let title = uniqueDraftTitle(base: "Untitled", existing: memoryNotes.map(\.title))
+        return saveMemoryNote(noteID: title, title: title, icon: "tray.full", body: "", apps: [])
+    }
+
+    @discardableResult
+    func createSkill(named title: String, body: String = "", icon: String = "sparkle") -> String? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let reserved = Set(allActions.map(\.id))
@@ -189,8 +200,8 @@ final class Model: ObservableObject {
             _ = try noteRepository.saveSkillNote(
                 actionID: actionID,
                 title: trimmed,
-                icon: "sparkle",
-                body: "Describe what this skill should do.\n"
+                icon: icon,
+                body: body
             )
             reloadCustomActions()
             reloadNotes()
@@ -199,6 +210,16 @@ final class Model: ObservableObject {
             NSLog("[Caret] create skill failed: %@", String(describing: error))
             return nil
         }
+    }
+
+    private func uniqueDraftTitle(base: String, existing: [String]) -> String {
+        let existingSet = Set(existing)
+        if !existingSet.contains(base) { return base }
+        var counter = 2
+        while existingSet.contains("\(base) \(counter)") {
+            counter += 1
+        }
+        return "\(base) \(counter)"
     }
 
     var trimmedPanelQuery: String {
@@ -1022,6 +1043,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         let closing = notification.object as? NSWindow
         guard closing === settingsWindow || closing === debugWindow else { return }
+        if closing === settingsWindow {
+            SettingsMainMenu.uninstall()
+        }
         let otherVisible = (closing === settingsWindow && debugWindow?.isVisible == true)
             || (closing === debugWindow && settingsWindow?.isVisible == true)
         if !otherVisible {
@@ -1085,8 +1109,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         settingsWindow?.toolbarStyle = .unified
-        settingsWindow?.contentView = NSHostingView(rootView: CaretSettingsView(model: model))
+        if let hosting = settingsWindow?.contentView as? NSHostingView<CaretSettingsView> {
+            hosting.rootView = CaretSettingsView(model: model)
+        } else {
+            settingsWindow?.contentView = NSHostingView(rootView: CaretSettingsView(model: model))
+        }
         NSApp.setActivationPolicy(.regular)
+        SettingsMainMenu.install()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }

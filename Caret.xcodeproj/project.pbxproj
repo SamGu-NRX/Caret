@@ -28,6 +28,7 @@
 		B10000000000000000000043 /* CaretPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000044 /* CaretPaths.swift */; };
 		B10000000000000000000045 /* InstalledApps.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000046 /* InstalledApps.swift */; };
 		B10000000000000000000047 /* AppReferenceIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000048 /* AppReferenceIcon.swift */; };
+		B10000000000000000000055 /* SettingsMainMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000056 /* SettingsMainMenu.swift */; };
 		B1000000000000000000002D /* PinnedActionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* PinnedActionsStore.swift */; };
 		B1000000000000000000002E /* PinnedActionsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* PinnedActionsStoreTests.swift */; };
 		B10000000000000000000028 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* Assets.xcassets */; };
@@ -83,6 +84,7 @@
 		B10000000000000000000044 /* CaretPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretPaths.swift; sourceTree = "<group>"; };
 		B10000000000000000000046 /* InstalledApps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstalledApps.swift; sourceTree = "<group>"; };
 		B10000000000000000000048 /* AppReferenceIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppReferenceIcon.swift; sourceTree = "<group>"; };
+		B10000000000000000000056 /* SettingsMainMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsMainMenu.swift; sourceTree = "<group>"; };
 		B1000000000000000000001E /* PinnedActionsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedActionsStoreTests.swift; sourceTree = "<group>"; };
 		B1000000000000000000001F /* CaretTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CaretTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000018 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -186,6 +188,7 @@
 				B10000000000000000000044 /* CaretPaths.swift */,
 				B10000000000000000000046 /* InstalledApps.swift */,
 				B10000000000000000000048 /* AppReferenceIcon.swift */,
+				B10000000000000000000056 /* SettingsMainMenu.swift */,
 				B10000000000000000000018 /* Assets.xcassets */,
 			);
 			name = Caret;
@@ -372,6 +375,7 @@
 				B10000000000000000000043 /* CaretPaths.swift in Sources */,
 				B10000000000000000000045 /* InstalledApps.swift in Sources */,
 				B10000000000000000000047 /* AppReferenceIcon.swift in Sources */,
+				B10000000000000000000055 /* SettingsMainMenu.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
