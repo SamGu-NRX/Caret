@@ -69,7 +69,7 @@ final class SelectionMonitor {
     }
 
     private func inspect() {
-        guard AXIsProcessTrusted() else {
+        guard AXHelpers.isTrusted() else {
             publish(nil)
             return
         }

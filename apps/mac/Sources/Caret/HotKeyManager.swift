@@ -3,6 +3,7 @@ import ApplicationServices
 
 final class HotKeyManager {
     var onHotKey: ((CGPoint) -> Void)?
+    var onPinnedHotKey: ((Int) -> Void)?
 
     private var globalMonitor: Any?
     private var localMonitor: Any?
@@ -13,10 +14,10 @@ final class HotKeyManager {
     func register() {
         installChordMonitors()
 
-        if !AXIsProcessTrusted() {
+        if !AXHelpers.isTrusted() {
             trustTimer?.invalidate()
             trustTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
-                guard AXIsProcessTrusted() else { return }
+                guard AXHelpers.isTrusted() else { return }
                 timer.invalidate()
                 self?.trustTimer = nil
                 self?.installChordMonitors()
@@ -41,7 +42,7 @@ final class HotKeyManager {
         unregister()
     }
 
-    private func fire() {
+    private func fireToggle() {
         onHotKey?(NSEvent.mouseLocation)
     }
 
@@ -56,17 +57,22 @@ final class HotKeyManager {
         }
 
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] event in
-            self?.handleChord(event)
+            self?.handle(event)
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak self] event in
-            self?.handleChord(event)
+            self?.handle(event)
             return event
         }
     }
 
-    private func handleChord(_ event: NSEvent) {
+    private func handle(_ event: NSEvent) {
         if event.type == .keyDown {
-            if chordArmed { sawOtherKey = true }
+            if handlePinnedShortcut(event) {
+                return
+            }
+            if chordArmed {
+                sawOtherKey = true
+            }
             return
         }
 
@@ -80,9 +86,29 @@ final class HotKeyManager {
         if chordArmed {
             chordArmed = false
             if !sawOtherKey {
-                fire()
+                fireToggle()
             }
             sawOtherKey = false
+        }
+    }
+
+    private func handlePinnedShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection([.command, .option, .shift, .control])
+        guard flags == [.command, .option], let slot = slot(forKeyCode: event.keyCode) else {
+            return false
+        }
+        chordArmed = false
+        sawOtherKey = true
+        onPinnedHotKey?(slot)
+        return true
+    }
+
+    private func slot(forKeyCode keyCode: UInt16) -> Int? {
+        switch keyCode {
+        case 18: return 1
+        case 19: return 2
+        case 20: return 3
+        default: return nil
         }
     }
 }

@@ -3,6 +3,7 @@ import ApplicationServices
 
 final class StatusBarController: NSObject, NSMenuDelegate {
     var onOpen: (() -> Void)?
+    var onFixAccessibility: (() -> Void)?
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var accessibilityItem: NSMenuItem?
@@ -30,6 +31,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(axItem)
         accessibilityItem = axItem
 
+        let repairItem = NSMenuItem(title: "Reconnect Accessibility…", action: #selector(fixAccessibility), keyEquivalent: "")
+        repairItem.target = self
+        menu.addItem(repairItem)
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit Caret", action: #selector(quit), keyEquivalent: "q")
@@ -45,8 +50,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     private func refresh() {
-        let trusted = AXIsProcessTrusted()
-        accessibilityItem?.title = trusted ? "Accessibility: On" : "Enable Accessibility…"
+        let trusted = AXHelpers.isTrusted()
+        accessibilityItem?.title = trusted ? "Accessibility: connected" : "Accessibility: not connected to this build"
         if let button = statusItem.button {
             let name = trusted ? "sparkle" : "exclamationmark.triangle"
             let image = NSImage(systemSymbolName: name, accessibilityDescription: "Caret")
@@ -61,6 +66,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func openAccessibility() {
         AXHelpers.openAccessibilitySettings()
+    }
+
+    @objc private func fixAccessibility() {
+        onFixAccessibility?()
     }
 
     @objc private func quit() {

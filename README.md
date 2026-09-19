@@ -11,7 +11,8 @@ git clone https://github.com/theodorexli/hackathon-2026-09-19.git
 cd hackathon-2026-09-19
 make test
 make demo
-make app
+make install    # Release Caret.app → /Applications
+# make dmg      # also writes dist/Caret.dmg
 ```
 
 The current app asks for Accessibility, then shows a blue asterisk beside supported fields and selections. Command–Option or the button opens the scrollable action list; up to three pinned actions use Command–Option–1/2/3. These actions currently log and close the panel. Inline completion, Tab acceptance, Command–1/2/3 and model routing are planned, not wired. The [input pipeline contract](docs/input-pipeline.md) defines the next implementation and the owners.
