@@ -382,6 +382,15 @@ enum AXHelpers {
 
     /// Replaces the current selection when it still matches `expectedSelected`.
     @discardableResult
+    static func replaceCurrentLine(_ element: AXUIElement, with line: String) -> Bool {
+        guard let value = fieldValue(element), let caret = selectedTextRange(element) else { return false }
+        let ns = value as NSString
+        let index = min(max(caret.location, 0), ns.length)
+        let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
+        return replaceRange(element, range: lineRange, with: line)
+    }
+
+    @discardableResult
     static func replaceSelectionIfMatches(
         _ element: AXUIElement,
         expectedSelected: String,

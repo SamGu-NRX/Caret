@@ -37,14 +37,26 @@ struct SkillActionSnapshot: Equatable {
 @MainActor
 final class SkillActionRunner {
     static func hasInput(_ target: SelectionTarget) -> Bool {
-        if !target.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return true
+        gatewayInputText(from: target) != nil
+    }
+
+    /// Selection if any; otherwise the current line at the caret (never a stale or whole-document dump).
+    static func gatewayInputText(from target: SelectionTarget) -> String? {
+        let selected = target.selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selected.isEmpty {
+            return target.selectedText
         }
-        if let full = target.fieldContext?.fullText.trimmingCharacters(in: .whitespacesAndNewlines),
-           !full.isEmpty {
-            return true
-        }
-        return false
+        guard target.kind == .input, let ctx = target.fieldContext else { return nil }
+        let line = lineAtCaret(in: ctx).trimmingCharacters(in: .whitespacesAndNewlines)
+        return line.isEmpty ? nil : line
+    }
+
+    private static func lineAtCaret(in ctx: FieldTextContext) -> String {
+        let ns = ctx.fullText as NSString
+        guard ns.length > 0 else { return "" }
+        let index = min(max(ctx.insertLocation, 0), ns.length)
+        let range = ns.lineRange(for: NSRange(location: index, length: 0))
+        return ns.substring(with: range)
     }
 
     func run(action: CaretAction, skill: CaretSkill?, target: SelectionTarget?, model: Model?) {
@@ -120,15 +132,7 @@ final class SkillActionRunner {
     }
 
     private func inputText(from target: SelectionTarget) -> String? {
-        let selected = target.selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !selected.isEmpty {
-            return target.selectedText
-        }
-        if let full = target.fieldContext?.fullText.trimmingCharacters(in: .whitespacesAndNewlines),
-           !full.isEmpty {
-            return target.fieldContext?.fullText
-        }
-        return nil
+        Self.gatewayInputText(from: target)
     }
 
     private func applyOutput(_ output: String, snapshot: SkillActionSnapshot) async {
@@ -163,9 +167,11 @@ final class SkillActionRunner {
             return
         }
 
-        if let ctx = AXHelpers.makeFieldContext(from: element),
-           ctx.fullText == snapshot.inputText {
-            _ = AXHelpers.setFieldValue(element, output)
+        if snapshot.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let ctx = AXHelpers.makeFieldContext(from: element),
+           Self.lineAtCaret(in: ctx).trimmingCharacters(in: .whitespacesAndNewlines) == snapshot.inputText
+                .trimmingCharacters(in: .whitespacesAndNewlines) {
+            _ = AXHelpers.replaceCurrentLine(element, with: output)
             return
         }
 

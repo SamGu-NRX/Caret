@@ -104,7 +104,9 @@ final class Model: ObservableObject {
     }
 
     func beginSkillPreview(actionID: String) {
+        skillPreviewByActionID[actionID] = ""
         skillPreviewRunningActionID = actionID
+        objectWillChange.send()
     }
 
     func finishSkillPreview(actionID: String, output: String) {
@@ -537,7 +539,8 @@ enum ActionsMenuMetrics {
     static let rowHeightWithSubtitle: CGFloat = 46
     static let maxVisibleRows: CGFloat = 8
     static let width: CGFloat = 300
-    static let gatewayWidth: CGFloat = 340
+    static let gatewayWidth: CGFloat = 400
+    static let gatewayMinHeight: CGFloat = 300
 
     static var maxScrollHeight: CGFloat {
         rowHeightWithSubtitle * maxVisibleRows + 8
@@ -563,18 +566,23 @@ struct SkillPickerView: View {
         return "Search actions or create"
     }
 
+    private var panelWidth: CGFloat {
+        gatewayScopedAction != nil ? ActionsMenuMetrics.gatewayWidth : ActionsMenuMetrics.width
+    }
+
     var body: some View {
-        if let action = gatewayScopedAction {
-            GatewayActionPanel(model: model, action: action) {
-                model.clearPanelScope()
-                searchFocused = true
+        Group {
+            if let action = gatewayScopedAction {
+                GatewayActionPanel(model: model, action: action) {
+                    model.clearPanelScope()
+                    searchFocused = true
+                }
+            } else {
+                browsePanel
             }
-            .onAppear {
-                model.ensureGatewayRun(action)
-            }
-        } else {
-            browsePanel
         }
+        .frame(width: panelWidth, alignment: .topLeading)
+        .fixedSize(horizontal: true, vertical: true)
     }
 
     private var browsePanel: some View {
@@ -711,51 +719,100 @@ private struct GatewayActionPanel: View {
         model.skillPreviewRunningActionID == action.id
     }
 
-    private var bodyText: String {
-        let text = model.skillPreviewText(actionID: action.id)
-        if !text.isEmpty { return text }
-        if isRunning { return "Calling Vercel with your skill file…" }
-        return "Select text in another app (or copy it), then open Translate again."
+    private var resultText: String {
+        model.skillPreviewText(actionID: action.id)
+    }
+
+    private var hasResult: Bool {
+        !resultText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var sectionTitle: String {
+        GatewaySkillActions.previewLabel(for: action.id)
+    }
+
+    private var idleHint: String {
+        "Select text in another app, or copy it to the clipboard, then run \(action.title) again."
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button(action: onBack) {
-                Label(action.title, systemImage: "chevron.left")
-                    .labelStyle(.titleAndIcon)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-
-            Text(GatewaySkillActions.previewLabel(for: action.id))
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-
-            Text("Translated text appears in the box below.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if isRunning {
-                ProgressView()
-                    .controlSize(.regular)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-
-            Text(bodyText)
-                .font(.body)
-                .lineSpacing(4)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
-                .padding(12)
-                .background {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.primary.opacity(0.06))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back to actions")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(action.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(sectionTitle)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.primary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
+
+            Divider().opacity(0.25)
+
+            resultCard
+                .padding(14)
         }
-        .padding(12)
-        .frame(minHeight: 260)
         .frame(width: ActionsMenuMetrics.gatewayWidth, alignment: .topLeading)
+        .frame(minHeight: ActionsMenuMetrics.gatewayMinHeight, alignment: .top)
+    }
+
+    @ViewBuilder
+    private var resultCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if isRunning {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("Running with your skill instructions…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 200, maxHeight: 280)
+            } else if hasResult {
+                ScrollView(.vertical, showsIndicators: true) {
+                    Text(resultText)
+                        .font(.system(size: 14))
+                        .lineSpacing(5)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(14)
+                }
+                .frame(minHeight: 200, maxHeight: 280)
+            } else {
+                Text(idleHint)
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, minHeight: 200, alignment: .topLeading)
+                    .padding(14)
+            }
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -940,7 +997,10 @@ final class CaretPanel: NSPanel {
     }
 
     private func frame(near point: CGPoint, width: CGFloat) -> NSRect {
-        let height = max(frame.size.height, 280)
+        let minHeight = width >= ActionsMenuMetrics.gatewayWidth
+            ? ActionsMenuMetrics.gatewayMinHeight + 24
+            : 280
+        let height = max(frame.size.height, minHeight)
         let size = CGSize(width: width, height: height)
         let screen = AXHelpers.screen(containing: point)
         let visible = screen?.visibleFrame ?? NSRect(origin: .zero, size: size)
@@ -965,9 +1025,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var trustTimer: Timer?
     private var lastTarget: SelectionTarget?
     /// Last target that still had selected text (kept after Caret steals focus).
-    private var lastNonEmptySelectionTarget: SelectionTarget?
-    /// Selection captured when opening a gateway panel (before Caret takes focus).
-    private var capturedRunTarget: SelectionTarget?
     private var lastPanelPoint: CGPoint = NSEvent.mouseLocation
     private var clickMonitor: Any?
     private var escapeMonitor: Any?
@@ -1011,7 +1068,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         model.onRun = { [weak self] action, skill in
             guard let self, let model = self.model else { return }
-            let target = self.gatewayRunTarget()
+            let target = self.freshTargetForGatewayAction()
             if GatewaySkillActions.contains(action.id) {
                 model.scopedActionID = action.id
                 model.panelQuery = ""
@@ -1117,10 +1174,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Task { @MainActor in
                 guard let self, let model = self.model else { return }
                 self.lastTarget = target
-                if let target,
-                   !target.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    self.lastNonEmptySelectionTarget = target
-                }
                 model.selectedText = target?.selectedText ?? ""
                 model.sourceApp = target?.sourceApp
                 if self.panel?.isVisible == true {
@@ -1231,15 +1284,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func gatewayRunTarget() -> SelectionTarget? {
-        if let capturedRunTarget { return capturedRunTarget }
-        if let lastTarget, SkillActionRunner.hasInput(lastTarget) { return lastTarget }
-        return lastNonEmptySelectionTarget
+    /// Live AX snapshot only — no sticky selection from earlier actions.
+    private func freshTargetForGatewayAction() -> SelectionTarget? {
+        monitor.refreshNow()
+        guard let target = lastTarget, SkillActionRunner.hasInput(target) else { return nil }
+        return target
     }
 
     private func showPanel(at point: CGPoint, scopedActionID: String?) {
         lastPanelPoint = point
-        capturedRunTarget = gatewayRunTarget()
         model?.preparePanel(scopedActionID: scopedActionID)
         trigger.hide()
         // Pause before presenting: presenting makes Caret frontmost, and the
