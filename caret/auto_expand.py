@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 
-from caret.completions import ChatMessage, complete_text
+from caret.completions import ChatMessage, CompletionError, complete_text
 
 _PATTERN_LINE = re.compile(r"^\s*(?:\d+\.|[-*])\s+(.+)$")
 MIN_TYPED_CHARACTERS = 5
@@ -137,12 +137,18 @@ def complete_auto_expand(
         from caret.providers.groq import GroqWriter
         from caret.providers.http import post_json
 
-        writer = GroqWriter.from_env()
-        if model:
-            writer.client.model = model
-        raw = writer.client.send(messages, post_json).content
+        from caret.engine import ProviderFailure
+        from caret.providers.openai_chat import ChatError
+
+        try:
+            writer = GroqWriter.from_env()
+            if model:
+                writer.client.model = model
+            raw = writer.client.send(messages, post_json).content
+        except (ProviderFailure, ChatError) as error:
+            raise CompletionError(str(error)) from None
     elif provider == "gateway":
         raw = complete_text(messages[1]["content"], system=messages[0]["content"], **kwargs)
     else:
-        raise ValueError(f"Unknown CARET_INLINE_PROVIDER: {provider}; choose groq or gateway")
+        raise CompletionError(f"Unknown CARET_INLINE_PROVIDER: {provider}; choose groq or gateway")
     return normalize_continuation(raw, prefix)

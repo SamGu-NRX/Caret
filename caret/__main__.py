@@ -56,7 +56,7 @@ def main() -> int:
     )
     auto_expand_cmd.add_argument("--prefix", required=True)
     auto_expand_cmd.add_argument("--instructions", default="")
-    auto_expand_cmd.add_argument("--model", default=DEFAULT_MODEL)
+    auto_expand_cmd.add_argument("--model", default=None)
     run_action_cmd = commands.add_parser(
         "run-action",
         help="Transform text for a Caret skill action via Vercel AI Gateway (stdout = result only)",

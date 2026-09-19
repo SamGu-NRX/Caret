@@ -83,6 +83,14 @@ class AutoExpandTests(unittest.TestCase):
         self.assertIn("Keep it brief.", send.call_args.args[0][0]["content"])
         gateway.assert_not_called()
 
+    def test_cli_leaves_model_selection_to_inline_provider(self):
+        from caret.__main__ import main
+        with patch("sys.argv", ["caret", "auto-expand", "--prefix", "Send it"]), patch(
+            "caret.__main__.complete_auto_expand", return_value=" tomorrow."
+        ) as complete, patch("sys.stdout"):
+            self.assertEqual(main(), 0)
+        self.assertIsNone(complete.call_args.kwargs["model"])
+
     def test_normalize_empty_when_only_repeats_prefix(self):
         self.assertEqual(
             normalize_continuation("Thanks for the update", "Thanks for the update"),
