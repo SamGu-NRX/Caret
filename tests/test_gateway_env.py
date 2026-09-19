@@ -4,21 +4,24 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from caret.completions import VERCEL_API_GATEWAY_KEY_ENV, gateway_api_key
+from caret.gateway_env import inject_gateway_api_key_from_files
 
 
 class GatewayEnvTests(unittest.TestCase):
-    def test_loads_key_from_project_local_file(self):
+    def test_inject_skipped_when_opt_out_set(self):
         with tempfile.TemporaryDirectory() as tmp:
-            local_dir = Path(tmp) / ".local"
-            local_dir.mkdir()
-            (local_dir / "vercel-api-gateway-key").write_text("file-key\n", encoding="utf-8")
+            key_path = Path(tmp) / "vercel-api-gateway-key"
+            key_path.write_text("file-secret\n", encoding="utf-8")
             with patch.dict(
                 os.environ,
-                {"CARET_PROJECT_ROOT": tmp, VERCEL_API_GATEWAY_KEY_ENV: ""},
+                {
+                    "CARET_SKIP_GATEWAY_KEY_INJECT": "1",
+                    "CARET_SUPPORT_ROOT": tmp,
+                },
                 clear=True,
             ):
-                self.assertEqual(gateway_api_key(), "file-key")
+                inject_gateway_api_key_from_files()
+                self.assertNotIn("VERCEL_API_GATEWAY_KEY", os.environ)
 
 
 if __name__ == "__main__":

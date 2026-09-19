@@ -727,10 +727,6 @@ private struct GatewayActionPanel: View {
         !resultText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var sectionTitle: String {
-        GatewaySkillActions.previewLabel(for: action.id)
-    }
-
     private var idleHint: String {
         "Select text in another app, or copy it to the clipboard, then run \(action.title) again."
     }
@@ -748,14 +744,10 @@ private struct GatewayActionPanel: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Back to actions")
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(action.title)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Text(sectionTitle)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.primary)
-                }
+                Text(action.title)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 14)

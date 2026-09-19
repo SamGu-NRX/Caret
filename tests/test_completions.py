@@ -20,7 +20,11 @@ class CompletionsTests(unittest.TestCase):
             self.assertEqual(gateway_api_key(), "vercel-key")
 
     def test_gateway_api_key_missing_raises(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(
+            os.environ,
+            {"CARET_SKIP_GATEWAY_KEY_INJECT": "1"},
+            clear=True,
+        ):
             with self.assertRaises(CompletionError):
                 gateway_api_key()
 

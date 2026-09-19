@@ -41,6 +41,8 @@ def _try_sync_from_github_secret() -> None:
 
 def inject_gateway_api_key_from_files() -> None:
     """Set gateway env vars from disk when not already in the process environment."""
+    if os.environ.get("CARET_SKIP_GATEWAY_KEY_INJECT", "").strip():
+        return
     for name in (VERCEL_API_GATEWAY_KEY_ENV, AI_GATEWAY_API_KEY_ENV):
         if os.environ.get(name, "").strip():
             return
