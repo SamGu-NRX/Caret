@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .auto_expand import complete_auto_expand
 from .completions import DEFAULT_MODEL, CompletionError, complete_text
+from .skill_action import GATEWAY_SKILL_ACTION_IDS, complete_skill_action
 from .planner import plan
 from .screenpipe import debug_preview, last_n_clipboard, last_n_minutes, last_n_windows
 from .skills import create_skill, filter_skills, list_skills
@@ -56,6 +57,18 @@ def main() -> int:
     auto_expand_cmd.add_argument("--prefix", required=True)
     auto_expand_cmd.add_argument("--instructions", default="")
     auto_expand_cmd.add_argument("--model", default=DEFAULT_MODEL)
+    run_action_cmd = commands.add_parser(
+        "run-action",
+        help="Transform text for a Caret skill action via Vercel AI Gateway (stdout = result only)",
+    )
+    run_action_cmd.add_argument("--action", required=True, choices=sorted(GATEWAY_SKILL_ACTION_IDS))
+    run_action_cmd.add_argument("--text", required=True)
+    run_action_cmd.add_argument(
+        "--instructions",
+        default="",
+        help="Live skill instructions from Caret Settings (overrides on-disk note)",
+    )
+    run_action_cmd.add_argument("--model", default=DEFAULT_MODEL)
     args = parser.parse_args()
     if args.command == "history-minutes":
         try:
@@ -95,6 +108,19 @@ def main() -> int:
             print(json.dumps({"error": str(error)}), file=sys.stderr)
             return 1
         print(suffix, end="")
+        return 0
+    if args.command == "run-action":
+        try:
+            text = complete_skill_action(
+                args.action,
+                args.text,
+                instructions_override=args.instructions or None,
+                model=args.model,
+            )
+        except (CompletionError, ValueError) as error:
+            print(json.dumps({"error": str(error)}), file=sys.stderr)
+            return 1
+        print(text, end="")
         return 0
     if args.command == "complete":
         try:

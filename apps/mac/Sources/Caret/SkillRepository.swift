@@ -42,6 +42,9 @@ struct SkillRepository {
     }
 
     func list(actionID: String) -> [CaretSkill] {
+        if GatewaySkillActions.contains(actionID) {
+            return []
+        }
         guard let actionDir = CaretPaths.skillsRoot?.appendingPathComponent(actionID, isDirectory: true),
               let files = try? FileManager.default.contentsOfDirectory(
                   at: actionDir,

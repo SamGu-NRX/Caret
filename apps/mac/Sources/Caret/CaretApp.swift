@@ -24,7 +24,7 @@ final class Model: ObservableObject {
     @Published private(set) var customActions: [CaretAction] = []
     @Published private(set) var storedMemories: [StoredMemory] = []
     var memories: [MemoryItem] = []
-    var onRun: ((CaretAction) -> Void)?
+    var onRun: ((CaretAction, CaretSkill?) -> Void)?
     var onPinsChanged: (() -> Void)?
     var onOpenAccessibility: (() -> Void)?
     var onReconnectAccessibility: (() -> Void)?
@@ -36,6 +36,10 @@ final class Model: ObservableObject {
 
     @Published private(set) var skillNotes: [CaretNote] = []
     @Published private(set) var memoryNotes: [CaretNote] = []
+    @Published private(set) var skillPreviewByActionID: [String: String] = [:]
+    @Published var skillPreviewRunningActionID: String?
+
+    private var liveSkillInstructionsByActionID: [String: String] = [:]
 
     init(pinStore: PinnedActionsStore = .load()) {
         self.pinStore = pinStore
@@ -71,6 +75,37 @@ final class Model: ObservableObject {
     func tabCompletionsConfiguration() -> (instructions: String, excludedApps: [String]) {
         let note = skillNotes.first(where: { $0.id == TabCompletions.actionID })
         return (note?.body ?? "", note?.excludedApps ?? [])
+    }
+
+    func setLiveSkillInstructions(actionID: String, body: String) {
+        liveSkillInstructionsByActionID[actionID] = body
+    }
+
+    func resolvedSkillInstructions(actionID: String) -> String? {
+        if let live = liveSkillInstructionsByActionID[actionID]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !live.isEmpty {
+            return live
+        }
+        return skillNotes.first(where: { $0.id == actionID })?.body
+    }
+
+    func skillPreviewText(actionID: String) -> String {
+        skillPreviewByActionID[actionID] ?? ""
+    }
+
+    func beginSkillPreview(actionID: String) {
+        skillPreviewRunningActionID = actionID
+    }
+
+    func finishSkillPreview(actionID: String, output: String) {
+        skillPreviewByActionID[actionID] = output
+        skillPreviewRunningActionID = nil
+    }
+
+    func failSkillPreview(actionID: String, message: String) {
+        skillPreviewByActionID[actionID] = message
+        skillPreviewRunningActionID = nil
     }
 
     func reloadNotes() {
@@ -365,6 +400,15 @@ final class Model: ObservableObject {
         panelQuery = ""
     }
 
+    /// Gateway actions use the skill note in Settings (`caret/notes/skills/*.md`), not JSON variants.
+    func selectActionFromPanel(_ action: CaretAction) {
+        if GatewaySkillActions.contains(action.id) {
+            run(action, skill: nil)
+            return
+        }
+        selectActionForSkills(action)
+    }
+
     func submitCreateFromQuery() {
         let name = trimmedPanelQuery
         guard !name.isEmpty else { return }
@@ -391,15 +435,7 @@ final class Model: ObservableObject {
     }
 
     func run(_ action: CaretAction, skill: CaretSkill? = nil) {
-        NSLog(
-            "[Caret] action=%@ skill=%@ memories=%d selection=%@ app=%@",
-            action.id,
-            skill?.id ?? "-",
-            memories.count,
-            selectedText.replacingOccurrences(of: "\n", with: " "),
-            sourceApp ?? "-"
-        )
-        onRun?(action)
+        onRun?(action, skill)
     }
 
     func run(skill: CaretSkill) {
@@ -409,6 +445,10 @@ final class Model: ObservableObject {
 
     func runPinnedSlot(_ slot: Int) {
         guard let id = pinStore.actionID(forSlot: slot), let action = action(id: id) else { return }
+        if GatewaySkillActions.contains(action.id) {
+            run(action, skill: nil)
+            return
+        }
         let skills = skillRepository.list(actionID: id)
         if let first = skills.first {
             run(action, skill: first)
@@ -495,7 +535,7 @@ struct SkillPickerView: View {
                                 isPinned: model.pinStore.isPinned(action.id),
                                 canPin: model.canPin(action),
                                 onPin: { model.togglePin(action) },
-                                onSelect: { model.selectActionForSkills(action) }
+                                onSelect: { model.selectActionFromPanel(action) }
                             )
                         }
                         if model.showCreateRow {
@@ -739,6 +779,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var trigger: TriggerButtonController!
     private let monitor = SelectionMonitor()
     private let tabCompletions = TabCompletionsController()
+    private let skillActionRunner = SkillActionRunner()
     private let statusBar = StatusBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -759,8 +800,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hidesOnDeactivate = false
-        model.onRun = { [weak self] _ in
-            self?.hidePanel()
+        model.onRun = { [weak self] action, skill in
+            guard let self, let model = self.model else { return }
+            let target = self.lastTarget
+            self.hidePanel()
+            self.skillActionRunner.run(
+                action: action,
+                skill: skill,
+                target: target,
+                model: model
+            )
         }
         model.onPinsChanged = { [weak self] in
             self?.syncPinnedTriggerUI()
@@ -826,7 +875,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         trigger.onPinnedAction = { [weak self] chip in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, let model = self.model else { return }
+                if GatewaySkillActions.contains(chip.id), let action = model.action(id: chip.id) {
+                    model.run(action, skill: nil)
+                    return
+                }
                 self.showPanel(
                     at: CGPoint(x: self.trigger.buttonFrame.maxX, y: self.trigger.buttonFrame.midY),
                     scopedActionID: chip.id
@@ -858,6 +911,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         requestAccessibilityAndStart()
         ScreenpipeSupervisor.start(projectRoot: CaretPaths.projectRoot)
+        Task {
+            await GatewayKeySync.syncFromGitHubIfNeeded(projectRoot: CaretPaths.projectRoot)
+        }
     }
 
     private func syncPinnedTriggerUI() {

@@ -26,5 +26,8 @@ subprocess.run(
     check=True,
 )
 bundle = root / ".local/build/Debug/Caret.app"
+sync_script = root / "scripts" / "sync_vercel_gateway_key.sh"
+if sync_script.is_file() and "--build-only" not in sys.argv[1:]:
+    subprocess.run(["/bin/bash", str(sync_script)], cwd=root, check=False)
 if "--build-only" not in sys.argv[1:]:
     subprocess.run(["open", str(bundle)], check=True)

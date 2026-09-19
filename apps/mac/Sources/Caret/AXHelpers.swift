@@ -380,6 +380,32 @@ enum AXHelpers {
         return suffixRange
     }
 
+    /// Replaces the current selection when it still matches `expectedSelected`.
+    @discardableResult
+    static func replaceSelectionIfMatches(
+        _ element: AXUIElement,
+        expectedSelected: String,
+        replacement: String
+    ) -> Bool {
+        guard !replacement.isEmpty else { return false }
+        let current = stringValue(element, kAXSelectedTextAttribute as CFString) ?? ""
+        guard current == expectedSelected else { return false }
+        guard let range = selectedTextRange(element), range.length > 0 else { return false }
+        return replaceRange(element, range: range, with: replacement)
+    }
+
+    @discardableResult
+    static func replaceRange(_ element: AXUIElement, range: NSRange, with text: String) -> Bool {
+        guard let value = fieldValue(element) else { return false }
+        let nsValue = value as NSString
+        guard range.location >= 0, NSMaxRange(range) <= nsValue.length else { return false }
+        let updated = nsValue.replacingCharacters(in: range, with: text)
+        guard setFieldValue(element, updated) else { return false }
+        let newRange = NSRange(location: range.location, length: (text as NSString).length)
+        setSelectedTextRange(element, range: newRange)
+        return true
+    }
+
     @discardableResult
     static func removeRange(_ element: AXUIElement, range: NSRange) -> Bool {
         guard let value = fieldValue(element) else { return false }

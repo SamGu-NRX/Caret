@@ -1,0 +1,28 @@
+# Writes VERCEL_API_GATEWAY_KEY to a short-lived artifact for local Caret dev sync.
+# GitHub never exposes secret values via API; this workflow is the supported bridge.
+name: Export gateway key (local dev)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Package key for download
+        env:
+          VERCEL_API_GATEWAY_KEY: ${{ secrets.VERCEL_API_GATEWAY_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$VERCEL_API_GATEWAY_KEY" > vercel-api-gateway-key
+          test -s vercel-api-gateway-key
+      - uses: actions/upload-artifact@6.0.0
+        with:
+          name: caret-gateway-key
+          path: vercel-api-gateway-key
+          retention-days: 1

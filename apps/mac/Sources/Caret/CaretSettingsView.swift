@@ -97,7 +97,12 @@ struct CaretSettingsView: View {
         }
         .onChange(of: editTitle) { _, _ in scheduleAutosave() }
         .onChange(of: editIcon) { _, _ in scheduleAutosave() }
-        .onChange(of: editBody) { _, _ in scheduleAutosave() }
+        .onChange(of: editBody) { _, newBody in
+            if let id = selectedSkillActionID {
+                model.setLiveSkillInstructions(actionID: id, body: newBody)
+            }
+            scheduleAutosave()
+        }
         .onChange(of: editApps) { _, _ in scheduleAutosave() }
         .onDisappear { flushAutosave() }
     }
@@ -430,6 +435,7 @@ struct CaretSettingsView: View {
         editTitle = TabCompletions.isTabCompletionsAction(item.action.id) ? TabCompletions.defaultTitle : title
         editIcon = icon
         editBody = body
+        model.setLiveSkillInstructions(actionID: item.action.id, body: body)
         editApps = apps.joined(separator: ", ")
         editorBaseline = EditorSnapshot(title: title, icon: icon, body: body, apps: apps)
         saveStatus = .idle
@@ -1049,10 +1055,72 @@ private struct SkillNoteEditor: View {
             Divider()
                 .padding(.horizontal, NoteDetailMetrics.horizontalPadding)
 
-            ExpandingInstructionsEditor(label: "Instructions", text: $bodyText)
-                .padding(.horizontal, NoteDetailMetrics.horizontalPadding)
-                .padding(.top, NoteDetailMetrics.bodyTopPadding)
-                .padding(.bottom, NoteDetailMetrics.bodyBottomPadding)
+            VStack(spacing: 0) {
+                ExpandingInstructionsEditor(label: "Instructions", text: $bodyText)
+                    .layoutPriority(1)
+                if GatewaySkillActions.contains(action.id) {
+                    Divider()
+                        .padding(.vertical, 12)
+                    SkillActionPreviewPanel(
+                        model: model,
+                        actionID: action.id,
+                        label: GatewaySkillActions.previewLabel(for: action.id)
+                    )
+                    .layoutPriority(1)
+                }
+            }
+            .padding(.horizontal, NoteDetailMetrics.horizontalPadding)
+            .padding(.top, NoteDetailMetrics.bodyTopPadding)
+            .padding(.bottom, NoteDetailMetrics.bodyBottomPadding)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct SkillActionPreviewPanel: View {
+    @ObservedObject var model: Model
+    let actionID: String
+    let label: String
+
+    private var previewText: String {
+        model.skillPreviewText(actionID: actionID)
+    }
+
+    private var isRunning: Bool {
+        model.skillPreviewRunningActionID == actionID
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                if isRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Spacer(minLength: 0)
+            }
+            ScrollView {
+                Text(previewText.isEmpty ? "Run this action on selected text or clipboard to see the result here." : previewText)
+                    .font(.body)
+                    .lineSpacing(3)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .foregroundStyle(previewText.isEmpty ? .secondary : .primary)
+                    .textSelection(.enabled)
+            }
+            .padding(12)
+            .frame(minHeight: 120, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor).opacity(0.45))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
