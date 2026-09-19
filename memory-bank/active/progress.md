@@ -50,3 +50,15 @@ Repair the duplicate object ID in `Caret.xcodeproj` so `make install` can read t
 * Insights
     - `e4935c9` on origin already fixed the `B100…55` collision by moving Info.plist to `B100…62` and assigned `B100…57` to TabCompletions
     - A locally unused "next" ID is not safe when main has moved
+
+## 2026-09-19 - BUILD - COMPLETE (rework)
+
+* Work completed
+    - Rebased local main onto `origin/main`
+    - Resolved pbxproj conflict by keeping origin's Info.plist `B100…62`
+    - Kept `tests/test_xcodeproj.py`; 44 tests pass; `xcodebuild -list` and `make install` succeed
+* Decisions made
+    - Do not carry a pbxproj ID remap when main already fixed the collision
+    - The remaining shippable change is the contract test
+* Insights
+    - `B100…57` is TabCompletions on current main; do not reuse it for Info.plist

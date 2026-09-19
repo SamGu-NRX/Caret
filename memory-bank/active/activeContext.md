@@ -1,11 +1,12 @@
 # Active Context
 
 ## Current Task: caret-xcodeproj-id-collision
-**Phase:** BUILD - IN-PROGRESS (rework after QA FAIL)
+**Phase:** BUILD - COMPLETE
 
 ## What Was Done
-- QA FAIL: Info.plist `…57` collides with TabCompletions on `origin/main`. Origin already uses Info.plist `…62`.
-- Re-entering Build: rebase onto `origin/main`, drop the pbxproj remap, keep the contract tests.
+- Rebased onto `origin/main` (`e4935c9` Tab completions). Kept origin's Info.plist `B100…62`.
+- Dropped the local Info.plist `…57` remap. Kept `tests/test_xcodeproj.py`.
+- Full Python suite (44 tests) and `xcodebuild -list` pass on the rebased tree.
 
 ## Next Step
-- Rebase onto `origin/main` and keep `tests/test_xcodeproj.py` only if the collision is already gone.
+- Level 1 QA rerun via `/niko-qa` subagent.

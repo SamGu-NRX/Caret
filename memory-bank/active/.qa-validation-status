@@ -1,3 +1,0 @@
-FAIL
-
-Local Info.plist ID B100…57 collides with origin/main TabCompletions PBXBuildFile (same ID). Origin already removed the B100…55 collision by moving Info.plist to B100…62 in e4935c9. Local main is behind that commit. The pbxproj remap must not land as-is. Keep tests/test_xcodeproj.py. Build must rebase onto origin/main and drop or redo the ID change only if a collision remains.
