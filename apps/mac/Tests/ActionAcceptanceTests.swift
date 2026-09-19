@@ -171,3 +171,39 @@ final class SelectionContextTests: XCTestCase {
         XCTAssertTrue(snap.selection.isEmpty)
     }
 }
+
+/// Opening Caret's panel makes Caret frontmost, so the next capture reports a
+/// focus change. Acting on that tore down the offers the panel exists to show.
+@MainActor
+final class PanelCapturePauseTests: XCTestCase {
+    private func coordinator() -> InlineCompletionCoordinator {
+        InlineCompletionCoordinator(provider: nil, capture: FocusedTargetCapture())
+    }
+
+    func testPauseIsOffUntilThePanelOpens() {
+        XCTAssertFalse(coordinator().isPaused)
+    }
+
+    func testPauseTogglesAndIsIdempotent() {
+        let c = coordinator()
+        c.setPaused(true)
+        XCTAssertTrue(c.isPaused)
+        c.setPaused(true)
+        XCTAssertTrue(c.isPaused, "repeating the same state is a no-op, not a toggle")
+        c.setPaused(false)
+        XCTAssertFalse(c.isPaused)
+    }
+
+    /// Offers already prepared must survive the panel opening: dropping them
+    /// is the bug this pause exists to prevent.
+    func testOffersSurviveAPanelOpenAndClose() {
+        let provider = CoreBridgeProvider(capture: FocusedTargetCapture())
+        var drops = 0
+        provider.onActionsChanged = { drops += 1 }
+
+        let c = coordinator()
+        c.setPaused(true)
+        c.setPaused(false)
+        XCTAssertEqual(drops, 0, "a panel open/close cycle must not invalidate offers")
+    }
+}

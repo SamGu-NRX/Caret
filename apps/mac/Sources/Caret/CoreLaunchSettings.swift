@@ -86,8 +86,12 @@ enum CoreLaunchSettings {
     /// actionable fact without weakening that rule or reading the child's
     /// output. A variable NAME is not a secret; no value is ever read here.
     static func requiredKey(forProvider provider: String) -> String? {
+        // Neither replays nor pattern-matches against a provider, so neither
+        // reads a key. Returning a name here would block a working demo on a
+        // variable nothing consumes.
         if provider.hasPrefix("scripted:") { return nil }
         switch provider {
+        case "pattern": return nil
         case "gateway": return "AI_GATEWAY_API_KEY"
         case "groq": return "GROQ_API_KEY"
         case "jev": return "TYPESAFE_API_KEY"
@@ -143,12 +147,25 @@ enum CoreLaunchSettings {
               isDirectory.boolValue
         else { return .failure(.noRoot(expandedRoot)) }
 
-        // The user's current choice: gateway judge, Groq inline writer. The
-        // core's own default judge is jev, and nothing falls back to gateway,
-        // so --judge must be passed explicitly every time.
+        // Deterministic pattern judge, Groq inline writer.
+        //
+        // `gateway` was the default until the core owner ran it live on Sam's
+        // team and got HTTP 403 customer_verification_required -- the Vercel
+        // AI Gateway account needs a card on file. The core reports that as a
+        // failed tick with no offer and no fallback, so a gateway default
+        // would have produced an app that silently never completes anything.
+        // `pattern` is the deterministic classifier the demo uses: meeting
+        // phrases resolve to book-calendar-link, everything else abstains, and
+        // every verdict is labelled pattern-demo so it cannot be mistaken for
+        // a model result. Groq remains the real writer, so inline completions
+        // are genuinely generated.
+        //
+        // Gateway stays reachable by putting it in the "arguments" key once
+        // the account is verified. The core's own default judge is jev and
+        // nothing falls back, so --judge is always passed explicitly.
         var arguments = config.arguments
             ?? env["CARET_CORE_ARGS"]?.split(separator: " ").map(String.init)
-            ?? ["--judge", "gateway", "--writer", "groq"]
+            ?? ["--judge", "pattern", "--writer", "groq"]
 
         // Adapters append. Putting them in `arguments` would replace the
         // defaults and silently drop --judge, leaving the core on jev with a

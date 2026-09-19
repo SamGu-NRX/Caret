@@ -1058,6 +1058,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func showPanel(at point: CGPoint, scopedActionID: String?) {
         model?.preparePanel(scopedActionID: scopedActionID)
         trigger.hide()
+        // Pause before presenting: presenting makes Caret frontmost, and the
+        // next capture tick would otherwise read Caret's own focus and
+        // invalidate the offers this panel is showing.
+        inlineCompletion?.setPaused(true)
         panel?.present(at: point)
         syncActionOffers()
         installClickOutside()
@@ -1065,6 +1069,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func hidePanel() {
         panel?.orderOut(nil)
+        inlineCompletion?.setPaused(false)
         inlineCompletion?.setVisibleChoiceCount(0)
         removeClickOutside()
         model?.clearPanelScope()

@@ -48,6 +48,28 @@ final class InlineCompletionCoordinator {
     /// so action offers built from it stop being valid too.
     var onContextInvalidated: (() -> Void)?
 
+    /// True while Caret's own panel is on screen.
+    ///
+    /// Opening the panel makes Caret frontmost, so the next capture sees a
+    /// different (or no) focused field and reports invalidatesPriorContext.
+    /// Acting on that would tear down the offers the user opened the panel to
+    /// look at -- the panel destroying its own contents. Capture is paused for
+    /// as long as it is up, and the host field the offers were prepared
+    /// against is revalidated on accept regardless, so pausing loses no
+    /// safety.
+    private(set) var isPaused = false
+
+    func setPaused(_ paused: Bool) {
+        guard isPaused != paused else { return }
+        isPaused = paused
+        if !paused {
+            // Focus is back with the host. Treat the next reading as new
+            // rather than comparing it against what Caret itself was showing.
+            capture.invalidate()
+        }
+        log.info("inline capture \(paused ? "paused" : "resumed", privacy: .public)")
+    }
+
     init(provider: InlineCompletionProviding? = nil, capture: FocusedTargetCapture) {
         self.provider = provider
         self.capture = capture
@@ -144,6 +166,9 @@ final class InlineCompletionCoordinator {
 
     private func poll() {
         guard let provider else { return }
+        // While the panel is up, Caret is frontmost. Capturing would only
+        // report Caret's own focus and invalidate the visible offers.
+        guard !isPaused else { return }
 
         switch capture.capture(now: Date()) {
         case .unchanged:

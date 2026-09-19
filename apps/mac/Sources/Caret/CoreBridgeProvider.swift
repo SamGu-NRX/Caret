@@ -256,6 +256,7 @@ final class CoreBridgeProvider: InlineCompletionProviding {
     func invalidateContextualOffers() {
         let removable = actionOffers.keys.filter { !executing.contains($0) }
         guard !removable.isEmpty else { return }
+        log.info("dropping \(removable.count, privacy: .public) action offer(s): context invalidated")
         for id in removable { actionOffers[id] = nil }
         onActionsChanged?()
     }
@@ -434,6 +435,9 @@ final class CoreBridgeProvider: InlineCompletionProviding {
                 record.state = .unavailable(reason: reason)
             }
             actionOffers[offer.proposalID] = record
+            // Workflow id and runnability only. The offer's text belongs to
+            // the user and is never logged.
+            log.info("action offer: \(offer.workflowID, privacy: .public) executable=\(record.isExecutable, privacy: .public) method=\(offer.executionMethod, privacy: .public)")
             onActionOffer?(record)
             onActionsChanged?()
 
