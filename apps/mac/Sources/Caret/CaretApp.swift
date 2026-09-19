@@ -1204,6 +1204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         TypingPrefixCapture.shared.onChange = { [weak self] in
             Task { @MainActor in
                 guard let self, self.panel?.isVisible != true else { return }
+                self.monitor.refreshNow()
                 self.tabCompletions.update(target: self.lastTarget)
             }
         }

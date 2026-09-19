@@ -33,24 +33,44 @@ def _shared_prefix_length(typed: str, pattern: str) -> int:
     return limit
 
 
+def _typing_tokens(full_prefix: str) -> list[str]:
+    if not full_prefix:
+        return []
+    raw: list[str] = [full_prefix]
+    if "\n" in full_prefix:
+        raw.append(full_prefix.rsplit("\n", 1)[-1])
+    parts = full_prefix.split()
+    if parts:
+        raw.append(parts[-1])
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for token in sorted(raw, key=len, reverse=True):
+        if token not in seen:
+            seen.add(token)
+            ordered.append(token)
+    return ordered
+
+
 def pattern_completion_suffix(prefix: str, instructions: str) -> str:
     """Return text to append when `prefix` partially matches an instruction pattern."""
-    typed = prefix
-    if len(typed) < MIN_TYPED_CHARACTERS or not typed.strip():
+    if not prefix.strip():
         return ""
 
     best_suffix = ""
     best_pattern_len = -1
-    for pattern in instruction_patterns(instructions):
-        shared = _shared_prefix_length(typed, pattern)
-        if shared != len(typed):
+    for typed in _typing_tokens(prefix):
+        if len(typed) < MIN_TYPED_CHARACTERS:
             continue
-        if shared >= len(pattern):
-            continue
-        suffix = pattern[shared:]
-        if len(pattern) > best_pattern_len:
-            best_suffix = suffix
-            best_pattern_len = len(pattern)
+        for pattern in instruction_patterns(instructions):
+            shared = _shared_prefix_length(typed, pattern)
+            if shared != len(typed):
+                continue
+            if shared >= len(pattern):
+                continue
+            suffix = pattern[shared:]
+            if len(pattern) > best_pattern_len:
+                best_suffix = suffix
+                best_pattern_len = len(pattern)
     return best_suffix
 
 

@@ -77,6 +77,11 @@ final class SelectionMonitor {
         "AXCodeEditor",
     ]
 
+    func refreshNow() {
+        lastMouse = NSEvent.mouseLocation
+        inspect()
+    }
+
     func start() {
         stop()
 

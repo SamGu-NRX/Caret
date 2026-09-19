@@ -45,25 +45,25 @@ final class TabCompletionsController {
 
         let captured = TypingPrefixCapture.shared.capturedPrefix(for: target)
         let prefix = target.effectivePrefix(captured: captured)
-        guard prefix.count >= TabCompletions.minimumTypedCharacters else {
-            clearOffer()
-            return
-        }
-
         let instructions = config.instructions
-        let patternSuffix = TabCompletionsPatterns.completionSuffix(
-            prefix: prefix,
+
+        if let pattern = TabCompletionsPatterns.completionMatch(
+            fullPrefix: prefix,
             instructions: instructions
-        )
-        if !patternSuffix.isEmpty {
+        ) {
             fetchTask?.cancel()
             fetchTask = nil
             presentInlineOffer(
-                prefix: prefix,
-                suffix: patternSuffix,
+                prefix: pattern.token,
+                suffix: pattern.suffix,
                 processID: target.focusedProcessID ?? 0,
                 anchor: target.screenRect
             )
+            return
+        }
+
+        guard TabCompletionsPatterns.meetsMinimumTyping(prefix) else {
+            clearOffer()
             return
         }
 
@@ -105,17 +105,18 @@ final class TabCompletionsController {
         processID: pid_t,
         anchor: CGRect
     ) async {
-        guard prefix.count >= TabCompletions.minimumTypedCharacters else {
+        let aiPrefix = TabCompletionsPatterns.longestEligibleToken(prefix) ?? prefix
+        guard aiPrefix.count >= TabCompletions.minimumTypedCharacters else {
             clearOffer()
             return
         }
         do {
-            let suffix = try await CaretCLI.autoExpand(prefix: prefix, instructions: instructions)
+            let suffix = try await CaretCLI.autoExpand(prefix: aiPrefix, instructions: instructions)
             guard !Task.isCancelled, !suffix.isEmpty else {
                 clearOffer()
                 return
             }
-            presentInlineOffer(prefix: prefix, suffix: suffix, processID: processID, anchor: anchor)
+            presentInlineOffer(prefix: aiPrefix, suffix: suffix, processID: processID, anchor: anchor)
         } catch CaretCLI.Error.missingProjectRoot {
             clearOffer()
         } catch {
@@ -128,7 +129,6 @@ final class TabCompletionsController {
         guard let app = NSRunningApplication(processIdentifier: processID),
               app.processIdentifier == NSWorkspace.shared.frontmostApplication?.processIdentifier
         else {
-            clearOffer()
             return
         }
 
