@@ -20,7 +20,8 @@ Native Mac UI in Swift, local workflow core in Python 3.11+ with stdlib only, ru
 - Python: `unittest` discovery under `tests/` (`make test`). Checks should cover scheduling arithmetic, failed-source handling, hold transitions, and duplicate external effects — see `CONTRIBUTING.md`.
 - Pin lockstep: `scripts/check_sources.py` requires `sources.json`, `.gitmodules`, and staged submodule SHAs to match.
 - Full Mac gate: `make check` (tests + pin check + `swift build`). CI splits this: Linux runs tests, the pin check, and a fixture preview; macOS builds the Swift package (`.github/workflows/ci.yml`).
-- No check uses live accounts or sends messages. A green run does not prove Gmail, calendar, or browser acceptance.
+- GitHub Actions repository secret `SUPABASE_HACKATHON_TOKEN` is available for CI jobs that need Supabase (`gh secret list`). Workflows that need it should use `${{ secrets.SUPABASE_HACKATHON_TOKEN }}`. Do not write the value into the repo, plaintext workflow files, or memory-bank.
+- No current check uses live Gmail, calendar, or browser accounts, or sends messages. A green run does not prove those integrations.
 
 ## Design System
 
