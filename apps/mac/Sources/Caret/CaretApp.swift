@@ -1152,16 +1152,22 @@ struct CaretActionOfferRow: View {
             Text("Running…")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
-        case .succeeded:
-            Label("Done", systemImage: "checkmark")
+        case .succeeded(_, _, let scope):
+            // "Draft ready" and "Done" are different claims. A draft-only run
+            // completed its own job without sending or scheduling anything.
+            Label(scope.label, systemImage: scope == .draftOnly ? "doc.text" : "checkmark")
                 .labelStyle(.titleAndIcon)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.green)
+                .foregroundStyle(scope == .draftOnly ? Color.secondary : Color.green)
         case .failed:
             Label("Failed", systemImage: "exclamationmark.triangle")
                 .labelStyle(.titleAndIcon)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.orange)
+        case .cancelled:
+            Text("Stopped")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
         case .unavailable:
             Text("Unavailable")
                 .font(.system(size: 10, weight: .medium))
@@ -1171,7 +1177,12 @@ struct CaretActionOfferRow: View {
 
     @ViewBuilder private var detail: some View {
         switch offer.state {
-        case .succeeded(let summary, let evidence):
+        case .cancelled(let summary):
+            Text(summary)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        case .succeeded(let summary, let evidence, _):
             Text(summary)
                 .font(.system(size: 11))
                 .foregroundStyle(.primary)
