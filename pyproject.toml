@@ -1,0 +1,6 @@
+[project]
+name = "caret-core"
+version = "0.1.0"
+description = "Local workflow and evidence core for Caret"
+requires-python = ">=3.11"
+dependencies = []

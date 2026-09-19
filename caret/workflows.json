@@ -1,0 +1,24 @@
+[
+  {
+    "id": "book-flight",
+    "name": "Book a flight",
+    "inputs": ["thread", "travel_constraints", "calendar", "timetable"],
+    "stages": ["extract", "find_options", "preview", "navigate_to_payment"],
+    "stop_before": "payment",
+    "status": "adapter_required"
+  },
+  {
+    "id": "book-calendar-link",
+    "name": "Book a calendar link",
+    "inputs": ["thread", "calendar", "travel_buffers"],
+    "stages": ["extract", "intersect", "preview", "send", "hold", "confirm", "cleanup"],
+    "status": "local_preview"
+  },
+  {
+    "id": "revise",
+    "name": "Revise",
+    "inputs": ["selected_text", "instruction"],
+    "stages": ["generate", "preview", "replace_selection"],
+    "status": "adapter_required"
+  }
+]
