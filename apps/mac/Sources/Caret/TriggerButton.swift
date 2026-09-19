@@ -9,6 +9,32 @@ enum CaretPillMetrics {
     static let stripCornerRadius: CGFloat = clusterHeight / 2
 }
 
+enum TriggerButtonGeometry {
+    static func frame(avoiding textRect: CGRect, size: CGSize, visibleFrame: CGRect) -> CGRect? {
+        guard !textRect.isNull, !textRect.isInfinite,
+              size.width > 0, size.height > 0,
+              size.width <= visibleFrame.width, size.height <= visibleFrame.height else { return nil }
+        // Keep the entire cluster, including its shadow, out of the editable field.
+        let protected = textRect.standardized.insetBy(dx: -8, dy: -8)
+        let candidates = [
+            CGPoint(x: protected.maxX, y: textRect.midY - size.height / 2),
+            CGPoint(x: protected.minX - size.width, y: textRect.midY - size.height / 2),
+            CGPoint(x: textRect.maxX - size.width, y: protected.minY - size.height),
+            CGPoint(x: textRect.maxX - size.width, y: protected.maxY)
+        ]
+        for origin in candidates {
+            let clamped = CGPoint(
+                x: min(max(origin.x, visibleFrame.minX), visibleFrame.maxX - size.width),
+                y: min(max(origin.y, visibleFrame.minY), visibleFrame.maxY - size.height)
+            )
+            let frame = CGRect(origin: clamped, size: size)
+            if !frame.intersects(protected) { return frame }
+        }
+        // Clamping into a full-screen editor would cover text. Leave its shortcuts available.
+        return nil
+    }
+}
+
 struct PinnedActionChip: Identifiable, Equatable {
     let id: String
     let title: String
@@ -24,6 +50,7 @@ final class TriggerButtonController {
 
     private let panel = TriggerButtonPanel()
     private var lastRect: CGRect = .zero
+    private var lastTarget: SelectionTarget?
     private var pinnedActions: [PinnedActionChip] = []
     private weak var chordState: ModifierChordState?
 
@@ -40,12 +67,7 @@ final class TriggerButtonController {
         if let size = panel.contentView?.fittingSize, size.width > 1 {
             panel.setContentSize(NSSize(width: size.width, height: max(size.height, CaretPillMetrics.sparkleSize.height)))
         }
-        if panel.isVisible, lastRect != .zero {
-            var frame = lastRect
-            frame.size = panel.frame.size
-            lastRect = frame
-            panel.setFrame(frame, display: true)
-        }
+        if let lastTarget { update(target: lastTarget) }
     }
 
     private func makeHostingView() -> NSHostingView<TriggerClusterView> {
@@ -71,21 +93,41 @@ final class TriggerButtonController {
             return
         }
 
+        lastTarget = target
         let size = panel.frame.size.width > 1 ? panel.frame.size : CaretPillMetrics.sparkleSize
-        let point = target.anchor
-        var origin = CGPoint(x: point.x + 10, y: point.y - size.height / 2)
-        var frame = CGRect(origin: origin, size: size)
-
-        if let screen = AXHelpers.screen(containing: point) {
-            if frame.maxX > screen.visibleFrame.maxX {
-                origin.x = point.x - size.width - 10
-            }
-            frame = AXHelpers.clamp(CGRect(origin: origin, size: size), to: screen.visibleFrame)
+        var protected = target.screenRect
+        var hasFieldBounds = false
+        // A caret can be zero-width. Its mouse fallback is not a safe placement anchor.
+        // The focused field also reserves space for text and selected inline completions.
+        if let app = NSWorkspace.shared.frontmostApplication,
+           app.processIdentifier == target.focusedProcessID,
+           let element = AXHelpers.focusedTextElement(in: app),
+           let field = AXHelpers.frame(element) {
+            protected = protected.union(field)
+            hasFieldBounds = true
         }
-
-        if panel.isVisible, hypot(frame.midX - lastRect.midX, frame.midY - lastRect.midY) < 3 {
+        let point = CGPoint(x: protected.midX, y: protected.midY)
+        guard let screen = AXHelpers.screen(containing: point) else {
+            panel.orderOut(nil)
             return
         }
+        if !hasFieldBounds {
+            guard protected.height > 2 else {
+                panel.orderOut(nil)
+                return
+            }
+            // Without field bounds, reserve the whole line for an inline completion.
+            protected = CGRect(x: screen.visibleFrame.minX, y: protected.minY,
+                               width: screen.visibleFrame.width, height: protected.height)
+        }
+        guard let frame = TriggerButtonGeometry.frame(avoiding: protected, size: size, visibleFrame: screen.visibleFrame)
+        else {
+            panel.orderOut(nil)
+            lastRect = .zero
+            return
+        }
+
+        if panel.isVisible, frame == lastRect { return }
 
         lastRect = frame
         panel.setFrame(frame, display: true)
@@ -93,6 +135,7 @@ final class TriggerButtonController {
     }
 
     func hide() {
+        lastTarget = nil
         lastRect = .zero
         panel.orderOut(nil)
     }
