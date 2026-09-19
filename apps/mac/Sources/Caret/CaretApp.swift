@@ -350,9 +350,12 @@ final class Model: ObservableObject {
         panelQuery = ""
     }
 
+    var onPanelLayoutChanged: (() -> Void)?
+
     func clearPanelScope() {
         scopedActionID = nil
         panelQuery = ""
+        onPanelLayoutChanged?()
     }
 
     func openSettings() {
@@ -543,6 +546,8 @@ enum ActionsMenuMetrics {
     static let gatewayMinHeight: CGFloat = 300
     /// Fixed floating-panel height for gateway skills (header + scroll body).
     static let gatewayPanelHeight: CGFloat = gatewayMinHeight + 24
+    /// Default height for the action browse palette (search + action list).
+    static let browsePanelMinHeight: CGFloat = 280
     static let gatewayHeaderHeight: CGFloat = 50
     static let gatewayBodyPadding: CGFloat = 14
     static var gatewayBodyHeight: CGFloat {
@@ -611,28 +616,6 @@ struct SkillPickerView: View {
 
                 // B-01: offered / running / succeeded / failed, with the
                 // core's own summary and evidence. Never synthesized.
-                if !model.actionOffers.isEmpty {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(model.actionOffers) { offer in
-                                CaretActionOfferRow(offer: offer) {
-                                    model.runOfferedAction(offer)
-                                }
-                            }
-                        }
-                    }
-                    // Keep evidence scrollable without pushing the action menu off screen.
-                    .frame(maxHeight: 220)
-                }
-
-                if !model.backendStatus.isEmpty {
-                    CaretActionStatusRow(
-                        title: "Actions unavailable",
-                        detail: model.backendStatus,
-                        tone: .unavailable
-                    )
-                }
-
                 PanelSearchField(
                     text: $model.panelQuery,
                     placeholder: searchPlaceholder,
@@ -645,6 +628,20 @@ struct SkillPickerView: View {
                     } else if model.showCreateRow {
                         model.submitCreateFromQuery()
                     }
+                }
+
+                if !model.actionOffers.isEmpty {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(model.actionOffers) { offer in
+                                CaretActionOfferRow(offer: offer) {
+                                    model.runOfferedAction(offer)
+                                }
+                            }
+                        }
+                    }
+                    // Keep evidence scrollable without pushing the action menu off screen.
+                    .frame(maxHeight: 220)
                 }
             }
             .padding(.horizontal, 10)
@@ -789,8 +786,6 @@ private struct GatewayActionPanel: View {
         }
         .padding(.horizontal, 14)
         .frame(height: ActionsMenuMetrics.gatewayHeaderHeight, alignment: .leading)
-        .background(.ultraThinMaterial)
-        .zIndex(1)
     }
 
     @ViewBuilder
@@ -1011,19 +1006,20 @@ final class CaretPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    func present(at point: CGPoint, width: CGFloat = ActionsMenuMetrics.width, makeKey: Bool = true) {
-        setFrame(frame(near: point, width: width), display: true)
+    func present(
+        at point: CGPoint,
+        width: CGFloat = ActionsMenuMetrics.width,
+        height: CGFloat = ActionsMenuMetrics.browsePanelMinHeight,
+        makeKey: Bool = true
+    ) {
+        setFrame(frame(near: point, width: width, height: height), display: true)
         orderFrontRegardless()
         if makeKey {
             self.makeKey()
         }
     }
 
-    private func frame(near point: CGPoint, width: CGFloat) -> NSRect {
-        let minHeight = width >= ActionsMenuMetrics.gatewayWidth
-            ? ActionsMenuMetrics.gatewayPanelHeight
-            : 280
-        let height = max(frame.size.height, minHeight)
+    private func frame(near point: CGPoint, width: CGFloat, height: CGFloat) -> NSRect {
         let size = CGSize(width: width, height: height)
         let screen = AXHelpers.screen(containing: point)
         let visible = screen?.visibleFrame ?? NSRect(origin: .zero, size: size)
@@ -1089,13 +1085,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hidesOnDeactivate = false
+        model.onPanelLayoutChanged = { [weak self] in
+            self?.resyncVisiblePanelFrame()
+        }
         model.onRun = { [weak self] action, skill in
             guard let self, let model = self.model else { return }
             let target = self.freshTargetForGatewayAction()
             if GatewaySkillActions.contains(action.id) {
                 model.scopedActionID = action.id
                 model.panelQuery = ""
-                if self.panel?.isVisible != true {
+                if self.panel?.isVisible == true {
+                    self.resyncVisiblePanelFrame()
+                } else {
                     self.showPanel(at: self.lastPanelPoint, scopedActionID: action.id)
                 }
             } else {
@@ -1314,6 +1315,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return target
     }
 
+    private static func panelDimensions(scopedActionID: String?) -> (width: CGFloat, height: CGFloat) {
+        let isGateway = scopedActionID.map { GatewaySkillActions.contains($0) } == true
+        if isGateway {
+            return (ActionsMenuMetrics.gatewayWidth, ActionsMenuMetrics.gatewayPanelHeight)
+        }
+        return (ActionsMenuMetrics.width, ActionsMenuMetrics.browsePanelMinHeight)
+    }
+
+    private func resyncVisiblePanelFrame() {
+        guard panel?.isVisible == true else { return }
+        let scopedActionID = model?.scopedActionID
+        let dimensions = Self.panelDimensions(scopedActionID: scopedActionID)
+        let stealsFocus = scopedActionID.map { GatewaySkillActions.contains($0) } != true
+        panel?.present(
+            at: lastPanelPoint,
+            width: dimensions.width,
+            height: dimensions.height,
+            makeKey: stealsFocus
+        )
+    }
+
     private func showPanel(at point: CGPoint, scopedActionID: String?) {
         lastPanelPoint = point
         model?.preparePanel(scopedActionID: scopedActionID)
@@ -1322,14 +1344,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // next capture tick would otherwise read Caret's own focus and
         // invalidate the offers this panel is showing.
         inlineCompletion?.setPaused(true)
-        let panelWidth: CGFloat
-        if let scopedActionID, GatewaySkillActions.contains(scopedActionID) {
-            panelWidth = ActionsMenuMetrics.gatewayWidth
-        } else {
-            panelWidth = ActionsMenuMetrics.width
-        }
+        let dimensions = Self.panelDimensions(scopedActionID: scopedActionID)
         let stealsFocus = scopedActionID.map { GatewaySkillActions.contains($0) } != true
-        panel?.present(at: point, width: panelWidth, makeKey: stealsFocus)
+        panel?.present(
+            at: point,
+            width: dimensions.width,
+            height: dimensions.height,
+            makeKey: stealsFocus
+        )
         syncActionOffers()
         installClickOutside()
         if let id = scopedActionID,

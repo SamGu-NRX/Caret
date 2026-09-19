@@ -326,6 +326,13 @@ final class CoreLaunchSettingsTests: XCTestCase {
                       "the user needs to know which judge they would silently get")
         XCTAssertTrue(CoreLaunchSettings.Unavailable.noInterpreter.statusText.contains("dev.json"))
     }
+
+    func testDiscoveredPythonPrefersExistingSystemBinary() {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/python3") else {
+            throw XCTSkip("No system python3 on this runner")
+        }
+        XCTAssertEqual(CoreLaunchSettings.discoveredPythonExecutable(), "/usr/bin/python3")
+    }
 }
 
 /// The demo argv. Gateway 403s on this team (customer_verification_required),

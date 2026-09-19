@@ -65,7 +65,9 @@ enum CoreLaunchSettings {
         var statusText: String {
             switch self {
             case .noInterpreter:
-                return "No Python interpreter configured. Set \"python\" in ~/.config/caret/dev.json."
+                return """
+                Caret could not find Python 3. Install Python 3.11+ or set \"python\" in ~/.config/caret/dev.json.
+                """
             case .noRoot(let path):
                 return "Core not found at \(path). Set \"root\" in ~/.config/caret/dev.json."
             case .missingKey(let variable, let provider):
@@ -131,12 +133,30 @@ enum CoreLaunchSettings {
         return result
     }
 
+    /// Same discovery order as `CaretCLI`: explicit config, then common install paths.
+    static func discoveredPythonExecutable() -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/python3.14",
+            "/opt/homebrew/bin/python3.13",
+            "/opt/homebrew/bin/python3.12",
+            "/usr/local/bin/python3.12",
+            "/usr/bin/python3",
+        ]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        return nil
+    }
+
     static func resolve() -> Result<CoreLaunchConfiguration, Unavailable> {
         let env = ProcessInfo.processInfo.environment
         let config = DeveloperConfig.load()
 
-        let pythonPath = env["CARET_PYTHON"] ?? config.python
-        guard let pythonPath, FileManager.default.isExecutableFile(atPath: (pythonPath as NSString).expandingTildeInPath) else {
+        let configuredPython = env["CARET_PYTHON"] ?? config.python
+        let pythonPath = configuredPython ?? discoveredPythonExecutable()
+        guard let pythonPath,
+              FileManager.default.isExecutableFile(atPath: (pythonPath as NSString).expandingTildeInPath)
+        else {
             return .failure(.noInterpreter)
         }
 

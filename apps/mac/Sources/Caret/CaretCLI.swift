@@ -35,7 +35,10 @@ enum CaretCLI {
         let configuredRoot = parentEnvironment["CARET_CORE_ROOT"] ?? config.root
         guard let root = configuredRoot.map({ URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) })
             ?? CaretPaths.projectRoot else { throw Error.missingProjectRoot }
-        let python = parentEnvironment["CARET_PYTHON"] ?? config.python ?? Self.pythonExecutable()
+        let python = parentEnvironment["CARET_PYTHON"]
+            ?? config.python
+            ?? CoreLaunchSettings.discoveredPythonExecutable()
+            ?? "/usr/bin/python3"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: (python as NSString).expandingTildeInPath)
         process.currentDirectoryURL = root
@@ -80,20 +83,6 @@ enum CaretCLI {
     }
 
     private static let gatewayKeyFileName = "vercel-api-gateway-key"
-
-    private static func pythonExecutable() -> String {
-        let candidates = [
-            "/opt/homebrew/bin/python3.14",
-            "/opt/homebrew/bin/python3.13",
-            "/opt/homebrew/bin/python3.12",
-            "/usr/local/bin/python3.12",
-            "/usr/bin/python3",
-        ]
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
-            return path
-        }
-        return "/usr/bin/python3"
-    }
 
     static func userFacingMessage(for error: Swift.Error) -> String {
         switch error {
