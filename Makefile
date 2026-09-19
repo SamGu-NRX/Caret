@@ -18,6 +18,7 @@ test:
 check: test
 	python3 scripts/check_sources.py
 	swift test --package-path apps/mac
+	xcodebuild -quiet -project Caret.xcodeproj -scheme Caret -configuration Debug -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
 
 sources:
 	git submodule update --init --depth 1 packages/keytype packages/ghosttype packages/computer-use-jev

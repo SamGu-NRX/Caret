@@ -31,3 +31,5 @@ jobs:
           xcodebuild -version
           swift --version
       - run: swift test --package-path apps/mac
+      - name: Build the packaged app
+        run: xcodebuild -quiet -project Caret.xcodeproj -scheme Caret -configuration Debug -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build

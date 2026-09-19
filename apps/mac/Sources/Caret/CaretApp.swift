@@ -41,6 +41,7 @@ final class Model: ObservableObject {
     let skillRepository = SkillRepository()
     let memoryRepository = MemoryRepository()
     let noteRepository = NoteRepository()
+    let noteEditor = NoteEditorSession()
 
     @Published private(set) var skillNotes: [CaretNote] = []
     @Published private(set) var memoryNotes: [CaretNote] = []
@@ -69,7 +70,8 @@ final class Model: ObservableObject {
         onPinsChanged?()
     }
 
-    func saveSkillNote(actionID: String, title: String, icon: String, body: String, apps: [String] = []) {
+    @discardableResult
+    func saveSkillNote(actionID: String, title: String, icon: String, body: String, apps: [String] = []) -> Bool {
         do {
             _ = try noteRepository.saveSkillNote(
                 actionID: actionID,
@@ -80,12 +82,15 @@ final class Model: ObservableObject {
             )
             reloadNotes()
             onPinsChanged?()
+            return true
         } catch {
             NSLog("[Caret] save skill note failed: %@", String(describing: error))
+            return false
         }
     }
 
-    func saveMemoryNote(noteID: String, title: String, icon: String, body: String, apps: [String]) {
+    @discardableResult
+    func saveMemoryNote(noteID: String, title: String, icon: String, body: String, apps: [String]) -> Bool {
         do {
             _ = try noteRepository.saveMemoryNote(
                 noteID: noteID,
@@ -95,17 +100,22 @@ final class Model: ObservableObject {
                 apps: apps
             )
             reloadNotes()
+            return true
         } catch {
             NSLog("[Caret] save memory note failed: %@", String(describing: error))
+            return false
         }
     }
 
-    func deleteMemoryNote(id: String) {
+    @discardableResult
+    func deleteMemoryNote(id: String) -> Bool {
         do {
             try noteRepository.deleteMemoryNote(id: id)
             reloadNotes()
+            return true
         } catch {
             NSLog("[Caret] delete memory note failed: %@", String(describing: error))
+            return false
         }
     }
 
@@ -152,7 +162,8 @@ final class Model: ObservableObject {
         }
     }
 
-    func deleteSkill(actionID: String) {
+    @discardableResult
+    func deleteSkill(actionID: String) -> Bool {
         do {
             try noteRepository.deleteSkillNote(actionID: actionID)
             try skillRepository.deleteActionDirectory(actionID: actionID)
@@ -161,8 +172,10 @@ final class Model: ObservableObject {
             }
             reloadCustomActions()
             reloadNotes()
+            return true
         } catch {
             NSLog("[Caret] delete skill failed: %@", String(describing: error))
+            return false
         }
     }
 
@@ -748,6 +761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var panel: CaretPanel?
     private var permissionPanel: NSPanel?
     private var settingsWindow: NSWindow?
+    private var debugWindow: NSWindow?
     private var model: Model?
     private var trustTimer: Timer?
     private var lastTarget: SelectionTarget?
@@ -817,6 +831,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         statusBar.onSettings = { [weak self] in
             self?.showSettingsWindow()
+        }
+        statusBar.onDebug = { [weak self] in
+            self?.showDebugWindow()
         }
         statusBar.onFixAccessibility = { [weak self] in
             self?.showPermissionWindow()
@@ -1003,8 +1020,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === settingsWindow else { return }
-        NSApp.setActivationPolicy(.accessory)
+        let closing = notification.object as? NSWindow
+        guard closing === settingsWindow || closing === debugWindow else { return }
+        let otherVisible = (closing === settingsWindow && debugWindow?.isVisible == true)
+            || (closing === debugWindow && settingsWindow?.isVisible == true)
+        if !otherVisible {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -1067,6 +1089,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func showDebugWindow() {
+        hidePanel()
+
+        if debugWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Caret Debug"
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            debugWindow = window
+        }
+
+        debugWindow?.contentView = NSHostingView(rootView: CaretDebugView())
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        debugWindow?.makeKeyAndOrderFront(nil)
     }
 
     func showPermissionWindow() {
