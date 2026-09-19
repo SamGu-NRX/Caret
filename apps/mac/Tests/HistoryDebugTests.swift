@@ -1,5 +1,7 @@
 import XCTest
+#if SWIFT_PACKAGE
 @testable import Caret
+#endif
 
 final class HistoryDebugTests: XCTestCase {
     func testCommandUsesProjectRootAndLease() {

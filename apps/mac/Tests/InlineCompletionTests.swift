@@ -1,5 +1,7 @@
 import XCTest
+#if SWIFT_PACKAGE
 @testable import Caret
+#endif
 
 /// These cover the decisions that are dangerous to get wrong: who owns a
 /// keystroke, whether an offer is still about the text on screen, and whether

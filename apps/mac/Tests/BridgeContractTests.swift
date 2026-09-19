@@ -1,6 +1,8 @@
 import XCTest
 import CaretCore
+#if SWIFT_PACKAGE
 @testable import Caret
+#endif
 
 /// Decoding against the timestamp shapes the real Python core emits.
 ///

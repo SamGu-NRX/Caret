@@ -26,6 +26,7 @@ enum CoreLaunchSettings {
         /// `--adapter <entry>`, e.g. "caret.live_workflows:MeetingDraftWorkflow".
         var adapters: [String]?
         var envFile: String?
+        var demoMeeting: Bool?
 
         static func load() -> DeveloperConfig {
             let explicit = ProcessInfo.processInfo.environment["CARET_DEV_CONFIG"]
@@ -37,6 +38,16 @@ enum CoreLaunchSettings {
             else { return DeveloperConfig() }
             return config
         }
+    }
+
+    static var demoMeetingEnabled: Bool {
+        demoMeetingEnabled(environment: ProcessInfo.processInfo.environment, config: DeveloperConfig.load())
+    }
+
+    static func demoMeetingEnabled(environment: [String: String], config: DeveloperConfig) -> Bool {
+        // An explicit environment value overrides the developer file, including disabling it.
+        if let value = environment["CARET_DEMO_MEETING"] { return value == "1" }
+        return config.demoMeeting == true
     }
 
     enum Unavailable: Error, Equatable {

@@ -1,6 +1,8 @@
 import XCTest
 import CaretCore
+#if SWIFT_PACKAGE
 @testable import Caret
+#endif
 
 /// Regressions for five blockers a fresh review found in the action
 /// acceptance path at 3956ee0. Each test names the wrong behavior it pins
