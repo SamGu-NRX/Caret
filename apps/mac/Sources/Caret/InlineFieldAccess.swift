@@ -78,10 +78,19 @@ enum InlineFieldAccess {
         return NSRange(location: range.location, length: range.length)
     }
 
-    /// Stable-enough identity for one element within its window. AX exposes no
-    /// durable element id, so this combines what is stable across reads of the
-    /// same field. It is deliberately not the value: identity must survive the
-    /// user typing.
+    /// Provisional identity for one element within its window.
+    ///
+    /// KNOWN LIMITATION, tracked as B-03: role plus label plus window title can
+    /// collide. Two same-shaped fields in one window, or two windows sharing a
+    /// title, are indistinguishable here, so a stale offer could in principle
+    /// be judged current for the wrong field. The other revalidation checks
+    /// (live text equality and exact selection) make an actual wrong edit very
+    /// unlikely, but they do not close the hole by themselves.
+    ///
+    /// CaretCore's `AXIdentityRegistry` closes it properly by retaining the
+    /// AXUIElement and matching with CFEqual. This is deleted in favor of that
+    /// at integration rather than grown into a second identity scheme; see
+    /// docs/inline-tab-completion.md.
     private static func elementID(_ element: AXUIElement, role: String, subrole: String) -> String {
         let label = AXHelpers.stringValue(element, kAXIdentifierAttribute as CFString)
             ?? AXHelpers.stringValue(element, kAXPlaceholderValueAttribute as CFString)

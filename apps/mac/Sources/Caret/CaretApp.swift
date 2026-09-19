@@ -253,12 +253,15 @@ final class Model: ObservableObject {
     }
 
     func run(_ action: CaretAction, skill: CaretSkill? = nil) {
+        // Length, not content. This line runs for every action in whatever
+        // app the user is in, so logging the selection would copy their mail,
+        // messages and passwords into the system log.
         NSLog(
-            "[Caret] action=%@ skill=%@ memories=%d selection=%@ app=%@",
+            "[Caret] action=%@ skill=%@ memories=%d selection_units=%d app=%@",
             action.id,
             skill?.id ?? "-",
             memories.count,
-            selectedText.replacingOccurrences(of: "\n", with: " "),
+            selectedText.utf16.count,
             sourceApp ?? "-"
         )
         onRun?(action)
