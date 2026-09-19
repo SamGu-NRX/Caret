@@ -17,7 +17,7 @@ test:
 
 check: test
 	python3 scripts/check_sources.py
-	swift build --package-path apps/mac
+	swift test --package-path apps/mac
 
 sources:
 	git submodule update --init --depth 1 packages/keytype packages/ghosttype packages/computer-use-jev
