@@ -923,6 +923,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         provider.onActionOffer = { [weak self] _ in
             Task { @MainActor in self?.syncActionOffers() }
         }
+        provider.onActionsChanged = { [weak self] in
+            Task { @MainActor in self?.syncActionOffers() }
+        }
         provider.onActionStateChange = { [weak self] proposalID, state in
             Task { @MainActor in
                 self?.model?.updateActionState(proposalID, state)
@@ -941,6 +944,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.statusBar.setInlineStatus(text)
             self.model?.backendStatus = text ?? ""
         }
+        coordinator.onContextInvalidated = { [weak self] in
+            // The field these offers were prepared against is gone.
+            self?.bridge?.invalidateContextualOffers()
+        }
         coordinator.onSelectChoice = { [weak self] index in
             Task { @MainActor in self?.runVisibleChoice(index: index) }
         }
@@ -951,8 +958,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func syncActionOffers() {
         guard let bridge, let model else { return }
         model.setActionOffers(bridge.visibleExecutableActions)
-        // Cmd-1..3 bind only to offers that are both visible and runnable.
-        inlineCompletion?.setVisibleChoiceCount(min(3, model.runnableOffers.count))
+        // Blocker 2: an ambient offer arriving while the panel is closed used
+        // to claim Cmd-1..3 from whatever app the user was typing in. Caret
+        // owns those chords only while its own panel is on screen showing the
+        // choices they address.
+        let visible = panel?.isVisible == true
+        inlineCompletion?.setVisibleChoiceCount(visible ? min(3, model.runnableOffers.count) : 0)
     }
 
     /// Cmd-1..3 while Caret's own picker is showing choices. Bound only for as
@@ -960,6 +971,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// rest of the time.
     private func runVisibleChoice(index: Int) {
         guard let model else { return }
+        // Rechecked here, not just when the count was published: the panel can
+        // close between the tap consuming the key and this running.
+        guard panel?.isVisible == true else { return }
         let choices = model.runnableOffers
         // The tap only consumed the key because this many choices were
         // visible; if that changed in between, the host should have had it.

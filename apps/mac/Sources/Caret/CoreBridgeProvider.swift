@@ -135,6 +135,9 @@ final class CoreBridgeProvider: InlineCompletionProviding {
     /// Action offers and their state changes, for the picker to render.
     var onActionOffer: ((CaretActionOffer) -> Void)?
     var onActionStateChange: ((String, CaretActionOffer.State) -> Void)?
+    /// The set of offers changed, so the UI list and the key tap's choice
+    /// count both need recomputing.
+    var onActionsChanged: (() -> Void)?
 
     let capture: FocusedTargetCapture
     private var client: CoreBridgeClient?
@@ -234,6 +237,17 @@ final class CoreBridgeProvider: InlineCompletionProviding {
 
     func actionOffer(id: String) -> CaretActionOffer? { actionOffers[id] }
 
+    /// The user left the field or focus changed. Offers were prepared against
+    /// that context, so they stop being valid whether or not the core has
+    /// noticed yet. A run already in flight is left alone: it owns its own
+    /// outcome and will report it.
+    func invalidateContextualOffers() {
+        let removable = actionOffers.keys.filter { !executing.contains($0) }
+        guard !removable.isEmpty else { return }
+        for id in removable { actionOffers[id] = nil }
+        onActionsChanged?()
+    }
+
     /// Runs an offered action exactly once.
     ///
     /// The claim is synchronous and taken before any await, so two keystrokes
@@ -261,6 +275,20 @@ final class CoreBridgeProvider: InlineCompletionProviding {
             return
         }
 
+        // Blocker 1: the offer's target was captured when the offer was
+        // minted, which may be many seconds and several keystrokes ago. An
+        // action can rewrite the user's text, so sending a saved target
+        // unchecked risks acting on a field they have left. Revalidate against
+        // the live field first and refuse on any mismatch.
+        guard let live = capture.liveTarget() else {
+            finish(proposalID, .unavailable(reason: "Caret can no longer read the field this action was prepared for."))
+            return
+        }
+        if let mismatch = Self.staleness(offerTarget: offer.target, live: live) {
+            finish(proposalID, .unavailable(reason: mismatch))
+            return
+        }
+
         Task { @MainActor in
             do {
                 let result = try await client.accept(
@@ -280,6 +308,31 @@ final class CoreBridgeProvider: InlineCompletionProviding {
                 self.finish(proposalID, .failed(summary: "The run could not be completed."))
             }
         }
+    }
+
+    /// Why a saved action target no longer matches the live field, or nil
+    /// when it still does.
+    ///
+    /// Identity is compared without the content token first, so "you moved to
+    /// a different field" and "you edited this field" stay distinguishable:
+    /// they are different things to tell the user.
+    nonisolated static func staleness(
+        offerTarget: TargetIdentity,
+        live: InsertionGuard.LiveField
+    ) -> String? {
+        if live.secure { return "That field is secure, so Caret will not act on it." }
+
+        var expected = offerTarget
+        var actual = live.target
+        expected.elementRevision = ""
+        actual.elementRevision = ""
+        guard expected == actual else {
+            return "The focus moved to a different field, so nothing ran."
+        }
+        guard offerTarget.elementRevision == live.target.elementRevision else {
+            return "The text changed after this was prepared, so nothing ran."
+        }
+        return nil
     }
 
     /// The core's ExecutionResult permits exactly four statuses:
@@ -370,9 +423,16 @@ final class CoreBridgeProvider: InlineCompletionProviding {
             }
             actionOffers[offer.proposalID] = record
             onActionOffer?(record)
+            onActionsChanged?()
 
         case .invalidated(let proposalID, let reason):
-            actionOffers[proposalID] = nil
+            // Blocker 5: dropping the record is not enough. The UI keeps its
+            // own list and the key tap keeps its own choice count, so both
+            // must be recomputed now or a dead row stays on screen and Cmd-1
+            // still claims a key for an offer that no longer exists.
+            let wasAction = actionOffers.removeValue(forKey: proposalID) != nil
+            executing.remove(proposalID)
+            if wasAction { onActionsChanged?() }
             onInvalidated?(proposalID, .invalidatedByCore)
             log.info("core invalidated a proposal: \(reason, privacy: .public)")
 

@@ -33,6 +33,10 @@ final class InlineCompletionCoordinator {
     /// Unused since InsertionGuard owns validation; kept nil to make the
     /// retained-text path unreachable.
     private var offerBaseText: String?
+    /// The newest frame seen while the request window was closed, kept so a
+    /// pause right after typing still gets evaluated.
+    private var pendingSnapshot: (snapshot: InputSnapshot, target: InlineTarget)?
+    private var pendingFlush: DispatchWorkItem?
     private var acceptTask: Task<Void, Never>?
 
     private let log = Logger(subsystem: "com.caret.app", category: "inline-completion")
@@ -40,6 +44,9 @@ final class InlineCompletionCoordinator {
     /// Surfaced to the status item. Never carries field content or keystrokes.
     private(set) var status: InlineDisabledReason?
     var onStatusChange: ((InlineDisabledReason?) -> Void)?
+    /// The focused field changed in a way that invalidates prepared context,
+    /// so action offers built from it stop being valid too.
+    var onContextInvalidated: (() -> Void)?
 
     init(provider: InlineCompletionProviding? = nil, capture: FocusedTargetCapture) {
         self.provider = provider
@@ -121,6 +128,9 @@ final class InlineCompletionCoordinator {
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        pendingFlush?.cancel()
+        pendingFlush = nil
+        pendingSnapshot = nil
         acceptTask?.cancel()
         acceptTask = nil
         tap.stop()
@@ -141,6 +151,7 @@ final class InlineCompletionCoordinator {
 
         case .suppressed(let suppression, let invalidatesPriorContext):
             if invalidatesPriorContext {
+                onContextInvalidated?()
                 // The user is no longer in the field the offer was about. This
                 // includes the composing case, where whether a composition is
                 // in progress is not observable: an offer that might land
@@ -177,13 +188,28 @@ final class InlineCompletionCoordinator {
     private func maybeRequest(_ snapshot: InputSnapshot, target: InlineTarget, provider: InlineCompletionProviding) {
         guard status == nil else { return }
         guard store.visibleOffer == nil, !store.acceptanceInFlight else { return }
-        if let lastRequestAt, Date().timeIntervalSince(lastRequestAt) < Self.requestInterval { return }
-        // Completing into the middle of a selection is a different feature.
-        guard snapshot.selection.isEmpty else { return }
+
+        // Blocker 3: this used to drop any snapshot arriving inside the
+        // 2 second window. The capture has already deduped, so a dropped
+        // snapshot is real typing that is simply never evaluated -- if the
+        // user pauses right after, their latest text is the one that never
+        // gets judged. Two independent cadence schedulers cannot both throttle
+        // without losing changes, so the newest frame is retained and sent
+        // when the window opens, and the core's own admission owns the rest.
+        if let lastRequestAt, Date().timeIntervalSince(lastRequestAt) < Self.requestInterval {
+            pendingSnapshot = (snapshot, target)
+            schedulePendingFlush()
+            return
+        }
+        pendingSnapshot = nil
 
         lastRequestAt = Date()
-        offerBaseText = nil
 
+        // Blocker 4: the real selection is sent. Refusing a non-empty
+        // selection here blocked every selection-driven action -- revise,
+        // summarize, translate -- before the judge ever saw the context. Only
+        // inline completion needs a collapsed caret, and the offer store
+        // already refuses an inline offer that does not match.
         let request = InlineCompletionRequest(
             generation: store.generation,
             revision: snapshot.revision,
@@ -192,7 +218,10 @@ final class InlineCompletionCoordinator {
             nearbyText: snapshot.nearbyText,
             textOffset: snapshot.textOffset,
             caret: snapshot.caret,
-            selection: NSRange(location: snapshot.caret, length: 0),
+            selection: NSRange(
+                location: snapshot.selection.start,
+                length: max(0, snapshot.selection.end - snapshot.selection.start)
+            ),
             secure: snapshot.secure,
             imeComposing: snapshot.imeComposing,
             appExcluded: snapshot.appExcluded,
@@ -206,6 +235,25 @@ final class InlineCompletionCoordinator {
                 await MainActor.run { self?.setStatus(.providerError) }
             }
         }
+    }
+
+    /// Sends the retained frame once the interval has elapsed, unless newer
+    /// input has already superseded it.
+    private func schedulePendingFlush() {
+        guard pendingFlush == nil else { return }
+        let elapsed = lastRequestAt.map { Date().timeIntervalSince($0) } ?? Self.requestInterval
+        let delay = max(0.05, Self.requestInterval - elapsed)
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.pendingFlush = nil
+                guard let pending = self.pendingSnapshot, let provider = self.provider else { return }
+                self.pendingSnapshot = nil
+                self.maybeRequest(pending.snapshot, target: pending.target, provider: provider)
+            }
+        }
+        pendingFlush = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // MARK: - Offers

@@ -17,6 +17,11 @@ import Foundation
 ///   func dismiss(proposalID: String) async throws -> Bool
 /// The adapter maps InlineTarget <-> TargetIdentity and CoreEvent.offer(.inline)
 /// -> InlineOffer. Those are the only conversions needed.
+/// Main-actor isolated because every implementation touches UI-adjacent state
+/// and the coordinator that drives it is main-actor too. Isolating the
+/// protocol is the correct fix for the conformance warning; marking the
+/// conformance @unchecked would silence it while leaving the data race real.
+@MainActor
 protocol InlineCompletionProviding: AnyObject {
     /// An offer arrived, tagged with the generation of the request that asked
     /// for it so the store can drop a late answer.
