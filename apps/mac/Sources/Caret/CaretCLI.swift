@@ -18,13 +18,13 @@ enum CaretCLI {
         }.value
     }
 
-    static func runAction(actionID: String, text: String, instructions: String?) async throws -> String {
-        try await Task.detached(priority: .userInitiated) {
-            var args = ["--action", actionID, "--text", text]
-            if let instructions,
-               !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                args.append(contentsOf: ["--instructions", instructions])
-            }
+    static func runAction(actionID: String, text: String, instructions: String) async throws -> String {
+        let trimmed = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw Error.emptyResponse
+        }
+        return try await Task.detached(priority: .userInitiated) {
+            let args = ["--action", actionID, "--text", text, "--instructions", trimmed]
             return try runCommand(subcommand: "run-action", arguments: args)
         }.value
     }

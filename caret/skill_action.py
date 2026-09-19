@@ -47,10 +47,8 @@ def build_skill_messages(
     system_parts = [
         instructions.strip(),
         "",
-        "Apply the instructions to the user's text.",
-        "Return ONLY the transformed text.",
-        "Do not wrap the answer in quotes or markdown fences.",
-        "Do not add a preamble or explanation unless the instructions require a specific format.",
+        "The block above is the user's skill instructions. Follow it exactly.",
+        "Return ONLY the transformed text (no quotes, labels, or markdown fences).",
     ]
     system = "\n".join(system_parts)
     return [

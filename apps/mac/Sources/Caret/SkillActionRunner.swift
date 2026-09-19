@@ -53,10 +53,7 @@ final class SkillActionRunner {
         }
 
         let (input, snapshot) = resolved
-        guard let instructions = model?.resolvedSkillInstructions(actionID: action.id)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !instructions.isEmpty
-        else {
+        guard let instructions = SkillInstructions.resolvedBody(actionID: action.id, model: model) else {
             model?.failSkillPreview(
                 actionID: action.id,
                 message: "Add Instructions for this skill in Caret Settings, then try again."

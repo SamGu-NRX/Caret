@@ -440,6 +440,10 @@ final class Model: ObservableObject {
 
     func run(skill: CaretSkill) {
         guard let action = action(id: skill.actionID) else { return }
+        if GatewaySkillActions.contains(action.id) {
+            run(action, skill: nil)
+            return
+        }
         run(action, skill: skill)
     }
 
@@ -497,17 +501,19 @@ struct SkillPickerView: View {
                     .buttonStyle(.plain)
                 }
 
-                PanelSearchField(
-                    text: $model.panelQuery,
-                    placeholder: searchPlaceholder,
-                    isFocused: $searchFocused,
-                    onSettings: { model.openSettings() }
-                )
-                .onSubmit {
-                    if model.settingsMatchesSearch {
-                        model.openSettings()
-                    } else if model.showCreateRow {
-                        model.submitCreateFromQuery()
+                if !(model.scopedAction.map { GatewaySkillActions.contains($0.id) } ?? false) {
+                    PanelSearchField(
+                        text: $model.panelQuery,
+                        placeholder: searchPlaceholder,
+                        isFocused: $searchFocused,
+                        onSettings: { model.openSettings() }
+                    )
+                    .onSubmit {
+                        if model.settingsMatchesSearch {
+                            model.openSettings()
+                        } else if model.showCreateRow {
+                            model.submitCreateFromQuery()
+                        }
                     }
                 }
             }
@@ -541,6 +547,9 @@ struct SkillPickerView: View {
                         if model.showCreateRow {
                             CreateRow(model: model)
                         }
+                    } else if let action = model.scopedAction,
+                              GatewaySkillActions.contains(action.id) {
+                        GatewayPanelResultView(model: model, action: action)
                     } else {
                         let _ = model.skillsVersion
                         if model.filteredSkills.isEmpty, !model.trimmedPanelQuery.isEmpty {
@@ -558,7 +567,7 @@ struct SkillPickerView: View {
                 }
                 .padding(.vertical, 4)
             }
-            .frame(maxHeight: ActionsMenuMetrics.maxScrollHeight)
+            .frame(maxHeight: gatewayPanelScrollHeight)
         }
         .frame(width: ActionsMenuMetrics.width)
         .onAppear {
@@ -567,6 +576,56 @@ struct SkillPickerView: View {
         .onChange(of: model.scopedActionID) { _, _ in
             searchFocused = true
         }
+    }
+
+    private var gatewayPanelScrollHeight: CGFloat {
+        if model.scopedAction.map({ GatewaySkillActions.contains($0.id) }) == true {
+            return 360
+        }
+        return ActionsMenuMetrics.maxScrollHeight
+    }
+}
+
+private struct GatewayPanelResultView: View {
+    @ObservedObject var model: Model
+    let action: CaretAction
+
+    private var isRunning: Bool {
+        model.skillPreviewRunningActionID == action.id
+    }
+
+    private var bodyText: String {
+        let text = model.skillPreviewText(actionID: action.id)
+        if !text.isEmpty { return text }
+        if isRunning { return "" }
+        return "Select text or copy to the clipboard, then run this action."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(GatewaySkillActions.previewLabel(for: action.id))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            if isRunning {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Calling Vercel…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(bodyText)
+                    .font(.body)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(minHeight: 140, maxHeight: 320)
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
     }
 }
 
@@ -772,6 +831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var model: Model?
     private var trustTimer: Timer?
     private var lastTarget: SelectionTarget?
+    private var lastPanelPoint: CGPoint = NSEvent.mouseLocation
     private var clickMonitor: Any?
     private var escapeMonitor: Any?
     private let chordState = ModifierChordState()
@@ -803,7 +863,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.onRun = { [weak self] action, skill in
             guard let self, let model = self.model else { return }
             let target = self.lastTarget
-            self.hidePanel()
+            if GatewaySkillActions.contains(action.id) {
+                model.scopedActionID = action.id
+                model.panelQuery = ""
+                if self.panel?.isVisible != true {
+                    self.showPanel(at: self.lastPanelPoint, scopedActionID: action.id)
+                }
+            } else {
+                self.hidePanel()
+            }
             self.skillActionRunner.run(
                 action: action,
                 skill: skill,
@@ -875,9 +943,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         trigger.onPinnedAction = { [weak self] chip in
             Task { @MainActor in
-                guard let self, let model = self.model else { return }
-                if GatewaySkillActions.contains(chip.id), let action = model.action(id: chip.id) {
-                    model.run(action, skill: nil)
+                guard let self else { return }
+                if GatewaySkillActions.contains(chip.id) {
+                    self.showPanel(
+                        at: CGPoint(x: self.trigger.buttonFrame.maxX, y: self.trigger.buttonFrame.midY),
+                        scopedActionID: chip.id
+                    )
                     return
                 }
                 self.showPanel(
@@ -925,6 +996,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func runPinnedAction(slot: Int) {
         guard let model else { return }
+        guard let id = model.pinStore.actionID(forSlot: slot),
+              let action = model.action(id: id)
+        else { return }
+        if GatewaySkillActions.contains(action.id) {
+            showPanel(at: lastPanelPoint, scopedActionID: action.id)
+            return
+        }
         model.runPinnedSlot(slot)
     }
 
@@ -937,10 +1015,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func showPanel(at point: CGPoint, scopedActionID: String?) {
+        lastPanelPoint = point
         model?.preparePanel(scopedActionID: scopedActionID)
         trigger.hide()
         panel?.present(at: point)
         installClickOutside()
+        if let id = scopedActionID,
+           GatewaySkillActions.contains(id),
+           let action = model?.action(id: id),
+           let model {
+            model.run(action, skill: nil)
+        }
     }
 
     private func hidePanel() {

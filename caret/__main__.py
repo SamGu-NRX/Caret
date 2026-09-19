@@ -65,8 +65,8 @@ def main() -> int:
     run_action_cmd.add_argument("--text", required=True)
     run_action_cmd.add_argument(
         "--instructions",
-        default="",
-        help="Live skill instructions from Caret Settings (overrides on-disk note)",
+        required=True,
+        help="Skill instructions from Caret Settings (sent to Vercel as the system prompt)",
     )
     run_action_cmd.add_argument("--model", default=DEFAULT_MODEL)
     args = parser.parse_args()
@@ -114,7 +114,7 @@ def main() -> int:
             text = complete_skill_action(
                 args.action,
                 args.text,
-                instructions_override=args.instructions or None,
+                instructions_override=args.instructions,
                 model=args.model,
             )
         except (CompletionError, ValueError) as error:
