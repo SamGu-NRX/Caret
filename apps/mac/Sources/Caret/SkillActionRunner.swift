@@ -36,6 +36,17 @@ struct SkillActionSnapshot: Equatable {
 
 @MainActor
 final class SkillActionRunner {
+    static func hasInput(_ target: SelectionTarget) -> Bool {
+        if !target.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if let full = target.fieldContext?.fullText.trimmingCharacters(in: .whitespacesAndNewlines),
+           !full.isEmpty {
+            return true
+        }
+        return false
+    }
+
     func run(action: CaretAction, skill: CaretSkill?, target: SelectionTarget?, model: Model?) {
         _ = skill
         guard GatewaySkillActions.contains(action.id) else {
@@ -53,10 +64,10 @@ final class SkillActionRunner {
         }
 
         let (input, snapshot) = resolved
-        guard let instructions = SkillInstructions.resolvedBody(actionID: action.id, model: model) else {
+        guard let instructions = SkillInstructions.skillFileBody(actionID: action.id) else {
             model?.failSkillPreview(
                 actionID: action.id,
-                message: "Add Instructions for this skill in Caret Settings, then try again."
+                message: "Add Instructions in the skill file (Caret Settings → this action), then try again."
             )
             return
         }
@@ -80,7 +91,10 @@ final class SkillActionRunner {
             } catch {
                 NSLog("[Caret] action=%@ failed: %@", action.id, String(describing: error))
                 await MainActor.run {
-                    model?.failSkillPreview(actionID: action.id, message: String(describing: error))
+                    model?.failSkillPreview(
+                        actionID: action.id,
+                        message: CaretCLI.userFacingMessage(for: error)
+                    )
                 }
             }
         }

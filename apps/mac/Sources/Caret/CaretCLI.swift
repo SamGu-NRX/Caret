@@ -34,12 +34,13 @@ enum CaretCLI {
             throw Error.missingProjectRoot
         }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.executableURL = URL(fileURLWithPath: Self.pythonExecutable())
         process.currentDirectoryURL = root
         var environment = ProcessInfo.processInfo.environment
         environment["CARET_PROJECT_ROOT"] = root.path
         environment["CARET_NOTES_ROOT"] = CaretPaths.notesRoot.path
         environment["CARET_SUPPORT_ROOT"] = CaretPaths.applicationSupportRoot.path
+        environment["PYTHONPATH"] = root.path
         Self.injectGatewayAPIKey(into: &environment, projectRoot: root)
         process.environment = environment
         process.arguments = ["-m", "caret", subcommand] + arguments
@@ -62,7 +63,8 @@ enum CaretCLI {
         let err = String(data: errData, encoding: .utf8) ?? ""
 
         guard process.terminationStatus == 0 else {
-            throw Error.nonZeroExit(process.terminationStatus, err.isEmpty ? out : err)
+            let payload = err.isEmpty ? out : err
+            throw Error.nonZeroExit(process.terminationStatus, Self.parseCLIErrorPayload(payload))
         }
         let trimmed = out.trimmingCharacters(in: .newlines)
         guard !trimmed.isEmpty else {
@@ -72,6 +74,71 @@ enum CaretCLI {
     }
 
     private static let gatewayKeyFileName = "vercel-api-gateway-key"
+
+    private static func pythonExecutable() -> String {
+        let candidates = [
+            "/opt/homebrew/bin/python3.13",
+            "/opt/homebrew/bin/python3.12",
+            "/usr/local/bin/python3.12",
+            "/usr/bin/python3",
+        ]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        return "/usr/bin/python3"
+    }
+
+    static func userFacingMessage(for error: Swift.Error) -> String {
+        switch error {
+        case Error.missingProjectRoot:
+            return "Caret cannot find the project folder. Rebuild with make app from the hackathon repo."
+        case Error.emptyResponse:
+            return "The model returned no text. Try again or shorten the selection."
+        case Error.launchFailed(let underlying):
+            return "Could not run Caret CLI: \(underlying.localizedDescription)"
+        case Error.nonZeroExit(_, let message):
+            return message
+        default:
+            return String(describing: error)
+        }
+    }
+
+    private static func parseCLIErrorPayload(_ payload: String) -> String {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let data = trimmed.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = object["error"] as? String {
+            return humanizeGatewayError(error)
+        }
+        return humanizeGatewayError(trimmed)
+    }
+
+    private static func humanizeGatewayError(_ raw: String) -> String {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty {
+            return "Translation failed. Check Console.app for Caret logs."
+        }
+        if text.localizedCaseInsensitiveContains("credit card")
+            || text.contains("customer_verification_required") {
+            return """
+            Vercel AI Gateway is blocked until you add a card on your Vercel team (free tier credits still apply).
+
+            Vercel dashboard → Team → AI → add billing, then try Translate again.
+            """
+        }
+        if text.localizedCaseInsensitiveContains("Missing API key") {
+            return """
+            Missing Vercel API key for Caret.
+
+            Put the key in:
+            ~/Library/Application Support/Caret/vercel-api-gateway-key
+            """
+        }
+        if text.hasPrefix("Gateway HTTP") {
+            return text.replacingOccurrences(of: "\\n", with: "\n")
+        }
+        return text
+    }
 
     private static func injectGatewayAPIKey(into environment: inout [String: String], projectRoot: URL) {
         if let existing = environment["VERCEL_API_GATEWAY_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),

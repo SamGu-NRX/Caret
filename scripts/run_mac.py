@@ -26,8 +26,30 @@ subprocess.run(
     check=True,
 )
 bundle = root / ".local/build/Debug/Caret.app"
+plist = bundle / "Contents" / "Info.plist"
+if plist.is_file():
+    subprocess.run(
+        ["/usr/libexec/PlistBuddy", "-c", f"Set :CaretProjectRoot {root}", str(plist)],
+        check=False,
+    )
+    subprocess.run(
+        ["/usr/libexec/PlistBuddy", "-c", f"Add :CaretProjectRoot string {root}", str(plist)],
+        check=False,
+    )
 sync_script = root / "scripts" / "sync_vercel_gateway_key.sh"
 if sync_script.is_file() and "--build-only" not in sys.argv[1:]:
     subprocess.run(["/bin/bash", str(sync_script)], cwd=root, check=False)
 if "--build-only" not in sys.argv[1:]:
-    subprocess.run(["open", str(bundle)], check=True)
+    if "--install-applications" in sys.argv[1:] or "CARET_INSTALL_APPLICATIONS" in __import__(
+        "os"
+    ).environ:
+        import shutil
+
+        dest = Path("/Applications/Caret.app")
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(bundle, dest, symlinks=True)
+        subprocess.run(["/usr/bin/pkill", "-x", "Caret"], check=False)
+        subprocess.run(["open", str(dest)], check=False)
+    else:
+        subprocess.run(["open", str(bundle)], check=False)

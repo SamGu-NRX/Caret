@@ -21,6 +21,7 @@ final class TabCompletionsController {
     private let tabMonitor = TabInterceptMonitor()
     private let ghostPanel = InlineGhostPanel()
     private var offer: Offer?
+    private var offerPrefix: String?
     private var fetchTask: Task<Void, Never>?
     private var lastPresentedSuffix: String?
 
@@ -58,6 +59,7 @@ final class TabCompletionsController {
             fetchTask?.cancel()
             fetchTask = nil
             presentInlineOffer(
+                prefix: prefix,
                 suffix: patternSuffix,
                 processID: target.focusedProcessID ?? 0,
                 anchor: target.screenRect
@@ -65,8 +67,12 @@ final class TabCompletionsController {
             return
         }
 
-        if offer != nil {
+        if let offerPrefix, offerPrefix == prefix, offer != nil {
             return
+        }
+        if offer != nil {
+            revertActiveOfferIfNeeded()
+            offerPrefix = nil
         }
 
         fetchTask?.cancel()
@@ -87,6 +93,7 @@ final class TabCompletionsController {
         fetchTask?.cancel()
         fetchTask = nil
         offer = nil
+        offerPrefix = nil
         lastPresentedSuffix = nil
         ghostPanel.hide()
         tabMonitor.setActive(false, onTab: nil)
@@ -103,22 +110,21 @@ final class TabCompletionsController {
             return
         }
         do {
-            await GatewayKeySync.syncFromGitHubIfNeeded(projectRoot: CaretPaths.projectRoot)
             let suffix = try await CaretCLI.autoExpand(prefix: prefix, instructions: instructions)
             guard !Task.isCancelled, !suffix.isEmpty else {
                 clearOffer()
                 return
             }
-            presentInlineOffer(suffix: suffix, processID: processID, anchor: anchor)
+            presentInlineOffer(prefix: prefix, suffix: suffix, processID: processID, anchor: anchor)
         } catch CaretCLI.Error.missingProjectRoot {
             clearOffer()
         } catch {
-            NSLog("[Caret] Tab completion failed: %@", String(describing: error))
+            NSLog("[Caret] Tab completion failed: %@", CaretCLI.userFacingMessage(for: error))
             clearOffer()
         }
     }
 
-    private func presentInlineOffer(suffix: String, processID: pid_t, anchor: CGRect) {
+    private func presentInlineOffer(prefix: String, suffix: String, processID: pid_t, anchor: CGRect) {
         guard let app = NSRunningApplication(processIdentifier: processID),
               app.processIdentifier == NSWorkspace.shared.frontmostApplication?.processIdentifier
         else {
@@ -149,6 +155,7 @@ final class TabCompletionsController {
                 processID: processID,
                 anchor: caretAnchor
             )
+            offerPrefix = prefix
             lastPresentedSuffix = suffix
             tabMonitor.setActive(true) { [weak self] in
                 self?.acceptCurrentOffer() ?? false
@@ -164,6 +171,7 @@ final class TabCompletionsController {
             processID: processID,
             anchor: caretAnchor
         )
+        offerPrefix = prefix
         lastPresentedSuffix = suffix
         tabMonitor.setActive(true) { [weak self] in
             self?.acceptCurrentOffer() ?? false

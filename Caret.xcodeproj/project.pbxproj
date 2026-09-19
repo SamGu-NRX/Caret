@@ -45,6 +45,9 @@
 		B10000000000000000000061 /* HistoryDebug.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000060 /* HistoryDebug.swift */; };
 		B10000000000000000000064 /* CaretDebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000063 /* CaretDebugView.swift */; };
 		B10000000000000000000066 /* HistoryDebugTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000065 /* HistoryDebugTests.swift */; };
+		B10000000000000000000076 /* SkillActionRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000073 /* SkillActionRunner.swift */; };
+		B10000000000000000000077 /* GatewayKeySync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000074 /* GatewayKeySync.swift */; };
+		B10000000000000000000078 /* SkillInstructions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000075 /* SkillInstructions.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -97,6 +100,9 @@
 		B10000000000000000000060 /* HistoryDebug.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryDebug.swift; sourceTree = "<group>"; };
 		B10000000000000000000063 /* CaretDebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretDebugView.swift; sourceTree = "<group>"; };
 		B10000000000000000000065 /* HistoryDebugTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryDebugTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000073 /* SkillActionRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillActionRunner.swift; sourceTree = "<group>"; };
+		B10000000000000000000074 /* GatewayKeySync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayKeySync.swift; sourceTree = "<group>"; };
+		B10000000000000000000075 /* SkillInstructions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillInstructions.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -153,6 +159,9 @@
 				B1000000000000000000001C /* AccessibilityTrust.swift */,
 				B1000000000000000000001D /* PinnedActionsStore.swift */,
 				B10000000000000000000020 /* SkillRepository.swift */,
+				B10000000000000000000073 /* SkillActionRunner.swift */,
+				B10000000000000000000074 /* GatewayKeySync.swift */,
+				B10000000000000000000075 /* SkillInstructions.swift */,
 				B1000000000000000000003C /* ModifierChordState.swift */,
 				B1000000000000000000003D /* CaretSettingsView.swift */,
 				B10000000000000000000040 /* MemoryRepository.swift */,
@@ -330,6 +339,9 @@
 				B1000000000000000000002B /* AccessibilityTrust.swift in Sources */,
 				B1000000000000000000002C /* PinnedActionsStore.swift in Sources */,
 				B1000000000000000000003A /* SkillRepository.swift in Sources */,
+				B10000000000000000000076 /* SkillActionRunner.swift in Sources */,
+				B10000000000000000000077 /* GatewayKeySync.swift in Sources */,
+				B10000000000000000000078 /* SkillInstructions.swift in Sources */,
 				B1000000000000000000003B /* ModifierChordState.swift in Sources */,
 				B1000000000000000000003E /* CaretSettingsView.swift in Sources */,
 				B1000000000000000000003F /* MemoryRepository.swift in Sources */,

@@ -101,11 +101,13 @@ final class Model: ObservableObject {
     func finishSkillPreview(actionID: String, output: String) {
         skillPreviewByActionID[actionID] = output
         skillPreviewRunningActionID = nil
+        objectWillChange.send()
     }
 
     func failSkillPreview(actionID: String, message: String) {
         skillPreviewByActionID[actionID] = message
         skillPreviewRunningActionID = nil
+        objectWillChange.send()
     }
 
     func reloadNotes() {
@@ -396,6 +398,12 @@ final class Model: ObservableObject {
     }
 
     func selectActionForSkills(_ action: CaretAction) {
+        if GatewaySkillActions.contains(action.id) {
+            scopedActionID = action.id
+            panelQuery = ""
+            run(action, skill: nil)
+            return
+        }
         scopedActionID = action.id
         panelQuery = ""
     }
@@ -447,6 +455,13 @@ final class Model: ObservableObject {
         run(action, skill: skill)
     }
 
+    func ensureGatewayRun(_ action: CaretAction) {
+        guard GatewaySkillActions.contains(action.id) else { return }
+        if skillPreviewRunningActionID == action.id { return }
+        if !(skillPreviewByActionID[action.id] ?? "").isEmpty { return }
+        run(action, skill: nil)
+    }
+
     func runPinnedSlot(_ slot: Int) {
         guard let id = pinStore.actionID(forSlot: slot), let action = action(id: id) else { return }
         if GatewaySkillActions.contains(action.id) {
@@ -467,6 +482,7 @@ enum ActionsMenuMetrics {
     static let rowHeightWithSubtitle: CGFloat = 46
     static let maxVisibleRows: CGFloat = 8
     static let width: CGFloat = 300
+    static let gatewayWidth: CGFloat = 340
 
     static var maxScrollHeight: CGFloat {
         rowHeightWithSubtitle * maxVisibleRows + 8
@@ -477,7 +493,15 @@ struct SkillPickerView: View {
     @ObservedObject var model: Model
     @FocusState private var searchFocused: Bool
 
+    private var gatewayScopedAction: CaretAction? {
+        guard let id = model.scopedActionID, GatewaySkillActions.contains(id) else { return nil }
+        return model.action(id: id)
+    }
+
     private var searchPlaceholder: String {
+        if gatewayScopedAction != nil {
+            return ""
+        }
         if model.scopedAction != nil {
             return "Filter skills or create one"
         }
@@ -485,6 +509,20 @@ struct SkillPickerView: View {
     }
 
     var body: some View {
+        if let action = gatewayScopedAction {
+            GatewayActionPanel(model: model, action: action) {
+                model.clearPanelScope()
+                searchFocused = true
+            }
+            .onAppear {
+                model.ensureGatewayRun(action)
+            }
+        } else {
+            browsePanel
+        }
+    }
+
+    private var browsePanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 if let action = model.scopedAction {
@@ -501,19 +539,17 @@ struct SkillPickerView: View {
                     .buttonStyle(.plain)
                 }
 
-                if !(model.scopedAction.map { GatewaySkillActions.contains($0.id) } ?? false) {
-                    PanelSearchField(
-                        text: $model.panelQuery,
-                        placeholder: searchPlaceholder,
-                        isFocused: $searchFocused,
-                        onSettings: { model.openSettings() }
-                    )
-                    .onSubmit {
-                        if model.settingsMatchesSearch {
-                            model.openSettings()
-                        } else if model.showCreateRow {
-                            model.submitCreateFromQuery()
-                        }
+                PanelSearchField(
+                    text: $model.panelQuery,
+                    placeholder: searchPlaceholder,
+                    isFocused: $searchFocused,
+                    onSettings: { model.openSettings() }
+                )
+                .onSubmit {
+                    if model.settingsMatchesSearch {
+                        model.openSettings()
+                    } else if model.showCreateRow {
+                        model.submitCreateFromQuery()
                     }
                 }
             }
@@ -547,9 +583,6 @@ struct SkillPickerView: View {
                         if model.showCreateRow {
                             CreateRow(model: model)
                         }
-                    } else if let action = model.scopedAction,
-                              GatewaySkillActions.contains(action.id) {
-                        GatewayPanelResultView(model: model, action: action)
                     } else {
                         let _ = model.skillsVersion
                         if model.filteredSkills.isEmpty, !model.trimmedPanelQuery.isEmpty {
@@ -567,7 +600,7 @@ struct SkillPickerView: View {
                 }
                 .padding(.vertical, 4)
             }
-            .frame(maxHeight: gatewayPanelScrollHeight)
+            .frame(maxHeight: ActionsMenuMetrics.maxScrollHeight)
         }
         .frame(width: ActionsMenuMetrics.width)
         .onAppear {
@@ -577,18 +610,12 @@ struct SkillPickerView: View {
             searchFocused = true
         }
     }
-
-    private var gatewayPanelScrollHeight: CGFloat {
-        if model.scopedAction.map({ GatewaySkillActions.contains($0.id) }) == true {
-            return 360
-        }
-        return ActionsMenuMetrics.maxScrollHeight
-    }
 }
 
-private struct GatewayPanelResultView: View {
+private struct GatewayActionPanel: View {
     @ObservedObject var model: Model
     let action: CaretAction
+    var onBack: () -> Void
 
     private var isRunning: Bool {
         model.skillPreviewRunningActionID == action.id
@@ -597,35 +624,48 @@ private struct GatewayPanelResultView: View {
     private var bodyText: String {
         let text = model.skillPreviewText(actionID: action.id)
         if !text.isEmpty { return text }
-        if isRunning { return "" }
-        return "Select text or copy to the clipboard, then run this action."
+        if isRunning { return "Calling Vercel with your skill file…" }
+        return "Select text in another app (or copy it), then open Translate again."
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(action: onBack) {
+                Label(action.title, systemImage: "chevron.left")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
             Text(GatewaySkillActions.previewLabel(for: action.id))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-                .textCase(.uppercase)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Text("Translated text appears in the box below.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             if isRunning {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Calling Vercel…")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                ProgressView()
+                    .controlSize(.regular)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+
+            Text(bodyText)
+                .font(.body)
+                .lineSpacing(4)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+                .padding(12)
+                .background {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
                 }
-            }
-            ScrollView(.vertical, showsIndicators: true) {
-                Text(bodyText)
-                    .font(.body)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-            .frame(minHeight: 140, maxHeight: 320)
         }
-        .padding(.horizontal, 10)
-        .padding(.bottom, 10)
+        .padding(12)
+        .frame(minHeight: 260)
+        .frame(width: ActionsMenuMetrics.gatewayWidth, alignment: .topLeading)
     }
 }
 
@@ -801,14 +841,17 @@ final class CaretPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    func present(at point: CGPoint) {
-        setFrame(frame(near: point), display: true)
+    func present(at point: CGPoint, width: CGFloat = ActionsMenuMetrics.width, makeKey: Bool = true) {
+        setFrame(frame(near: point, width: width), display: true)
         orderFrontRegardless()
-        makeKey()
+        if makeKey {
+            self.makeKey()
+        }
     }
 
-    private func frame(near point: CGPoint) -> NSRect {
-        let size = frame.size.width > 1 ? frame.size : CGSize(width: ActionsMenuMetrics.width, height: 200)
+    private func frame(near point: CGPoint, width: CGFloat) -> NSRect {
+        let height = max(frame.size.height, 280)
+        let size = CGSize(width: width, height: height)
         let screen = AXHelpers.screen(containing: point)
         let visible = screen?.visibleFrame ?? NSRect(origin: .zero, size: size)
         let margin: CGFloat = 12
@@ -831,6 +874,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var model: Model?
     private var trustTimer: Timer?
     private var lastTarget: SelectionTarget?
+    /// Last target that still had selected text (kept after Caret steals focus).
+    private var lastNonEmptySelectionTarget: SelectionTarget?
+    /// Selection captured when opening a gateway panel (before Caret takes focus).
+    private var capturedRunTarget: SelectionTarget?
     private var lastPanelPoint: CGPoint = NSEvent.mouseLocation
     private var clickMonitor: Any?
     private var escapeMonitor: Any?
@@ -862,7 +909,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         model.onRun = { [weak self] action, skill in
             guard let self, let model = self.model else { return }
-            let target = self.lastTarget
+            let target = self.gatewayRunTarget()
             if GatewaySkillActions.contains(action.id) {
                 model.scopedActionID = action.id
                 model.panelQuery = ""
@@ -968,6 +1015,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Task { @MainActor in
                 guard let self, let model = self.model else { return }
                 self.lastTarget = target
+                if let target,
+                   !target.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.lastNonEmptySelectionTarget = target
+                }
                 model.selectedText = target?.selectedText ?? ""
                 model.sourceApp = target?.sourceApp
                 if self.panel?.isVisible == true {
@@ -1014,11 +1065,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private func gatewayRunTarget() -> SelectionTarget? {
+        if let capturedRunTarget { return capturedRunTarget }
+        if let lastTarget, SkillActionRunner.hasInput(lastTarget) { return lastTarget }
+        return lastNonEmptySelectionTarget
+    }
+
     private func showPanel(at point: CGPoint, scopedActionID: String?) {
         lastPanelPoint = point
+        capturedRunTarget = gatewayRunTarget()
         model?.preparePanel(scopedActionID: scopedActionID)
         trigger.hide()
-        panel?.present(at: point)
+        let panelWidth: CGFloat
+        if let scopedActionID, GatewaySkillActions.contains(scopedActionID) {
+            panelWidth = ActionsMenuMetrics.gatewayWidth
+        } else {
+            panelWidth = ActionsMenuMetrics.width
+        }
+        let stealsFocus = scopedActionID.map { GatewaySkillActions.contains($0) } != true
+        panel?.present(at: point, width: panelWidth, makeKey: stealsFocus)
         installClickOutside()
         if let id = scopedActionID,
            GatewaySkillActions.contains(id),
@@ -1030,16 +1095,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func hidePanel() {
         panel?.orderOut(nil)
+        panel?.resignKey()
         removeClickOutside()
         model?.clearPanelScope()
+        restoreTypingAppFocus()
         trigger.update(target: lastTarget)
+        tabCompletions.update(target: lastTarget)
+    }
+
+    /// Caret must not stay frontmost after the panel closes or inline Tab completions stop.
+    private func restoreTypingAppFocus() {
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        else { return }
+        if let pid = lastTarget?.focusedProcessID,
+           pid != ProcessInfo.processInfo.processIdentifier,
+           let app = NSRunningApplication(processIdentifier: pid) {
+            app.activate(options: [.activateIgnoringOtherApps])
+            return
+        }
+        NSApp.hide(nil)
     }
 
     private func installClickOutside() {
         removeClickOutside()
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
-                self?.hidePanel()
+                guard let self else { return }
+                let screenPoint = NSEvent.mouseLocation
+                if let panel = self.panel, panel.isVisible, panel.frame.contains(screenPoint) {
+                    return
+                }
+                if self.trigger.buttonFrame.contains(screenPoint) {
+                    return
+                }
+                self.hidePanel()
             }
         }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
