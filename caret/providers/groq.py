@@ -58,11 +58,13 @@ class GroqWriter:
         model: str = DEFAULT_MODEL,
         endpoint: str = DEFAULT_ENDPOINT,
         timeout: float = 4.0,
-        max_completion_tokens: int = 64,
+        max_completion_tokens: int = 512,
         temperature: float = 0.2,
     ) -> None:
         if not api_key:
             raise ProviderFailure(f"A Groq API key is required; set {API_KEY_ENV}")
+        # A live gpt-oss-20b smoke test exhausted 64 tokens before producing text;
+        # the same prompt returned a short completion using 114 tokens with this cap.
         self.client = OpenAIChatClient(
             service="Groq",
             endpoint=endpoint,

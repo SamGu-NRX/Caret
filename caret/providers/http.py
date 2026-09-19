@@ -28,6 +28,8 @@ def post_json(url: str, payload: dict, headers: dict[str, str], timeout: float) 
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=body, method="POST")
     request.add_header("Content-Type", "application/json")
+    # Groq rejected urllib's default identity with HTTP 403/1010 in the Mac smoke test.
+    request.add_header("User-Agent", "Caret/0.1")
     for name, value in headers.items():
         request.add_header(name, value)
     try:
