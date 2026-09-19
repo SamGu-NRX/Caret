@@ -37,14 +37,6 @@ final class Model: ObservableObject {
     @Published private(set) var skillNotes: [CaretNote] = []
     @Published private(set) var memoryNotes: [CaretNote] = []
 
-    let actions: [CaretAction] = [
-        CaretAction(id: "revise", title: "Revise draft"),
-        CaretAction(id: "summarize", title: "Summarize"),
-        CaretAction(id: "translate", title: "Translate"),
-        CaretAction(id: "extract-tasks", title: "Extract tasks"),
-        CaretAction(id: "tone-polite", title: "Make polite"),
-    ]
-
     init(pinStore: PinnedActionsStore = .load()) {
         self.pinStore = pinStore
         reloadCustomActions()
@@ -60,7 +52,6 @@ final class Model: ObservableObject {
     func reloadNotes() {
         CaretPaths.bootstrapNotesStore()
         skillNotes = noteRepository.listSkillNotes()
-        _ = try? noteRepository.ensureSkillNotes(for: allActions)
         memoryNotes = noteRepository.listMemoryNotes()
         storedMemories = memoryRepository.load()
         memories = noteRepository.memoryContextItems()
@@ -141,28 +132,22 @@ final class Model: ObservableObject {
     }
 
     var allActions: [CaretAction] {
-        let builtInIDs = Set(actions.map(\.id))
-        var extrasByID: [String: CaretAction] = [:]
-        for action in customActions where !builtInIDs.contains(action.id) {
-            extrasByID[action.id] = action
+        var byID: [String: CaretAction] = [:]
+        for note in skillNotes {
+            byID[note.id] = CaretAction(id: note.id, title: note.title)
         }
-        for note in skillNotes where !builtInIDs.contains(note.id) {
-            extrasByID[note.id] = CaretAction(id: note.id, title: note.title)
+        for action in customActions where byID[action.id] == nil {
+            byID[action.id] = action
         }
-        let extras = extrasByID.values.sorted {
+        return byID.values.sorted {
             $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
-        return actions + extras
-    }
-
-    func isBuiltInAction(_ actionID: String) -> Bool {
-        actions.contains { $0.id == actionID }
     }
 
     func deleteSkill(actionID: String) {
-        guard !isBuiltInAction(actionID) else { return }
         do {
             try noteRepository.deleteSkillNote(actionID: actionID)
+            try skillRepository.deleteActionDirectory(actionID: actionID)
             if pinStore.isPinned(actionID), let action = action(id: actionID) {
                 togglePin(action)
             }
@@ -177,7 +162,7 @@ final class Model: ObservableObject {
     func createSkill(named title: String) -> String? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let reserved = Set(actions.map(\.id))
+        let reserved = Set(allActions.map(\.id))
         let actionID = noteRepository.makeUniqueSkillActionID(title: trimmed, reservedIDs: reserved)
         do {
             _ = try noteRepository.saveSkillNote(
@@ -204,9 +189,7 @@ final class Model: ObservableObject {
     }
 
     func reloadCustomActions() {
-        let builtIn = Set(actions.map(\.id))
         customActions = skillRepository.listActionIDs()
-            .filter { !builtIn.contains($0) }
             .map { CaretAction(id: $0, title: SkillRepository.displayTitle(actionID: $0)) }
     }
 

@@ -140,20 +140,11 @@ struct CaretSettingsView: View {
                 switch tab {
                 case .skills:
                     List(selection: $selectedSkillActionID) {
-                        ForEach(builtInSkillItems) { item in
+                        ForEach(model.actionSkillItems) { item in
                             SkillActionRow(
                                 item: item,
-                                isLocked: true,
-                                isPinned: model.pinStore.isPinned(item.action.id)
-                            )
-                                .tag(item.action.id)
-                                .sidebarListRowStyle
-                        }
-                        ForEach(customSkillItems) { item in
-                            SkillActionRow(
-                                item: item,
-                                isLocked: false,
-                                isPinned: model.pinStore.isPinned(item.action.id)
+                                isDeletable: true,
+                                onDelete: { removeSkill(item.action.id) }
                             )
                                 .tag(item.action.id)
                                 .sidebarListRowStyle
@@ -163,7 +154,7 @@ struct CaretSettingsView: View {
                                     }
                                 }
                         }
-                        .onDelete(perform: deleteCustomSkillRows)
+                        .onDelete(perform: deleteSkillRows)
                     }
                     .sidebarListStyle
                 case .memories:
@@ -300,7 +291,9 @@ struct CaretSettingsView: View {
                     bodyText: $editBody,
                     appsText: $editApps,
                     saveStatus: saveStatus,
-                    iconChoices: CaretSymbolChoices.skillIcons
+                    iconChoices: CaretSymbolChoices.skillIcons,
+                    canDelete: true,
+                    onDelete: { removeSkill(item.action.id) }
                 )
                 .id(item.action.id)
                 .onAppear { applySkillEditor(item: item) }
@@ -511,16 +504,8 @@ struct CaretSettingsView: View {
         }
     }
 
-    private var builtInSkillItems: [ActionSkillItem] {
-        model.actionSkillItems.filter { model.isBuiltInAction($0.action.id) }
-    }
-
-    private var customSkillItems: [ActionSkillItem] {
-        model.actionSkillItems.filter { !model.isBuiltInAction($0.action.id) }
-    }
-
-    private func deleteCustomSkillRows(at offsets: IndexSet) {
-        let items = customSkillItems
+    private func deleteSkillRows(at offsets: IndexSet) {
+        let items = model.actionSkillItems
         for index in offsets {
             guard items.indices.contains(index) else { continue }
             removeSkill(items[index].action.id)
@@ -566,8 +551,10 @@ private extension View {
 
 private struct SkillActionRow: View {
     let item: ActionSkillItem
-    var isLocked: Bool = false
-    var isPinned: Bool = false
+    var isDeletable: Bool = false
+    var onDelete: (() -> Void)?
+
+    @State private var isHovering = false
 
     var body: some View {
         let icon = item.note?.icon ?? CaretActionIcons.icon(for: item.action.id)
@@ -586,23 +573,21 @@ private struct SkillActionRow: View {
                     .opacity(item.note == nil ? 0 : 1)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            HStack(spacing: 6) {
-                if isPinned {
-                    Image(systemName: "pin.fill")
-                        .font(.caption2)
-                        .foregroundStyle(Color.accentColor)
-                        .accessibilityLabel("Pinned to Caret bar")
+            if isDeletable, isHovering, let onDelete {
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(6)
+                        .background(.ultraThinMaterial, in: Circle())
                 }
-                if isLocked {
-                    Image(systemName: "lock.fill")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .accessibilityLabel("Built-in skill")
-                }
+                .buttonStyle(.plain)
+                .help("Remove skill")
             }
         }
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, minHeight: SidebarListMetrics.rowMinHeight - 10, alignment: .leading)
+        .onHover { isHovering = $0 }
     }
 }
 
@@ -790,17 +775,22 @@ private struct SkillDetailPinButton: View {
 
     var body: some View {
         Button(action: onToggle) {
-            HStack(spacing: 5) {
-                Image(systemName: isPinned ? "pin.fill" : "pin")
-                    .font(.body.weight(.semibold))
-                if isPinned, let shortcutLabel {
-                    Text(shortcutLabel)
-                        .font(.caption.weight(.semibold))
-                        .monospacedDigit()
+            HStack(spacing: 4) {
+                if isPinned {
+                    Text("Pinned")
+                        .font(.subheadline.weight(.semibold))
+                    if let shortcutLabel {
+                        Text(shortcutLabel)
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                } else {
+                    Text("Pin to bar")
+                        .font(.subheadline.weight(.medium))
                 }
             }
             .foregroundStyle(isPinned ? Color.accentColor : (canPin ? Color.secondary : Color.secondary.opacity(0.45)))
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -811,7 +801,7 @@ private struct SkillDetailPinButton: View {
         .buttonStyle(.plain)
         .disabled(!isPinned && !canPin)
         .help(helpText)
-        .accessibilityLabel(isPinned ? "Pinned" : "Pin action")
+        .accessibilityLabel(isPinned ? "Pinned" : "Pin to bar")
     }
 }
 
@@ -864,6 +854,8 @@ private struct SkillNoteEditor: View {
     @Binding var appsText: String
     let saveStatus: SaveStatus
     let iconChoices: [String]
+    var canDelete: Bool = false
+    var onDelete: (() -> Void)?
 
     private var isPinned: Bool { model.pinStore.isPinned(action.id) }
     private var canPin: Bool { model.canPin(action) }
@@ -882,8 +874,17 @@ private struct SkillNoteEditor: View {
                                 shortcutLabel: model.shortcutLabel(for: action),
                                 onToggle: { model.togglePin(action) }
                             )
+                            if canDelete, let onDelete {
+                                Button("Delete", role: .destructive, action: onDelete)
+                                    .controlSize(.small)
+                            }
                         }
                         NoteDetailUpdatedLine(updatedAt: note?.updatedAt, status: saveStatus)
+                        if !canDelete {
+                            Text("Starter action — edit and pin; can’t remove from the list.")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 }
                 SkillAppsField(appsText: $appsText)

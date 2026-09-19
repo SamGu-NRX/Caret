@@ -110,6 +110,16 @@ struct SkillRepository {
         )
     }
 
+    func deleteActionDirectory(actionID: String) throws {
+        guard let root = CaretPaths.skillsRoot else { return }
+        let dir = root.appendingPathComponent(actionID, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return
+        }
+        try FileManager.default.removeItem(at: dir)
+    }
+
     static func slugify(_ text: String) -> String {
         let lowered = text.lowercased()
         let allowed = lowered.unicodeScalars.map { scalar -> Character in
