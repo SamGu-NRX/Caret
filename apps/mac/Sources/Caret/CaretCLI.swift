@@ -30,13 +30,11 @@ enum CaretCLI {
     }
 
     private static func runCommand(subcommand: String, arguments: [String]) throws -> String {
-        guard let root = CaretPaths.projectRoot else {
-            throw Error.missingProjectRoot
-        }
         let config = CoreLaunchSettings.DeveloperConfig.load()
         let parentEnvironment = ProcessInfo.processInfo.environment
         let configuredRoot = parentEnvironment["CARET_CORE_ROOT"] ?? config.root
-        let root = configuredRoot.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) } ?? root
+        guard let root = configuredRoot.map({ URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) })
+            ?? CaretPaths.projectRoot else { throw Error.missingProjectRoot }
         let python = parentEnvironment["CARET_PYTHON"] ?? config.python ?? Self.pythonExecutable()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: (python as NSString).expandingTildeInPath)
