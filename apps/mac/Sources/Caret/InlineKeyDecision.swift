@@ -96,7 +96,13 @@ enum InlineKeyRouter {
 
         switch event.keyCode {
         case InlineKeyCode.tab:
-            return decideTab(event, context: context)
+            // Tab belongs to TabCompletionsController, which runs its own
+            // CGEvent tap on this key code. Two taps claiming one key is a
+            // race whose winner depends on tap registration order, not a
+            // fallback, so this one never touches Tab. The inline accept path
+            // below is retained and unit-tested because it is the contract
+            // that owner implements; it is simply not armed here.
+            return .passThrough
 
         case InlineKeyCode.escape:
             guard event.modifiers.isEmpty, context.visibleProposalID != nil else { return .passThrough }

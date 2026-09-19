@@ -63,13 +63,27 @@ enum CaretPaths {
                 copyMarkdown(from: repo.appendingPathComponent("skills"), to: skillsNotesDir)
             }
         }
-        if directoryIsEmpty(memoriesNotesDir) {
-            if let seed = bundleSeedNotesRoot {
-                copyMarkdown(from: seed.appendingPathComponent("memories"), to: memoriesNotesDir)
+        migrateLegacySkillsToTabCompletions()
+    }
+
+    /// Collapse legacy follow-up / auto-expand notes into `tab-completions.md`.
+    private static func migrateLegacySkillsToTabCompletions() {
+        let fm = FileManager.default
+        let target = skillsNotesDir.appendingPathComponent("\(TabCompletions.actionID).md")
+        for legacyID in TabCompletions.legacyActionIDs {
+            let legacy = skillsNotesDir.appendingPathComponent("\(legacyID).md")
+            guard fm.fileExists(atPath: legacy.path) else { continue }
+            if !fm.fileExists(atPath: target.path) {
+                try? fm.copyItem(at: legacy, to: target)
             }
-            if directoryIsEmpty(memoriesNotesDir), let repo = repoNotesRoot {
-                copyMarkdown(from: repo.appendingPathComponent("memories"), to: memoriesNotesDir)
+            try? fm.removeItem(at: legacy)
+        }
+        let autoExpand = skillsNotesDir.appendingPathComponent("auto-expand.md")
+        if fm.fileExists(atPath: autoExpand.path) {
+            if !fm.fileExists(atPath: target.path) {
+                try? fm.copyItem(at: autoExpand, to: target)
             }
+            try? fm.removeItem(at: autoExpand)
         }
     }
 

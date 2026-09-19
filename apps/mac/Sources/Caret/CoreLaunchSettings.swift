@@ -19,7 +19,12 @@ enum CoreLaunchSettings {
     struct DeveloperConfig: Decodable {
         var python: String?
         var root: String?
+        /// Replaces the judge/writer defaults outright. Prefer `adapters` for
+        /// the demo flags; see `resolve()` for why replacing is a footgun.
         var arguments: [String]?
+        /// Appended, never replacing. Each entry becomes
+        /// `--adapter <entry>`, e.g. "caret.live_workflows:MeetingDraftWorkflow".
+        var adapters: [String]?
         var envFile: String?
         var demoMeeting: Bool?
 
@@ -48,6 +53,12 @@ enum CoreLaunchSettings {
     enum Unavailable: Error, Equatable {
         case noInterpreter
         case noRoot(String)
+        /// The provider the arguments select needs a key that is not set.
+        /// Carries the variable name, which is actionable and is not a secret.
+        case missingKey(variable: String, provider: String)
+        /// The arguments do not select a judge, so the core would silently use
+        /// its own default rather than the one intended.
+        case judgeNotSelected
 
         var reason: InlineDisabledReason { .noProvider }
 
@@ -57,8 +68,37 @@ enum CoreLaunchSettings {
                 return "No Python interpreter configured. Set \"python\" in ~/.config/caret/dev.json."
             case .noRoot(let path):
                 return "Core not found at \(path). Set \"root\" in ~/.config/caret/dev.json."
+            case .missingKey(let variable, let provider):
+                return "\(variable) is not set, which the \(provider) provider needs. Add it to the env file in ~/.config/caret/dev.json."
+            case .judgeNotSelected:
+                return "No --judge in the configured arguments. The core defaults to jev, which needs a different key."
             }
         }
+    }
+
+    /// Which environment variable each provider reads.
+    ///
+    /// Checked before launching rather than after. The core does report the
+    /// missing name on stderr and exit, but CaretCore's transport counts
+    /// stderr and never logs it -- deliberately, so upstream text cannot leak
+    /// into our logs. That means the name would never reach the user, and they
+    /// would see only a process that died. Preflighting here recovers the one
+    /// actionable fact without weakening that rule or reading the child's
+    /// output. A variable NAME is not a secret; no value is ever read here.
+    static func requiredKey(forProvider provider: String) -> String? {
+        if provider.hasPrefix("scripted:") { return nil }
+        switch provider {
+        case "gateway": return "AI_GATEWAY_API_KEY"
+        case "groq": return "GROQ_API_KEY"
+        case "jev": return "TYPESAFE_API_KEY"
+        default: return nil
+        }
+    }
+
+    /// The provider named by `flag`, or nil when the flag is absent.
+    static func provider(named flag: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
     }
 
     /// Reads `KEY=value` lines. Values are returned for the child's
@@ -103,15 +143,40 @@ enum CoreLaunchSettings {
               isDirectory.boolValue
         else { return .failure(.noRoot(expandedRoot)) }
 
-        // The user's current choice: gateway judge, Groq inline writer.
-        let arguments = config.arguments
+        // The user's current choice: gateway judge, Groq inline writer. The
+        // core's own default judge is jev, and nothing falls back to gateway,
+        // so --judge must be passed explicitly every time.
+        var arguments = config.arguments
             ?? env["CARET_CORE_ARGS"]?.split(separator: " ").map(String.init)
             ?? ["--judge", "gateway", "--writer", "groq"]
+
+        // Adapters append. Putting them in `arguments` would replace the
+        // defaults and silently drop --judge, leaving the core on jev with a
+        // key that is not set -- a failure that looks nothing like its cause.
+        for adapter in config.adapters ?? [] {
+            arguments.append(contentsOf: ["--adapter", adapter])
+        }
+
+        guard let judge = provider(named: "--judge", in: arguments) else {
+            return .failure(.judgeNotSelected)
+        }
 
         let envFile = env["CARET_ENV_FILE"] ?? config.envFile
         var overrides = environment(fromEnvFileAt: envFile)
         for key in ["GROQ_API_KEY", "AI_GATEWAY_API_KEY", "TYPESAFE_API_KEY"] {
             if let value = env[key] { overrides[key] = value }
+        }
+
+        // Preflight every provider the arguments select, so a missing key is
+        // named instead of surfacing as a dead process.
+        for (flag, provider) in [("--judge", judge), ("--writer", provider(named: "--writer", in: arguments))].compactMap({ pair in
+            pair.1.map { (pair.0, $0) }
+        }) {
+            guard let variable = requiredKey(forProvider: provider) else { continue }
+            let present = overrides[variable]?.isEmpty == false || env[variable]?.isEmpty == false
+            guard present else {
+                return .failure(.missingKey(variable: variable, provider: "\(flag.dropFirst(2)) \(provider)"))
+            }
         }
 
         return .success(

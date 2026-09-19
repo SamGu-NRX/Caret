@@ -7,6 +7,8 @@ struct CaretNote: Identifiable, Equatable {
     let icon: String
     let updatedAt: Date
     let apps: [String]
+    /// Apps where Tab completions must not run (`excluded_apps` in frontmatter).
+    let excludedApps: [String]
     let body: String
 }
 
@@ -69,7 +71,8 @@ struct NoteRepository {
         title: String,
         icon: String,
         body: String,
-        apps: [String] = []
+        apps: [String] = [],
+        excludedApps: [String] = []
     ) throws -> CaretNote {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { throw NoteRepositoryError.invalidTitle }
@@ -79,7 +82,8 @@ struct NoteRepository {
             title: trimmedTitle,
             icon: icon.isEmpty ? CaretActionIcons.icon(for: actionID) : icon,
             body: body,
-            apps: apps
+            apps: apps,
+            excludedApps: TabCompletions.isTabCompletionsAction(actionID) ? excludedApps : []
         )
         guard let note = loadNote(at: url) else { throw NoteRepositoryError.writeFailed }
         return note
@@ -166,7 +170,40 @@ struct NoteRepository {
         return collapsed.isEmpty ? "memory" : collapsed
     }
 
-    private func writeNote(to url: URL, title: String, icon: String, body: String, apps: [String]) throws {
+    func ensureTabCompletionsNote() throws {
+        let url = CaretPaths.skillsNotesDir.appendingPathComponent("\(TabCompletions.actionID).md")
+        if FileManager.default.fileExists(atPath: url.path) { return }
+        let seed = tabCompletionsSeedURL()
+        if let seed, FileManager.default.fileExists(atPath: seed.path) {
+            try FileManager.default.copyItem(at: seed, to: url)
+            return
+        }
+        try saveSkillNote(
+            actionID: TabCompletions.actionID,
+            title: TabCompletions.defaultTitle,
+            icon: TabCompletions.defaultIcon,
+            body: """
+            Continue from the caret with the next natural phrase. Match the user's voice; prefer short inline additions over rewriting.
+            """
+        )
+    }
+
+    private func tabCompletionsSeedURL() -> URL? {
+        if let bundle = Bundle.main.resourceURL?.appendingPathComponent("NotesSeed/skills/tab-completions.md"),
+           FileManager.default.fileExists(atPath: bundle.path) {
+            return bundle
+        }
+        return CaretPaths.repoNotesRoot?.appendingPathComponent("skills/tab-completions.md")
+    }
+
+    private func writeNote(
+        to url: URL,
+        title: String,
+        icon: String,
+        body: String,
+        apps: [String],
+        excludedApps: [String] = []
+    ) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let updated = ISO8601DateFormatter.caret.string(from: Date())
         var lines = [
@@ -175,7 +212,10 @@ struct NoteRepository {
             "icon: \(icon)",
             "updated: \(updated)",
         ]
-        if !apps.isEmpty {
+        if !excludedApps.isEmpty {
+            lines.append("excluded_apps:")
+            lines.append(contentsOf: excludedApps.map { "  - \($0)" })
+        } else if !apps.isEmpty {
             lines.append("apps:")
             lines.append(contentsOf: apps.map { "  - \($0)" })
         }
@@ -207,6 +247,7 @@ struct NoteRepository {
         let icon = parsed.meta["icon"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedIcon = (icon?.isEmpty == false ? icon! : "doc.text")
         let apps = Self.parseApps(parsed.meta["apps"])
+        let excludedApps = Self.parseApps(parsed.meta["excluded_apps"])
         let updated = Self.parseUpdated(parsed.meta["updated"], fileURL: url)
         return CaretNote(
             id: stem,
@@ -214,6 +255,7 @@ struct NoteRepository {
             icon: resolvedIcon,
             updatedAt: updated,
             apps: apps,
+            excludedApps: excludedApps,
             body: parsed.body.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
@@ -296,7 +338,7 @@ enum CaretActionIcons {
         switch actionID {
         case "book-flight": return "airplane"
         case "book-calendar-link": return "calendar"
-        case "follow-up": return "envelope"
+        case "tab-completions", "auto-expand": return "arrow.up.left.and.arrow.down.right"
         case "revise": return "pencil"
         case "summarize": return "list.bullet"
         case "translate": return "character.book.closed"

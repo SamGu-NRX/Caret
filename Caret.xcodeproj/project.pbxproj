@@ -7,13 +7,25 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D20000000000000000000001 /* NoteEditorSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* NoteEditorSession.swift */; };
 		B10000000000000000000021 /* CaretApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* CaretApp.swift */; };
 		B10000000000000000000022 /* AXHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* AXHelpers.swift */; };
 		B10000000000000000000023 /* HotKeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* HotKeyManager.swift */; };
 		B10000000000000000000024 /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* PermissionView.swift */; };
 		B10000000000000000000025 /* SelectionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* SelectionMonitor.swift */; };
-		B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
+				B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
+B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
+		B1000000000000000000A100 /* InlineCompletionTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B100 /* InlineCompletionTypes.swift */; };
+		B1000000000000000000A101 /* InlineKeyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B101 /* InlineKeyDecision.swift */; };
+		B1000000000000000000A102 /* InlineOfferStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B102 /* InlineOfferStore.swift */; };
+		B1000000000000000000A103 /* InlineFieldAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B103 /* InlineFieldAccess.swift */; };
+		B1000000000000000000A104 /* InlineKeyTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B104 /* InlineKeyTap.swift */; };
+		B1000000000000000000A105 /* InlineCompletionProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B105 /* InlineCompletionProvider.swift */; };
+		B1000000000000000000A106 /* InlineCompletionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B106 /* InlineCompletionCoordinator.swift */; };
+		B1000000000000000000A107 /* InlineCoreBridging.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B107 /* InlineCoreBridging.swift */; };
+		B1000000000000000000A108 /* InlinePreviewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B108 /* InlinePreviewWindow.swift */; };
+		B1000000000000000000A109 /* InlineCaretGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B109 /* InlineCaretGeometry.swift */; };
+		B1000000000000000000A10A /* CoreBridgeProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B10A /* CoreBridgeProvider.swift */; };
+		B1000000000000000000A10B /* CoreLaunchSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000B10B /* CoreLaunchSettings.swift */; };
 		B10000000000000000000027 /* TriggerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* TriggerButton.swift */; };
 		B1000000000000000000002B /* AccessibilityTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* AccessibilityTrust.swift */; };
 		B1000000000000000000002C /* PinnedActionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* PinnedActionsStore.swift */; };
@@ -28,24 +40,22 @@
 		B10000000000000000000043 /* CaretPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000044 /* CaretPaths.swift */; };
 		B10000000000000000000045 /* InstalledApps.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000046 /* InstalledApps.swift */; };
 		B10000000000000000000047 /* AppReferenceIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000048 /* AppReferenceIcon.swift */; };
+		B10000000000000000000055 /* SettingsMainMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000056 /* SettingsMainMenu.swift */; };
+		B10000000000000000000057 /* TabCompletions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000058 /* TabCompletions.swift */; };
+		B10000000000000000000059 /* CaretCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000005A /* CaretCLI.swift */; };
+		B1000000000000000000005B /* TabCompletionsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000005C /* TabCompletionsController.swift */; };
+		B1000000000000000000005D /* TabInterceptMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000005E /* TabInterceptMonitor.swift */; };
+		B10000000000000000000068 /* TabCompletionsPatterns.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000067 /* TabCompletionsPatterns.swift */; };
+		B1000000000000000000006A /* InlineGhostPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000069 /* InlineGhostPanel.swift */; };
+		B1000000000000000000006C /* TextTyping.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000006B /* TextTyping.swift */; };
+		B1000000000000000000006E /* TypingPrefixCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000006D /* TypingPrefixCapture.swift */; };
+		B10000000000000000000070 /* TypingPrefixLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000006F /* TypingPrefixLogic.swift */; };
+		B10000000000000000000072 /* TypingPrefixLogicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000071 /* TypingPrefixLogicTests.swift */; };
 		B1000000000000000000002D /* PinnedActionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* PinnedActionsStore.swift */; };
 		B1000000000000000000002E /* PinnedActionsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* PinnedActionsStoreTests.swift */; };
 		B10000000000000000000028 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* Assets.xcassets */; };
 		B1000000000000000000002A /* ApplicationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* ApplicationServices.framework */; };
-		C80000000000000000000000 /* CoreBridgeProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000000 /* CoreBridgeProvider.swift */; };
-		C80000000000000000000001 /* CoreLaunchSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000001 /* CoreLaunchSettings.swift */; };
-		C80000000000000000000002 /* InlineCaretGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000002 /* InlineCaretGeometry.swift */; };
-		C80000000000000000000003 /* InlineCompletionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000003 /* InlineCompletionCoordinator.swift */; };
-		C80000000000000000000004 /* InlineCompletionProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000004 /* InlineCompletionProvider.swift */; };
-		C80000000000000000000005 /* InlineCompletionTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000005 /* InlineCompletionTypes.swift */; };
-		C80000000000000000000006 /* InlineCoreBridging.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000006 /* InlineCoreBridging.swift */; };
-		C80000000000000000000007 /* InlineFieldAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000007 /* InlineFieldAccess.swift */; };
-		C80000000000000000000008 /* InlineKeyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000008 /* InlineKeyDecision.swift */; };
-		C80000000000000000000009 /* InlineKeyTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70000000000000000000009 /* InlineKeyTap.swift */; };
-		C8000000000000000000000A /* InlineOfferStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7000000000000000000000A /* InlineOfferStore.swift */; };
-		C8000000000000000000000B /* InlinePreviewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7000000000000000000000B /* InlinePreviewWindow.swift */; };
 		B10000000000000000000061 /* HistoryDebug.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000060 /* HistoryDebug.swift */; };
-		B10000000000000000000062 /* HistoryDebug.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000060 /* HistoryDebug.swift */; };
 		B10000000000000000000064 /* CaretDebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000063 /* CaretDebugView.swift */; };
 		B10000000000000000000066 /* HistoryDebugTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000065 /* HistoryDebugTests.swift */; };
 /* End PBXBuildFile section */
@@ -61,7 +71,6 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		D20000000000000000000002 /* NoteEditorSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorSession.swift; sourceTree = "<group>"; };
 		B1000000000000000000000F /* Caret.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Caret.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000011 /* CaretApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* AXHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AXHelpers.swift; sourceTree = "<group>"; };
@@ -69,6 +78,18 @@
 		B10000000000000000000014 /* PermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionView.swift; sourceTree = "<group>"; };
 		B10000000000000000000015 /* SelectionMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionMonitor.swift; sourceTree = "<group>"; };
 		B10000000000000000000016 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
+		B1000000000000000000B100 /* InlineCompletionTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionTypes.swift; sourceTree = "<group>"; };
+		B1000000000000000000B101 /* InlineKeyDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineKeyDecision.swift; sourceTree = "<group>"; };
+		B1000000000000000000B102 /* InlineOfferStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineOfferStore.swift; sourceTree = "<group>"; };
+		B1000000000000000000B103 /* InlineFieldAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineFieldAccess.swift; sourceTree = "<group>"; };
+		B1000000000000000000B104 /* InlineKeyTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineKeyTap.swift; sourceTree = "<group>"; };
+		B1000000000000000000B105 /* InlineCompletionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionProvider.swift; sourceTree = "<group>"; };
+		B1000000000000000000B106 /* InlineCompletionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionCoordinator.swift; sourceTree = "<group>"; };
+		B1000000000000000000B107 /* InlineCoreBridging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCoreBridging.swift; sourceTree = "<group>"; };
+		B1000000000000000000B108 /* InlinePreviewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlinePreviewWindow.swift; sourceTree = "<group>"; };
+		B1000000000000000000B109 /* InlineCaretGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCaretGeometry.swift; sourceTree = "<group>"; };
+		B1000000000000000000B10A /* CoreBridgeProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreBridgeProvider.swift; sourceTree = "<group>"; };
+		B1000000000000000000B10B /* CoreLaunchSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreLaunchSettings.swift; sourceTree = "<group>"; };
 		B10000000000000000000017 /* TriggerButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TriggerButton.swift; sourceTree = "<group>"; };
 		B1000000000000000000001C /* AccessibilityTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityTrust.swift; sourceTree = "<group>"; };
 		B1000000000000000000001D /* PinnedActionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedActionsStore.swift; sourceTree = "<group>"; };
@@ -78,40 +99,37 @@
 		B10000000000000000000040 /* MemoryRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryRepository.swift; sourceTree = "<group>"; };
 		B10000000000000000000042 /* CaretNote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretNote.swift; sourceTree = "<group>"; };
 		B10000000000000000000050 /* ScreenpipeSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenpipeSupervisor.swift; sourceTree = "<group>"; };
-		B10000000000000000000055 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B10000000000000000000062 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10000000000000000000053 /* ScreenpipeSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenpipeSupervisorTests.swift; sourceTree = "<group>"; };
 		B10000000000000000000044 /* CaretPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretPaths.swift; sourceTree = "<group>"; };
 		B10000000000000000000046 /* InstalledApps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstalledApps.swift; sourceTree = "<group>"; };
 		B10000000000000000000048 /* AppReferenceIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppReferenceIcon.swift; sourceTree = "<group>"; };
+		B10000000000000000000056 /* SettingsMainMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsMainMenu.swift; sourceTree = "<group>"; };
+		B10000000000000000000058 /* TabCompletions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabCompletions.swift; sourceTree = "<group>"; };
+		B1000000000000000000005A /* CaretCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretCLI.swift; sourceTree = "<group>"; };
+		B1000000000000000000005C /* TabCompletionsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabCompletionsController.swift; sourceTree = "<group>"; };
+		B1000000000000000000005E /* TabInterceptMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabInterceptMonitor.swift; sourceTree = "<group>"; };
+		B10000000000000000000067 /* TabCompletionsPatterns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabCompletionsPatterns.swift; sourceTree = "<group>"; };
+		B10000000000000000000069 /* InlineGhostPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineGhostPanel.swift; sourceTree = "<group>"; };
+		B1000000000000000000006B /* TextTyping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextTyping.swift; sourceTree = "<group>"; };
+		B1000000000000000000006D /* TypingPrefixCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingPrefixCapture.swift; sourceTree = "<group>"; };
+		B1000000000000000000006F /* TypingPrefixLogic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingPrefixLogic.swift; sourceTree = "<group>"; };
+		B10000000000000000000071 /* TypingPrefixLogicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingPrefixLogicTests.swift; sourceTree = "<group>"; };
 		B1000000000000000000001E /* PinnedActionsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedActionsStoreTests.swift; sourceTree = "<group>"; };
 		B1000000000000000000001F /* CaretTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CaretTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000018 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B1000000000000000000001A /* ApplicationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ApplicationServices.framework; path = System/Library/Frameworks/ApplicationServices.framework; sourceTree = SDKROOT; };
-		C70000000000000000000000 /* CoreBridgeProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreBridgeProvider.swift; sourceTree = "<group>"; };
-		C70000000000000000000001 /* CoreLaunchSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreLaunchSettings.swift; sourceTree = "<group>"; };
-		C70000000000000000000002 /* InlineCaretGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCaretGeometry.swift; sourceTree = "<group>"; };
-		C70000000000000000000003 /* InlineCompletionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionCoordinator.swift; sourceTree = "<group>"; };
-		C70000000000000000000004 /* InlineCompletionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionProvider.swift; sourceTree = "<group>"; };
-		C70000000000000000000005 /* InlineCompletionTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCompletionTypes.swift; sourceTree = "<group>"; };
-		C70000000000000000000006 /* InlineCoreBridging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineCoreBridging.swift; sourceTree = "<group>"; };
-		C70000000000000000000007 /* InlineFieldAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineFieldAccess.swift; sourceTree = "<group>"; };
-		C70000000000000000000008 /* InlineKeyDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineKeyDecision.swift; sourceTree = "<group>"; };
-		C70000000000000000000009 /* InlineKeyTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineKeyTap.swift; sourceTree = "<group>"; };
-		C7000000000000000000000A /* InlineOfferStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineOfferStore.swift; sourceTree = "<group>"; };
-		C7000000000000000000000B /* InlinePreviewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlinePreviewWindow.swift; sourceTree = "<group>"; };
 		B10000000000000000000060 /* HistoryDebug.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryDebug.swift; sourceTree = "<group>"; };
 		B10000000000000000000063 /* CaretDebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretDebugView.swift; sourceTree = "<group>"; };
 		B10000000000000000000065 /* HistoryDebugTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryDebugTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
-
-		B100000000000000000000A2 /* CaretCore in Frameworks */ = {isa = PBXBuildFile; productRef = B100000000000000000000A1 /* CaretCore */; };
-/* End PBXBuildFile section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		B10000000000000000000005 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B100000000000000000000A2 /* CaretCore in Frameworks */,
 				B1000000000000000000002A /* ApplicationServices.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -123,7 +141,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-							B100000000000000000000A2 /* CaretCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -153,39 +170,48 @@
 			isa = PBXGroup;
 			children = (
 				B10000000000000000000011 /* CaretApp.swift */,
-				C7000000000000000000000B /* InlinePreviewWindow.swift */,
-				C7000000000000000000000A /* InlineOfferStore.swift */,
-				C70000000000000000000009 /* InlineKeyTap.swift */,
-				C70000000000000000000008 /* InlineKeyDecision.swift */,
-				C70000000000000000000007 /* InlineFieldAccess.swift */,
-				C70000000000000000000006 /* InlineCoreBridging.swift */,
-				C70000000000000000000005 /* InlineCompletionTypes.swift */,
-				C70000000000000000000004 /* InlineCompletionProvider.swift */,
-				C70000000000000000000003 /* InlineCompletionCoordinator.swift */,
-				C70000000000000000000002 /* InlineCaretGeometry.swift */,
-				C70000000000000000000001 /* CoreLaunchSettings.swift */,
-				C70000000000000000000000 /* CoreBridgeProvider.swift */,
 				B10000000000000000000012 /* AXHelpers.swift */,
 				B10000000000000000000013 /* HotKeyManager.swift */,
 				B10000000000000000000014 /* PermissionView.swift */,
 				B10000000000000000000015 /* SelectionMonitor.swift */,
 				B10000000000000000000016 /* StatusBarController.swift */,
+				B1000000000000000000B100 /* InlineCompletionTypes.swift */,
+				B1000000000000000000B101 /* InlineKeyDecision.swift */,
+				B1000000000000000000B102 /* InlineOfferStore.swift */,
+				B1000000000000000000B103 /* InlineFieldAccess.swift */,
+				B1000000000000000000B104 /* InlineKeyTap.swift */,
+				B1000000000000000000B105 /* InlineCompletionProvider.swift */,
+				B1000000000000000000B106 /* InlineCompletionCoordinator.swift */,
+				B1000000000000000000B107 /* InlineCoreBridging.swift */,
+				B1000000000000000000B108 /* InlinePreviewWindow.swift */,
+				B1000000000000000000B109 /* InlineCaretGeometry.swift */,
+				B1000000000000000000B10A /* CoreBridgeProvider.swift */,
+				B1000000000000000000B10B /* CoreLaunchSettings.swift */,
 				B10000000000000000000017 /* TriggerButton.swift */,
 				B1000000000000000000001C /* AccessibilityTrust.swift */,
 				B1000000000000000000001D /* PinnedActionsStore.swift */,
 				B10000000000000000000020 /* SkillRepository.swift */,
 				B1000000000000000000003C /* ModifierChordState.swift */,
 				B1000000000000000000003D /* CaretSettingsView.swift */,
-				D20000000000000000000002 /* NoteEditorSession.swift */,
 				B10000000000000000000040 /* MemoryRepository.swift */,
 				B10000000000000000000042 /* CaretNote.swift */,
 				B10000000000000000000050 /* ScreenpipeSupervisor.swift */,
 				B10000000000000000000060 /* HistoryDebug.swift */,
 				B10000000000000000000063 /* CaretDebugView.swift */,
-				B10000000000000000000055 /* Info.plist */,
+				B10000000000000000000062 /* Info.plist */,
 				B10000000000000000000044 /* CaretPaths.swift */,
 				B10000000000000000000046 /* InstalledApps.swift */,
 				B10000000000000000000048 /* AppReferenceIcon.swift */,
+				B10000000000000000000056 /* SettingsMainMenu.swift */,
+				B10000000000000000000058 /* TabCompletions.swift */,
+				B1000000000000000000005A /* CaretCLI.swift */,
+				B1000000000000000000005C /* TabCompletionsController.swift */,
+				B1000000000000000000005E /* TabInterceptMonitor.swift */,
+				B10000000000000000000067 /* TabCompletionsPatterns.swift */,
+				B10000000000000000000069 /* InlineGhostPanel.swift */,
+				B1000000000000000000006B /* TextTyping.swift */,
+				B1000000000000000000006D /* TypingPrefixCapture.swift */,
+				B1000000000000000000006F /* TypingPrefixLogic.swift */,
 				B10000000000000000000018 /* Assets.xcassets */,
 			);
 			name = Caret;
@@ -206,6 +232,7 @@
 				B1000000000000000000001E /* PinnedActionsStoreTests.swift */,
 				B10000000000000000000053 /* ScreenpipeSupervisorTests.swift */,
 				B10000000000000000000065 /* HistoryDebugTests.swift */,
+				B10000000000000000000071 /* TypingPrefixLogicTests.swift */,
 			);
 			name = CaretTests;
 			path = apps/mac/Tests;
@@ -230,6 +257,9 @@
 			name = CaretTests;
 			productName = CaretTests;
 			productReference = B1000000000000000000001F /* CaretTests.xctest */;
+			packageProductDependencies = (
+				B100000000000000000000A1 /* CaretCore */,
+			);
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		B10000000000000000000002 /* Caret */ = {
@@ -247,9 +277,6 @@
 			name = Caret;
 			productName = Caret;
 			productReference = B1000000000000000000000F /* Caret.app */;
-			packageProductDependencies = (
-				B100000000000000000000A1 /* CaretCore */,
-			);
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -270,11 +297,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				B1000000000000000000002E /* PinnedActionsStoreTests.swift in Sources */,
-				B1000000000000000000002D /* PinnedActionsStore.swift in Sources */,
-				B10000000000000000000052 /* ScreenpipeSupervisor.swift in Sources */,
 				B10000000000000000000054 /* ScreenpipeSupervisorTests.swift in Sources */,
-				B10000000000000000000062 /* HistoryDebug.swift in Sources */,
 				B10000000000000000000066 /* HistoryDebugTests.swift in Sources */,
+				B10000000000000000000072 /* TypingPrefixLogicTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -309,11 +334,11 @@
 				en,
 				Base,
 			);
+			mainGroup = B1000000000000000000000C;
+			productRefGroup = B1000000000000000000000D /* Products */;
 			packageReferences = (
 				B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */,
 			);
-			mainGroup = B1000000000000000000000C;
-			productRefGroup = B1000000000000000000000D /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -340,30 +365,29 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000000000000000000021 /* CaretApp.swift in Sources */,
-				C8000000000000000000000B /* InlinePreviewWindow.swift in Sources */,
-				C8000000000000000000000A /* InlineOfferStore.swift in Sources */,
-				C80000000000000000000009 /* InlineKeyTap.swift in Sources */,
-				C80000000000000000000008 /* InlineKeyDecision.swift in Sources */,
-				C80000000000000000000007 /* InlineFieldAccess.swift in Sources */,
-				C80000000000000000000006 /* InlineCoreBridging.swift in Sources */,
-				C80000000000000000000005 /* InlineCompletionTypes.swift in Sources */,
-				C80000000000000000000004 /* InlineCompletionProvider.swift in Sources */,
-				C80000000000000000000003 /* InlineCompletionCoordinator.swift in Sources */,
-				C80000000000000000000002 /* InlineCaretGeometry.swift in Sources */,
-				C80000000000000000000001 /* CoreLaunchSettings.swift in Sources */,
-				C80000000000000000000000 /* CoreBridgeProvider.swift in Sources */,
 				B10000000000000000000022 /* AXHelpers.swift in Sources */,
 				B10000000000000000000023 /* HotKeyManager.swift in Sources */,
 				B10000000000000000000024 /* PermissionView.swift in Sources */,
 				B10000000000000000000025 /* SelectionMonitor.swift in Sources */,
 				B10000000000000000000026 /* StatusBarController.swift in Sources */,
+				B1000000000000000000A100 /* InlineCompletionTypes.swift in Sources */,
+				B1000000000000000000A101 /* InlineKeyDecision.swift in Sources */,
+				B1000000000000000000A102 /* InlineOfferStore.swift in Sources */,
+				B1000000000000000000A103 /* InlineFieldAccess.swift in Sources */,
+				B1000000000000000000A104 /* InlineKeyTap.swift in Sources */,
+				B1000000000000000000A105 /* InlineCompletionProvider.swift in Sources */,
+				B1000000000000000000A106 /* InlineCompletionCoordinator.swift in Sources */,
+				B1000000000000000000A107 /* InlineCoreBridging.swift in Sources */,
+				B1000000000000000000A108 /* InlinePreviewWindow.swift in Sources */,
+				B1000000000000000000A109 /* InlineCaretGeometry.swift in Sources */,
+				B1000000000000000000A10A /* CoreBridgeProvider.swift in Sources */,
+				B1000000000000000000A10B /* CoreLaunchSettings.swift in Sources */,
 				B10000000000000000000027 /* TriggerButton.swift in Sources */,
 				B1000000000000000000002B /* AccessibilityTrust.swift in Sources */,
 				B1000000000000000000002C /* PinnedActionsStore.swift in Sources */,
 				B1000000000000000000003A /* SkillRepository.swift in Sources */,
 				B1000000000000000000003B /* ModifierChordState.swift in Sources */,
 				B1000000000000000000003E /* CaretSettingsView.swift in Sources */,
-				D20000000000000000000001 /* NoteEditorSession.swift in Sources */,
 				B1000000000000000000003F /* MemoryRepository.swift in Sources */,
 				B10000000000000000000041 /* CaretNote.swift in Sources */,
 				B10000000000000000000051 /* ScreenpipeSupervisor.swift in Sources */,
@@ -372,24 +396,20 @@
 				B10000000000000000000043 /* CaretPaths.swift in Sources */,
 				B10000000000000000000045 /* InstalledApps.swift in Sources */,
 				B10000000000000000000047 /* AppReferenceIcon.swift in Sources */,
+				B10000000000000000000055 /* SettingsMainMenu.swift in Sources */,
+				B10000000000000000000057 /* TabCompletions.swift in Sources */,
+				B10000000000000000000059 /* CaretCLI.swift in Sources */,
+				B1000000000000000000005B /* TabCompletionsController.swift in Sources */,
+				B1000000000000000000005D /* TabInterceptMonitor.swift in Sources */,
+				B10000000000000000000068 /* TabCompletionsPatterns.swift in Sources */,
+				B1000000000000000000006A /* InlineGhostPanel.swift in Sources */,
+				B1000000000000000000006C /* TextTyping.swift in Sources */,
+				B1000000000000000000006E /* TypingPrefixCapture.swift in Sources */,
+				B10000000000000000000070 /* TypingPrefixLogic.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin XCLocalSwiftPackageReference section */
-		B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = apps/mac;
-		};
-/* End XCLocalSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		B100000000000000000000A1 /* CaretCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = CaretCore;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		B10000000000000000000008 /* Debug */ = {
@@ -398,10 +418,6 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
-				/* Local Swift package products stay in BUILD_DIR even when the app output is redirected. */
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
-				SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
-				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_TESTABILITY = YES;
@@ -410,6 +426,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
+				/* Swift package products remain in BUILD_DIR when app output is redirected. */
+				SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
+				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -421,14 +441,14 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
-				/* Local Swift package products stay in BUILD_DIR even when the app output is redirected. */
-				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
-				SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
-				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				SDKROOT = macosx;
+				CONFIGURATION_BUILD_DIR = "$(SRCROOT)/.local/build/$(CONFIGURATION)";
+				/* Swift package products remain in BUILD_DIR when app output is redirected. */
+				SWIFT_INCLUDE_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
+				LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(BUILD_DIR)/$(CONFIGURATION)");
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;
@@ -520,6 +540,20 @@
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = apps/mac;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B100000000000000000000A1 /* CaretCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CaretCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCConfigurationList section */
 		B10000000000000000000006 /* Build configuration list for PBXProject "Caret" */ = {

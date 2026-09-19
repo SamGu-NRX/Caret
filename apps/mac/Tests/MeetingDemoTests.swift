@@ -1,7 +1,9 @@
 import XCTest
 import SwiftUI
 import CaretCore
+#if SWIFT_PACKAGE
 @testable import Caret
+#endif
 
 final class MeetingDemoTests: XCTestCase {
     private func offer() -> CaretActionOffer {

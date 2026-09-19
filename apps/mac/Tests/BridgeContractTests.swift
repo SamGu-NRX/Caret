@@ -1,6 +1,8 @@
 import XCTest
 import CaretCore
+#if SWIFT_PACKAGE
 @testable import Caret
+#endif
 
 /// Decoding against the timestamp shapes the real Python core emits.
 ///
@@ -253,5 +255,75 @@ final class BridgeContractTests: XCTestCase {
         let provider = CoreBridgeProvider(capture: FocusedTargetCapture())
         XCTAssertTrue(provider.visibleExecutableActions.isEmpty,
                       "no offers exist until the core mints one")
+    }
+}
+
+/// The launch preflight. A missing provider key is the most likely reason the
+/// demo does not start, and the core names it on stderr then exits -- but
+/// CaretCore counts stderr and never logs it, so that name cannot reach the
+/// user unless it is checked here first.
+final class CoreLaunchSettingsTests: XCTestCase {
+    func testEachProviderNamesItsOwnKey() {
+        XCTAssertEqual(CoreLaunchSettings.requiredKey(forProvider: "gateway"), "AI_GATEWAY_API_KEY")
+        XCTAssertEqual(CoreLaunchSettings.requiredKey(forProvider: "groq"), "GROQ_API_KEY")
+        // TYPESAFE_API_KEY is the Jev key, not an old name for the others.
+        XCTAssertEqual(CoreLaunchSettings.requiredKey(forProvider: "jev"), "TYPESAFE_API_KEY")
+    }
+
+    /// A scripted provider replays a recording and needs no key. It must not
+    /// be reported as misconfigured.
+    func testScriptedProviderNeedsNoKey() {
+        XCTAssertNil(CoreLaunchSettings.requiredKey(forProvider: "scripted:/tmp/a.json"))
+    }
+
+    func testProviderIsReadFromTheFlagThatSelectsIt() {
+        let args = ["--judge", "gateway", "--writer", "groq", "--adapter", "caret.live_workflows:MeetingDraftWorkflow"]
+        XCTAssertEqual(CoreLaunchSettings.provider(named: "--judge", in: args), "gateway")
+        XCTAssertEqual(CoreLaunchSettings.provider(named: "--writer", in: args), "groq")
+        XCTAssertNil(CoreLaunchSettings.provider(named: "--missing", in: args))
+    }
+
+    /// A trailing flag with no value must not read the next thing along, or a
+    /// malformed config would silently select the wrong provider.
+    func testDanglingFlagYieldsNoProvider() {
+        XCTAssertNil(CoreLaunchSettings.provider(named: "--judge", in: ["--writer", "groq", "--judge"]))
+    }
+
+    /// The env file parser returns names and values for the child's
+    /// environment; it must tolerate comments, quotes and blank values without
+    /// inventing entries.
+    func testEnvFileParsingIsStrict() throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("caret-env-\(UUID().uuidString)")
+        try """
+        # comment
+        GROQ_API_KEY=abc123
+        AI_GATEWAY_API_KEY="quoted-value"
+        EMPTY=
+        malformed-line
+        """.write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let parsed = CoreLaunchSettings.environment(fromEnvFileAt: url.path)
+        XCTAssertEqual(parsed["GROQ_API_KEY"], "abc123")
+        XCTAssertEqual(parsed["AI_GATEWAY_API_KEY"], "quoted-value", "surrounding quotes are stripped")
+        XCTAssertNil(parsed["EMPTY"], "a blank value is not a configured key")
+        XCTAssertEqual(parsed.count, 2)
+    }
+
+    func testMissingEnvFileIsEmptyNotACrash() {
+        XCTAssertTrue(CoreLaunchSettings.environment(fromEnvFileAt: "/nonexistent/caret.env").isEmpty)
+        XCTAssertTrue(CoreLaunchSettings.environment(fromEnvFileAt: nil).isEmpty)
+    }
+
+    /// Each failure names the thing to change. A dead process with no reason
+    /// is what this exists to prevent.
+    func testUnavailableReasonsAreActionable() {
+        XCTAssertTrue(CoreLaunchSettings.Unavailable
+            .missingKey(variable: "AI_GATEWAY_API_KEY", provider: "judge gateway")
+            .statusText.contains("AI_GATEWAY_API_KEY"))
+        XCTAssertTrue(CoreLaunchSettings.Unavailable.judgeNotSelected.statusText.contains("jev"),
+                      "the user needs to know which judge they would silently get")
+        XCTAssertTrue(CoreLaunchSettings.Unavailable.noInterpreter.statusText.contains("dev.json"))
     }
 }

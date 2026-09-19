@@ -27,6 +27,8 @@ final class InlineKeyTap {
 
     /// The chord shown in the preview hint. Sourced here so the hint cannot
     /// drift from the key this tap actually claims.
+    /// Shown by the preview owned by this path. Tab itself is claimed by
+    /// TabCompletionsController, not here.
     static let acceptHint = "Tab"
 
     private var tap: CFMachPort?
