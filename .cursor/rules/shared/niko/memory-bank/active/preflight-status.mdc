@@ -1,0 +1,16 @@
+---
+globs: memory-bank/active/.preflight-status
+---
+
+# Preflight Status
+
+The preflight status file is the ephemeral result of one Preflight run. It lives at `memory-bank/active/.preflight-status`. Overwrite it each run. Delete it at archive.
+
+**First line** is exactly one of these (exact casing):
+
+- `PASS` — checks passed with no advisories
+- `PASS WITH ADVISORY` — checks passed; advisory findings recorded; still a valid build/transition gate; includes in-phase plan edits
+- `FAIL (fixable)` — plan has issues but the issues have known fixes; planner re-plans.
+- `FAIL (blocking)` — plan has issues that require materially changing the plan; operator must provide guidance then invoke `/niko-plan`.
+
+After a blank line, the rest of the file is this run's findings, in prose. No required headings.

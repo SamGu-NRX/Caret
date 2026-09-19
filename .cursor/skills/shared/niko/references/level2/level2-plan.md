@@ -1,0 +1,202 @@
+# Plan Phase - Level 2: Simple Enhancement
+
+This document creates a concrete implementation plan for a Level 2 (Simple Enhancement) task. It produces a linear, actionable plan with test-first design, technology validation, and a clear checklist - enough structure to prevent drift without the overhead of creative phases or architectural analysis.
+
+## Step 1: Load Memory Bank Files
+
+Read:
+- `memory-bank/active/tasks.md`
+- `memory-bank/active/projectbrief.md`
+- `memory-bank/systemPatterns.md`
+- `memory-bank/active/activeContext.md`
+- `memory-bank/techContext.md`
+- `.cursor/rules/shared/always-tdd.mdc`
+
+## Step 2: Verify Prerequisites
+
+- Confirm `memory-bank/active/tasks.md` exists (stub created by `/niko` - it will contain the task name but not yet a full plan; that's this document's job)
+- Confirm `memory-bank/active/progress.md` exists and indicates that the current task is indeed a Level 2 task
+- Confirm `memory-bank/active/projectbrief.md` exists with the user story and requirements
+
+🚨 If any of the prerequisites are missing, STOP and inform the user (see "Output to Operator" below).
+
+## Step 3: Test Planning (TDD)
+
+- **Behavior Identification**: Enumerate the specific, observable behaviors this enhancement must exhibit when complete. Each behavior is a testable assertion, not a vague description. Frame as `[input/action] → [expected outcome]`. List behaviors only for executable work; do not invent tests for prose/policy units.
+- **Edge Cases**: Identify at minimum: invalid input, boundary values, empty/null states, and interaction with existing behavior that must not regress.
+- **Test Infrastructure Survey**: Locate the project's existing test framework, runner, conventions, and directory structure. New tests must conform to established patterns - do not introduce a parallel test infrastructure. If no test infrastructure can be located, flag this as a blocking question for the operator.
+- **Test File Mapping**: For each behavior identified, specify the exact test file (existing or new) and describe the test case. If a new test file is needed, its name and location must follow existing conventions.
+
+## Step 4: Review Codebase Structure
+
+- Identify the specific files, functions, and modules that will be touched by this enhancement
+- Cross-reference against `memory-bank/systemPatterns.md` to confirm the planned touchpoints align with established patterns
+- Identify any existing utilities, helpers, or abstractions that the implementation should leverage rather than duplicate
+
+## Step 5: Create Implementation Plan
+
+- Produce a **linear, ordered** list of implementation steps. Each step must name concrete files and functions - not abstractions.
+- Classify each step as **executable** or **prose/policy**.
+- For an **executable** step, numbered substeps are the always-tdd stages in order: stub tests, stub interface, write tests and run red, write code and run green. Put the specific changes (new functions, modified signatures, added exports, config changes) in those substeps. If the substeps can be reordered and still read correctly, the step is not planned yet.
+- For a **prose/policy** step, use ordered work steps plus `No tests: prose/policy artifact`. Never schedule a change-detector.
+- Steps must be sequenced so that each builds on the last; no step should require backtracking.
+- Include documentation update steps for any project documentation (README files, doc comments, configuration docs, user-facing guides) that would be affected by the implementation. Documentation changes are implementation work, not an afterthought.
+
+## Step 6: Identify Challenges & Mitigations
+
+- For each non-trivial step, note what could go wrong and how to handle it
+- Flag any dependency on external state (APIs, environment, config) that must be present during build
+- If any challenge suggests the task is actually Level 3+ (multiple components with design decisions, cross-cutting concerns, ambiguous requirements): FAIL with recommendation to re-level
+
+## Step 7: Pre-Mortem
+
+After Challenges & Mitigations are recorded, run Pre-Mortem on the whole plan:
+
+- Imagine this plan has already failed. What would the likely cause(s) be?
+- For each likely cause: say how the plan changes in response (scope cut, new step, new open question, etc.), or note in one line that a Challenge already covers it and move on
+- Do **not** re-list the Challenges & Mitigations as a dump — Pre-Mortem is prospective hindsight on the plan as a whole (wrong premise, wrong layer, missing constraint), not another tech-risk register
+
+## Step 8: Technology Validation 
+
+- Document any new dependencies, build tool changes, or configuration additions
+- If new technology is introduced: Create a minimal proof-of-concept that verifies the dependency installs, builds, and runs in the project's environment
+- If no new technology: skip this step and note "No new technology - validation not required"
+
+## Step 9: Generate Plan Report
+
+1. Write the complete plan to `memory-bank/active/tasks.md` using the output format below
+2. Update `memory-bank/active/activeContext.md` with planning outcome
+
+### tasks.md Plan Format
+
+~~~markdown
+# Task: [Task name]
+
+* Task ID: [task-id]
+* Complexity: Level 2
+* Type: [task type (simple enhancement, bug fix, etc.)]
+
+[Concrete description of the enhancement]
+
+
+## Test Plan (TDD)
+
+### Behaviors to Verify
+
+- [Behavior 1]: [input/action] → [expected outcome]
+- [Behavior 2]: [input/action] → [expected outcome]
+- [Edge case 1]: [input/action] → [expected outcome]
+
+(or "No new executable behavior." if the task is entirely prose/policy — do not invent behaviors)
+
+### Test Infrastructure
+
+- Framework: [existing framework name]
+- Test location: [path to test directory]
+- Conventions: [describe naming/structure conventions observed]
+- New test files: [list, or "none"]
+
+## Implementation Plan
+
+### 1. [Unit name] — executable
+
+- Files: [file paths]
+
+1. Stub tests: [test file + empty cases]
+2. Stub interface: [signatures to add]
+3. Write tests and run red: [assertions]
+4. Write code and run green: [production changes]
+
+### 2. [Unit name] — prose/policy
+
+- Files: [file paths]
+- No tests: prose/policy artifact
+
+1. [Work step]
+2. [Work step]
+
+## Technology Validation
+
+[New dependencies and validation results, or "No new technology - validation not required"]
+
+## Dependencies
+
+- [Dependency 1]
+- [Dependency 2]
+
+## Challenges & Mitigations
+
+- [Challenge 1]: [Mitigation]
+- [Challenge 2]: [Mitigation]
+
+## Pre-Mortem
+
+- [Likely cause if this plan failed]: [How the plan changes, or "already covered by Challenge N"]
+- [Likely cause 2]: [Plan response]
+
+## Status
+
+- [x] Initialization complete
+- [x] Test planning complete (TDD)
+- [x] Implementation plan complete
+- [x] Technology validation complete
+- [x] Pre-Mortem complete
+- [ ] Preflight
+- [ ] Build
+- [ ] QA
+~~~
+
+## Step 10: Log Progress
+
+> 🚨 **Printing this notice is NOT the end of this phase.** After printing, continue immediately to the next step - do not stop.
+
+Record the results by printing the appropriate block:
+
+### PASS
+
+~~~markdown
+# Plan Result
+
+✅ PASS - Level 2: Simple Enhancement
+
+## Summary
+
+- **Behaviors to verify**: [count]
+- **Implementation steps**: [count]
+- **Files affected**: [list]
+- **New dependencies**: [list or "none"]
+
+## Challenges
+
+[Brief summary of identified challenges, or "None identified"]
+
+## Pre-Mortem
+
+[Brief summary of likely plan-failure causes and plan responses, or "None beyond Challenges"]
+
+## Next Steps
+
+Preflight validation will now run automatically.
+~~~
+
+### FAIL
+
+~~~markdown
+# Plan Result
+
+❌ FAIL
+
+## Reason
+
+[Why planning could not complete]
+
+## Next Steps
+
+- **Prerequisites missing**: Run `/niko` to initialize properly.
+- **Re-level required**: Task complexity exceeds Level 2. Discuss with operator before re-planning at Level 3+.
+~~~
+
+## Step 11: Phase Transition
+
+- If operator input is required: stop and wait for them.
+- If operator input is not required: load the appropriate complexity level-specific Niko workflow file, then use its Phase Mappings to execute the next phase.

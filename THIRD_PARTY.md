@@ -2,6 +2,8 @@
 
 `sources.json` records exact upstream commits. Each `packages/` entry is a Git submodule, not code relicensed by Caret. Preserve upstream copyright and license notices when extracting code. The root MIT license covers original Caret files only. No upstream code runs in the default starter.
 
+`.summem/summem` is the [SumMem](https://github.com/texarkanine/SumMem) 0.12.0 script (`64ce35c89ba0982c74ba8207c3f3a37a2fbf2f21`), AGPL-3.0 with additional permissions in that file's header. Invoking the script does not make this repository a covered work. The `AGENTS.md` bootstrap prompt is 0BSD. SumMem is agent memory, not a `packages/` pin.
+
 | Upstream | License at pin |
 | --- | --- |
 | KeyType, GhostType | MIT |

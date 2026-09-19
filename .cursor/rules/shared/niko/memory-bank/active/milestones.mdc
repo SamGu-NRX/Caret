@@ -1,0 +1,69 @@
+---
+globs: memory-bank/active/milestones.md
+---
+
+# L4 Milestone List
+
+`memory-bank/active/milestones.md` is the L4 plan and state tracker.
+
+1. **In-flight signal**: its presence tells `/niko` that an L4 project is active.
+2. **State tracker**: the checklist records which milestones are complete.
+
+Put requirements in `memory-bank/active/projectbrief.md`. Put sequence, invariants, done, and risks in this file.
+
+## File Format
+
+```markdown
+# Milestones: <task-id>
+
+## Cross-milestone invariants & constraints
+
+[Properties no milestone may violate. If two milestones share an artifact, state who may touch it and when.]
+
+## Execution Order
+
+[Optional Mermaid flowchart. Omit if all milestones are sequential.]
+
+- [ ] <Deliverable. Include an existing ticket id or URL if one exists.>
+- [ ] <Deliverable>
+- [ ] <Deliverable>
+
+## Per-milestone done and risks
+
+### <exact checkbox text>
+- Done: <what shipped looks like>
+- Risks: <what this sub-run must not lose, or "see invariants">
+```
+
+Rules:
+- Header: `# Milestones: <task-id>` matching the task ID in `memory-bank/active/tasks.md`
+- One GFM checkbox per milestone (`- [ ]` or `- [x]`). No sub-bullets. No second sentence. No file lists.
+- Do not create tickets. If a ticket already exists, put its id or URL on that checkbox line.
+- Only the Execution Order checklist may use `- [ ]` / `- [x]`. Those markers are the milestone list.
+- The checklist is serial-safe: walking it one at a time never requires a later milestone.
+- When the work is not a straight line, the flowchart shows which milestones may run in parallel. One-at-a-time follows the list. Parallel follows the DAG. The two must agree so a switch mid-project does not conflict.
+- The flowchart is not a milestone.
+
+## What Makes a Good Milestone
+
+Each milestone must satisfy all of these:
+
+- **Independently deliverable** — plan, build, test, and commit with no need for a later milestone
+- **L1/L2/L3 scoped** — not itself L4
+- **Concrete** — names the deliverable ("Add user authentication flow", not "Work on auth")
+- **Non-overlapping** — no two milestones do the same work to the same files
+- **Done** — the heading block (or a covering invariant) states what shipped looks like
+
+If a milestone fails these, split, merge, or rewrite it before sub-runs begin.
+
+## Lifecycle
+
+| Event | Who | Action |
+|-------|-----|--------|
+| L4 Plan phase | `.cursor/skills/shared/niko/references/level4/level4-plan.md` | Creates `memory-bank/active/milestones.md` |
+| `/niko` re-entry - sub-run complete | `/niko` Step 2a (Advance L4 Milestone) | Checks off the completed milestone (`- [ ]` → `- [x]`) |
+| `/niko` re-entry - unchecked remain | `/niko` Step 2a → Step 7 (Classify) | Classifies first unchecked as L1/L2/L3, initiates sub-run |
+| `/niko` re-entry - all `- [x]` | `/niko` Step 2a | Routes to capstone archive |
+| Capstone archive | `.cursor/skills/shared/niko/references/level4/level4-archive.md` | Deletes `memory-bank/active/milestones.md` |
+
+🚨 **Do not create or modify `memory-bank/active/milestones.md` outside of these lifecycle events.** Its presence is a binary signal for `/niko`. A manual create will send the next `/niko` into L4 routing.

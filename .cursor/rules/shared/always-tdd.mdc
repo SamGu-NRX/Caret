@@ -1,0 +1,55 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Test-Driven Development (TDD) Requirement
+
+All changes to **executable behavior** (defined below) must be made according to this test-driven development process: **tests get written first**. Strictly follow the four steps laid out below, in order, for every such change. Never skip ahead to making code changes without following this process.
+
+## What TDD Governs
+
+In scope: behavior a user of this product can observe breaking. File extension does not decide.
+
+Out of scope: user-facing prose and policy — docs content, PR and issue templates, CONTRIBUTING, instructional comments, project narrative, rule and skill wording, etc. Repository bootstrap (AGENTS.md, CLAUDE.md, copied init text, etc.), vendored third-party tools, gitignore lines, etc. are out of scope even when an agent or a developer tool invokes them.
+
+Before writing a test that asserts on a document's contents, ask what makes the test fail:
+
+> If it can only go red when someone deliberately edits the artifact it asserts on, it is a **change-detector**, not a test: it fires on intended edits and stays silent when the product breaks.
+
+Delete change-detectors; write none. The failure mode decides, not the format. A test that locks a contract across files (manifest/version lockstep, dual plugin manifests, etc.) is a contract test only when that lockstep is the published contract of this product: it goes red when the contract breaks for a user of this product, not when content is merely edited. If semantic versioning already signals the expectation, do not add the test. Enforce out-of-scope artifacts with review, a purpose-built gate (commit-title lint, link checker, schema validator), or nothing at all.
+
+## 1. Determine Scope
+
+1. Determine scope of necessary code changes
+2. Determine necessary behaviors to test
+3. Determine the correct locations in the existing test infrastructure for those tests
+	- Determine if new test suites must be added
+	- Determine if test cases must be added to existing test suites
+	- Determine if existing test cases must be modified
+	- If you cannot locate existing test infrastructure, **stop and ask** what to do.
+
+## 2. Stubbing
+
+1. **Stub new tests:** create any necessary test suites and/or test cases, with **empty implementations**
+	- If the test signature is not self-descriptive, include multi-line comments on the test suites and test cases explaining the behaviors they are supposed to test.
+	- Do not implement any tests yet.
+2. **Stub the interface:** add any new functions, classes, etc to the codebase with **empty implementations**
+	- include full function and/or class signatures, etc
+	- include full multi-line comment documentation in the style already in use in the project *or* the industry standard for the language(s) in use if the project has no prior art
+	- Do not implement any of the actual code changes yet.
+3. **Modify existing tests:** modify any existing tests as needed to correctly test for the new behavior
+
+## 3. Write Tests
+
+1. **Implement the Tests**: Fill out the implementations of all the empty tests you wrote.
+2. **Run the Tests:** Run the tests you wrote. All your new tests should fail; that is expected and means you did it right.
+
+## 4. Write Code
+
+Only write code after all tests have been created, stubbed, documented, and implemented.
+
+1. Start with the first failing test
+2. Implement the required code to make that test pass
+3. Run the tests
+4. Repeat steps 1-3 until all tests pass
