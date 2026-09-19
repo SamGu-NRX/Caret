@@ -35,6 +35,7 @@ The starter needs Python 3.11+ and macOS 14+. `make app` requires full Xcode; Sw
 ```sh
 git clone https://github.com/theodorexli/hackathon-2026-09-19.git
 cd hackathon-2026-09-19
+git submodule update --init --depth 1 packages/keytype
 make test
 make demo
 make install    # Release Caret.app → /Applications

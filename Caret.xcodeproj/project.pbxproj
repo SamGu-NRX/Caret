@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D90000000000000000000005 /* KeyType LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = D90000000000000000000004 /* KeyType LICENSE */; };
+		D90000000000000000000003 /* CompletionUI in Frameworks */ = {isa = PBXBuildFile; productRef = D90000000000000000000002 /* CompletionUI */; };
 		D20000000000000000000001 /* NoteEditorSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* NoteEditorSession.swift */; };
 		B10000000000000000000021 /* CaretApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* CaretApp.swift */; };
 		B10000000000000000000022 /* AXHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* AXHelpers.swift */; };
@@ -79,6 +81,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D90000000000000000000004 /* KeyType LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = packages/keytype/LICENSE; sourceTree = SOURCE_ROOT; };
 		D20000000000000000000002 /* NoteEditorSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorSession.swift; sourceTree = "<group>"; };
 		B1000000000000000000000F /* Caret.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Caret.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000011 /* CaretApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretApp.swift; sourceTree = "<group>"; };
@@ -146,6 +149,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B100000000000000000000A2 /* CaretCore in Frameworks */,
+				D90000000000000000000003 /* CompletionUI in Frameworks */,
 				B1000000000000000000002A /* ApplicationServices.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -283,6 +287,7 @@
 			productReference = B1000000000000000000001F /* CaretTests.xctest */;
 			packageProductDependencies = (
 				B100000000000000000000A1 /* CaretCore */,
+				D90000000000000000000002 /* CompletionUI */,
 			);
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
@@ -364,6 +369,7 @@
 			productRefGroup = B1000000000000000000000D /* Products */;
 			packageReferences = (
 				B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */,
+				D90000000000000000000001 /* KeyType CompletionUI */,
 			);
 			projectDirPath = "";
 			projectRoot = "";
@@ -380,6 +386,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000000000000000000028 /* Assets.xcassets in Resources */,
+				D90000000000000000000005 /* KeyType LICENSE in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -566,6 +573,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		D90000000000000000000001 /* KeyType CompletionUI */ = {isa = XCLocalSwiftPackageReference; relativePath = packages/keytype/Packages/CompletionUI; };
 		B100000000000000000000A0 /* XCLocalSwiftPackageReference "apps/mac" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = apps/mac;
@@ -573,6 +581,7 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		D90000000000000000000002 /* CompletionUI */ = {isa = XCSwiftPackageProductDependency; productName = CompletionUI; };
 		B100000000000000000000A1 /* CaretCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = CaretCore;
