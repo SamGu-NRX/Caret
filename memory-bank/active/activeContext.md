@@ -1,12 +1,11 @@
 # Active Context
 
 ## Current Task: caret-xcodeproj-id-collision
-**Phase:** BUILD - COMPLETE
+**Phase:** BUILD - IN-PROGRESS (rework after QA FAIL)
 
 ## What Was Done
-- Reproduced: Sources listed `B100…55` as SettingsMainMenu, but that ID was also Info.plist.
-- Tests first: unique object IDs; every Sources `files` entry is a `PBXBuildFile`. Both failed, then passed.
-- Info.plist is now `B100…57`. Full Python suite green. `make install` built Release and copied `/Applications/Caret.app`.
+- QA FAIL: Info.plist `…57` collides with TabCompletions on `origin/main`. Origin already uses Info.plist `…62`.
+- Re-entering Build: rebase onto `origin/main`, drop the pbxproj remap, keep the contract tests.
 
 ## Next Step
-- Level 1 QA via `/niko-qa` subagent.
+- Rebase onto `origin/main` and keep `tests/test_xcodeproj.py` only if the collision is already gone.

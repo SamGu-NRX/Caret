@@ -27,3 +27,26 @@ Repair the duplicate object ID in `Caret.xcodeproj` so `make install` can read t
     - Contract test lives under `tests/` so Linux CI can catch the next collision
 * Insights
     - Xcode resolves a duplicate ID to the later object; the FileRef won, so Sources looked invalid
+
+## 2026-09-19 - QA - FAIL
+
+* Work completed
+    - QA by [Niko QA review](0b8aed7c-c8d5-4d94-8800-9eaf63745c0a) against `origin/main` `e4935c9`
+* Decisions made
+    - Do not push the Info.plist `…57` remap; that ID is TabCompletions on origin
+    - Re-enter Build: rebase onto `origin/main`, keep `tests/test_xcodeproj.py`, drop the pbxproj remap unless a collision remains
+* Insights
+    - `origin/main` already moved Info.plist to `B100…62` in the Tab completions commit
+
+## 2026-09-19 - QA - COMPLETE (FAIL)
+
+* Work completed
+    - Reviewed pbxproj remap and `tests/test_xcodeproj.py` against the brief
+    - Confirmed local IDs are unique and both new tests pass
+    - Compared the remap to `origin/main` (ahead 2, behind 1)
+* Decisions made
+    - FAIL: Build must rerun. Do not land Info.plist as `B100…57`.
+    - The contract tests are acceptable and should be kept
+* Insights
+    - `e4935c9` on origin already fixed the `B100…55` collision by moving Info.plist to `B100…62` and assigned `B100…57` to TabCompletions
+    - A locally unused "next" ID is not safe when main has moved
