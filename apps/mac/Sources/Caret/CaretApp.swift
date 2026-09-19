@@ -1182,16 +1182,21 @@ struct CaretActionOfferRow: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
-        case .succeeded(let summary, let evidence, _):
+        case .succeeded(let summary, let evidence, let scope):
             Text(summary)
                 .font(.system(size: 11))
                 .foregroundStyle(.primary)
-                .lineLimit(3)
-            ForEach(Array(evidence.prefix(3).enumerated()), id: \.offset) { _, item in
+                .fixedSize(horizontal: false, vertical: true)
+            let rows = CaretActionOffer.visibleEvidence(evidence, scope: scope)
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, item in
+                // Wraps rather than truncating. The adapter's no-effect
+                // disclosure runs past 100 characters, and a single clipped
+                // line would cut it mid-sentence -- exactly the sentence that
+                // stops a draft reading as a booking.
                 Text(item)
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .foregroundStyle(scope == .draftOnly ? Color.primary.opacity(0.75) : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         case .failed(let summary):
             Text(summary)

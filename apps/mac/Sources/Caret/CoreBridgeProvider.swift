@@ -93,6 +93,17 @@ struct CaretActionOffer: Identifiable, Equatable {
 
     var displayTitle: String { title.isEmpty ? workflowID : title }
 
+    /// Evidence rows to show for a finished run.
+    ///
+    /// A draft-only run shows all of it, uncapped. The adapter puts its
+    /// no-effect disclosure ("No message was sent, and no calendar event was
+    /// created, held or modified") in evidence, and that sentence is the whole
+    /// reason the user does not mistake a draft for a booking. Dropping it to
+    /// keep a row count tidy would undo the disclosure.
+    static func visibleEvidence(_ evidence: [String], scope: CompletionScope) -> [String] {
+        scope == .draftOnly ? evidence : Array(evidence.prefix(4))
+    }
+
     var completionScope: CompletionScope {
         Self.draftOnlyExecutionMethods.contains(executionMethod.trimmingCharacters(in: .whitespaces).lowercased())
             ? .draftOnly

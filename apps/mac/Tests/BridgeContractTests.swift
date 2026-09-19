@@ -228,4 +228,30 @@ final class BridgeContractTests: XCTestCase {
         XCTAssertEqual(offer("cal", method: "draft_only", sampleOnly: false).completionScope, .draftOnly)
         XCTAssertEqual(offer("flight", method: "skyvern_browser", sampleOnly: false).completionScope, .externalEffect)
     }
+
+
+    /// The adapter's no-effect disclosure is the sentence that stops a draft
+    /// reading as a booking. It must survive whatever row cap the UI applies.
+    func testDraftOnlyEvidenceIsNeverCapped() {
+        let disclosure = "Returned the approved draft text only. No message was sent, and no calendar event was created, held or modified."
+        let evidence = ["one", "two", "three", "four", "five", disclosure]
+
+        let draft = CaretActionOffer.visibleEvidence(evidence, scope: .draftOnly)
+        XCTAssertEqual(draft.count, evidence.count, "a draft-only run shows all evidence")
+        XCTAssertTrue(draft.contains(disclosure), "the no-effect disclosure must not be dropped")
+        XCTAssertGreaterThan(disclosure.count, 100, "fixture must be long enough to exercise the wrap")
+
+        // Ordinary runs may still be capped; nothing load-bearing is lost.
+        XCTAssertEqual(CaretActionOffer.visibleEvidence(evidence, scope: .externalEffect).count, 4)
+    }
+
+    /// Offers come only from core-minted offer events. The app never turns a
+    /// workflows.list catalog entry into something the user can run, so the
+    /// registry's exclusion of unavailable adapters stays the invariant.
+    @MainActor
+    func testCatalogEntriesAreNotSynthesizedIntoOffers() {
+        let provider = CoreBridgeProvider(capture: FocusedTargetCapture())
+        XCTAssertTrue(provider.visibleExecutableActions.isEmpty,
+                      "no offers exist until the core mints one")
+    }
 }
