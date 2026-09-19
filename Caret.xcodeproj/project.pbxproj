@@ -14,6 +14,7 @@
 		B10000000000000000000024 /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* PermissionView.swift */; };
 		B10000000000000000000025 /* SelectionMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* SelectionMonitor.swift */; };
 		B10000000000000000000026 /* StatusBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* StatusBarController.swift */; };
+		B10000000000000000009A01 /* SettingsMainMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000009A02 /* SettingsMainMenu.swift */; };
 		B10000000000000000000027 /* TriggerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* TriggerButton.swift */; };
 		B1000000000000000000002B /* AccessibilityTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* AccessibilityTrust.swift */; };
 		B1000000000000000000002C /* PinnedActionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* PinnedActionsStore.swift */; };
@@ -69,6 +70,7 @@
 		B10000000000000000000014 /* PermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionView.swift; sourceTree = "<group>"; };
 		B10000000000000000000015 /* SelectionMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionMonitor.swift; sourceTree = "<group>"; };
 		B10000000000000000000016 /* StatusBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBarController.swift; sourceTree = "<group>"; };
+		B10000000000000000009A02 /* SettingsMainMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsMainMenu.swift; sourceTree = "<group>"; };
 		B10000000000000000000017 /* TriggerButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TriggerButton.swift; sourceTree = "<group>"; };
 		B1000000000000000000001C /* AccessibilityTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityTrust.swift; sourceTree = "<group>"; };
 		B1000000000000000000001D /* PinnedActionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedActionsStore.swift; sourceTree = "<group>"; };
@@ -170,6 +172,7 @@
 				B10000000000000000000014 /* PermissionView.swift */,
 				B10000000000000000000015 /* SelectionMonitor.swift */,
 				B10000000000000000000016 /* StatusBarController.swift */,
+				B10000000000000000009A02 /* SettingsMainMenu.swift */,
 				B10000000000000000000017 /* TriggerButton.swift */,
 				B1000000000000000000001C /* AccessibilityTrust.swift */,
 				B1000000000000000000001D /* PinnedActionsStore.swift */,
@@ -357,6 +360,7 @@
 				B10000000000000000000024 /* PermissionView.swift in Sources */,
 				B10000000000000000000025 /* SelectionMonitor.swift in Sources */,
 				B10000000000000000000026 /* StatusBarController.swift in Sources */,
+				B10000000000000000009A01 /* SettingsMainMenu.swift in Sources */,
 				B10000000000000000000027 /* TriggerButton.swift in Sources */,
 				B1000000000000000000002B /* AccessibilityTrust.swift in Sources */,
 				B1000000000000000000002C /* PinnedActionsStore.swift in Sources */,
