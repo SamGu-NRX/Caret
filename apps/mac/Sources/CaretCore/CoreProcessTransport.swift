@@ -40,6 +40,12 @@ public struct CoreLaunchConfiguration: Equatable, Sendable {
 
 /// Runs the core as a long-lived child process and moves whole lines over its
 /// stdin and stdout.
+///
+/// One dedicated reader thread owns stdout from first byte to termination. It
+/// reads, delivers every line, and only then reports the exit. That ordering is
+/// structural rather than coordinated: there is no second reader to race, so a
+/// reply sitting in the pipe when the child exits cannot be lost behind the
+/// termination that follows it. The main thread never blocks on the pipe.
 public final class CoreProcessTransport: CoreTransport {
     private let configuration: CoreLaunchConfiguration
     private let log = Logger(subsystem: "com.caret.app", category: "core-transport")
@@ -47,10 +53,7 @@ public final class CoreProcessTransport: CoreTransport {
 
     private var process: Process?
     private var stdinPipe: Pipe?
-    private var stdoutPipe: Pipe?
-    private var accumulator = LineAccumulator()
     private var terminated = false
-    private var lineSink: ((String) -> Void)?
     private var stderrLineCount = 0
 
     public init(configuration: CoreLaunchConfiguration) {
@@ -80,51 +83,50 @@ public final class CoreProcessTransport: CoreTransport {
         process.standardOutput = stdout
         process.standardError = stderr
 
+        // Lifecycle state is stored before run(). A child that exits instantly
+        // would otherwise reach the exit path while these were still nil.
         lock.lock()
-        lineSink = onLine
+        self.process = process
+        self.stdinPipe = stdin
+        self.terminated = false
+        self.stderrLineCount = 0
         lock.unlock()
 
-        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
+        // A provider failure can echo upstream response text, which may contain
+        // whatever the user was typing. stderr is counted, never logged and
+        // never placed in a termination reason.
+        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
-            if chunk.isEmpty {
+            guard !chunk.isEmpty else {
                 handle.readabilityHandler = nil
-                self.finish(reason: .exited(status: self.currentStatus()), onTermination: onTermination)
                 return
             }
-            self.lock.lock()
-            let lines = self.accumulator.append(chunk)
-            self.lock.unlock()
-            for line in lines { onLine(line) }
-        }
-
-        // A provider failure can echo upstream response text, and that text may
-        // contain whatever the user was typing. stderr is therefore counted,
-        // never logged and never put in a termination reason.
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
-            let chunk = handle.availableData
-            guard !chunk.isEmpty, let text = String(data: chunk, encoding: .utf8) else { return }
-            self.countStderr(text)
-        }
-
-        process.terminationHandler = { [weak self] finished in
-            guard let self else { return }
-            self.finish(reason: .exited(status: finished.terminationStatus), onTermination: onTermination)
+            self?.countStderr(chunk)
         }
 
         do {
             try process.run()
         } catch {
+            lock.lock()
+            self.process = nil
+            self.stdinPipe = nil
+            lock.unlock()
+            stderr.fileHandleForReading.readabilityHandler = nil
             throw BridgeError.launchFailed(error.localizedDescription)
         }
 
-        lock.lock()
-        self.process = process
-        self.stdinPipe = stdin
-        self.stdoutPipe = stdout
-        self.terminated = false
-        lock.unlock()
+        let reader = Thread { [weak self] in
+            self?.readUntilEOF(
+                handle: stdout.fileHandleForReading,
+                process: process,
+                onLine: onLine,
+                onTermination: onTermination
+            )
+        }
+        reader.name = "caret.core-transport.reader"
+        reader.stackSize = 512 * 1024
+        reader.start()
+
         log.info("core process started")
     }
 
@@ -140,7 +142,6 @@ public final class CoreProcessTransport: CoreTransport {
         do {
             try pipe.fileHandleForWriting.write(contentsOf: data)
         } catch {
-            // The child closed its stdin: it is gone or going.
             throw BridgeError.notRunning
         }
     }
@@ -150,25 +151,44 @@ public final class CoreProcessTransport: CoreTransport {
         let process = self.process
         let stdin = self.stdinPipe
         lock.unlock()
+        // Closing stdin is how the core is asked to leave: its read loop ends,
+        // it exits, stdout reaches EOF and the reader thread finishes.
         try? stdin?.fileHandleForWriting.close()
         guard let process, process.isRunning else { return }
         process.terminate()
     }
 
-    // MARK: - Private
+    // MARK: - Reader
 
-    private func countStderr(_ text: String) {
-        let count = text.split(separator: "\n").count
-        lock.lock()
-        stderrLineCount += count
-        lock.unlock()
+    /// Owns stdout for the life of the process. `availableData` blocks until
+    /// bytes arrive or the write end closes, so the loop ends exactly at EOF.
+    private func readUntilEOF(
+        handle: FileHandle,
+        process: Process,
+        onLine: @escaping (String) -> Void,
+        onTermination: @escaping (CoreTerminationReason) -> Void
+    ) {
+        var accumulator = LineAccumulator()
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }
+            for line in accumulator.append(chunk) { onLine(line) }
+        }
+        // Anything the child wrote without a closing newline.
+        if let trailing = accumulator.flush() { onLine(trailing) }
+
+        // Every line is delivered before the exit is reported.
+        process.waitUntilExit()
+        finish(reason: .exited(status: process.terminationStatus), onTermination: onTermination)
     }
 
-    private func currentStatus() -> Int32 {
+    private func countStderr(_ chunk: Data) {
+        let count = chunk.reduce(into: 0) { total, byte in
+            if byte == UInt8(ascii: "\n") { total += 1 }
+        }
         lock.lock()
-        defer { lock.unlock() }
-        guard let process else { return -1 }
-        return process.isRunning ? 0 : process.terminationStatus
+        stderrLineCount += max(count, 1)
+        lock.unlock()
     }
 
     private func finish(reason: CoreTerminationReason, onTermination: @escaping (CoreTerminationReason) -> Void) {
@@ -178,22 +198,8 @@ public final class CoreProcessTransport: CoreTransport {
             return
         }
         terminated = true
-        let handle = stdoutPipe?.fileHandleForReading
-        let sink = lineSink
         let suppressed = stderrLineCount
         lock.unlock()
-
-        // Drain whatever stdout still holds before anyone is told the core is
-        // gone. A reply can be sitting in the pipe when the process exits, and
-        // failing its waiter first would lose an answer we already have.
-        if let handle, let sink {
-            let remaining = (try? handle.readToEnd()) ?? Data()
-            lock.lock()
-            var lines = accumulator.append(remaining)
-            if let trailing = accumulator.flush() { lines.append(trailing) }
-            lock.unlock()
-            for line in lines { sink(line) }
-        }
 
         if suppressed > 0 {
             // The count is safe to record; the text is not.

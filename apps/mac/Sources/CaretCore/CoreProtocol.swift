@@ -22,20 +22,43 @@ public enum CoreLimits {
 
 // MARK: - Timestamps
 
-/// The core parses with `datetime.fromisoformat` and rejects a naive timestamp,
-/// so every time we send carries an explicit offset. Whole seconds only: older
-/// Python only accepts 3 or 6 fractional digits, and the core orders work by
-/// `revision`, not by these stamps.
+/// The core parses with `datetime.fromisoformat` and rejects a naive
+/// timestamp, so what we send always carries an offset.
+///
+/// What we receive usually carries fractional seconds:
+/// `datetime.now(timezone.utc).isoformat()` emits
+/// `2026-09-19T18:55:48.704267+00:00`. `ISO8601DateFormatter` matches one
+/// shape per instance, so parsing tries the fractional form first and falls
+/// back to whole seconds. Emitting stays at whole seconds, which every
+/// supported Python parses.
 public enum CoreTimestamp {
-    private static let formatter: ISO8601DateFormatter = {
+    private static func formatter(fractional: Bool) -> ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
+        formatter.formatOptions = fractional
+            ? [.withInternetDateTime, .withFractionalSeconds]
+            : [.withInternetDateTime]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         return formatter
-    }()
+    }
 
-    public static func string(from date: Date) -> String { formatter.string(from: date) }
-    public static func date(from string: String) -> Date? { formatter.date(from: string) }
+    private static let fractionalParser = formatter(fractional: true)
+    private static let wholeSecondParser = formatter(fractional: false)
+    private static let encoder = formatter(fractional: false)
+    private static let parseLock = NSLock()
+
+    public static func string(from date: Date) -> String {
+        parseLock.lock()
+        defer { parseLock.unlock() }
+        return encoder.string(from: date)
+    }
+
+    /// Accepts both the fractional and whole-second forms, with `Z` or an
+    /// explicit offset.
+    public static func date(from string: String) -> Date? {
+        parseLock.lock()
+        defer { parseLock.unlock() }
+        return fractionalParser.date(from: string) ?? wholeSecondParser.date(from: string)
+    }
 }
 
 // MARK: - Identity
