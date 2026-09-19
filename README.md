@@ -1,5 +1,7 @@
 # Caret
 
+[Visit the Caret site](https://caret-landing-ebon.vercel.app/)
+
 A native Mac assistant with two interaction modes: inline completion accepted with Tab, and a nearby action hoverable. Jev chooses whether to abstain, offer a small text edit or propose an action; a second query selects the workflow or computer task. A fast Groq-hosted model generates inline text. This is the target behavior, with integration still in progress.
 
 ## Start here

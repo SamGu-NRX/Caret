@@ -1,22 +1,24 @@
 .PHONY: demo app install dmg test check sources
 
+PYTHON := $(shell for p in python3 python3.13 python3.12; do if $$p -c 'import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)' 2>/dev/null; then echo $$p; break; fi; done)
+
 demo:
-	python3 -m caret preview --fixture fixtures/meeting.json
+	$(PYTHON) -m caret preview --fixture fixtures/meeting.json
 
 app:
-	python3 scripts/run_mac.py
+	CARET_INSTALL_APPLICATIONS=1 $(PYTHON) scripts/run_mac.py
 
 install:
-	python3 scripts/package_mac.py --install
+	$(PYTHON) scripts/package_mac.py --install
 
 dmg:
-	python3 scripts/package_mac.py --dmg
+	$(PYTHON) scripts/package_mac.py --dmg
 
 test:
-	python3 -m unittest discover -s tests -v
+	$(PYTHON) -m unittest discover -s tests -v
 
 check: test
-	python3 scripts/check_sources.py
+	$(PYTHON) scripts/check_sources.py
 	swift test --package-path apps/mac
 	xcodebuild -quiet -project Caret.xcodeproj -scheme Caret -configuration Debug -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build
 

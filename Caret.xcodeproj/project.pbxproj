@@ -42,9 +42,6 @@
 		B10000000000000000000045 /* InstalledApps.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000046 /* InstalledApps.swift */; };
 		B10000000000000000000047 /* AppReferenceIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000048 /* AppReferenceIcon.swift */; };
 		B10000000000000000000055 /* SettingsMainMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000056 /* SettingsMainMenu.swift */; };
-		64A928433C12C1482BB01B8E /* SkillInstructions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F9582D7B8EA73FDB2913009 /* SkillInstructions.swift */; };
-		342386323B8C1C8F73901A51 /* SkillActionRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1441B40C4C20150AB7D57B /* SkillActionRunner.swift */; };
-		F592D8F9569CCC39263AE413 /* GatewayKeySync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C46B2C4F8AF067D6007B7F3 /* GatewayKeySync.swift */; };
 		B10000000000000000000057 /* TabCompletions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000058 /* TabCompletions.swift */; };
 		B10000000000000000000059 /* CaretCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000005A /* CaretCLI.swift */; };
 		B1000000000000000000005B /* TabCompletionsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000005C /* TabCompletionsController.swift */; };
@@ -62,6 +59,9 @@
 		B10000000000000000000061 /* HistoryDebug.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000060 /* HistoryDebug.swift */; };
 		B10000000000000000000064 /* CaretDebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000063 /* CaretDebugView.swift */; };
 		B10000000000000000000066 /* HistoryDebugTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000065 /* HistoryDebugTests.swift */; };
+		B10000000000000000000076 /* SkillActionRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000073 /* SkillActionRunner.swift */; };
+		B10000000000000000000077 /* GatewayKeySync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000074 /* GatewayKeySync.swift */; };
+		B10000000000000000000078 /* SkillInstructions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000075 /* SkillInstructions.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -110,9 +110,6 @@
 		B10000000000000000000046 /* InstalledApps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstalledApps.swift; sourceTree = "<group>"; };
 		B10000000000000000000048 /* AppReferenceIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppReferenceIcon.swift; sourceTree = "<group>"; };
 		B10000000000000000000056 /* SettingsMainMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsMainMenu.swift; sourceTree = "<group>"; };
-		1F9582D7B8EA73FDB2913009 /* SkillInstructions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillInstructions.swift; sourceTree = "<group>"; };
-		DB1441B40C4C20150AB7D57B /* SkillActionRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillActionRunner.swift; sourceTree = "<group>"; };
-		4C46B2C4F8AF067D6007B7F3 /* GatewayKeySync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayKeySync.swift; sourceTree = "<group>"; };
 		B10000000000000000000058 /* TabCompletions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabCompletions.swift; sourceTree = "<group>"; };
 		B1000000000000000000005A /* CaretCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretCLI.swift; sourceTree = "<group>"; };
 		B1000000000000000000005C /* TabCompletionsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabCompletionsController.swift; sourceTree = "<group>"; };
@@ -130,6 +127,9 @@
 		B10000000000000000000060 /* HistoryDebug.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryDebug.swift; sourceTree = "<group>"; };
 		B10000000000000000000063 /* CaretDebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaretDebugView.swift; sourceTree = "<group>"; };
 		B10000000000000000000065 /* HistoryDebugTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryDebugTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000073 /* SkillActionRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillActionRunner.swift; sourceTree = "<group>"; };
+		B10000000000000000000074 /* GatewayKeySync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayKeySync.swift; sourceTree = "<group>"; };
+		B10000000000000000000075 /* SkillInstructions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillInstructions.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -199,6 +199,9 @@
 				B1000000000000000000001C /* AccessibilityTrust.swift */,
 				B1000000000000000000001D /* PinnedActionsStore.swift */,
 				B10000000000000000000020 /* SkillRepository.swift */,
+				B10000000000000000000073 /* SkillActionRunner.swift */,
+				B10000000000000000000074 /* GatewayKeySync.swift */,
+				B10000000000000000000075 /* SkillInstructions.swift */,
 				B1000000000000000000003C /* ModifierChordState.swift */,
 				B1000000000000000000003D /* CaretSettingsView.swift */,
 				D20000000000000000000002 /* NoteEditorSession.swift */,
@@ -212,9 +215,6 @@
 				B10000000000000000000046 /* InstalledApps.swift */,
 				B10000000000000000000048 /* AppReferenceIcon.swift */,
 				B10000000000000000000056 /* SettingsMainMenu.swift */,
-				1F9582D7B8EA73FDB2913009 /* SkillInstructions.swift */,
-				DB1441B40C4C20150AB7D57B /* SkillActionRunner.swift */,
-				4C46B2C4F8AF067D6007B7F3 /* GatewayKeySync.swift */,
 				B10000000000000000000058 /* TabCompletions.swift */,
 				B1000000000000000000005A /* CaretCLI.swift */,
 				B1000000000000000000005C /* TabCompletionsController.swift */,
@@ -398,6 +398,9 @@
 				B1000000000000000000002B /* AccessibilityTrust.swift in Sources */,
 				B1000000000000000000002C /* PinnedActionsStore.swift in Sources */,
 				B1000000000000000000003A /* SkillRepository.swift in Sources */,
+				B10000000000000000000076 /* SkillActionRunner.swift in Sources */,
+				B10000000000000000000077 /* GatewayKeySync.swift in Sources */,
+				B10000000000000000000078 /* SkillInstructions.swift in Sources */,
 				B1000000000000000000003B /* ModifierChordState.swift in Sources */,
 				B1000000000000000000003E /* CaretSettingsView.swift in Sources */,
 				D20000000000000000000001 /* NoteEditorSession.swift in Sources */,
@@ -410,9 +413,6 @@
 				B10000000000000000000045 /* InstalledApps.swift in Sources */,
 				B10000000000000000000047 /* AppReferenceIcon.swift in Sources */,
 				B10000000000000000000055 /* SettingsMainMenu.swift in Sources */,
-				64A928433C12C1482BB01B8E /* SkillInstructions.swift in Sources */,
-				342386323B8C1C8F73901A51 /* SkillActionRunner.swift in Sources */,
-				F592D8F9569CCC39263AE413 /* GatewayKeySync.swift in Sources */,
 				B10000000000000000000057 /* TabCompletions.swift in Sources */,
 				B10000000000000000000059 /* CaretCLI.swift in Sources */,
 				B1000000000000000000005B /* TabCompletionsController.swift in Sources */,
