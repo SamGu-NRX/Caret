@@ -2,6 +2,8 @@
 .build/
 .swiftpm/
 .local/
+vercel-api-gateway-key
+screenpipe-lease.json
 xcuserdata/
 DerivedData/
 build/
