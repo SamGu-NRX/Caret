@@ -49,3 +49,7 @@ When the task needs project, architecture, or stack context, read the relevant p
 - Treat packages/ as pinned upstream code. Preserve authorship and licenses; do not bulk rename upstream files.
 - Run make check on Mac, or make test plus python3 scripts/check_sources.py for core-only Linux work.
 - Preserve other contributors' changes. Use branches and PRs after the initial repository setup.
+
+## Portfolio entry
+
+`.portfolio/project.md` is this project's entry on kgu.one. When a change alters what the project does, its results, awards, stack or links, update that file in the same change, following the rules in its header.
