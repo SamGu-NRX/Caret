@@ -13,7 +13,7 @@
 title: Caret
 kind: project
 date: 2026-09
-line: Cursor’s Tab, in every app on your Mac. Caret finishes your sentence or offers a workflow, then waits for your yes.
+line: Cursor-style Tab, in every app on your Mac. Caret finishes your sentence or offers a workflow, then waits for your yes.
 award: 1st place, Cursor x AITX
 badge: 1st
 stack: [Swift, Python, Groq]
