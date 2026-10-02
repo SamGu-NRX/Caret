@@ -9,6 +9,7 @@ import { Store } from "../src/store.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
 import { PROTOCOL_VERSION, type AppRef, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { markerRule, pendingMarkers } from "../src/tasks/pending.ts";
+import { renderFillReadiness, renderMarkerAudit } from "../src/audit-report.ts";
 import { field, focus, MAIL_APP, node, snap, text, value } from "./builders.ts";
 
 describe("marker rule ids", () => {
@@ -165,6 +166,26 @@ describe("audit", () => {
       void helper.handleReader(focus(FORM, F("textfield~9"), 3000, { app: FORMS }));
       expect(helper.audit?.summary().fill).toMatchObject({ emptyEditable: 1, nodeMissing: 1, measured: 0 });
     });
+  });
+
+  it("renders both reports from the summary with counts and no window text", () => {
+    void helper.handleReader(job(1000, "Exporting 40%", true, true));
+    void helper.handleReader(mail(2000, true));
+    void helper.handleReader(job(9000, "Export finished", false, false));
+    void helper.handleReader(job(80_000, "Export finished", true, false));
+    const s = helper.audit?.summary();
+    if (s === undefined) throw new Error("audit missing");
+    const markers = renderMarkerAudit({ ...s, startedAt: 0, updatedAt: 3_600_000 }, [{ name: "audit reader", meanPct: 2.5, peakPct: 9, peakRssMb: 50 }]);
+    expect(markers).toContain("| dev.caret.jobs | 1 | 1 | 1.0 | 1 | 1 |");
+    expect(markers).toContain("| verbCount | 1 | 1 | 1 |");
+    expect(markers).toContain("with more than 60 s between the markers clearing and the return: 1");
+    expect(markers).toContain("| audit reader | 2.5% | 9.0% | 50 MB |");
+    const fill = renderFillReadiness(s);
+    expect(fill).toContain("Measured: 0 focuses");
+    for (const t of ["Export", "Priya", "venue"]) {
+      expect(markers).not.toContain(t);
+      expect(fill).not.toContain(t);
+    }
   });
 
   it("keeps hashes of what it saw and no text in its summary", () => {
