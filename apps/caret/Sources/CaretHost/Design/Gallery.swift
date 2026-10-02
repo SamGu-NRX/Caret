@@ -283,3 +283,122 @@ struct LayoutFixScene: View {
         }
     }
 }
+
+// MARK: - The perch and the activity list
+
+extension Gallery {
+    /// The perch in each mood, in a corner of a synthetic screen with the window it works in, so
+    /// the render shows the glance as `PerchGaze` computes it.
+    static func perch(_ character: FigureCharacter = .pebble) -> [Item] {
+        [
+            Item(name: "perch-working", view: AnyView(PerchScene(mood: .working, character: character))),
+            Item(name: "perch-waiting", view: AnyView(PerchScene(mood: .waiting, needsYou: 1, character: character))),
+            Item(name: "perch-needs-you", view: AnyView(PerchScene(mood: .needsYou, needsYou: 2, character: character))),
+            Item(name: "perch-done", view: AnyView(PerchScene(mood: .done, character: character))),
+            Item(name: "perch-error", view: AnyView(PerchScene(mood: .error, character: character))),
+            Item(name: "perch-working-above", view: AnyView(PerchScene(mood: .working, character: character, windowAbove: true))),
+        ]
+    }
+
+    /// 2026-10-02 15:00 CDT, for the list's Done times.
+    static let listNow = Date(timeIntervalSince1970: 1_790_971_200)
+
+    static let activityRows: [ActivityRow] = {
+        let t = Int64(listNow.timeIntervalSince1970 * 1000)
+        return [
+            ActivityRow(id: "run-2", section: .needsYou, state: .paused, says: "Fill the six fields", app: "Caret Fixture",
+                        progress: "Stopped before step 3 of 6", actions: [.resume, .undo], updatedAt: t - 20_000),
+            ActivityRow(id: "watch-2", section: .needsYou, state: .needsYou, says: "Watching 'Upload' in Caret Fixture", app: "Caret Fixture",
+                        progress: "Waiting for you", actions: [], updatedAt: t - 60_000),
+            ActivityRow(id: "run-3", section: .inProgress, state: .running, says: "Fill the claim form from Invoice 2041", app: "Caret Fixture",
+                        progress: "Step 4 of 6", actions: [.takeOver], updatedAt: t - 5_000),
+            ActivityRow(id: "watch-1", section: .inProgress, state: .running, says: "Watching 'Test run' in Caret Fixture", app: "Caret Fixture",
+                        progress: "Watching", actions: [], updatedAt: t - 90_000),
+            ActivityRow(id: "run-1", section: .done, state: .done, says: "Coffee with Dana, Thu 3:00 to 3:30", app: "Calendar",
+                        progress: nil, actions: [.undo], updatedAt: t - 16 * 60_000),
+            ActivityRow(id: "run-0", section: .done, state: .failed, says: "Fill the schedule form", app: "Caret Fixture",
+                        progress: "Stopped at step 2 of 5", actions: [.undo], updatedAt: t - 41 * 60_000),
+        ]
+    }()
+
+    static func activity(_ character: FigureCharacter = .pebble) -> [Item] {
+        func list(_ rows: [ActivityRow], mood: Perch.Mood?, busy: Set<String> = []) -> AnyView {
+            AnyView(ActivityListView(rows: rows, mood: mood, character: character, busy: busy, animated: false, now: listNow)
+                .environment(\.timeZone, TimeZone(identifier: "America/Chicago")!)
+                .environment(\.locale, Locale(identifier: "en_US")))
+        }
+        return [
+            Item(name: "activity-list", view: list(activityRows, mood: .needsYou)),
+            Item(name: "activity-list-taking-over", view: list(activityRows, mood: .needsYou, busy: ["run-3"])),
+            Item(name: "activity-list-empty", view: list([], mood: nil)),
+        ]
+    }
+}
+
+/// A corner of a synthetic screen: the window a task works in, and the perch in the corner's
+/// home, aimed by `PerchGaze` exactly as on screen. Off screen only; nothing here reads the screen.
+struct PerchScene: View {
+    var mood: Perch.Mood
+    var needsYou = 0
+    var character: FigureCharacter = .pebble
+    /// The window straight above the perch rather than up and to the left.
+    var windowAbove = false
+    @Environment(\.colorScheme) private var scheme
+
+    static let size = CGSize(width: 300, height: 190)
+
+    var body: some View {
+        let visible = CGRect(origin: .zero, size: Self.size)
+        let perch = PerchPlacement.frame(.bottomRight, size: PerchModel.size, in: visible)
+        let window = windowAbove ? CGRect(x: 170, y: 14, width: 120, height: 84) : CGRect(x: 16, y: 16, width: 168, height: 104)
+        let model = PerchModel()
+        model.presented = true
+        model.animated = false
+        model.mood = mood
+        model.needsYou = needsYou
+        model.character = character
+        switch mood {
+        case .done, .error: model.gaze = .zero
+        default: model.gaze = PerchGaze.toward(window, from: CGPoint(x: perch.midX, y: perch.midY))
+        }
+        let dark = scheme == .dark
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(Color(nsColor: Tokens.srgb(dark ? 0x26282C : 0xD9DCE1)))
+            SceneWindow(title: "Upload", dark: dark)
+                .frame(width: window.width, height: window.height)
+                .offset(x: window.minX, y: window.minY)
+            PerchView(model: model)
+                .offset(x: perch.minX, y: perch.minY)
+        }
+        .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    /// A window, roughly: title bar with three dots and a title, an empty body.
+    struct SceneWindow: View {
+        var title: String
+        var dark: Bool
+
+        var body: some View {
+            VStack(spacing: 0) {
+                HStack(spacing: 5) {
+                    ForEach(0..<3, id: \.self) { _ in Circle().fill(Color(token: Tokens.secondary).opacity(0.35)).frame(width: 7, height: 7) }
+                    Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(token: Tokens.secondary)).padding(.leading, 6)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 20)
+                Rectangle().fill(Color(token: Tokens.border)).frame(height: 1)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach([0.8, 0.55, 0.65], id: \.self) { w in
+                        RoundedRectangle(cornerRadius: 2).fill(Color(token: Tokens.secondary).opacity(0.18)).frame(height: 5).frame(maxWidth: .infinity, alignment: .leading).scaleEffect(x: w, y: 1, anchor: .leading)
+                    }
+                }
+                .padding(10)
+                Spacer(minLength: 0)
+            }
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: Tokens.srgb(dark ? 0x2E2F33 : 0xFBFBFC))))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color(token: Tokens.border), lineWidth: 1))
+        }
+    }
+}

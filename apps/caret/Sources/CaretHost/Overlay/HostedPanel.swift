@@ -25,6 +25,12 @@ final class OverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Takes the first click in a window that is not key, so a button in a panel that never becomes
+/// key works on the first press.
+final class FirstMouseHostingView: NSHostingView<AnyView> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 enum Screen {
     /// Accessibility frames are global, top-left origin on the primary display; AppKit's are
     /// bottom-left.
@@ -66,15 +72,17 @@ final class HostedPanel {
 
     let panel = OverlayPanel.make()
     private let material = NSVisualEffectView()
-    private let host = NSHostingView(rootView: AnyView(EmptyView()))
+    private let host: NSHostingView<AnyView> = FirstMouseHostingView(rootView: AnyView(EmptyView()))
     private(set) var anchor = Anchor(corner: .topLeft, point: .zero)
     /// What the panel says, for the debug socket.
     var text = ""
     private(set) var isExiting = false
 
     /// `material: false` for decoration drawn straight over the app (the underline and count),
-    /// which has no surface, blur or shadow of its own.
-    init(radius: CGFloat, material hasMaterial: Bool = true) {
+    /// which has no surface, blur or shadow of its own. `interactive: true` for a panel with
+    /// buttons (the activity list): it takes clicks, still without ever becoming key.
+    init(radius: CGFloat, material hasMaterial: Bool = true, interactive: Bool = false) {
+        panel.ignoresMouseEvents = !interactive
         host.autoresizingMask = [.width, .height]
         // The panel sizes the host from its fitting size; no constraints of its own.
         host.sizingOptions = []

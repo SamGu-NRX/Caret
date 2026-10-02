@@ -19,15 +19,16 @@ final class SnapshotTests: XCTestCase {
     static let channelTolerance = 24
     static let maxDifferingPixels = 40
 
-    var record: Bool { ProcessInfo.processInfo.environment["CARET_RECORD_SNAPSHOTS"] == "1" }
-    var outDir: URL? { ProcessInfo.processInfo.environment["CARET_SNAPSHOT_OUT"].map { URL(fileURLWithPath: $0) } }
+    static var record: Bool { ProcessInfo.processInfo.environment["CARET_RECORD_SNAPSHOTS"] == "1" }
+    static var outDir: URL? { ProcessInfo.processInfo.environment["CARET_SNAPSHOT_OUT"].map { URL(fileURLWithPath: $0) } }
+    var outDir: URL? { Self.outDir }
 
     func testPopupSpecsMatchTheirReferences() throws {
-        try check(Gallery.specs())
+        try Self.check(Gallery.specs())
     }
 
     func testLinesMatchTheirReferences() throws {
-        try check(Gallery.lines())
+        try Self.check(Gallery.lines())
     }
 
     func testGallerySpecsMatchTheGoldenFixture() throws {
@@ -73,7 +74,8 @@ final class SnapshotTests: XCTestCase {
 
     // MARK: -
 
-    private func check(_ items: [Gallery.Item]) throws {
+    /// Renders each item in both themes and compares it with its reference (or records it).
+    static func check(_ items: [Gallery.Item]) throws {
         for item in items {
             for dark in [false, true] {
                 let name = "\(item.name)-\(dark ? "dark" : "light").png"
@@ -94,7 +96,9 @@ final class SnapshotTests: XCTestCase {
         }
     }
 
-    private func write(_ data: Data, to url: URL) throws {
+    private func write(_ data: Data, to url: URL) throws { try Self.write(data, to: url) }
+
+    static func write(_ data: Data, to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url)
     }

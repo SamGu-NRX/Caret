@@ -25,8 +25,9 @@ enum Visibility {
         )
     }
 
-    /// On-screen windows, front to back.
-    static func windows() -> [SurfaceGate.Window] {
+    /// On-screen windows, front to back. Window-server only, so any thread may call it (the input
+    /// pause reads it off the tap thread).
+    nonisolated static func windows() -> [SurfaceGate.Window] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return []
         }

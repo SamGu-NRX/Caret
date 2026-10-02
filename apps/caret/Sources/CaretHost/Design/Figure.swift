@@ -83,6 +83,10 @@ protocol FigureDrawing {
     var viewBox: CGSize { get }
     /// Height to width, so a given height yields the character's own width.
     func pose(for state: FigureState, facing: FigureFacing) -> FigurePose
+    /// The perch's pose: the state's pose turned along `gaze` (length at most 1, x right, y down;
+    /// zero looks out at the user). Each character turns differently: the pebble moves its eyes,
+    /// the seed leans, the wren tilts its head.
+    func pose(for state: FigureState, gaze: CGVector) -> FigurePose
     func body(_ pose: FigurePose, fill: Color) -> AnyView
     /// One silhouette for the menu bar, eyes cut out.
     func glyph() -> Path
@@ -149,6 +153,22 @@ struct Pebble: FigureDrawing {
         return pose
     }
 
+    /// The eyes travel 1.1 across and 0.8 up or down, the most the body's outline allows at 32 pt
+    /// before an eye touches the edge. Done keeps its squint centered; Error keeps looking down.
+    func pose(for state: FigureState, gaze: CGVector) -> FigurePose {
+        var pose = pose(for: state, facing: .right)
+        switch state {
+        case .noticed, .offering, .working, .needsYou:
+            let rest: CGFloat = state == .needsYou ? -0.5 : 0
+            pose.eyeOffset = gaze == .zero
+                ? CGSize(width: 0, height: rest)
+                : CGSize(width: gaze.dx * 1.1, height: gaze.dy * 0.8)
+        case .done, .error, .absent:
+            break
+        }
+        return pose
+    }
+
     func body(_ pose: FigurePose, fill: Color) -> AnyView {
         let box = viewBox
         let unit = UnitPoint(x: 0.5, y: 1)
@@ -206,6 +226,16 @@ struct Seed: FigureDrawing {
         case .error:
             pose.graphite = true
             pose.fallen = true
+        }
+        return pose
+    }
+
+    /// No eyes: it leans up to 10 degrees toward what it is working in.
+    func pose(for state: FigureState, gaze: CGVector) -> FigurePose {
+        var pose = pose(for: state, facing: .right)
+        switch state {
+        case .noticed, .offering, .working, .needsYou: pose.rotation = Double(gaze.dx) * 10
+        case .done, .error, .absent: break
         }
         return pose
     }
@@ -277,6 +307,17 @@ struct Wren: FigureDrawing {
         return pose
     }
 
+    /// Faces the side the window is on (the view mirrors it) and tilts its head up to 20 degrees
+    /// toward the window's height, on top of the state's own tilt.
+    func pose(for state: FigureState, gaze: CGVector) -> FigurePose {
+        var pose = pose(for: state, facing: .right)
+        switch state {
+        case .noticed, .offering, .working, .needsYou: pose.headRotation += Double(gaze.dy) * 20
+        case .done, .error, .absent: break
+        }
+        return pose
+    }
+
     func body(_ pose: FigurePose, fill: Color) -> AnyView {
         let box = viewBox
         return AnyView(GeometryReader { geo in
@@ -327,13 +368,16 @@ struct FigureView: View {
     var height: CGFloat = 10
     /// False for off-screen renders: draw the state's end pose and nothing else.
     var animated = true
+    /// The perch's glance, which replaces `facing`. Nil at text size.
+    var gaze: CGVector?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let drawing = character.drawing
         let width = height * drawing.viewBox.width / drawing.viewBox.height
-        let end = drawing.pose(for: state, facing: facing)
+        let end = gaze.map { drawing.pose(for: state, gaze: $0) } ?? drawing.pose(for: state, facing: facing)
+        let faces = gaze.map { $0.dx < 0 ? FigureFacing.left : .right } ?? facing
         let moving = animated && !reduceMotion
         let fill = Color(token: end.graphite ? Tokens.graphite : Tokens.carrot)
         Group {
@@ -352,23 +396,31 @@ struct FigureView: View {
                 } keyframes: { _ in
                     Gesture.track(for: state, character: character)
                 }
-                .keyframeAnimator(initialValue: Gesture.rest, repeating: state == .offering) { content, g in
+                .keyframeAnimator(initialValue: Gesture.rest, repeating: breathes) { content, g in
                     content.scaleEffect(x: g.scaleX, y: g.scaleY, anchor: .bottom)
                 } keyframes: { _ in
-                    Gesture.breath(character: character, active: state == .offering)
+                    Gesture.breath(character: character, active: breathes)
                 }
                 .animation(postureAnimation, value: state)
+                .animation(Motion.curve(Motion.easeInOut, 0.24), value: gaze)
             } else {
                 drawing.body(end, fill: fill)
             }
         }
         .frame(width: width, height: height)
-        .scaleEffect(x: facing == .left && character == .wren ? -1 : 1, y: 1)
+        .scaleEffect(x: faces == .left && character == .wren ? -1 : 1, y: 1)
         .accessibilityHidden(true)
     }
 
-    /// The pebble blinks once every 5 s while offering, 150 ms.
-    private var blinks: Bool { state == .offering && character == .pebble }
+    /// Offering breathes; so does the perch while it works, since its motion is the report.
+    private var breathes: Bool { state == .offering || (gaze != nil && state == .working) }
+
+    /// The pebble blinks once every 5 s while offering, 150 ms, and on the perch whenever its eyes
+    /// are open on something.
+    private var blinks: Bool {
+        guard character == .pebble else { return false }
+        return state == .offering || (gaze != nil && [.noticed, .working, .needsYou].contains(state))
+    }
 
     private var postureAnimation: Animation {
         if state == .error && character == .seed { return Motion.curve(Motion.easeFall, 0.24) }

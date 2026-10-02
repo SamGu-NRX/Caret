@@ -25,6 +25,12 @@ public final class TapThread: @unchecked Sendable {
         public var navigated: @Sendable (UInt64, OfferUI) -> Void
         /// Esc on a working line that has run 3 s. Runs on the tap thread; enqueue.
         public var stopWork: @Sendable (StatusLine) -> Void
+        /// Every user key-down that names its target pid, before the arbiter sees it: real input
+        /// in an app a run acts in pauses the run. Tap thread; a lock and a lookup, then enqueue.
+        public var realKey: @Sendable (Int32) -> Void
+        /// Every user mouse-down, at its global top-left-origin point, from a listen-only tap.
+        /// Tap thread; enqueue.
+        public var mouseDown: @Sendable (CGPoint) -> Void
 
         public init(
             claimed: @escaping @Sendable (Claim) -> Void,
@@ -32,7 +38,9 @@ public final class TapThread: @unchecked Sendable {
             undo: @escaping @Sendable (UndoGrant) -> Void,
             keyDown: @escaping @Sendable (UInt64) -> Void,
             navigated: @escaping @Sendable (UInt64, OfferUI) -> Void = { _, _ in },
-            stopWork: @escaping @Sendable (StatusLine) -> Void = { _ in }
+            stopWork: @escaping @Sendable (StatusLine) -> Void = { _ in },
+            realKey: @escaping @Sendable (Int32) -> Void = { _ in },
+            mouseDown: @escaping @Sendable (CGPoint) -> Void = { _ in }
         ) {
             self.claimed = claimed
             self.offerChanged = offerChanged
@@ -40,6 +48,8 @@ public final class TapThread: @unchecked Sendable {
             self.keyDown = keyDown
             self.navigated = navigated
             self.stopWork = stopWork
+            self.realKey = realKey
+            self.mouseDown = mouseDown
         }
     }
 
@@ -52,6 +62,7 @@ public final class TapThread: @unchecked Sendable {
         var recentCallbackNanos: [UInt64] = []
         var targetFromEvent: UInt64 = 0
         var targetMissing: UInt64 = 0
+        var mouseDowns: UInt64 = 0
     }
 
     private let arbiter: OfferArbiter
@@ -60,6 +71,9 @@ public final class TapThread: @unchecked Sendable {
     /// Set on the tap thread; read from the main and socket threads, hence the lock.
     private let port = OSAllocatedUnfairLock<CFMachPort?>(uncheckedState: nil)
     private var tap: CFMachPort? { port.withLockUnchecked { $0 } }
+    /// The listen-only mouse tap; nil when the system refused it. Clicks then never pause a run,
+    /// and the debug state says so.
+    private let mousePort = OSAllocatedUnfairLock<CFMachPort?>(uncheckedState: nil)
     private var runLoop: CFRunLoop?
     private var thread: Thread?
 
@@ -87,6 +101,7 @@ public final class TapThread: @unchecked Sendable {
 
     public func stop() {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let mouse = mousePort.withLockUnchecked({ $0 }) { CGEvent.tapEnable(tap: mouse, enable: false) }
         if let runLoop { CFRunLoopStop(runLoop) }
         thread = nil
     }
@@ -110,7 +125,9 @@ public final class TapThread: @unchecked Sendable {
             maxCallbackMicros: Double(s.maxCallbackNanos) / 1_000,
             p99CallbackMicros: LatencyRecorder.percentile(sorted, 0.99),
             targetFromEvent: s.targetFromEvent,
-            targetMissing: s.targetMissing
+            targetMissing: s.targetMissing,
+            mouseTap: mousePort.withLockUnchecked { $0 } != nil,
+            mouseDowns: s.mouseDowns
         )
     }
 
@@ -134,12 +151,29 @@ public final class TapThread: @unchecked Sendable {
         let loop = CFRunLoopGetCurrent()
         CFRunLoopAddSource(loop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        // Clicks are only observed, on a separate listen-only tap: it cannot hold up or swallow a
+        // click, so the key tap's ownership rules stay the only ones that consume anything.
+        let mouseMask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+            | CGEventMask(1 << CGEventType.rightMouseDown.rawValue)
+            | CGEventMask(1 << CGEventType.otherMouseDown.rawValue)
+        var mouseSource: CFRunLoopSource?
+        if let mouse = CGEvent.tapCreate(
+            tap: .cgSessionEventTap, place: .tailAppendEventTap, options: .listenOnly,
+            eventsOfInterest: mouseMask, callback: Self.mouseCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) {
+            mouseSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mouse, 0)
+            CFRunLoopAddSource(loop, mouseSource, .commonModes)
+            CGEvent.tapEnable(tap: mouse, enable: true)
+            mousePort.withLockUnchecked { $0 = mouse }
+        }
         port.withLockUnchecked { $0 = tap }
         self.runLoop = loop
         stats.withLock { $0.running = true }
         ready.signal()
         CFRunLoopRun()
         CFRunLoopRemoveSource(loop, source, .commonModes)
+        if let mouseSource { CFRunLoopRemoveSource(loop, mouseSource, .commonModes) }
         stats.withLock { $0.running = false }
     }
 
@@ -157,6 +191,20 @@ public final class TapThread: @unchecked Sendable {
         guard let refcon else { return Unmanaged.passUnretained(event) }
         let owner = Unmanaged<TapThread>.fromOpaque(refcon).takeUnretainedValue()
         return owner.process(type: type, event: event)
+    }
+
+    private static let mouseCallback: CGEventTapCallBack = { _, type, event, refcon in
+        guard let refcon else { return Unmanaged.passUnretained(event) }
+        let owner = Unmanaged<TapThread>.fromOpaque(refcon).takeUnretainedValue()
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let mouse = owner.mousePort.withLockUnchecked({ $0 }) { CGEvent.tapEnable(tap: mouse, enable: true) }
+            return Unmanaged.passUnretained(event)
+        }
+        if event.getIntegerValueField(.eventSourceUserData) != SynthesizedEventMarker.userData {
+            owner.stats.withLock { $0.mouseDowns &+= 1 }
+            owner.callbacks.mouseDown(event.location)
+        }
+        return Unmanaged.passUnretained(event)
     }
 
     private func process(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -189,6 +237,7 @@ public final class TapThread: @unchecked Sendable {
     @discardableResult
     public func route(_ key: KeyStroke, stampedAt uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
         callbacks.keyDown(uptimeNanos)
+        if let pid = key.targetPID { callbacks.realKey(pid) }
         switch arbiter.handleKeyDown(key) {
         case .consume(let claim):
             callbacks.claimed(claim)

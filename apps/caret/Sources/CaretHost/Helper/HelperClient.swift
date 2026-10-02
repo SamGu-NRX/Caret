@@ -22,6 +22,10 @@ final class HelperClient: @unchecked Sendable {
 
     let path: String
     private let onMessage: @Sendable (HelperInbound) -> Void
+    /// Called on the client thread with true after each hello, and false when the connection
+    /// drops. Must only enqueue. The activity feed lists on connect and resets on disconnect,
+    /// because the helper's task registry lives in its memory.
+    private let onLink: @Sendable (Bool) -> Void
     private let stats = OSAllocatedUnfairLock(initialState: Stats())
     /// The connected descriptor, or -1. Writers hold this lock for the whole line.
     private let connection = OSAllocatedUnfairLock(initialState: Int32(-1))
@@ -29,9 +33,14 @@ final class HelperClient: @unchecked Sendable {
     private let minBackoff: TimeInterval = 0.25
     private let maxBackoff: TimeInterval = 2
 
-    init(path: String = HelperClient.defaultPath, onMessage: @escaping @Sendable (HelperInbound) -> Void) {
+    init(
+        path: String = HelperClient.defaultPath,
+        onMessage: @escaping @Sendable (HelperInbound) -> Void,
+        onLink: @escaping @Sendable (Bool) -> Void = { _ in }
+    ) {
         self.path = path
         self.onMessage = onMessage
+        self.onLink = onLink
     }
 
     func start() {
@@ -67,8 +76,22 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? NDJSON.line(accept))
     }
 
-    private func sendLine(_ line: Data?) {
-        guard let line else { return }
+    /// `taskControl` from the activity list or the input pause. True when written; a control for
+    /// a helper that is not connected is dropped, since its task is gone with it.
+    @discardableResult
+    func send(_ control: TaskControl) -> Bool {
+        sendLine(try? NDJSON.line(control))
+    }
+
+    /// `activityRequest`; the reply comes back to this connection only.
+    @discardableResult
+    func send(_ request: ActivityRequest) -> Bool {
+        sendLine(try? NDJSON.line(request))
+    }
+
+    @discardableResult
+    private func sendLine(_ line: Data?) -> Bool {
+        guard let line else { return false }
         let sent = connection.withLock { fd -> Bool in
             guard fd >= 0 else { return false }
             return Self.writeAll(fd, line)
@@ -76,6 +99,7 @@ final class HelperClient: @unchecked Sendable {
         stats.withLock { s in
             if sent { s.resultsSent &+= 1 } else { s.resultsDropped &+= 1 }
         }
+        return sent
     }
 
     // MARK: - Client thread
@@ -85,12 +109,14 @@ final class HelperClient: @unchecked Sendable {
         while running.withLock({ $0 }) {
             if let fd = connect() {
                 backoff = minBackoff
+                onLink(true)
                 readUntilClosed(fd)
                 connection.withLock { current in
                     if current == fd { current = -1 }
                 }
                 close(fd)
                 stats.withLock { $0.connected = false }
+                onLink(false)
             }
             guard running.withLock({ $0 }) else { break }
             Thread.sleep(forTimeInterval: backoff)
@@ -162,6 +188,7 @@ final class HelperClient: @unchecked Sendable {
         stats.withLock { s in
             switch message {
             case .fillProposal: s.proposals &+= 1
+            case .activity, .activityReply: s.activity &+= 1
             case .error(let e):
                 s.errors &+= 1
                 // The helper answers a message it cannot parse with this error; until its schema

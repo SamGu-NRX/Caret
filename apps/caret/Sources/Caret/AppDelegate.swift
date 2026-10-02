@@ -2,7 +2,7 @@ import AppKit
 import CaretHost
 
 /// A minimal menu-bar shell: the figure as the status item (Carrot while work runs), the engine
-/// state, the character setting, and Quit.
+/// state, the activity list, the perch toggle, the character setting, and Quit.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let runtime: HostRuntime
@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isTerminating = false
     private var working = false
     private var characterItems: [NSMenuItem] = []
+    private let perchItem = NSMenuItem(title: "Show Perch", action: nil, keyEquivalent: "")
 
     init(configuration: HostRuntime.Configuration) {
         runtime = HostRuntime(configuration: configuration)
@@ -63,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         stateItem.title = runtime.engineSummary
+        perchItem.state = runtime.perchHidden ? .off : .on
         let current = FigureSettings.shared.character
         for item in characterItems {
             item.state = item.representedObject as? String == current.rawValue ? .on : .off
@@ -79,6 +81,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshGlyph()
     }
 
+    @objc private func showActivity(_ sender: NSMenuItem) {
+        runtime.toggleActivityList()
+    }
+
+    @objc private func togglePerch(_ sender: NSMenuItem) {
+        runtime.perchHidden.toggle()
+    }
+
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem = item
@@ -87,6 +97,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         stateItem.isEnabled = false
         menu.addItem(stateItem)
+        menu.addItem(.separator())
+        let activityItem = NSMenuItem(title: "Activity", action: #selector(showActivity(_:)), keyEquivalent: "")
+        activityItem.target = self
+        menu.addItem(activityItem)
+        // The perch can be hidden; work still shows in Activity and the glyph still tints.
+        perchItem.action = #selector(togglePerch(_:))
+        perchItem.target = self
+        menu.addItem(perchItem)
         menu.addItem(.separator())
         // The figure is provisional until Sam picks one (OPEN-QUESTIONS.md 1); all three are kept.
         let characterMenu = NSMenu()

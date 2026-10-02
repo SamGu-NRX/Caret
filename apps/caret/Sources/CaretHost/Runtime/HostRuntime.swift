@@ -1,6 +1,7 @@
 import AppCompatibility
 import AppKit
 import CaretHostCore
+import CaretScreenCore
 import Foundation
 
 /// Builds and owns the host's parts and wires them together. The app shell creates one, calls
@@ -20,6 +21,10 @@ public final class HostRuntime {
         public var ghostEnabled: Bool
         /// After a verified fill, post Tab to the form so its focus moves on (SURFACES.md section 5).
         public var fillAdvances: Bool
+        /// False computes the perch and the activity list and reports them on the debug socket
+        /// without drawing them (`--perch hidden`, `CARET_PERCH=hidden`), for test runs while
+        /// someone is using the Mac.
+        public var perchDrawsOnScreen: Bool
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
@@ -28,8 +33,10 @@ public final class HostRuntime {
             allowedBundleIDs: Set<String>? = HostRuntime.allowedBundleIDsFromEnvironment,
             allowedPIDs: Set<Int32>? = HostRuntime.pids(ProcessInfo.processInfo.environment["CARET_ALLOW_PIDS"]),
             ghostEnabled: Bool = ProcessInfo.processInfo.environment["CARET_GHOST"] != "off",
-            fillAdvances: Bool = ProcessInfo.processInfo.environment["CARET_FILL_ADVANCE"] != "off"
+            fillAdvances: Bool = ProcessInfo.processInfo.environment["CARET_FILL_ADVANCE"] != "off",
+            perchDrawsOnScreen: Bool = ProcessInfo.processInfo.environment["CARET_PERCH"] != "hidden"
         ) {
+            self.perchDrawsOnScreen = perchDrawsOnScreen
             self.socketPath = socketPath
             self.helperSocketPath = helperSocketPath
             self.modelURL = modelURL
@@ -71,6 +78,8 @@ public final class HostRuntime {
     private let fill: FillCoordinator
     private let surface: SurfaceCoordinator
     private let helper: HelperClient
+    private let activity: ActivityCenter
+    private let perch: PerchController
     private let executor: InsertionExecutor
     private let tap: TapThread
     private let socket: DebugStateSocket
@@ -118,12 +127,30 @@ public final class HostRuntime {
                 surface.displaced(offer)
             }
         }
-        helper = HelperClient(path: configuration.helperSocketPath) { message in
+        let activity = ActivityCenter()
+        self.activity = activity
+        let perch = PerchController(center: activity, drawsOnScreen: configuration.perchDrawsOnScreen)
+        self.perch = perch
+        activity.onChange = { perch.refresh() }
+        helper = HelperClient(path: configuration.helperSocketPath, onMessage: { message in
             let at = DispatchTime.now().uptimeNanoseconds
-            DispatchQueue.main.async { MainActor.assumeIsolated { fill.receive(message, at: at) } }
-        }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    fill.receive(message, at: at)
+                    activity.receive(message)
+                }
+            }
+        }, onLink: { up in
+            DispatchQueue.main.async { MainActor.assumeIsolated { activity.linkChanged(up) } }
+        })
         fill.client = helper
         surface.client = helper
+        activity.client = helper
+        let pauseClient = helper
+        let pauser = InputPauser(gate: activity.pauseGate) { taskIds, kind in
+            for id in taskIds { pauseClient.send(TaskControl(taskId: id, action: .pause)) }
+            activity.notePause(taskIds, kind: kind)
+        }
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
                 if claim.insertsText { executor.submit(claim) }
@@ -154,7 +181,9 @@ public final class HostRuntime {
             },
             stopWork: { line in
                 DispatchQueue.main.async { MainActor.assumeIsolated { surface.stopWork(line) } }
-            }
+            },
+            realKey: { pid in pauser.key(pid: pid) },
+            mouseDown: { point in pauser.click(at: point) }
         ))
         let tap = self.tap
         let helper = self.helper
@@ -176,7 +205,8 @@ public final class HostRuntime {
                 }
             },
             progress: { phase in MainActor.assumeIsolated { surface.progress(phase) } },
-            surface: { MainActor.assumeIsolated { surface.debugInfo() } }
+            surface: { MainActor.assumeIsolated { surface.debugInfo() } },
+            perch: { words in MainActor.assumeIsolated { Self.perchCommand(words, perch: perch, activity: activity, pauser: pauser) } }
         )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
             Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods, hooks: hooks)
@@ -191,11 +221,22 @@ public final class HostRuntime {
         set { surface.onWorkingChanged = newValue }
     }
 
+    /// The menu bar's "Show Perch" choice, kept in user defaults.
+    public var perchHidden: Bool {
+        get { perch.hidden }
+        set { perch.hidden = newValue }
+    }
+
+    public func toggleActivityList() { perch.toggleList() }
+
     public func start() throws {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
         if !tap.start() { status.increment("tap.createFailed") }
-        focus.onChange = { [coordinator] change in coordinator.handle(change) }
+        focus.onChange = { [coordinator, perch] change in
+            coordinator.handle(change)
+            perch.focusChanged(caret: change.snapshot?.caretRect, element: change.element)
+        }
         focus.start()
         helper.start()
         let modelFile = configuration.modelURL.lastPathComponent
@@ -222,6 +263,7 @@ public final class HostRuntime {
         helper.stop()
         fill.shutdown()
         surface.shutdown()
+        perch.shutdown()
         overlay.hide()
         arbiter.invalidate()
         // A paste in progress must finish and put the user's clipboard back before exit.
@@ -259,6 +301,53 @@ public final class HostRuntime {
         let inject: @Sendable (Data) -> String
         let progress: @Sendable (String) -> String
         let surface: @Sendable () -> DebugState.SurfaceInfo
+        /// `perch`, `activity`, `control`, `click` and `perch-avoid` (`perchCommand`).
+        let perch: @Sendable ([String]) -> String
+    }
+
+    /// Debug socket commands for the perch and the activity list. Main thread.
+    ///
+    ///   perch                          the perch's state, the rows, the pause table
+    ///   activity open|close            opens or closes the list, as a click on the perch does
+    ///   control <taskId> <action>      presses a row's button (takeOver, resume, undo)
+    ///   click <pid>                    a real click in <pid>, through the input pause
+    ///   perch-avoid x y w h | clear    stands in for a focused field there (global, top-left)
+    static func perchCommand(_ words: [String], perch: PerchController, activity: ActivityCenter, pauser: InputPauser) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        func ok(_ extra: String = "") -> String { "{\"ok\":true\(extra)}" }
+        switch words.first {
+        case "perch":
+            return (try? String(decoding: encoder.encode(perch.debugInfo()), as: UTF8.self)) ?? "{}"
+        case "activity":
+            switch words.dropFirst().first {
+            case "open": perch.openList()
+            case "close": perch.closeList()
+            default: return #"{"error":"usage: activity open|close"}"#
+            }
+            return ok()
+        case "control":
+            guard words.count == 3, let action = RowAction(rawValue: words[2]) else {
+                return #"{"error":"usage: control <taskId> takeOver|resume|undo"}"#
+            }
+            return ok(",\"sent\":\(activity.control(words[1], action))")
+        case "click":
+            guard words.count == 2, let pid = Int32(words[1]) else { return #"{"error":"usage: click <pid>"}"# }
+            pauser.click(pid: pid)
+            return ok()
+        case "perch-avoid":
+            if words.count == 2, words[1] == "clear" {
+                perch.avoid(caret: nil, field: nil)
+                return ok()
+            }
+            let n = words.dropFirst().compactMap(Double.init)
+            guard n.count == 4 else { return #"{"error":"usage: perch-avoid x y w h | clear"}"# }
+            let rect = CGRect(x: n[0], y: n[1], width: n[2], height: n[3])
+            perch.avoid(caret: CGRect(x: rect.maxX - 2, y: rect.minY, width: 2, height: min(rect.height, 18)), field: rect)
+            return ok()
+        default:
+            return #"{"error":"unknown command"}"#
+        }
     }
 
     nonisolated static func jsonString(_ text: String) -> String {
@@ -299,6 +388,9 @@ public final class HostRuntime {
         case "progress":
             guard words.count == 2 else { return Data("{\"error\":\"usage: progress done|error\"}\n".utf8) }
             let reply = DispatchQueue.main.sync { hooks.progress(words[1]) }
+            return Data((reply + "\n").utf8)
+        case "perch", "activity", "control", "click", "perch-avoid":
+            let reply = DispatchQueue.main.sync { hooks.perch(words) }
             return Data((reply + "\n").utf8)
         case "state":
             var state = makeState(arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
