@@ -218,8 +218,10 @@ export class Helper {
         store.count(`reader.snapshot_${m.reason}`, 1, m.at);
         store.count("reader.nodes", m.nodes.length, m.at);
         if (m.stats.truncated) store.count("reader.truncated", 1, m.at);
-        this.transfers.onChanges(changes);
+        const cleared = this.transfers.onChanges(changes);
         this.patterns.onChanges(changes);
+        // Recorded after the pattern engine has seen the edits, the order tick-judged transfers arrive in.
+        this.record(cleared);
         if (this.mode === "shadow") this.shadowLogger.onChanges(changes);
         const moved = prevFocused !== this.model.focusedWindowId;
         if (prevFocused !== null && moved) this.record(this.transfers.flush(prevFocused));
