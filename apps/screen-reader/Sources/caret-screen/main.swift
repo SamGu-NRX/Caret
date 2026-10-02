@@ -1,7 +1,7 @@
 // caret-screen: Caret's Accessibility reader.
 //
 //   caret-screen [--shadow] [--socket PATH] [--deny-list PATH] [--background-interval S]
-//                [--event-pids P,P] [--only-pids P,P] [--record FILE] [--e1-log FILE]
+//                [--event-pids P,P] [--event-bundles B,B] [--only-pids P,P] [--record FILE] [--e1-log FILE]
 //   caret-screen --e8 --pids P,P [--title-match REGEX] [--runs N] [--interval S] --out FILE
 //
 // Default mode streams NDJSON to the helper's socket. --shadow tells the helper to log
@@ -49,6 +49,7 @@ let denyPath = option("--deny-list") ?? "\(home)/.caret-run/deny-apps.txt"
 let background = option("--background-interval").map { TimeInterval($0) ?? 30 } ?? 30
 let eventPids = pids(option("--event-pids"))
 let onlyPids = pids(option("--only-pids"))
+let eventBundles = Set((option("--event-bundles") ?? "").split(separator: ",").map(String.init))
 let recordPath = option("--record")
 let e1Path = option("--e1-log")
 let e8Pids = pids(option("--pids"))
@@ -109,6 +110,7 @@ var options = ReaderOptions(denyList: deny)
 options.backgroundInterval = background
 options.eventPids = eventPids
 options.onlyPids = onlyPids
+options.eventBundles = eventBundles
 let reader = MainActor.assumeIsolated { ScreenReader(ctx: ctx, options: options) }
 var connectedOnce = false
 socket.onConnect = {

@@ -83,9 +83,20 @@ public struct CompactResult: Sendable {
 public struct Compactor {
     /// The "<app>/<window kind>" prefix of every key in this window.
     public let prefix: String
+    /// Normalized window title. A label equal to it is a document title, not a name, and stays out of keys.
+    let titleLabel: String?
 
-    public init(app: String, windowKind: String) {
+    public init(app: String, windowKind: String, windowTitle: String? = nil) {
         prefix = "\(app)/\(windowKind)"
+        titleLabel = windowTitle.map(ElementKey.normalizeLabel).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// The label a node contributes to keys. Web areas carry the page title and browsers name their
+    /// top group after the window title; both change on every navigation or unread count, and in E8
+    /// they moved every key in a Chrome page at once. Such labels are left out of keys.
+    func keyLabel(role: String, normalized: String) -> String {
+        if role == "AXWebArea" || normalized == titleLabel { return "" }
+        return normalized
     }
 
     /// Compacts the children of a window element.
@@ -145,7 +156,8 @@ public struct Compactor {
         if !n.enabled { states.append(.disabled) }
         if n.checked { states.append(.checked) }
         if n.secure { states.append(.secure) }
-        return Info(label: label, normalizedLabel: ElementKey.normalizeLabel(label ?? ""), value: value, editable: editable, states: states)
+        return Info(label: label, normalizedLabel: keyLabel(role: n.role, normalized: ElementKey.normalizeLabel(label ?? "")),
+                    value: value, editable: editable, states: states)
     }
 
     private func visit(_ n: RawNode, chain: [String], parent: String?, state: inout State) {
@@ -164,7 +176,7 @@ public struct Compactor {
     }
 
     private func emit(_ n: RawNode, info: Info, key: String, chain: [String], parent: String?, state: inout State, ordinal: Int? = nil) {
-        let named = info.label != nil
+        let named = !info.normalizedLabel.isEmpty
         let seg = "\(ElementKey.shortRole(n.role)):\(info.normalizedLabel)"
         // An ancestor's segment carries its ordinal only when it is not the first, so two sibling
         // groups with the same name give their children distinct, self-contained scopes.

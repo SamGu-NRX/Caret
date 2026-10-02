@@ -199,8 +199,51 @@ func buildForm(_ title: String, _ fields: [Field], origin: NSPoint) -> NSWindow 
     return w
 }
 
+/// E8 drift window: things that move element keys on purpose. A status label and a button title
+/// toggle between words, and an unnamed field is inserted above three other unnamed fields and
+/// removed again, which shifts their ordinals.
+final class DriftWindow {
+    let w = makeWindow("Caret Fixture — Drift", NSRect(x: 300, y: 300, width: 420, height: 260))
+    let status = NSTextField(labelWithString: "Status: Online")
+    let button = NSButton(title: "Play", target: nil, action: nil)
+    var fields: [NSTextField] = []
+    var extra: NSTextField?
+    var tick = 0
+
+    init() {
+        let v = w.contentView!
+        status.frame = NSRect(x: 16, y: 220, width: 200, height: 20)
+        button.frame = NSRect(x: 230, y: 214, width: 100, height: 30)
+        v.addSubview(status); v.addSubview(button)
+        for i in 0..<3 {
+            let f = NSTextField(frame: NSRect(x: 16, y: 130 - Double(i) * 34, width: 380, height: 24))
+            f.stringValue = "row \(["alpha", "bravo", "charlie"][i])"
+            v.addSubview(f); fields.append(f)
+        }
+        w.orderBack(nil)
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in self.step() }
+    }
+
+    func step() {
+        tick += 1
+        if tick % 2 == 0 { status.stringValue = status.stringValue.hasSuffix("Online") ? "Status: Away" : "Status: Online" }
+        if tick % 3 == 0 { button.title = button.title == "Play" ? "Pause" : "Play" }
+        if tick % 4 == 0 {
+            if let e = extra { e.removeFromSuperview(); extra = nil } else {
+                let e = NSTextField(frame: NSRect(x: 16, y: 170, width: 380, height: 24))
+                // Added after the others in the view list but placed above them, as layout code often does;
+                // inserted first so it precedes them in the accessibility order too.
+                w.contentView!.addSubview(e, positioned: .below, relativeTo: fields[0])
+                extra = e
+            }
+        }
+    }
+}
+var drift: DriftWindow?
+
 for name in windowList {
     switch name {
+    case "drift": drift = DriftWindow()
     case "reference": windows[name] = buildReference()
     case "distractors": windows[name] = buildReference("Caret Fixture — Inbox", distractors, x: 300)
     case "claim": windows[name] = buildForm("Caret Fixture — Claim form", claimForm, origin: NSPoint(x: 540, y: 80))
@@ -247,6 +290,8 @@ final class E1Script {
         status.frame = NSRect(x: 16, y: 60, width: 420, height: 20)
         for v in [programmatic, typed, focusA, focusB, status] { w.contentView!.addSubview(v) }
         w.orderBack(nil)
+        // A background app posts focus notifications only within its key window.
+        w.makeKey()
     }
 
     func marker(_ a: String) -> String { "T\(ms())\(a)\(n)" }
@@ -305,7 +350,7 @@ var e1: E1Script?
 if let p = e1Path {
     let s = E1Script(log: LineLog(p))
     e1 = s
-    s.run(cycles: cycles, period: period) { exit(0) }
+    s.run(cycles: cycles, period: period) {}
 }
 
 // MARK: - WebKit window for E1 (the page scripts its own changes)
@@ -360,6 +405,7 @@ final class Activity {
         i += 1
         guard let w = windows.values.first(where: { $0.title == p.window }), let tf = formFields[p.window]?[p.field].1 else { return }
         tf.stringValue = ""
+        w.makeKey()
         w.makeFirstResponder(tf)
         log.write(["t": ms(), "event": "focus", "window": p.window, "label": formFields[p.window]![p.field].0.label])
         let chars = Array(p.text)

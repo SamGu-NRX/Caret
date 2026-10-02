@@ -61,6 +61,7 @@ public final class AppWorker: @unchecked Sendable {
     private var pendingSubtrees: [AXRef] = []
     private var focusEmptyAtEvent: (AXRef, Bool)?
     private var focusElement: AXRef?
+    private var pendingRegistrations: [String] = []
 
     /// Notifications that schedule work. Registered on the application element while the app is event-driven.
     static let notifications: [String] = [
@@ -152,7 +153,21 @@ public final class AppWorker: @unchecked Sendable {
         }
     }
 
-    private func addObserver() {
+    /// Registers the observer. An app that is busy answers "cannot complete" (seen for TextEdit and
+    /// Activity Monitor during E1), so those notifications are retried a few times, a second apart.
+    private func addObserver(attempt: Int = 0) {
+        if attempt > 0 {
+            guard eventDriven, let obs = observer else { return }
+            let refcon = Unmanaged.passUnretained(self).toOpaque()
+            let retry = pendingRegistrations
+            pendingRegistrations = retry.filter { AXObserverAddNotification(obs, ax, $0 as CFString, refcon) == .cannotComplete }
+            if !pendingRegistrations.isEmpty {
+                if attempt < 5 { queue.asyncAfter(deadline: .now() + 1) { self.addObserver(attempt: attempt + 1) } } else {
+                    ctx.log("\(app.name): gave up observing \(pendingRegistrations.joined(separator: ","))")
+                }
+            }
+            return
+        }
         guard observer == nil else { return }
         var obs: AXObserver?
         guard AXObserverCreate(pid, observerCallback, &obs) == .success, let obs else {
@@ -161,12 +176,17 @@ public final class AppWorker: @unchecked Sendable {
         }
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         var failed: [String] = []
-        for n in Self.notifications where AXObserverAddNotification(obs, ax, n as CFString, refcon) != .success {
-            failed.append(n)
+        pendingRegistrations = []
+        for n in Self.notifications {
+            let r = AXObserverAddNotification(obs, ax, n as CFString, refcon)
+            if r == .cannotComplete { pendingRegistrations.append(n) } else if r != .success && r != .notificationAlreadyRegistered {
+                failed.append("\(n)(\(r.rawValue))")
+            }
         }
-        if !failed.isEmpty { ctx.log("\(app.name): could not observe \(failed.joined(separator: ","))") }
+        if !failed.isEmpty { ctx.log("\(app.name): cannot observe \(failed.joined(separator: ","))") }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
         observer = obs
+        if !pendingRegistrations.isEmpty { queue.asyncAfter(deadline: .now() + 1) { self.addObserver(attempt: 1) } }
     }
 
     private func removeObserver() {
@@ -281,14 +301,14 @@ public final class AppWorker: @unchecked Sendable {
         let limits: WalkLimits = (reason == .background || reason == .initial) ? .background : .focused
         let walker = Walker(limits: limits, focused: fe)
         let raw = walker.readChildren(of: w.el)
-        let result = Compactor(app: appPart, windowKind: info.kind).compact(windowChildren: raw)
+        let title = AX.string(w.el, kAXTitleAttribute) ?? ""
+        let result = Compactor(app: appPart, windowKind: info.kind, windowTitle: title).compact(windowChildren: raw)
         let walkMs = walker.elapsedMs
         var contexts: [AXRef: KeyContext] = [:]
         for (h, kc) in result.contexts { contexts[AXRef(walker.elements[h])] = kc }
         info.contexts = contexts
         info.lastWalk = CFAbsoluteTimeGetCurrent()
 
-        let title = AX.string(w.el, kAXTitleAttribute) ?? ""
         let frame = AX.frame(of: w.el)
         var h = Hasher()
         h.combine(title); h.combine(isFocused); h.combine(result.nodes.count)
@@ -312,13 +332,14 @@ public final class AppWorker: @unchecked Sendable {
     private func walkSubtree(_ el: AXRef) -> Bool {
         guard let (w, kc) = lookup(el), kc.leaf || kc.named, var info = windows[w] else { return false }
         let walker = Walker(limits: .focused, focused: focusElement?.el)
+        let title = AX.string(w.el, kAXTitleAttribute) ?? ""
         guard let raw = walker.readSubtree(el.el), !walker.truncated,
-              let result = Compactor(app: appPart, windowKind: info.kind).compactSubtree(raw, context: kc) else { return false }
+              let result = Compactor(app: appPart, windowKind: info.kind, windowTitle: title).compactSubtree(raw, context: kc) else { return false }
         for (h, c) in result.contexts { info.contexts[AXRef(walker.elements[h])] = c }
         info.contentHash = nil
         windows[w] = info
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: .event, app: app,
-                            window: WindowRef(windowId: info.id, kind: info.kind, title: AX.string(w.el, kAXTitleAttribute) ?? "", frame: AX.frame(of: w.el)),
+                            window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: AX.frame(of: w.el)),
                             focused: w == focusedWindow, root: kc.key, nodes: result.nodes, values: ctx.detector.values(for: result.nodes),
                             focusedKey: result.focusedKey,
                             stats: WalkStats(walkMs: (walker.elapsedMs * 10).rounded() / 10, visited: walker.visited, truncated: false))
@@ -349,10 +370,10 @@ public final class AppWorker: @unchecked Sendable {
     // MARK: - experiments
 
     /// Synchronous full walk returning raw results, for E8. Runs on the worker's queue.
-    func walkForExperiment(titleFilter: (String) -> Bool) -> [(windowTitle: String, elements: [AXRef], contexts: [Int: KeyContext], nodes: [Node], ms: Double)] {
+    func walkForExperiment(titleFilter: (String) -> Bool) -> [(window: AXRef, windowTitle: String, elements: [AXRef], contexts: [Int: KeyContext], nodes: [Node], ms: Double)] {
         queue.sync {
             guard let ws = AX.elements(ax, kAXWindowsAttribute) else { return [] }
-            var out: [(String, [AXRef], [Int: KeyContext], [Node], Double)] = []
+            var out: [(AXRef, String, [AXRef], [Int: KeyContext], [Node], Double)] = []
             for w in ws {
                 let title = AX.string(w, kAXTitleAttribute) ?? ""
                 guard titleFilter(title) else { continue }
@@ -360,8 +381,8 @@ public final class AppWorker: @unchecked Sendable {
                 let i = info(for: r)
                 let walker = Walker(limits: .background, focused: nil)
                 let raw = walker.readChildren(of: w)
-                let res = Compactor(app: appPart, windowKind: i.kind).compact(windowChildren: raw)
-                out.append((title, walker.elements.map(AXRef.init), res.contexts, res.nodes, walker.elapsedMs))
+                let res = Compactor(app: appPart, windowKind: i.kind, windowTitle: title).compact(windowChildren: raw)
+                out.append((r, title, walker.elements.map(AXRef.init), res.contexts, res.nodes, walker.elapsedMs))
             }
             return out
         }

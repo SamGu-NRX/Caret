@@ -73,4 +73,19 @@ import Testing
             "dev.caret.fixture/standard/group:item~1/button:remove~0",
         ])
     }
+
+    @Test func pageAndWindowTitlesStayOutOfKeys() {
+        func page(_ title: String) -> [String] {
+            let c = Compactor(app: "com.google.Chrome", windowKind: "standard", windowTitle: "\(title) - Google Chrome")
+            return c.compact(windowChildren: [
+                RawNode(role: "AXGroup", title: "\(title) - Google Chrome", children: [
+                    RawNode(role: "AXButton", title: "Reload"),
+                    RawNode(role: "AXWebArea", title: title, children: [RawNode(role: "AXTextField", title: "Email")]),
+                ]),
+            ]).nodes.map(\.key)
+        }
+        #expect(page("Inbox") == page("Inbox (3) - Order shipped"))
+        #expect(page("Inbox").contains("com.google.Chrome/standard/webarea:~0/textfield:email~0") == false)
+        #expect(page("Inbox").contains("com.google.Chrome/standard/textfield:email~0"))
+    }
 }

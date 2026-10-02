@@ -12,6 +12,8 @@ public struct ReaderOptions: Sendable {
     public var backgroundInterval: TimeInterval = 30
     /// Apps treated as event-driven even when not frontmost. For fixture experiments that must not take focus.
     public var eventPids: Set<pid_t> = []
+    /// Apps with these bundle identifiers are event-driven too, whatever their pid. For E1's passive Electron sample.
+    public var eventBundles: Set<String> = []
     /// When non-empty, only these processes are read. For experiments that must not read anything else.
     public var onlyPids: Set<pid_t> = []
     public var denyList: DenyList
@@ -82,6 +84,7 @@ public final class ScreenReader {
         guard app.activationPolicy == .regular || app.activationPolicy == .accessory || opts.eventPids.contains(pid) else { return }
         let bundleId = app.bundleIdentifier ?? ""
         if opts.denyList.denies(bundleId) { return }
+        if opts.eventBundles.contains(bundleId) { opts.eventPids.insert(pid) }
         let ref = AppRef(pid: Int(pid), bundleId: bundleId, name: app.localizedName ?? bundleId)
         enableManualAccessibility(app)
         let w = AppWorker(pid: pid, app: ref, ctx: ctx)
