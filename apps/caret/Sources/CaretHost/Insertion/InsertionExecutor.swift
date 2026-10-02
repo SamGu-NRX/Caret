@@ -2,6 +2,7 @@ import AppCompatibility
 import ApplicationServices
 import AutocompleteCore
 import CaretHostCore
+import CaretScreenCore
 import Foundation
 import os
 import TextInsertion

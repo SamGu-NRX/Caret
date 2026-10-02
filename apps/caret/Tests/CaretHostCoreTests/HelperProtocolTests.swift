@@ -25,6 +25,8 @@ final class HelperProtocolGoldenTests: XCTestCase {
             switch try HelperInbound.decode(line) {
             case .fillProposal: return "fillProposal"
             case .error: return "error"
+            case .activity: return "activity"
+            case .activityReply: return "activityReply"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
@@ -32,7 +34,28 @@ final class HelperProtocolGoldenTests: XCTestCase {
         XCTAssertEqual(kinds, [
             "skip:hello", "skip:snapshot", "skip:focus", "skip:appSwitch", "skip:windowClosed",
             "skip:pasteboard", "skip:fillRequest", "fillProposal", "error",
+            "skip:readerCommand", "skip:verbResult", "skip:userInput", "skip:taskProgress", "skip:readerCommand",
+            "skip:fillResult", "skip:taskControl", "skip:activityRequest", "activity", "activityReply",
         ])
+    }
+
+    func testGoldenActivityLinesBuildTheFeed() throws {
+        var feed = ActivityFeed()
+        for line in try goldenLines() {
+            switch try HelperInbound.decode(line) {
+            case .activityReply(let reply): XCTAssertTrue(feed.applyList(reply))
+            case .activity(let a): _ = feed.apply(a)
+            default: continue
+            }
+        }
+        // The broadcast (seq 12) came before the list (seq 13), which replaces it.
+        XCTAssertTrue(feed.listed)
+        XCTAssertEqual(feed.seq, 13)
+        let paused = try XCTUnwrap(feed.tasks["task-1"])
+        XCTAssertEqual(paused.state, .paused)
+        let row = try XCTUnwrap(ActivityList.row(for: paused))
+        XCTAssertEqual(row.section, .needsYou)
+        XCTAssertEqual(row.actions.first, .resume)
     }
 
     func testGoldenFillProposalFieldsDecodeExactly() throws {
@@ -70,15 +93,15 @@ final class HelperProtocolGoldenTests: XCTestCase {
     }
 
     func testGoldenErrorDecodes() throws {
-        let last = try XCTUnwrap(try goldenLines().last)
-        XCTAssertEqual(try HelperInbound.decode(last), .error(try JSONDecoder().decode(HelperError.self, from: last)))
-        guard case .error(let e) = try HelperInbound.decode(last) else { return XCTFail("not an error") }
+        let line = try XCTUnwrap(try goldenLines().first { String(decoding: $0, as: UTF8.self).contains(#""type":"error""#) })
+        XCTAssertEqual(try HelperInbound.decode(line), .error(try JSONDecoder().decode(HelperError.self, from: line)))
+        guard case .error(let e) = try HelperInbound.decode(line) else { return XCTFail("not an error") }
         XCTAssertEqual(e.message, "unknown window 5150-9")
     }
 
     func testAnUnknownTypeIsNamedNotFatal() throws {
-        let line = Data(#"{"type":"taskProgress","v":1,"at":1}"#.utf8)
-        XCTAssertEqual(try HelperInbound.decode(line), .unknown(type: "taskProgress"))
+        let line = Data(#"{"type":"patternOffer","v":1,"at":1}"#.utf8)
+        XCTAssertEqual(try HelperInbound.decode(line), .unknown(type: "patternOffer"))
     }
 
     func testAWrongVersionIsRejected() {

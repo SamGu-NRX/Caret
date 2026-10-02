@@ -1,3 +1,4 @@
+import CaretScreenCore
 import Foundation
 
 /// The JSON the debug socket returns. Tests and the lead read host state from here instead of from
@@ -155,14 +156,16 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var connected = false
         public var connects: UInt64 = 0
         public var proposals: UInt64 = 0
+        /// `activity` and `activityReply` messages received.
+        public var activity: UInt64 = 0
         public var errors: UInt64 = 0
         /// The helper's last error text: window ids and reasons, never screen text.
         public var lastError: String?
         /// Messages that were valid but not for a consumer, or of a type this host does not know.
         public var skipped: [String: UInt64] = [:]
         public var undecodable: UInt64 = 0
-        /// fillResult lines written to the socket, written while disconnected, and answered by the
-        /// helper with "invalid consumer message".
+        /// Lines written to the socket (fillResult, offerAccept, taskControl, activityRequest),
+        /// dropped while disconnected, and fillResults answered with "invalid consumer message".
         public var resultsSent: UInt64 = 0
         public var resultsDropped: UInt64 = 0
         public var resultsRejected: UInt64 = 0
@@ -311,12 +314,18 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// Keys whose event named the receiving pid, and keys whose event did not (those take nothing).
         public var targetFromEvent: UInt64?
         public var targetMissing: UInt64?
+        /// The listen-only mouse tap exists (clicks can pause a run), and the clicks it saw.
+        public var mouseTap: Bool?
+        public var mouseDowns: UInt64?
 
         public init(
             running: Bool, enabled: Bool, keyDowns: UInt64, consumed: UInt64,
             timeoutRecoveries: UInt64, maxCallbackMicros: Double, p99CallbackMicros: Double?,
-            targetFromEvent: UInt64? = nil, targetMissing: UInt64? = nil
+            targetFromEvent: UInt64? = nil, targetMissing: UInt64? = nil,
+            mouseTap: Bool? = nil, mouseDowns: UInt64? = nil
         ) {
+            self.mouseTap = mouseTap
+            self.mouseDowns = mouseDowns
             self.targetFromEvent = targetFromEvent
             self.targetMissing = targetMissing
             self.running = running
