@@ -86,7 +86,9 @@ export class Store {
     this.dir = dir;
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.salt = loadSalt(join(dir, "salt"));
-    this.db = new DatabaseSync(join(dir, "screen.sqlite"));
+    const dbPath = join(dir, "screen.sqlite");
+    this.db = new DatabaseSync(dbPath);
+    chmodSync(dbPath, 0o600);
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec(SCHEMA);
   }
