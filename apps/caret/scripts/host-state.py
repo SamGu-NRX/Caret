@@ -20,7 +20,7 @@ PATH = os.environ.get("CARET_HOST_SOCKET") or os.path.expanduser("~/.caret-run/s
 
 def ask(command: str = "state") -> dict:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(2.0)
+        s.settimeout(5.0)
         s.connect(PATH)
         s.sendall((command + "\n").encode())
         s.shutdown(socket.SHUT_WR)

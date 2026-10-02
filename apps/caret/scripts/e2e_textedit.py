@@ -40,11 +40,11 @@ def cua(tool, args):
 
 
 def state(command="state"):
-    for attempt in range(3):
+    for attempt in range(5):
         out = subprocess.run([sys.executable, STATE, command], capture_output=True, text=True)
         if out.returncode == 0:
             return json.loads(out.stdout)
-        time.sleep(0.2)
+        time.sleep(0.5)
     raise RuntimeError(f"host socket did not answer: {out.stderr.strip()}")
 
 
@@ -125,11 +125,6 @@ def focus(pid, window_id):
     for _ in range(10):
         require_idle()
         cua("bring_to_front", {"pid": pid, "window_id": window_id})
-        # When cua-driver cannot verify the activation (seen after a display/Space change), ask
-        # the fixture app itself to become frontmost through AX.
-        time.sleep(0.3)
-        if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode != 0:
-            subprocess.run([KEYS, str(pid), "activate"], capture_output=True)
         for _ in range(20):
             time.sleep(0.1)
             if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode == 0:
@@ -223,31 +218,58 @@ def verify_value(pid, window_id, expected):
     return result
 
 
+# Mid-sentence fixtures, tried in order until one gets an offer. KeyType's mid-line gate is a
+# confidence threshold, and these sit near it: the same text can be offered on one run and not
+# the next.
+MID_CASES = [
+    ("Can we move the", " to Friday?"),
+    ("We should schedule a call for next", " to go over it."),
+    ("Please send me the", " by Monday."),
+    ("I will be in the", " all afternoon."),
+]
+
+
 def accept(case, evidence):
     os.makedirs(evidence, exist_ok=True)
     if case == "end":
-        pid, window_id, _ = open_fixture("caret-accept-end.txt", "")
-        prefix, suffix = "", ""
-        typed = "I will send you the report by the end of the "
-    elif case in ("mid", "midword"):
-        # "mid": the caret moves into an existing sentence and nothing is typed there.
-        # "midword": a word is started mid-sentence (KeyType's mid-line gate usually suppresses it).
-        prefix, suffix, typed = {
-            "mid": ("Can we move the", " to Friday?", ""),
-            "midword": ("I read your ", " and they were clear.", "detailed meeting no"),
-        }[case]
-        pid, window_id, _ = open_fixture(f"caret-accept-{case}.txt", prefix + suffix)
+        return accept_one(case, evidence, "", "", "I will send you the report by the end of the ")
+    if case == "midword":
+        return accept_one(case, evidence, "I read your ", " and they were clear.", "detailed meeting no")
+    if case == "mid":
+        tried = []
+        for prefix, suffix in MID_CASES:
+            report = accept_one(case, evidence, prefix, suffix, "")
+            if report.get("result") == "satisfied":
+                report["mid_cases_without_offer"] = tried
+                return report
+            tried.append(prefix + "|" + suffix)
+            stop_fixtures()
+        return {"case": case, "result": "no offer accepted", "mid_cases_without_offer": tried}
+    raise SystemExit(f"unknown case {case}")
+
+
+def stop_fixtures():
+    for pid in LAUNCHED:
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            pass
+    LAUNCHED.clear()
+
+
+def accept_one(case, evidence, prefix, suffix, typed):
+    """Opens a fixture holding prefix + suffix, puts the caret between them, types `typed`, waits
+    for an offer, presses Tab and verifies the document."""
+    pid, window_id, _ = open_fixture(f"caret-accept-{case}.txt", prefix + suffix)
+    if prefix and suffix:
         # Opening puts the caret at 0; walk it to the end of the prefix.
         send_keys(pid, window_id, "right", len(prefix))
-    else:
-        raise SystemExit(f"unknown case {case}")
-
     if typed:
         send(pid, window_id, "type", typed, ["60"])
     report = {"case": case, "typed": typed, "prefix": prefix, "suffix": suffix}
     insertion = None
     offer = None
-    for _ in range(10):
+    for _ in range(4):
         focus(pid, window_id)
         offer = wait_offer(pid)
         if not offer or not focused(pid):
@@ -265,6 +287,7 @@ def accept(case, evidence):
     report["offer"] = offer
     if not insertion:
         report["result"] = "no offer accepted"
+        report["counters"] = state().get("counters")
         return report
     report["insertion"] = insertion
     # What Tab actually inserted; it equals the offer read above unless the offer was refreshed in

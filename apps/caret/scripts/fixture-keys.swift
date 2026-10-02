@@ -8,7 +8,6 @@
 //
 // Build: swiftc -O fixture-keys.swift -o ../.build/fixture-keys
 // Usage: fixture-keys <pid> type <text> [interval_ms]
-//        fixture-keys <pid> activate
 //        fixture-keys <pid> key tab|left|right|space|delete [count]
 //        fixture-keys <pid> check
 
@@ -16,18 +15,31 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-/// Owner of the frontmost ordinary (layer 0) on-screen window, read live from the window server.
-/// NSWorkspace's frontmost app is not refreshed in a process without a run loop.
-func frontWindowOwner() -> pid_t? {
-    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
-        as? [[String: Any]] else { return nil }
-    return list.first { ($0[kCGWindowLayer as String] as? Int) == 0 }?[kCGWindowOwnerPID as String] as? pid_t
+/// The pid of the app that receives keyboard input: LaunchServices' front application. Window
+/// order is not enough: an app can own the frontmost window without being active, and then HID
+/// keys go to the active app instead (seen on 2026-10-02, when keys meant for a fixture reached
+/// another app).
+func activeAppPID() -> pid_t? {
+    func run(_ args: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/lsappinfo")
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        do { try process.run() } catch { return "" }
+        process.waitUntilExit()
+        return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    }
+    let asn = run(["front"]).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !asn.isEmpty else { return nil }
+    let info = run(["info", "-only", "pid", asn])
+    guard let value = info.split(separator: "=").last?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+    return pid_t(value)
 }
 
-/// The frontmost window's pid and the pid owning that app's focused element. A short-lived CLI
-/// often gets kAXErrorCannotComplete from the system-wide element, so this asks the app directly.
+/// The active app's pid and the pid owning that app's focused element.
 func focusedPIDs() -> (app: pid_t?, element: pid_t?) {
-    guard let front = frontWindowOwner() else { return (nil, nil) }
+    guard let front = activeAppPID() else { return (nil, nil) }
     let app = AXUIElementCreateApplication(front)
     for _ in 0..<5 {
         var value: CFTypeRef?
@@ -77,12 +89,6 @@ switch args[2] {
 case "check":
     requireTarget(target)
     print("ok")
-case "activate":
-    // Asks the fixture app to become frontmost through AX (kAXFrontmostAttribute), for hosts
-    // where cua-driver's bring_to_front cannot verify. Only ever pass a pid the test launched.
-    let app = AXUIElementCreateApplication(target)
-    let result = AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-    print("activate \(result.rawValue)")
 case "type":
     guard args.count >= 4 else { exit(2) }
     let interval = args.count >= 5 ? UInt32(args[4]) ?? 120 : 120
