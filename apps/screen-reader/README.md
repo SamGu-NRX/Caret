@@ -1,0 +1,39 @@
+# caret-screen
+
+Caret's Accessibility reader. It keeps the helper's screen model current: every open window, compacted, keyed and annotated with typed values, streamed as NDJSON to `~/.caret-run/sockets/screen.sock`. The wire format is defined in `helper/src/protocol.ts`; `CaretScreenCore` mirrors it in Swift for any Swift consumer.
+
+## Run
+
+```sh
+cd apps/screen-reader
+/usr/bin/lockf -k ~/.caret-run/locks/build.lock swift build
+(cd ../../helper && CARET_ENV_FILE=/path/to/.env node src/main.ts) &
+./.build/debug/caret-screen            # or --shadow: log opportunities, show nothing, call no model
+```
+
+Start the binary directly, not through `open`, so it inherits the Accessibility grant of the process that starts it. It exits with a message if it is not trusted.
+
+## What it reads, and when
+
+- **The focused window of the frontmost app**, on Accessibility notifications, at most once per 100 ms, and after a slow walk, three walks' time later. A value change on a field it already knows re-reads that field alone. A focus change also sends a `focus` message.
+- **The window being left**, once, at the moment of the switch.
+- **Every other window**, every 30 s. An unchanged window sends nothing.
+- Each app has its own queue, each element a 0.25 s messaging timeout, and each walk a deadline (0.4 s focused, 1 s background) and a 6,000-node budget. A cut-short walk says `truncated`.
+- Chromium and Electron apps get `AXManualAccessibility` once per process. Electron accepts it; Chrome and Helium answer "unsupported" and expose their web content anyway. `AXEnhancedUserInterface` is never set.
+
+Never read:
+
+- the value of a secure text field (checked by role and subrole on every read path)
+- apps on the deny list, `~/.caret-run/deny-apps.txt`: one bundle identifier or prefix per line, created with password managers and Keychain Access on first run.
+
+## Element keys
+
+`<app>/<window kind>/<named ancestors>/<role>:<label>~<ordinal>`. Labels are lowercased with digit runs masked as `#`, so counters and dates do not move keys. Unnamed containers are left out, so wrapping does not move keys. Page titles and labels equal to the window title are left out, since Chrome renames its top group and web area on every title change. The ordinal counts earlier siblings with the same role and label. E8 measured the result: 191 of 196 elements kept one key over 100 walks, and every drift was in a window built to cause it.
+
+## Flags for experiments
+
+`--event-pids`, `--event-bundles` and `--only-pids` make named apps event-driven or restrict reading to them. `--record FILE` tees messages to a file and requires `--only-pids`, because a recording holds screen text. `--e1-log FILE` logs every notification with its callback time. `--e8 --pids … --out FILE` walks windows repeatedly and reports key stability. The scripts in `experiments/` run E1, E8, the shadow logger and the grounded-fill evaluation against `caret-fixture`, which shows synthetic data only.
+
+## Tests
+
+`swift test` covers element keys, compaction, typed-value detection and the golden protocol fixture shared with the helper (`helper/fixtures/golden/protocol.ndjson`).
