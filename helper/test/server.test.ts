@@ -121,3 +121,84 @@ describe("helper socket", () => {
     await expect(second.listen()).rejects.toThrow(/already listening/);
   });
 });
+
+describe("executor over the socket", () => {
+  let dir: string;
+  let store: Store;
+  let server: HelperServer;
+  let path: string;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "caret-exec-sock-"));
+    path = join(dir, "s.sock");
+    store = new Store(join(dir, "data"));
+    let s: HelperServer | null = null;
+    const helper = new Helper({
+      store,
+      askJev: null,
+      shadow: false,
+      allowBackgroundFocus: false,
+      publish: (m: HelperMessage) => s?.publish(m),
+      sendToReader: (cmd) => s?.sendToReader(cmd) ?? false,
+    });
+    server = new HelperServer(path, () => helper, () => {});
+    s = server;
+    await server.listen();
+  });
+
+  afterEach(async () => {
+    await server.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sends reader commands to the reader, matches its answers, and streams taskProgress to consumers", async () => {
+    const W = "5150-3";
+    let value = "";
+    const window = () => snap([field(EMAIL, value, { label: "Email" })], { at: Date.now(), windowId: W, title: "Fixture form", reason: "request" });
+    const reader = await connect(path);
+    send(reader.s, { type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "test" });
+    send(reader.s, window());
+    // A scripted reader: every command gets a fresh snapshot (after acting) and then its answer.
+    const commands: string[] = [];
+    const serve = (async () => {
+      for (;;) {
+        const c = (await reader.next()) as { type: string; id: string; verb: { kind: string; expect?: string; value?: string } };
+        if (c.type !== "readerCommand") continue;
+        commands.push(c.verb.kind);
+        let outcome = "ok";
+        if (c.verb.kind === "write") {
+          if (c.verb.expect === value) value = c.verb.value ?? "";
+          else outcome = "changed";
+        }
+        if (c.verb.kind !== "watchInput") send(reader.s, window());
+        send(reader.s, { type: "verbResult", v: PROTOCOL_VERSION, id: c.id, at: Date.now(), outcome, detail: null });
+      }
+    })();
+    void serve;
+
+    const consumer = await connect(path);
+    send(consumer.s, { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "test" });
+    const plan = {
+      id: "p",
+      title: "p",
+      slots: {},
+      steps: [{ says: "Email holds d@example.com", end: { kind: "valueEquals", window: { title: "Fixture form" }, target: { key: EMAIL, describe: "Email" }, value: "d@example.com" } }],
+    };
+    send(consumer.s, { type: "runPlan", v: PROTOCOL_VERSION, taskId: "sock-1", plan, slots: {} });
+    const phases: string[] = [];
+    for (;;) {
+      const m = (await consumer.next()) as { type: string; phase?: string };
+      if (m.type !== "taskProgress") continue;
+      phases.push(m.phase ?? "");
+      if (m.phase === "done" || m.phase === "stopped") break;
+    }
+    expect(phases).toEqual(["started", "acting", "verified", "done"]);
+    expect(value).toBe("d@example.com");
+    // The watch is released after "done" is published, so its command may still be on the way.
+    for (let i = 0; i < 50 && commands.length < 5; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(commands).toEqual(["walk", "watchInput", "walk", "write", "watchInput"]);
+    reader.s.destroy();
+    consumer.s.destroy();
+  });
+});
