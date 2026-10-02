@@ -87,6 +87,18 @@ final class HostRulesTests: XCTestCase {
         XCTAssertFalse(GhostTextEngine.shouldUseCapsule(for: context(before: "Hi", after: " there", endOfLine: true)))
     }
 
+    func testMidSentenceAnchorDropsASentenceTerminator() {
+        let candidate = CompletionCandidate(text: " week.", mode: .prose)
+        let continues = CompletionRequest(context: context(before: "call for next", after: " to go over it.", endOfLine: false), prompt: "")
+        XCTAssertEqual(GhostTextEngine.anchorText(for: candidate, request: continues), " week")
+        let newSentence = CompletionRequest(context: context(before: "call for next", after: " See you.", endOfLine: false), prompt: "")
+        XCTAssertEqual(GhostTextEngine.anchorText(for: candidate, request: newSentence), " week.", "a capital may start a new sentence")
+        let punctuation = CompletionRequest(context: context(before: "call for next", after: ", then", endOfLine: false), prompt: "")
+        XCTAssertEqual(GhostTextEngine.anchorText(for: candidate, request: punctuation), " week.")
+        let nextLine = CompletionRequest(context: context(before: "call for next", after: "\nNew line", endOfLine: false), prompt: "")
+        XCTAssertEqual(GhostTextEngine.anchorText(for: candidate, request: nextLine), " week.")
+    }
+
     func testAnchorTextDropsTrailingWhitespaceOnlyAtEndOfLine() {
         let candidate = CompletionCandidate(text: " there ", mode: .prose)
         let eol = CompletionRequest(context: context(before: "Hi"), prompt: "")

@@ -135,8 +135,23 @@ final class GhostTextEngine {
         var anchored = CaretBoundary.reconcile(completion, beforeCursor: request.context.beforeCursor)
         if request.context.afterCursor.isEmpty {
             while let last = anchored.last, last.isWhitespace { anchored.removeLast() }
+        } else if sentenceContinues(after: request.context.afterCursor) {
+            // Without FIM tokens (the Gemma file has none) KeyType falls back to plain
+            // continuation, which ends the sentence: "call for next| to go over it." gave
+            // " week." in `Caret --probe`. Text after the caret continues the sentence, so a
+            // closing terminator would be wrong there.
+            while let last = anchored.last, ".!?".contains(last) { anchored.removeLast() }
         }
         return anchored.isEmpty ? nil : anchored
+    }
+
+    /// True when the text after the caret, on the same line, starts with a lowercase word or a
+    /// number: the sentence goes on past the insertion point. A capital may start a new sentence,
+    /// so it does not count.
+    nonisolated static func sentenceContinues(after afterCursor: String) -> Bool {
+        let line = afterCursor.prefix { !$0.isNewline }
+        guard let first = line.first(where: { !$0.isWhitespace }) else { return false }
+        return first.isLowercase || first.isNumber
     }
 
     /// True when visible text follows the caret on the same line, where inline ghost text would

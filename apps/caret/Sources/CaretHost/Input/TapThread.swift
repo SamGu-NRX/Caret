@@ -111,6 +111,7 @@ public final class TapThread: @unchecked Sendable {
             ready.signal()
             return
         }
+        Self.warmCallbackPath()
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         let loop = CFRunLoopGetCurrent()
         CFRunLoopAddSource(loop, source, .commonModes)
@@ -122,6 +123,16 @@ public final class TapThread: @unchecked Sendable {
         CFRunLoopRun()
         CFRunLoopRemoveSource(loop, source, .commonModes)
         stats.withLock { $0.running = false }
+    }
+
+    /// Runs the callback's work once on this thread before the first real key, so lazy Swift
+    /// metadata and lock setup are not paid inside a user's keystroke.
+    private static func warmCallbackPath() {
+        let scratch = OfferArbiter()
+        if let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) {
+            _ = scratch.handleKeyDown(KeyStroke(event: event))
+        }
+        _ = scratch.handleKeyDown(.tab)
     }
 
     private static let callback: CGEventTapCallBack = { _, type, event, refcon in
