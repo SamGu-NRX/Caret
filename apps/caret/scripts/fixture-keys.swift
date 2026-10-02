@@ -41,9 +41,12 @@ func focusedPIDs() -> (app: pid_t?, element: pid_t?) {
     return (front, nil)
 }
 
-func requireTarget(_ target: pid_t) {
+/// Exits 3 when the target lost focus, after printing how many units were already sent so a
+/// caller can re-focus and resume.
+func requireTarget(_ target: pid_t, sent: Int = 0) {
     let focus = focusedPIDs()
     guard focus.app == target, focus.element == target else {
+        print("sent \(sent)")
         FileHandle.standardError.write(Data("refused: focus is app=\(focus.app.map(String.init) ?? "nil") element=\(focus.element.map(String.init) ?? "nil"), not \(target)\n".utf8))
         exit(3)
     }
@@ -76,12 +79,13 @@ case "check":
 case "type":
     guard args.count >= 4 else { exit(2) }
     let interval = args.count >= 5 ? UInt32(args[4]) ?? 120 : 120
-    for character in args[3] {
-        requireTarget(target)
+    for (sent, character) in args[3].enumerated() {
+        requireTarget(target, sent: sent)
         let text = String(character)
         post(keyCode: text == " " ? 49 : 0, text: text)
         usleep(interval * 1_000)
     }
+    print("sent \(args[3].count)")
 case "key":
     guard args.count >= 4 else { exit(2) }
     let count = args.count >= 5 ? Int(args[4]) ?? 1 : 1
@@ -89,8 +93,8 @@ case "key":
         "tab": (48, "\t"), "left": (123, nil), "right": (124, nil), "space": (49, " "), "delete": (51, nil),
     ]
     guard let (code, text) = codes[args[3]] else { exit(2) }
-    for _ in 0..<count {
-        requireTarget(target)
+    for sent in 0..<count {
+        requireTarget(target, sent: sent)
         post(keyCode: code, text: text)
         usleep(30_000)
     }

@@ -10,8 +10,14 @@ import TextInsertion
 /// For each claim, in order on one serial queue: reread the focused field (element, value,
 /// selection, pid), let `OfferArbiter.confirm` run the insertion guard, and only then insert
 /// through KeyType's `PasteboardCompletionInserter` (a synthesized ⌘V, which the target app's undo
-/// records like a user paste). Afterwards it rereads once more to record whether the field now
-/// holds exactly the value the guard predicted.
+/// records like a user paste). Afterwards it rereads until the field holds exactly the value the
+/// guard predicted, and only then puts the user's clipboard back.
+///
+/// KeyType restores the clipboard on a fixed 120 ms timer, so an app that handles ⌘V later than
+/// that pastes the user's own clipboard. Restoring only after the field shows the insertion (or
+/// after `pasteSettleTimeout`) closes that window. No run has shown the late-paste case; one
+/// TextEdit run on 2026-10-02 that first looked like it turned out to be unrelated text arriving
+/// in the fixture. The cost is that the suggestion sits on the clipboard until the field settles.
 final class InsertionExecutor: @unchecked Sendable {
     struct Result: Sendable {
         let claim: Claim
@@ -23,6 +29,9 @@ final class InsertionExecutor: @unchecked Sendable {
     private let status: HostStatus
     private let planner: InsertionPlanner
     private let inserter: PasteboardCompletionInserter
+    /// Shared with `inserter`, which saves the user's clipboard into it before writing.
+    private let pasteboard = SystemPasteboard()
+    private let pasteSettleTimeout: TimeInterval = 1.5
     private let onFinished: @Sendable (Result) -> Void
     /// The policy-relevant context of recent offers, so the planner can pick the app's insertion
     /// strategy (paste-and-match-style, NBSP workaround, chunked injection).
@@ -37,7 +46,7 @@ final class InsertionExecutor: @unchecked Sendable {
         self.arbiter = arbiter
         self.status = status
         self.planner = InsertionPlanner(compatibilityStore: compatibilityStore)
-        self.inserter = PasteboardCompletionInserter(planner: planner)
+        self.inserter = PasteboardCompletionInserter(planner: planner, pasteboard: pasteboard, restoreDelayNanoseconds: 0)
         self.onFinished = onFinished
     }
 
@@ -84,16 +93,23 @@ final class InsertionExecutor: @unchecked Sendable {
 
         let context = contexts.withLock { list in list.last { $0.0 == claim.offer.id }?.1 }
             ?? TextFieldContext(beforeCursor: "", target: AppTarget(bundleIdentifier: claim.offer.target.bundleID, appName: ""))
-        let plan = planner.plan(candidate: CompletionCandidate(text: text), context: context)
+        var plan = planner.plan(candidate: CompletionCandidate(text: text), context: context)
+        let usesPasteboard: Bool
+        switch plan.strategy {
+        case .pasteboardPaste, .pasteAndMatchStyle, .firstWordOnly: usesPasteboard = true
+        case .characterInjection, .chunkedStringInjection: usesPasteboard = false
+        }
+        plan.restorePasteboard = false
         let error = Self.blocking { [inserter] in try await inserter.insert(plan: plan) }
+        let verified = error == nil ? waitForValue(approved.resultingValue, timeout: pasteSettleTimeout) : nil
+        if usesPasteboard { pasteboard.restore() }
         arbiter.finishInsertion(claimID: claim.claimID, error: error)
-        guard error == nil else { return finish(ok: false, error: error, verified: nil) }
-        finish(ok: true, error: nil, verified: waitForValue(approved.resultingValue))
+        finish(ok: error == nil, error: error, verified: verified)
     }
 
     /// Polls the focused field for up to `timeout` until it holds `expected`. Apps apply a paste
     /// asynchronously, so a single immediate read would race it.
-    private func waitForValue(_ expected: String, timeout: TimeInterval = 0.6) -> Bool {
+    private func waitForValue(_ expected: String, timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
             if FieldReader.readFocused()?.value == expected { return true }

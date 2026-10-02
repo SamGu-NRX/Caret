@@ -37,11 +37,90 @@ def cua(tool, args):
 
 
 def state(command="state"):
-    return json.loads(subprocess.run([sys.executable, STATE, command], capture_output=True, text=True, check=True).stdout)
+    for attempt in range(3):
+        out = subprocess.run([sys.executable, STATE, command], capture_output=True, text=True)
+        if out.returncode == 0:
+            return json.loads(out.stdout)
+        time.sleep(0.2)
+    raise RuntimeError(f"host socket did not answer: {out.stderr.strip()}")
+
+
+def capture(pid, window_id, path):
+    subprocess.run([sys.executable, CAPTURE, str(pid), str(window_id), path], check=True, capture_output=True)
 
 
 def keys(pid, *args):
     subprocess.run([KEYS, str(pid), *map(str, args)], check=True)
+
+
+class UserActive(RuntimeError):
+    """Someone else is using this Mac. Tests stop instead of competing for the foreground."""
+
+
+IDLE_MIN_SECONDS = float(os.environ.get("CARET_E2E_IDLE_MIN", "600"))
+LAST_SYNTHETIC = None  # monotonic time our last synthetic key finished
+
+
+def hid_idle_seconds():
+    out = subprocess.run(["ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if "HIDIdleTime" in line:
+            return int(line.split()[-1]) / 1e9
+    return 0.0
+
+
+def require_idle():
+    """Before the first key: no user input for IDLE_MIN_SECONDS. Afterwards our own keys reset the
+    idle clock, so the check becomes: no input since our last key."""
+    idle = hid_idle_seconds()
+    if LAST_SYNTHETIC is None:
+        if idle < IDLE_MIN_SECONDS:
+            raise UserActive(f"user input {idle:.0f}s ago; need {IDLE_MIN_SECONDS:.0f}s idle")
+        return
+    since = time.monotonic() - LAST_SYNTHETIC
+    if idle + 1.0 < since:
+        raise UserActive(f"user input {idle:.1f}s ago, after our last key {since:.1f}s ago")
+
+
+def run_keys(pid, *args):
+    global LAST_SYNTHETIC
+    require_idle()
+    out = subprocess.run([KEYS, str(pid), *map(str, args)], capture_output=True, text=True)
+    LAST_SYNTHETIC = time.monotonic()
+    if out.returncode == 3:
+        raise UserActive("fixture lost focus: " + out.stderr.strip())
+    out.check_returncode()
+    return out
+
+
+def focus(pid, window_id):
+    """Bring the fixture forward once. Losing it later means someone else took the foreground, so
+    callers abort instead of taking it back."""
+    require_idle()
+    cua("bring_to_front", {"pid": pid, "window_id": window_id})
+    time.sleep(0.4)
+    if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode != 0:
+        raise UserActive("fixture did not get the foreground")
+
+
+def still_focused(pid):
+    require_idle()
+    if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode != 0:
+        raise UserActive("fixture lost the foreground")
+
+
+def send(pid, window_id, mode, payload, extra):
+    run_keys(pid, mode, payload, *extra)
+    return 0
+
+
+def send_keys(pid, window_id, key, count):
+    run_keys(pid, "key", key, count)
+
+
+def textedit_pids():
+    out = subprocess.run(["pgrep", "-x", "TextEdit"], capture_output=True, text=True).stdout
+    return [int(p) for p in out.split()]
 
 
 def open_fixture(name, text):
@@ -50,10 +129,13 @@ def open_fixture(name, text):
     path = os.path.join(FIXTURES, name)
     with open(path, "w") as handle:
         handle.write(text)
+    before = set(textedit_pids())
     launched = cua("launch_app", {
         "bundle_id": "com.apple.TextEdit", "urls": [path], "creates_new_application_instance": True,
     })
     pid = launched["pid"]
+    if pid in before:
+        raise RuntimeError(f"launch_app returned an existing TextEdit ({pid}); refusing to use or stop it")
     LAUNCHED.append(pid)
     window_id = None
     for _ in range(50):
@@ -66,21 +148,16 @@ def open_fixture(name, text):
     if window_id is None:
         raise RuntimeError(f"no window for {name}")
     cua("set_window_frame", {"pid": pid, "window_id": window_id, **FRAME})
-    # Another tool's focus-restore can hand the foreground back shortly after; retry until the
-    # fixture has held it for a moment.
-    for _ in range(5):
-        cua("bring_to_front", {"pid": pid, "window_id": window_id})
-        time.sleep(1.0)
-        if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode == 0:
-            return pid, window_id, path
-    raise RuntimeError("fixture could not keep the foreground")
+    focus(pid, window_id)
+    return pid, window_id, path
 
 
-def wait_offer(after_id=0, timeout=10.0):
+def wait_offer(pid, timeout=4.0):
+    """An offer for the fixture that has been on screen for a moment (settled, not mid-update)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         offer = state().get("offer")
-        if offer and offer["id"] > after_id and offer["ageMs"] > 120:
+        if offer and offer["pid"] == pid and offer["ageMs"] > 150:
             return offer
         time.sleep(0.05)
     return None
@@ -99,35 +176,48 @@ def accept(case, evidence):
     if case == "end":
         pid, window_id, _ = open_fixture("caret-accept-end.txt", "")
         prefix, suffix = "", ""
-        typed = "Thanks again for sending the notes from"
+        typed = "I will send you the report by the end of the "
     elif case == "mid":
         prefix, suffix = "I read your ", " and they were clear."
         pid, window_id, _ = open_fixture("caret-accept-mid.txt", prefix + suffix)
         # Opening puts the caret at 0; walk it to the end of the prefix.
-        keys(pid, "key", "right", len(prefix))
+        send_keys(pid, window_id, "right", len(prefix))
         typed = "detailed meeting no"
     else:
         raise SystemExit(f"unknown case {case}")
 
-    before = state()
-    last_offer_id = before["offer"]["id"] if before.get("offer") else 0
-    keys(pid, "type", typed, 140)
-    offer = wait_offer(last_offer_id)
-    report = {"case": case, "typed": typed, "prefix": prefix, "suffix": suffix, "offer": offer}
-    if not offer:
-        report["result"] = "no offer"
+    send(pid, window_id, "type", typed, ["60"])
+    report = {"case": case, "typed": typed, "prefix": prefix, "suffix": suffix}
+    insertion = None
+    offer = wait_offer(pid)
+    if offer:
+        still_focused(pid)
+        capture(pid, window_id, os.path.join(evidence, f"caret-{case}-offer.png"))
+        claim_before = (state().get("lastInsertion") or {}).get("claimID", 0)
+        run_keys(pid, "key", "tab")
+        insertion = json.loads(subprocess.run(
+            [sys.executable, STATE, "wait-insertion", str(claim_before), "5"], capture_output=True, text=True
+        ).stdout or "null")
+    report["offer"] = offer
+    if not insertion:
+        report["result"] = "no offer accepted"
         return report
-    subprocess.run([sys.executable, CAPTURE, str(pid), str(window_id), os.path.join(evidence, f"caret-{case}-offer.png")], check=True)
-    claim_before = (state().get("lastInsertion") or {}).get("claimID", 0)
-    keys(pid, "key", "tab")
-    insertion = json.loads(subprocess.run(
-        [sys.executable, STATE, "wait-insertion", str(claim_before), "5"], capture_output=True, text=True
-    ).stdout or "null")
     report["insertion"] = insertion
-    expected = prefix + typed + offer["text"] + suffix
+    # What Tab actually inserted; it equals the offer read above unless the offer was refreshed in
+    # between, which the report shows.
+    expected = prefix + typed + insertion["text"] + suffix
+    report["offer_matches_insertion"] = insertion["text"] == offer["text"]
     report["expected_value"] = expected
     report["verify_state"] = verify_value(pid, window_id, expected)
-    subprocess.run([sys.executable, CAPTURE, str(pid), str(window_id), os.path.join(evidence, f"caret-{case}-accepted.png")], check=True)
+    # Only photograph a document that holds exactly the synthetic text: a failed paste can put
+    # the user's own clipboard into the fixture, and that must not land in evidence.
+    if report["verify_state"].get("status") == "satisfied":
+        capture(pid, window_id, os.path.join(evidence, f"caret-{case}-accepted.png"))
+    else:
+        # The document holds something other than our synthetic text; drop the earlier capture.
+        offer_png = os.path.join(evidence, f"caret-{case}-offer.png")
+        if os.path.exists(offer_png):
+            os.unlink(offer_png)
     report["host"] = {k: state()[k] for k in ("lastClaim", "lastInsertion", "counters")}
     report["result"] = report["verify_state"].get("status")
     return report
@@ -146,7 +236,7 @@ def latency(evidence, interval_ms):
     pid, window_id, _ = open_fixture("caret-latency.txt", "")
     state("latency-reset")
     start = state()
-    keys(pid, "type", PASSAGE, interval_ms)
+    send(pid, window_id, "type", PASSAGE, [str(interval_ms)])
     time.sleep(1.0)
     end = state()
     summary = end["latency"]
@@ -173,6 +263,9 @@ def main():
         else:
             raise SystemExit(__doc__)
         print(json.dumps(report, indent=2, sort_keys=True))
+    except UserActive as error:
+        print(json.dumps({"blocked": "user active", "reason": str(error)}))
+        sys.exit(4)
     finally:
         # Each run owns one TextEdit instance on a synthetic file; nothing in it needs saving.
         # cua-driver's kill_app refuses processes started by another CLI session, so signal it.
