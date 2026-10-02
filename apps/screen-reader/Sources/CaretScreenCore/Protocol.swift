@@ -382,6 +382,25 @@ public struct FillSource: Codable, Equatable, Sendable {
     }
 }
 
+/// One of the two independent asks behind a fill, with ids mapped back to the first ask's numbering.
+public struct FillAsk: Codable, Equatable, Sendable {
+    public var choice: String
+    public var confidence: Double
+    public var value: String?
+    enum CodingKeys: String, CodingKey { case choice, confidence, value }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        choice = try c.decode(String.self, forKey: .choice); confidence = try c.decode(Double.self, forKey: .confidence)
+        value = try c.decodeNullable(String.self, forKey: .value)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(choice, forKey: .choice); try c.encode(confidence, forKey: .confidence); try c.encode(value, forKey: .value)
+    }
+}
+
+public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence }
+
 public struct FillField: Codable, Equatable, Sendable {
     public var key: String
     public var frame: Frame?
@@ -391,19 +410,27 @@ public struct FillField: Codable, Equatable, Sendable {
     /// The chosen candidate's text, copied verbatim by the helper. Nil when the choice is "none".
     public var value: String?
     public var source: FillSource?
-    enum CodingKeys: String, CodingKey { case key, frame, descriptor, choice, confidence, value, source }
+    /// Why a value an ask picked was not proposed: the asks disagreed, or agreed below the cutoff.
+    public var withheld: FillWithheld?
+    /// Exactly two: the first ask, and the second with candidates shuffled and the field reworded.
+    public var asks: [FillAsk]
+    enum CodingKeys: String, CodingKey { case key, frame, descriptor, choice, confidence, value, source, withheld, asks }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key); frame = try c.decodeNullable(Frame.self, forKey: .frame)
         descriptor = try c.decode(String.self, forKey: .descriptor); choice = try c.decode(String.self, forKey: .choice)
         confidence = try c.decode(Double.self, forKey: .confidence)
         value = try c.decodeNullable(String.self, forKey: .value); source = try c.decodeNullable(FillSource.self, forKey: .source)
+        withheld = try c.decodeNullable(FillWithheld.self, forKey: .withheld)
+        asks = try c.decode([FillAsk].self, forKey: .asks)
+        if asks.count != 2 { throw ProtocolError("asks must hold exactly two entries, got \(asks.count)") }
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(key, forKey: .key); try c.encode(frame, forKey: .frame); try c.encode(descriptor, forKey: .descriptor)
         try c.encode(choice, forKey: .choice); try c.encode(confidence, forKey: .confidence)
         try c.encode(value, forKey: .value); try c.encode(source, forKey: .source)
+        try c.encode(withheld, forKey: .withheld); try c.encode(asks, forKey: .asks)
     }
 }
 
@@ -424,7 +451,9 @@ public struct FillProposal: Codable, Equatable, Sendable {
     public var fields: [FillField]
     public var candidates: Int
     public var jev: JevUsage
-    enum CodingKeys: String, CodingKey { case id, at, windowId, bundleId, triggerKey, fields, candidates, jev }
+    /// The confidence an agreed choice had to reach to be proposed.
+    public var cutoff: Double
+    enum CodingKeys: String, CodingKey { case id, at, windowId, bundleId, triggerKey, fields, candidates, jev, cutoff }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -432,6 +461,7 @@ public struct FillProposal: Codable, Equatable, Sendable {
         windowId = try c.decode(String.self, forKey: .windowId); bundleId = try c.decode(String.self, forKey: .bundleId)
         triggerKey = try c.decode(String.self, forKey: .triggerKey); fields = try c.decode([FillField].self, forKey: .fields)
         candidates = try c.decode(Int.self, forKey: .candidates); jev = try c.decode(JevUsage.self, forKey: .jev)
+        cutoff = try c.decode(Double.self, forKey: .cutoff)
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
@@ -439,6 +469,7 @@ public struct FillProposal: Codable, Equatable, Sendable {
         try c.encode(id, forKey: .id); try c.encode(at, forKey: .at); try c.encode(windowId, forKey: .windowId)
         try c.encode(bundleId, forKey: .bundleId); try c.encode(triggerKey, forKey: .triggerKey)
         try c.encode(fields, forKey: .fields); try c.encode(candidates, forKey: .candidates); try c.encode(jev, forKey: .jev)
+        try c.encode(cutoff, forKey: .cutoff)
     }
 }
 

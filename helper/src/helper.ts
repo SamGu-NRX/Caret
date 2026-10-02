@@ -21,6 +21,8 @@ export interface HelperOptions {
    * evaluations, where the fixture must not take focus away from whoever is using the Mac.
    */
   allowBackgroundFocus: boolean;
+  /** Overrides FILL_CUTOFF, for calibration runs that need every agreed choice. */
+  fillCutoff?: number;
   publish: (m: HelperMessage) => void;
   warn?: (line: string) => void;
 }
@@ -184,7 +186,7 @@ export class Helper {
     if (!explicit && now - (this.lastFill.get(formKey) ?? -Infinity) < FILL_REPEAT_MS) return null;
     this.inflight.add(formKey);
     try {
-      const asked = await proposeFill(this.model, ask, windowId, key, now);
+      const asked = await proposeFill(this.model, ask, windowId, key, now, this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff });
       const p = this.revalidate(asked);
       this.lastFill.set(formKey, now);
       if (p === null) {

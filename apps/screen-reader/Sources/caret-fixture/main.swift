@@ -4,7 +4,7 @@
 //
 //   caret-fixture [--windows reference,claim,schedule] [--gold FILE] [--duration S]
 //                 [--e1 FILE --cycles N --period S] [--webkit URL]
-//                 [--activity FILE] [--focus-forms]
+//                 [--activity FILE] [--focus-forms [--visit reference,distractors]]
 import AppKit
 import WebKit
 
@@ -37,6 +37,8 @@ let period = TimeInterval(opt("--period") ?? "1.2") ?? 1.2
 let webkitURL = opt("--webkit")
 let activityPath = opt("--activity")
 let focusForms = has("--focus-forms")
+/// Windows made key, in this order, before each form is focused: the user looks something up, then goes to the form.
+let visitList = (opt("--visit") ?? "").split(separator: ",").map(String.init)
 if !argv.isEmpty { die("unknown arguments: \(argv.joined(separator: " "))") }
 
 func ms() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
@@ -441,10 +443,18 @@ if let p = activityPath {
 }
 
 /// Focuses the first empty field of each form once, a few seconds apart, to exercise focus-triggered fill.
+/// With --visit, the listed windows are made key first, 1.5 s apart, so the reader sees the user
+/// pass through them and the last one is the window the user just left.
 if focusForms {
+    for v in visitList where windows[v] == nil { die("--visit names \(v), which is not among --windows") }
     var delay = 6.0
     for title in ["Caret Fixture — Claim form", "Caret Fixture — Schedule follow-up"] {
         guard let w = windows.values.first(where: { $0.title == title }), let tf = formFields[title]?.first?.1 else { continue }
+        for v in visitList {
+            let vw = windows[v]!
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { vw.makeKey() }
+            delay += 1.5
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             MainActor.assumeIsolated {
                 // Without a key window, a background app posts no focus notification for a new first responder.

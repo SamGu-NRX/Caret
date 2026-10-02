@@ -745,6 +745,74 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "withheld": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "disagree",
+                          "lowConfidence"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "asks": {
+                    "type": "array",
+                    "prefixItems": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "choice": {
+                            "type": "string"
+                          },
+                          "confidence": {
+                            "type": "number"
+                          },
+                          "value": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "choice",
+                          "confidence",
+                          "value"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "choice": {
+                            "type": "string"
+                          },
+                          "confidence": {
+                            "type": "number"
+                          },
+                          "value": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "choice",
+                          "confidence",
+                          "value"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ],
+                    "items": false,
+                    "minItems": 2,
+                    "maxItems": 2
                   }
                 },
                 "required": [
@@ -754,7 +822,9 @@
                   "choice",
                   "confidence",
                   "value",
-                  "source"
+                  "source",
+                  "withheld",
+                  "asks"
                 ],
                 "additionalProperties": false
               }
@@ -791,6 +861,9 @@
                 "costUsd"
               ],
               "additionalProperties": false
+            },
+            "cutoff": {
+              "type": "number"
             }
           },
           "required": [
@@ -803,7 +876,8 @@
             "triggerKey",
             "fields",
             "candidates",
-            "jev"
+            "jev",
+            "cutoff"
           ],
           "additionalProperties": false
         },

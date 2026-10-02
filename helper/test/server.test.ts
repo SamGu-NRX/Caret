@@ -57,7 +57,7 @@ describe("helper socket", () => {
       jevCalls++;
       return {
         model: "jev-test",
-        answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "c1", confidence: 0.95 }])),
+        answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: Object.keys(req.questions[id]?.criteria ?? {})[0] ?? "none", confidence: 0.95 }])),
         inputTokens: 10,
         latencyMs: 1,
         costUsd: 0,
@@ -91,7 +91,7 @@ describe("helper socket", () => {
     // A consumer can also ask directly.
     send(consumer.s, { type: "fillRequest", v: PROTOCOL_VERSION, windowId: FORM, fieldKey: EMAIL });
     expect(((await consumer.next()) as { type: string }).type).toBe("fillProposal");
-    expect(jevCalls).toBe(2);
+    expect(jevCalls).toBe(4); // two asks per proposal
     reader.s.destroy();
     consumer.s.destroy();
   });

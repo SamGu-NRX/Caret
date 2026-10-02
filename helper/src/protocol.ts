@@ -171,17 +171,34 @@ export const FillSource = z.object({
 });
 export type FillSource = z.infer<typeof FillSource>;
 
+/** One of the two independent asks behind a fill: what it picked, with ids mapped back to the first ask's numbering. */
+export const FillAsk = z.object({
+  choice: z.string(),
+  confidence: z.number(),
+  /** The picked candidate's text, or null for "none". */
+  value: z.string().nullable(),
+});
+export type FillAsk = z.infer<typeof FillAsk>;
+
 export const FillField = z.object({
   key: z.string(),
   /** Where the field is on screen, so a consumer can draw the proposed value in place. */
   frame: Frame.nullable(),
   descriptor: z.string(),
-  /** Jev's choice: a candidate id, or "none". */
+  /** The proposed candidate id, or "none" when the asks chose none or the proposal was withheld. */
   choice: z.string(),
+  /** The lower of the two asks' confidences when they agree; 0 when they disagree. */
   confidence: z.number(),
   /** The chosen candidate's text, copied verbatim by code. Null when the choice is "none". */
   value: z.string().nullable(),
   source: FillSource.nullable(),
+  /**
+   * Why a value was not proposed although an ask picked one: the two asks picked different
+   * candidates, or they agreed below the confidence cutoff. Null otherwise.
+   */
+  withheld: z.enum(["disagree", "lowConfidence"]).nullable(),
+  /** The first ask, and the second with candidates shuffled and the field reworded. */
+  asks: z.tuple([FillAsk, FillAsk]),
 });
 export type FillField = z.infer<typeof FillField>;
 
@@ -196,12 +213,15 @@ export const FillProposal = z.object({
   triggerKey: z.string(),
   fields: z.array(FillField),
   candidates: z.number().int().nonnegative(),
+  /** Both asks together: latency is the slower of the two parallel requests, tokens and cost are summed. */
   jev: z.object({
     model: z.string(),
     latencyMs: z.number().nonnegative(),
     inputTokens: z.number().int().nonnegative(),
     costUsd: z.number().nonnegative(),
   }),
+  /** The confidence an agreed choice had to reach to be proposed. */
+  cutoff: z.number(),
 });
 export type FillProposal = z.infer<typeof FillProposal>;
 

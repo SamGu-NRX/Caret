@@ -48,7 +48,7 @@ describe("review fixes", () => {
     const slowJev: AskJev = async (req) => {
       // The user types into the field before the answer arrives.
       void h?.handleReader(snap([field(K("textfield:email~0"), "typed@example.com", { label: "Email" })], { at: 3, windowId: FORM, focused: true }));
-      return { model: "t", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: "c1", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 };
+      return { model: "t", answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: Object.keys(req.questions[id]?.criteria ?? {})[0] ?? "none", confidence: 0.9 }])), inputTokens: 1, latencyMs: 1, costUsd: 0 };
     };
     const published: HelperMessage[] = [];
     h = new Helper({ store, askJev: slowJev, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m) });

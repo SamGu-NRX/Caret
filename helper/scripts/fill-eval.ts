@@ -114,7 +114,17 @@ for (let r = 0; r < rounds; r++) {
 }
 sock.destroy();
 
-interface Row { form: string; label: string; gold: string | null; value: string | null; confidence: number; outcome: string; source: string | null }
+interface Row {
+  form: string;
+  label: string;
+  gold: string | null;
+  value: string | null;
+  confidence: number;
+  outcome: string;
+  source: string | null;
+  withheld: string | null;
+  asks: { value: string | null; confidence: number }[];
+}
 const rows: Row[] = [];
 const requests: { form: string; trigger: "focus" | "request"; latencyMs: number; inputTokens: number; costUsd: number; candidates: number; fields: number }[] = [];
 proposals.forEach((p, i) => {
@@ -126,7 +136,17 @@ proposals.forEach((p, i) => {
     if (g === undefined) continue;
     const outcome =
       f.value === g.gold ? "exact" : f.value === null ? "missed" : g.gold === null ? "wrong fill (gold none)" : "wrong fill";
-    rows.push({ form: t.title, label: g.label, gold: g.gold, value: f.value, confidence: f.confidence, outcome, source: f.source?.windowTitle ?? null });
+    rows.push({
+      form: t.title,
+      label: g.label,
+      gold: g.gold,
+      value: f.value,
+      confidence: f.confidence,
+      outcome,
+      source: f.source?.windowTitle ?? null,
+      withheld: f.withheld,
+      asks: f.asks.map((x) => ({ value: x.value, confidence: x.confidence })),
+    });
   }
 });
 
@@ -141,6 +161,11 @@ const summary = {
   wrongFill: count("wrong fill") + count("wrong fill (gold none)"),
   missed: count("missed"),
   exactRate: rows.length === 0 ? 0 : count("exact") / rows.length,
+  answerable: rows.filter((r) => r.gold !== null).length,
+  answerableFilled: rows.filter((r) => r.gold !== null && r.value === r.gold).length,
+  withheldDisagree: rows.filter((r) => r.withheld === "disagree").length,
+  withheldLow: rows.filter((r) => r.withheld === "lowConfidence").length,
+  cutoff: proposals[0]?.cutoff ?? null,
   latencyMs: { min: lat[0], median: q(0.5), p90: q(0.9), max: lat[lat.length - 1] },
   inputTokens: requests.reduce((s, r) => s + r.inputTokens, 0),
   costUsd: requests.reduce((s, r) => s + r.costUsd, 0),
@@ -154,19 +179,24 @@ md.push(`${summary.requests} requests (${fromFocus} triggered by a focus event, 
 md.push(`| Measure | Value |`, `| --- | --- |`);
 md.push(`| Exact match | ${summary.exact} of ${summary.fieldJudgments} (${(summary.exactRate * 100).toFixed(1)}%) |`);
 md.push(`| Wrong fills | ${summary.wrongFill} |`);
-md.push(`| Missed (chose none, gold had a value) | ${summary.missed} |`);
+md.push(`| Missed (no value proposed, gold had one) | ${summary.missed} |`);
+md.push(`| Answerable fields filled correctly | ${summary.answerableFilled} of ${summary.answerable} (${((100 * summary.answerableFilled) / Math.max(1, summary.answerable)).toFixed(1)}%) |`);
+md.push(`| Withheld: asks disagreed / under cutoff ${summary.cutoff} | ${summary.withheldDisagree} / ${summary.withheldLow} |`);
 md.push(`| Latency per request, ms | min ${summary.latencyMs.min?.toFixed(0)}, median ${summary.latencyMs.median.toFixed(0)}, p90 ${summary.latencyMs.p90.toFixed(0)}, max ${summary.latencyMs.max?.toFixed(0)} |`);
 md.push(`| Input tokens | ${summary.inputTokens} |`);
 md.push(`| Spend | $${summary.costUsd.toFixed(5)} |`, "");
-md.push(`| Form | Field | Gold | Proposed | Confidence | Outcome |`, `| --- | --- | --- | --- | --- | --- |`);
+md.push(`| Form | Field | Gold | Proposed | Confidence | Outcome | Ask 1 | Ask 2 |`, `| --- | --- | --- | --- | --- | --- | --- | --- |`);
 const seen = new Set<string>();
 for (const r of rows) {
-  const k = `${r.form}|${r.label}|${r.value}`;
+  const askText = (i: number): string => `${r.asks[i]?.value ?? "(none)"} ${r.asks[i]?.confidence.toFixed(2) ?? ""}`;
+  const k = `${r.form}|${r.label}|${r.value}|${askText(0)}|${askText(1)}`;
   if (seen.has(k)) continue;
   seen.add(k);
-  const n = rows.filter((x) => `${x.form}|${x.label}|${x.value}` === k).length;
-  md.push(`| ${r.form.replace("Caret Fixture — ", "")} | ${r.label} | ${r.gold ?? "(none)"} | ${r.value ?? "(none)"} | ${r.confidence.toFixed(2)} | ${r.outcome}${n > 1 ? ` ×${n}` : ""} |`);
+  const n = rows.filter((x) => `${x.form}|${x.label}|${x.value}|${x.asks[0]?.value ?? "(none)"} ${x.asks[0]?.confidence.toFixed(2) ?? ""}|${x.asks[1]?.value ?? "(none)"} ${x.asks[1]?.confidence.toFixed(2) ?? ""}` === k).length;
+  md.push(
+    `| ${r.form.replace("Caret Fixture — ", "")} | ${r.label} | ${r.gold ?? "(none)"} | ${r.value ?? "(none)"} | ${r.confidence.toFixed(2)} | ${r.outcome}${r.withheld === null ? "" : ` (withheld: ${r.withheld})`}${n > 1 ? ` ×${n}` : ""} | ${askText(0)} | ${askText(1)} |`,
+  );
 }
 if (errors.length > 0) md.push("", "Errors:", ...errors.map((e) => `- ${e}`));
 writeFileSync(join(a.out, "fill-eval.md"), md.join("\n") + "\n");
-console.log(md.slice(0, 12).join("\n"));
+console.log(md.slice(0, 14).join("\n"));

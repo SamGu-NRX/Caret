@@ -39,11 +39,16 @@ export function nodeText(node: Node): string {
   return node.value ?? node.label ?? "";
 }
 
+/** Bound on the focus history; a form looks back one entry, so this is generous. */
+const MAX_FOCUS_HISTORY = 100;
+
 export class ScreenModel {
   readonly windows = new Map<string, WindowState>();
   private changes: Change[] = [];
   /** Window that most recently arrived with focused=true. */
   focusedWindowId: string | null = null;
+  /** Every change of focused window, oldest first. */
+  private readonly focusHistory: { windowId: string; at: number }[] = [];
 
   /** Applies one snapshot and returns the changes it produced. */
   apply(snap: Snapshot): Change[] {
@@ -98,11 +103,30 @@ export class ScreenModel {
     };
     this.windows.set(id, state);
     if (snap.focused) {
+      if (this.focusedWindowId !== id) {
+        this.focusHistory.push({ windowId: id, at: snap.at });
+        if (this.focusHistory.length > MAX_FOCUS_HISTORY) this.focusHistory.shift();
+      }
       this.focusedWindowId = id;
       for (const [otherId, w] of this.windows) if (otherId !== id && w.app.pid === snap.app.pid) w.focused = false;
     }
     this.changes.push(...out);
     return out;
+  }
+
+  /**
+   * The window the user was in just before they last came to `windowId`. When `windowId` was never
+   * focused (a fill requested for a background form), the most recently focused other window.
+   */
+  windowBefore(windowId: string): string | null {
+    let i = this.focusHistory.length - 1;
+    const last = this.focusHistory.findLastIndex((e) => e.windowId === windowId);
+    if (last >= 0) i = last - 1;
+    for (; i >= 0; i--) {
+      const e = this.focusHistory[i];
+      if (e !== undefined && e.windowId !== windowId && this.windows.has(e.windowId)) return e.windowId;
+    }
+    return null;
   }
 
   close(windowId: string, at: number): Change | null {
@@ -130,6 +154,7 @@ export class ScreenModel {
   reset(): void {
     this.windows.clear();
     this.focusedWindowId = null;
+    this.focusHistory.length = 0;
   }
 }
 

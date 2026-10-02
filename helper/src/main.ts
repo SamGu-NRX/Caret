@@ -1,5 +1,5 @@
 // caret-helper: listens on the screen socket for caret-screen and for consumers.
-//   node src/main.ts [--socket PATH] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus]
+//   node src/main.ts [--socket PATH] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
 // The Jev key comes from TYPESAFE_API_KEY or the .env file named by CARET_ENV_FILE, read when a request is made.
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ const { values: args } = parseArgs({
     "no-jev": { type: "boolean", default: false },
     "allow-background-focus": { type: "boolean", default: false },
     "status-every": { type: "string", default: "60" },
+    "fill-cutoff": { type: "string" },
   },
 });
 
@@ -33,6 +34,7 @@ const helper = new Helper({
   askJev: args["no-jev"] ? null : makeJevClient(() => loadJevKey()),
   shadow: args.shadow,
   allowBackgroundFocus: args["allow-background-focus"],
+  ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
   warn,
 });

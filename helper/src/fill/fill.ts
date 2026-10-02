@@ -1,17 +1,32 @@
 // Grounded fill: one Jev request per form, one Choice question per empty field, each offering
 // the same candidate spans plus "none" (deep plan section 5, "Fill"). Jev picks a candidate id;
 // code copies that candidate's text verbatim into the proposal. Nothing here writes to any app.
-import { randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type FillField, type FillProposal, type Node } from "../protocol.ts";
+//
+// Every form is asked twice in parallel. The second ask shuffles the candidates, renumbers them and
+// rewords each field's question. A value is proposed only when both asks pick the same candidate
+// and the lower confidence clears the cutoff. With a second person's details on screen, a single
+// ask filled 12 of 60 fields wrongly at confidences up to 0.90
+// (~/.caret-run/evidence/screen/fill-distractors/fill-eval.md), so agreement and the cutoff exist
+// to turn those into blanks.
+import { randomInt, randomUUID } from "node:crypto";
+import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type Node } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { describeCandidate, generateCandidates, type Candidate } from "./candidates.ts";
 import { describeField } from "./descriptor.ts";
-import type { AskJev, JevRequest } from "./jev.ts";
+import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 
 export const NONE = "none";
 const FILLABLE_ROLES = new Set(["AXTextField", "AXTextArea", "AXComboBox"]);
 /** A form question beyond this many fields is cut to the fields nearest the trigger. Assumed. */
 export const MAX_FIELDS = 20;
+/**
+ * Lowest confidence, taken as the lower of the two asks, at which an agreed choice is proposed.
+ * It is the lowest cutoff at which none of the five calibration sets (900 field judgments over four
+ * prompt versions, ~/.caret-run/evidence/screen/fill-distractors-v2/calibration.md) has a wrong
+ * agreed fill; the highest wrong agreed confidence seen was 0.70. On the final prompt it gives up
+ * 2 of 156 answerable fields. One synthetic fixture is thin evidence; recheck on real windows.
+ */
+export const FILL_CUTOFF = 0.75;
 
 export class FillError extends Error {}
 
@@ -29,51 +44,134 @@ export function formFields(w: WindowState, triggerKey: string, max = MAX_FIELDS)
   return fields.sort((a, b) => dist(a) - dist(b)).slice(0, max);
 }
 
-export function buildFillRequest(w: WindowState, fields: { id: string; descriptor: string }[], candidates: Candidate[]): JevRequest {
+export interface AskField {
+  id: string;
+  descriptor: string;
+  /** A short name for the field, used to list the form's other fields. */
+  name: string;
+}
+
+/**
+ * Ask 1 and ask 2 word the same question differently, so a choice that rests on wording alone is
+ * less likely to repeat. The second wording is a plain paraphrase: an earlier one that added "for the
+ * same person, order or event the form is about" made the second ask wrong on 43 of the 180 judgments
+ * where the first was right (wording1-cal-* in the evidence folder).
+ */
+const WORDINGS = [
+  (where: string, d: string): string =>
+    `A form in the ${where} has this field: ${d} Which candidate is the value the user should enter in this field? The user usually copies from the window they just left. Choose none if no candidate fits.`,
+  (where: string, d: string): string =>
+    `Field to fill: ${d} It is in a form in the ${where}. Which value below should the user type into this field? Values usually come from the window the user just left. Answer none if no value below belongs in it.`,
+] as const;
+
+export function buildFillRequest(w: WindowState, fields: AskField[], candidates: Candidate[], wording: 0 | 1 = 0): JevRequest {
   const criteria: Record<string, string> = {};
   for (const c of candidates) criteria[c.id] = describeCandidate(c);
   criteria[NONE] = "No candidate is the value this field asks for.";
   const where = `${w.app.name} window '${w.window.title}'`;
   const questions: JevRequest["questions"] = {};
   for (const f of fields) {
-    questions[f.id] = {
-      type: "choice",
-      instructions: `A form in the ${where} has this field: ${f.descriptor} Which candidate is the value the user should enter in this field? Choose none if no candidate fits.`,
-      criteria,
-    };
+    questions[f.id] = { type: "choice", instructions: WORDINGS[wording](where, f.descriptor), criteria };
   }
   return {
     state: {
       destination_window: where,
-      task: "The user is filling in this form. The candidates are values visible in the user's other open windows.",
+      form_fields: fields.map((f) => f.name).join("; "),
+      task:
+        "The user is filling in this form. The candidates are values visible in the user's other open windows. " +
+        "Users most often copy from the window they were in just before the form.",
     },
     questions,
   };
 }
 
-export async function proposeFill(model: ScreenModel, askJev: AskJev, windowId: string, triggerKey: string, now = Date.now()): Promise<FillProposal> {
+/** Fisher-Yates with an injectable source of randomness, so tests can fix the order. */
+export function shuffled<T>(xs: readonly T[], rand: (n: number) => number = randomInt): T[] {
+  const out = [...xs];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = rand(i + 1);
+    [out[i], out[j]] = [out[j] as T, out[i] as T];
+  }
+  return out;
+}
+
+/** Shuffles candidates within each source window, keeping the windows in their original order. */
+export function shuffledWithinWindows(cands: readonly Candidate[], rand?: (n: number) => number): Candidate[] {
+  const groups = new Map<string, Candidate[]>();
+  for (const c of cands) {
+    const g = groups.get(c.source.windowId);
+    if (g === undefined) groups.set(c.source.windowId, [c]);
+    else g.push(c);
+  }
+  const windowOrder = [...new Set(cands.map((c) => c.source.windowId))];
+  return windowOrder.flatMap((id) => shuffled(groups.get(id) ?? [], rand));
+}
+
+export interface FillOptions {
+  cutoff?: number;
+  rand?: (n: number) => number;
+}
+
+export async function proposeFill(
+  model: ScreenModel,
+  askJev: AskJev,
+  windowId: string,
+  triggerKey: string,
+  now = Date.now(),
+  opts: FillOptions = {},
+): Promise<FillProposal> {
+  const cutoff = opts.cutoff ?? FILL_CUTOFF;
   const w = model.windows.get(windowId);
   if (w === undefined) throw new FillError(`unknown window ${windowId}`);
   const nodes = formFields(w, triggerKey);
-  const fields = nodes.map((n, i) => ({ id: `f${i + 1}`, node: n, descriptor: describeField(w, n).text }));
-  const candidates = generateCandidates(model, windowId);
+  const fields = nodes.map((n, i) => {
+    const d = describeField(w, n);
+    return { id: `f${i + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field" };
+  });
+  const candidates = generateCandidates(model, windowId, undefined, now);
   if (candidates.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
 
-  const res = await askJev(buildFillRequest(w, fields, candidates));
+  // The second ask sees the same candidates in another order under other ids, so neither position
+  // nor id can carry a choice from one ask to the other. Windows keep their recency order and only
+  // the candidates inside each window are shuffled: with a full shuffle the second ask was wrong on
+  // 30 of 180 judgments the first ask got right, mostly picking the other person's details or none
+  // (wording2-cal-* in the evidence folder), so window order is context worth keeping, not noise.
+  const order = shuffledWithinWindows(candidates, opts.rand);
+  const second = order.map((c, i) => ({ ...c, id: `v${i + 1}` }));
+  const back = new Map(second.map((c, i) => [c.id, order[i]?.id ?? ""]));
+  const [r1, r2] = await Promise.all([
+    askJev(buildFillRequest(w, fields, candidates, 0)),
+    askJev(buildFillRequest(w, fields, second, 1)),
+  ]);
+
   const byId = new Map(candidates.map((c) => [c.id, c]));
+  const readAsk = (r: JevResult, fieldId: string, mapId: (id: string) => string | undefined): FillAsk => {
+    const a = r.answers[fieldId];
+    if (a === undefined) throw new FillError(`Jev returned no answer for ${fieldId}`);
+    if (a.choice === NONE) return { choice: NONE, confidence: a.confidence, value: null };
+    const id = mapId(a.choice);
+    const c = id === undefined ? undefined : byId.get(id);
+    if (c === undefined) throw new FillError(`Jev chose ${a.choice}, which is not a candidate id`);
+    return { choice: c.id, confidence: a.confidence, value: c.text };
+  };
+
   const out: FillField[] = fields.map((f) => {
-    const a = res.answers[f.id];
-    if (a === undefined) throw new FillError(`Jev returned no answer for ${f.id}`);
-    const c = a.choice === NONE ? undefined : byId.get(a.choice);
-    if (a.choice !== NONE && c === undefined) throw new FillError(`Jev chose ${a.choice}, which is not a candidate id`);
+    const a1 = readAsk(r1, f.id, (id) => id);
+    const a2 = readAsk(r2, f.id, (id) => back.get(id));
+    const agree = a1.choice === a2.choice;
+    const confidence = agree ? Math.min(a1.confidence, a2.confidence) : 0;
+    const withheld = a1.choice === NONE && a2.choice === NONE ? null : !agree ? "disagree" : confidence < cutoff ? "lowConfidence" : null;
+    const c = withheld === null && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
     return {
       key: f.node.key,
       frame: f.node.frame ?? null,
       descriptor: f.descriptor,
-      choice: a.choice,
-      confidence: a.confidence,
+      choice: c?.id ?? NONE,
+      confidence,
       value: c?.text ?? null,
       source: c?.source ?? null,
+      withheld,
+      asks: [a1, a2],
     };
   });
 
@@ -87,6 +185,12 @@ export async function proposeFill(model: ScreenModel, askJev: AskJev, windowId: 
     triggerKey,
     fields: out,
     candidates: candidates.length,
-    jev: { model: res.model, latencyMs: res.latencyMs, inputTokens: res.inputTokens, costUsd: res.costUsd },
+    jev: {
+      model: r1.model,
+      latencyMs: Math.max(r1.latencyMs, r2.latencyMs),
+      inputTokens: r1.inputTokens + r2.inputTokens,
+      costUsd: r1.costUsd + r2.costUsd,
+    },
+    cutoff,
   };
 }

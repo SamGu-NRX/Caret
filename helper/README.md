@@ -15,7 +15,7 @@ Node 24 or later; the store uses the built-in `node:sqlite`.
 
 `src/protocol.ts` is the contract, written in zod and exported to JSON Schema. Every client's first line is `hello` with a role. The reader then sends `snapshot`, `focus`, `appSwitch`, `windowClosed` and `pasteboard`. A consumer may send `fillRequest {windowId, fieldKey}` and receives every `fillProposal` and `error`.
 
-A `fillProposal` holds one entry per empty field of the form: the field's key and frame, the derived descriptor, Jev's choice and confidence, the chosen candidate's text copied verbatim (`value`, or null for "none"), and where it came from. Proposals are made on focus of an empty field in the frontmost app, or on request, and dropped if the field was filled, its window closed or the mode changed while Jev answered. Nothing here writes into any app; insertion belongs to the host.
+A `fillProposal` holds one entry per empty field of the form: the field's key and frame, the derived descriptor, the agreed choice and its confidence, both asks, the chosen candidate's text copied verbatim (`value`, or null for "none"), and where it came from. Proposals are made on focus of an empty field in the frontmost app, or on request, and dropped if the field was filled, its window closed or the mode changed while Jev answered. Nothing here writes into any app; insertion belongs to the host.
 
 ## What is kept
 
@@ -25,4 +25,8 @@ A `fillProposal` holds one entry per empty field of the form: the field's key an
 
 ## Jev
 
-One request per form, one choice question per empty field, each offering every candidate span plus `none` (`src/fill/fill.ts`). Candidates come from every window but the form's own: typed values first, then single lines of text, with `Label: value` lines split so the value is the span. The key is read from `TYPESAFE_API_KEY` or the `.env` named by `CARET_ENV_FILE` when a request is made, and is never logged.
+One request per form, one choice question per empty field, each offering every candidate span plus `none` (`src/fill/fill.ts`). Candidates come from every window but the form's own: typed values first, then single lines of text, with `Label: value` lines split so the value is the span. Each candidate line names its section, the first line of its block, its window, and whether that window is the one the user was in just before the form (`src/fill/candidates.ts`).
+
+Every form is asked twice in parallel. The second ask shuffles the candidates inside each window, renumbers them, and rewords the field. A value is proposed only when both asks pick the same candidate and the lower confidence is at least 0.75. A proposal carries both asks and, for a field left blank, whether the asks disagreed or agreed below the cutoff. Calibration and acceptance runs are in `~/.caret-run/evidence/screen/fill-distractors-v2/calibration.md`.
+
+The key is read from `TYPESAFE_API_KEY` or the `.env` named by `CARET_ENV_FILE` when a request is made, and is never logged.
