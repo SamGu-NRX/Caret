@@ -35,6 +35,7 @@ import { SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } 
 import { MemoryStore } from "./patterns/memory.ts";
 import { PatternEngine } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
+import { PendingWatcher } from "./tasks/pending.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -120,6 +121,8 @@ export class Helper {
   readonly patterns: PatternEngine;
   /** Every piece of Caret's work and its state, published as activity messages. */
   readonly tasks: TaskRegistry;
+  /** Watches on windows the user left while they showed unfinished work. */
+  readonly pending: PendingWatcher;
   private readonly socketLink: SocketReaderLink | null;
   private readonly changeListeners = new Set<(changes: readonly Change[]) => void>();
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
@@ -160,6 +163,14 @@ export class Helper {
       run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots),
       shadow: () => this.mode === "shadow",
     });
+    this.pending = new PendingWatcher({
+      model: this.model,
+      askJev: opts.askJev,
+      tasks: this.tasks,
+      reader: (v) => this.readerVerb(v),
+      live: () => this.mode === "live",
+      ...(opts.warn === undefined ? {} : { warn: opts.warn }),
+    });
   }
 
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
@@ -175,6 +186,7 @@ export class Helper {
         this.text.clear();
         this.executor.readerRestarted();
         this.patterns.readerRestarted();
+        this.pending.readerRestarted();
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
         return null;
@@ -195,6 +207,10 @@ export class Helper {
         this.patterns.onChanges(changes);
         if (this.mode === "shadow") this.shadowLogger.onChanges(changes);
         if (prevFocused !== null && prevFocused !== this.model.focusedWindowId) this.record(this.transfers.flush(prevFocused));
+        // The user left a window: the reader's leave walk of it, or focus arriving in another window.
+        this.pending.onSnapshot(m.window.windowId);
+        if (m.reason === "leave") this.pending.left(m.window.windowId);
+        if (prevFocused !== null && prevFocused !== this.model.focusedWindowId) this.pending.left(prevFocused);
         return null;
       }
       case "focus": {
@@ -210,6 +226,8 @@ export class Helper {
       }
       case "appSwitch":
         if (this.mode === "shadow") this.shadowLogger.onAppSwitch(m);
+        // The app being left may send no leave walk when its window did not change; its focused window was left all the same.
+        if (m.from !== null) for (const w of this.model.windows.values()) if (w.app.pid === m.from.pid && w.focused) this.pending.left(w.window.windowId);
         store.count("reader.app_switch", 1, m.at);
         return null;
       case "windowClosed": {
@@ -218,6 +236,7 @@ export class Helper {
         // since the judgment reads the window's typed values.
         if (this.mode === "shadow") this.shadowLogger.onWindowClosing(m.windowId);
         this.patterns.onWindowClosed(m.windowId);
+        this.pending.onWindowClosed(m.windowId);
         this.model.close(m.windowId, m.at);
         return null;
       }
@@ -365,6 +384,10 @@ export class Helper {
     }
     try {
       if (m.type === "runPlan") return await this.executor.run(m.taskId, m.plan, m.slots);
+      if (this.pending.has(m.taskId) || this.tasks.get(m.taskId)?.kind === "watch") {
+        this.pending.control(m.taskId, m.action);
+        return null;
+      }
       switch (m.action) {
         case "resume":
           return await this.executor.resume(m.taskId);
@@ -409,6 +432,7 @@ export class Helper {
   shutdown(): void {
     this.record(this.transfers.flush());
     this.patterns.shutdown();
+    this.pending.shutdown();
     this.shadowLogger.close();
     this.opts.store.flush();
   }
