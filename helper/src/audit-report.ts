@@ -121,8 +121,8 @@ export function renderMarkerAudit(s: AuditSummary, cpu: readonly ProcessCpu[] = 
   const app = (set: RuleSet, k: string): MarkerAppCounts | undefined => s.markers[set].byApp[k];
   const cleared = (set: RuleSet, k: string): number => s.markers[set].episodes.filter((e) => e.bundleId === k && e.clearedAfterMs !== null).length;
   const active = [
-    activity.hidMinutes === null ? null : `${activity.hidMinutes.toFixed(0)} minutes by the HID idle timer, which also counts events that agents post`,
-    activity.powerdMinutes === null ? null : `${activity.powerdMinutes.toFixed(0)} minutes of hardware input by powerd's spans`,
+    activity.hidMinutes === null ? null : `${activity.hidMinutes.toFixed(0)} active minutes by the HID idle timer (which also counts events that agents post)`,
+    activity.powerdMinutes === null ? null : `${activity.powerdMinutes.toFixed(0)} by powerd's hardware-input spans`,
   ].filter((x) => x !== null);
   const out = [
     "# Pending markers on real windows: B5 rules and B6 rules",
@@ -130,7 +130,7 @@ export function renderMarkerAudit(s: AuditSummary, cpu: readonly ProcessCpu[] = 
     `A read-only audit instance (its own caret-screen and helper, Jev off) ran from ${time(s.startedAt)} to ${time(s.updatedAt)} (Chicago time), ${(h * 60).toFixed(0)} minutes${active.length === 0 ? "" : `, with ${active.join(" and ")}`}. Each time the user left a window it applied both rule sets to the same window and counted which rules fired. Each set holds its own simulated watches: one per window, at most ${MAX_WATCHES}, ended when that set's markers are gone. The audit asked its reader to re-read every window either set watched. Rates are per wall-clock hour.`,
     "",
     "- *B5 rules*: the words of the window's first 400 lines (B4's markers, as B5 audited them).",
-    "- *B6 rules*: windowMarkers in helper/src/tasks/pending.ts. Indicators by role; an enabled Stop button by the message composer; and a text status only when it is the window's own, neither inside a list item (button, link, row, tab) nor in a sidebar.",
+    "- *B6 rules*: windowMarkers in helper/src/tasks/pending.ts. Indicators by role; an enabled Stop button by the message composer; and, in a window with no composer, a text status only when it is the window's own, neither inside a list item (button, link, row, tab) nor in a sidebar.",
     "",
     "## Before and after",
     "",
