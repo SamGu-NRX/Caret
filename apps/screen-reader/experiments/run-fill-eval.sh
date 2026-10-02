@@ -30,7 +30,7 @@ fi
 (cd "$HELPER" && exec node src/main.ts --data-dir "$OUT/helper-data" --allow-background-focus --status-every 60 ${CUTOFF_ARGS[@]+"${CUTOFF_ARGS[@]}"} > "$OUT/helper.log" 2>&1) &
 HELPERPID=$!
 sleep 1.5
-"$BIN/caret-fixture" --windows "$WINDOWS" --gold "$OUT/gold.json" --focus-forms ${VISIT_ARGS[@]+"${VISIT_ARGS[@]}"} --duration 300 > "$OUT/fixture.log" 2>&1 &
+"$BIN/caret-fixture" --foreground --windows "$WINDOWS" --gold "$OUT/gold.json" --focus-forms ${VISIT_ARGS[@]+"${VISIT_ARGS[@]}"} --duration 300 > "$OUT/fixture.log" 2>&1 &
 FIX=$!
 # The fixture prints its pid line once its windows exist; a reader started earlier can find no windows to walk.
 for _ in $(seq 1 40); do grep -q 'caret-fixture pid' "$OUT/fixture.log" 2>/dev/null && break; sleep 0.25; done

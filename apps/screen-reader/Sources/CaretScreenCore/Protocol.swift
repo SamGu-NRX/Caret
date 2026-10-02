@@ -510,6 +510,9 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     case watchInput(pids: [Int])
     /// Replaces the set of windows under a pending-state watch; an empty list ends every watch.
     case watchWindows(windows: [WatchedWindow])
+    /// Brings one window to the front and activates its app, then re-walks it. It writes nothing, but
+    /// it moves the user's focus, so it is gated by --act-pids like write and press.
+    case raise(pid: Int, windowId: String)
 
     enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows }
 
@@ -532,6 +535,8 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             self = .watchInput(pids: try c.decode([Int].self, forKey: .pids))
         case "watchWindows":
             self = .watchWindows(windows: try c.decode([WatchedWindow].self, forKey: .windows))
+        case "raise":
+            self = .raise(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId))
         case let k:
             throw ProtocolError("unknown verb \(k)")
         }
@@ -553,6 +558,8 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             try c.encode("watchInput", forKey: .kind); try c.encode(pids, forKey: .pids)
         case let .watchWindows(windows):
             try c.encode("watchWindows", forKey: .kind); try c.encode(windows, forKey: .windows)
+        case let .raise(pid, windowId):
+            try c.encode("raise", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
         }
     }
 }
@@ -669,6 +676,8 @@ public enum Message: Codable, Equatable, Sendable {
     case pasteboard(Pasteboard), fillRequest(FillRequest), fillProposal(FillProposal), error(HelperError)
     case readerCommand(ReaderCommand), verbResult(VerbResult), userInput(UserInput), taskProgress(TaskProgress)
     case fillResult(FillResult), taskControl(TaskControl), activityRequest(ActivityRequest), activity(Activity), activityReply(ActivityReply)
+    case alternatives(OfferAlternatives), action(OfferAction), popup(OfferPopup), offerAccept(OfferAccept), offerStop(OfferStop)
+    case offerWithdrawn(OfferWithdrawn)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -691,6 +700,12 @@ public enum Message: Codable, Equatable, Sendable {
         case ActivityRequest.type: self = .activityRequest(try ActivityRequest(from: decoder))
         case Activity.type: self = .activity(try Activity(from: decoder))
         case ActivityReply.type: self = .activityReply(try ActivityReply(from: decoder))
+        case OfferAlternatives.type: self = .alternatives(try OfferAlternatives(from: decoder))
+        case OfferAction.type: self = .action(try OfferAction(from: decoder))
+        case OfferPopup.type: self = .popup(try OfferPopup(from: decoder))
+        case OfferAccept.type: self = .offerAccept(try OfferAccept(from: decoder))
+        case OfferStop.type: self = .offerStop(try OfferStop(from: decoder))
+        case OfferWithdrawn.type: self = .offerWithdrawn(try OfferWithdrawn(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -715,6 +730,12 @@ public enum Message: Codable, Equatable, Sendable {
         case .activityRequest(let m): try m.encode(to: encoder)
         case .activity(let m): try m.encode(to: encoder)
         case .activityReply(let m): try m.encode(to: encoder)
+        case .alternatives(let m): try m.encode(to: encoder)
+        case .action(let m): try m.encode(to: encoder)
+        case .popup(let m): try m.encode(to: encoder)
+        case .offerAccept(let m): try m.encode(to: encoder)
+        case .offerStop(let m): try m.encode(to: encoder)
+        case .offerWithdrawn(let m): try m.encode(to: encoder)
         }
     }
 }

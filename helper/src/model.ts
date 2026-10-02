@@ -45,8 +45,14 @@ const MAX_FOCUS_HISTORY = 100;
 export class ScreenModel {
   readonly windows = new Map<string, WindowState>();
   private changes: Change[] = [];
-  /** Window that most recently arrived with focused=true. */
+  /**
+   * Window that most recently arrived with focused=true. A request walk reports an app's own focused
+   * window as focused even while the app is in the background, so this alone does not say the user is
+   * in that window; frontmostPid does.
+   */
   focusedWindowId: string | null = null;
+  /** The app the user is in, from the reader's appSwitch and frontmost focus events; null until one arrives. */
+  frontmostPid: number | null = null;
   /** Every change of focused window, oldest first. */
   private readonly focusHistory: { windowId: string; at: number }[] = [];
 
@@ -154,6 +160,7 @@ export class ScreenModel {
   reset(): void {
     this.windows.clear();
     this.focusedWindowId = null;
+    this.frontmostPid = null;
     this.focusHistory.length = 0;
   }
 }

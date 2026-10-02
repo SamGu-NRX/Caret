@@ -6,7 +6,8 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { describeTransfer, templateOf } from "../src/patterns/shape.ts";
 import { LoopRecognizer, type LoopEvent } from "../src/patterns/loops.ts";
-import { Desk, PEOPLE, cellKey, emailOf, grid, roster } from "./scene.ts";
+import { Desk, PEOPLE, cellKey, emailOf, grid, listKey, roster, type ListWindow } from "./scene.ts";
+import { FIXTURE_APP } from "./builders.ts";
 
 describe("templateOf", () => {
   it("drops every ordinal and keeps the field's label", () => {
@@ -67,6 +68,8 @@ describe("loop recognizer over the helper's transfers", () => {
     expect(events.map((e) => e.type)).toEqual(["predict"]);
     const p = events[0] as Extract<LoopEvent, { type: "predict" }>;
     expect(p.cells.map((c) => [c.dstKey, c.value])).toEqual([[cellKey(dst, 2, 0), PEOPLE[2]]]);
+    // One source window: nothing to offer beside the prediction.
+    expect(p.alternatives).toEqual([[]]);
 
     fill(dst, 2, 0, PEOPLE[2]!);
     const c = events[1] as Extract<LoopEvent, { type: "confirmed" }>;
@@ -134,6 +137,101 @@ describe("loop recognizer over the helper's transfers", () => {
     fill(dst, 0, 0, PEOPLE[0]!);
     fill(dst, 1, 0, PEOPLE[1]!);
     expect(events.map((e) => e.type)).toEqual(["predict"]);
+  });
+
+  describe("two source lists that start alike", () => {
+    /** A second list with the same first two people, then others. Invented names. */
+    const directory = (windowId = "5150-8", rest = ["Lena Hartmann", "Oskar Lindqvist", "Yusuf Demir", "Mila Novak"]): ListWindow => ({
+      windowId,
+      app: FIXTURE_APP,
+      title: `Directory ${windowId}`,
+      group: "People",
+      lines: [PEOPLE[0]!, PEOPLE[1]!, ...rest],
+    });
+    const predicted = (): Extract<LoopEvent, { type: "predict" }> => {
+      const p = events.find((e) => e.type === "predict");
+      if (p?.type !== "predict") throw new Error("no prediction");
+      return p;
+    };
+    const start = (...lists: ListWindow[]): ReturnType<typeof grid> => {
+      for (const l of lists) desk.showList(l);
+      desk.advance(1000);
+      const dst = grid();
+      desk.showGrid(dst);
+      fill(dst, 0, 0, PEOPLE[0]!);
+      fill(dst, 1, 0, PEOPLE[1]!);
+      return dst;
+    };
+
+    it("predicts from the first list and offers the second list's next name beside it", () => {
+      const dir = directory();
+      const src = roster();
+      start(dir, src);
+      const p = predicted();
+      const main = p.cells[0]!;
+      const other = main.srcWindowId === src.windowId ? dir : src;
+      expect(p.alternatives).toHaveLength(1);
+      expect(p.alternatives[0]!.map((c) => [c.srcWindowId, c.srcKey, c.value])).toEqual([[other.windowId, listKey(other, 2), other.lines[2]]]);
+      expect([main.value, p.alternatives[0]![0]!.value].sort()).toEqual([PEOPLE[2], "Lena Hartmann"].sort());
+    });
+
+    it("offers at most two alternatives, each a different value", () => {
+      start(roster(), directory("5150-8"), directory("5150-9", ["Lena Hartmann", "Noor Haddad"]), directory("5150-10", ["Arjun Mehta"]), directory("5150-11", ["Noor Haddad"]));
+      const p = predicted();
+      const values = [p.cells[0]!.value, ...p.alternatives[0]!.map((c) => c.value)];
+      expect(values).toHaveLength(3);
+      expect(new Set(values).size).toBe(3);
+    });
+
+    it("switches the loop to the list whose name the user took, and finishes from that list", () => {
+      const dir = directory();
+      const src = roster();
+      const dst = start(dir, src);
+      const p = predicted();
+      const alt = p.alternatives[0]![0]!;
+      const chosen = alt.srcWindowId === dir.windowId ? dir : src;
+      fill(dst, 2, 0, alt.value);
+      const c = events.find((e) => e.type === "confirmed");
+      expect(c?.type === "confirmed" && c.rest.map((r) => r.map((x) => [x.srcWindowId, x.value]))).toEqual(
+        [3, 4, 5].map((i) => [[chosen.windowId, chosen.lines[i]]]),
+      );
+      expect(loops.active?.srcWindowId).toBe(chosen.windowId);
+      expect(loops.active?.others).toEqual([]);
+    });
+
+    it("ends the loop when one round takes a column from each list", () => {
+      const both = (l: string[]): string[] => l.flatMap((n) => [n, emailOf(n)]);
+      const a = roster(both(PEOPLE));
+      const b = directory("5150-8", both(["Lena Hartmann", "Oskar Lindqvist"]));
+      b.lines = both([PEOPLE[0]!, PEOPLE[1]!, "Lena Hartmann", "Oskar Lindqvist"]);
+      for (const l of [a, b]) desk.showList(l);
+      desk.advance(1000);
+      const dst = grid(["Name", "Email"], 5);
+      desk.showGrid(dst);
+      for (let r = 0; r < 2; r++) {
+        fill(dst, r, 0, PEOPLE[r]!);
+        fill(dst, r, 1, emailOf(PEOPLE[r]!));
+      }
+      const p = predicted();
+      expect(p.alternatives.map((alts) => alts.length)).toEqual([1, 1]);
+      // The name from the main list, then the email from the other one: no single list explains the row.
+      fill(dst, 2, 0, p.cells[0]!.value);
+      fill(dst, 2, 1, p.alternatives[1]![0]!.value);
+      expect(events.map((e) => e.type)).toEqual(["predict", "ended"]);
+      expect(events[1]).toMatchObject({ type: "ended", reason: "diverged" });
+    });
+
+    it("keeps the main list when the value taken is what memory makes of the main list's own value", () => {
+      const dst = start(directory(), roster());
+      const p = predicted();
+      const main = p.cells[0]!;
+      const alt = p.alternatives[0]![0]!;
+      // As if a memory rule turned the main list's value into the text the other list shows.
+      loops.expect(p.loop.id, main.dstKey, alt.value, alt.kind);
+      fill(dst, 2, 0, alt.value);
+      expect(events.map((e) => e.type)).toEqual(["predict", "confirmed"]);
+      expect(loops.active?.srcWindowId).toBe(main.srcWindowId);
+    });
   });
 
   it("offers nothing when the next destination is already filled", () => {

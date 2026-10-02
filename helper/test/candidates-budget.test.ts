@@ -8,6 +8,12 @@ import { legacyGenerateCandidates } from "./legacy-candidates.ts";
 import { largeScene, rng } from "./large-scene.ts";
 import { snap } from "./builders.ts";
 
+/** A clock that moves 0.5 ms each time it is read. */
+const slowClockFor = (): (() => number) => {
+  let t = 0;
+  return () => (t += 0.5);
+};
+
 describe("candidate generator", () => {
   const scene = largeScene();
   const NOW = 2_000_000;
@@ -97,6 +103,24 @@ describe("candidate generator", () => {
       expect(stats.nodes).toBeGreaterThan(0);
       expect(candidates).toEqual(legacyGenerateCandidates(noValues, scene.formWindowId, 1000, NOW).slice(0, candidates.length));
     });
+  });
+
+  it("applies the cap and the budget inside one node's lines", () => {
+    const model = new ScreenModel();
+    const log = Array.from({ length: 20_000 }, (_, i) => `build step ${i} finished`).join("\n");
+    model.apply(snap([{ key: "l/statictext~0", parent: null, role: "AXStaticText", label: log }], { at: 1000, windowId: "log", focused: true }));
+    model.apply(snap([], { at: 2000, windowId: "form", focused: true }));
+    let reads = 0;
+    const counting = (): number => ++reads;
+    const capped = collectCandidates(model, "form", { now: 3000, budgetMs: Number.POSITIVE_INFINITY, clock: counting });
+    expect(capped.candidates).toHaveLength(MAX_CANDIDATES);
+    // Stopped at the 80th line: the clock is read every 64 lines, plus once at the start and once at the end.
+    // Reading all 20,000 lines would have read it over 300 times.
+    expect(reads).toBeLessThanOrEqual(4);
+    expect(capped.stats.overBudget).toBe(false);
+    const timed = collectCandidates(model, "form", { max: 20_000, now: 3000, budgetMs: 5, clock: slowClockFor() });
+    expect(timed.stats.overBudget).toBe(true);
+    expect(timed.candidates.length).toBeLessThanOrEqual(64 * 11);
   });
 
   it("keeps generateCandidates' signature and default cap", () => {

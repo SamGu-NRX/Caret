@@ -9,7 +9,7 @@ import { FakeCalendar } from "../src/executor/means.ts";
 import { classifyLabel } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
 import type { AskJev } from "../src/fill/jev.ts";
-import { FIXTURE_APP } from "./builders.ts";
+import { FIXTURE_APP, snap } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
 
 const W = { titleStartsWith: TITLE };
@@ -58,6 +58,21 @@ describe("executor", () => {
     expect(r).toMatchObject({ outcome: "done", acted: 2, skipped: 0 });
     expect(app.node(K("textfield:name~0"))?.value).toBe("Dana Whitfield");
     expect(progress("t1").map((p) => p.phase)).toEqual(["started", "acting", "verified", "acting", "verified", "done"]);
+  });
+
+  it("brings a window to the front with a raise, writes nothing, and skips the step when the window is already in front", async () => {
+    const front: Step = { says: "The executor window is in front", end: { kind: "windowFocused", window: W } };
+    // The fake app refuses to raise, as a reader without --act-pids for it would.
+    const r = await helper.executor.run("t1", plan([front]), {});
+    expect(r).toMatchObject({ outcome: "stopped", step: 0, detail: "the reader refused: notAllowed (the fake app does not raise its window)" });
+    expect(app.verbs.filter((v) => v.kind === "raise")).toEqual([{ kind: "raise", pid: FIXTURE_APP.pid, windowId: WIN }]);
+    expect(helper.executor.ledger("t1")).toEqual([]);
+
+    // Focused within its app is not enough: the app must also be the one the user is in.
+    void helper.handleReader(snap(structuredClone(app.nodes), { at: 5000, windowId: WIN, title: TITLE, focused: true }));
+    expect(await helper.executor.run("t2", plan([front], "p2"), {})).toMatchObject({ outcome: "stopped", step: 0 });
+    void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 5100, from: null, to: FIXTURE_APP });
+    expect(await helper.executor.run("t3", plan([front], "p3"), {})).toMatchObject({ outcome: "done", acted: 0, skipped: 1 });
   });
 
   it("aborts on a mismatch and names the step: the write reports success but nothing changed", async () => {

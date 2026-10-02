@@ -24,7 +24,7 @@ sleep 2
 stop "$FIX"
 
 PAGE="file://$HERE/e1-page.html?cycles=200&period=700"
-"$BIN/caret-fixture" --windows reference,claim,schedule --activity "$OUT/activity.ndjson" --webkit "$PAGE" --duration 600 > /dev/null 2>&1 &
+"$BIN/caret-fixture" --foreground --windows reference,claim,schedule --activity "$OUT/activity.ndjson" --webkit "$PAGE" --duration 600 > /dev/null 2>&1 &
 FIX2=$!
 rm -rf "$PROFILE"
 open -n -g -a "Google Chrome" --args --user-data-dir="$PROFILE" --no-first-run --no-default-browser-check --disable-sync --disable-extensions "$PAGE"

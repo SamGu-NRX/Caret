@@ -1,6 +1,8 @@
 // The pattern engine: runs the loop and routine recognizers as transfers and changes arrive, turns
 // what they find into offers through the gate, runs a taken offer's plan through the executor, and
 // learns preferences from the user's edits to values it filled. No model is called anywhere here.
+// An offer that speaks goes out as a patternOffer and, for the host, as one alternatives message per
+// cell (loopNext) or one action line (loopFinish, routine) whose accept is the same take.
 import { performance } from "node:perf_hooks";
 import { nodeText, type Change, type ScreenModel } from "../model.ts";
 import {
@@ -10,11 +12,15 @@ import {
   type MemoryRequest,
   type OfferCell,
   type OfferControl,
+  type OfferAction,
+  type OfferAlternatives,
   type OfferKind,
   type OfferWithdrawn,
   type PatternOffer,
   type ValueKind,
 } from "../protocol.ts";
+import type { PopupRef, PopupValue } from "../popup.ts";
+import type { AcceptHandler, AcceptResult } from "../offers/registry.ts";
 import type { Transfer } from "../transfers.ts";
 import type { RollingText } from "../rolling-text.ts";
 import type { TaskResult } from "../executor/executor.ts";
@@ -39,9 +45,10 @@ export interface EngineDeps {
   text: RollingText;
   memory: MemoryStore;
   hash: Hash;
-  publish: (m: HelperMessage) => void;
-  /** Runs a plan through the executor. */
-  run: (taskId: string, plan: Plan, slots: Record<string, string>) => Promise<TaskResult>;
+  /** `accept` is how an action this message offers the host is taken. */
+  publish: (m: HelperMessage, accept?: AcceptHandler) => void;
+  /** Runs a plan through the executor; `expect` holds field values, by window and key, that must still hold at its first read. */
+  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>) => Promise<TaskResult>;
   shadow: () => boolean;
 }
 
@@ -56,6 +63,14 @@ interface OfferState {
   routineId: string | null;
   state: "open" | "taken" | "closed";
   closedAt: number | null;
+  /** Keys of the alternatives messages published for this offer's cells, withdrawn with it. */
+  derived: string[];
+  /**
+   * Source windows and memory entries that only the alternatives read. The host shows those values,
+   * so the offer is withdrawn when one of them goes, as for its own cells.
+   */
+  altSources: Set<string>;
+  altMemory: Set<string>;
 }
 
 interface Watch {
@@ -181,7 +196,7 @@ export class PatternEngine {
       this.watches.delete(id);
     }
     for (const o of this.offers.values()) {
-      if (o.state === "open" && (o.msg.windowId === windowId || o.cells.some((c) => c.srcWindowId === windowId))) this.withdraw(o, "stale");
+      if (o.state === "open" && (o.msg.windowId === windowId || o.cells.some((c) => c.srcWindowId === windowId) || o.altSources.has(windowId))) this.withdraw(o, "stale");
     }
   }
 
@@ -215,6 +230,41 @@ export class PatternEngine {
     this.routines.flush();
   }
 
+  /**
+   * Runs an open offer's plan as the task with the offer's id: from offerControl take, and from the
+   * host's offerAccept of the offer's action line. A refusal says why and has written nothing.
+   */
+  async take(offerId: string): Promise<AcceptResult> {
+    const o = this.offers.get(offerId);
+    if (o === undefined) return { refused: "no such offer, or it expired" };
+    if (o.state !== "open") return { refused: `already ${o.state === "taken" ? "taken" : "withdrawn"}` };
+    if (this.deps.shadow()) return { refused: "the helper is in shadow mode and does not act" };
+    const stale = this.recheck(o);
+    if (stale !== null) {
+      this.withdraw(o, "stale");
+      return { refused: `${stale}; nothing was written` };
+    }
+    o.state = "taken";
+    this.withdraw(o, "taken");
+    this.deps.memory.recordReaction(o.msg.kind, o.msg.bundleId, "take", this.clock);
+    let r: TaskResult;
+    try {
+      // recheck found every destination empty; one the user fills before the run's first read stops it.
+      const empty: Record<string, Record<string, string>> = {};
+      for (const c of o.cells) (empty[c.dstWindowId] ??= {})[c.dstKey] = "";
+      r = await this.deps.run(o.msg.id, o.plan, o.slots, empty);
+    } catch (e) {
+      return { refused: e instanceof Error ? e.message : String(e) };
+    }
+    if (r.outcome !== "done") return r;
+    for (const c of o.cells) this.watch(c);
+    if (o.loopId !== null) {
+      const ev = this.loops.taken(o.loopId);
+      if (ev !== null) this.onLoop(ev);
+    }
+    return r;
+  }
+
   /** Take, dismiss, or "Don't offer this here". Problems are published as errors. */
   async control(m: OfferControl): Promise<TaskResult | null> {
     const o = this.offers.get(m.offerId);
@@ -223,29 +273,8 @@ export class PatternEngine {
     const memory = this.deps.memory;
     switch (m.action) {
       case "take": {
-        if (o.state !== "open") return this.fail(`offer ${m.offerId}: already ${o.state === "taken" ? "taken" : "withdrawn"}`);
-        if (this.deps.shadow()) return this.fail(`offer ${m.offerId}: the helper is in shadow mode and does not act`);
-        const stale = this.recheck(o);
-        if (stale !== null) {
-          this.withdraw(o, "stale");
-          return this.fail(`offer ${m.offerId}: ${stale}; nothing was written`);
-        }
-        o.state = "taken";
-        this.withdraw(o, "taken");
-        memory.recordReaction(kind, bundleId, "take", this.clock);
-        let r: TaskResult;
-        try {
-          r = await this.deps.run(o.msg.id, o.plan, o.slots);
-        } catch (e) {
-          return this.fail(`offer ${m.offerId}: ${e instanceof Error ? e.message : String(e)}`);
-        }
-        if (r.outcome !== "done") return r;
-        for (const c of o.cells) this.watch(c);
-        if (o.loopId !== null) {
-          const ev = this.loops.taken(o.loopId);
-          if (ev !== null) this.onLoop(ev);
-        }
-        return r;
+        const r = await this.take(m.offerId);
+        return "refused" in r ? this.fail(`offer ${m.offerId}: ${r.refused}`) : r;
       }
       case "dismiss":
       case "dontOfferHere": {
@@ -300,9 +329,11 @@ export class PatternEngine {
   private onLoop(ev: LoopEvent): void {
     const loopOffers = [...this.offers.values()].filter((o) => o.loopId === ev.loop.id && o.state === "open");
     switch (ev.type) {
-      case "predict":
-        this.offer("loopNext", ev.loop.id, { loopId: ev.loop.id, routineId: null }, ev.cells, { hits: 1, misses: 0, paused: false, grounded: true });
+      case "predict": {
+        const o = this.offer("loopNext", ev.loop.id, { loopId: ev.loop.id, routineId: null }, ev.cells, { hits: 1, misses: 0, paused: false, grounded: true });
+        if (o !== null) this.offerAlternatives(o, ev.alternatives);
         return;
+      }
       case "confirmed":
         for (const o of loopOffers) this.withdraw(o, "taken");
         if (ev.rest.length > 0) this.offer("loopFinish", ev.loop.id, { loopId: ev.loop.id, routineId: null }, ev.rest.flat(), { hits: 2, misses: 0, paused: false, grounded: true });
@@ -397,10 +428,73 @@ export class PatternEngine {
     };
     // A memory rule may change what Caret writes; the loop must accept that value when it comes back as a transfer.
     if (ids.loopId !== null) for (const c of written) if (c.written !== c.value) this.loops.expect(ids.loopId, c.dstKey, c.written, c.kind);
-    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null };
+    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, derived: [], altSources: new Set(), altMemory: new Set() };
     this.offers.set(id, o);
     this.deps.publish(msg);
+    if (kind !== "loopNext") this.offerAction(o);
     return o;
+  }
+
+  /** The value a cell would write, with its ref: the source node and the text quoted from it, or a memory rule over that. */
+  private cellValue(srcWindowId: string, srcKey: string, source: string, written: string, memory: readonly string[]): PopupValue {
+    const node: PopupRef = { node: `${srcWindowId}/${srcKey}`, quote: source };
+    if (written === source) return { text: written, ref: node };
+    return { text: written, ref: { rule: "memory", derived: [node, ...memory.map((id) => ({ memory: id }))] } };
+  }
+
+  /**
+   * One alternatives message per cell of a loopNext offer that spoke: the main fit's value first, then
+   * other source windows' values for the same cell. A value an alternative would write after memory
+   * rules is expected by the loop too, under its own fit, so inserting it switches the loop there.
+   */
+  private offerAlternatives(o: OfferState, alternatives: readonly LoopCell[][]): void {
+    const model = this.deps.model;
+    o.cells.forEach((c, i) => {
+      const w = model.windows.get(c.dstWindowId);
+      if (w === undefined) return;
+      const candidates = [this.cellValue(c.srcWindowId, c.srcKey, c.value, c.written, c.memory)];
+      for (const alt of alternatives[i] ?? []) {
+        const m = applyMemory(this.deps.memory, this.deps.hash, alt.value, alt.kind, c.dstShapeHash);
+        if (m.value !== alt.value && o.loopId !== null) this.loops.expect(o.loopId, alt.dstKey, m.value, alt.kind, alt.srcWindowId);
+        o.altSources.add(alt.srcWindowId);
+        for (const id of m.used) o.altMemory.add(id);
+        candidates.push(this.cellValue(alt.srcWindowId, alt.srcKey, alt.value, m.value, m.used));
+      }
+      const top = candidates[0] as PopupValue;
+      const msg: OfferAlternatives = {
+        type: "alternatives",
+        v: PROTOCOL_VERSION,
+        offerKey: `${o.msg.id}.${i}`,
+        at: this.clock,
+        field: { pid: w.app.pid, windowId: c.dstWindowId, key: c.dstKey, frame: w.nodes.get(c.dstKey)?.frame ?? null },
+        candidates,
+        quoted: "node" in top.ref && top.ref.quote === top.text,
+      };
+      o.derived.push(msg.offerKey);
+      this.deps.publish(msg);
+    });
+  }
+
+  /**
+   * The action line of a loopFinish or routine offer, under the offer's own id, so accepting it runs as
+   * the same task a take does. Its end state is the offer's sentence, derived from every cell's value.
+   */
+  private offerAction(o: OfferState): void {
+    const first = o.cells[0];
+    const w = first === undefined ? undefined : this.deps.model.windows.get(first.dstWindowId);
+    if (first === undefined || w === undefined) return;
+    const kind = o.msg.kind;
+    const msg: OfferAction = {
+      type: "action",
+      v: PROTOCOL_VERSION,
+      offerKey: o.msg.id,
+      at: this.clock,
+      field: { pid: w.app.pid, windowId: first.dstWindowId, key: first.dstKey, frame: w.nodes.get(first.dstKey)?.frame ?? null },
+      app: w.app.name,
+      endState: { text: o.msg.says, ref: { rule: kind, derived: o.cells.map((c) => this.cellValue(c.srcWindowId, c.srcKey, c.value, c.written, c.memory).ref) } },
+      actions: [kind === "loopFinish" ? { id: "finish", label: "Finish", key: "tab" } : { id: "run", label: "Fill", key: "tab" }],
+    };
+    this.deps.publish(msg, () => this.take(o.msg.id));
   }
 
   private says(kind: OfferKind, cells: OfferCell[]): string {
@@ -440,13 +534,16 @@ export class PatternEngine {
   private withdraw(o: OfferState, reason: OfferWithdrawn["reason"]): void {
     if (o.state === "open") o.state = "closed";
     o.closedAt = this.clock;
+    // The cells' alternatives go first, so the offer's own withdrawal is the last word on it.
+    for (const id of o.derived) this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id, reason });
+    o.derived = [];
     this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: o.msg.id, reason });
   }
 
   /** Withdraws every open offer built from this memory entry: its routine, or a value a memory rule changed. */
   private withdrawDependents(id: string): void {
     for (const o of this.offers.values()) {
-      if (o.state === "open" && (o.routineId === id || o.cells.some((c) => c.memory.includes(id)))) this.withdraw(o, "stale");
+      if (o.state === "open" && (o.routineId === id || o.cells.some((c) => c.memory.includes(id)) || o.altMemory.has(id))) this.withdraw(o, "stale");
     }
   }
 

@@ -80,6 +80,8 @@ export interface FillFocus {
   formFields: number;
   /** Time of the capped generator the product runs, and whether it stopped on its budget. Before B6 this was the uncapped generator's time. */
   generatorMs: number;
+  /** CPU time of the same call, user and system, all threads. Absent before B6's final run. */
+  generatorCpuMs?: number;
   overBudget?: boolean;
 }
 
@@ -399,7 +401,10 @@ export class Audit {
     if (d.nearest !== null) app.hasNearest++;
     if (d.section !== null) app.hasSection++;
     // The product's generator, capped and on its budget, as a live helper would run it on this focus.
+    // CPU time beside wall time: on a loaded Mac, or with this audit's own hashing behind a GC pause, wall time alone cannot say what the generator cost.
+    const c0 = process.cpuUsage();
     const { stats } = collectCandidates(this.model, m.windowId, { now: m.at });
+    const cpu = process.cpuUsage(c0);
     const all = countSpans(this.model, m.windowId);
     this.focusesList.push({
       bundleId: w.app.bundleId,
@@ -409,6 +414,7 @@ export class Audit {
       typedCandidates: all.typed,
       formFields: formFields(w, m.key).length,
       generatorMs: Math.round(stats.ms * 10) / 10,
+      generatorCpuMs: Math.round((cpu.user + cpu.system) / 100) / 10,
       overBudget: stats.overBudget,
     });
   }

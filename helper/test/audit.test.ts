@@ -216,7 +216,7 @@ describe("audit", () => {
       hidMinutes: 40,
       powerdMinutes: 31,
     });
-    expect(markers).toContain("with 40 minutes by the HID idle timer");
+    expect(markers).toContain("with 40 active minutes by the HID idle timer (which also counts events that agents post) and 31 by powerd's hardware-input spans");
     // App, leaves, with markers B5 and B6, watches B5 and B6, cleared B5 and B6.
     expect(markers).toContain("| dev.caret.jobs | 1 | 1 | 1 | 1 | 1 | 1 | 1 |");
     expect(markers).toContain("| Leaves with markers per hour | 1.0 | 1.0 |");

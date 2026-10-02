@@ -3,19 +3,24 @@
 // not take focus from whoever is using the Mac; its windows open behind other windows.
 //
 //   caret-fixture [--windows reference,claim,schedule] [--gold FILE] [--duration S]
+//                 [--foreground] [--appearance dark|light]
 //                 [--e1 FILE --cycles N --period S] [--webkit URL]
 //                 [--activity FILE] [--focus-forms [--visit reference,distractors]]
 //   --windows executor adds the executor window, driven by lines on stdin:
 //     reset | seed FIELD VALUE | remove FIELD | sheet | dump
-//   --background-only makes the app impossible to activate. Timed focus modes (--focus-forms, --activity,
-//   --e1) were not checked with it; `focus NAME` was (B4).
+//   By default the app is background-only (activation policy prohibited): it cannot be activated
+//   and its windows can never be key. --foreground uses the accessory policy instead, so windows can
+//   be key; the app still hands activation back whenever it gets it. The timed focus modes
+//   (--focus-forms, --activity, --e1) need key windows and refuse to start without --foreground.
+//   --background-only is accepted and does nothing, so older scripts still parse.
+//   --appearance dark|light sets the app's appearance; without it the system appearance applies.
 //   --windows roster,seating adds a list of eight names and a six-seat chart for the loop recognizer;
 //   the seating window takes stdin lines reset | dump. Only one of executor and seating may be open.
 //   --windows jobs adds a test run that counts up under a progress bar, an upload with a spinner,
 //   and a notes window; stdin `jobs reset | finish N | ask N | dump` drives them.
 //   stdin `focus NAME` makes one of the fixture's own windows key without activating the app, which
-//   moves AX focus inside the fixture only (it works with --background-only too: AppKit reports no
-//   key window, yet the reader sees the focus move). Each command answers one JSON line on stdout.
+//   moves AX focus inside the fixture only (it works in the background-only default too: AppKit
+//   reports no key window, yet the reader sees the focus move). Each command answers one JSON line on stdout.
 import AppKit
 import WebKit
 
@@ -48,12 +53,27 @@ let period = TimeInterval(opt("--period") ?? "1.2") ?? 1.2
 let webkitURL = opt("--webkit")
 let activityPath = opt("--activity")
 let focusForms = has("--focus-forms")
-/// Background-only: AppKit never activates the app, so it cannot take the foreground even for a moment.
-/// Its windows can never be key, so focus-driven modes (--focus-forms, --activity, --e1) need the default.
-let backgroundOnly = has("--background-only")
+/// Background-only is the default: AppKit never activates the app, so it cannot take the foreground
+/// even for a moment while someone else is using the Mac. Its windows can never be key, so the
+/// focus-driven modes need --foreground. The old flag is still accepted and changes nothing.
+let foreground = has("--foreground")
+_ = has("--background-only")
+let appearanceName = opt("--appearance")
 /// Windows made key, in this order, before each form is focused: the user looks something up, then goes to the form.
 let visitList = (opt("--visit") ?? "").split(separator: ",").map(String.init)
 if !argv.isEmpty { die("unknown arguments: \(argv.joined(separator: " "))") }
+if !foreground {
+    for (flag, on) in [("--focus-forms", focusForms), ("--activity", activityPath != nil), ("--e1", e1Path != nil)] where on {
+        die("\(flag) makes windows key, which a background-only app cannot do; pass --foreground")
+    }
+}
+let appearance: NSAppearance?
+switch appearanceName {
+case nil: appearance = nil
+case "dark": appearance = NSAppearance(named: .darkAqua)
+case "light": appearance = NSAppearance(named: .aqua)
+case let other?: die("--appearance takes dark or light, not \(other)")
+}
 
 func ms() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
 
@@ -152,7 +172,8 @@ let scheduleForm: [Field] = [
 
 let app = NSApplication.shared
 // A deactivate-on-activation guard alone still left the fixture frontmost for a second at launch (B3, 2026-10-02).
-app.setActivationPolicy(backgroundOnly ? .prohibited : .accessory)
+app.setActivationPolicy(foreground ? .accessory : .prohibited)
+if let appearance { app.appearance = appearance }
 // Launched from the frontmost app (a terminal or an agent host), the fixture was made the active app
 // at launch and held the foreground for a whole evaluation run (executor run-3). It never needs to
 // be active: windows are made key without activation. So it hands activation back whenever it gets it.

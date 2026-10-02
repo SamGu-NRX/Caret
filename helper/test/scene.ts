@@ -90,6 +90,7 @@ export class Desk implements ReaderLink {
       return answer("ok");
     }
     if (verb.kind === "press") return answer("noElement", verb.key);
+    if (verb.kind === "raise") return answer("notAllowed", "the desk does not raise windows");
     const cells = new Set(Array.from({ length: g.rows }, (_, r) => g.columns.map((_, c) => cellKey(g, r, c))).flat());
     if (!cells.has(verb.key)) return answer("noElement", verb.key);
     if (verb.attribute !== "value") return answer("ok");

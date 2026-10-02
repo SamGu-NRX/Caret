@@ -153,6 +153,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = nodeText(node).split(/\r?\n/);
       for (const raw of lines) {
+        // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
+        if (full() || outOfTime()) return finish();
         const line = raw.replace(/\s+/g, " ").trim();
         if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line)) continue;
         if (line.endsWith(":")) continue; // a label, not a value

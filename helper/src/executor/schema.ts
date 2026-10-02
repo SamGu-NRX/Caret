@@ -43,6 +43,11 @@ export const EndState = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("focused"), ...InWindow }),
   /** The selected window's title equals `title`. */
   z.object({ kind: z.literal("windowTitle"), window: WindowSel, title: z.string() }),
+  /**
+   * The selected window is the one the user is in. Needs no `via`: the executor asks the reader to
+   * raise the window and activate its app. It writes nothing, so it leaves nothing for undo.
+   */
+  z.object({ kind: z.literal("windowFocused"), window: WindowSel }),
   /** An event with this title, start and end exists in the named calendar. Checked through the calendar interface, not the screen. */
   z.object({
     kind: z.literal("calendarEvent"),

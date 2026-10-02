@@ -13,7 +13,7 @@ import { PROTOCOL_VERSION, type Activity, type HelperMessage, type Node, type Re
 import type { JevRequest, JevResult } from "../src/fill/jev.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
 import { RULE_SETS } from "../src/audit.ts";
-import { buildPendingRequest, isStopLabel, signature, watchLines, windowMarkers } from "../src/tasks/pending.ts";
+import { allWatchLines, buildPendingRequest, isStopLabel, signature, watchLines, windowMarkers } from "../src/tasks/pending.ts";
 import { agentSnap, BROWSER, browserChat, CODEX, codexWindow, T3, t3Window } from "./agent-fixtures.ts";
 import { field, node, snap, text } from "./builders.ts";
 
@@ -84,9 +84,20 @@ describe("agent-thread markers", () => {
       expect(rules(windowOf(BROWSER, browserChat({ running: false, claude, threads: [{ title: "Packing list", status: "Thinking" }] })))).toEqual([]);
     });
 
-    it("keeps a status that is the page's own, in the main pane", () => {
-      const w = windowOf(BROWSER, browserChat({ running: false, extra: [text("net.imput.helium/standard/statictext:x~0", "Deploying 3 of 5", [600, 300, 300, 18])] }));
-      expect(rules(w)).toEqual(["verbCount"]);
+    it("reads no status from a chat's text: in a window with a composer it is history", () => {
+      const history = [text("h/statictext:a~0", "Running tests…", [600, 300, 300, 18]), text("h/statictext:b~0", "All tests passed.", [600, 330, 300, 18])];
+      expect(rules(windowOf(BROWSER, browserChat({ running: false, extra: history })))).toEqual([]);
+      expect(rules(windowOf(T3, t3Window({ running: false, extra: history })))).toEqual([]);
+      expect(b5Rules(windowOf(T3, t3Window({ running: false, extra: history })))).toEqual(["verbEllipsis"]);
+    });
+
+    it("keeps a page's own status in its main pane when the page has no composer, and drops its sidebar's", () => {
+      const nodes = [
+        node("d/webarea~0", "AXWebArea", { label: "Deploys", frame: [0, 0, 1400, 900] }),
+        text("d/statictext:side~0", "Working on 2 of 4", [20, 200, 200, 18], "d/webarea~0"),
+        text("d/statictext:main~0", "Deploying 3 of 5", [600, 300, 300, 18], "d/webarea~0"),
+      ];
+      expect(windowMarkers(windowOf(BROWSER, nodes))).toEqual([{ rule: "verbCount", line: "Deploying 3 of 5" }]);
     });
   });
 
@@ -127,6 +138,31 @@ describe("the watch's text for a long agent thread", () => {
     expect(lines.at(-2)).toBe("All four seating files are updated.");
     expect(watchLines(done, "head")).not.toContain("All four seating files are updated.");
     expect(signature(running, watchLines(running), windowMarkers(running))).not.toBe(signature(done, lines, windowMarkers(done)));
+  });
+
+  it("reproduces B5's first 400 lines in head mode, a node that runs past 400 included", () => {
+    const big = Array.from({ length: 600 }, (_, i) => (i === 150 ? "Indexing 3 of 9" : `line ${i}`)).join("\n");
+    const w = windowOf(BROWSER, [text("b/statictext:a~0", "first"), text("b/statictext:b~0", big), text("b/statictext:c~0", "after")]);
+    const head = watchLines(w, "head");
+    expect(head).toHaveLength(601);
+    expect(head).toContain("Indexing 3 of 9");
+    expect(head).not.toContain("after");
+    expect(b5Rules(w)).toEqual(["verbCount"]);
+  });
+
+  it("changes the signature when a line in the middle of a long window changes", () => {
+    const lines = (mid: string): Node[] => Array.from({ length: 1000 }, (_, i) => text(`m/statictext:${i}~0`, i === 500 ? mid : `entry ${i}`, [300, 20 * i, 400, 18]));
+    const a = windowOf(BROWSER, lines("Copy finished"));
+    const b = windowOf(BROWSER, lines("Approve the copy of 3 files?"));
+    expect(watchLines(a)).toEqual(watchLines(b));
+    expect(signature(a, allWatchLines(a), windowMarkers(a))).not.toBe(signature(b, allWatchLines(b), windowMarkers(b)));
+  });
+
+  it("names at most ten marker lines in a question", () => {
+    const many = Array.from({ length: 50 }, (_, i) => text(`s/statictext:${i}~0`, `Exporting part ${i} of 50`, [600, 20 * i, 300, 18]));
+    const w = windowOf(BROWSER, many);
+    const req = buildPendingRequest(w, watchLines(w), watchLines(w), windowMarkers(w), windowMarkers(w));
+    expect(String((req.state as Record<string, string>).signs_of_running_work_now).split("\n")).toHaveLength(10);
   });
 
   it("tells Jev the signs of running work then and now", () => {
@@ -204,6 +240,18 @@ describe("watching a T3 Code thread", () => {
     await helper.pending.whenIdle();
     expect(requests).toHaveLength(1);
     expect(watches().at(-1)).toMatchObject({ state: "done", cause: "screen" });
+  });
+
+  it("asks nothing about a truncated walk, which may have missed the stop button", async () => {
+    show(t3Window({ running: true, threads: OTHERS }), true, "focus");
+    show(t3Window({ running: true, threads: OTHERS }), false, "leave");
+    toNotes();
+    at += 100;
+    const cut = agentSnap(T3, t3Window({ running: true, threads: OTHERS }).slice(0, 20), { at, windowId: T3W, title: "Seating chart", reason: "watch" });
+    void helper.handleReader({ ...cut, stats: { walkMs: 400, visited: 6000, truncated: true } });
+    await helper.pending.whenIdle();
+    expect(requests).toHaveLength(0);
+    expect(watches().at(-1)).toMatchObject({ state: "running" });
   });
 
   it("registers no watch for a window whose open thread is idle while sidebar threads work", () => {

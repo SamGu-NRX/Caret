@@ -36,11 +36,18 @@ private func goldenLines() throws -> [Data] {
             case .activityRequest: "activityRequest"
             case .activity: "activity"
             case .activityReply: "activityReply"
+            case .alternatives: "alternatives"
+            case .action: "action"
+            case .popup: "popup"
+            case .offerAccept: "offerAccept"
+            case .offerStop: "offerStop"
+            case .offerWithdrawn: "offerWithdrawn"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
                           "readerCommand", "verbResult", "userInput", "taskProgress",
-                          "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply"])
+                          "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
+                          "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -92,6 +99,59 @@ private func goldenLines() throws -> [Data] {
         #expect(p.pid == 5150 && p.fields.compactMap(\.source).allSatisfy { $0.pid == 5150 })
         let badState = Data(#"{"type":"taskControl","v":1,"taskId":"t","action":"cancel"}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
+    }
+
+    @Test func readsTheOfferMessagesAndRaise() throws {
+        let lines = try goldenLines()
+        guard case .alternatives(let alt) = try JSONDecoder().decode(Message.self, from: lines[19]) else { Issue.record("line 20 is not alternatives"); return }
+        #expect(alt.quoted && alt.candidates.map(\.text) == ["Cara Diaz", "Cal Duarte"])
+        #expect(alt.field.frame == Frame(x: 120, y: 288, width: 180, height: 22))
+        #expect(alt.candidates[0].ref == .node(key: "5150-1/dev.caret.fixture/standard/statictext:cara diaz~0", quote: "Cara Diaz"))
+
+        guard case .action(let line) = try JSONDecoder().decode(Message.self, from: lines[20]) else { Issue.record("line 21 is not an action"); return }
+        #expect(line.app == "Sheet Fixture" && line.actions.map(\.key) == [.tab])
+        guard case .derived(let rule, let from) = line.endState.ref else { Issue.record("endState is not derived"); return }
+        #expect(rule == "loopFinish" && from.count == 2)
+        let variants = try #require(line.variants)
+        #expect(variants.figure == .needsYou)
+        let source = try #require(variants.blocks.first { if case .choices = $0.content { true } else { false } })
+        #expect(source.id == "source")
+        #expect(variants.choices?.rows.map(\.label.text) == ["Caret Fixture", "Mail Fixture"])
+        #expect(variants.choices?.rows.map { $0.hint?.text } == ["Dev Patel", nil])
+
+        guard case .popup(let popup) = try JSONDecoder().decode(Message.self, from: lines[21]) else { Issue.record("line 22 is not a popup"); return }
+        #expect(popup.offerKey == "fill-2" && popup.spec.id == "fill-2" && popup.spec.header?.title.text == "Fill 2 fields")
+        guard case .fields(let fields)? = popup.spec.blocks.first(where: { $0.content.typeName == "fields" })?.content else {
+            Issue.record("the popup has no fields block"); return
+        }
+        #expect(fields.rows.map(\.destination.text) == ["Email", "Phone"])
+        #expect(fields.rows.map { $0.value?.text } == ["dana.whitfield@example.com", "+1 512 555 0142"])
+        #expect(fields.rows.map(\.state) == [.ready, .ready] && fields.more == 0)
+
+        guard case .offerAccept(let accept) = try JSONDecoder().decode(Message.self, from: lines[22]) else { Issue.record("line 23 is not an offerAccept"); return }
+        #expect(accept == OfferAccept(offerId: "offer-5", actionId: "finish", overrides: ["variants": 1], at: 1_790_000_002_300))
+        guard case .offerStop(let stop) = try JSONDecoder().decode(Message.self, from: lines[23]) else { Issue.record("line 24 is not an offerStop"); return }
+        #expect(stop.offerId == "offer-5")
+        guard case .offerWithdrawn(let gone) = try JSONDecoder().decode(Message.self, from: lines[24]) else { Issue.record("line 25 is not an offerWithdrawn"); return }
+        #expect(gone.id == "offer-4.0" && gone.reason == .taken)
+        guard case .readerCommand(let raise) = try JSONDecoder().decode(Message.self, from: lines[25]) else { Issue.record("line 26 is not a readerCommand"); return }
+        #expect(raise.verb == .raise(pid: 5150, windowId: "5150-4") && raise.expires == 1_790_000_007_600)
+    }
+
+    /// Optional keys stay out of the encoding when absent, and a null where zod wants the key left out is refused.
+    @Test func offerOptionalsAndNullables() throws {
+        let field = OfferField(pid: 1, windowId: "1-1", key: "k", frame: nil)
+        let line = OfferAction(offerKey: "o", at: 1, field: field, app: "App", endState: PopupSpec.Value("x", ref: .memory(id: "m")),
+                               actions: [PopupSpec.Action(id: "go", label: "Go", key: .tab)])
+        let obj = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(Message.action(line))) as! [String: Any]
+        #expect(obj["variants"] == nil)
+        #expect((obj["field"] as? [String: Any])?["frame"] is NSNull)
+        let nullVariants = Data(#"{"type":"action","v":1,"offerKey":"o","at":1,"field":{"pid":1,"windowId":"w","key":"k","frame":null},"app":"A","endState":{"text":"x","ref":{"memory":"m"}},"actions":[{"id":"go","label":"Go","key":"tab"}],"variants":null}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: nullVariants) }
+        let negativeRow = Data(#"{"type":"offerAccept","v":1,"offerId":"o","actionId":"a","overrides":{"choices":-1},"at":1}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: negativeRow) }
+        let badReason = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"expired"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badReason) }
     }
 
     @Test func rejectsAWrongVersionAndAnUnknownType() {

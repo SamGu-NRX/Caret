@@ -1,7 +1,7 @@
 // The executor (deep plan section 7). For each step of a plan:
 //   1. Re-read the step's window and stop if anything it saw at the start has changed under it.
 //   2. If the end state already holds, skip the step. A finished plan therefore reruns as a no-op.
-//   3. Pick the means: a value or focus write, a press, the calendar, or a URL. A press whose label
+//   3. Pick the means: a value or focus write, a press, a raise, the calendar, or a URL. A press whose label
 //      reads as send, submit, delete or pay is never made; the run stops and hands it to the user.
 //   4. Predict the change, act through a reader verb that rechecks the exact target, re-read the
 //      window, and compare what changed against the prediction. A mismatch stops the run at that step.
@@ -154,12 +154,28 @@ export class Executor {
     this.session++;
   }
 
+  /** Whether a run with this id exists, running or finished. */
+  has(taskId: string): boolean {
+    return this.tasks.has(taskId);
+  }
+
+  /** Whether a run with this id is under way or paused, so a working line for it is still open. */
+  live(taskId: string): boolean {
+    const t = this.tasks.get(taskId);
+    return t !== undefined && (t.finished === null || t.finished === "paused");
+  }
+
   ledger(taskId: string): readonly LedgerEntry[] {
     return this.tasks.get(taskId)?.ledger ?? [];
   }
 
-  /** Validates the plan, fills its slots, and runs it from the first step. */
-  async run(taskId: string, rawPlan: unknown, slots: Record<string, string>): Promise<TaskResult> {
+  /**
+   * Validates the plan, fills its slots, and runs it from the first step. `expect` names field values,
+   * by window id and key, that must still hold when the task first reads each window: an offer checked
+   * its fields empty when the user took it, and a value typed while the first walk was under way must
+   * stop the run, not become the value the write expects and replaces.
+   */
+  async run(taskId: string, rawPlan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>): Promise<TaskResult> {
     if (this.tasks.has(taskId)) throw new PlanError(`task ${taskId} already exists`);
     const parsed = Plan.safeParse(rawPlan);
     if (!parsed.success) throw new PlanError(`invalid plan: ${parsed.error.message.slice(0, 400)}`);
@@ -180,6 +196,7 @@ export class Executor {
       session: this.session,
       undoing: false,
     };
+    for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
     this.progress(task, "started", null, null);
     return this.loop(task);
@@ -376,6 +393,7 @@ export class Executor {
       this.progress(task, "skipped", i, "already true");
       return;
     }
+    if (end.kind === "windowFocused") return this.raiseStep(task, i, w, step);
 
     if (end.kind === "valueEquals" || end.kind === "focused") {
       const node = await this.resolve(task, i, w, end.target, step.says);
@@ -440,6 +458,17 @@ export class Executor {
     await this.deps.beforeAct?.(task.id, i);
     const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label }, w.window.windowId);
     task.ledger.push({ kind: "press", step: i, label });
+    await this.awaitEffect(task, i, step, w.window.windowId, seen);
+    this.checkUnexpected(seen, null);
+    await this.verified(task, i, step);
+  }
+
+  /** Brings the window to the front. Nothing is written, so nothing goes in the ledger. */
+  private async raiseStep(task: Task, i: number, w: WindowState, step: Step): Promise<void> {
+    this.checkInterrupt(task);
+    this.progress(task, "acting", i, `raise; expect '${clip(w.window.title)}' in ${w.app.name} to be the focused window`);
+    await this.deps.beforeAct?.(task.id, i);
+    const seen = await this.act(task, { kind: "raise", pid: w.app.pid, windowId: w.window.windowId }, w.window.windowId);
     await this.awaitEffect(task, i, step, w.window.windowId, seen);
     this.checkUnexpected(seen, null);
     await this.verified(task, i, step);
@@ -625,6 +654,10 @@ export class Executor {
     switch (end.kind) {
       case "windowTitle":
         return w.window.title === end.title;
+      case "windowFocused":
+        // The window must be the app's focused one and the app the one the user is in: a request walk
+        // marks a background app's own focused window as focused, which alone would skip the raise.
+        return this.deps.model.focusedWindowId === w.window.windowId && this.deps.model.frontmostPid === w.app.pid;
       case "exists":
       case "absent": {
         const r = resolveLocally(w, end.target);

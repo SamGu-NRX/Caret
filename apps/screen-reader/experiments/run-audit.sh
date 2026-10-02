@@ -7,17 +7,21 @@
 #   OUT/hid-idle.tsv        "<epoch s> <HID idle s>" every 30 s, for active minutes
 #   OUT/pids.txt            the pids this script started
 # The seen-text hashes and their key go to SEEN (keep it outside OUT, run the leak check, delete it).
-#   run-audit.sh OUT SEEN DUR_SECONDS
+#   run-audit.sh OUT SEEN MAX_SECONDS [ACTIVE_MINUTES]
+# With ACTIVE_MINUTES it stops as soon as that many active minutes are in (a 30 s sample with under
+# 30 s of HID idle time counts as half a minute), or at MAX_SECONDS, whichever comes first.
 set -euo pipefail
-OUT=$1
-SEEN=$2
 DUR=$3
+TARGET=${4:-0}
+# Absolute paths: the helper runs from helper/, so a relative OUT or SEEN would land somewhere else.
+mkdir -p "$1"
+OUT="$(cd "$1" && pwd)"
+SEEN="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../.build/debug"
 HELPER="$HERE/../../../helper"
 WORK=$(mktemp -d /tmp/caret-audit.XXXXXX)
 SOCK="$WORK/s.sock"
-mkdir -p "$OUT"
 # Signals only pids this script recorded. An empty or zero pid would make `kill` signal the whole process group.
 stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
 cleanup() { stop "${READER:-}"; sleep 1; stop "${HPID:-}"; sleep 2; rm -rf "$WORK"; }
@@ -43,6 +47,10 @@ while (( $(date +%s) < END )); do
   # awk reads to the end: exiting early would SIGPIPE ioreg and, under pipefail, end the script.
   idle=$(ioreg -c IOHIDSystem | awk '/HIDIdleTime/ && !d { printf "%.1f", $NF / 1000000000; d = 1 }')
   printf "%s\t%s\n" "$now" "$idle" >> "$OUT/hid-idle.tsv"
+  if (( TARGET > 0 )); then
+    active=$(awk '$2 < 30 { n++ } END { print int(n / 2) }' "$OUT/hid-idle.tsv")
+    (( active >= TARGET )) && { echo "reached $active active minutes"; break; }
+  fi
   kill -0 "$READER" 2>/dev/null || { echo "reader exited"; break; }
   kill -0 "$HPID" 2>/dev/null || { echo "helper exited"; break; }
   sleep 30
