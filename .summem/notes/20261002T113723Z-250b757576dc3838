@@ -1,0 +1,1 @@
+Synthetic HID keys go to LaunchServices' front app, not the owner of the frontmost window; guard on lsappinfo front before typing into a fixture.

@@ -1,0 +1,1 @@
+KeyType tokenizes with add_special=false; Gemma GGUFs need <bos> or output derails. apps/caret wraps the runtime (BOSRuntime) instead of editing packages/.
