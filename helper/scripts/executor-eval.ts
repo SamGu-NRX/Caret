@@ -27,6 +27,8 @@ const { values: a } = parseArgs({
     out: { type: "string" },
     runs: { type: "string", default: "20" },
     "fault-runs": { type: "string", default: "10" },
+    "target-cutoff": { type: "string" },
+    plans: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "exec-eval.sock") },
   },
 });
@@ -70,6 +72,7 @@ const helper = new Helper({
   executorHooks: {
     beforeStep: (t, i) => hooks.beforeStep?.(t, i) ?? Promise.resolve(),
     beforeAct: (t, i) => hooks.beforeAct?.(t, i) ?? Promise.resolve(),
+    ...(a["target-cutoff"] === undefined ? {} : { targetCutoff: Number(a["target-cutoff"]) }),
   },
 });
 server = new HelperServer(a.socket, () => helper, (l) => errors.push(l));
@@ -281,7 +284,9 @@ interface Row {
 }
 const rows: Row[] = [];
 
+const only = a.plans === undefined ? null : new Set(a.plans.split(","));
 for (const [name, pc] of Object.entries(plans)) {
+  if (only !== null && !only.has(name)) continue;
   for (let r = 0; r < RUNS; r++) {
     await reset(pc.seed);
     const before = await dump();
@@ -313,7 +318,7 @@ for (const [name, pc] of Object.entries(plans)) {
 
 // The risky plan: the write happens, the press is handed off, and the fixture confirms nothing was sent.
 const riskRows: { run: number; outcome: string; step: number | null; sent: boolean; detail: string | null }[] = [];
-for (let r = 0; r < RUNS; r++) {
+for (let r = 0; r < (only === null || only.has("send") ? RUNS : 0); r++) {
   await reset({});
   const id = newTask("send");
   const res = (await helper.handleTask({ type: "runPlan", v: 1, taskId: id, plan: risky, slots: { msg: `Hello ${r}` } })) as TaskResult | null;
@@ -326,7 +331,7 @@ type Fault = "removed" | "changedBeforeStep" | "changedBeforeAct" | "sheet";
 const faultRows: { fault: Fault; run: number; outcome: string; step: number | null; detail: string | null; wroteFaultTarget: boolean }[] = [];
 const contact = plans.contact as PlanCase;
 for (const fault of ["removed", "changedBeforeStep", "changedBeforeAct", "sheet"] as Fault[]) {
-  for (let r = 0; r < FAULT_RUNS; r++) {
+  for (let r = 0; r < (only === null || only.has("faults") ? FAULT_RUNS : 0); r++) {
     await reset(contact.seed);
     const slots = contact.slots(r);
     hooks.beforeStep = async (_, i) => {
@@ -366,6 +371,7 @@ const med = (xs: number[]): number => {
 };
 for (const name of Object.keys(plans)) {
   const rs = rows.filter((x) => x.plan === name);
+  if (rs.length === 0) continue;
   const verified = rs.filter((x) => x.claimedDone && x.checkFailure === null).length;
   const lie = rs.filter((x) => x.claimedDone && x.checkFailure !== null).length;
   const rerun = rs.filter((x) => x.rerunOutcome === "done" && x.rerunActs === 0).length;
@@ -380,9 +386,18 @@ for (const f of ["removed", "changedBeforeStep", "changedBeforeAct", "sheet"] as
   const fs = faultRows.filter((x) => x.fault === f);
   md.push(`| ${f} | ${fs.length} | ${fs.filter((x) => x.outcome === "stopped").length} | ${JSON.stringify(count(fs.map((x) => String(x.step === null ? "none" : x.step + 1))))} | ${fs.filter((x) => x.wroteFaultTarget).length} | ${fs[0]?.detail ?? ""} |`);
 }
+const tc = helper.executor.targetChoices;
+const agreedConf = tc.filter((c) => c.jev.asks[0].key !== null && c.jev.asks[0].key === c.jev.asks[1].key).map((c) => Math.min(c.jev.asks[0].confidence, c.jev.asks[1].confidence));
+const wrongPick = tc.filter((c) => c.chose !== null && !c.chose.includes("group:shipping")).length;
+md.push(
+  "",
+  `## Jev target questions`,
+  "",
+  `${tc.length} questions; asks agreed on ${agreedConf.length}; acted on ${tc.filter((c) => c.chose !== null).length}; acted on an element outside the Shipping section: ${wrongPick}. Agreed lower confidence: min ${Math.min(...agreedConf).toFixed(2)}, median ${med(agreedConf).toFixed(2)}, max ${Math.max(...agreedConf).toFixed(2)}. Disagreements: ${tc.length - agreedConf.length}.`,
+);
 md.push("", `Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}. Fake calendar calls: ${JSON.stringify(count(calendar.calls))}. Helper errors: ${errors.length}.`);
 writeFileSync(join(OUT, "executor-eval.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "executor-eval.json"), JSON.stringify({ rows, riskRows, faultRows, progress, errors, jevCalls, jevCost, calendarCalls: calendar.calls }, null, 2) + "\n");
+writeFileSync(join(OUT, "executor-eval.json"), JSON.stringify({ rows, riskRows, faultRows, progress, errors, jevCalls, jevCost, calendarCalls: calendar.calls, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
 writeFileSync(join(OUT, "reader.log"), readerLog);
 console.log(md.join("\n"));
 process.exit(0);

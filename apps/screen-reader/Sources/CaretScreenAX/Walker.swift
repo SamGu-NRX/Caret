@@ -17,6 +17,9 @@ public struct WalkLimits: Sendable {
     public static let focused = WalkLimits(deadline: 0.4, maxVisited: 6000, maxDepth: 64, maxChildren: 400, maxValueChars: 20_000)
     /// Background walks may take longer, but a 4 s cap was hit on long tables in the probe, so stop well before that.
     public static let background = WalkLimits(deadline: 1.0, maxVisited: 6000, maxDepth: 64, maxChildren: 400, maxValueChars: 20_000)
+    /// Walks for the executor, which needs a complete read to judge an act and waits for it anyway.
+    /// One focused-limit walk in about 80 was cut short on a loaded Mac; 2 s is assumed, not measured.
+    public static let request = WalkLimits(deadline: 2.0, maxVisited: 6000, maxDepth: 64, maxChildren: 400, maxValueChars: 20_000)
 }
 
 public final class Walker {

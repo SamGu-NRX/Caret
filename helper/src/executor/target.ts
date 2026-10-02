@@ -6,15 +6,18 @@ import type { Node } from "../protocol.ts";
 import { nodeText, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
 import { shuffled } from "../fill/fill.ts";
-import { FILL_CUTOFF } from "../fill/fill.ts";
 import type { Target } from "./schema.ts";
 
 export const MAX_TARGET_CANDIDATES = 40;
 /**
- * Lowest agreed confidence for a target choice. Borrowed from the fill calibration; no target
- * questions were calibrated, so this number has no evidence of its own.
+ * Lowest agreed confidence for a target choice. Agreement is the main guard. On the fixture's
+ * two-way ambiguity (Billing and Shipping fields sharing a label), 78 of 78 questions agreed on the
+ * right field, at lower confidences from 0.62 to 0.93
+ * (~/.caret-run/evidence/screen/executor/target-calibration/). 0.6 sits just under all of them. No
+ * wrong agreed pick was seen, so this data cannot say how confident a wrong pick can be; recheck
+ * on real apps with more candidates.
  */
-export const TARGET_CUTOFF = FILL_CUTOFF;
+export const TARGET_CUTOFF = 0.6;
 const NONE = "none";
 
 export type Resolution =
@@ -100,6 +103,7 @@ export async function resolveTarget(
   goal: string,
   askJev: AskJev | null,
   rand?: (n: number) => number,
+  cutoff = TARGET_CUTOFF,
 ): Promise<Resolution> {
   const local = resolveLocally(w, t);
   if ("node" in local) return { ok: true, node: local.node, how: local.how, jev: null };
@@ -127,7 +131,7 @@ export async function resolveTarget(
   };
   if (a1.key === null || a1.key !== a2.key) return { ok: false, reason: `${first.length} elements match and the two asks did not agree on one`, jev };
   const conf = Math.min(a1.confidence, a2.confidence);
-  if (conf < TARGET_CUTOFF) return { ok: false, reason: `the asks agreed at confidence ${conf.toFixed(2)}, under ${TARGET_CUTOFF}`, jev };
+  if (conf < cutoff) return { ok: false, reason: `the asks agreed at confidence ${conf.toFixed(2)}, under ${cutoff}`, jev };
   const node = w.nodes.get(a1.key);
   if (node === undefined) return { ok: false, reason: "the chosen element left the window", jev };
   return { ok: true, node, how: "jev", jev };

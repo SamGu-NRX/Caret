@@ -42,7 +42,7 @@ export interface HelperOptions {
   calendar?: CalendarPort | null;
   urls?: UrlOpener | null;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
-  executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct">;
+  executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   publish: (m: HelperMessage) => void;
   warn?: (line: string) => void;
 }

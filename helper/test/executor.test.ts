@@ -190,6 +190,15 @@ describe("executor", () => {
     expect((await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@x.example")]), {})).outcome).toBe("done");
   });
 
+  it("tries a failed walk again, but stops after three failures in a row", async () => {
+    app.failWalks = 2;
+    expect((await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {})).outcome).toBe("done");
+    app.failWalks = 3;
+    const r = await helper.executor.run("t2", plan([write(K("textfield:email~0"), "x@example.com")]), {});
+    expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+    expect(r.detail).toMatch(/cannot re-read/);
+  });
+
   it("keeps a step's end target and its press target apart", async () => {
     const p = plan([
       {

@@ -19,6 +19,8 @@ export class FakeApp implements ReaderLink {
   readonly buttons = new Map<string, (app: FakeApp) => void>();
   /** Makes value writes report success while changing nothing, as Chromium does in the background. */
   dropWrites = false;
+  /** Answers this many walks with axError first, as a walk cut short by a busy app is. */
+  failWalks = 0;
   /** Rewrites each written value, as an app that formats input does. */
   normalize: ((v: string) => string) | null = null;
   /** Called after each verb, so a test can change the app between steps. */
@@ -59,6 +61,10 @@ export class FakeApp implements ReaderLink {
     if (verb.kind === "watchInput") return { outcome: "ok", detail: null };
     if (verb.pid !== FIXTURE_APP.pid) return { outcome: "notAllowed", detail: null };
     if (verb.windowId !== WIN) return { outcome: "noWindow", detail: null };
+    if (verb.kind === "walk" && this.failWalks > 0) {
+      this.failWalks--;
+      return { outcome: "axError", detail: "the walk was cut short" };
+    }
     this.show();
     if (verb.kind === "walk") return { outcome: "ok", detail: null };
     const n = this.node(verb.key);

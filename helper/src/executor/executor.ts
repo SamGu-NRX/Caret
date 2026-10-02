@@ -14,7 +14,7 @@ import type { AskJev } from "../fill/jev.ts";
 import type { CalendarPort, ReaderLink, UrlOpener } from "./means.ts";
 import { classifyLabel } from "./risk.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
-import { norm, resolveLocally, resolveTarget, type Resolution } from "./target.ts";
+import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
 
 export interface ExecutorDeps {
   model: ScreenModel;
@@ -34,6 +34,8 @@ export interface ExecutorDeps {
    */
   beforeStep?: (taskId: string, step: number) => Promise<void>;
   beforeAct?: (taskId: string, step: number) => Promise<void>;
+  /** Overrides TARGET_CUTOFF, for runs that measure the confidences of target questions. */
+  targetCutoff?: number;
 }
 
 export type Outcome = "done" | "stopped" | "handoff" | "paused";
@@ -63,6 +65,8 @@ export interface UndoResult {
 
 /** How many re-reads a press or URL gets to show its effect, and the pause between them. Assumed, not measured. */
 const EFFECT_POLLS = 4;
+/** Extra tries for a failed walk. One cut-short walk in 20 shipping runs stopped a run on a loaded Mac. */
+const WALK_RETRIES = 2;
 const EFFECT_POLL_MS = 150;
 
 interface Task {
@@ -95,6 +99,8 @@ class StepStop extends Error {
 
 export class Executor {
   private readonly tasks = new Map<string, Task>();
+  /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
+  readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
   /** Bumped when a new reader connects: window ids start over, so older tasks may no longer act or undo. */
   private session = 0;
   /** The pid set the reader was last asked to watch, as a sorted list. */
@@ -422,7 +428,12 @@ export class Executor {
       for (const c of cs) if (c.windowId === w.window.windowId) seen.push(c);
     });
     try {
-      const r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
+      // A walk only reads, so one that fails (a busy app cuts a walk short past its deadline) is tried
+      // again before the step stops. Writes and presses are never retried.
+      let r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
+      for (let n = 0; n < WALK_RETRIES && r.outcome === "axError"; n++) {
+        r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
+      }
       if (r.outcome !== "ok") throw new StepStop("stopped", `cannot re-read '${w.window.title}': ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     } finally {
       off();
@@ -471,8 +482,11 @@ export class Executor {
       // A cached choice still has to fit the locator in the current tree.
       if (n !== undefined && (t.role === undefined || n.role === t.role) && (t.label === undefined || norm(n.label) === norm(t.label))) return n;
     }
-    const r = await resolveTarget(w, t, goal, this.deps.askJev, this.deps.rand ?? randomInt);
-    if (r.jev !== null) task.jevCalls += 2;
+    const r = await resolveTarget(w, t, goal, this.deps.askJev, this.deps.rand ?? randomInt, this.deps.targetCutoff);
+    if (r.jev !== null) {
+      task.jevCalls += 2;
+      this.targetChoices.push({ taskId: task.id, step: i, chose: r.ok ? r.node.key : null, jev: r.jev });
+    }
     if (!r.ok) throw new StepStop("stopped", `target for '${goal}' not found: ${r.reason}`);
     task.resolved.set(cacheKey, r);
     return r.node;

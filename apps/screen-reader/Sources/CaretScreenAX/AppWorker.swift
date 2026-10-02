@@ -306,7 +306,7 @@ public final class AppWorker: @unchecked Sendable {
         AXUIElementSetMessagingTimeout(w.el, AX.elementTimeout)
         var info = info(for: w)
         let fe = focusedElement ?? (isFocused ? (focusElement?.el ?? AX.element(ax, kAXFocusedUIElementAttribute)) : nil)
-        let limits: WalkLimits = (reason == .background || reason == .initial) ? .background : .focused
+        let limits: WalkLimits = reason == .request ? .request : (reason == .background || reason == .initial) ? .background : .focused
         let walker = Walker(limits: limits, focused: fe)
         let raw = walker.readChildren(of: w.el)
         let title = AX.string(w.el, kAXTitleAttribute) ?? ""
