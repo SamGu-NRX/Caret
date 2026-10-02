@@ -1,0 +1,1 @@
+caret-fixture spawned from the frontmost app (T3 or a terminal) became the active app and held the foreground for a whole run; it now deactivates on becoming active. Poll lsappinfo front during GUI runs.
