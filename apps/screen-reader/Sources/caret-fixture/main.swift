@@ -5,6 +5,9 @@
 //   caret-fixture [--windows reference,claim,schedule] [--gold FILE] [--duration S]
 //                 [--e1 FILE --cycles N --period S] [--webkit URL]
 //                 [--activity FILE] [--focus-forms [--visit reference,distractors]]
+//   --windows executor adds the executor window, driven by lines on stdin:
+//     reset | seed FIELD VALUE | remove FIELD | sheet | dump
+//   Each command answers one JSON line on stdout.
 import AppKit
 import WebKit
 
@@ -243,9 +246,135 @@ final class DriftWindow {
 }
 var drift: DriftWindow?
 
+/// The executor's fixture: named fields (two pairs share a label in different sections, so a locator
+/// by label alone is ambiguous), a status line, and buttons with known effects. Stdin commands reset
+/// it, change it behind the reader's back, and report its true state, which is how the evaluation
+/// checks the executor without trusting the executor's own reading.
+final class ExecutorWindow {
+    static let title = "Caret Fixture — Executor"
+    let w = makeWindow(ExecutorWindow.title, NSRect(x: 620, y: 520, width: 560, height: 560))
+    var fields: [String: NSView] = [:]
+    var frames: [String: (NSView, NSRect)] = [:]
+    let notes = NSTextView(frame: NSRect(x: 0, y: 0, width: 300, height: 50))
+    let status = NSTextField(labelWithString: "Status: Active")
+    var noteLabel: NSTextField?
+    var sent = false
+    var sheet: NSWindow?
+
+    init() {
+        let v = w.contentView!
+        func field(_ name: String, _ label: String, _ frame: NSRect, in parent: NSView) {
+            let tf = NSTextField(frame: frame)
+            tf.setAccessibilityLabel(label)
+            parent.addSubview(tf)
+            fields[name] = tf
+            frames[name] = (parent, frame)
+        }
+        var y = 520.0
+        for (name, label) in [("name", "Name"), ("email", "Email"), ("reference", "Reference"), ("message", "Message"), ("eventTitle", "Event title")] {
+            v.addSubview(label_(label + ":", NSRect(x: 16, y: y + 2, width: 110, height: 20)))
+            field(name, label, NSRect(x: 130, y: y, width: 300, height: 24), in: v)
+            y -= 34
+        }
+        let scroll = NSScrollView(frame: NSRect(x: 130, y: y - 30, width: 300, height: 50))
+        notes.setAccessibilityLabel("Notes")
+        notes.isRichText = false
+        scroll.documentView = notes
+        v.addSubview(label_("Notes:", NSRect(x: 16, y: y + 2, width: 110, height: 20)))
+        v.addSubview(scroll)
+        fields["notes"] = notes
+        y -= 90
+        for (i, section) in ["Billing", "Shipping"].enumerated() {
+            let box = NSBox(frame: NSRect(x: 12 + Double(i) * 270, y: y - 40, width: 260, height: 100))
+            box.title = section
+            box.setAccessibilityLabel(section)
+            v.addSubview(box)
+            let key = section.lowercased()
+            field("\(key)City", "City", NSRect(x: 8, y: 40, width: 230, height: 24), in: box.contentView!)
+            field("\(key)Street", "Street", NSRect(x: 8, y: 8, width: 230, height: 24), in: box.contentView!)
+        }
+        status.frame = NSRect(x: 16, y: 70, width: 200, height: 20)
+        v.addSubview(status)
+        for (i, title) in ["Archive", "Add note", "Next page", "Send"].enumerated() {
+            let b = NSButton(title: title, target: self, action: #selector(pressed(_:)))
+            b.frame = NSRect(x: 16 + Double(i) * 130, y: 20, width: 120, height: 30)
+            v.addSubview(b)
+        }
+        w.orderBack(nil)
+    }
+
+    private func label_(_ s: String, _ f: NSRect) -> NSTextField { label(s, f) }
+
+    @objc func pressed(_ b: NSButton) {
+        switch b.title {
+        case "Archive": status.stringValue = "Status: Archived"
+        case "Add note":
+            if noteLabel == nil {
+                let l = NSTextField(labelWithString: "Note added")
+                l.frame = NSRect(x: 240, y: 70, width: 200, height: 20)
+                w.contentView!.addSubview(l)
+                noteLabel = l
+            }
+        case "Next page": w.title = ExecutorWindow.title + " (page 2)"
+        case "Send": sent = true
+        default: break
+        }
+    }
+
+    func value(_ name: String) -> String? {
+        guard let f = fields[name], f.superview != nil || f === notes else { return nil }
+        if f === notes { return notes.enclosingScrollView?.superview == nil ? nil : notes.string }
+        return (f as? NSTextField)?.stringValue
+    }
+
+    func set(_ name: String, _ value: String) -> Bool {
+        guard let f = fields[name] else { return false }
+        if f === notes { notes.string = value } else { (f as? NSTextField)?.stringValue = value }
+        return true
+    }
+
+    func command(_ line: String) -> [String: Any] {
+        let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
+        switch parts.first ?? "" {
+        case "reset":
+            if let s = sheet { w.endSheet(s); sheet = nil }
+            for (name, (parent, frame)) in frames where fields[name]!.superview == nil {
+                fields[name]!.frame = frame
+                parent.addSubview(fields[name]!)
+            }
+            for name in fields.keys { _ = set(name, "") }
+            status.stringValue = "Status: Active"
+            noteLabel?.removeFromSuperview(); noteLabel = nil
+            w.title = ExecutorWindow.title
+            sent = false
+            return ["ok": true]
+        case "seed" where parts.count >= 2:
+            return ["ok": set(parts[1], parts.count == 3 ? parts[2] : "")]
+        case "remove" where parts.count == 2:
+            guard let f = fields[parts[1]], f !== notes else { return ["ok": false] }
+            f.removeFromSuperview()
+            return ["ok": true]
+        case "sheet":
+            let s = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
+            s.contentView!.addSubview(label("Unsaved changes", NSRect(x: 20, y: 60, width: 260, height: 20)))
+            w.beginSheet(s)
+            sheet = s
+            return ["ok": true]
+        case "dump":
+            var values: [String: Any] = [:]
+            for name in fields.keys { values[name] = value(name) ?? NSNull() }
+            return ["ok": true, "title": w.title, "fields": values, "status": status.stringValue, "note": noteLabel != nil, "sent": sent, "sheet": sheet != nil]
+        default:
+            return ["ok": false, "error": "unknown command \(line)"]
+        }
+    }
+}
+var executorWindow: ExecutorWindow?
+
 for name in windowList {
     switch name {
     case "drift": drift = DriftWindow()
+    case "executor": executorWindow = ExecutorWindow()
     case "reference": windows[name] = buildReference()
     case "distractors": windows[name] = buildReference("Caret Fixture — Inbox", distractors, x: 300)
     case "claim": windows[name] = buildForm("Caret Fixture — Claim form", claimForm, origin: NSPoint(x: 540, y: 80))
@@ -463,6 +592,27 @@ if focusForms {
             }
         }
         delay += 6
+    }
+}
+
+// Stdin commands for the executor window, one per line, each answered with one JSON line.
+if let ex = executorWindow {
+    var pending = Data()
+    FileHandle.standardInput.readabilityHandler = { h in
+        let chunk = h.availableData
+        if chunk.isEmpty { h.readabilityHandler = nil; return }
+        pending.append(chunk)
+        while let nl = pending.firstIndex(of: 0x0A) {
+            let line = String(decoding: pending[pending.startIndex..<nl], as: UTF8.self)
+            pending.removeSubrange(pending.startIndex...nl)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let out = ex.command(line.trimmingCharacters(in: .whitespaces))
+                    let d = (try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])) ?? Data("{\"ok\":false}".utf8)
+                    print(String(decoding: d, as: UTF8.self))
+                }
+            }
+        }
     }
 }
 

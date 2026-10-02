@@ -8,7 +8,19 @@ import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import type { AskJev } from "./fill/jev.ts";
 import { FillError, formFields, proposeFill } from "./fill/fill.ts";
-import { PROTOCOL_VERSION, type FillProposal, type FillRequest, type HelperMessage, type ReaderMessage } from "./protocol.ts";
+import {
+  PROTOCOL_VERSION,
+  type FillProposal,
+  type FillRequest,
+  type HelperMessage,
+  type ReaderCommand,
+  type ReaderMessage,
+  type RunPlan,
+  type TaskControl,
+} from "./protocol.ts";
+import type { Change } from "./model.ts";
+import { Executor, type ExecutorDeps, type TaskResult, type UndoResult } from "./executor/executor.ts";
+import { SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -23,6 +35,14 @@ export interface HelperOptions {
   allowBackgroundFocus: boolean;
   /** Overrides FILL_CUTOFF, for calibration runs that need every agreed choice. */
   fillCutoff?: number;
+  /** Sends a command to the connected reader; false when none is connected. Without it the executor cannot act. */
+  sendToReader?: (cmd: ReaderCommand) => boolean;
+  /** Replaces the socket link to the reader, for tests that simulate the reader in process. */
+  readerLink?: ReaderLink;
+  calendar?: CalendarPort | null;
+  urls?: UrlOpener | null;
+  /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
+  executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct">;
   publish: (m: HelperMessage) => void;
   warn?: (line: string) => void;
 }
@@ -42,6 +62,9 @@ export class Helper {
   private readonly lastFill = new Map<string, number>();
   private readonly inflight = new Set<string>();
   private lastPrune = 0;
+  readonly executor: Executor;
+  private readonly socketLink: SocketReaderLink | null;
+  private readonly changeListeners = new Set<(changes: readonly Change[]) => void>();
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
   private preFocus: { windowId: string; values: Map<string, string> } | null = null;
 
@@ -50,6 +73,20 @@ export class Helper {
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
+    this.socketLink = opts.readerLink === undefined ? new SocketReaderLink(opts.sendToReader ?? (() => false)) : null;
+    this.executor = new Executor({
+      model: this.model,
+      reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
+      calendar: opts.calendar ?? null,
+      urls: opts.urls ?? null,
+      askJev: opts.askJev,
+      publish: (m) => opts.publish(m),
+      onChanges: (l) => {
+        this.changeListeners.add(l);
+        return () => this.changeListeners.delete(l);
+      },
+      ...opts.executorHooks,
+    });
   }
 
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
@@ -63,6 +100,7 @@ export class Helper {
         this.shadowLogger.close();
         this.model.reset();
         this.text.clear();
+        this.executor.readerRestarted();
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
         return null;
@@ -73,6 +111,7 @@ export class Helper {
           this.preFocus = { windowId: m.window.windowId, values: new Map(prior === undefined ? [] : [...prior.nodes].map(([k, n]) => [k, n.value ?? ""])) };
         }
         const changes = this.model.apply(m);
+        if (changes.length > 0) for (const l of this.changeListeners) l(changes);
         const w = this.model.windows.get(m.window.windowId);
         if (w !== undefined) this.text.observe(w, m.at);
         store.count(`reader.snapshot_${m.reason}`, 1, m.at);
@@ -109,11 +148,32 @@ export class Helper {
       case "pasteboard":
         store.count("reader.pasteboard_change", 1, m.at);
         return null;
+      case "verbResult":
+        this.socketLink?.answer(m);
+        return null;
+      case "userInput":
+        this.executor.onUserInput(m);
+        return null;
     }
   }
 
   handleConsumer(m: FillRequest): Promise<FillProposal | null> {
     return this.fill(m.windowId, m.fieldKey, true);
+  }
+
+  /** Runs a plan or controls a task. Errors in the request itself are published, not thrown. */
+  async handleTask(m: RunPlan | TaskControl): Promise<TaskResult | UndoResult | null> {
+    if (this.mode !== "live") {
+      this.error(`task ${m.taskId}: the helper is in shadow mode and does not act`);
+      return null;
+    }
+    try {
+      if (m.type === "runPlan") return await this.executor.run(m.taskId, m.plan, m.slots);
+      return m.action === "resume" ? await this.executor.resume(m.taskId) : await this.executor.undo(m.taskId);
+    } catch (e) {
+      this.error(`task ${m.taskId}: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
   }
 
   /** Periodic work: settled transfers, idle shadow episodes, pruning and count flushes. */

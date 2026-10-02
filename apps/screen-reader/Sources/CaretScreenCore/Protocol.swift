@@ -490,10 +490,164 @@ public struct HelperError: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - executor messages
+
+/// What the helper asks the reader to do. Mirrors ReaderCommand.verb in protocol.ts.
+public enum ReaderVerb: Codable, Equatable, Sendable {
+    case walk(pid: Int, windowId: String)
+    /// `attribute` is "value" or "focused"; `expect` is the value the field must hold right before the write.
+    case write(pid: Int, windowId: String, key: String, role: String, attribute: String, expect: String, value: String)
+    /// `label` is the label the element must still carry.
+    case press(pid: Int, windowId: String, key: String, role: String, label: String)
+    case watchInput(pids: [Int])
+
+    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .kind) {
+        case "walk":
+            self = .walk(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId))
+        case "write":
+            let attribute = try c.decode(String.self, forKey: .attribute)
+            guard attribute == "value" || attribute == "focused" else { throw ProtocolError("unknown write attribute \(attribute)") }
+            self = .write(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId),
+                          key: try c.decode(String.self, forKey: .key), role: try c.decode(String.self, forKey: .role),
+                          attribute: attribute, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
+        case "press":
+            self = .press(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId),
+                          key: try c.decode(String.self, forKey: .key), role: try c.decode(String.self, forKey: .role),
+                          label: try c.decode(String.self, forKey: .label))
+        case "watchInput":
+            self = .watchInput(pids: try c.decode([Int].self, forKey: .pids))
+        case let k:
+            throw ProtocolError("unknown verb \(k)")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .walk(pid, windowId):
+            try c.encode("walk", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
+        case let .write(pid, windowId, key, role, attribute, expect, value):
+            try c.encode("write", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
+            try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(attribute, forKey: .attribute)
+            try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value)
+        case let .press(pid, windowId, key, role, label):
+            try c.encode("press", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
+            try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(label, forKey: .label)
+        case let .watchInput(pids):
+            try c.encode("watchInput", forKey: .kind); try c.encode(pids, forKey: .pids)
+        }
+    }
+}
+
+public struct ReaderCommand: Codable, Equatable, Sendable {
+    public static let type = "readerCommand"
+    public var id: String
+    /// Milliseconds since the epoch after which the reader must not act: the helper has stopped waiting.
+    public var expires: Int64
+    public var verb: ReaderVerb
+    public init(id: String, expires: Int64, verb: ReaderVerb) { self.id = id; self.expires = expires; self.verb = verb }
+    enum CodingKeys: String, CodingKey { case id, expires, verb }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); expires = try c.decode(Int64.self, forKey: .expires)
+        verb = try c.decode(ReaderVerb.self, forKey: .verb)
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(expires, forKey: .expires); try c.encode(verb, forKey: .verb)
+    }
+}
+
+public enum VerbOutcome: String, Codable, Sendable { case ok, notAllowed, noWindow, noElement, changed, secure, axError }
+
+public struct VerbResult: Codable, Equatable, Sendable {
+    public static let type = "verbResult"
+    public var id: String
+    public var at: Int64
+    public var outcome: VerbOutcome
+    public var detail: String?
+    public init(id: String, at: Int64, outcome: VerbOutcome, detail: String?) {
+        self.id = id; self.at = at; self.outcome = outcome; self.detail = detail
+    }
+    enum CodingKeys: String, CodingKey { case id, at, outcome, detail }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); at = try c.decode(Int64.self, forKey: .at)
+        outcome = try c.decode(VerbOutcome.self, forKey: .outcome); detail = try c.decodeNullable(String.self, forKey: .detail)
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(at, forKey: .at); try c.encode(outcome, forKey: .outcome); try c.encode(detail, forKey: .detail)
+    }
+}
+
+/// Real input in a watched process. No key codes or characters, only that it happened.
+public struct UserInput: Codable, Equatable, Sendable {
+    public static let type = "userInput"
+    public enum Kind: String, Codable, Sendable { case key, mouse }
+    public var at: Int64
+    public var pid: Int
+    public var kind: Kind
+    /// Mouse location in Accessibility coordinates as [x, y]; nil for keys.
+    public var point: [Double]?
+    public init(at: Int64, pid: Int, kind: Kind, point: [Double]?) { self.at = at; self.pid = pid; self.kind = kind; self.point = point }
+    enum CodingKeys: String, CodingKey { case at, pid, kind, point }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Int64.self, forKey: .at); pid = try c.decode(Int.self, forKey: .pid)
+        kind = try c.decode(Kind.self, forKey: .kind); point = try c.decodeNullable([Double].self, forKey: .point)
+        if let p = point, p.count != 2 { throw ProtocolError("point must hold two numbers") }
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(at, forKey: .at); try c.encode(pid, forKey: .pid); try c.encode(kind, forKey: .kind); try c.encode(point, forKey: .point)
+    }
+}
+
+public struct TaskProgress: Codable, Equatable, Sendable {
+    public static let type = "taskProgress"
+    public enum Phase: String, Codable, Sendable { case started, skipped, acting, verified, paused, handoff, stopped, done, undone }
+    public var at: Int64
+    public var taskId: String
+    public var planId: String
+    public var phase: Phase
+    public var step: Int?
+    public var steps: Int
+    public var says: String?
+    public var detail: String?
+    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Int64.self, forKey: .at); taskId = try c.decode(String.self, forKey: .taskId)
+        planId = try c.decode(String.self, forKey: .planId); phase = try c.decode(Phase.self, forKey: .phase)
+        step = try c.decodeNullable(Int.self, forKey: .step); steps = try c.decode(Int.self, forKey: .steps)
+        says = try c.decodeNullable(String.self, forKey: .says); detail = try c.decodeNullable(String.self, forKey: .detail)
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(at, forKey: .at); try c.encode(taskId, forKey: .taskId); try c.encode(planId, forKey: .planId)
+        try c.encode(phase, forKey: .phase); try c.encode(step, forKey: .step); try c.encode(steps, forKey: .steps)
+        try c.encode(says, forKey: .says); try c.encode(detail, forKey: .detail)
+    }
+}
+
 /// Any message on the socket, decoded by its `type`.
 public enum Message: Codable, Equatable, Sendable {
     case hello(Hello), snapshot(Snapshot), focus(Focus), appSwitch(AppSwitch), windowClosed(WindowClosed)
     case pasteboard(Pasteboard), fillRequest(FillRequest), fillProposal(FillProposal), error(HelperError)
+    case readerCommand(ReaderCommand), verbResult(VerbResult), userInput(UserInput), taskProgress(TaskProgress)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -507,6 +661,10 @@ public enum Message: Codable, Equatable, Sendable {
         case FillRequest.type: self = .fillRequest(try FillRequest(from: decoder))
         case FillProposal.type: self = .fillProposal(try FillProposal(from: decoder))
         case HelperError.type: self = .error(try HelperError(from: decoder))
+        case ReaderCommand.type: self = .readerCommand(try ReaderCommand(from: decoder))
+        case VerbResult.type: self = .verbResult(try VerbResult(from: decoder))
+        case UserInput.type: self = .userInput(try UserInput(from: decoder))
+        case TaskProgress.type: self = .taskProgress(try TaskProgress(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -522,6 +680,10 @@ public enum Message: Codable, Equatable, Sendable {
         case .fillRequest(let m): try m.encode(to: encoder)
         case .fillProposal(let m): try m.encode(to: encoder)
         case .error(let m): try m.encode(to: encoder)
+        case .readerCommand(let m): try m.encode(to: encoder)
+        case .verbResult(let m): try m.encode(to: encoder)
+        case .userInput(let m): try m.encode(to: encoder)
+        case .taskProgress(let m): try m.encode(to: encoder)
         }
     }
 }

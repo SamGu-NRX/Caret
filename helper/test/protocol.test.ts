@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AnyMessage, ConsumerMessage, HelperMessage, Node, ReaderMessage } from "../src/protocol.ts";
-import { renderProtocolJsonSchema, SCHEMA_PATH } from "../src/export-schema.ts";
+import { AnyMessage, ConsumerMessage, HelperMessage, HelperToReader, Node, ReaderMessage } from "../src/protocol.ts";
+import { PLAN_SCHEMA_PATH, renderPlanJsonSchema, renderProtocolJsonSchema, SCHEMA_PATH } from "../src/export-schema.ts";
+import { Plan } from "../src/executor/schema.ts";
 
 const GOLDEN = fileURLToPath(new URL("../fixtures/golden/protocol.ndjson", import.meta.url));
 const lines = readFileSync(GOLDEN, "utf8").trim().split("\n");
@@ -10,7 +11,10 @@ const lines = readFileSync(GOLDEN, "utf8").trim().split("\n");
 describe("golden protocol fixture", () => {
   it("holds one of every message type", () => {
     const types = lines.map((l) => (JSON.parse(l) as { type: string }).type);
-    expect(types).toEqual(["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error"]);
+    expect(types).toEqual([
+      "hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
+      "readerCommand", "verbResult", "userInput", "taskProgress",
+    ]);
   });
 
   it("parses every line, and each parse is lossless", () => {
@@ -22,12 +26,16 @@ describe("golden protocol fixture", () => {
   });
 
   it("routes each line to the union for its direction", () => {
-    const [hello, snapshot, focus, appSwitch, closed, pasteboard, fillRequest, proposal, error] = lines.map((l) => JSON.parse(l) as unknown);
-    for (const m of [hello, snapshot, focus, appSwitch, closed, pasteboard]) expect(ReaderMessage.safeParse(m).success).toBe(true);
+    const [hello, snapshot, focus, appSwitch, closed, pasteboard, fillRequest, proposal, error, command, verbResult, userInput, progress] = lines.map(
+      (l) => JSON.parse(l) as unknown,
+    );
+    for (const m of [hello, snapshot, focus, appSwitch, closed, pasteboard, verbResult, userInput]) expect(ReaderMessage.safeParse(m).success).toBe(true);
     expect(ConsumerMessage.safeParse(fillRequest).success).toBe(true);
     expect(ConsumerMessage.safeParse(hello).success).toBe(true);
-    for (const m of [proposal, error]) expect(HelperMessage.safeParse(m).success).toBe(true);
+    for (const m of [proposal, error, progress]) expect(HelperMessage.safeParse(m).success).toBe(true);
+    expect(HelperToReader.safeParse(command).success).toBe(true);
     expect(ReaderMessage.safeParse(proposal).success).toBe(false);
+    expect(ReaderMessage.safeParse(command).success).toBe(false);
   });
 
   it("rejects the shapes the Swift decoder also rejects", () => {
@@ -53,5 +61,30 @@ describe("golden protocol fixture", () => {
 describe("exported JSON Schema", () => {
   it("matches the zod schemas (run `pnpm schema` after editing protocol.ts)", () => {
     expect(readFileSync(SCHEMA_PATH, "utf8")).toBe(renderProtocolJsonSchema());
+  });
+});
+
+describe("plan schema", () => {
+  const PLAN = fileURLToPath(new URL("../fixtures/golden/plan.json", import.meta.url));
+  const golden: unknown = JSON.parse(readFileSync(PLAN, "utf8"));
+
+  it("parses the golden plan losslessly, with one step of every end-state kind and both vias", () => {
+    const p = Plan.parse(golden);
+    expect(p).toEqual(golden);
+    expect(new Set(p.steps.map((s) => s.end.kind))).toEqual(new Set(["valueEquals", "exists", "absent", "focused", "windowTitle", "calendarEvent"]));
+    expect(new Set(p.steps.flatMap((s) => (s.via === undefined ? [] : [s.via.kind])))).toEqual(new Set(["press", "openUrl"]));
+  });
+
+  it("rejects a target with nothing to find it by, a window with no title, and a date without an offset", () => {
+    const g = structuredClone(golden) as { steps: { end: Record<string, unknown> }[] };
+    const step = (end: Record<string, unknown>) => ({ ...g, steps: [{ says: "x", end }] });
+    expect(Plan.safeParse(step({ kind: "exists", window: { title: "W" }, target: { describe: "x" } })).success).toBe(false);
+    expect(Plan.safeParse(step({ kind: "exists", window: { bundleId: "b" }, target: { key: "k", describe: "x" } })).success).toBe(false);
+    expect(Plan.safeParse(step({ kind: "calendarEvent", calendar: "c", title: "t", start: "2026-10-08T15:00:00", end: "2026-10-08T15:30:00Z" })).success).toBe(false);
+    expect(Plan.safeParse(step({ kind: "pressed", window: { title: "W" } })).success).toBe(false);
+  });
+
+  it("matches the exported JSON Schema (run `pnpm schema` after editing executor/schema.ts)", () => {
+    expect(readFileSync(PLAN_SCHEMA_PATH, "utf8")).toBe(renderPlanJsonSchema());
   });
 });

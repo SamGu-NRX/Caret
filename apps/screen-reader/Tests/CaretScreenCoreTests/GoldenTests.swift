@@ -27,9 +27,14 @@ private func goldenLines() throws -> [Data] {
             case .fillRequest: "fillRequest"
             case .fillProposal: "fillProposal"
             case .error: "error"
+            case .readerCommand: "readerCommand"
+            case .verbResult: "verbResult"
+            case .userInput: "userInput"
+            case .taskProgress: "taskProgress"
             }
         }
-        #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error"])
+        #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
+                          "readerCommand", "verbResult", "userInput", "taskProgress"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -54,6 +59,17 @@ private func goldenLines() throws -> [Data] {
         #expect(email.states == [.focused])
         #expect(s.nodes.first { $0.subrole == "AXSecureTextField" }?.value == nil)
         #expect(s.values == [TypedValue(kind: .id, text: "ORD-2026-48213", nodeKey: "dev.caret.fixture/standard/statictext:order ord-#-#~0")])
+    }
+
+    @Test func readsAReaderCommand() throws {
+        let lines = try goldenLines()
+        guard case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: lines[9]) else {
+            Issue.record("line 10 is not a readerCommand"); return
+        }
+        guard case let .write(pid, _, _, role, attribute, expect, value) = c.verb else { Issue.record("not a write"); return }
+        #expect(pid == 5150 && role == "AXTextField" && attribute == "value" && expect == "" && value == "dana.whitfield@example.com")
+        let badVerb = Data(#"{"type":"readerCommand","v":1,"id":"x","verb":{"kind":"type","pid":1}}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badVerb) }
     }
 
     @Test func rejectsAWrongVersionAndAnUnknownType() {

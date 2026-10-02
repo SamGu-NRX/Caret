@@ -1,10 +1,11 @@
 // Unix socket server. Every client's first line is a hello naming its role. The reader then
-// streams ReaderMessages; consumers send FillRequests and receive every HelperMessage.
+// streams ReaderMessages and receives the executor's readerCommands; consumers send fill requests,
+// plans and task controls, and receive every HelperMessage.
 // Invalid lines are answered with an error message and counted, never silently dropped.
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type HelperMessage } from "./protocol.ts";
+import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type HelperMessage, type ReaderCommand } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
@@ -12,6 +13,8 @@ const MAX_LINE_CHARS = 32 * 1024 * 1024;
 
 export class HelperServer {
   private readonly consumers = new Set<Socket>();
+  /** The most recent reader connection; commands go there. */
+  private reader: Socket | null = null;
   private readonly sockets = new Set<Socket>();
   private server: Server | null = null;
   private readonly helper: () => Helper;
@@ -22,6 +25,12 @@ export class HelperServer {
     this.path = path;
     this.helper = helper;
     this.warn = warn;
+  }
+
+  sendToReader(cmd: ReaderCommand): boolean {
+    if (this.reader === null || this.reader.destroyed) return false;
+    this.reader.write(JSON.stringify(cmd) + "\n");
+    return true;
   }
 
   publish(m: HelperMessage): void {
@@ -84,7 +93,10 @@ export class HelperServer {
           }
           role = hello.data.role;
           if (role === "consumer") this.consumers.add(s);
-          else void this.helper().handleReader(hello.data);
+          else {
+            this.reader = s;
+            void this.helper().handleReader(hello.data);
+          }
           continue;
         }
         if (role === "reader") {
@@ -101,11 +113,13 @@ export class HelperServer {
             continue;
           }
           if (m.data.type === "fillRequest") void this.helper().handleConsumer(m.data);
+          else if (m.data.type === "runPlan" || m.data.type === "taskControl") void this.helper().handleTask(m.data);
         }
       }
     });
     s.on("close", () => {
       this.consumers.delete(s);
+      if (this.reader === s) this.reader = null;
       this.sockets.delete(s);
     });
     s.on("error", (e) => this.warn(`socket error: ${e.message}`));

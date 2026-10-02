@@ -26,13 +26,19 @@ Never read:
 - the value of a secure text field (checked by role and subrole on every read path)
 - apps on the deny list, `~/.caret-run/deny-apps.txt`: one bundle identifier or prefix per line, created with password managers and Keychain Access on first run.
 
+## Acting for the executor
+
+The helper sends `readerCommand` lines back over the same socket. `walk` re-reads one window. `write` (a field's value, or its focus) and `press` re-walk the window, find the element by key, recheck its role, label and current value against what the helper expects, act, wait 0.15 s, and walk again, so the helper holds the new state before the `verbResult` arrives. A secure field is never written.
+
+Write and press act only in processes named by `--act-pids`, which must be a subset of `--only-pids`. Without the flag the reader only reads, so tonight the executor can act in fixture processes and nowhere else. `watchInput` turns on a global key and mouse monitor for the named processes and reports that input happened, its process and a click's location: never key codes or characters.
+
 ## Element keys
 
 `<app>/<window kind>/<named ancestors>/<role>:<label>~<ordinal>`. Labels are lowercased with digit runs masked as `#`, so counters and dates do not move keys. Unnamed containers are left out, so wrapping does not move keys. Page titles and labels equal to the window title are left out, since Chrome renames its top group and web area on every title change. The ordinal counts earlier siblings with the same role and label. E8 measured the result: 191 of 196 elements kept one key over 100 walks, and every drift was in a window built to cause it.
 
 ## Flags for experiments
 
-`--event-pids`, `--event-bundles` and `--only-pids` make named apps event-driven or restrict reading to them. `--record FILE` tees messages to a file and requires `--only-pids`, because a recording holds screen text. `--e1-log FILE` logs every notification with its callback time. `--e8 --pids … --out FILE` walks windows repeatedly and reports key stability. The scripts in `experiments/` run E1, E8, the shadow logger and the grounded-fill evaluation against `caret-fixture`, which shows synthetic data only.
+`--event-pids`, `--event-bundles` and `--only-pids` make named apps event-driven or restrict reading to them. `--act-pids` allows the executor's verbs in named fixture processes. `--record FILE` tees messages to a file and requires `--only-pids`, because a recording holds screen text. `--e1-log FILE` logs every notification with its callback time. `--e8 --pids … --out FILE` walks windows repeatedly and reports key stability. The scripts in `experiments/` run E1, E8, the shadow logger and the grounded-fill evaluation against `caret-fixture`, which shows synthetic data only. `caret-fixture --windows executor` adds the executor's window, which takes `reset`, `seed`, `remove`, `sheet` and `dump` commands on stdin.
 
 ## Tests
 

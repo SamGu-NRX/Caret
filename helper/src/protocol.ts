@@ -146,7 +146,91 @@ export const Pasteboard = z.object({
 });
 export type Pasteboard = z.infer<typeof Pasteboard>;
 
-export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard]);
+/**
+ * The helper asks the reader to act. `walk` re-reads one window and sends its snapshot. `write` and
+ * `press` re-walk the window, find the element by key, check that it still has the expected role,
+ * label and value, act, re-walk and send the new snapshot, then answer with a verbResult. They act
+ * only on processes the reader was started with `--act-pids` for. `watchInput` names the processes
+ * whose real key and mouse input the reader reports as userInput; an empty list stops reporting.
+ */
+export const ReaderCommand = z.object({
+  type: z.literal("readerCommand"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string(),
+  /**
+   * After this time the reader must not act on the command: the helper has stopped waiting and
+   * reported the step as failed. Checked immediately before the write or press.
+   */
+  expires: ms,
+  verb: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("walk"), pid: z.number().int(), windowId: z.string() }),
+    z.object({
+      kind: z.literal("write"),
+      pid: z.number().int(),
+      windowId: z.string(),
+      key: z.string(),
+      role: z.string(),
+      /** "value" sets AXValue; "focused" sets AXFocused to true and ignores `value`. */
+      attribute: z.enum(["value", "focused"]),
+      /** The value the field must hold right before the write; "" for empty. */
+      expect: z.string(),
+      value: z.string(),
+    }),
+    z.object({
+      kind: z.literal("press"),
+      pid: z.number().int(),
+      windowId: z.string(),
+      key: z.string(),
+      role: z.string(),
+      /** The label the element must still carry; the helper's risk check ran on this text. */
+      label: z.string(),
+    }),
+    z.object({ kind: z.literal("watchInput"), pids: z.array(z.number().int()) }),
+  ]),
+});
+export type ReaderCommand = z.infer<typeof ReaderCommand>;
+export type ReaderVerb = ReaderCommand["verb"];
+
+export const VerbOutcome = z.enum([
+  "ok",
+  /** The process is not one the reader may act on. */
+  "notAllowed",
+  "noWindow",
+  "noElement",
+  /** Role, label or value differed from what the helper expected. */
+  "changed",
+  "secure",
+  /** The Accessibility call itself failed; `detail` holds its error code. */
+  "axError",
+]);
+export type VerbOutcome = z.infer<typeof VerbOutcome>;
+
+/** The reader's answer to one readerCommand. Any snapshot the verb produced was sent before it. */
+export const VerbResult = z.object({
+  type: z.literal("verbResult"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string(),
+  at: ms,
+  outcome: VerbOutcome,
+  detail: z.string().nullable(),
+});
+export type VerbResult = z.infer<typeof VerbResult>;
+
+/**
+ * Real input in a watched process: no key codes, characters or text, only that it happened.
+ * `point` is the mouse location for clicks, in the same coordinates as frames; null for keys.
+ */
+export const UserInput = z.object({
+  type: z.literal("userInput"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  pid: z.number().int(),
+  kind: z.enum(["key", "mouse"]),
+  point: z.tuple([z.number(), z.number()]).nullable(),
+});
+export type UserInput = z.infer<typeof UserInput>;
+
+export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput]);
 export type ReaderMessage = z.infer<typeof ReaderMessage>;
 
 /** Consumer asks for a fill proposal for the form around one field, without waiting for a focus event. */
@@ -158,7 +242,26 @@ export const FillRequest = z.object({
 });
 export type FillRequest = z.infer<typeof FillRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest]);
+/** Runs a plan (executor/schema.ts) with its slots filled. Progress comes back as taskProgress. */
+export const RunPlan = z.object({
+  type: z.literal("runPlan"),
+  v: z.literal(PROTOCOL_VERSION),
+  taskId: z.string(),
+  plan: z.unknown(),
+  slots: z.record(z.string(), z.string()),
+});
+export type RunPlan = z.infer<typeof RunPlan>;
+
+/** Continue a paused task, or restore everything a finished or stopped task wrote. */
+export const TaskControl = z.object({
+  type: z.literal("taskControl"),
+  v: z.literal(PROTOCOL_VERSION),
+  taskId: z.string(),
+  action: z.enum(["resume", "undo"]),
+});
+export type TaskControl = z.infer<typeof TaskControl>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -233,9 +336,49 @@ export const HelperError = z.object({
 });
 export type HelperError = z.infer<typeof HelperError>;
 
-export const HelperMessage = z.discriminatedUnion("type", [FillProposal, HelperError]);
+export const TaskPhase = z.enum([
+  /** The task started; `step` is null. */
+  "started",
+  /** The step's end state already held, so nothing was done. */
+  "skipped",
+  /** About to act; `detail` names the means and the predicted change. */
+  "acting",
+  /** The act happened and the observed change matched the prediction. */
+  "verified",
+  /** Real input in the target window paused the run before this step. */
+  "paused",
+  /** The step's target reads as send, submit, delete or pay; the run stops and the press is left to the user. */
+  "handoff",
+  /** A recheck, mismatch or failure stopped the run at this step; `detail` says why. */
+  "stopped",
+  /** Every end state holds. */
+  "done",
+  /** Undo finished; `detail` counts what was restored and what was not. */
+  "undone",
+]);
+export type TaskPhase = z.infer<typeof TaskPhase>;
+
+export const TaskProgress = z.object({
+  type: z.literal("taskProgress"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  taskId: z.string(),
+  planId: z.string(),
+  phase: TaskPhase,
+  /** Zero-based step index, or null for task-level phases. */
+  step: z.number().int().nonnegative().nullable(),
+  steps: z.number().int().nonnegative(),
+  /** The step's end state as a sentence, for the steps block and the activity view. */
+  says: z.string().nullable(),
+  detail: z.string().nullable(),
+});
+export type TaskProgress = z.infer<typeof TaskProgress>;
+
+export const HelperMessage = z.discriminatedUnion("type", [FillProposal, HelperError, TaskProgress]);
+/** What the helper sends the reader. */
+export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand]);
 export type HelperMessage = z.infer<typeof HelperMessage>;
 
 /** Every message that may appear on the socket in either direction. */
-export const AnyMessage = z.union([ReaderMessage, FillRequest, HelperMessage]);
+export const AnyMessage = z.union([ReaderMessage, ConsumerMessage, HelperMessage, HelperToReader]);
 export type AnyMessage = z.infer<typeof AnyMessage>;

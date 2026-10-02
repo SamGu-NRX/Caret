@@ -39,6 +39,24 @@ public enum AX {
         isSecure(e) ? nil : string(e, kAXValueAttribute)
     }
 
+    /// An attribute read that tells "the element has no such value" apart from "the read failed".
+    /// The executor's rechecks use it so an unreadable field is never treated as empty or not secure.
+    public enum Read {
+        case value(CFTypeRef)
+        case absent
+        case failed(AXError)
+    }
+
+    public static func read(_ e: AXUIElement, _ name: String) -> Read {
+        var v: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(e, name as CFString, &v)
+        switch err {
+        case .success: return v.map(Read.value) ?? .absent
+        case .noValue, .attributeUnsupported: return .absent
+        default: return .failed(err)
+        }
+    }
+
     public static func element(_ e: AXUIElement, _ name: String) -> AXUIElement? {
         guard let v = copy(e, name), CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
         return (v as! AXUIElement)

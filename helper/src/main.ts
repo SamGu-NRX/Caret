@@ -36,6 +36,7 @@ const helper = new Helper({
   allowBackgroundFocus: args["allow-background-focus"],
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
+  sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
   warn,
 });
 server = new HelperServer(args.socket, () => helper, warn);

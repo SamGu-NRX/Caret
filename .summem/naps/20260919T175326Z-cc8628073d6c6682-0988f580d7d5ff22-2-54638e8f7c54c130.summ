@@ -1,0 +1,1 @@
+v1: Caret launches and supervises pinned Screenpipe (TCC stays on its binary; client uses the launcher lease); Supabase only as control plane, never for last-N or threads.

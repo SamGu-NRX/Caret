@@ -298,10 +298,14 @@ public final class AppWorker: @unchecked Sendable {
         return i
     }
 
-    private func walkWindow(_ w: AXRef, reason: WalkReason, isFocused: Bool) {
+    /// Walks one window and sends its snapshot unless nothing changed. Returns the compacted nodes and whether the walk was cut short.
+    /// `focusedElement` overrides how the focused element is found, for verbs that need the app's
+    /// focus as it is now, whatever the reader last saw.
+    @discardableResult
+    private func walkWindow(_ w: AXRef, reason: WalkReason, isFocused: Bool, focusedElement: AXUIElement?? = nil) -> (nodes: [Node], truncated: Bool) {
         AXUIElementSetMessagingTimeout(w.el, AX.elementTimeout)
         var info = info(for: w)
-        let fe = isFocused ? (focusElement?.el ?? AX.element(ax, kAXFocusedUIElementAttribute)) : nil
+        let fe = focusedElement ?? (isFocused ? (focusElement?.el ?? AX.element(ax, kAXFocusedUIElementAttribute)) : nil)
         let limits: WalkLimits = (reason == .background || reason == .initial) ? .background : .focused
         let walker = Walker(limits: limits, focused: fe)
         let raw = walker.readChildren(of: w.el)
@@ -318,10 +322,11 @@ public final class AppWorker: @unchecked Sendable {
         h.combine(title); h.combine(isFocused); h.combine(result.nodes.count)
         for n in result.nodes { h.combine(n) }
         let hash = h.finalize()
-        let unchanged = info.contentHash == hash && reason != .initial && reason != .focus
+        // A request walk always sends: the helper is waiting for it to judge an act.
+        let unchanged = info.contentHash == hash && reason != .initial && reason != .focus && reason != .request
         info.contentHash = hash
         windows[w] = info
-        if unchanged { return }
+        if unchanged { return (result.nodes, walker.truncated) }
 
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: reason, app: app,
                             window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: frame),
@@ -329,6 +334,7 @@ public final class AppWorker: @unchecked Sendable {
                             focusedKey: result.focusedKey,
                             stats: WalkStats(walkMs: (walkMs * 10).rounded() / 10, visited: walker.visited, truncated: walker.truncated))
         ctx.emitter.send(.snapshot(snap))
+        return (result.nodes, walker.truncated)
     }
 
     /// Re-reads just the element a notification named, when it was a kept node whose key does not
@@ -369,6 +375,144 @@ public final class AppWorker: @unchecked Sendable {
             if let i = windows[w], now - i.lastWalk < minAge { continue }
             walkWindow(w, reason: reason, isFocused: w == focused)
         }
+    }
+
+    // MARK: - verbs
+
+    /// Runs one executor verb on this app's queue and answers through `reply`. Write and press re-walk
+    /// the window, find the element by key, check it is the same element the key named before, recheck
+    /// role, label and value against what the helper expects, act, wait for the app to settle, and
+    /// walk again, so the helper has the new state before the answer arrives. Every recheck fails
+    /// closed: an attribute that cannot be read refuses the act. `mayAct` is false unless the reader
+    /// was started with --act-pids for this app; `expires` is when the helper stops waiting.
+    func perform(_ verb: ReaderVerb, mayAct: Bool, expires: Int64, reply: @escaping @Sendable (VerbOutcome, String?) -> Void) {
+        queue.async {
+            let (outcome, detail) = self.performNow(verb, mayAct: mayAct, expires: expires)
+            reply(outcome, detail)
+        }
+    }
+
+    /// Time for the app to apply an act before the window is walked again. Assumed, not measured.
+    static let settle: TimeInterval = 0.15
+
+    private func performNow(_ verb: ReaderVerb, mayAct: Bool, expires: Int64) -> (VerbOutcome, String?) {
+        switch verb {
+        case .watchInput:
+            return (.ok, nil)
+        case let .walk(_, windowId):
+            guard let w = window(id: windowId) else { return (.noWindow, windowId) }
+            if requestWalk(w).truncated { return (.axError, "the walk was cut short, so the window cannot be judged") }
+            return (.ok, nil)
+        case let .write(_, windowId, key, role, attribute, expect, value):
+            guard mayAct else { return (.notAllowed, "the reader was not started with --act-pids \(pid)") }
+            let found = target(windowId: windowId, key: key, role: role)
+            guard case let .success((w, el, _)) = found else { return found.failure }
+            switch AX.read(el, kAXSubroleAttribute) {
+            case .failed(let e): return (.axError, "cannot read the subrole (\(e.rawValue)), so the field may be a password field")
+            case .value(let v) where (v as? String) == "AXSecureTextField": return (.secure, nil)
+            default: break
+            }
+            if role == "AXSecureTextField" { return (.secure, nil) }
+            if nowMs() > expires { return (.axError, "the command expired before it could act") }
+            let err: AXError
+            if attribute == "focused" {
+                err = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            } else {
+                // The value is read again right before the write, so a change since the walk is caught too.
+                let current: String
+                switch AX.read(el, kAXValueAttribute) {
+                case .failed(let e): return (.axError, "cannot read the current value (\(e.rawValue))")
+                case .absent: current = ""
+                case .value(let v):
+                    guard let str = v as? String else { return (.changed, "the value is not text") }
+                    current = str
+                }
+                guard current == expect else { return (.changed, "value is '\(current.prefix(80))'") }
+                err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
+            }
+            guard err == .success else { return (.axError, "AXUIElementSetAttributeValue \(err.rawValue)") }
+            Thread.sleep(forTimeInterval: Self.settle)
+            requestWalk(w)
+            return (.ok, nil)
+        case let .press(_, windowId, key, role, label):
+            guard mayAct else { return (.notAllowed, "the reader was not started with --act-pids \(pid)") }
+            let found = target(windowId: windowId, key: key, role: role)
+            guard case let .success((w, el, _)) = found else { return found.failure }
+            // The label is read from the element itself, not from the walk, right before the press:
+            // the helper's risk check ran on `label`, so a control renamed since then is not pressed.
+            guard let live = liveLabel(el) else { return (.axError, "cannot read the control's label") }
+            guard live.trimmingCharacters(in: .whitespacesAndNewlines) == label else { return (.changed, "label is '\(live.prefix(80))'") }
+            if nowMs() > expires { return (.axError, "the command expired before it could act") }
+            let err = AXUIElementPerformAction(el, kAXPressAction as CFString)
+            guard err == .success else { return (.axError, "AXUIElementPerformAction \(err.rawValue)") }
+            Thread.sleep(forTimeInterval: Self.settle)
+            requestWalk(w)
+            return (.ok, nil)
+        }
+    }
+
+    private enum Found {
+        case success((AXRef, AXUIElement, Node))
+        case fail(VerbOutcome, String?)
+        var failure: (VerbOutcome, String?) {
+            if case let .fail(o, d) = self { return (o, d) }
+            return (.ok, nil)
+        }
+    }
+
+    /// Re-walks the window and finds the element for `key`. The element must be the same one the key
+    /// named in the walk before, so a removed field cannot pass its key on to a sibling with the same
+    /// label, and must still have the expected role.
+    private func target(windowId: String, key: String, role: String) -> Found {
+        guard let w = window(id: windowId) else { return .fail(.noWindow, windowId) }
+        let before = element(key: key, in: w)
+        let walk = requestWalk(w)
+        if walk.truncated { return .fail(.axError, "the walk was cut short, so the target cannot be checked") }
+        guard let el = element(key: key, in: w), let node = walk.nodes.first(where: { $0.key == key }) else { return .fail(.noElement, key) }
+        if let b = before, !CFEqual(b, el) { return .fail(.changed, "another element now has this key") }
+        AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+        switch AX.read(el, kAXRoleAttribute) {
+        case .value(let v) where (v as? String) == role: return .success((w, el, node))
+        case .value(let v): return .fail(.changed, "role is \((v as? String) ?? "not text")")
+        case .absent: return .fail(.changed, "the element has no role")
+        case .failed(let e): return .fail(.axError, "cannot read the role (\(e.rawValue))")
+        }
+    }
+
+    @discardableResult
+    private func requestWalk(_ w: AXRef) -> (nodes: [Node], truncated: Bool) {
+        walkWindow(w, reason: .request, isFocused: w == focusedWindow, focusedElement: .some(focusedElement(in: w)))
+    }
+
+    /// The control's name as the compactor derives it: title, else description. Nil when a read fails.
+    private func liveLabel(_ el: AXUIElement) -> String? {
+        for attr in [kAXTitleAttribute, kAXDescriptionAttribute] {
+            switch AX.read(el, attr) {
+            case .failed: return nil
+            case .value(let v):
+                if let s = v as? String, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return s }
+            case .absent: continue
+            }
+        }
+        return ""
+    }
+
+    /// The window with this reader-assigned id. A window the reader has not walked yet has no id the helper could know.
+    private func window(id: String) -> AXRef? {
+        windows.first(where: { $0.value.id == id })?.key
+    }
+
+    /// The live element whose key, in the window's latest walk, is `key`.
+    private func element(key: String, in w: AXRef) -> AXUIElement? {
+        windows[w]?.contexts.first(where: { $0.value.key == key })?.key.el
+    }
+
+    /// The app's focused element if it sits in `w`; nil otherwise.
+    private func focusedElement(in w: AXRef) -> AXUIElement? {
+        guard let fe = AX.element(ax, kAXFocusedUIElementAttribute) else { return nil }
+        AXUIElementSetMessagingTimeout(fe, AX.elementTimeout)
+        guard let fw = AX.element(fe, kAXWindowAttribute), CFEqual(fw, w.el) else { return nil }
+        return fe
     }
 
     // MARK: - experiments
