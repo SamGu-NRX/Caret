@@ -11,7 +11,15 @@ export const MIN_UNIT = 6;
 const MAX_UNIT = 400;
 const OTHER_APPS = "(apps after the 31st)";
 
-const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
+/**
+ * Whitespace collapsed and letters lowercased one code point at a time. Lowercasing a whole string
+ * is contextual (a final sigma lowers differently), so a unit cut from a longer line could hash
+ * differently from the same unit seen alone.
+ */
+const norm = (s: string): string => {
+  const t = s.replace(/\s+/g, " ").trim();
+  return /^[\x00-\x7f]*$/.test(t) ? t.toLowerCase() : Array.from(t, (c) => c.toLowerCase()).join("");
+};
 const EDGE = /^[\s"'“”‘’()[\]{}<>.,;:!?*`|-]+|[\s"'“”‘’()[\]{}<>.,;:!?*`|-]+$/g;
 const isWord = (c: string | undefined): boolean => c !== undefined && /[\p{L}\p{N}]/u.test(c);
 

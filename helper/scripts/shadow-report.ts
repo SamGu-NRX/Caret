@@ -67,7 +67,7 @@ try {
       a["pmset-log"] === undefined
         ? execFileSync("pmset", ["-g", "log"], { encoding: "utf8", maxBuffer: 1 << 30, stdio: ["ignore", "pipe", "ignore"] })
         : readFileSync(a["pmset-log"], "utf8");
-    activeSpans = humanActiveSpans(log, coverage.to);
+    activeSpans = humanActiveSpans(log);
   }
   const report = opportunityReport({ episodes, transfers, counts, coverage, activeSpans });
   writeFileSync(need("out"), renderOpportunity(report));

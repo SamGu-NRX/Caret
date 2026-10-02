@@ -5,8 +5,9 @@
 // PATHs are files or directories, read whole. --diff adds the lines added since REV in the repo's
 // commits (git diff REV..HEAD). A match that also occurs in the repo at --public-rev was public before
 // the audit ran, such as a word in this code base, and is counted apart. Prints counts; --show also
-// prints the matching text, which comes from the files under check, never from the seen file. Exits 1
-// when any match is not public.
+// prints the matching text, which comes from the files under check, never from the seen file. That
+// text can be real-window content when a check fails, so --show output stays in the terminal and
+// goes into no file. Exits 1 when any match is not public.
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -57,7 +58,8 @@ for (const [file, text] of targets) {
 const isPublic = new Set<string>();
 if (a["public-rev"] !== undefined && a.repo !== undefined && hits.size > 0) {
   try {
-    const out = execFileSync("git", ["-C", a.repo, "grep", "-h", "-o", "-i", "-F", "--no-color", "-f", "/dev/stdin", a["public-rev"]], {
+    // -w: a unit counts as public only as a whole word there, so a private name is not excused by a longer public one that starts with it.
+    const out = execFileSync("git", ["-C", a.repo, "grep", "-h", "-o", "-i", "-w", "-F", "--no-color", "-f", "/dev/stdin", a["public-rev"]], {
       input: [...hits.keys()].join("\n"),
       encoding: "utf8",
       maxBuffer: 1 << 28,

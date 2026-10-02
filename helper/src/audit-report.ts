@@ -45,8 +45,7 @@ export function renderMarkerAudit(s: AuditSummary, cpu: readonly ProcessCpu[] = 
   const sum = (f: (a: MarkerAppCounts) => number): number => Object.values(apps).reduce((n, a) => n + f(a), 0);
   const ended = (e: string): number => m.episodes.filter((x) => x.end === e).length;
   const returned = m.episodes.filter((e) => e.end === "returned");
-  const clearedFirst = returned.filter((e) => e.clearedAfterMs !== null && e.returnedAfterMs !== null && e.clearedAfterMs <= e.returnedAfterMs);
-  const slow = clearedFirst.filter((e) => (e.returnedAfterMs as number) - (e.clearedAfterMs as number) > SLOW_RETURN_MS);
+  const slow = returned.filter((e) => (e.returnedAfterMs ?? 0) - (e.clearedAfterMs ?? 0) > SLOW_RETURN_MS);
   const out = [
     "# Pending markers on real windows",
     "",
@@ -55,9 +54,9 @@ export function renderMarkerAudit(s: AuditSummary, cpu: readonly ProcessCpu[] = 
     "## Headline",
     "",
     `- Leaves checked: ${sum((a) => a.checks)}. With at least one marker: ${sum((a) => a.withMarkers)} (${(sum((a) => a.withMarkers) / h).toFixed(1)} per hour).`,
-    `- Windows that would have become watches: ${m.watches.registered}; at most ${m.watches.maxConcurrent} at once; ${m.watches.overLimit} refused by the limit of 8; ${m.watches.alreadyResolved} leaves skipped because the window's text had not changed since its last watch ended.`,
-    `- Watch outcomes: the user came back ${ended("returned")}, the window closed ${ended("closed")}, still open at the end ${ended("auditEnded")}.`,
-    `- Markers cleared before the user came back: ${clearedFirst.length} of ${returned.length} returns; with more than ${SLOW_RETURN_MS / 1000} s between the markers clearing and the return: ${slow.length}. Background windows are re-read every 10 s while watched, so a clear is seen up to 10 s late.`,
+    `- Windows that would have become watches: ${m.watches.registered}; at most ${m.watches.maxConcurrent} at once; ${m.watches.overLimit} refused by the limit of 8. With Jev off, a watch here ends when its markers are gone, where B4's would end on Jev's answer.`,
+    `- Watch outcomes: the user came back after the markers cleared ${ended("returned")}, the window closed first ${ended("closed")}, watched again for new work first ${ended("replaced")}, still open at the end ${ended("auditEnded")}. Returns while the markers still showed: ${m.episodes.reduce((n, e) => n + e.returnsWhileRunning, 0)}.`,
+    `- Of the ${returned.length} returns after the work cleared, ${slow.length} came more than ${SLOW_RETURN_MS / 1000} s after the clear (deep plan 6.4 counts these). Watched windows are re-read every 10 s and on their app's notifications, so a clear is seen up to 10 s late.`,
     "",
     "## By app",
     "",
@@ -86,11 +85,13 @@ export function renderMarkerAudit(s: AuditSummary, cpu: readonly ProcessCpu[] = 
     "",
     "## Watch episodes",
     "",
-    "| App | First rule | End | Cleared after (s) | Returned after (s) |",
-    "|---|---|---|---:|---:|",
+    "Times are seconds from the leave that registered the watch.",
+    "",
+    "| App | First rule | End | Cleared after | Returned after | Returns while running |",
+    "|---|---|---|---:|---:|---:|",
     ...m.episodes.map(
       (e) =>
-        `| ${e.bundleId} | ${e.rule} | ${e.end} | ${e.clearedAfterMs === null ? "-" : (e.clearedAfterMs / 1000).toFixed(0)} | ${e.returnedAfterMs === null ? "-" : (e.returnedAfterMs / 1000).toFixed(0)} |`,
+        `| ${e.bundleId} | ${e.rule} | ${e.end} | ${e.clearedAfterMs === null ? "-" : (e.clearedAfterMs / 1000).toFixed(0)} | ${e.returnedAfterMs === null ? "-" : (e.returnedAfterMs / 1000).toFixed(0)} | ${e.returnsWhileRunning} |`,
     ),
     "",
     ...cpuLines(cpu),

@@ -33,7 +33,11 @@ const TEXT_RULES = [
   { id: "labelledStatus", re: new RegExp(`^(?:status|state)\\s*:\\s*(?:${VERBS}|in progress|queued|pending)\\b`, "i") },
 ] as const;
 const INDICATORS: Record<string, string> = { AXProgressIndicator: "[progress bar]", AXBusyIndicator: "[busy indicator]" };
-const INDICATOR_RULES: Record<string, MarkerRule> = { "[progress bar]": "progressBar", "[busy indicator]": "busyIndicator" };
+// A Map, not an object literal: a window line reading "constructor" must not find Object's own properties.
+const INDICATOR_RULES = new Map<string, MarkerRule>([
+  ["[progress bar]", "progressBar"],
+  ["[busy indicator]", "busyIndicator"],
+]);
 
 /** Names for the marker rules, so a real-window audit can count which one fired without keeping the text. */
 export type MarkerRule = (typeof TEXT_RULES)[number]["id"] | "progressBar" | "busyIndicator";
@@ -41,7 +45,7 @@ export const MARKER_RULE_IDS: readonly MarkerRule[] = ["progressBar", "busyIndic
 
 /** The rule that makes this watch line a marker, the first in rule order, or null. Button labels never are. */
 export function markerRule(line: string): MarkerRule | null {
-  const indicator = INDICATOR_RULES[line];
+  const indicator = INDICATOR_RULES.get(line);
   if (indicator !== undefined) return indicator;
   if (line.startsWith("[button] ")) return null;
   return TEXT_RULES.find((r) => r.re.test(line))?.id ?? null;

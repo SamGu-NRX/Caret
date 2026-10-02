@@ -36,6 +36,12 @@ describe("scan", () => {
     expect(scanText("from halvorsen freight", SeenSet.fromJSON(f)).map((h) => h.unit).sort()).toEqual(["freight", "halvorsen"]);
   });
 
+  it("finds a unit whose letters lowercase differently in context", () => {
+    const greek = new SeenSet();
+    greek.add("ΑΒΓΔΣ.", "dev.caret.mail");
+    expect(scanText("ΑΒΓΔΣ.ΑΒΓΔ", greek).map((h) => h.unit)).toEqual(["αβγδσ."]);
+  });
+
   it("refuses a seen file with a malformed key", () => {
     expect(() => SeenSet.fromJSON({ salt: "abc", bundles: [], lengths: [], hashes: {} })).toThrow(/salt/);
   });

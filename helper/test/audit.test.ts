@@ -22,7 +22,7 @@ describe("marker rule ids", () => {
     ["Status: queued", "labelledStatus"],
   ])("names the rule for %s", (line, id) => expect(markerRule(line)).toBe(id));
 
-  it.each(["[button] Building…", "Loading…", "Room 4B, Building C"])("names none for %s", (line) => {
+  it.each(["[button] Building…", "Loading…", "Room 4B, Building C", "constructor", "toString", "__proto__"])("names none for %s", (line) => {
     expect(markerRule(line)).toBeNull();
     expect(pendingMarkers([line])).toEqual([]);
   });
@@ -82,7 +82,7 @@ describe("audit", () => {
   it("counts the rules that fired when the user left, registers a watch, and times the clear and the return", () => {
     void helper.handleReader(job(1000, "Exporting 40%", true, true));
     void helper.handleReader(mail(2000, true)); // focus moves: the job window is left
-    void helper.handleReader(job(9000, "Export finished", false, false)); // markers clear 8 s after the leave
+    void helper.handleReader(job(9000, "Export finished", false, false)); // markers clear 7 s after the leave
     void helper.handleReader(mail(30_000, false));
     void helper.handleReader(job(80_000, "Export finished", true, false)); // the user comes back 78 s after the leave
 
@@ -90,31 +90,68 @@ describe("audit", () => {
     expect(s?.markers.byApp["dev.caret.jobs"]).toMatchObject({ checks: 1, withMarkers: 1, windowsWithMarkers: 1, watches: 1 });
     expect(s?.markers.byApp["dev.caret.jobs"]?.checksByRule).toMatchObject({ progressBar: 1, verbCount: 1, verbEllipsis: 0 });
     expect(s?.markers.byApp["dev.caret.mail"]).toMatchObject({ checks: 1, withMarkers: 0, watches: 0 });
-    expect(s?.markers.watches).toMatchObject({ registered: 1, maxConcurrent: 1 });
-    expect(s?.markers.episodes).toEqual([{ bundleId: "dev.caret.jobs", rule: "verbCount", end: "returned", clearedAfterMs: 7000, returnedAfterMs: 78_000 }]);
-    // The reader was asked to watch the window, then to stop.
+    expect(s?.markers.watches).toEqual({ registered: 1, overLimit: 0, maxConcurrent: 1 });
+    expect(s?.markers.episodes).toEqual([
+      { bundleId: "dev.caret.jobs", rule: "verbCount", end: "returned", clearedAfterMs: 7000, returnedAfterMs: 78_000, returnsWhileRunning: 0 },
+    ]);
+    // The reader was asked to watch the window, then to stop once the markers cleared.
     expect(reader.verbs).toEqual([
       { kind: "watchWindows", windows: [{ pid: 7170, windowId: JOB }] },
       { kind: "watchWindows", windows: [] },
     ]);
   });
 
-  it("does not watch a window again when it is left with the text it was resolved on", () => {
+  it("keeps the watch when the user comes back before the work clears, as B4 does", () => {
     void helper.handleReader(job(1000, "Exporting 40%", true, true));
     void helper.handleReader(mail(2000, true));
-    void helper.handleReader(job(3000, "Exporting 40%", true, true)); // back before anything cleared
-    void helper.handleReader(mail(4000, true));
-    const s = helper.audit?.summary();
+    void helper.handleReader(job(3000, "Exporting 40%", true, true)); // back while it still runs
+    void helper.handleReader(mail(4000, true)); // and away again: a second leave, no second watch
+    let s = helper.audit?.summary();
     expect(s?.markers.byApp["dev.caret.jobs"]).toMatchObject({ checks: 2, withMarkers: 2, windowsWithMarkers: 1, watches: 1 });
-    expect(s?.markers.watches).toMatchObject({ registered: 1, alreadyResolved: 1 });
-    expect(s?.markers.episodes[0]).toMatchObject({ end: "returned", clearedAfterMs: null, returnedAfterMs: 1000 });
+    expect(s?.markers.episodes).toEqual([]);
+    helper.audit?.stop(5000);
+    s = helper.audit?.summary();
+    expect(s?.markers.episodes).toEqual([
+      { bundleId: "dev.caret.jobs", rule: "verbCount", end: "auditEnded", clearedAfterMs: null, returnedAfterMs: null, returnsWhileRunning: 1 },
+    ]);
   });
 
-  it("ends a watch whose window closes, and every open one when the audit stops", () => {
+  it("counts one leave once though the helper reports it three times", () => {
+    void helper.handleReader(job(1000, "Running", true, false));
+    void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 1500, from: JOBS, to: MAIL_APP });
+    void helper.handleReader({ ...job(1600, "Running", false, false), reason: "leave" });
+    void helper.handleReader(mail(1700, true));
+    expect(helper.audit?.summary().markers.byApp["dev.caret.jobs"]).toMatchObject({ checks: 1, withMarkers: 1, watches: 1 });
+    expect(helper.audit?.summary().markers.byApp["dev.caret.jobs"]?.linesByRule.statusWord).toBe(1);
+  });
+
+  it("sees a return through an app it cannot read", () => {
+    void helper.handleReader(job(1000, "Running", true, false));
+    const other: AppRef = { pid: 9190, bundleId: "dev.caret.unread", name: "Unread" };
+    void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 2000, from: JOBS, to: other });
+    void helper.handleReader(job(9000, "Done", false, false));
+    void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 90_000, from: other, to: JOBS });
+    void helper.handleReader({ ...job(90_100, "Done", true, false), reason: "focus" });
+    expect(helper.audit?.summary().markers.episodes).toEqual([
+      { bundleId: "dev.caret.jobs", rule: "statusWord", end: "returned", clearedAfterMs: 7000, returnedAfterMs: 88_100, returnsWhileRunning: 0 },
+    ]);
+  });
+
+  it("does not take a truncated walk as the markers clearing", () => {
+    void helper.handleReader(job(1000, "Running", true, false));
+    void helper.handleReader(mail(2000, true));
+    void helper.handleReader({ ...snap([], { at: 5000, windowId: JOB, app: JOBS, title: "Export queue" }), stats: { walkMs: 900, visited: 4000, truncated: true } });
+    helper.audit?.stop(6000);
+    expect(helper.audit?.summary().markers.episodes[0]).toMatchObject({ end: "auditEnded", clearedAfterMs: null });
+  });
+
+  it("ends a watch whose window closes", () => {
     void helper.handleReader(job(1000, "Running", true, false));
     void helper.handleReader(mail(2000, true));
     void helper.handleReader({ type: "windowClosed", v: PROTOCOL_VERSION, at: 5000, windowId: JOB });
-    expect(helper.audit?.summary().markers.episodes).toEqual([{ bundleId: "dev.caret.jobs", rule: "statusWord", end: "closed", clearedAfterMs: null, returnedAfterMs: null }]);
+    expect(helper.audit?.summary().markers.episodes).toEqual([
+      { bundleId: "dev.caret.jobs", rule: "statusWord", end: "closed", clearedAfterMs: null, returnedAfterMs: null, returnsWhileRunning: 0 },
+    ]);
   });
 
   describe("fill readiness", () => {
@@ -178,7 +215,7 @@ describe("audit", () => {
     const markers = renderMarkerAudit({ ...s, startedAt: 0, updatedAt: 3_600_000 }, [{ name: "audit reader", meanPct: 2.5, peakPct: 9, peakRssMb: 50 }]);
     expect(markers).toContain("| dev.caret.jobs | 1 | 1 | 1.0 | 1 | 1 |");
     expect(markers).toContain("| verbCount | 1 | 1 | 1 |");
-    expect(markers).toContain("with more than 60 s between the markers clearing and the return: 1");
+    expect(markers).toContain("Of the 1 returns after the work cleared, 1 came more than 60 s after the clear");
     expect(markers).toContain("| audit reader | 2.5% | 9.0% | 50 MB |");
     const fill = renderFillReadiness(s);
     expect(fill).toContain("Measured: 0 focuses");

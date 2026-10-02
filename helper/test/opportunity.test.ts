@@ -21,15 +21,16 @@ describe("human activity spans", () => {
   ].join("\n");
 
   it("runs each powerd assertion from its creation to its last input and ignores posted events", () => {
-    expect(humanActiveSpans(log, T("10:30"))).toEqual([
+    expect(humanActiveSpans(log)).toEqual([
       { from: T("09:00"), to: T("09:20") },
-      // Still raised when the log ends: input within its ten-minute timeout, capped at that.
-      { from: T("10:00"), to: T("10:20") },
+      // Still raised when the log ends at 10:15:26: its last known input is 10:10:00.
+      { from: T("10:00"), to: T("10:10") },
     ]);
   });
 
-  it("does not extend an open span past now", () => {
-    expect(humanActiveSpans(log, T("10:12")).at(-1)).toEqual({ from: T("10:00"), to: T("10:12") });
+  it("extends a span still raised to ten minutes before the log's last line", () => {
+    const later = `${log}\n2026-03-04 10:40:00 -0600 Notification  \tDisplay is turned on`;
+    expect(humanActiveSpans(later).at(-1)).toEqual({ from: T("10:00"), to: T("10:30") });
   });
 });
 

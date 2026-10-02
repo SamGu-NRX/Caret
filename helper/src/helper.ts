@@ -224,7 +224,7 @@ export class Helper {
         const moved = prevFocused !== this.model.focusedWindowId;
         if (prevFocused !== null && moved) this.record(this.transfers.flush(prevFocused));
         this.pending.onSnapshot(m.window.windowId);
-        this.audit?.onSnapshot(m, moved ? this.model.focusedWindowId : null);
+        this.audit?.onSnapshot(m);
         // The user left a window: the reader's leave walk of it, or focus arriving in another window.
         if (m.reason === "leave") this.left(m.window.windowId, m.at);
         if (prevFocused !== null && moved) this.left(prevFocused, m.at);

@@ -20,12 +20,18 @@ export interface Span {
  * last input. Events that agents and fixtures post (CGEventPost) raise WindowServer's own
  * per-process assertions on this Mac and not powerd's (checked against the 2026-10-02 log), so they
  * are not counted. WindowServer's per-device assertions are not used: they can stay raised for days.
+ * An assertion still raised when the log ends had input within ten minutes of the log's last line,
+ * so its span runs at least that far.
  */
-export function humanActiveSpans(log: string, now: number): Span[] {
+export function humanActiveSpans(log: string): Span[] {
   const line = /^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [+-]\d{4})\s+Assertions\s+PID \d+\(powerd\) (Created|TurnedOn|Summary|TimedOut|Released) UserIsActive "com\.apple\.powermanagement\.kernel\.useractive[^"]*" (\d+):(\d\d):(\d\d)/;
+  const stampAt = /^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [+-]\d{4})/;
   let open: Span | null = null;
+  let lastStamp = -Infinity;
   const spans: Span[] = [];
   for (const raw of log.split("\n")) {
+    const st = stampAt.exec(raw);
+    if (st !== null) lastStamp = Math.max(lastStamp, parseStamp(st[1] as string));
     const m = line.exec(raw);
     if (m === null) continue;
     const [, stamp, event, hh, mm, ss] = m as unknown as [string, string, string, string, string, string];
@@ -44,8 +50,7 @@ export function humanActiveSpans(log: string, now: number): Span[] {
       open = null;
     }
   }
-  // An assertion still raised means input within the last ten minutes; its last input is at most now.
-  if (open !== null) spans.push({ from: open.from, to: Math.max(open.to, Math.min(now, open.to + 10 * 60 * 1000)) });
+  if (open !== null) spans.push({ from: open.from, to: Math.max(open.to, lastStamp - 10 * 60 * 1000) });
   return mergeSpans(spans);
 }
 
