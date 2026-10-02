@@ -1,0 +1,1 @@
+Caret last-N reads minutes/windows/clipboard, newest first, via a lease in .local/screenpipe-lease.json. Caret.app launches screenpipe@0.4.50 on :3031 with clipboard on; clipboard is a Screenpipe UiEventType input, off unless --disable-clipboard-capture false.

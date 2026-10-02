@@ -15,6 +15,8 @@ Node 24 or later; the store uses the built-in `node:sqlite`.
 
 `src/protocol.ts` is the contract, written in zod and exported to JSON Schema. Every client's first line is `hello` with a role. The reader then sends `snapshot`, `focus`, `appSwitch`, `windowClosed` and `pasteboard`. A consumer may send `fillRequest {windowId, fieldKey}` and receives every `fillProposal` and `error`.
 
+The host reports what it did with each proposed field as `fillResult`. An `inserted` result marks that field's transfer as Caret's (attribution `caret`), whether the transfer was judged before or after the result arrived; `undone` removes the transfer from the log and the store again. A result for a proposal, window or field the helper never proposed is answered with an `error`.
+
 A `fillProposal` holds one entry per empty field of the form: the field's key and frame, the derived descriptor, the agreed choice and its confidence, both asks, the chosen candidate's text copied verbatim (`value`, or null for "none"), and where it came from. Proposals are made on focus of an empty field in the frontmost app, or on request, and dropped if the field was filled, its window closed or the mode changed while Jev answered. Nothing here writes into any app; insertion belongs to the host.
 
 ## What is kept
@@ -41,9 +43,24 @@ A plan (`src/executor/schema.ts`, exported to `schemas/plan.schema.json`, exampl
 4. A press target whose label reads as send, submit, delete or pay (`src/executor/risk.ts`), or that has no label, is never pressed: the run ends as a hand-off at that step.
 5. Compare: the written value must appear in the change log and the model, no other field may change, and a press must make its end state hold within four re-reads.
 
-Every write is recorded with the value it replaced; `taskControl {action: "undo"}` restores them newest first, each only if the field still holds what Caret wrote. Real input in a window the task acts in pauses it before the next step; `taskControl {action: "resume"}` continues. The calendar is an interface with one implementation, `FakeCalendar`; nothing here links EventKit or opens URLs.
+Every write is recorded with the value it replaced; `taskControl {action: "undo"}` restores them newest first, each only if the field still holds what Caret wrote. Real input in a window the task acts in, or `taskControl` `pause` or `takeOver`, pauses it at the next step boundary: before the next step starts, or before the current step acts if its reads are still under way. `resume` continues; `stop` ends a running or paused task there, keeping what it wrote. Undo of a paused run ends it. The calendar is an interface with one implementation, `FakeCalendar`; nothing here links EventKit or opens URLs.
 
 `node scripts/executor-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR` runs five fixture plans, the Send hand-off and injected faults against `caret-fixture` with the real reader.
+
+## Tasks and the activity feed
+
+`src/tasks/registry.ts` keeps one record per piece of Caret's work: every executor run (`kind: plan`), every `loopFinish` or `routine` offer (listed as `ready` under the offer id, which its run reuses when taken), and every pending-state watch. States are `preparing`, `ready`, `running`, `paused`, `needsYou`, `done`, `failed` and `undone`, and `cause` says who caused the latest move: `caret`, `you` or `screen`. A run's hand-off is `needsYou`; a stop, by the user or by a mismatch, is `failed` with its cause; undo, or an offer withdrawn before it ran, is `undone`. Nothing leaves done, failed or undone except a finished run's undo.
+
+Every transition and every step change is sent to all consumers as `activity {seq, at, from, task}`, with `seq` rising by one. A record carries the step reached, its sentence, the end states that remain, and whether undo applies. `activityRequest {requestId, op: list | since, since?}` is answered with `activityReply` to the asker only: `list` returns every record, newest first; `since` returns the activity messages after a sequence number, or `truncated: true` when the 1,000-message buffer no longer reaches back that far. Records live in memory only and finished ones are dropped after a day.
+
+## Pending-state watch
+
+`src/tasks/pending.ts`. When the user leaves a window (the reader's `leave` walk, focus arriving in another window, or an app switch), code looks for markers: a progress or busy indicator, or a status line such as "Running tests…", "Exporting 40%", "Building" or "Status: running". Loading, saving, syncing and updating are left out because apps show them constantly. A window with markers gets a watch, a task in `running`, and the reader is sent `watchWindows`, so it re-reads that window on its app's notifications about it and every 10 s.
+
+When the window's text changes, with digits masked so a counter or percentage does not count, Jev answers two choice questions in one request: has the work finished (`yes`, `failed`, `no`), and is the window waiting on the user (`yes`, `no`). The state holds the window's text from when the user left and from now, at most 30 lines, never an editable field's value. Waiting wins, so an approval prompt is `needsYou`; finished is `done`, failed is `failed`, and anything else stays `running`. Questions wait out a 150 ms trailing debounce (at most 400 ms), run one at a time per window, and an answer about a screen that changed meanwhile is dropped. Answers that the work is still running back off from 1 s to 20 s. Done and failed end the watch; leaving the window again with the same text registers nothing. A watch takes `pause`, `resume` and `stop`; a window that closes ends it (done by you if it was waiting on you, failed otherwise). At most eight windows are watched.
+
+- `node scripts/pending-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR` leaves the fixture's ordinary windows to count false watches, runs ten live-Jev runs of the job windows (Running to Done, and to "Approve?") with latency from the fixture's own timestamp, and measures idle CPU with and without a watch. It needs `CARET_ENV_FILE` and the GUI lock.
+- `node scripts/tasks-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR` runs a six-step plan over the socket as a consumer: pause after step 2 and resume, take over after step 3, stop and undo. It needs the GUI lock.
 
 ## Patterns and memory
 
