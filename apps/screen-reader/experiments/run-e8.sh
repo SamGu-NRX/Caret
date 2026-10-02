@@ -14,7 +14,7 @@ BIN="$HERE/../.build/debug"
 PROFILE=/tmp/caret-e8-chrome
 mkdir -p "$OUT"
 # Signals only pids this script recorded. An empty or zero pid would make `kill` signal the whole process group.
-stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && kill "$p" 2>/dev/null; done; return 0; }
+stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
 trap 'stop "${FIX:-}" "${FIX2:-}"; pkill -f "user-data-dir=$PROFILE" 2>/dev/null || true; sleep 1; rm -rf "$PROFILE"' EXIT
 
 "$BIN/caret-fixture" --windows reference,distractors,claim,schedule --duration 600 > /dev/null 2>&1 &

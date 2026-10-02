@@ -14,7 +14,7 @@ DATA="$OUT/shadow-data"
 mkdir -p "$OUT"
 rm -rf "$DATA"
 # Signals only pids this script recorded. An empty or zero pid would make `kill` signal the whole process group.
-stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && kill "$p" 2>/dev/null; done; return 0; }
+stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
 trap 'stop "${READER:-}" "${HELPERPID:-}" "${FIX:-}"' EXIT
 
 (cd "$HELPER" && exec node src/main.ts --shadow --data-dir "$DATA" --status-every 60 > "$OUT/helper.log" 2>&1) &

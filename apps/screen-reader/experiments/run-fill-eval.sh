@@ -12,7 +12,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../.build/debug"
 HELPER="$HERE/../../../helper"
 : "${CARET_ENV_FILE:?set CARET_ENV_FILE to the .env holding TYPESAFE_API_KEY}"
-stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && kill "$p" 2>/dev/null; done; return 0; }
+stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
 trap 'stop "${READER:-}" "${FIX:-}" "${HELPERPID:-}"' EXIT
 mkdir -p "$OUT"
 rm -rf "$OUT/helper-data" "$OUT/reader-record.ndjson"

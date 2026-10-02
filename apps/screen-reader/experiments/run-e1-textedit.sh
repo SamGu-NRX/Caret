@@ -20,7 +20,7 @@ TE=$(comm -13 <(echo "$before") <(echo "$after") | head -1)
 [[ -n "$TE" ]] || { echo "no new TextEdit instance"; exit 1; }
 echo "textedit $TE" | tee "$OUT/pids.txt"
 # Signals only pids this script recorded. An empty or zero pid would make `kill` signal the whole process group.
-stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && kill "$p" 2>/dev/null; done; return 0; }
+stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
 trap 'stop "${READER:-}" "$TE"' EXIT
 "$BIN/caret-screen" --only-pids "$TE" --event-pids "$TE" --socket /tmp/caret-e1-textedit/none.sock --e1-log "$OUT/e1.ndjson" > "$OUT/reader.log" 2>&1 &
 READER=$!
