@@ -89,7 +89,7 @@ describe("candidate generator", () => {
   });
   it("records where each candidate came from", () => {
     const c = cands.find((x) => x.text === "dana.whitfield@example.com")!;
-    expect(c.source).toEqual({ windowId: SRC, bundleId: "dev.caret.mail", appName: "Mail Fixture", windowTitle: "Order confirmation", nodeKey: "m/statictext:sig~0", kind: "email" });
+    expect(c.source).toEqual({ pid: 6160, windowId: SRC, bundleId: "dev.caret.mail", appName: "Mail Fixture", windowTitle: "Order confirmation", nodeKey: "m/statictext:sig~0", kind: "email" });
   });
   it("respects the cap", () => {
     expect(generateCandidates(buildModel(), FORM, 2)).toHaveLength(2);
@@ -142,7 +142,7 @@ describe("proposeFill", () => {
     expect(p.fields[0]?.asks.map((a) => a.value)).toEqual([EMAIL, EMAIL]);
     expect(p.fields[0]?.source?.windowId).toBe(SRC);
     expect(p.fields.slice(1).every((f) => f.value === null && f.source === null && f.withheld === null)).toBe(true);
-    expect(p).toMatchObject({ type: "fillProposal", windowId: FORM, at: 5000, jev: { model: "jev-test", inputTokens: 2000 } });
+    expect(p).toMatchObject({ type: "fillProposal", pid: 5150, windowId: FORM, at: 5000, jev: { model: "jev-test", inputTokens: 2000 } });
   });
 
   it("withholds a value the two asks disagree on", async () => {

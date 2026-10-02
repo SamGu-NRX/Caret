@@ -19,7 +19,7 @@ export interface TransferRow {
   dstKeyHash: string;
   /** Time between the source value first appearing and the destination change. */
   ageMs: number;
-  attribution: "user" | "unknown";
+  attribution: "user" | "unknown" | "caret";
 }
 
 export interface ShadowRow {
@@ -123,13 +123,23 @@ export class Store {
     this.pending = new Map();
   }
 
-  addTransfer(t: TransferRow): void {
-    this.db
+  /** Returns the row id, so a later fillResult can re-attribute or remove the row. */
+  addTransfer(t: TransferRow): number {
+    return Number(this.db
       .prepare(
         `INSERT INTO transfers (at, value_hash, kind, length, match, src_bundle, src_window_kind, src_key_hash,
            dst_bundle, dst_window_kind, dst_key_hash, age_ms, attribution) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(t.at, t.valueHash, t.kind, t.length, t.match, t.srcBundle, t.srcWindowKind, t.srcKeyHash, t.dstBundle, t.dstWindowKind, t.dstKeyHash, t.ageMs, t.attribution);
+      .run(t.at, t.valueHash, t.kind, t.length, t.match, t.srcBundle, t.srcWindowKind, t.srcKeyHash, t.dstBundle, t.dstWindowKind, t.dstKeyHash, t.ageMs, t.attribution)
+      .lastInsertRowid);
+  }
+
+  setAttribution(id: number, attribution: TransferRow["attribution"]): void {
+    this.db.prepare("UPDATE transfers SET attribution = ? WHERE id = ?").run(attribution, id);
+  }
+
+  removeTransfer(id: number): void {
+    this.db.prepare("DELETE FROM transfers WHERE id = ?").run(id);
   }
 
   addShadow(r: ShadowRow): void {

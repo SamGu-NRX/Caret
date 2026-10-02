@@ -65,6 +65,7 @@ export function generateCandidates(model: ScreenModel, targetWindowId: string, m
       blockHead: blockHead(w, node, text),
       recency: recency(w),
       source: {
+        pid: w.app.pid,
         windowId: w.window.windowId,
         bundleId: w.app.bundleId,
         appName: w.app.name,

@@ -63,7 +63,8 @@ export const TypedValue = z.object({
 });
 export type TypedValue = z.infer<typeof TypedValue>;
 
-export const WalkReason = z.enum(["initial", "focus", "event", "leave", "background", "request"]);
+/** `watch` is a re-read of a window under a pending-state watch, on its notifications or every 10 s. */
+export const WalkReason = z.enum(["initial", "focus", "event", "leave", "background", "request", "watch"]);
 export type WalkReason = z.infer<typeof WalkReason>;
 
 export const Hello = z.object({
@@ -152,6 +153,9 @@ export type Pasteboard = z.infer<typeof Pasteboard>;
  * label and value, act, re-walk and send the new snapshot, then answer with a verbResult. They act
  * only on processes the reader was started with `--act-pids` for. `watchInput` names the processes
  * whose real key and mouse input the reader reports as userInput; an empty list stops reporting.
+ * `watchWindows` replaces the set of windows under a pending-state watch: the reader re-reads each
+ * when the app posts a notification about it and every 10 s, as `watch` walks that send a snapshot
+ * only when something changed. An empty list ends every watch. It only reads, so it needs no `--act-pids`.
  */
 export const ReaderCommand = z.object({
   type: z.literal("readerCommand"),
@@ -186,6 +190,7 @@ export const ReaderCommand = z.object({
       label: z.string(),
     }),
     z.object({ kind: z.literal("watchInput"), pids: z.array(z.number().int()) }),
+    z.object({ kind: z.literal("watchWindows"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
   ]),
 });
 export type ReaderCommand = z.infer<typeof ReaderCommand>;
@@ -252,12 +257,18 @@ export const RunPlan = z.object({
 });
 export type RunPlan = z.infer<typeof RunPlan>;
 
-/** Continue a paused task, or restore everything a finished or stopped task wrote. */
+/**
+ * Controls one task in the activity feed. `pause` stops a run at its next step boundary, before the
+ * next act; `resume` continues a paused run or watch; `stop` ends it there for good (state failed,
+ * cause you); `takeOver` pauses like `pause` and hands the run back to the user, and its activity
+ * record names the step it reached and the steps that remain. `undo` restores everything a finished,
+ * stopped or paused run wrote. A watch takes pause, resume and stop only.
+ */
 export const TaskControl = z.object({
   type: z.literal("taskControl"),
   v: z.literal(PROTOCOL_VERSION),
   taskId: z.string(),
-  action: z.enum(["resume", "undo"]),
+  action: z.enum(["pause", "resume", "stop", "takeOver", "undo"]),
 });
 export type TaskControl = z.infer<typeof TaskControl>;
 
@@ -300,10 +311,39 @@ export const MemoryRequest = z.object({
 });
 export type MemoryRequest = z.infer<typeof MemoryRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest]);
+/**
+ * The host's report on one field of a fill proposal: what it did with the proposed value and how.
+ * `inserted` marks the matching transfer as Caret's; `undone` removes that transfer from the log again.
+ */
+export const FillResult = z.object({
+  type: z.literal("fillResult"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  proposalId: z.string(),
+  windowId: z.string(),
+  fieldKey: z.string(),
+  outcome: z.enum(["inserted", "rejected", "failed", "undone", "undoFailed"]),
+  reason: z.string().nullable(),
+  method: z.enum(["pastePid", "axSelectedText", "axValue"]).nullable(),
+  valueLength: z.number().int().nonnegative(),
+});
+export type FillResult = z.infer<typeof FillResult>;
+
+/** `list` returns every task record; `since` returns the activity messages after sequence number `since`. */
+export const ActivityRequest = z.object({
+  type: z.literal("activityRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string(),
+  op: z.enum(["list", "since"]),
+  since: z.number().int().nonnegative().optional(),
+});
+export type ActivityRequest = z.infer<typeof ActivityRequest>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
+  pid: z.number().int(),
   windowId: z.string(),
   bundleId: z.string(),
   appName: z.string(),
@@ -349,6 +389,8 @@ export const FillProposal = z.object({
   v: z.literal(PROTOCOL_VERSION),
   id: z.string(),
   at: ms,
+  /** The process that owns the form's window. */
+  pid: z.number().int(),
   windowId: z.string(),
   bundleId: z.string(),
   /** The field whose focus (or request) produced this proposal. */
@@ -518,7 +560,99 @@ export const MemoryReply = z.object({
 });
 export type MemoryReply = z.infer<typeof MemoryReply>;
 
-export const HelperMessage = z.discriminatedUnion("type", [FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply]);
+// MARK: - tasks and the activity feed (plan section 3, "Reporting")
+
+/**
+ * Where a piece of Caret's work stands. `preparing`: Caret is building it before anyone asked.
+ * `ready`: prepared and offered, waiting to be taken. `running`: acting, or watching a window.
+ * `paused`: stopped at a step boundary and resumable. `needsYou`: the user has to act (a hand-off, or a
+ * watched window waiting on them). `done`: every end state holds, or the watched work finished.
+ * `failed`: it ended without reaching its end state; `cause` says who ended it. `undone`: what it
+ * wrote was restored, or an offer was withdrawn before it ran, so nothing of it stands.
+ */
+export const TaskState = z.enum(["preparing", "ready", "running", "paused", "needsYou", "done", "failed", "undone"]);
+export type TaskState = z.infer<typeof TaskState>;
+/** Who caused the latest transition: Caret's own judgment, the user (a control, or real input), or the screen (a window closed or changed). */
+export const TaskCause = z.enum(["caret", "you", "screen"]);
+export type TaskCause = z.infer<typeof TaskCause>;
+/** `plan` is a runPlan or a taken loopNext; `loopFinish` and `routine` start as ready offers; `watch` is a pending-state watch. */
+export const TaskKind = z.enum(["plan", "loopFinish", "routine", "watch"]);
+export type TaskKind = z.infer<typeof TaskKind>;
+
+/** One of Jev's two pending answers, as chosen. */
+export const PendingAnswer = z.object({ choice: z.string(), confidence: z.number() });
+
+export const PendingInfo = z.object({
+  /** The line that marked the window as unfinished when the user left it: a status text, or the indicator's role. */
+  markedBy: z.string(),
+  /** The first line that differs from what the window showed when the watch began; null before any change. */
+  status: z.string().nullable(),
+  /** Has the work finished: yes, failed or no. Null until the window first changes. */
+  finished: PendingAnswer.nullable(),
+  /** Is the window waiting on the user: yes or no. */
+  waiting: PendingAnswer.nullable(),
+  /** Jev requests made for this watch so far. */
+  asks: z.number().int().nonnegative(),
+});
+export type PendingInfo = z.infer<typeof PendingInfo>;
+
+export const TaskRecord = z.object({
+  /** The taskId of a run, the offer id of a loopFinish or routine (taking it runs under the same id), or `watch-…`. */
+  id: z.string(),
+  kind: TaskKind,
+  state: TaskState,
+  cause: TaskCause.nullable(),
+  /** The work as a sentence: the plan's title, the offer's sentence, or what is being watched. */
+  says: z.string(),
+  app: AppRef.nullable(),
+  windowId: z.string().nullable(),
+  windowTitle: z.string().nullable(),
+  /** Zero-based index of the step the run is at, or stopped or paused before. Null for watches and before the first step. */
+  step: z.number().int().nonnegative().nullable(),
+  steps: z.number().int().nonnegative().nullable(),
+  /** The current step's end state as a sentence. */
+  stepSays: z.string().nullable(),
+  /** End states not yet reached, from `step` on, so a paused or taken-over row can say what remains. */
+  remaining: z.array(z.string()),
+  detail: z.string().nullable(),
+  /** True while the run has writes undo could restore. */
+  undoable: z.boolean(),
+  startedAt: ms,
+  updatedAt: ms,
+  pending: PendingInfo.nullable(),
+});
+export type TaskRecord = z.infer<typeof TaskRecord>;
+
+/** Sent to every consumer on each transition, and on step changes of a running task. `seq` rises by one per message. */
+export const Activity = z.object({
+  type: z.literal("activity"),
+  v: z.literal(PROTOCOL_VERSION),
+  seq: z.number().int().positive(),
+  at: ms,
+  /** The state before this message; null when the record is new. Equal to `task.state` for a step change. */
+  from: TaskState.nullable(),
+  task: TaskRecord,
+});
+export type Activity = z.infer<typeof Activity>;
+
+/**
+ * Sent to the asking consumer only. `seq` is the latest activity sequence number. `list` fills `tasks`,
+ * newest first; `since` fills `events`, oldest first. `truncated` means events after `since` were
+ * already dropped from the helper's buffer, so the consumer must `list` instead.
+ */
+export const ActivityReply = z.object({
+  type: z.literal("activityReply"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string(),
+  error: z.string().nullable(),
+  seq: z.number().int().nonnegative(),
+  tasks: z.array(TaskRecord),
+  events: z.array(Activity),
+  truncated: z.boolean(),
+});
+export type ActivityReply = z.infer<typeof ActivityReply>;
+
+export const HelperMessage = z.discriminatedUnion("type", [FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply]);
 /** What the helper sends the reader. */
 export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand]);
 export type HelperMessage = z.infer<typeof HelperMessage>;

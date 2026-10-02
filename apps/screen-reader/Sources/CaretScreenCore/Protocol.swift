@@ -149,16 +149,17 @@ public struct TypedValue: Codable, Equatable, Hashable, Sendable {
 }
 
 public enum WalkReason: String, Codable, Sendable {
-    case initial, focus, event, leave, background, request
+    /// `watch`: a re-read of a window under a pending-state watch.
+    case initial, focus, event, leave, background, request, watch
 }
 
 public enum ClientRole: String, Codable, Sendable { case reader, consumer }
 public enum ReaderMode: String, Codable, Sendable { case live, shadow }
 
 /// Every message carries `type` and `v`; this checks both on decode and writes both on encode.
-private enum Envelope: String, CodingKey { case type, v }
+enum Envelope: String, CodingKey { case type, v }
 
-private func checkEnvelope(_ decoder: Decoder, _ type: String) throws {
+func checkEnvelope(_ decoder: Decoder, _ type: String) throws {
     let c = try decoder.container(keyedBy: Envelope.self)
     let t = try c.decode(String.self, forKey: .type)
     let v = try c.decode(Int.self, forKey: .v)
@@ -166,7 +167,7 @@ private func checkEnvelope(_ decoder: Decoder, _ type: String) throws {
     guard v == Proto.version else { throw ProtocolError("unsupported protocol version \(v)") }
 }
 
-private func writeEnvelope(_ encoder: Encoder, _ type: String) throws {
+func writeEnvelope(_ encoder: Encoder, _ type: String) throws {
     var c = encoder.container(keyedBy: Envelope.self)
     try c.encode(type, forKey: .type)
     try c.encode(Proto.version, forKey: .v)
@@ -361,21 +362,24 @@ public struct FillRequest: Codable, Equatable, Sendable {
 }
 
 public struct FillSource: Codable, Equatable, Sendable {
+    public var pid: Int
     public var windowId: String
     public var bundleId: String
     public var appName: String
     public var windowTitle: String
     public var nodeKey: String
     public var kind: ValueKind?
-    enum CodingKeys: String, CodingKey { case windowId, bundleId, appName, windowTitle, nodeKey, kind }
+    enum CodingKeys: String, CodingKey { case pid, windowId, bundleId, appName, windowTitle, nodeKey, kind }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        pid = try c.decode(Int.self, forKey: .pid)
         windowId = try c.decode(String.self, forKey: .windowId); bundleId = try c.decode(String.self, forKey: .bundleId)
         appName = try c.decode(String.self, forKey: .appName); windowTitle = try c.decode(String.self, forKey: .windowTitle)
         nodeKey = try c.decode(String.self, forKey: .nodeKey); kind = try c.decodeNullable(ValueKind.self, forKey: .kind)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(pid, forKey: .pid)
         try c.encode(windowId, forKey: .windowId); try c.encode(bundleId, forKey: .bundleId)
         try c.encode(appName, forKey: .appName); try c.encode(windowTitle, forKey: .windowTitle)
         try c.encode(nodeKey, forKey: .nodeKey); try c.encode(kind, forKey: .kind)
@@ -445,6 +449,8 @@ public struct FillProposal: Codable, Equatable, Sendable {
     public static let type = "fillProposal"
     public var id: String
     public var at: Int64
+    /// The process that owns the form's window.
+    public var pid: Int
     public var windowId: String
     public var bundleId: String
     public var triggerKey: String
@@ -453,11 +459,12 @@ public struct FillProposal: Codable, Equatable, Sendable {
     public var jev: JevUsage
     /// The confidence an agreed choice had to reach to be proposed.
     public var cutoff: Double
-    enum CodingKeys: String, CodingKey { case id, at, windowId, bundleId, triggerKey, fields, candidates, jev, cutoff }
+    enum CodingKeys: String, CodingKey { case id, at, pid, windowId, bundleId, triggerKey, fields, candidates, jev, cutoff }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); at = try c.decode(Int64.self, forKey: .at)
+        pid = try c.decode(Int.self, forKey: .pid)
         windowId = try c.decode(String.self, forKey: .windowId); bundleId = try c.decode(String.self, forKey: .bundleId)
         triggerKey = try c.decode(String.self, forKey: .triggerKey); fields = try c.decode([FillField].self, forKey: .fields)
         candidates = try c.decode(Int.self, forKey: .candidates); jev = try c.decode(JevUsage.self, forKey: .jev)
@@ -466,7 +473,8 @@ public struct FillProposal: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(id, forKey: .id); try c.encode(at, forKey: .at); try c.encode(windowId, forKey: .windowId)
+        try c.encode(id, forKey: .id); try c.encode(at, forKey: .at); try c.encode(pid, forKey: .pid)
+        try c.encode(windowId, forKey: .windowId)
         try c.encode(bundleId, forKey: .bundleId); try c.encode(triggerKey, forKey: .triggerKey)
         try c.encode(fields, forKey: .fields); try c.encode(candidates, forKey: .candidates); try c.encode(jev, forKey: .jev)
         try c.encode(cutoff, forKey: .cutoff)
@@ -500,8 +508,10 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     /// `label` is the label the element must still carry.
     case press(pid: Int, windowId: String, key: String, role: String, label: String)
     case watchInput(pids: [Int])
+    /// Replaces the set of windows under a pending-state watch; an empty list ends every watch.
+    case watchWindows(windows: [WatchedWindow])
 
-    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids }
+    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -520,6 +530,8 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
                           label: try c.decode(String.self, forKey: .label))
         case "watchInput":
             self = .watchInput(pids: try c.decode([Int].self, forKey: .pids))
+        case "watchWindows":
+            self = .watchWindows(windows: try c.decode([WatchedWindow].self, forKey: .windows))
         case let k:
             throw ProtocolError("unknown verb \(k)")
         }
@@ -539,8 +551,16 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(label, forKey: .label)
         case let .watchInput(pids):
             try c.encode("watchInput", forKey: .kind); try c.encode(pids, forKey: .pids)
+        case let .watchWindows(windows):
+            try c.encode("watchWindows", forKey: .kind); try c.encode(windows, forKey: .windows)
         }
     }
+}
+
+public struct WatchedWindow: Codable, Equatable, Hashable, Sendable {
+    public var pid: Int
+    public var windowId: String
+    public init(pid: Int, windowId: String) { self.pid = pid; self.windowId = windowId }
 }
 
 public struct ReaderCommand: Codable, Equatable, Sendable {
@@ -648,6 +668,7 @@ public enum Message: Codable, Equatable, Sendable {
     case hello(Hello), snapshot(Snapshot), focus(Focus), appSwitch(AppSwitch), windowClosed(WindowClosed)
     case pasteboard(Pasteboard), fillRequest(FillRequest), fillProposal(FillProposal), error(HelperError)
     case readerCommand(ReaderCommand), verbResult(VerbResult), userInput(UserInput), taskProgress(TaskProgress)
+    case fillResult(FillResult), taskControl(TaskControl), activityRequest(ActivityRequest), activity(Activity), activityReply(ActivityReply)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -665,6 +686,11 @@ public enum Message: Codable, Equatable, Sendable {
         case VerbResult.type: self = .verbResult(try VerbResult(from: decoder))
         case UserInput.type: self = .userInput(try UserInput(from: decoder))
         case TaskProgress.type: self = .taskProgress(try TaskProgress(from: decoder))
+        case FillResult.type: self = .fillResult(try FillResult(from: decoder))
+        case TaskControl.type: self = .taskControl(try TaskControl(from: decoder))
+        case ActivityRequest.type: self = .activityRequest(try ActivityRequest(from: decoder))
+        case Activity.type: self = .activity(try Activity(from: decoder))
+        case ActivityReply.type: self = .activityReply(try ActivityReply(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -684,6 +710,11 @@ public enum Message: Codable, Equatable, Sendable {
         case .verbResult(let m): try m.encode(to: encoder)
         case .userInput(let m): try m.encode(to: encoder)
         case .taskProgress(let m): try m.encode(to: encoder)
+        case .fillResult(let m): try m.encode(to: encoder)
+        case .taskControl(let m): try m.encode(to: encoder)
+        case .activityRequest(let m): try m.encode(to: encoder)
+        case .activity(let m): try m.encode(to: encoder)
+        case .activityReply(let m): try m.encode(to: encoder)
         }
     }
 }

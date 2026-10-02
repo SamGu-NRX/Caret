@@ -60,7 +60,7 @@ export class FakeApp implements ReaderLink {
   }
 
   private perform(verb: ReaderVerb): { outcome: VerbResult["outcome"]; detail: string | null } {
-    if (verb.kind === "watchInput") return { outcome: "ok", detail: null };
+    if (verb.kind === "watchInput" || verb.kind === "watchWindows") return { outcome: "ok", detail: null };
     if (verb.pid !== FIXTURE_APP.pid) return { outcome: "notAllowed", detail: null };
     if (verb.windowId !== WIN) return { outcome: "noWindow", detail: null };
     if (verb.kind === "walk" && this.failWalks > 0) {

@@ -15,7 +15,10 @@ export interface Transfer {
   src: Observation;
   dst: { windowId: string; bundleId: string; windowKind: string; key: string };
   ageMs: number;
-  attribution: "user" | "unknown";
+  /** `caret` when the host reported inserting this value for Caret (fillResult). */
+  attribution: "user" | "unknown" | "caret";
+  /** The store's row for this transfer, once recorded. */
+  rowId?: number;
 }
 
 interface PendingEdit {

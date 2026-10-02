@@ -180,6 +180,7 @@ export async function proposeFill(
     v: PROTOCOL_VERSION,
     id: randomUUID(),
     at: now,
+    pid: w.app.pid,
     windowId,
     bundleId: w.app.bundleId,
     triggerKey,

@@ -64,6 +64,12 @@ public final class AppWorker: @unchecked Sendable {
     private var focusEmptyAtEvent: (AXRef, Bool)?
     private var focusElement: AXRef?
     private var pendingRegistrations: [String] = []
+    /// Window ids under a pending-state watch. While non-empty the app keeps its observer even when it
+    /// is not event-driven, and those windows are re-read on their notifications and on a timer.
+    private var watched: Set<String> = []
+    private var watchTimer: DispatchSourceTimer?
+    private var watchScheduled = false
+    private var lastWatchWalk: CFAbsoluteTime = 0
 
     /// Notifications that schedule work. Registered on the application element while the app is event-driven.
     static let notifications: [String] = [
@@ -92,7 +98,70 @@ public final class AppWorker: @unchecked Sendable {
             self.frontmost = frontmost
             guard on != self.eventDriven else { return }
             self.eventDriven = on
-            on ? self.addObserver() : self.removeObserver()
+            if on { self.addObserver() } else if self.watched.isEmpty { self.removeObserver() }
+        }
+    }
+
+    // MARK: - pending-state watch
+
+    /// Re-read interval for a watched window with no notifications (brief B4: every 10 s).
+    static let watchInterval: TimeInterval = 10
+    /// Least time between two notification-driven watch walks of one app. Assumed, not measured: it
+    /// bounds a progress bar's notification stream to two walks a second, inside the 2 s report target.
+    static let watchMinGap: TimeInterval = 0.5
+    /// Wait after the first notification, so a burst of them costs one walk. Assumed.
+    static let watchCoalesce: TimeInterval = 0.1
+
+    /// Replaces this app's watched windows. Ids the worker does not know are kept: the helper only
+    /// names windows it has seen, and a window that has since closed is dropped at the next watch walk.
+    func setWatched(_ ids: Set<String>) {
+        queue.async {
+            self.watched = ids
+            if ids.isEmpty {
+                self.watchTimer?.cancel()
+                self.watchTimer = nil
+                if !self.eventDriven { self.removeObserver() }
+                return
+            }
+            self.addObserver()
+            if self.watchTimer == nil {
+                let t = DispatchSource.makeTimerSource(queue: self.queue)
+                t.schedule(deadline: .now() + Self.watchInterval, repeating: Self.watchInterval, leeway: .seconds(1))
+                t.setEventHandler { self.watchWalk() }
+                t.resume()
+                self.watchTimer = t
+            }
+        }
+    }
+
+    /// A notification arrived while some window is watched. One that names an element of a window the
+    /// reader knows and does not watch is ignored; anything else (an element in a watched window, the
+    /// app element, an element not yet walked) schedules a watch walk, at most one per watchMinGap.
+    private func noteForWatch(_ el: AXRef) {
+        let owner: AXRef?
+        if let (w, _) = lookup(el) { owner = w } else if windows[el] != nil { owner = el } else {
+            owner = AX.element(el.el, kAXWindowAttribute).map(AXRef.init)
+        }
+        if let o = owner, let id = windows[o]?.id, !watched.contains(id) { return }
+        guard !watchScheduled else { return }
+        watchScheduled = true
+        let delay = max(Self.watchCoalesce, lastWatchWalk + Self.watchMinGap - CFAbsoluteTimeGetCurrent())
+        queue.asyncAfter(deadline: .now() + delay) { self.watchWalk() }
+    }
+
+    /// Walks every watched window. A walk sends a snapshot only when the window changed. A window
+    /// whose element is gone is reported closed and leaves the watch.
+    private func watchWalk() {
+        watchScheduled = false
+        lastWatchWalk = CFAbsoluteTimeGetCurrent()
+        for (w, info) in windows where watched.contains(info.id) {
+            if case .failed(.invalidUIElement) = AX.read(w.el, kAXRoleAttribute) {
+                windows.removeValue(forKey: w)
+                watched.remove(info.id)
+                ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
+                continue
+            }
+            walkWindow(w, reason: .watch, isFocused: eventDriven && w == focusedWindow)
         }
     }
 
@@ -118,6 +187,8 @@ public final class AppWorker: @unchecked Sendable {
 
     func stop() {
         queue.sync {
+            self.watchTimer?.cancel()
+            self.watchTimer = nil
             self.removeObserver()
             for (_, info) in self.windows { self.ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id))) }
             self.windows.removeAll()
@@ -133,6 +204,7 @@ public final class AppWorker: @unchecked Sendable {
     }
 
     private func handle(_ name: String, _ el: AXRef) {
+        if !watched.isEmpty { noteForWatch(el) }
         guard eventDriven else { return }
         switch name {
         case kAXFocusedUIElementChangedNotification:
@@ -164,7 +236,7 @@ public final class AppWorker: @unchecked Sendable {
     /// Activity Monitor during E1), so those notifications are retried a few times, a second apart.
     private func addObserver(attempt: Int = 0) {
         if attempt > 0 {
-            guard eventDriven, let obs = observer else { return }
+            guard eventDriven || !watched.isEmpty, let obs = observer else { return }
             let refcon = Unmanaged.passUnretained(self).toOpaque()
             let retry = pendingRegistrations
             pendingRegistrations = retry.filter { AXObserverAddNotification(obs, ax, $0 as CFString, refcon) == .cannotComplete }
@@ -309,7 +381,7 @@ public final class AppWorker: @unchecked Sendable {
         AXUIElementSetMessagingTimeout(w.el, AX.elementTimeout)
         var info = info(for: w)
         let fe = focusedElement ?? (isFocused ? (focusElement?.el ?? AX.element(ax, kAXFocusedUIElementAttribute)) : nil)
-        let limits: WalkLimits = reason == .request ? .request : (reason == .background || reason == .initial) ? .background : .focused
+        let limits: WalkLimits = reason == .request ? .request : (reason == .background || reason == .initial || reason == .watch) ? .background : .focused
         let walker = Walker(limits: limits, focused: fe)
         let raw = walker.readChildren(of: w.el)
         let title = AX.string(w.el, kAXTitleAttribute) ?? ""
@@ -400,7 +472,7 @@ public final class AppWorker: @unchecked Sendable {
 
     private func performNow(_ verb: ReaderVerb, mayAct: Bool, expires: Int64) -> (VerbOutcome, String?) {
         switch verb {
-        case .watchInput:
+        case .watchInput, .watchWindows:
             return (.ok, nil)
         case let .walk(_, windowId):
             guard let w = window(id: windowId) else { return (.noWindow, windowId) }

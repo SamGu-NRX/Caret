@@ -14,6 +14,7 @@ describe("golden protocol fixture", () => {
     expect(types).toEqual([
       "hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
       "readerCommand", "verbResult", "userInput", "taskProgress",
+      "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
     ]);
   });
 
@@ -26,9 +27,13 @@ describe("golden protocol fixture", () => {
   });
 
   it("routes each line to the union for its direction", () => {
-    const [hello, snapshot, focus, appSwitch, closed, pasteboard, fillRequest, proposal, error, command, verbResult, userInput, progress] = lines.map(
+    const [hello, snapshot, focus, appSwitch, closed, pasteboard, fillRequest, proposal, error, command, verbResult, userInput, progress, watchCommand, fillResult, control, activityRequest, activity, activityReply] = lines.map(
       (l) => JSON.parse(l) as unknown,
     );
+    for (const m of [fillResult, control, activityRequest]) expect(ConsumerMessage.safeParse(m).success).toBe(true);
+    for (const m of [activity, activityReply]) expect(HelperMessage.safeParse(m).success).toBe(true);
+    expect(HelperToReader.safeParse(watchCommand).success).toBe(true);
+    expect(ConsumerMessage.safeParse(activity).success).toBe(false);
     for (const m of [hello, snapshot, focus, appSwitch, closed, pasteboard, verbResult, userInput]) expect(ReaderMessage.safeParse(m).success).toBe(true);
     expect(ConsumerMessage.safeParse(fillRequest).success).toBe(true);
     expect(ConsumerMessage.safeParse(hello).success).toBe(true);

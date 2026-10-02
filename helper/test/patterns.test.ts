@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { PROTOCOL_VERSION, type HelperMessage, type MemoryReply, type PatternOffer } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type Activity, type HelperMessage, type MemoryReply, type PatternOffer } from "../src/protocol.ts";
 import { decide, type GateContext, type GateInput } from "../src/patterns/gate.ts";
 import { MemoryError, MemoryStore, FORGET_BLOCK_MS } from "../src/patterns/memory.ts";
 import { applyMemory, captureEdit } from "../src/patterns/preferences.ts";
@@ -152,6 +152,20 @@ describe("pattern engine in the helper", () => {
     expect(offers()).toHaveLength(2);
     const log = helper.memory.decisions().filter((d) => d.speak);
     expect(log.map((d) => [d.offerKind, d.showProbability])).toEqual([["loopNext", 2 / 3], ["loopFinish", 0.75]]);
+    // The finish is one task in the activity feed: ready when offered, then the run under the offer's id.
+    const states = sent.filter((m): m is Activity => m.type === "activity" && m.task.id === finish!.id).map((m) => [m.from, m.task.state]);
+    expect(states[0]).toEqual([null, "ready"]);
+    expect(states.at(-1)).toEqual(["running", "done"]);
+    expect(helper.tasks.get(finish!.id)).toMatchObject({ kind: "loopFinish", says: finish!.says, remaining: [], undoable: true });
+  });
+
+  it("lists a loop finish withdrawn before it ran as undone", () => {
+    const dst = grid();
+    startLoop(dst);
+    desk.fill(dst, 2, 0, PEOPLE[2]!);
+    const [finish] = offers("loopFinish");
+    void helper.handleOffer({ type: "offerControl", v: PROTOCOL_VERSION, offerId: finish!.id, action: "dismiss" });
+    expect(helper.tasks.get(finish!.id)).toMatchObject({ state: "undone", cause: "you", detail: "withdrawn: dismissed" });
   });
 
   it("confirms the loop when the user types the predicted row instead of taking it", () => {

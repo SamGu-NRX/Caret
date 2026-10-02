@@ -94,6 +94,24 @@ describe("helper socket", () => {
     other.s.destroy();
   });
 
+  it("answers an activity request to the asker only, and routes a fillResult to the helper", async () => {
+    const asker = await connect(path);
+    const other = await connect(path);
+    const hello = { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "t" };
+    send(asker.s, hello);
+    send(other.s, hello);
+    send(asker.s, { type: "activityRequest", v: PROTOCOL_VERSION, requestId: "a1", op: "list" });
+    expect(await asker.next()).toEqual({ type: "activityReply", v: PROTOCOL_VERSION, requestId: "a1", error: null, seq: 0, tasks: [], events: [], truncated: false });
+    send(asker.s, { type: "activityRequest", v: PROTOCOL_VERSION, requestId: "a2", op: "since" });
+    expect(await asker.next()).toMatchObject({ requestId: "a2", error: "since needs a `since` sequence number" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(other.lines).toEqual([]);
+    send(asker.s, { type: "fillResult", v: PROTOCOL_VERSION, at: 1, proposalId: "p-9", windowId: "w", fieldKey: "k", outcome: "inserted", reason: null, method: "axValue", valueLength: 3 });
+    expect(await asker.next()).toMatchObject({ type: "error", message: "fillResult: unknown or expired proposal p-9" });
+    asker.s.destroy();
+    other.s.destroy();
+  });
+
   it("turns a reader focus on an empty field into a proposal that consumers receive", async () => {
     const consumer = await connect(path);
     send(consumer.s, { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "test" });

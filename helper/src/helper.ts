@@ -10,7 +10,10 @@ import type { AskJev } from "./fill/jev.ts";
 import { FillError, formFields, proposeFill } from "./fill/fill.ts";
 import {
   PROTOCOL_VERSION,
+  type ActivityReply,
+  type ActivityRequest,
   type FillProposal,
+  type FillResult,
   type FillRequest,
   type HelperMessage,
   type MemoryReply,
@@ -22,12 +25,16 @@ import {
   type VerbResult,
   type RunPlan,
   type TaskControl,
+  type TaskCause,
+  type TaskPhase,
+  type TaskState,
 } from "./protocol.ts";
 import type { Change } from "./model.ts";
-import { Executor, type ExecutorDeps, type TaskResult, type UndoResult } from "./executor/executor.ts";
+import { Executor, type ExecutorDeps, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
 import { MemoryStore } from "./patterns/memory.ts";
 import { PatternEngine } from "./patterns/engine.ts";
+import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -56,6 +63,39 @@ export interface HelperOptions {
   warn?: (line: string) => void;
 }
 
+/** The activity state each executor phase puts its task in. */
+const PHASE_STATE: Record<TaskPhase, TaskState> = {
+  started: "running",
+  skipped: "running",
+  acting: "running",
+  verified: "running",
+  paused: "paused",
+  handoff: "needsYou",
+  stopped: "failed",
+  done: "done",
+  undone: "undone",
+};
+
+/** A host-reported insert and the transfer it explains are this close in time. Assumed: the transfer is judged after SETTLE_MS. */
+const CARET_FILL_MATCH_MS = 10_000;
+/** Proposals are remembered this long so a late fillResult can still be matched. Assumed. */
+const PROPOSAL_KEEP_MS = 10 * 60 * 1000;
+
+/** A value the host reported inserting for Caret, and the transfer it was matched to, if any yet. */
+interface CaretFill {
+  proposalId: string;
+  at: number;
+  value: string;
+  undone: boolean;
+  transfer: Transfer | null;
+}
+
+const fieldId = (windowId: string, key: string): string => `${windowId}\u0000${key}`;
+
+function fillMatches(f: CaretFill, t: Transfer): boolean {
+  return Math.abs(t.at - f.at) <= CARET_FILL_MATCH_MS && (f.value.includes(t.value) || t.value.includes(f.value));
+}
+
 /** Re-asking Jev for the same form inside this window returns nothing new. Assumed. */
 const FILL_REPEAT_MS = 30_000;
 const PRUNE_EVERY_MS = 10_000;
@@ -70,10 +110,16 @@ export class Helper {
   private readonly opts: HelperOptions;
   private readonly lastFill = new Map<string, number>();
   private readonly inflight = new Set<string>();
+  /** Recent proposals, by id: the window and each proposed field's value, so fillResult can be checked and matched. */
+  private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string> }>();
+  /** Host-reported inserts, by window and field. */
+  private readonly caretFills = new Map<string, CaretFill>();
   private lastPrune = 0;
   readonly executor: Executor;
   readonly memory: MemoryStore;
   readonly patterns: PatternEngine;
+  /** Every piece of Caret's work and its state, published as activity messages. */
+  readonly tasks: TaskRegistry;
   private readonly socketLink: SocketReaderLink | null;
   private readonly changeListeners = new Set<(changes: readonly Change[]) => void>();
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
@@ -85,6 +131,7 @@ export class Helper {
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
     this.socketLink = opts.readerLink === undefined ? new SocketReaderLink(opts.sendToReader ?? (() => false)) : null;
+    this.tasks = new TaskRegistry((m) => opts.publish(m));
     this.executor = new Executor({
       model: this.model,
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
@@ -92,6 +139,7 @@ export class Helper {
       urls: opts.urls ?? null,
       askJev: opts.askJev,
       publish: (m) => opts.publish(m),
+      onTask: (e) => this.onTaskEvent(e),
       onChanges: (l) => {
         this.changeListeners.add(l);
         return () => this.changeListeners.delete(l);
@@ -105,7 +153,9 @@ export class Helper {
       memory: this.memory,
       hash: (t) => opts.store.hash(t),
       publish: (m) => {
-        if (this.mode === "live") opts.publish(m);
+        if (this.mode !== "live") return;
+        opts.publish(m);
+        this.onPatternMessage(m);
       },
       run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots),
       shadow: () => this.mode === "shadow",
@@ -205,6 +255,108 @@ export class Helper {
     return this.patterns.memoryRequest(m);
   }
 
+  /** Answers an activity request; the server sends the reply to the asking consumer only. */
+  handleActivity(m: ActivityRequest): ActivityReply {
+    return this.tasks.answer(m);
+  }
+
+  /**
+   * The host's report on one proposed field. `inserted` marks the field's transfer as Caret's,
+   * whether the transfer was judged already or is judged later; `undone` removes that transfer from
+   * the log and the store again. Other outcomes are counted. A result for a proposal or field this
+   * helper never proposed is an error, not a guess.
+   */
+  handleFillResult(m: FillResult): void {
+    const store = this.opts.store;
+    const p = this.proposals.get(m.proposalId);
+    if (p === undefined) return this.error(`fillResult: unknown or expired proposal ${m.proposalId}`);
+    if (p.windowId !== m.windowId) return this.error(`fillResult: proposal ${m.proposalId} is for window ${p.windowId}, not ${m.windowId}`);
+    const value = p.values.get(m.fieldKey);
+    if (value === undefined) return this.error(`fillResult: proposal ${m.proposalId} proposed no value for ${m.fieldKey}`);
+    store.count(`fill.result_${m.outcome}`, 1, m.at);
+    const id = fieldId(m.windowId, m.fieldKey);
+    if (m.outcome === "inserted") {
+      const fill: CaretFill = { proposalId: m.proposalId, at: m.at, value, undone: false, transfer: null };
+      this.caretFills.set(id, fill);
+      // The transfer may have been judged before the result arrived.
+      const t = this.recentTransfers.findLast((x) => fillMatches(fill, x) && fieldId(x.dst.windowId, x.dst.key) === id);
+      if (t !== undefined) this.markCaret(fill, t);
+      return;
+    }
+    if (m.outcome === "undone") {
+      const fill = this.caretFills.get(id);
+      if (fill === undefined || fill.proposalId !== m.proposalId) return this.error(`fillResult: undone for ${m.fieldKey}, but no insert of proposal ${m.proposalId} was reported`);
+      fill.undone = true;
+      const t = fill.transfer;
+      if (t === null) return;
+      const i = this.recentTransfers.indexOf(t);
+      if (i >= 0) this.recentTransfers.splice(i, 1);
+      if (t.rowId !== undefined) store.removeTransfer(t.rowId);
+      fill.transfer = null;
+    }
+  }
+
+  private markCaret(fill: CaretFill, t: Transfer): void {
+    t.attribution = "caret";
+    fill.transfer = t;
+    if (t.rowId !== undefined) this.opts.store.setAttribution(t.rowId, "caret");
+  }
+
+  /** An executor phase becomes a task record: created on the run's first phase, updated on every later one. */
+  private onTaskEvent(e: TaskEvent): void {
+    const state = PHASE_STATE[e.phase];
+    const cause: TaskCause | null = e.cause ?? (state === "running" ? null : state === "undone" ? "you" : "caret");
+    const fields = {
+      state,
+      cause,
+      step: e.step,
+      steps: e.steps,
+      stepSays: e.says,
+      remaining: e.remaining,
+      detail: e.detail,
+      undoable: e.undoable,
+      ...(e.window === null ? {} : { app: e.window.app, windowId: e.window.windowId, windowTitle: e.window.title }),
+    };
+    try {
+      if (this.tasks.get(e.taskId) === undefined) {
+        this.tasks.create({ id: e.taskId, kind: "plan", says: e.title, app: null, windowId: null, windowTitle: null, pending: null, ...fields });
+      } else this.tasks.update(e.taskId, fields);
+    } catch (err) {
+      if (!(err instanceof TransitionError)) throw err;
+      this.opts.warn?.(`activity: ${err.message}`);
+    }
+  }
+
+  /**
+   * A loopFinish or routine offer is prepared work: it is listed as ready under the offer's id, which
+   * is also the task id its run gets when taken. Withdrawn before it ran, it becomes undone.
+   */
+  private onPatternMessage(m: HelperMessage): void {
+    if (m.type === "patternOffer" && (m.kind === "loopFinish" || m.kind === "routine")) {
+      const w = this.model.windows.get(m.windowId);
+      this.tasks.create({
+        id: m.id,
+        kind: m.kind,
+        state: "ready",
+        cause: null,
+        says: m.says,
+        app: w?.app ?? null,
+        windowId: m.windowId,
+        windowTitle: w?.window.title ?? null,
+        step: null,
+        steps: null,
+        stepSays: null,
+        remaining: [],
+        detail: null,
+        undoable: false,
+        pending: null,
+      });
+    } else if (m.type === "offerWithdrawn" && m.reason !== "taken" && this.tasks.get(m.id)?.state === "ready") {
+      const by: TaskCause = m.reason === "dismissed" || m.reason === "diverged" ? "you" : "screen";
+      this.tasks.update(m.id, { state: "undone", cause: by, detail: `withdrawn: ${m.reason}` });
+    }
+  }
+
   /** Runs a plan or controls a task. Errors in the request itself are published, not thrown. */
   async handleTask(m: RunPlan | TaskControl): Promise<TaskResult | UndoResult | null> {
     if (this.mode !== "live") {
@@ -213,7 +365,20 @@ export class Helper {
     }
     try {
       if (m.type === "runPlan") return await this.executor.run(m.taskId, m.plan, m.slots);
-      return m.action === "resume" ? await this.executor.resume(m.taskId) : await this.executor.undo(m.taskId);
+      switch (m.action) {
+        case "resume":
+          return await this.executor.resume(m.taskId);
+        case "undo":
+          return await this.executor.undo(m.taskId);
+        case "pause":
+        case "takeOver":
+          // The run's own promise resolves as paused at the next step boundary.
+          this.executor.pause(m.taskId, m.action === "takeOver");
+          return null;
+        case "stop":
+          this.executor.stop(m.taskId);
+          return null;
+      }
     } catch (e) {
       this.error(`task ${m.taskId}: ${e instanceof Error ? e.message : String(e)}`);
       return null;
@@ -234,6 +399,9 @@ export class Helper {
       this.text.prune(now);
       const cutoff = now - 10 * 60 * 1000;
       while ((this.recentTransfers[0]?.at ?? now) < cutoff) this.recentTransfers.shift();
+      for (const [id, p] of this.proposals) if (now - p.at > PROPOSAL_KEEP_MS) this.proposals.delete(id);
+      for (const [id, f] of this.caretFills) if (now - f.at > PROPOSAL_KEEP_MS) this.caretFills.delete(id);
+      this.tasks.prune(now);
       this.opts.store.flush();
     }
   }
@@ -245,12 +413,19 @@ export class Helper {
     this.opts.store.flush();
   }
 
-  private record(ts: Transfer[]): void {
+  private record(judged: Transfer[]): void {
     const store = this.opts.store;
-    for (const t of ts) {
+    const ts: Transfer[] = [];
+    for (const t of judged) {
+      const fill = this.caretFills.get(fieldId(t.dst.windowId, t.dst.key));
+      const caret = fill !== undefined && fillMatches(fill, t);
+      // A Caret fill the host already undid leaves nothing to log.
+      if (caret && fill.undone) continue;
+      if (caret) t.attribution = "caret";
+      ts.push(t);
       this.recentTransfers.push(t);
       store.count(`transfer.${t.match}`, 1, t.at);
-      store.addTransfer({
+      t.rowId = store.addTransfer({
         at: t.at,
         valueHash: store.hash(t.value),
         kind: t.kind,
@@ -265,6 +440,7 @@ export class Helper {
         ageMs: t.ageMs,
         attribution: t.attribution,
       });
+      if (caret) fill.transfer = t;
     }
     if (ts.length > 0) this.patterns.onTransfers(ts);
   }
@@ -296,6 +472,9 @@ export class Helper {
       const asked = await proposeFill(this.model, ask, windowId, key, now, this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff });
       const p = this.revalidate(asked);
       this.lastFill.set(formKey, now);
+      if (p !== null) {
+        this.proposals.set(p.id, { at: now, windowId: p.windowId, values: new Map(p.fields.flatMap((f) => (f.value === null ? [] : [[f.key, f.value] as const]))) });
+      }
       if (p === null) {
         store.count("fill.stale", 1, now);
         return null;

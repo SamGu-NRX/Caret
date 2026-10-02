@@ -5,10 +5,11 @@
 //      reads as send, submit, delete or pay is never made; the run stops and hands it to the user.
 //   4. Predict the change, act through a reader verb that rechecks the exact target, re-read the
 //      window, and compare what changed against the prediction. A mismatch stops the run at that step.
-// Real input in a window the task acts in pauses it at the next step boundary. Every write goes in
-// an undo ledger with the value it replaced.
+// Real input in a window the task acts in, or a pause or take-over from a consumer, pauses it at the
+// next step boundary: before the next step starts, or before the current step acts if its reads are
+// still under way. A stop ends it there. Every write goes in an undo ledger with the value it replaced.
 import { randomInt } from "node:crypto";
-import { PROTOCOL_VERSION, type Node, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
+import { PROTOCOL_VERSION, type AppRef, type Node, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { CalendarPort, ReaderLink, UrlOpener } from "./means.ts";
@@ -23,6 +24,8 @@ export interface ExecutorDeps {
   urls: UrlOpener | null;
   askJev: AskJev | null;
   publish: (m: TaskProgress) => void;
+  /** Every phase with what the activity feed needs beyond taskProgress: who caused it, what remains, whether undo applies. */
+  onTask?: (e: TaskEvent) => void;
   /** Registers a listener for changes the model records; returns the function that removes it. */
   onChanges: (listener: (changes: readonly Change[]) => void) => () => void;
   /** Pause between re-reads while waiting for a press or URL to show its effect. */
@@ -39,6 +42,31 @@ export interface ExecutorDeps {
 }
 
 export type Outcome = "done" | "stopped" | "handoff" | "paused";
+
+export interface TaskEvent {
+  taskId: string;
+  /** The plan's title, as the task's sentence. */
+  title: string;
+  phase: TaskPhase;
+  step: number | null;
+  steps: number;
+  says: string | null;
+  detail: string | null;
+  /** Who caused a pause or stop; null for phases Caret reaches on its own way through the plan. */
+  cause: TaskCause | null;
+  /** End states not yet reached. */
+  remaining: string[];
+  undoable: boolean;
+  /** The first window the plan bound, for the activity row. */
+  window: { app: AppRef; windowId: string; title: string } | null;
+}
+
+/** Why a run must stop at its next step boundary. `takeOver` is a pause that hands the run back to the user. */
+interface Interrupt {
+  kind: "pause" | "stop";
+  by: "input" | "control" | "takeOver";
+  why: string;
+}
 
 export interface TaskResult {
   taskId: string;
@@ -78,7 +106,7 @@ interface Task {
   expected: Map<string, Map<string, string>>;
   next: number;
   ledger: LedgerEntry[];
-  interrupt: string | null;
+  interrupt: Interrupt | null;
   acted: number;
   skipped: number;
   jevCalls: number;
@@ -91,11 +119,17 @@ interface Task {
 
 class StepStop extends Error {
   readonly outcome: "stopped" | "handoff";
-  constructor(outcome: "stopped" | "handoff", message: string) {
+  /** A stop caused by the screen changing under the task, not by a mismatch after Caret acted. */
+  readonly by: TaskCause;
+  constructor(outcome: "stopped" | "handoff", message: string, by: TaskCause = "caret") {
     super(message);
     this.outcome = outcome;
+    this.by = by;
   }
 }
+
+/** Thrown at a step boundary when the task has a pending interrupt. */
+class Interrupted extends Error {}
 
 export class Executor {
   private readonly tasks = new Map<string, Task>();
@@ -162,14 +196,59 @@ export class Executor {
   /** Real input from the reader: pause any task acting in that window at its next step boundary. */
   onUserInput(m: UserInput): void {
     for (const task of this.tasks.values()) {
-      if (task.finished !== null) continue;
+      if (task.finished !== null || task.interrupt?.kind === "stop") continue;
       for (const windowId of task.windows.values()) {
         const w = this.deps.model.windows.get(windowId);
         if (w === undefined || w.app.pid !== m.pid) continue;
         const inside = m.kind === "mouse" ? m.point !== null && w.window.frame !== null && contains(w.window.frame, m.point) : w.focused;
-        if (inside) task.interrupt = `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'`;
+        if (inside) task.interrupt = { kind: "pause", by: "input", why: `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'` };
       }
     }
+  }
+
+  /**
+   * Pauses a running task at its next step boundary; the running `run` or `resume` call then resolves
+   * as paused. `takeOver` hands the run back to the user: the paused phase names the step it reached.
+   * Taking over an already paused task reports it again as handed back.
+   */
+  pause(taskId: string, takeOver: boolean): void {
+    const task = this.need(taskId);
+    const by = takeOver ? "takeOver" : "control";
+    if (task.finished === "paused") {
+      if (takeOver) this.progress(task, "paused", task.next, this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
+      return;
+    }
+    if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
+    if (task.interrupt?.kind !== "stop") task.interrupt = { kind: "pause", by, why: takeOver ? "you took over" : "you paused it" };
+  }
+
+  /** Ends a running task at its next step boundary, or a paused one now. What it wrote stays; undo restores it. */
+  stop(taskId: string): void {
+    const task = this.need(taskId);
+    if (task.finished === "paused") {
+      task.finished = "stopped";
+      this.progress(task, "stopped", task.next, `stopped by you before step ${task.next + 1} of ${task.plan.steps.length}`, "you");
+      return;
+    }
+    if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to stop`);
+    task.interrupt = { kind: "stop", by: "control", why: "you stopped it" };
+  }
+
+  private need(taskId: string): Task {
+    const task = this.tasks.get(taskId);
+    if (task === undefined) throw new PlanError(`no task ${taskId}`);
+    return task;
+  }
+
+  /** Throws at a step boundary when a pause or stop is pending. */
+  private checkInterrupt(task: Task): void {
+    if (task.interrupt !== null) throw new Interrupted();
+  }
+
+  private pauseDetail(task: Task, it: Interrupt): string {
+    const where = `before step ${task.next + 1} of ${task.plan.steps.length}`;
+    if (it.by === "takeOver") return `Caret handed this back to you ${where}`;
+    return `paused ${where}: ${it.why}`;
   }
 
   /**
@@ -197,6 +276,8 @@ export class Executor {
       }
     }
     task.ledger = remaining.reverse();
+    // A paused run whose writes were restored cannot continue from where it was.
+    if (task.finished === "paused") task.finished = "stopped";
     const detail = `restored ${out.restored}; not restored ${out.notRestored.length}; presses not undoable ${out.notUndoable}`;
     this.progress(task, "undone", null, detail);
     return out;
@@ -221,12 +302,9 @@ export class Executor {
       while (task.next < steps.length) {
         const i = task.next;
         const step = steps[i] as Step;
-        if (task.interrupt !== null) {
-          task.finished = "paused";
-          this.progress(task, "paused", i, `paused before this step: ${task.interrupt}`);
-          return this.result(task, "paused", i, task.interrupt);
-        }
+        this.checkInterrupt(task);
         await this.deps.beforeStep?.(task.id, i);
+        this.checkInterrupt(task);
         await this.updateWatch();
         await this.runStep(task, i, step);
         task.next = i + 1;
@@ -236,10 +314,24 @@ export class Executor {
       return this.result(task, "done", null, null);
     } catch (e) {
       const i = task.next;
+      const it = task.interrupt;
+      if (e instanceof Interrupted && it !== null) {
+        task.interrupt = null;
+        if (it.kind === "stop") {
+          const detail = `stopped by you before step ${i + 1} of ${steps.length}`;
+          task.finished = "stopped";
+          this.progress(task, "stopped", i, detail, "you");
+          return this.result(task, "stopped", i, detail);
+        }
+        const detail = this.pauseDetail(task, it);
+        task.finished = "paused";
+        this.progress(task, "paused", i, detail, "you");
+        return this.result(task, "paused", i, detail);
+      }
       const outcome = e instanceof StepStop ? e.outcome : "stopped";
       const detail = e instanceof Error ? e.message : String(e);
       task.finished = outcome;
-      this.progress(task, outcome === "handoff" ? "handoff" : "stopped", i, detail);
+      this.progress(task, outcome === "handoff" ? "handoff" : "stopped", i, detail, e instanceof StepStop ? e.by : "caret");
       return this.result(task, outcome, i, detail);
     } finally {
       await this.updateWatch();
@@ -291,6 +383,7 @@ export class Executor {
     if (node.states?.includes("secure")) throw new StepStop("handoff", `'${step.says}' targets a password field; that is left to you`);
     const before = node.value ?? "";
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
+    this.checkInterrupt(task);
     this.progress(task, "acting", i, `write ${attribute}; expect ${prediction}`);
     const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value };
     await this.deps.beforeAct?.(task.id, i);
@@ -332,6 +425,7 @@ export class Executor {
     if (label === "") throw new StepStop("handoff", `the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
     const risk = classifyLabel(label);
     if (risk !== "safe") throw new StepStop("handoff", `'${label}' reads as ${risk}; Caret leaves that press to you`);
+    this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
     const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label }, w.window.windowId);
@@ -343,6 +437,7 @@ export class Executor {
 
   private async urlStep(task: Task, i: number, w: WindowState, url: string, step: Step): Promise<void> {
     if (this.deps.urls === null) throw new StepStop("stopped", "no URL opener is configured");
+    this.checkInterrupt(task);
     this.progress(task, "acting", i, `open ${url}; expect: ${step.says}`);
     await this.deps.urls.open(url);
     await this.awaitEffect(task, i, step, w.window.windowId, []);
@@ -357,6 +452,7 @@ export class Executor {
       this.progress(task, "skipped", i, "already true");
       return;
     }
+    this.checkInterrupt(task);
     this.progress(task, "acting", i, `add event '${end.title}' to ${end.calendar}; expect it to be found there`);
     this.checkSession(task);
     const ev = await cal.add(end.calendar, end.title, end.start, end.end);
@@ -420,7 +516,7 @@ export class Executor {
     await this.walk(w);
     const fresh = this.window(id);
     for (const n of fresh.nodes.values()) {
-      if (n.role === "AXSheet") throw new StepStop("stopped", `a sheet covers '${fresh.window.title}'`);
+      if (n.role === "AXSheet") throw new StepStop("stopped", `a sheet covers '${fresh.window.title}'`, "screen");
     }
     const exp = task.expected.get(id);
     if (exp === undefined) {
@@ -429,7 +525,7 @@ export class Executor {
       for (const [key, text] of editableValues(fresh)) {
         const want = exp.get(key);
         if (want === undefined) exp.set(key, text);
-        else if (want !== text) throw new StepStop("stopped", `${key} changed since the plan started: '${clip(want)}' is now '${clip(text)}'`);
+        else if (want !== text) throw new StepStop("stopped", `${key} changed since the plan started: '${clip(want)}' is now '${clip(text)}'`, "screen");
       }
     }
     return fresh;
@@ -455,7 +551,7 @@ export class Executor {
   }
 
   private checkSession(task: Task): void {
-    if (task.session !== this.session) throw new StepStop("stopped", "the reader restarted since this task began, so its window ids no longer apply");
+    if (task.session !== this.session) throw new StepStop("stopped", "the reader restarted since this task began, so its window ids no longer apply", "screen");
   }
 
   private bind(task: Task, sel: WindowSel): string {
@@ -463,7 +559,7 @@ export class Executor {
     const k = JSON.stringify(sel);
     const bound = task.windows.get(k);
     if (bound !== undefined) {
-      if (!this.deps.model.windows.has(bound)) throw new StepStop("stopped", `the window '${sel.title ?? sel.titleStartsWith}' closed`);
+      if (!this.deps.model.windows.has(bound)) throw new StepStop("stopped", `the window '${sel.title ?? sel.titleStartsWith}' closed`, "screen");
       return bound;
     }
     const hits = [...this.deps.model.windows.values()].filter(
@@ -472,7 +568,7 @@ export class Executor {
         (sel.title === undefined || w.window.title === sel.title) &&
         (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)),
     );
-    if (hits.length === 0) throw new StepStop("stopped", `no window matches ${k}`);
+    if (hits.length === 0) throw new StepStop("stopped", `no window matches ${k}`, "screen");
     if (hits.length > 1) throw new StepStop("stopped", `${hits.length} windows match ${k}; the plan must name one`);
     const id = (hits[0] as WindowState).window.windowId;
     task.windows.set(k, id);
@@ -481,7 +577,7 @@ export class Executor {
 
   private window(id: string): WindowState {
     const w = this.deps.model.windows.get(id);
-    if (w === undefined) throw new StepStop("stopped", `window ${id} is gone`);
+    if (w === undefined) throw new StepStop("stopped", `window ${id} is gone`, "screen");
     return w;
   }
 
@@ -561,18 +657,26 @@ export class Executor {
 
   // MARK: - reporting
 
-  private progress(task: Task, phase: TaskPhase, step: number | null, detail: string | null): void {
-    this.deps.publish({
-      type: "taskProgress",
-      v: PROTOCOL_VERSION,
-      at: Date.now(),
+  private progress(task: Task, phase: TaskPhase, step: number | null, detail: string | null, cause: TaskCause | null = null): void {
+    const says = step === null ? null : (task.plan.steps[step]?.says ?? null);
+    const steps = task.plan.steps.length;
+    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, phase, step, steps, says, detail });
+    if (this.deps.onTask === undefined) return;
+    // The first step not yet reached: past this one once it is verified or skipped, none once done.
+    const from = phase === "done" ? steps : phase === "verified" || phase === "skipped" ? (step ?? task.next) + 1 : (step ?? task.next);
+    const bound = [...task.windows.values()].map((id) => this.deps.model.windows.get(id)).find((w) => w !== undefined);
+    this.deps.onTask({
       taskId: task.id,
-      planId: task.plan.id,
+      title: task.plan.title,
       phase,
       step,
-      steps: task.plan.steps.length,
-      says: step === null ? null : (task.plan.steps[step]?.says ?? null),
+      steps,
+      says,
       detail,
+      cause,
+      remaining: task.plan.steps.slice(from).map((s) => s.says),
+      undoable: task.finished !== null && task.ledger.some((e) => e.kind !== "press"),
+      window: bound === undefined ? null : { app: bound.app, windowId: bound.window.windowId, title: bound.window.title },
     });
   }
 

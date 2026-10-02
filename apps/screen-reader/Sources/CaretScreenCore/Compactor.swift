@@ -54,8 +54,9 @@ public enum Roles {
         "AXDisclosureTriangle", "AXIncrementor", "AXSegmentedControl", "AXTextField", "AXTextArea", "AXComboBox",
         "AXSearchField", "AXDateField", "AXColorWell",
     ]
-    /// Kept even when unnamed, because their presence matters: a sheet over a window blocks acting in it.
-    public static let presence: Set<String> = ["AXSheet"]
+    /// Kept even when unnamed, because their presence matters: a sheet over a window blocks acting in it,
+    /// and a progress or busy indicator marks the window as showing unfinished work (pending-state watch).
+    public static let presence: Set<String> = ["AXSheet", "AXProgressIndicator", "AXBusyIndicator"]
     /// Roles whose AXValue is read. Everything else is skipped to save a round trip per node.
     public static let valueBearing: Set<String> = [
         "AXStaticText", "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXPopUpButton", "AXCheckBox",

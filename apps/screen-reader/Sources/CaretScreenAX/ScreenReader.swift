@@ -97,6 +97,14 @@ public final class ScreenReader {
             watch(Set(pids.map { pid_t($0) }))
             answer(.ok, nil)
             return
+        case let .watchWindows(list):
+            // The list replaces every watch, so each worker gets its own windows or none.
+            var byPid: [pid_t: Set<String>] = [:]
+            for w in list { byPid[pid_t(w.pid), default: []].insert(w.windowId) }
+            for (p, worker) in workers { worker.setWatched(byPid[p] ?? []) }
+            let unread = byPid.keys.filter { workers[$0] == nil }.sorted()
+            answer(.ok, unread.isEmpty ? nil : "not read, so not watched: \(unread.map(String.init).joined(separator: ","))")
+            return
         case let .walk(p, _), let .write(p, _, _, _, _, _, _), let .press(p, _, _, _, _):
             pid = pid_t(p)
         }

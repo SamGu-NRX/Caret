@@ -15,6 +15,15 @@ import Testing
         #expect(r.nodes[2].states == [.disabled, .checked])
     }
 
+    /// The pending-state watch reads unfinished work from these, and they are usually unnamed.
+    @Test func keepsUnnamedProgressAndBusyIndicators() {
+        let r = c.compact(windowChildren: [
+            RawNode(role: "AXGroup", children: [RawNode(role: "AXProgressIndicator"), RawNode(role: "AXBusyIndicator")]),
+            RawNode(role: "AXImage"),
+        ])
+        #expect(r.nodes.map(\.role) == ["AXProgressIndicator", "AXBusyIndicator"])
+    }
+
     @Test func keepsAnEditableValueThatRepeatsTheLabel() {
         let r = c.compact(windowChildren: [RawNode(role: "AXTextField", title: "City", value: "City")])
         #expect(r.nodes[0].value == "City")

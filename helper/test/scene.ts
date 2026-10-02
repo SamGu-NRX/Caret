@@ -81,7 +81,7 @@ export class Desk implements ReaderLink {
   async run(verb: ReaderVerb): Promise<VerbResult> {
     this.verbs.push(verb);
     const answer = (outcome: VerbResult["outcome"], detail: string | null = null): VerbResult => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "desk", at: this.at, outcome, detail });
-    if (verb.kind === "watchInput") return answer("ok");
+    if (verb.kind === "watchInput" || verb.kind === "watchWindows") return answer("ok");
     const g = this.grids.get(verb.windowId);
     if (g === undefined) return answer("noWindow");
     if (verb.pid !== g.app.pid) return answer("notAllowed");
