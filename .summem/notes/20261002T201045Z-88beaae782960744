@@ -1,0 +1,1 @@
+Never edit a running bash script in place (bash reads it as it runs); write a new file and mv it over, as B6 did with run-audit.sh mid-audit.
