@@ -21,7 +21,7 @@ import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import { decide, type Decision } from "./gate.ts";
 import { LoopRecognizer, type LoopCell, type LoopEvent } from "./loops.ts";
-import { MemoryError, type MemoryStore } from "./memory.ts";
+import { MemoryError, dontOfferMatch, type MemoryStore } from "./memory.ts";
 import { applyMemory, captureEdit } from "./preferences.ts";
 import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
 import { describeTransfer, templateOf } from "./shape.ts";
@@ -72,33 +72,50 @@ interface Watch {
   pending: { value: string; at: number } | null;
 }
 
-/** Per-recognizer handling times, in milliseconds, for the 5 ms budget. */
+/**
+ * Per-recognizer handling times, in milliseconds, for the 5 ms budget. Wall time includes any time the
+ * process waited for a CPU; CPU time (process.cpuUsage, so it also counts V8's helper threads) is the
+ * work itself. On a loaded Mac the two differ by an order of magnitude at the tail.
+ */
+export interface TimingSummary {
+  n: number;
+  wall: { p50: number; p99: number; max: number };
+  cpu: { p50: number; p99: number; max: number };
+}
+
 export class Timings {
-  private readonly samples = new Map<string, number[]>();
+  private readonly wall = new Map<string, number[]>();
+  private readonly cpu = new Map<string, number[]>();
   static readonly MAX = 200_000;
 
   time<T>(name: string, f: () => T): T {
+    const c0 = process.cpuUsage();
     const t0 = performance.now();
     try {
       return f();
     } finally {
-      this.add(name, performance.now() - t0);
+      const wall = performance.now() - t0;
+      const c = process.cpuUsage(c0);
+      this.add(name, wall, (c.user + c.system) / 1000);
     }
   }
 
-  add(name: string, ms: number): void {
-    let s = this.samples.get(name);
-    if (s === undefined) this.samples.set(name, (s = []));
-    if (s.length < Timings.MAX) s.push(ms);
+  add(name: string, wallMs: number, cpuMs: number): void {
+    for (const [m, v] of [[this.wall, wallMs], [this.cpu, cpuMs]] as const) {
+      let s = m.get(name);
+      if (s === undefined) m.set(name, (s = []));
+      if (s.length < Timings.MAX) s.push(v);
+    }
   }
 
-  summary(): Record<string, { n: number; p50: number; p95: number; p99: number; max: number }> {
-    const out: Record<string, { n: number; p50: number; p95: number; p99: number; max: number }> = {};
-    for (const [name, s] of this.samples) {
-      const v = [...s].sort((a, b) => a - b);
-      const q = (p: number): number => v[Math.min(v.length - 1, Math.floor(p * v.length))] ?? 0;
-      out[name] = { n: v.length, p50: q(0.5), p95: q(0.95), p99: q(0.99), max: v[v.length - 1] ?? 0 };
-    }
+  summary(): Record<string, TimingSummary> {
+    const q = (xs: number[]): { p50: number; p99: number; max: number } => {
+      const v = [...xs].sort((a, b) => a - b);
+      const at = (p: number): number => v[Math.min(v.length - 1, Math.floor(p * v.length))] ?? 0;
+      return { p50: at(0.5), p99: at(0.99), max: v[v.length - 1] ?? 0 };
+    };
+    const out: Record<string, TimingSummary> = {};
+    for (const [name, w] of this.wall) out[name] = { n: w.length, wall: q(w), cpu: q(this.cpu.get(name) ?? []) };
     return out;
   }
 }
@@ -137,7 +154,7 @@ export class PatternEngine {
         continue;
       }
       const events = this.timings.time("loops", () => this.loops.onTransfer(p));
-      this.timings.time("routines", () => this.routines.onTransfer(p));
+      this.timings.time("routines.transfer", () => this.routines.onTransfer(p));
       for (const ev of events) this.onLoop(ev);
     }
   }
@@ -146,7 +163,7 @@ export class PatternEngine {
     for (const c of changes) {
       this.clock = Math.max(this.clock, c.at);
       if (c.kind === "windowOpened") {
-        const preds = this.timings.time("routines", () => this.routines.onWindowOpened(c.windowId, c.at));
+        const preds = this.timings.time("routines.open", () => this.routines.onWindowOpened(c.windowId, c.at));
         if (preds.length > 0) this.onPredictions(preds);
       } else if (c.kind === "value" && c.key !== null) {
         const w = this.watches.get(`${c.windowId}\u0000${c.key}`);
@@ -157,7 +174,7 @@ export class PatternEngine {
 
   /** Called before the window leaves the model. */
   onWindowClosed(windowId: string): void {
-    this.timings.time("routines", () => this.routines.onWindowClosed(windowId));
+    this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId));
     for (const [id, w] of this.watches) {
       if (w.windowId !== windowId) continue;
       this.judgeEdit(w);
@@ -172,7 +189,7 @@ export class PatternEngine {
     this.clock = Math.max(this.clock, now);
     const ended = this.timings.time("loops", () => this.loops.tick(now));
     if (ended !== null) this.onLoop(ended);
-    this.timings.time("routines", () => this.routines.tick(now));
+    this.timings.time("routines.tick", () => this.routines.tick(now));
     this.timings.time("edits", () => {
       for (const [id, w] of this.watches) {
         if (w.pending !== null && now - w.pending.at >= EDIT_SETTLE_MS) {
@@ -183,6 +200,7 @@ export class PatternEngine {
       }
     });
     for (const [id, o] of this.offers) if (o.closedAt !== null && now - o.closedAt > OFFER_KEEP_MS) this.offers.delete(id);
+    this.timings.time("decisionLog", () => this.deps.memory.flushDecisions());
   }
 
   /** A new reader numbers windows from scratch: every open bundle closes, and every offer is stale. */
@@ -233,7 +251,7 @@ export class PatternEngine {
       case "dontOfferHere": {
         if (m.action === "dontOfferHere") {
           const w = this.deps.model.windows.get(o.msg.windowId);
-          memory.upsert("preference", `dontOffer:${kind}:${bundleId}`, { rule: "dontOffer", offerKind: kind, bundleId, appName: w?.app.name ?? bundleId }, this.clock, w?.app.name ?? null);
+          memory.upsert("preference", dontOfferMatch(kind, bundleId), { rule: "dontOffer", offerKind: kind, bundleId, appName: w?.app.name ?? bundleId }, this.clock, w?.app.name ?? null);
         }
         memory.recordReaction(kind, bundleId, m.action === "dismiss" ? "dismiss" : "dontOfferHere", this.clock);
         if (o.state === "open") this.withdraw(o, "dismissed");

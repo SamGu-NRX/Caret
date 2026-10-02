@@ -403,6 +403,8 @@ export interface Replayed {
   offers: { index: number; offer: PatternOffer }[];
   /** Wall time to handle each message, including the ticks before it, in milliseconds. */
   eventMs: number[];
+  /** The same, as process CPU time. */
+  eventCpuMs: number[];
 }
 
 /**
@@ -410,7 +412,7 @@ export interface Replayed {
  * messages are released at that wall-clock spacing (20 ms is 50 events a second).
  */
 export async function replay(helper: Helper, sent: HelperMessage[], stream: Stream, paceMs = 0): Promise<Replayed> {
-  const out: Replayed = { offers: [], eventMs: [] };
+  const out: Replayed = { offers: [], eventMs: [], eventCpuMs: [] };
   let last: number | null = null;
   /** Ticks fall on a fixed 250 ms grid of stream time, as main.ts's interval does, however dense the messages. */
   let nextTick: number | null = null;
@@ -424,6 +426,7 @@ export async function replay(helper: Helper, sent: HelperMessage[], stream: Stre
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     }
     const before = sent.length;
+    const c0 = process.cpuUsage();
     const s = performance.now();
     // A gap of hours (the next day) gets one tick; otherwise every grid point up to this message ticks.
     if (nextTick === null) nextTick = at + 250;
@@ -436,6 +439,8 @@ export async function replay(helper: Helper, sent: HelperMessage[], stream: Stre
     last = Math.max(last ?? at, at);
     void helper.handleReader(m);
     out.eventMs.push(performance.now() - s);
+    const c = process.cpuUsage(c0);
+    out.eventCpuMs.push((c.user + c.system) / 1000);
     for (const x of sent.slice(before)) if (x.type === "patternOffer") out.offers.push({ index: i, offer: x });
   }
   helper.tick((last ?? 0) + 5000);

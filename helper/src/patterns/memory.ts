@@ -12,7 +12,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import * as z from "zod";
 import {
   AboutFields,
@@ -166,6 +166,13 @@ export interface DecisionRow {
 export class MemoryStore {
   private readonly db: DatabaseSync;
   private readonly key: Buffer;
+  /**
+   * Decisions not yet written. The gate runs on the event path and a SQLite write there stalled for
+   * 11 ms once on a loaded disk (patterns-eval, 2026-10-02), so decisions are written on the tick.
+   */
+  private pendingDecisions: DecisionRow[] = [];
+  /** Every routine with its steps, read once per change: window openings consult it on the event path. */
+  private routineCache: RoutineRecord[] | null = null;
 
   constructor(dir: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -179,15 +186,25 @@ export class MemoryStore {
   }
 
   close(): void {
+    this.flushDecisions();
     this.db.close();
+  }
+
+  private readonly statements = new Map<string, StatementSync>();
+
+  /** Prepared once and reused: compiling SQL on every call was the bulk of a cold bundle close. */
+  private stmt(sql: string): StatementSync {
+    let st = this.statements.get(sql);
+    if (st === undefined) this.statements.set(sql, (st = this.db.prepare(sql)));
+    return st;
   }
 
   // MARK: - the socket API
 
   list(kind?: MemoryKind): MemoryEntry[] {
     const rows = (kind === undefined
-      ? this.db.prepare("SELECT * FROM memory ORDER BY kind, last_seen DESC").all()
-      : this.db.prepare("SELECT * FROM memory WHERE kind = ? ORDER BY last_seen DESC").all(kind)) as unknown as Row[];
+      ? this.stmt("SELECT * FROM memory ORDER BY kind, last_seen DESC").all()
+      : this.stmt("SELECT * FROM memory WHERE kind = ? ORDER BY last_seen DESC").all(kind)) as unknown as Row[];
     return rows.map((r) => this.entry(r));
   }
 
@@ -198,6 +215,7 @@ export class MemoryStore {
   /** Changes what the user may change in an entry. Anything else is refused with the reason. */
   edit(id: string, raw: Record<string, unknown>, now: number): MemoryEntry {
     const r = this.row(id);
+    this.routineCache = null;
     const fields = this.fields(r);
     let next: unknown;
     switch (r.kind) {
@@ -230,20 +248,22 @@ export class MemoryStore {
       }
     }
     this.write(r.kind, id, next);
-    this.db.prepare("UPDATE memory SET last_seen = ? WHERE id = ?").run(now, id);
+    this.stmt("UPDATE memory SET last_seen = ? WHERE id = ?").run(now, id);
     return this.get(id);
   }
 
   setPaused(id: string, paused: boolean): MemoryEntry {
     const r = this.row(id);
     if (r.kind === "permission") throw new MemoryError("a permission cannot be paused; change its rule instead");
-    this.db.prepare("UPDATE memory SET paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
+    this.stmt("UPDATE memory SET paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
+    this.routineCache = null;
     return this.get(id);
   }
 
   /** Deletes an entry. A forgotten routine is not relearned for FORGET_BLOCK_MS. */
   forget(id: string, now: number): void {
     const r = this.row(id);
+    this.routineCache = null;
     if (r.kind === "permission") throw new MemoryError("a permission cannot be forgotten; change its rule instead");
     if (r.kind === "routine") {
       this.db
@@ -254,10 +274,10 @@ export class MemoryStore {
       // A preference that pointed at this value would otherwise point at nothing.
       for (const p of this.rows("preference")) {
         const f = this.fields(p) as PreferenceFields;
-        if (f.rule === "useInstead" && f.aboutId === id) this.db.prepare("DELETE FROM memory WHERE id = ?").run(p.id);
+        if (f.rule === "useInstead" && f.aboutId === id) this.stmt("DELETE FROM memory WHERE id = ?").run(p.id);
       }
     }
-    this.db.prepare("DELETE FROM memory WHERE id = ?").run(id);
+    this.stmt("DELETE FROM memory WHERE id = ?").run(id);
   }
 
   // MARK: - for recognizers, fills and the gate
@@ -268,10 +288,10 @@ export class MemoryStore {
     const schema = kind === "about" ? AboutFields : kind === "people" ? PeopleFields : PreferenceFields;
     const valid = schema.safeParse(fields);
     if (!valid.success) throw new MemoryError(`not storing a ${kind} entry: ${valid.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
-    const hit = this.db.prepare("SELECT id FROM memory WHERE kind = ? AND match = ?").get(kind, match) as { id: string } | undefined;
+    const hit = this.stmt("SELECT id FROM memory WHERE kind = ? AND match = ?").get(kind, match) as { id: string } | undefined;
     if (hit !== undefined) {
       this.write(kind, hit.id, fields);
-      this.db.prepare("UPDATE memory SET count = count + 1, last_seen = ?, app = COALESCE(?, app) WHERE id = ?").run(at, app, hit.id);
+      this.stmt("UPDATE memory SET count = count + 1, last_seen = ?, app = COALESCE(?, app) WHERE id = ?").run(at, app, hit.id);
       return hit.id;
     }
     const id = `${kind}-${randomUUID().slice(0, 8)}`;
@@ -290,20 +310,21 @@ export class MemoryStore {
   }
 
   about(id: string): AboutFields | null {
-    const r = this.db.prepare("SELECT * FROM memory WHERE id = ? AND kind = 'about'").get(id) as Row | undefined;
+    const r = this.stmt("SELECT * FROM memory WHERE id = ? AND kind = 'about'").get(id) as Row | undefined;
     if (r === undefined || r.paused !== 0) return null;
     return this.fields(r) as AboutFields;
   }
 
   /** Counts a completed bundle with this signature. Null when the user forgot this routine recently. */
   recordRoutine(sig: string, steps: RoutineStep[], at: number): RoutineRecord | null {
-    const block = this.db.prepare("SELECT until FROM forgotten WHERE kind = 'routine' AND match = ?").get(sig) as { until: number } | undefined;
+    this.routineCache = null;
+    const block = this.stmt("SELECT until FROM forgotten WHERE kind = 'routine' AND match = ?").get(sig) as { until: number } | undefined;
     if (block !== undefined && block.until > at) return null;
-    const hit = this.db.prepare("SELECT id FROM memory WHERE kind = 'routine' AND match = ?").get(sig) as { id: string } | undefined;
+    const hit = this.stmt("SELECT id FROM memory WHERE kind = 'routine' AND match = ?").get(sig) as { id: string } | undefined;
     if (hit !== undefined) {
       // The latest occurrence's positions are the best guess for the next one.
       const f = JSON.parse(this.row(hit.id).fields ?? "{}") as { name?: string | null };
-      this.db.prepare("UPDATE memory SET count = count + 1, last_seen = ?, fields = ? WHERE id = ?").run(at, JSON.stringify({ steps, name: f.name ?? null }), hit.id);
+      this.stmt("UPDATE memory SET count = count + 1, last_seen = ?, fields = ? WHERE id = ?").run(at, JSON.stringify({ steps, name: f.name ?? null }), hit.id);
       return this.routine(hit.id);
     }
     const id = `routine-${randomUUID().slice(0, 8)}`;
@@ -314,34 +335,62 @@ export class MemoryStore {
   }
 
   routine(id: string): RoutineRecord | null {
-    const r = this.db.prepare("SELECT * FROM memory WHERE id = ? AND kind = 'routine'").get(id) as Row | undefined;
+    const r = this.stmt("SELECT * FROM memory WHERE id = ? AND kind = 'routine'").get(id) as Row | undefined;
     return r === undefined ? null : toRoutine(r);
   }
 
   /** Routines whose steps all write into windows of this app and kind. */
   routinesInto(bundleId: string, windowKind: string): RoutineRecord[] {
-    return this.rows("routine")
-      .map(toRoutine)
-      .filter((r) => r.steps.length > 0 && r.steps.every((s) => s.dstBundle === bundleId && s.dstWindowKind === windowKind));
+    this.routineCache ??= this.rows("routine").map(toRoutine);
+    return this.routineCache.filter((r) => r.steps.length > 0 && r.steps.every((s) => s.dstBundle === bundleId && s.dstWindowKind === windowKind));
   }
 
   scoreRoutine(id: string, hit: boolean): void {
-    this.db.prepare(`UPDATE memory SET ${hit ? "hits = hits + 1" : "misses = misses + 1"} WHERE id = ? AND kind = 'routine'`).run(id);
+    this.routineCache = null;
+    this.stmt(`UPDATE memory SET ${hit ? "hits = hits + 1" : "misses = misses + 1"} WHERE id = ? AND kind = 'routine'`).run(id);
   }
 
   permission(action: ActionType): PermissionRule {
-    const r = this.db.prepare("SELECT * FROM memory WHERE kind = 'permission' AND match = ?").get(action) as Row | undefined;
+    const r = this.stmt("SELECT * FROM memory WHERE kind = 'permission' AND match = ?").get(action) as Row | undefined;
     return r === undefined ? PERMISSIONS[action].rule : (this.fields(r) as PermissionFields).rule;
   }
 
   logDecision(d: DecisionRow): void {
-    this.db
-      .prepare("INSERT INTO decisions (at, offer_kind, pattern, bundle_id, speak, reasons, p_show) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(d.at, d.offerKind, d.pattern, d.bundleId, d.speak ? 1 : 0, d.reasons.join(","), d.showProbability);
+    this.pendingDecisions.push(d);
+  }
+
+  /** Runs `f` in one transaction, so several writes on the event path cost one commit. Nested calls join the outer one. */
+  batch<T>(f: () => T): T {
+    if (this.db.isTransaction) return f();
+    this.db.exec("BEGIN");
+    try {
+      const out = f();
+      this.db.exec("COMMIT");
+      return out;
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  /** Writes buffered decisions in one transaction. Called on the helper's tick and at close. */
+  flushDecisions(): void {
+    if (this.pendingDecisions.length === 0) return;
+    const stmt = this.stmt("INSERT INTO decisions (at, offer_kind, pattern, bundle_id, speak, reasons, p_show) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    this.db.exec("BEGIN");
+    try {
+      for (const d of this.pendingDecisions) stmt.run(d.at, d.offerKind, d.pattern, d.bundleId, d.speak ? 1 : 0, d.reasons.join(","), d.showProbability);
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+    this.pendingDecisions = [];
   }
 
   decisions(): DecisionRow[] {
-    return (this.db.prepare("SELECT * FROM decisions ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
+    this.flushDecisions();
+    return (this.stmt("SELECT * FROM decisions ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
       at: Number(r.at),
       offerKind: r.offer_kind as OfferKind,
       pattern: String(r.pattern),
@@ -353,12 +402,12 @@ export class MemoryStore {
   }
 
   spokenSince(at: number): number {
-    return Number((this.db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE speak = 1 AND at >= ?").get(at) as { n: number }).n);
+    return this.pendingDecisions.filter((d) => d.speak && d.at >= at).length + Number((this.stmt("SELECT COUNT(*) AS n FROM decisions WHERE speak = 1 AND at >= ?").get(at) as { n: number }).n);
   }
 
   /** A dismissal, a "Don't offer this here", or an offer withdrawn because the user did something else. */
   recordReaction(offerKind: OfferKind, bundleId: string, action: "dismiss" | "dontOfferHere" | "ignored" | "take", at: number): void {
-    this.db.prepare("INSERT INTO reactions (at, day, offer_kind, bundle_id, action) VALUES (?, ?, ?, ?, ?)").run(at, localDay(at), offerKind, bundleId, action);
+    this.stmt("INSERT INTO reactions (at, day, offer_kind, bundle_id, action) VALUES (?, ?, ?, ?, ?)").run(at, localDay(at), offerKind, bundleId, action);
   }
 
   /** Offers of this kind in this app that the user dismissed or ignored on `at`'s day. */
@@ -372,13 +421,14 @@ export class MemoryStore {
     );
   }
 
+  /** By match key, which for these rules is plain kind and bundle id, so nothing is decrypted on the event path. */
   dontOffer(offerKind: OfferKind, bundleId: string): boolean {
-    return this.active("preference").some((p) => p.fields.rule === "dontOffer" && p.fields.offerKind === offerKind && p.fields.bundleId === bundleId);
+    return this.stmt("SELECT 1 FROM memory WHERE kind = 'preference' AND match = ? AND paused = 0").get(dontOfferMatch(offerKind, bundleId)) !== undefined;
   }
 
   /** The raw rows, for tests that check nothing personal is stored in the clear. */
   rawRows(): Row[] {
-    return this.db.prepare("SELECT * FROM memory").all() as unknown as Row[];
+    return this.stmt("SELECT * FROM memory").all() as unknown as Row[];
   }
 
   // MARK: - internals
@@ -394,13 +444,13 @@ export class MemoryStore {
   }
 
   private row(id: string): Row {
-    const r = this.db.prepare("SELECT * FROM memory WHERE id = ?").get(id) as Row | undefined;
+    const r = this.stmt("SELECT * FROM memory WHERE id = ?").get(id) as Row | undefined;
     if (r === undefined) throw new MemoryError(`no memory entry ${id}`);
     return r;
   }
 
   private rows(kind: MemoryKind): Row[] {
-    return this.db.prepare("SELECT * FROM memory WHERE kind = ?").all(kind) as unknown as Row[];
+    return this.stmt("SELECT * FROM memory WHERE kind = ?").all(kind) as unknown as Row[];
   }
 
   private fields(r: Row): unknown {
@@ -412,8 +462,8 @@ export class MemoryStore {
   }
 
   private write(kind: MemoryKind, id: string, fields: unknown): void {
-    if (SEALED.has(kind)) this.db.prepare("UPDATE memory SET sealed = ?, fields = NULL WHERE id = ?").run(seal(this.key, JSON.stringify(fields)), id);
-    else this.db.prepare("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify(fields), id);
+    if (SEALED.has(kind)) this.stmt("UPDATE memory SET sealed = ?, fields = NULL WHERE id = ?").run(seal(this.key, JSON.stringify(fields)), id);
+    else this.stmt("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify(fields), id);
   }
 
   private entry(r: Row): MemoryEntry {
@@ -511,6 +561,8 @@ function toRoutine(r: Row): RoutineRecord {
     name: f.name ?? null,
   };
 }
+
+export const dontOfferMatch = (offerKind: OfferKind, bundleId: string): string => `dontOffer:${offerKind}:${bundleId}`;
 
 const times = (n: number): string => (n === 1 ? "once" : `${n} times`);
 

@@ -150,7 +150,12 @@ export class RoutineRecognizer {
     return b;
   }
 
+  /** Scores and counts in one transaction: a bundle closes on the event path. */
   private close(b: Bundle): BundleClose {
+    return this.memory.batch(() => this.closeNow(b));
+  }
+
+  private closeNow(b: Bundle): BundleClose {
     // The last transfer of each shape counts: a value copied and then replaced from another row is the replacement.
     const last = new Map<string, PatternTransfer>();
     for (const t of b.transfers) {
