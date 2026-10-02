@@ -30,6 +30,7 @@ export interface SnapOpts {
   values?: TypedValue[];
   focusedKey?: string | null;
   seq?: number;
+  reason?: Snapshot["reason"];
 }
 
 export function snap(nodes: Node[], o: SnapOpts): Snapshot {
@@ -38,7 +39,7 @@ export function snap(nodes: Node[], o: SnapOpts): Snapshot {
     v: PROTOCOL_VERSION,
     seq: o.seq ?? 0,
     at: o.at,
-    reason: "event",
+    reason: o.reason ?? "event",
     app: o.app ?? FIXTURE_APP,
     window: { windowId: o.windowId, kind: "standard", title: o.title ?? o.windowId, frame: [0, 0, 800, 600] },
     focused: o.focused ?? false,

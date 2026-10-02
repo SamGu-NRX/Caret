@@ -1,7 +1,7 @@
 // Transfer detection. A transfer is a value seen in one window that then appears in an
 // editable element of another. Each edited field is judged once its value has settled,
 // so a value typed one character at a time is matched whole, not at every prefix.
-import { insertedText, type MatchKind } from "./normalize.ts";
+import { EditSpan, type MatchKind } from "./normalize.ts";
 import type { Change, ScreenModel } from "./model.ts";
 import type { ValueKind } from "./protocol.ts";
 import type { Observation, RollingText } from "./rolling-text.ts";
@@ -21,8 +21,7 @@ export interface Transfer {
 interface PendingEdit {
   windowId: string;
   key: string;
-  before: string;
-  after: string;
+  span: EditSpan;
   firstChange: number;
   lastChange: number;
   focused: boolean;
@@ -54,17 +53,11 @@ export class TransferDetector {
       const p = this.pending.get(id);
       const focused = this.model.windows.get(c.windowId)?.focused === true;
       if (p === undefined) {
-        this.pending.set(id, {
-          windowId: c.windowId,
-          key: c.key,
-          before: c.before ?? "",
-          after: c.after ?? "",
-          firstChange: c.at,
-          lastChange: c.at,
-          focused,
-        });
+        const span = new EditSpan(c.before ?? "");
+        span.observe(c.after ?? "");
+        this.pending.set(id, { windowId: c.windowId, key: c.key, span, firstChange: c.at, lastChange: c.at, focused });
       } else {
-        p.after = c.after ?? "";
+        p.span.observe(c.after ?? "");
         p.lastChange = c.at;
         p.focused ||= focused;
       }
@@ -96,13 +89,13 @@ export class TransferDetector {
   private judge(p: PendingEdit): Transfer[] {
     const w = this.model.windows.get(p.windowId);
     if (w === undefined) return [];
-    const inserted = insertedText(p.before, p.after).trim();
+    const inserted = p.span.entered().trim();
     if (inserted.length === 0) return [];
 
     const candidates: { value: string; kind: ValueKind | null }[] = [];
     if (inserted.length >= MIN_WHOLE_VALUE && inserted.length <= MAX_VALUE) candidates.push({ value: inserted, kind: null });
     for (const v of w.values) {
-      if (v.nodeKey !== p.key || v.text.length < MIN_TYPED_VALUE || p.before.includes(v.text)) continue;
+      if (v.nodeKey !== p.key || v.text.length < MIN_TYPED_VALUE || p.span.initial.includes(v.text)) continue;
       if (!inserted.includes(v.text) && !v.text.includes(inserted)) continue;
       if (v.text === inserted) {
         const whole = candidates[0];

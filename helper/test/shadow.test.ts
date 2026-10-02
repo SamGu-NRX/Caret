@@ -75,6 +75,16 @@ describe("shadow logger", () => {
     expect(rows[0]).toMatchObject({ existed: "normalized", trigger: "appSwitch" });
   });
 
+  it("counts characters typed before the focus walk ran as part of the entry", () => {
+    void helper.handleReader(source(1000));
+    void helper.handleReader(form(2000, "", ""));
+    void helper.handleReader(snap([field(EMAIL, "da", { label: "Email" }), field(NOTES, "", { label: "Notes" })], { at: 3000, windowId: FORM, app: FIXTURE_APP, focused: true, reason: "focus" }));
+    void helper.handleReader(focus(FORM, EMAIL, 3000));
+    void helper.handleReader(form(4000, "dana.whitfield@example.com", ""));
+    helper.shutdown();
+    expect(store.shadowEpisodes()[0]).toMatchObject({ existed: "exact", enteredLength: 26 });
+  });
+
   it("counts short entries without judging them, and never calls Jev or publishes", () => {
     void helper.handleReader(form(2000, "", ""));
     void helper.handleReader(focus(FORM, NOTES, 3000));

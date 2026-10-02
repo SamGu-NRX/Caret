@@ -68,6 +68,7 @@ export async function proposeFill(model: ScreenModel, askJev: AskJev, windowId: 
     if (a.choice !== NONE && c === undefined) throw new FillError(`Jev chose ${a.choice}, which is not a candidate id`);
     return {
       key: f.node.key,
+      frame: f.node.frame ?? null,
       descriptor: f.descriptor,
       choice: a.choice,
       confidence: a.confidence,

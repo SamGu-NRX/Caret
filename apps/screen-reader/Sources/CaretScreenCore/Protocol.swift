@@ -57,11 +57,11 @@ public struct WindowRef: Codable, Equatable, Sendable {
     }
 }
 
-public enum NodeState: String, Codable, Sendable, CaseIterable {
+public enum NodeState: String, Codable, Hashable, Sendable, CaseIterable {
     case focused, selected, disabled, expanded, checked, secure
 }
 
-public struct Node: Codable, Equatable, Sendable {
+public struct Node: Codable, Equatable, Hashable, Sendable {
     public var key: String
     public var parent: String?
     public var role: String
@@ -356,16 +356,17 @@ public struct FillSource: Codable, Equatable, Sendable {
 
 public struct FillField: Codable, Equatable, Sendable {
     public var key: String
+    public var frame: Frame?
     public var descriptor: String
     public var choice: String
     public var confidence: Double
     /// The chosen candidate's text, copied verbatim by the helper. Nil when the choice is "none".
     public var value: String?
     public var source: FillSource?
-    enum CodingKeys: String, CodingKey { case key, descriptor, choice, confidence, value, source }
+    enum CodingKeys: String, CodingKey { case key, frame, descriptor, choice, confidence, value, source }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(key, forKey: .key); try c.encode(descriptor, forKey: .descriptor)
+        try c.encode(key, forKey: .key); try c.encode(frame, forKey: .frame); try c.encode(descriptor, forKey: .descriptor)
         try c.encode(choice, forKey: .choice); try c.encode(confidence, forKey: .confidence)
         try c.encode(value, forKey: .value); try c.encode(source, forKey: .source)
     }

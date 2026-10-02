@@ -50,11 +50,38 @@ export function containsBounded(haystack: string, needle: string): boolean {
   }
 }
 
-/** Inserted text between two versions of a field value, by common prefix and suffix. */
-export function insertedText(before: string, after: string): string {
-  let p = 0;
-  while (p < before.length && p < after.length && before[p] === after[p]) p++;
-  let s = 0;
-  while (s < before.length - p && s < after.length - p && before[before.length - 1 - s] === after[after.length - 1 - s]) s++;
-  return after.slice(p, after.length - s);
+/**
+ * What the user entered in a field over one edit, from the value it started with and every value
+ * seen since. Keeps the shortest common prefix and suffix with the starting value across all of
+ * them, so a field that was selected and retyped yields the whole new text, while an append yields
+ * only the appended part. Comparing only the first and last value would keep any letters the old
+ * and new text happen to share at either end.
+ */
+export class EditSpan {
+  readonly initial: string;
+  private prefix: number;
+  private suffix: number;
+  last: string;
+
+  constructor(initial: string) {
+    this.initial = initial;
+    this.prefix = initial.length;
+    this.suffix = initial.length;
+    this.last = initial;
+  }
+
+  observe(v: string): void {
+    this.last = v;
+    let p = 0;
+    while (p < this.prefix && p < v.length && this.initial[p] === v[p]) p++;
+    this.prefix = p;
+    let s = 0;
+    while (s < this.suffix && s < v.length - p && s < this.initial.length - p && this.initial[this.initial.length - 1 - s] === v[v.length - 1 - s]) s++;
+    this.suffix = s;
+  }
+
+  entered(): string {
+    const end = Math.max(this.prefix, this.last.length - this.suffix);
+    return this.last.slice(this.prefix, end);
+  }
 }

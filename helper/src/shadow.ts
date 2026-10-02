@@ -2,7 +2,7 @@
 // entry settles or focus moves on, it asks whether the text the user entered (6 or more
 // characters) existed, exactly or after normalization, in another readable window during the
 // ten minutes before the focus. It persists counts and hashes only and never shows anything.
-import { insertedText } from "./normalize.ts";
+import { EditSpan } from "./normalize.ts";
 import type { Change, ScreenModel } from "./model.ts";
 import type { AppSwitch, Focus, ValueKind } from "./protocol.ts";
 import type { Found, RollingText } from "./rolling-text.ts";
@@ -15,8 +15,7 @@ interface Episode {
   windowId: string;
   key: string;
   bundleId: string;
-  initial: string;
-  last: string;
+  span: EditSpan;
   lastChange: number | null;
 }
 
@@ -44,22 +43,28 @@ export class ShadowLogger {
     this.store.count("shadow.app_switch", 1, m.at);
   }
 
-  onFocus(m: Focus): void {
+  /**
+   * `before` is the field's value as last seen before the walk that reported this focus, when the
+   * helper has it: typing can start before that walk runs, and the walk would otherwise count the
+   * first characters as already there.
+   */
+  onFocus(m: Focus, before?: string): void {
     this.close();
     this.store.count("shadow.focus", 1, m.at);
     if (!m.editable || m.key === null) return;
     this.store.count("shadow.field_focus", 1, m.at);
     const node = this.model.windows.get(m.windowId)?.nodes.get(m.key);
-    const initial = node?.value ?? "";
+    const span = new EditSpan(before ?? node?.value ?? "");
+    const current = node?.value ?? "";
+    if (current !== span.initial) span.observe(current);
     this.episode = {
       at: m.at,
       trigger: m.at - this.lastSwitchAt <= SWITCH_ATTRIBUTION_MS ? "appSwitch" : "focus",
       windowId: m.windowId,
       key: m.key,
       bundleId: m.app.bundleId,
-      initial,
-      last: initial,
-      lastChange: null,
+      span,
+      lastChange: current !== span.initial ? m.at : null,
     };
   }
 
@@ -72,7 +77,7 @@ export class ShadowLogger {
         return;
       }
       if (c.kind === "value" && c.windowId === ep.windowId && c.key === ep.key) {
-        ep.last = c.after ?? "";
+        ep.span.observe(c.after ?? "");
         ep.lastChange = c.at;
       }
     }
@@ -83,7 +88,7 @@ export class ShadowLogger {
     if (ep !== null && ep.lastChange !== null && now - ep.lastChange >= IDLE_MS) {
       this.close();
       // Keep watching the same field: further typing starts a new episode from where this one ended.
-      this.episode = { ...ep, at: now, initial: ep.last, lastChange: null };
+      this.episode = { ...ep, at: now, span: new EditSpan(ep.span.last), lastChange: null };
     }
   }
 
@@ -92,7 +97,7 @@ export class ShadowLogger {
     const ep = this.episode;
     this.episode = null;
     if (ep === null || ep.lastChange === null) return;
-    const entered = insertedText(ep.initial, ep.last).trim();
+    const entered = ep.span.entered().trim();
     if (entered.length === 0) return;
     if (entered.length < MIN_WHOLE_VALUE) {
       this.store.count("shadow.entry_short", 1, ep.lastChange);

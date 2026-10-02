@@ -40,6 +40,8 @@ export class Helper {
   private readonly lastFill = new Map<string, number>();
   private readonly inflight = new Set<string>();
   private lastPrune = 0;
+  /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
+  private preFocus: { windowId: string; values: Map<string, string> } | null = null;
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
@@ -58,6 +60,10 @@ export class Helper {
         return null;
       case "snapshot": {
         const prevFocused = this.model.focusedWindowId;
+        if (m.reason === "focus") {
+          const prior = this.model.windows.get(m.window.windowId);
+          this.preFocus = { windowId: m.window.windowId, values: new Map(prior === undefined ? [] : [...prior.nodes].map(([k, n]) => [k, n.value ?? ""])) };
+        }
         const changes = this.model.apply(m);
         const w = this.model.windows.get(m.window.windowId);
         if (w !== undefined) this.text.observe(w, m.at);
@@ -70,7 +76,11 @@ export class Helper {
         return null;
       }
       case "focus": {
-        if (this.mode === "shadow") this.shadowLogger.onFocus(m);
+        if (this.mode === "shadow") {
+          const before = this.preFocus?.windowId === m.windowId && m.key !== null ? this.preFocus.values.get(m.key) : undefined;
+          this.shadowLogger.onFocus(m, before);
+        }
+        this.preFocus = null;
         store.count(m.editable ? "reader.focus_editable" : "reader.focus_other", 1, m.at);
         const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus);
         if (!triggers || m.key === null) return null;

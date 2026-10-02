@@ -648,6 +648,33 @@
                   "key": {
                     "type": "string"
                   },
+                  "frame": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ],
+                        "items": false,
+                        "minItems": 4,
+                        "maxItems": 4
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "descriptor": {
                     "type": "string"
                   },
@@ -722,6 +749,7 @@
                 },
                 "required": [
                   "key",
+                  "frame",
                   "descriptor",
                   "choice",
                   "confidence",

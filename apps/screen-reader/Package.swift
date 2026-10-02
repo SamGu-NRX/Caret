@@ -16,7 +16,8 @@ let package = Package(
         .target(name: "CaretScreenAX", dependencies: ["CaretScreenCore"]),
         .executableTarget(name: "caret-screen", dependencies: ["CaretScreenAX", "CaretScreenCore"]),
         // Synthetic AppKit windows for tests and experiments. Shows invented data only.
-        .executableTarget(name: "caret-fixture"),
+        // Swift 5 mode: Timer callbacks that invalidate themselves are not worth Swift 6's ceremony in a test fixture.
+        .executableTarget(name: "caret-fixture", swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "CaretScreenCoreTests", dependencies: ["CaretScreenCore"]),
     ]
 )

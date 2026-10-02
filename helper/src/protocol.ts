@@ -173,6 +173,8 @@ export type FillSource = z.infer<typeof FillSource>;
 
 export const FillField = z.object({
   key: z.string(),
+  /** Where the field is on screen, so a consumer can draw the proposed value in place. */
+  frame: Frame.nullable(),
   descriptor: z.string(),
   /** Jev's choice: a candidate id, or "none". */
   choice: z.string(),

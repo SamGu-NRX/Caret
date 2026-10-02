@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containsBounded, insertedText, normalizeValue } from "../src/normalize.ts";
+import { containsBounded, EditSpan, normalizeValue } from "../src/normalize.ts";
 
 describe("normalizeValue", () => {
   it("compares phones by their last ten digits", () => {
@@ -36,10 +36,23 @@ describe("containsBounded", () => {
   });
 });
 
-describe("insertedText", () => {
-  it("returns what was added between two versions", () => {
-    expect(insertedText("", "hello")).toBe("hello");
-    expect(insertedText("Dear ,", "Dear Dana,")).toBe("Dana");
-    expect(insertedText("abc", "abc")).toBe("");
+describe("EditSpan", () => {
+  const run = (initial: string, ...values: string[]): string => {
+    const e = new EditSpan(initial);
+    for (const v of values) e.observe(v);
+    return e.entered();
+  };
+  it("returns the whole value typed into an empty field", () => {
+    expect(run("", "h", "he", "hello")).toBe("hello");
+  });
+  it("returns only the appended part of an edit", () => {
+    expect(run("Dear ,", "Dear D,", "Dear Dana,")).toBe("Dana");
+  });
+  it("returns the whole new text when old text was selected and retyped, even if the ends coincide", () => {
+    expect(run("Dana Whitfield", "W", "Weekly sync notes", "Weekly sync notes 3 field")).toBe("Weekly sync notes 3 field");
+  });
+  it("returns nothing when the value did not change", () => {
+    expect(run("abc")).toBe("");
+    expect(run("abc", "abc")).toBe("");
   });
 });
