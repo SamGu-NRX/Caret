@@ -76,15 +76,20 @@ describe("memory store", () => {
 
   it("learns a phone format, a person and a use-instead value from edits, and applies them", () => {
     const base = { kind: null, dstShapeHash: "dst1", fieldLabel: "Guest", app: "Mail" } as const;
-    expect(captureEdit(m, hash, { ...base, kind: "phone", written: "+1 (512) 555-0142", edited: "512-555-0142" }, 1)?.entry).toBe("format");
+    expect(captureEdit(m, hash, { ...base, kind: "phone", source: "+1 (512) 555-0142", written: "+1 (512) 555-0142", edited: "512-555-0142" }, 1)?.entry).toBe("format");
     expect(applyMemory(m, hash, "+1 (415) 555-0199", "phone", "any").value).toBe("415-555-0199");
-    expect(captureEdit(m, hash, { ...base, written: "Dana", edited: "Dana Reyes" }, 1)?.entry).toBe("people");
+    expect(captureEdit(m, hash, { ...base, source: "Dana", written: "Dana", edited: "Dana Reyes" }, 1)?.entry).toBe("people");
     expect(applyMemory(m, hash, "dana", null, "any").value).toBe("Dana Reyes");
-    expect(captureEdit(m, hash, { ...base, written: "Marcus Lowe", edited: "M. Lowe (ops)" }, 1)?.entry).toBe("useInstead");
+    expect(captureEdit(m, hash, { ...base, source: "Marcus Lowe", written: "Marcus Lowe", edited: "M. Lowe (ops)" }, 1)?.entry).toBe("useInstead");
     expect(applyMemory(m, hash, "Marcus Lowe", null, "dst1").value).toBe("M. Lowe (ops)");
     expect(applyMemory(m, hash, "Marcus Lowe", null, "other field").value).toBe("Marcus Lowe");
-    expect(captureEdit(m, hash, { ...base, written: "Marcus Lowe", edited: "" }, 1)).toBeNull();
-    expect(m.list("preference").map((p) => p.says).sort()).toEqual(["Guest gets your Guest, M. Lowe (ops) (you changed this once)", "Phone numbers go in as 512-555-0100 (you changed this once)"]);
+    expect(captureEdit(m, hash, { ...base, source: "Marcus Lowe", written: "Marcus Lowe", edited: "" }, 1)).toBeNull();
+    // A second correction of the same source value replaces the first: the next fill gets the newest.
+    expect(captureEdit(m, hash, { ...base, source: "Marcus Lowe", written: "M. Lowe (ops)", edited: "Marcus Lowe, Ops" }, 2)?.entry).toBe("useInstead");
+    expect(applyMemory(m, hash, "Marcus Lowe", null, "dst1").value).toBe("Marcus Lowe, Ops");
+    expect(captureEdit(m, hash, { ...base, source: "Marcus Lowe", written: "M. Lowe (ops)", edited: "M. Lowe (ops)" }, 2)).toBeNull();
+    expect(m.list("preference").map((p) => p.says).sort().slice(1)).toEqual(["Phone numbers go in as 512-555-0100 (you changed this once)"]);
+    expect(m.list("preference").find((p) => p.kind === "preference" && p.fields.rule === "useInstead")?.says).toBe("Guest gets your Guest, Marcus Lowe, Ops (you changed this 2 times)");
   });
 
   it("blocks relearning a forgotten routine for 30 days", () => {

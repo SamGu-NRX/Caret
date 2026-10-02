@@ -18,6 +18,8 @@ import {
   type OfferControl,
   type ReaderCommand,
   type ReaderMessage,
+  type ReaderVerb,
+  type VerbResult,
   type RunPlan,
   type TaskControl,
 } from "./protocol.ts";
@@ -183,6 +185,14 @@ export class Helper {
 
   handleConsumer(m: FillRequest): Promise<FillProposal | null> {
     return this.fill(m.windowId, m.fieldKey, true);
+  }
+
+  /**
+   * Sends one verb to the reader and resolves with its answer. For evaluation scripts that play the
+   * user through the reader's pid-checked AX writes; the executor uses the same link.
+   */
+  readerVerb(verb: ReaderVerb): Promise<VerbResult> {
+    return (this.opts.readerLink ?? (this.socketLink as SocketReaderLink)).run(verb);
   }
 
   /** Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. */

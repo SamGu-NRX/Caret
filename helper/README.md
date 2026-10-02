@@ -44,3 +44,20 @@ A plan (`src/executor/schema.ts`, exported to `schemas/plan.schema.json`, exampl
 Every write is recorded with the value it replaced; `taskControl {action: "undo"}` restores them newest first, each only if the field still holds what Caret wrote. Real input in a window the task acts in pauses it before the next step; `taskControl {action: "resume"}` continues. The calendar is an interface with one implementation, `FakeCalendar`; nothing here links EventKit or opens URLs.
 
 `node scripts/executor-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR` runs five fixture plans, the Send hand-off and injected faults against `caret-fixture` with the real reader.
+
+## Patterns and memory
+
+`src/patterns/` recognizes repeated work as transfers arrive, with no model in the path, and offers it through a gate.
+
+A transfer's shape is the source and destination element keys with their ordinals removed (a static text's own label, which is its content, becomes `*`), plus the window kinds and which part of the source was copied. Its row is the element's position among same-shape elements in its window (`shape.ts`).
+
+- **Loops** (`loops.ts`). Two rounds in a row of the same 1 to 3 transfers, one row further down the destination and 1 to 3 items further down the source, with each column keeping one value class (email, url, number, text). After round two the next round is read from the screen and published as a `patternOffer` of kind `loopNext`. When the user takes it, or types the same values, every remaining round becomes one `loopFinish` offer. A value shown in several windows counts for whichever window explains every round; a copy that cannot be described still breaks "in a row".
+- **Routines** (`routines.ts`). The transfers into one window until it closes or goes quiet for two minutes form a bundle; two or more shapes make a routine, signed by their sorted keyed hashes. When a window opens holding a known routine's destination fields, empty, Caret predicts silently from the live windows and scores the prediction when the bundle closes.
+- **Gate** (`gate.ts`). Rules first: shadow mode, paused, permission hand-off, "Don't offer this here", ignored twice today in this app, the hourly budget, proof (one matching round for `loopNext`, a confirmed round for `loopFinish`, two silent hits at 80% or better for a routine) and grounding. Every decision goes to the decision log with `(hits + 1) / (hits + misses + 2)` as its show probability; nothing calibrates or reads that number yet.
+- **Memory** (`memory.ts`, `memory.sqlite` beside the store). Five typed kinds: about you, people, preferences, routines, permissions. Each entry's sentence is rendered by code. About-you, people and preference fields are sealed with AES-256-GCM under `memory.key` (0600); routines hold only keyed hashes, app names and positions. A forgotten routine is not relearned for 30 days.
+- **Preferences** (`preferences.ts`). For a minute after Caret fills a field, a settled edit to it becomes memory: the same phone number reformatted is a format rule, a name extended is a People entry, anything else is an About-you value used instead for that field shape and source value. Every offer applies these before it shows a value, so editing the entry changes the next fill.
+
+A consumer sends `offerControl {offerId, action: take | dismiss | dontOfferHere}`; take runs the offer's plan through the executor. `memoryRequest {requestId, op: list | edit | pause | resume | forget}` is answered with a `memoryReply` to that consumer only.
+
+- `node scripts/patterns-eval.ts --out DIR` replays the planted and distractor streams in `test/stream.ts` at 50 events a second, then a forget-and-rerun and the edit scenario, and writes `results.json` and `summary.md`.
+- `node scripts/patterns-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR` runs the loop on `caret-fixture --windows roster,seating` with the real reader. It opens windows, so run it under `/usr/bin/lockf -k ~/.long-run/locks/gui.lock env CARET_GUI_LOCK=held`.

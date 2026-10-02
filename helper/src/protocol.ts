@@ -444,12 +444,17 @@ export const PatternOffer = z.object({
 });
 export type PatternOffer = z.infer<typeof PatternOffer>;
 
+/**
+ * The offer is no longer valid; a consumer removes it. `taken`: its values were entered, by Caret or by
+ * the user typing them. `diverged`: the user entered something else. `idle`: the loop went quiet.
+ * `stale`: a window it reads or writes closed, the reader restarted, or its memory entry was paused or forgotten.
+ */
 export const OfferWithdrawn = z.object({
   type: z.literal("offerWithdrawn"),
   v: z.literal(PROTOCOL_VERSION),
   at: ms,
   id: z.string(),
-  reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "failed"]),
+  reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale"]),
 });
 export type OfferWithdrawn = z.infer<typeof OfferWithdrawn>;
 

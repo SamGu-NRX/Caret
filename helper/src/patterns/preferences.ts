@@ -12,6 +12,8 @@ import { formatDigits, type MemoryStore } from "./memory.ts";
 import type { Hash } from "./routines.ts";
 
 export interface FilledField {
+  /** The source text the fill started from, before memory rules changed it. Rules are keyed on it. */
+  source: string;
   /** What Caret wrote. */
   written: string;
   /** What the field holds after the user's edit settled. */
@@ -40,8 +42,9 @@ export function captureEdit(memory: MemoryStore, hash: Hash, f: FilledField, at:
     return { entry: "format", ids: [id] };
   }
 
-  if (isName(written) && edited.toLowerCase().startsWith(`${written.toLowerCase()} `) && isName(edited)) {
-    const id = memory.upsert("people", hash(`people\u0000${written.toLowerCase()}`), { alias: written, name: edited }, at, f.app);
+  const source = f.source.trim();
+  if (isName(source) && edited.toLowerCase().startsWith(`${source.toLowerCase()} `) && isName(edited)) {
+    const id = memory.upsert("people", hash(`people\u0000${source.toLowerCase()}`), { alias: source, name: edited }, at, f.app);
     return { entry: "people", ids: [id] };
   }
 
@@ -52,7 +55,8 @@ export function captureEdit(memory: MemoryStore, hash: Hash, f: FilledField, at:
     at,
     f.app,
   );
-  const prefId = memory.upsert("preference", useInsteadMatch(hash, f.dstShapeHash, written, f.kind), { rule: "useInstead", field: f.fieldLabel, aboutId }, at, f.app);
+  // Keyed on the source text, so a second correction replaces the first instead of adding a rule that never matches.
+  const prefId = memory.upsert("preference", useInsteadMatch(hash, f.dstShapeHash, source, f.kind), { rule: "useInstead", field: f.fieldLabel, aboutId }, at, f.app);
   return { entry: "useInstead", ids: [aboutId, prefId] };
 }
 
@@ -68,7 +72,7 @@ export function applyMemory(memory: MemoryStore, hash: Hash, value: string, kind
     used.push(person.id);
   }
 
-  const match = useInsteadMatch(hash, dstShapeHash, v, kind);
+  const match = useInsteadMatch(hash, dstShapeHash, value, kind);
   for (const p of memory.active("preference")) {
     if (p.match !== match || p.fields.rule !== "useInstead") continue;
     const about = memory.about(p.fields.aboutId);

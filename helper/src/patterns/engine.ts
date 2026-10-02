@@ -61,6 +61,8 @@ interface OfferState {
 interface Watch {
   windowId: string;
   key: string;
+  /** The source text before memory rules; preference rules are keyed on it. */
+  source: string;
   written: string;
   kind: ValueKind | null;
   dstShapeHash: string;
@@ -429,6 +431,7 @@ export class PatternEngine {
     this.watches.set(`${c.dstWindowId}\u0000${c.dstKey}`, {
       windowId: c.dstWindowId,
       key: c.dstKey,
+      source: c.value,
       written: c.written,
       kind: c.kind,
       dstShapeHash: c.dstShapeHash,
@@ -441,7 +444,7 @@ export class PatternEngine {
 
   private judgeEdit(w: Watch): void {
     if (w.pending === null) return;
-    captureEdit(this.deps.memory, this.deps.hash, { written: w.written, edited: w.pending.value, kind: w.kind, dstShapeHash: w.dstShapeHash, fieldLabel: w.label, app: w.app }, w.pending.at);
+    captureEdit(this.deps.memory, this.deps.hash, { source: w.source, written: w.written, edited: w.pending.value, kind: w.kind, dstShapeHash: w.dstShapeHash, fieldLabel: w.label, app: w.app }, w.pending.at);
   }
 
   private fail(message: string): null {

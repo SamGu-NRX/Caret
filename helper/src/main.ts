@@ -60,6 +60,7 @@ const stop = async (signal: string): Promise<void> => {
   clearInterval(status);
   helper.shutdown();
   await server?.close();
+  helper.memory.close();
   store.close();
   warn(`stopped on ${signal}`);
   process.exit(0);

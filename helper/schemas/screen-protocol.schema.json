@@ -1418,8 +1418,7 @@
                 "dismissed",
                 "diverged",
                 "idle",
-                "stale",
-                "failed"
+                "stale"
               ]
             }
           },
