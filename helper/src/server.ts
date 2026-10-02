@@ -114,6 +114,8 @@ export class HelperServer {
           }
           if (m.data.type === "fillRequest") void this.helper().handleConsumer(m.data);
           else if (m.data.type === "runPlan" || m.data.type === "taskControl") void this.helper().handleTask(m.data);
+          else if (m.data.type === "offerControl") void this.helper().handleOffer(m.data);
+          else if (m.data.type === "memoryRequest") s.write(JSON.stringify(this.helper().handleMemory(m.data)) + "\n");
         }
       }
     });

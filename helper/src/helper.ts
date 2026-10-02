@@ -13,6 +13,9 @@ import {
   type FillProposal,
   type FillRequest,
   type HelperMessage,
+  type MemoryReply,
+  type MemoryRequest,
+  type OfferControl,
   type ReaderCommand,
   type ReaderMessage,
   type RunPlan,
@@ -21,6 +24,8 @@ import {
 import type { Change } from "./model.ts";
 import { Executor, type ExecutorDeps, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
+import { MemoryStore } from "./patterns/memory.ts";
+import { PatternEngine } from "./patterns/engine.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -40,6 +45,8 @@ export interface HelperOptions {
   /** Replaces the socket link to the reader, for tests that simulate the reader in process. */
   readerLink?: ReaderLink;
   calendar?: CalendarPort | null;
+  /** Memory entries, the decision log and reactions. Defaults to a store beside `store`'s database. */
+  memory?: MemoryStore;
   urls?: UrlOpener | null;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
@@ -63,6 +70,8 @@ export class Helper {
   private readonly inflight = new Set<string>();
   private lastPrune = 0;
   readonly executor: Executor;
+  readonly memory: MemoryStore;
+  readonly patterns: PatternEngine;
   private readonly socketLink: SocketReaderLink | null;
   private readonly changeListeners = new Set<(changes: readonly Change[]) => void>();
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
@@ -87,6 +96,17 @@ export class Helper {
       },
       ...opts.executorHooks,
     });
+    this.memory = opts.memory ?? new MemoryStore(opts.store.dir);
+    this.patterns = new PatternEngine({
+      model: this.model,
+      memory: this.memory,
+      hash: (t) => opts.store.hash(t),
+      publish: (m) => {
+        if (this.mode === "live") opts.publish(m);
+      },
+      run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots),
+      shadow: () => this.mode === "shadow",
+    });
   }
 
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
@@ -101,6 +121,7 @@ export class Helper {
         this.model.reset();
         this.text.clear();
         this.executor.readerRestarted();
+        this.patterns.readerRestarted();
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
         return null;
@@ -118,6 +139,7 @@ export class Helper {
         store.count("reader.nodes", m.nodes.length, m.at);
         if (m.stats.truncated) store.count("reader.truncated", 1, m.at);
         this.transfers.onChanges(changes);
+        this.patterns.onChanges(changes);
         if (this.mode === "shadow") this.shadowLogger.onChanges(changes);
         if (prevFocused !== null && prevFocused !== this.model.focusedWindowId) this.record(this.transfers.flush(prevFocused));
         return null;
@@ -142,6 +164,7 @@ export class Helper {
         // The shadow logger judges an open episode in this window before the window leaves the model,
         // since the judgment reads the window's typed values.
         if (this.mode === "shadow") this.shadowLogger.onWindowClosing(m.windowId);
+        this.patterns.onWindowClosed(m.windowId);
         this.model.close(m.windowId, m.at);
         return null;
       }
@@ -159,6 +182,16 @@ export class Helper {
 
   handleConsumer(m: FillRequest): Promise<FillProposal | null> {
     return this.fill(m.windowId, m.fieldKey, true);
+  }
+
+  /** Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. */
+  handleOffer(m: OfferControl): Promise<TaskResult | null> {
+    return this.patterns.control(m);
+  }
+
+  /** Answers a memory request; the server sends the reply to the asking consumer only, since entries hold personal values. */
+  handleMemory(m: MemoryRequest): MemoryReply {
+    return this.patterns.memoryRequest(m);
   }
 
   /** Runs a plan or controls a task. Errors in the request itself are published, not thrown. */
@@ -179,6 +212,7 @@ export class Helper {
   /** Periodic work: settled transfers, idle shadow episodes, pruning and count flushes. */
   tick(now = Date.now()): void {
     this.record(this.transfers.tick(now));
+    this.patterns.tick(now);
     if (this.mode === "shadow") this.shadowLogger.tick(now);
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {
       this.lastPrune = now;
@@ -195,6 +229,7 @@ export class Helper {
 
   shutdown(): void {
     this.record(this.transfers.flush());
+    this.patterns.shutdown();
     this.shadowLogger.close();
     this.opts.store.flush();
   }
@@ -220,6 +255,7 @@ export class Helper {
         attribution: t.attribution,
       });
     }
+    if (ts.length > 0) this.patterns.onTransfers(ts);
   }
 
   private async fill(windowId: string, key: string, explicit: boolean): Promise<FillProposal | null> {

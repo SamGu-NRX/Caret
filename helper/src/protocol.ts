@@ -261,7 +261,46 @@ export const TaskControl = z.object({
 });
 export type TaskControl = z.infer<typeof TaskControl>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl]);
+// MARK: - patterns and memory (plan section 4)
+
+export const OfferKind = z.enum([
+  /** The next round of a loop, predicted after two rounds. */
+  "loopNext",
+  /** Every remaining round of a loop whose prediction the user took or typed. */
+  "loopFinish",
+  /** A learned routine, at the opening of its next occurrence. */
+  "routine",
+]);
+export type OfferKind = z.infer<typeof OfferKind>;
+
+/** Take runs the offer's plan through the executor; dontOfferHere also writes a visible rule. */
+export const OfferControl = z.object({
+  type: z.literal("offerControl"),
+  v: z.literal(PROTOCOL_VERSION),
+  offerId: z.string(),
+  action: z.enum(["take", "dismiss", "dontOfferHere"]),
+});
+export type OfferControl = z.infer<typeof OfferControl>;
+
+export const MemoryKind = z.enum(["about", "people", "preference", "routine", "permission"]);
+export type MemoryKind = z.infer<typeof MemoryKind>;
+
+/**
+ * List, edit, pause, resume or forget memory entries. `kind` narrows a list; `id` names the entry
+ * for every other op; `fields` holds an edit's new values, checked against the entry's kind.
+ */
+export const MemoryRequest = z.object({
+  type: z.literal("memoryRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string(),
+  op: z.enum(["list", "edit", "pause", "resume", "forget"]),
+  id: z.string().optional(),
+  kind: MemoryKind.optional(),
+  fields: z.record(z.string(), z.unknown()).optional(),
+});
+export type MemoryRequest = z.infer<typeof MemoryRequest>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -374,7 +413,107 @@ export const TaskProgress = z.object({
 });
 export type TaskProgress = z.infer<typeof TaskProgress>;
 
-export const HelperMessage = z.discriminatedUnion("type", [FillProposal, HelperError, TaskProgress]);
+/** One value an offer would write, copied verbatim by code from a live source and then changed only by memory rules. */
+export const OfferCell = z.object({
+  windowId: z.string(),
+  key: z.string(),
+  frame: Frame.nullable(),
+  value: z.string(),
+  source: z.object({ windowId: z.string(), nodeKey: z.string(), appName: z.string(), windowTitle: z.string() }),
+  /** Memory entries that changed the source text into `value`. */
+  memory: z.array(z.string()),
+});
+export type OfferCell = z.infer<typeof OfferCell>;
+
+export const PatternOffer = z.object({
+  type: z.literal("patternOffer"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string(),
+  at: ms,
+  kind: OfferKind,
+  /** The loop or routine behind the offer. */
+  patternId: z.string(),
+  /** The offer as a sentence. */
+  says: z.string(),
+  windowId: z.string(),
+  bundleId: z.string(),
+  /** For loopNext, the cells shown as ghost values; for loopFinish and routine, every cell the plan writes. */
+  cells: z.array(OfferCell),
+  /** The gate's estimate that the offer is right, logged with the decision. See patterns/gate.ts. */
+  showProbability: z.number(),
+});
+export type PatternOffer = z.infer<typeof PatternOffer>;
+
+export const OfferWithdrawn = z.object({
+  type: z.literal("offerWithdrawn"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  id: z.string(),
+  reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "failed"]),
+});
+export type OfferWithdrawn = z.infer<typeof OfferWithdrawn>;
+
+export const MemoryStatus = z.enum(["learning", "active", "paused"]);
+export type MemoryStatus = z.infer<typeof MemoryStatus>;
+
+/** Action types from plan section 3, "Permission per action type". */
+export const ActionType = z.enum(["read", "show", "writeHere", "writeElsewhere", "outbound", "destructive", "sensitive"]);
+export type ActionType = z.infer<typeof ActionType>;
+export const PermissionRule = z.enum(["act", "actIfApproved", "ask", "handoff"]);
+export type PermissionRule = z.infer<typeof PermissionRule>;
+
+export const AboutFields = z.object({
+  label: z.string().min(1).max(80),
+  value: z.string().min(1).max(500),
+  source: z.enum(["contacts", "typed", "edit"]),
+});
+export const PeopleFields = z.object({ alias: z.string().min(1).max(80), name: z.string().min(1).max(200) });
+export const PreferenceFields = z.discriminatedUnion("rule", [
+  /** Digits of a value of this kind are written into `template`, each "#" taking one digit. */
+  z.object({ rule: z.literal("format"), valueKind: z.literal("phone"), template: z.string() }),
+  /** A field of this shape that would get a certain value gets the About-you entry `aboutId` instead. */
+  z.object({ rule: z.literal("useInstead"), field: z.string(), aboutId: z.string() }),
+  z.object({ rule: z.literal("dontOffer"), offerKind: OfferKind, bundleId: z.string(), appName: z.string() }),
+]);
+export const RoutineFields = z.object({
+  srcApps: z.array(z.string()),
+  dstApp: z.string(),
+  steps: z.number().int().positive(),
+  /** Set by a person, or later by a background model; the routine itself is the typed steps. */
+  name: z.string().nullable(),
+  /** Silent predictions scored against what the user then did. */
+  silent: z.object({ hits: z.number().int().nonnegative(), misses: z.number().int().nonnegative() }),
+});
+export const PermissionFields = z.object({ action: ActionType, rule: PermissionRule, fixed: z.boolean() });
+
+const entryBase = {
+  id: z.string(),
+  status: MemoryStatus,
+  /** The entry as a sentence, rendered by code from its fields. */
+  says: z.string(),
+  evidence: z.object({ count: z.number().int().nonnegative(), lastSeen: ms, app: z.string().nullable() }),
+};
+export const MemoryEntry = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("about"), ...entryBase, fields: AboutFields }),
+  z.object({ kind: z.literal("people"), ...entryBase, fields: PeopleFields }),
+  z.object({ kind: z.literal("preference"), ...entryBase, fields: PreferenceFields }),
+  z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields }),
+  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields }),
+]);
+export type MemoryEntry = z.infer<typeof MemoryEntry>;
+
+export const MemoryReply = z.object({
+  type: z.literal("memoryReply"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string(),
+  /** Null on success; otherwise what was wrong with the request. */
+  error: z.string().nullable(),
+  /** For list, the entries; for every other op, the entry after the change, or none after forget. */
+  entries: z.array(MemoryEntry),
+});
+export type MemoryReply = z.infer<typeof MemoryReply>;
+
+export const HelperMessage = z.discriminatedUnion("type", [FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply]);
 /** What the helper sends the reader. */
 export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand]);
 export type HelperMessage = z.infer<typeof HelperMessage>;

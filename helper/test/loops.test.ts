@@ -43,8 +43,9 @@ describe("loop recognizer over the helper's transfers", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "caret-loops-"));
     store = new Store(dir);
-    helper = new Helper({ store, askJev: null, shadow: true, allowBackgroundFocus: false, publish: () => {} });
-    desk = new Desk(helper);
+    desk = new Desk();
+    helper = new Helper({ store, askJev: null, shadow: true, allowBackgroundFocus: false, publish: () => {}, readerLink: desk });
+    desk.attach(helper);
     loops = new LoopRecognizer(helper.model);
     events = [];
     seen = 0;
