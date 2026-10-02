@@ -41,6 +41,24 @@ print(f"| Reader resident memory | start {res[0][2] / 1024:.0f} MB, end {res[-1]
 print(f"| Helper resident memory | start {res[0][4] / 1024:.0f} MB, end {res[-1][4] / 1024:.0f} MB, max {max(r[4] for r in res) / 1024:.0f} MB |")
 print(f"| Reader physical footprint | start {res[0][5] / 1024:.0f} MB, end {res[-1][5] / 1024:.0f} MB, max {max(r[5] for r in res) / 1024:.0f} MB |")
 print(f"| Helper physical footprint | start {res[0][6] / 1024:.0f} MB, end {res[-1][6] / 1024:.0f} MB, max {max(r[6] for r in res) / 1024:.0f} MB |")
+# Entry by entry: the episode whose start falls within 3 s of the fixture's focus.
+eps = db.execute("SELECT at, entered_length, existed FROM shadow_episodes WHERE dst_bundle = '' ORDER BY at").fetchall()
+focuses = [a for a in acts if a["event"] == "focus"]
+confusion = {}
+partial = 0
+for f, e in zip(focuses, entered):
+    m = [x for x in eps if f["t"] - 200 <= x[0] <= f["t"] + 3000]
+    judged = "missing" if not m else ("existed" if m[0][2] != "no" else "not found")
+    if m and m[0][1] != e["length"]:
+        partial += 1
+    k = ("copied" if e["existsElsewhere"] else "invented", judged)
+    confusion[k] = confusion.get(k, 0) + 1
+print("\nEntry by entry (episode starting within 3 s of the fixture's focus):\n")
+print("| Fixture entry | Judged existing | Judged not found | No episode |")
+print("| --- | --- | --- | --- |")
+for t in ("copied", "invented"):
+    print(f"| {t} | {confusion.get((t, 'existed'), 0)} | {confusion.get((t, 'not found'), 0)} | {confusion.get((t, 'missing'), 0)} |")
+print(f"\nEpisodes whose entered length differs from what the fixture typed: {partial}.")
 print("\nCounters persisted (all apps):\n")
 print("| Counter | Value |")
 print("| --- | --- |")

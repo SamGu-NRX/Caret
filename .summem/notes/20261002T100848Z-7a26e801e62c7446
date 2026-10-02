@@ -1,0 +1,1 @@
+Chrome and Helium reject AXManualAccessibility (-25205) but still expose web AX; Electron apps accept it. Web pages post no AX notification for DOM text, insert or remove changes (E1).

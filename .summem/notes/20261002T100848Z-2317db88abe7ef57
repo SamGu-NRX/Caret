@@ -1,0 +1,1 @@
+Chrome names its top AXGroup after the window title and AXWebArea after the page title; keep both out of element keys or every key moves on a title change (E8).

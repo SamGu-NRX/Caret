@@ -1,0 +1,1 @@
+A non-frontmost AppKit app posts AX focus notifications only inside its key window; fixtures call makeKey() (no activation) before makeFirstResponder.
