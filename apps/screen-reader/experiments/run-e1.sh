@@ -29,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$BIN/caret-fixture" --windows "" --e1 "$OUT/fixture-actions.ndjson" --cycles "$FIX_CYCLES" --period 1.2 \
+"$BIN/caret-fixture" --foreground --windows "" --e1 "$OUT/fixture-actions.ndjson" --cycles "$FIX_CYCLES" --period 1.2 \
   --webkit "$PAGE" --duration $(( DUR + 30 )) > "$OUT/fixture.log" 2>&1 &
 FIX=$!
 open -n -g -a "Google Chrome" --args --user-data-dir="$CHROME_PROFILE" --no-first-run --no-default-browser-check \

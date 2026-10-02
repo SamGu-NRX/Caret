@@ -21,7 +21,7 @@ trap 'stop "${READER:-}" "${HELPERPID:-}" "${FIX:-}"' EXIT
 HELPERPID=$!
 sleep 1.5
 HPID=$(pgrep -f "node src/main.ts --shadow --data-dir $DATA" | head -1)
-"$BIN/caret-fixture" --windows reference,distractors,claim,schedule --activity "$OUT/activity.ndjson" --duration $(( DUR + 20 )) > "$OUT/fixture.log" 2>&1 &
+"$BIN/caret-fixture" --foreground --windows reference,distractors,claim,schedule --activity "$OUT/activity.ndjson" --duration $(( DUR + 20 )) > "$OUT/fixture.log" 2>&1 &
 FIX=$!
 sleep 1
 "$BIN/caret-screen" --shadow --event-pids "$FIX" > "$OUT/reader.log" 2>&1 &
