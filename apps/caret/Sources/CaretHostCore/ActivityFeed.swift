@@ -172,7 +172,10 @@ public enum ActivityList {
             if r.undoable { actions = [.undo] }
         case .undone:
             section = .done
-            progress = "Undone"
+            // The helper reports a partial undo as undone with writes still restorable; the row
+            // keeps Undo so the user can try the rest again.
+            progress = r.undoable ? "Partly undone" : "Undone"
+            if r.undoable { actions = [.undo] }
         }
         return ActivityRow(id: r.id, section: section, state: r.state, says: r.says, app: r.app?.name, progress: progress, actions: actions, updatedAt: r.updatedAt)
     }

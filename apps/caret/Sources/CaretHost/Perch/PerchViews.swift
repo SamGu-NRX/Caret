@@ -119,8 +119,6 @@ struct CountBadge: View {
 /// perch or the menu bar; never takes focus.
 struct ActivityListView: View {
     static let width: CGFloat = 320
-    /// Rows drawn at most; the rest are counted in one line. The list is a glance. Assumed.
-    static let maxRows = 10
 
     var rows: [ActivityRow]
     var mood: Perch.Mood?
@@ -142,7 +140,9 @@ struct ActivityListView: View {
                     .padding(.top, 2)
             }
             ForEach(ActivityRow.Section.allCases, id: \.self) { section in
-                let sectionRows = shown.filter { $0.section == section }
+                // Every row with a button is listed; only Done is capped (ActivityList.maxDone),
+                // so no Continue or Undo is out of reach.
+                let sectionRows = rows.filter { $0.section == section }
                 if !sectionRows.isEmpty {
                     Text(section.title)
                         .font(.system(size: 11, weight: .semibold))
@@ -157,12 +157,6 @@ struct ActivityListView: View {
                     }
                 }
             }
-            if rows.count > shown.count {
-                Text("\(rows.count - shown.count) more")
-                    .font(Tokens.Font.hint)
-                    .foregroundStyle(Color(token: Tokens.secondary))
-                    .padding(.top, 6)
-            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
@@ -171,7 +165,6 @@ struct ActivityListView: View {
         .panelChrome(radius: 12)
     }
 
-    private var shown: [ActivityRow] { Array(rows.prefix(Self.maxRows)) }
 
     private var header: some View {
         HStack(spacing: 8) {

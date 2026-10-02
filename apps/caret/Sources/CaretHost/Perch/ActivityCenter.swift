@@ -129,16 +129,21 @@ final class ActivityCenter {
         }
     }
 
+    /// Fires at the earliest outstanding control's deadline, so a later press on another row
+    /// never extends an earlier one's wait.
     private func scheduleBusyTimeout() {
         busyTimer?.invalidate()
-        busyTimer = Timer.scheduledTimer(withTimeInterval: controlTimeout, repeats: false) { [weak self] _ in
+        busyTimer = nil
+        guard let earliest = inFlight.values.map(\.sentAt).min() else { return }
+        let wait = max(0.01, earliest.addingTimeInterval(controlTimeout).timeIntervalSinceNow)
+        busyTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                let cutoff = Date().addingTimeInterval(-self.controlTimeout + 0.05)
+                let cutoff = Date().addingTimeInterval(-self.controlTimeout + 0.01)
                 let before = self.inFlight.count
                 self.inFlight = self.inFlight.filter { $0.value.sentAt > cutoff }
                 if self.inFlight.count != before { self.changed() }
-                if !self.inFlight.isEmpty { self.scheduleBusyTimeout() }
+                self.scheduleBusyTimeout()
             }
         }
     }

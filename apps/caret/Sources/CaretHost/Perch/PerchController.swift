@@ -57,6 +57,11 @@ final class PerchController {
     private var choice: PerchPlacement.Choice?
     private var field: CGRect?
     private var caret: CGRect?
+    /// The focused field, kept so its frame can be read when the perch first gets something to
+    /// show; its frame is not read while the perch is idle.
+    private var focusedElement: AXUIElement?
+    private var hopWork: DispatchWorkItem?
+    private var stopped = false
     /// The window the subject's task acts in, as last located; global, top-left origin.
     private var target: (taskId: String, frame: CGRect?)?
     private var expiryTimer: Timer?
@@ -95,6 +100,7 @@ final class PerchController {
         let next = center.subject(now: now)
         scheduleExpiry(now: now)
         if next?.taskId != subject?.taskId { target = nil }
+        if subject == nil, next != nil { field = focusedElement.flatMap { AXRead.frame(of: $0) } }
         subject = next
         if let next {
             model.mood = next.mood
@@ -113,6 +119,7 @@ final class PerchController {
     /// the perch has something to show, so focus changes cost nothing extra the rest of the day.
     func focusChanged(caret: CGRect?, element: AXUIElement?) {
         self.caret = caret
+        focusedElement = element
         field = subject == nil ? nil : element.flatMap { AXRead.frame(of: $0) }
         guard subject != nil else { return }
         place(reason: "focus")
@@ -120,6 +127,7 @@ final class PerchController {
 
     /// The debug socket's stand-in for a focused field: global, top-left-origin rects.
     func avoid(caret: CGRect?, field: CGRect?) {
+        focusedElement = nil
         self.caret = caret
         self.field = field
         place(reason: "avoid")
@@ -157,15 +165,19 @@ final class PerchController {
 
     private func hop(to axFrame: CGRect) {
         relocating = true
+        hopWork?.cancel()
         withAnimation(Motion.curve(Motion.easeOut, 0.12)) { model.presented = false }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) { [weak self] in
+        let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, !self.stopped else { return }
                 self.relocating = false
+                self.hopWork = nil
                 self.panel.setFrame(Screen.cocoa(axFrame), display: false)
-                if self.subject != nil { self.show() }
+                if self.subject != nil { self.show() } else { self.panel.orderOut(nil) }
             }
         }
+        hopWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.13, execute: work)
     }
 
     /// Looks again for the subject's window when `locate` is set or the subject changed, and
@@ -202,7 +214,7 @@ final class PerchController {
     private func show() {
         orderOutWork?.cancel()
         orderOutWork = nil
-        guard !relocating else { return }
+        guard !relocating, !stopped else { return }
         if !model.presented {
             stats.shows += 1
             let reduce = Motion.reduceMotion
@@ -225,6 +237,13 @@ final class PerchController {
         gazeTimer = nil
         blinkTimer?.invalidate()
         blinkTimer = nil
+        // A hop in flight has already hidden the figure; nothing must bring it back.
+        if relocating {
+            hopWork?.cancel()
+            hopWork = nil
+            relocating = false
+            panel.orderOut(nil)
+        }
         guard model.presented else { return }
         stats.leaves += 1
         let reduce = Motion.reduceMotion
@@ -325,6 +344,9 @@ final class PerchController {
     }
 
     func shutdown() {
+        stopped = true
+        hopWork?.cancel()
+        orderOutWork?.cancel()
         expiryTimer?.invalidate()
         gazeTimer?.invalidate()
         blinkTimer?.invalidate()

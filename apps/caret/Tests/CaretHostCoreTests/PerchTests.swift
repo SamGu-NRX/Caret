@@ -128,7 +128,10 @@ final class ActivityRowTests: XCTestCase {
         XCTAssertEqual(failed.section, .done)
         XCTAssertEqual(failed.progress, "Stopped at step 2 of 5")
         XCTAssertEqual(failed.actions, [.undo])
-        XCTAssertEqual(row(taskRecord("u", .undone, undoable: true))!.actions, [], "an undone task has nothing left to undo")
+        XCTAssertEqual(row(taskRecord("u", .undone))!.actions, [], "an undone task has nothing left to undo")
+        let partly = row(taskRecord("u2", .undone, undoable: true))!
+        XCTAssertEqual(partly.progress, "Partly undone")
+        XCTAssertEqual(partly.actions, [.undo], "writes that were not restored can be tried again")
     }
 
     func testRowActionsSendTheMatchingControl() {
