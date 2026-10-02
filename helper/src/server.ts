@@ -1,6 +1,6 @@
 // Unix socket server. Every client's first line is a hello naming its role. The reader then
 // streams ReaderMessages and receives the executor's readerCommands; consumers send fill requests,
-// plans and task controls, and receive every HelperMessage.
+// plans, task controls and the host's offerAccept and offerStop, and receive every HelperMessage.
 // Invalid lines are answered with an error message and counted, never silently dropped.
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
@@ -115,6 +115,9 @@ export class HelperServer {
           if (m.data.type === "fillRequest") void this.helper().handleConsumer(m.data);
           else if (m.data.type === "runPlan" || m.data.type === "taskControl") void this.helper().handleTask(m.data);
           else if (m.data.type === "offerControl") void this.helper().handleOffer(m.data);
+          // The work an accept starts reports as taskProgress and activity under the offer id; a refusal as error plus a stopped taskProgress.
+          else if (m.data.type === "offerAccept") void this.helper().handleOfferAccept(m.data);
+          else if (m.data.type === "offerStop") void this.helper().handleOfferStop(m.data);
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
           else if (m.data.type === "activityRequest") s.write(JSON.stringify(this.helper().handleActivity(m.data)) + "\n");

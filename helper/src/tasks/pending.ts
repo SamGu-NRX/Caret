@@ -404,6 +404,13 @@ export interface PendingDeps {
   live: () => boolean;
   warn?: (line: string) => void;
   debounceMs?: number;
+  /**
+   * Jev's answer ended a watch as done, or moved it into needsYou. `status` is the watch's status line,
+   * the first line that changed since the user left. Not called for a watch that ends any other way.
+   */
+  onResolved?: (e: { watchId: string; windowId: string; state: "done" | "needsYou"; status: string | null }) => void;
+  /** Makes the random part of a watch id; tests pass a counter. */
+  newId?: () => string;
 }
 
 export interface PendingStats {
@@ -472,7 +479,7 @@ export class PendingWatcher {
       return null;
     }
     const watch: Watch = {
-      id: `watch-${randomUUID()}`,
+      id: `watch-${this.deps.newId?.() ?? randomUUID()}`,
       windowId,
       pid: w.app.pid,
       then: lines,
@@ -682,8 +689,12 @@ export class PendingWatcher {
     watch.info.finished = answer.finished;
     watch.info.waiting = answer.waiting;
     const detail = state === "needsYou" ? "the window is waiting for you" : state === "done" ? "the work finished" : state === "failed" ? "the work ended in an error" : null;
+    const before = this.deps.tasks.get(watch.id)?.state;
     if (FINISHED.has(state)) this.end(watch, state, "screen", detail);
     else this.deps.tasks.update(watch.id, { state, cause: state === "running" ? null : "screen", detail, pending: { ...watch.info } });
+    if (state === "done" || (state === "needsYou" && before !== "needsYou")) {
+      this.deps.onResolved?.({ watchId: watch.id, windowId: watch.windowId, state, status: watch.info.status });
+    }
     return false;
   }
 

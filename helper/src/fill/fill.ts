@@ -110,6 +110,8 @@ export function shuffledWithinWindows(cands: readonly Candidate[], rand?: (n: nu
 export interface FillOptions {
   cutoff?: number;
   rand?: (n: number) => number;
+  /** Makes the proposal id; tests pass a counter. */
+  newId?: () => string;
 }
 
 export async function proposeFill(
@@ -178,7 +180,7 @@ export async function proposeFill(
   return {
     type: "fillProposal",
     v: PROTOCOL_VERSION,
-    id: randomUUID(),
+    id: opts.newId?.() ?? randomUUID(),
     at: now,
     pid: w.app.pid,
     windowId,

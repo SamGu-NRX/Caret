@@ -39,11 +39,11 @@ The key is read from `TYPESAFE_API_KEY` or the `.env` named by `CARET_ENV_FILE` 
 
 ## Executor
 
-A plan (`src/executor/schema.ts`, exported to `schemas/plan.schema.json`, example in `fixtures/golden/plan.json`) is an ordered list of end states with `{{slots}}`: a field's value, an element that exists or is absent, a focused element, a window title, or a calendar event. A consumer sends `runPlan`, and the executor (`src/executor/executor.ts`) works through the steps, publishing `taskProgress` for each:
+A plan (`src/executor/schema.ts`, exported to `schemas/plan.schema.json`, example in `fixtures/golden/plan.json`) is an ordered list of end states with `{{slots}}`: a field's value, an element that exists or is absent, a focused element, a window title, the window in front (`windowFocused`), or a calendar event. A consumer sends `runPlan`, and the executor (`src/executor/executor.ts`) works through the steps, publishing `taskProgress` for each:
 
 1. Re-read the step's window through the reader. A sheet over it, or a field that changed since the task started, stops the run at this step.
 2. Skip the step if its end state already holds, so a finished plan reruns as a no-op.
-3. Write the value or focus, or press the step's `via` target, or open its URL, or add the calendar event. A locator that matches several elements is put to Jev twice (shuffled, reworded), and the step stops unless both asks agree.
+3. Write the value or focus, or press the step's `via` target, or open its URL, or add the calendar event. A `windowFocused` step sends the reader `raise` and needs no `via`; it writes nothing, so undo has nothing to restore. A locator that matches several elements is put to Jev twice (shuffled, reworded), and the step stops unless both asks agree.
 4. A press target whose label reads as send, submit, delete or pay (`src/executor/risk.ts`), or that has no label, is never pressed: the run ends as a hand-off at that step.
 5. Compare: the written value must appear in the change log and the model, no other field may change, and a press must make its end state hold within four re-reads.
 
@@ -88,6 +88,14 @@ A consumer sends `offerControl {offerId, action: take | dismiss | dontOfferHere}
 
 - `node scripts/patterns-eval.ts --out DIR` replays the planted and distractor streams in `test/stream.ts` at 50 events a second, then a forget-and-rerun and the edit scenario, and writes `results.json` and `summary.md`.
 - `node scripts/patterns-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR` runs the loop on `caret-fixture --windows roster,seating` with the real reader. It opens windows, so run it under `/usr/bin/lockf -k ~/.long-run/locks/gui.lock env CARET_GUI_LOCK=held`.
+
+## Offers to the host
+
+Three messages put something at the caret (`src/protocol.ts`, `src/popup.ts`): `alternatives` (up to three values for the focused field), `action` (one line of work in another app, with a Tab action) and `popup` (a `PopupSpec`). Code builds every one of them, and every value shown carries a ref to the screen node (`<windowId>/<elementKey>`, with the quoted text) or memory entry it came from.
+
+- **One publish gate.** Everything the helper sends consumers goes through `Helper.publish`. An offer is parsed against `HelperMessage` first; one that fails is not sent, `offers.refused` is counted, and the host gets an `error` naming the offerKey and the first issue's rule and path, never the text. A valid offer is recorded in `src/offers/registry.ts` with how to run it, for ten minutes or until its `offerWithdrawn`.
+- **Producers.** A grounded fill whose two or more fields all have a value and a source becomes a `popup` ("Fill N fields") instead of a `fillProposal` when focus triggered it (`src/offers/fill-popup.ts`); an explicit `fillRequest` always gets the `fillProposal` it asks for. A `loopNext` that speaks also sends one `alternatives` per cell, `<offerId>.<cell>`: the main source list's value, then other lists that explain both rounds; inserting another list's value switches the loop to that list. `loopFinish` and `routine` offers also send an `action` under the offer's own id. A pending watch that finishes or starts waiting on the user offers "Open <app>" in the field the user is in, held until they land in one, quoting the window's status line from the node that shows it (`src/offers/open-app.ts`).
+- **Accept and stop.** `offerAccept {offerId, actionId, overrides}` runs the offer as the task whose id is the offerId, so its `taskProgress` and `activity` carry that id. It is refused in shadow mode, for an unknown or expired offer, for `alternatives` (the host inserts those itself), for a second accept, for an action that is not on the offer or that only reveals another block, and for an override that names no picker of the offer or a row outside it. A refusal sends an `error` and a terminal `taskProgress` (`phase: stopped`, `steps: 0`, the reason as `detail`), except when a run with that id is already going, whose line must not end. `offerStop {offerId}` is a `taskControl` stop for that task.
 
 ## Real-window measurements
 

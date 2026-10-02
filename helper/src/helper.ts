@@ -1,6 +1,8 @@
 // The helper's core, independent of sockets: it applies reader messages to the screen model,
 // feeds the rolling text window, the transfer detector and the shadow logger, and asks for
 // grounded fill proposals. server.ts connects it to the socket; tests drive it directly.
+// Everything the helper sends consumers leaves through `publish`, which checks every offer for the
+// host against the protocol before it goes and records it for the host's offerAccept.
 import { ScreenModel } from "./model.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
@@ -9,16 +11,19 @@ import type { Store } from "./store.ts";
 import type { AskJev } from "./fill/jev.ts";
 import { FillError, formFields, proposeFill } from "./fill/fill.ts";
 import {
+  HOST_OFFER_TYPES,
+  HelperMessage,
   PROTOCOL_VERSION,
   type ActivityReply,
   type ActivityRequest,
   type FillProposal,
   type FillResult,
   type FillRequest,
-  type HelperMessage,
   type MemoryReply,
   type MemoryRequest,
+  type OfferAccept,
   type OfferControl,
+  type OfferStop,
   type ReaderCommand,
   type ReaderMessage,
   type ReaderVerb,
@@ -37,6 +42,9 @@ import { PatternEngine } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
+import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
+import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { OpenAppOffers } from "./offers/open-app.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -66,6 +74,8 @@ export interface HelperOptions {
   audit?: boolean;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
+  /** Makes the random part of proposal and watch ids, so tests can expect exact messages. */
+  newId?: () => string;
   publish: (m: HelperMessage) => void;
   warn?: (line: string) => void;
 }
@@ -139,6 +149,10 @@ export class Helper {
   readonly audit: Audit | null;
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
   private preFocus: { windowId: string; values: Map<string, string> } | null = null;
+  /** Every alternatives, action and popup message published and not yet withdrawn or expired. */
+  readonly offers = new HostOfferRegistry();
+  /** "Open <app>" action lines for watched windows that finished or need the user. */
+  readonly openApp: OpenAppOffers;
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
@@ -147,14 +161,14 @@ export class Helper {
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
     this.socketLink = opts.readerLink === undefined ? new SocketReaderLink(opts.sendToReader ?? (() => false)) : null;
-    this.tasks = new TaskRegistry((m) => opts.publish(m));
+    this.tasks = new TaskRegistry((m) => this.publish(m));
     this.executor = new Executor({
       model: this.model,
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
       calendar: opts.calendar ?? null,
       urls: opts.urls ?? null,
       askJev: opts.askJev,
-      publish: (m) => opts.publish(m),
+      publish: (m) => this.publish(m),
       onTask: (e) => this.onTaskEvent(e),
       onChanges: (l) => {
         this.changeListeners.add(l);
@@ -168,9 +182,9 @@ export class Helper {
       text: this.text,
       memory: this.memory,
       hash: (t) => opts.store.hash(t),
-      publish: (m) => {
+      publish: (m, accept) => {
         if (this.mode !== "live") return;
-        opts.publish(m);
+        this.publish(m, accept);
         this.onPatternMessage(m);
       },
       run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots),
@@ -182,8 +196,11 @@ export class Helper {
       tasks: this.tasks,
       reader: (v) => this.readerVerb(v),
       live: () => this.mode === "live",
+      onResolved: (e) => this.openApp.resolved(e),
+      ...(opts.newId === undefined ? {} : { newId: opts.newId }),
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
+    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots) });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v) }) : null;
   }
 
@@ -201,6 +218,7 @@ export class Helper {
         this.executor.readerRestarted();
         this.patterns.readerRestarted();
         this.pending.readerRestarted();
+        this.openApp.readerRestarted();
         this.audit?.readerRestarted(Date.now());
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
@@ -224,6 +242,7 @@ export class Helper {
         this.record(cleared);
         if (this.mode === "shadow") this.shadowLogger.onChanges(changes);
         const moved = prevFocused !== this.model.focusedWindowId;
+        if (moved && this.model.focusedWindowId !== null) this.openApp.onFocusedWindow(this.model.focusedWindowId);
         if (prevFocused !== null && moved) this.record(this.transfers.flush(prevFocused));
         this.pending.onSnapshot(m.window.windowId, m.stats.truncated);
         this.audit?.onSnapshot(m);
@@ -240,6 +259,7 @@ export class Helper {
         this.preFocus = null;
         this.audit?.onFocus(m);
         store.count(m.editable ? "reader.focus_editable" : "reader.focus_other", 1, m.at);
+        if (this.mode === "live") this.openApp.onFocus(m);
         const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus);
         if (!triggers || m.key === null) return null;
         return this.fill(m.windowId, m.key, false);
@@ -257,6 +277,7 @@ export class Helper {
         if (this.mode === "shadow") this.shadowLogger.onWindowClosing(m.windowId);
         this.patterns.onWindowClosed(m.windowId);
         this.pending.onWindowClosed(m.windowId);
+        this.openApp.onWindowClosed(m.windowId);
         this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
         return null;
@@ -294,6 +315,44 @@ export class Helper {
   /** Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. */
   handleOffer(m: OfferControl): Promise<TaskResult | null> {
     return this.patterns.control(m);
+  }
+
+  /**
+   * The host took an action of an action line or pop-up. The offer must be live, not yet accepted, and
+   * the action and overrides must be ones the host was shown; then the offer's producer runs it as the
+   * task whose id is the offerId. Any refusal publishes an error and, unless a run already has that id,
+   * a terminal taskProgress, so the host's working line ends.
+   */
+  async handleOfferAccept(m: OfferAccept): Promise<TaskResult | null> {
+    if (this.mode !== "live") return this.refuseAccept(m.offerId, "the helper is in shadow mode and does not act");
+    const r = this.offers.get(m.offerId);
+    if (r === undefined) return this.refuseAccept(m.offerId, "no such offer, or it expired");
+    if (r.accepted) return this.refuseAccept(m.offerId, "already accepted");
+    const why = acceptRefusal(r, m);
+    if (why !== null) return this.refuseAccept(m.offerId, why);
+    if (r.accept === null) return this.refuseAccept(m.offerId, "the offer has nothing to run");
+    r.accepted = true;
+    let out: AcceptResult;
+    try {
+      out = await r.accept(m);
+    } catch (e) {
+      return this.refuseAccept(m.offerId, e instanceof Error ? e.message : String(e));
+    }
+    return "refused" in out ? this.refuseAccept(m.offerId, out.refused) : out;
+  }
+
+  /** Esc on running work: a stop for the task the offer started. */
+  handleOfferStop(m: OfferStop): Promise<TaskResult | UndoResult | null> {
+    return this.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: m.offerId, action: "stop" });
+  }
+
+  private refuseAccept(offerId: string, reason: string): null {
+    this.error(`offer ${offerId}: ${reason}`);
+    // A second accept of an offer that is already running must not end that run's working line.
+    if (!this.executor.has(offerId)) {
+      this.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: offerId, planId: offerId, phase: "stopped", step: null, steps: 0, says: null, detail: reason });
+    }
+    return null;
   }
 
   /** Answers a memory request; the server sends the reply to the asking consumer only, since entries hold personal values. */
@@ -442,6 +501,7 @@ export class Helper {
   tick(now = Date.now()): void {
     this.record(this.transfers.tick(now));
     this.patterns.tick(now);
+    this.openApp.tick();
     if (this.mode === "shadow") this.shadowLogger.tick(now);
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {
       this.lastPrune = now;
@@ -455,6 +515,7 @@ export class Helper {
       for (const [id, p] of this.proposals) if (now - p.at > PROPOSAL_KEEP_MS) this.proposals.delete(id);
       for (const [id, f] of this.caretFills) if (now - f.at > PROPOSAL_KEEP_MS) this.caretFills.delete(id);
       this.tasks.prune(now);
+      this.offers.prune();
       this.opts.store.flush();
     }
   }
@@ -523,12 +584,12 @@ export class Helper {
     if (!explicit && now - (this.lastFill.get(formKey) ?? -Infinity) < FILL_REPEAT_MS) return null;
     this.inflight.add(formKey);
     try {
-      const asked = await proposeFill(this.model, ask, windowId, key, now, this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff });
+      const asked = await proposeFill(this.model, ask, windowId, key, now, {
+        ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
+        ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
+      });
       const p = this.revalidate(asked);
       this.lastFill.set(formKey, now);
-      if (p !== null) {
-        this.proposals.set(p.id, { at: now, windowId: p.windowId, values: new Map(p.fields.flatMap((f) => (f.value === null ? [] : [[f.key, f.value] as const]))) });
-      }
       if (p === null) {
         store.count("fill.stale", 1, now);
         return null;
@@ -536,7 +597,17 @@ export class Helper {
       store.count("fill.request", 1, now);
       store.count("fill.fields", p.fields.length, now);
       store.count("fill.proposed_values", p.fields.filter((f) => f.value !== null).length, now);
-      this.opts.publish(p);
+      // Every field grounded: the host shows one pop-up and Caret fills them all on Tab, so there is
+      // no per-field insert for a fillResult to report, and the proposal is not kept for one. An
+      // explicit fillRequest asks for the proposal itself (scripts/fill-eval.ts reads its fields), so it
+      // always gets one.
+      if (!explicit && fillPopupEligible(p)) {
+        store.count("fill.popup", 1, now);
+        this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p));
+        return p;
+      }
+      this.proposals.set(p.id, { at: now, windowId: p.windowId, values: new Map(p.fields.flatMap((f) => (f.value === null ? [] : [[f.key, f.value] as const]))) });
+      this.publish(p);
       return p;
     } catch (e) {
       store.count("fill.error", 1, now);
@@ -565,8 +636,56 @@ export class Helper {
     return { ...p, fields };
   }
 
+  /**
+   * "Fill all": every destination still empty and every source still showing its value, then one
+   * executor run under the proposal id. The pop-up is withdrawn either way.
+   */
+  private async acceptFill(p: GroundedProposal): Promise<AcceptResult> {
+    const stale = recheckFill(this.model, p);
+    const withdraw = (reason: "taken" | "stale"): void => {
+      this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: Date.now(), id: p.id, reason });
+    };
+    if (stale !== null) {
+      withdraw("stale");
+      return { refused: `${stale}; nothing was written` };
+    }
+    const { plan, slots } = fillPlan(this.model, p);
+    withdraw("taken");
+    return this.executor.run(p.id, plan, slots);
+  }
+
+  /**
+   * The one way out to consumers. An alternatives, action or popup message is parsed against the
+   * protocol first; one that fails is not sent, and the error names the offer and the first issue's
+   * rule and path, never its text. A valid one is recorded with `accept`, how taking it runs; a
+   * withdrawal removes the record. Returns false when the message was refused.
+   */
+  private publish(m: HelperMessage, accept?: AcceptHandler): boolean {
+    if (HOST_OFFER_TYPES.has(m.type)) {
+      const offerKey = String((m as HostOffer).offerKey);
+      const parsed = HelperMessage.safeParse(m);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        this.opts.store.count("offers.refused", 1);
+        const message = `offer ${offerKey} refused: ${issue?.message ?? "invalid"} at ${issuePath(issue?.path ?? [])}`;
+        this.opts.warn?.(message);
+        this.opts.publish({ type: "error", v: PROTOCOL_VERSION, at: Date.now(), message });
+        return false;
+      }
+      this.offers.record(m as HostOffer, accept ?? null);
+    } else if (m.type === "offerWithdrawn") this.offers.remove(m.id);
+    this.opts.publish(m);
+    return true;
+  }
+
   private error(message: string): void {
     this.opts.warn?.(message);
-    this.opts.publish({ type: "error", v: PROTOCOL_VERSION, at: Date.now(), message });
+    this.publish({ type: "error", v: PROTOCOL_VERSION, at: Date.now(), message });
   }
+}
+
+/** A zod issue path as a JSON path: ["spec", "blocks", 2, "rows", 0] is spec.blocks[2].rows[0]. */
+function issuePath(path: readonly PropertyKey[]): string {
+  if (path.length === 0) return "the message";
+  return path.map((p, i) => (typeof p === "number" ? `[${p}]` : i === 0 ? String(p) : `.${String(p)}`)).join("");
 }
