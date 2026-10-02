@@ -26,7 +26,10 @@ STATE = os.path.join(HERE, "host-state.py")
 CAPTURE = os.path.join(HERE, "capture-window.py")
 FIXTURES = os.path.expanduser("~/.caret-run/fixtures")
 LAUNCHED = []
-FRAME = {"x": 200, "y": 120, "width": 640, "height": 400}
+# Where fixtures are placed, in global points. It must be on a display that is actually drawing:
+# on 2026-10-02 the primary display captured black, so the default sits on the laptop panel.
+_frame = [float(v) for v in os.environ.get("CARET_E2E_FRAME", "600,1520,640,400").split(",")]
+FRAME = {"x": _frame[0], "y": _frame[1], "width": _frame[2], "height": _frame[3]}
 
 
 def cua(tool, args):
@@ -58,7 +61,10 @@ class UserActive(RuntimeError):
 
 
 IDLE_MIN_SECONDS = float(os.environ.get("CARET_E2E_IDLE_MIN", "600"))
-LAST_SYNTHETIC = None  # monotonic time our last synthetic key finished
+# Wall-clock time of our last synthetic key, shared across runs: our own keys reset the HID idle
+# clock, so "no input since our last key" is the test for a run that follows another.
+STAMP = os.path.expanduser("~/.caret-run/logs/e2e-last-synthetic-key")
+LAST_SYNTHETIC = None
 
 
 def hid_idle_seconds():
@@ -69,53 +75,99 @@ def hid_idle_seconds():
     return 0.0
 
 
+def last_synthetic_age():
+    if LAST_SYNTHETIC is not None:
+        return time.time() - LAST_SYNTHETIC
+    try:
+        return time.time() - float(open(STAMP).read())
+    except (OSError, ValueError):
+        return None
+
+
 def require_idle():
-    """Before the first key: no user input for IDLE_MIN_SECONDS. Afterwards our own keys reset the
-    idle clock, so the check becomes: no input since our last key."""
+    """No user input for IDLE_MIN_SECONDS, or none since our own last key (from this or an earlier
+    run that itself started on an idle Mac)."""
+    # The screen track's GUI experiments run a `caret-fixture` app that needs the foreground.
+    if subprocess.run(["pgrep", "-x", "caret-fixture"], capture_output=True).returncode == 0:
+        raise UserActive("another builder's caret-fixture GUI run is active")
     idle = hid_idle_seconds()
-    if LAST_SYNTHETIC is None:
-        if idle < IDLE_MIN_SECONDS:
-            raise UserActive(f"user input {idle:.0f}s ago; need {IDLE_MIN_SECONDS:.0f}s idle")
+    age = last_synthetic_age()
+    if age is not None and age < IDLE_MIN_SECONDS * 2 and idle + 1.0 >= age:
         return
-    since = time.monotonic() - LAST_SYNTHETIC
-    if idle + 1.0 < since:
-        raise UserActive(f"user input {idle:.1f}s ago, after our last key {since:.1f}s ago")
+    if idle < IDLE_MIN_SECONDS:
+        raise UserActive(f"user input {idle:.0f}s ago; need {IDLE_MIN_SECONDS:.0f}s idle")
+
+
+class FocusLost(RuntimeError):
+    """The fixture lost the foreground with no user input (an app activating itself)."""
+
+    def __init__(self, sent):
+        super().__init__(f"focus lost after {sent}")
+        self.sent = sent
 
 
 def run_keys(pid, *args):
     global LAST_SYNTHETIC
     require_idle()
     out = subprocess.run([KEYS, str(pid), *map(str, args)], capture_output=True, text=True)
-    LAST_SYNTHETIC = time.monotonic()
+    LAST_SYNTHETIC = time.time()
+    with open(STAMP, "w") as handle:
+        handle.write(str(LAST_SYNTHETIC))
     if out.returncode == 3:
-        raise UserActive("fixture lost focus: " + out.stderr.strip())
+        raise FocusLost(int(out.stdout.split()[-1]) if out.stdout.strip() else 0)
     out.check_returncode()
     return out
 
 
 def focus(pid, window_id):
-    """Bring the fixture forward once. Losing it later means someone else took the foreground, so
-    callers abort instead of taking it back."""
-    require_idle()
-    cua("bring_to_front", {"pid": pid, "window_id": window_id})
-    time.sleep(0.4)
-    if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode != 0:
-        raise UserActive("fixture did not get the foreground")
+    """Bring the fixture forward. Every attempt first checks for user input and stops the run if
+    there was any, so re-acquiring only ever competes with apps that activate themselves."""
+    for _ in range(10):
+        require_idle()
+        cua("bring_to_front", {"pid": pid, "window_id": window_id})
+        # When cua-driver cannot verify the activation (seen after a display/Space change), ask
+        # the fixture app itself to become frontmost through AX.
+        time.sleep(0.3)
+        if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode != 0:
+            subprocess.run([KEYS, str(pid), "activate"], capture_output=True)
+        for _ in range(20):
+            time.sleep(0.1)
+            if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode == 0:
+                return
+    raise UserActive("fixture could not get the foreground")
 
 
-def still_focused(pid):
-    require_idle()
-    if subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode != 0:
-        raise UserActive("fixture lost the foreground")
+def focused(pid):
+    return subprocess.run([KEYS, str(pid), "check"], capture_output=True).returncode == 0
 
 
 def send(pid, window_id, mode, payload, extra):
-    run_keys(pid, mode, payload, *extra)
-    return 0
+    """Types `payload`, re-focusing and resuming where it stopped if an app took the foreground."""
+    remaining = payload
+    for _ in range(30):
+        focus(pid, window_id)
+        try:
+            run_keys(pid, mode, remaining, *extra)
+            return
+        except FocusLost as lost:
+            remaining = remaining[lost.sent:]
+            if not remaining:
+                return
+    raise UserActive("kept losing the foreground")
 
 
 def send_keys(pid, window_id, key, count):
-    run_keys(pid, "key", key, count)
+    remaining = count
+    for _ in range(30):
+        focus(pid, window_id)
+        try:
+            run_keys(pid, "key", key, remaining)
+            return
+        except FocusLost as lost:
+            remaining -= lost.sent
+            if remaining <= 0:
+                return
+    raise UserActive("kept losing the foreground")
 
 
 def textedit_pids():
@@ -177,27 +229,39 @@ def accept(case, evidence):
         pid, window_id, _ = open_fixture("caret-accept-end.txt", "")
         prefix, suffix = "", ""
         typed = "I will send you the report by the end of the "
-    elif case == "mid":
-        prefix, suffix = "I read your ", " and they were clear."
-        pid, window_id, _ = open_fixture("caret-accept-mid.txt", prefix + suffix)
+    elif case in ("mid", "midword"):
+        # "mid": the caret moves into an existing sentence and nothing is typed there.
+        # "midword": a word is started mid-sentence (KeyType's mid-line gate usually suppresses it).
+        prefix, suffix, typed = {
+            "mid": ("Can we move the", " to Friday?", ""),
+            "midword": ("I read your ", " and they were clear.", "detailed meeting no"),
+        }[case]
+        pid, window_id, _ = open_fixture(f"caret-accept-{case}.txt", prefix + suffix)
         # Opening puts the caret at 0; walk it to the end of the prefix.
         send_keys(pid, window_id, "right", len(prefix))
-        typed = "detailed meeting no"
     else:
         raise SystemExit(f"unknown case {case}")
 
-    send(pid, window_id, "type", typed, ["60"])
+    if typed:
+        send(pid, window_id, "type", typed, ["60"])
     report = {"case": case, "typed": typed, "prefix": prefix, "suffix": suffix}
     insertion = None
-    offer = wait_offer(pid)
-    if offer:
-        still_focused(pid)
+    offer = None
+    for _ in range(10):
+        focus(pid, window_id)
+        offer = wait_offer(pid)
+        if not offer or not focused(pid):
+            continue
         capture(pid, window_id, os.path.join(evidence, f"caret-{case}-offer.png"))
         claim_before = (state().get("lastInsertion") or {}).get("claimID", 0)
-        run_keys(pid, "key", "tab")
+        try:
+            run_keys(pid, "key", "tab")
+        except FocusLost:
+            continue
         insertion = json.loads(subprocess.run(
             [sys.executable, STATE, "wait-insertion", str(claim_before), "5"], capture_output=True, text=True
         ).stdout or "null")
+        break
     report["offer"] = offer
     if not insertion:
         report["result"] = "no offer accepted"

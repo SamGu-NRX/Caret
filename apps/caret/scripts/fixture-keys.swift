@@ -8,6 +8,7 @@
 //
 // Build: swiftc -O fixture-keys.swift -o ../.build/fixture-keys
 // Usage: fixture-keys <pid> type <text> [interval_ms]
+//        fixture-keys <pid> activate
 //        fixture-keys <pid> key tab|left|right|space|delete [count]
 //        fixture-keys <pid> check
 
@@ -76,6 +77,12 @@ switch args[2] {
 case "check":
     requireTarget(target)
     print("ok")
+case "activate":
+    // Asks the fixture app to become frontmost through AX (kAXFrontmostAttribute), for hosts
+    // where cua-driver's bring_to_front cannot verify. Only ever pass a pid the test launched.
+    let app = AXUIElementCreateApplication(target)
+    let result = AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+    print("activate \(result.rawValue)")
 case "type":
     guard args.count >= 4 else { exit(2) }
     let interval = args.count >= 5 ? UInt32(args[4]) ?? 120 : 120

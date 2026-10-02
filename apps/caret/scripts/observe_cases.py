@@ -29,13 +29,17 @@ NARROW_TEXT = "Could you send me the updated numbers for the "
 def settle_and_capture(pid, window_id, path, expected, wait=1.6):
     """Waits for a suggestion to appear, then photographs the window only if the document holds
     exactly the synthetic text (anything else may be someone's real typing)."""
-    time.sleep(wait)
-    e2e.still_focused(pid)
-    if e2e.verify_value(pid, window_id, expected).get("status") != "satisfied":
-        return False
-    e2e.capture(pid, window_id, path)
-    e2e.still_focused(pid)
-    return True
+    for _ in range(5):
+        e2e.focus(pid, window_id)
+        time.sleep(wait)
+        if not e2e.focused(pid):
+            continue
+        if e2e.verify_value(pid, window_id, expected).get("status") != "satisfied":
+            return False
+        e2e.capture(pid, window_id, path)
+        if e2e.focused(pid):
+            return True
+    return False
 
 
 def run_case(case, label, evidence):
@@ -53,7 +57,7 @@ def run_case(case, label, evidence):
         expected = typed
     elif case == "narrow":
         pid, window_id, _ = e2e.open_fixture(f"{label}-{case}.txt", "")
-        e2e.cua("set_window_frame", {"pid": pid, "window_id": window_id, "x": 200, "y": 120, "width": 260, "height": 300})
+        e2e.cua("set_window_frame", {"pid": pid, "window_id": window_id, **{**e2e.FRAME, "width": 260, "height": 300}})
         typed = NARROW_TEXT
         expected = typed
     else:
