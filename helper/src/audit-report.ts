@@ -190,6 +190,9 @@ export function renderFillReadiness(s: AuditSummary): string {
     `- Typed-value candidates per focus: ${quant(list.map((x) => x.typedCandidates))}.`,
     `- Empty fields in the focused field's form: ${quant(list.map((x) => x.formFields))}.`,
     `- Capped generator time per focus (ms): ${quant(list.map((x) => x.generatorMs))}; stopped on its ${GENERATOR_BUDGET_MS} ms budget ${list.filter((x) => x.overBudget === true).length} of ${list.length}.`,
+    ...(list.some((x) => x.generatorCpuMs !== undefined)
+      ? [`- CPU time of the same calls (ms): ${quant(list.flatMap((x) => (x.generatorCpuMs === undefined ? [] : [x.generatorCpuMs])))}.`]
+      : []),
     "",
     "## By app",
     "",
