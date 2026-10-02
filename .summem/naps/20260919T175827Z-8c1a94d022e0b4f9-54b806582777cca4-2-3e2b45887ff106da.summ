@@ -1,1 +1,0 @@
-Mac CI defaults to Xcode 16.4 on macos-15; #available still type-checks, so keep the Xcode 26 select in ci.yml and #if compiler-gate new SDK APIs. The 2026-09-19 hackathon was happy-path only.

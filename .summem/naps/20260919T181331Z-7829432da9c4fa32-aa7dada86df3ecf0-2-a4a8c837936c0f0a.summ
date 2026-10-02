@@ -1,0 +1,1 @@
+Caret last-N (minutes, windows, clipboard; newest-first) reads screenpipe@0.4.50 on :3031 via .local/screenpipe-lease.json; clipboard is off unless --disable-clipboard-capture false. Whether Caret.app spawns it changed on 2026-09-19 (3db8f16 did not).

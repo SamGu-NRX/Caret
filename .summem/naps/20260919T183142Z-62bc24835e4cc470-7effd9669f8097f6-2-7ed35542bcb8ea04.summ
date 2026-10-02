@@ -1,0 +1,1 @@
+Caret.app starts its own screenpipe@0.4.50 on :3031 (never attaches; a second recorder can stop the first), but only if CaretProjectRoot is in Info.plist: INFOPLIST_KEY_ does not reach GENERATE_INFOPLIST_FILE, so ScreenpipeSupervisor.start no-ops.
