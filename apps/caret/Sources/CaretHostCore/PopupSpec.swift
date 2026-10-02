@@ -298,6 +298,8 @@ public enum PopupSpecError: Error, Equatable, Sendable, CustomStringConvertible 
     /// A Command-digit action next to a choices block, where Command-1 to 3 already choose rows.
     case actionKeyConflictsWithChoices(path: String, key: String)
     case unknownRevealTarget(path: String, id: String)
+    /// The pop-up after the reveal breaks a rule of its own.
+    case invalidReveal(path: String, reason: String)
 
     public var description: String {
         switch self {
@@ -319,6 +321,7 @@ public enum PopupSpecError: Error, Equatable, Sendable, CustomStringConvertible 
         case .duplicateActionID(let path, let id): return "\(path): action id \"\(id)\" used twice"
         case .actionKeyConflictsWithChoices(let path, let key): return "\(path): \(key) is taken by the choices block"
         case .unknownRevealTarget(let path, let id): return "\(path): reveal replaces unknown block \"\(id)\""
+        case .invalidReveal(let path, let reason): return "\(path): after the reveal, \(reason)"
         }
     }
 }
@@ -348,13 +351,14 @@ extension PopupSpec {
 
     /// Rules across blocks: one header first, one actions block with one Tab action, unique ids
     /// and keys, and Command-digit keys left to a choices block when one is shown.
-    private func checkStructure() throws {
+    func checkStructure() throws {
         var seen: [String: String] = [:]
         var ids = Set<String>()
         for (index, block) in blocks.enumerated() {
             let type = block.content.typeName
             let path = "blocks[\(index)]"
-            if type == "header" || type == "actions" || type == "source" {
+            // One choices block: the arrows and Command-digits act on a single set of rows.
+            if type == "header" || type == "actions" || type == "source" || type == "choices" {
                 if seen[type] != nil { throw PopupSpecError.duplicateBlock(type: type, path: path) }
             }
             seen[type] = path
@@ -382,8 +386,17 @@ extension PopupSpec {
             if choices != nil, action.key.digit != nil {
                 throw PopupSpecError.actionKeyConflictsWithChoices(path: path, key: action.key.rawValue)
             }
-            if let reveal = action.reveal, !ids.contains(reveal.replace) {
-                throw PopupSpecError.unknownRevealTarget(path: "\(path).reveal", id: reveal.replace)
+            if let reveal = action.reveal {
+                guard ids.contains(reveal.replace) else {
+                    throw PopupSpecError.unknownRevealTarget(path: "\(path).reveal", id: reveal.replace)
+                }
+                // What the reveal leads to must itself be a valid pop-up (a Tab action left, no
+                // Command-digit next to the new rows).
+                do {
+                    try applyingReveal(of: action.id).checkStructure()
+                } catch let error as PopupSpecError {
+                    throw PopupSpecError.invalidReveal(path: "\(path).reveal", reason: error.description)
+                }
             }
         }
     }

@@ -152,6 +152,43 @@ final class AlternativesTests: XCTestCase {
         XCTAssertEqual(try claim(arbiter.handleKeyDown(cmd(2))).choice.actionID, "open")
     }
 
+    func testARevealBoundToTabRevealsInsteadOfAccepting() throws {
+        var spec = K.spec("eventCard")
+        // Rebind the reveal to the down arrow: whichever key carries it, it reveals.
+        spec.blocks[3] = PopupSpec.Block(.actions(PopupSpec.Actions(items: [
+            PopupSpec.Action(id: "add", label: "Add", key: .tab),
+            PopupSpec.Action(id: "changeTime", label: "Change time", key: .down, reveal: spec.actions[1].reveal),
+        ])))
+        let arbiter = OfferArbiter()
+        arbiter.publish(Offer(text: "", source: .debug, kind: .popup(PopupOffer(offerKey: "k", spec: spec)), target: K.target(), fieldValue: K.value, caretUTF16: 0))
+        XCTAssertEqual(ui(arbiter.handleKeyDown(down))?.revealed, "changeTime")
+        XCTAssertEqual(ui(arbiter.handleKeyDown(down))?.highlight, 2, "after the reveal the arrow moves through the times")
+    }
+
+    func testAnActionLinesVariantsHonorTheirOwnReveal() throws {
+        var line = K.actionLine(numbered: false, variants: false)
+        guard case .action(var action) = line.kind else { return XCTFail() }
+        action.variants = K.spec("eventCard")
+        line.kind = .action(action)
+        let arbiter = OfferArbiter()
+        arbiter.publish(line)
+        _ = arbiter.handleKeyDown(down)
+        let revealed = ui(arbiter.handleKeyDown(cmd(2)))
+        XCTAssertEqual(revealed?.revealed, "changeTime")
+        XCTAssertEqual(arbiter.snapshot().current?.visibleSpec(ui: arbiter.snapshot().ui)?.rowCount, 3)
+        XCTAssertEqual(try claim(arbiter.handleKeyDown(.tab(to: pid))).choice.row, 1)
+    }
+
+    func testPublishingOverAnOfferTellsWhoDrewIt() throws {
+        let arbiter = OfferArbiter()
+        final class Box: @unchecked Sendable { var displaced: [UInt64] = [] }
+        let box = Box()
+        arbiter.onDisplaced = { box.displaced.append($0.id) }
+        let first = try XCTUnwrap(arbiter.publish(K.ghost()))
+        arbiter.publish(K.popup("picker"))
+        XCTAssertEqual(box.displaced, [first])
+    }
+
     func testEscStopsWorkOnlyAfterThreeSeconds() {
         let arbiter = OfferArbiter()
         arbiter.showStatus(StatusLine(pid: pid, kind: .working(startedAt: Date(timeIntervalSinceNow: -3.2)), offerKey: "line-1"))

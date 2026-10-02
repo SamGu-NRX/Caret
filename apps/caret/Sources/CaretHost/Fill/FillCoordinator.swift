@@ -183,6 +183,14 @@ final class FillCoordinator {
         shownKey = nil
     }
 
+    /// A newer offer from another producer replaced the fill offer on screen.
+    func displaced(_ offer: Offer) {
+        guard offer.id == shownOfferID else { return }
+        overlay.hideOffer(byTyping: false)
+        shownOfferID = nil
+        shownKey = nil
+    }
+
     // MARK: - Keys (posted to main by the tap thread)
 
     func offerChanged(_ reason: OfferArbiter.PassReason) {

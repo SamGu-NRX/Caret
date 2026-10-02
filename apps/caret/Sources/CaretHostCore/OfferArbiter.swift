@@ -121,6 +121,10 @@ public final class OfferArbiter: @unchecked Sendable {
 
     private let state = OSAllocatedUnfairLock(initialState: State())
 
+    /// Called on the publishing thread, outside the lock, with an offer that a newer `publish`
+    /// replaced, so whoever drew it can take it down. Set once, before offers flow.
+    public var onDisplaced: (@Sendable (Offer) -> Void)?
+
     public init() {}
 
     // MARK: - Main thread
@@ -129,11 +133,12 @@ public final class OfferArbiter: @unchecked Sendable {
     /// inserted or the offer is for the field revision an insertion just consumed.
     @discardableResult
     public func publish(_ offer: Offer) -> UInt64? {
-        state.withLock { s in
+        let (id, displaced): (UInt64?, Offer?) = state.withLock { s in
             guard s.insertingClaimID == nil, offer.target != s.consumedTarget else {
                 s.refusedPublishCount &+= 1
-                return nil
+                return (nil, nil)
             }
+            let displaced = s.current
             // The field has moved past the consumed state; returning to it later is a new state.
             s.consumedTarget = nil
             var stamped = offer
@@ -143,8 +148,10 @@ public final class OfferArbiter: @unchecked Sendable {
             s.ui = OfferUI(initialFor: stamped)
             s.typedSinceOffer = ""
             s.publishedCount &+= 1
-            return stamped.id
+            return (stamped.id, displaced)
         }
+        if let displaced { onDisplaced?(displaced) }
+        return id
     }
 
     /// Removes the current offer. With `offerID`, only that offer; a newer one survives.
@@ -278,7 +285,14 @@ public final class OfferArbiter: @unchecked Sendable {
             .consume(claim(offer, choice: choice, state: &s, now: now))
         }
         func takeAction(_ action: PopupSpec.Action?) -> Decision {
-            take(Choice(actionID: action?.id, row: rows > 0 ? s.ui.highlight : nil, revealed: s.ui.revealed, expanded: s.ui.expanded))
+            // An action that changes the pop-up reveals, whichever key it is bound to.
+            if let action, action.reveal != nil, let spec {
+                return navigate { ui in
+                    ui.revealed = action.id
+                    ui.highlight = spec.applyingReveal(of: action.id).choices?.selected
+                }
+            }
+            return take(Choice(actionID: action?.id, row: rows > 0 ? s.ui.highlight : nil, revealed: s.ui.revealed, expanded: s.ui.expanded))
         }
 
         switch (key, surface) {
@@ -323,12 +337,6 @@ public final class OfferArbiter: @unchecked Sendable {
         case (.commandDigit(let n), _):
             let actions = spec?.actions ?? offer.kind.actionLine?.actions ?? []
             guard let action = actions.first(where: { $0.key.digit == n }) else { return .pass(.noOffer) }
-            if action.reveal != nil {
-                return navigate { ui in
-                    ui.revealed = action.id
-                    ui.highlight = spec?.applyingReveal(of: action.id).choices?.selected
-                }
-            }
             return takeAction(action)
 
         default:
@@ -392,7 +400,7 @@ public final class OfferArbiter: @unchecked Sendable {
         case .fill(let origin):
             return .ghostFill(fillAll: origin.fillAll)
         case .action(let line):
-            if ui.expanded, let variants = line.variants {
+            if ui.expanded, let variants = offer.visibleSpec(ui: ui) {
                 return .popup(rows: variants.rowCount, numbered: variants.numberedDigits, hasDown: variants.hasDownAction)
             }
             return .actionLine(numbered: Set(line.actions.compactMap(\.key.digit)), hasVariants: line.variants != nil)

@@ -29,7 +29,11 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-FIXTURE = os.path.join(ROOT, "apps", "screen-reader", ".build", "debug", "caret-fixture")
+# The screen track's fixture build, which has --background-only (activation policy .prohibited);
+# this worktree's copy predates the flag. Executed only, never rebuilt or edited from here.
+FIXTURE = os.environ.get("CARET_FIXTURE_BIN") or os.path.join(
+    os.path.dirname(ROOT), "caret-v2-screen", "apps", "screen-reader", ".build", "debug", "caret-fixture")
+GUI_LOCK = os.path.expanduser("~/.long-run/locks/gui.lock")
 CARET = os.path.join(ROOT, "apps", "caret", ".build", "Caret.app", "Contents", "MacOS", "Caret")
 AX = os.path.join(ROOT, "apps", "caret", ".build", "fixture-ax")
 COMPOSE = os.path.join(ROOT, "apps", "caret", ".build", "compose-shot")
@@ -46,9 +50,11 @@ CLEANUP = []
 CHECKS = []
 KEY_PANELS = []
 RUN_START = None
-# caret-fixture takes the foreground when it launches (measured 2026-10-02: lsappinfo front is the
-# fixture pid within 0.5 s), so a run only starts after the Mac has been idle this long, and stops
-# the moment anyone touches the keyboard or mouse. This script itself posts no input events.
+# Launched without --background-only, caret-fixture took the foreground (measured 2026-10-02:
+# lsappinfo front was the fixture pid within 0.5 s, three runs between 10:56 and 11:01 CDT). Now it
+# is launched with --background-only under gui.lock, the frontmost app is checked after launch, and
+# a fixture that is frontmost anyway is killed at once. A run also only starts after the Mac has
+# been idle this long, and stops on any input. This script itself posts no input events.
 IDLE_MIN = float(os.environ.get("CARET_SURFACE_IDLE_MIN", "120"))
 
 
@@ -73,9 +79,16 @@ def expect_synthetic(seconds=3.0):
 
 def guard_user():
     """Any HID input since the run began, outside the host's own key windows, is someone using
-    the Mac: stop at once."""
+    the Mac: stop at once. A fixture that became frontmost is killed."""
     if RUN_START is None:
         return
+    fixture = next((p for n, p in STARTED if n == "fixture" and p.poll() is None), None)
+    if fixture is not None:
+        now = front_pid()
+        if fixture.pid in (now.get("pid"), now.get("lsappinfo")):
+            fixture.kill()
+            CHECKS.append({"check": "fixture never frontmost", "ok": False, "front": now, "killed": fixture.pid})
+            raise SystemExit(f"fixture {fixture.pid} became frontmost during the run; killed it")
     idle = hid_idle_seconds()
     last_input = time.time() - idle
     IDLE_LOG.append((round(time.time() - RUN_START, 2), round(idle, 2)))
@@ -215,9 +228,42 @@ def shot(out_dir, fixture_pid, host_pid, name):
     return out
 
 
+def gui_lock_held():
+    """True when some process holds gui.lock: a zero-wait lockf fails. The caller is expected to be
+    that process (`lockf -k ~/.long-run/locks/gui.lock surface_acceptance.py ...`)."""
+    return subprocess.run(["/usr/bin/lockf", "-t", "0", GUI_LOCK, "true"], capture_output=True).returncode != 0
+
+
+def front_pid():
+    """NSWorkspace's and LaunchServices' frontmost pids, from fixture-ax (no pid needed)."""
+    out = subprocess.run([AX, "frontmost"], capture_output=True, text=True, env=dict(os.environ, CARET_TEST_PIDS="1"))
+    return json.loads(out.stdout) if out.returncode == 0 else {}
+
+
+def launch_fixture(out_dir):
+    before = front_pid()
+    fx = start("fixture", [FIXTURE, "--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
+                           "--duration", "900", "--background-only"], out_dir)
+    # Watch the first two seconds: the fixture must never be frontmost.
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        now = front_pid()
+        if fx.pid in (now.get("pid"), now.get("lsappinfo")):
+            fx.kill()
+            fx.wait()
+            CHECKS.append({"check": "fixture never frontmost", "ok": False, "before": before, "after": now, "killed": fx.pid})
+            raise SystemExit(f"fixture {fx.pid} became frontmost; killed it")
+        time.sleep(0.1)
+    after = front_pid()
+    check("fixture launched without changing the frontmost app", after.get("pid") == before.get("pid"), before=before, after=after)
+    return fx
+
+
 def rig(out_dir, appearance):
     global RUN_START
     os.makedirs(out_dir, exist_ok=True)
+    if not gui_lock_held():
+        raise SystemExit("refused: run under lockf -k ~/.long-run/locks/gui.lock")
     idle = hid_idle_seconds()
     if idle < IDLE_MIN:
         raise SystemExit(f"deferred: user active (idle {idle:.0f} s < {IDLE_MIN:.0f} s)")
@@ -234,7 +280,7 @@ def rig(out_dir, appearance):
                    "front": subprocess.run(["lsappinfo", "front"], capture_output=True, text=True).stdout.strip()})
     if os.path.exists(HOST_SOCK):
         raise SystemExit(f"{HOST_SOCK} exists; another run may be live")
-    fx = start("fixture", [FIXTURE, "--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"), "--duration", "900"], out_dir)
+    fx = launch_fixture(out_dir)
     wait_for(lambda: os.path.exists(os.path.join(out_dir, "gold.json")), 10, 0.1)
     time.sleep(1)
     fields = [f for f in ax(fx.pid, "fields", fx.pid) if f["window"] == CLAIM]
@@ -250,7 +296,7 @@ def rig(out_dir, appearance):
         raise SystemExit("host did not open its socket")
     time.sleep(1)
     r = ax(fx.pid, "key-window", fx.pid, CLAIM)
-    check("key-window switch leaves the frontmost app alone", r["frontAfter"] == r["frontBefore"], result=r)
+    check("key-window switch leaves the frontmost app alone", r["frontAfter"] == r["frontBefore"] and r["frontAfter"] != fx.pid, result=r)
     return fx.pid, h.pid, gold
 
 

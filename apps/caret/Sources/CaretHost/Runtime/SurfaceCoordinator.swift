@@ -112,6 +112,9 @@ final class SurfaceCoordinator {
             return #"{"error":"no caret"}"#
         }
         clear(exit: 0)
+        // A new offer takes the one panel: whatever work line or result was on it ends.
+        endWork()
+        endResult()
         let offer = make(field)
         guard let offerID = arbiter.publish(offer) else { return #"{"error":"arbiter refused (an insertion is running)"}"# }
         let stamped = arbiter.snapshot().current.flatMap { $0.id == offerID ? $0 : nil } ?? offer
@@ -270,6 +273,22 @@ final class SurfaceCoordinator {
 
     func offerChanged(_ reason: OfferArbiter.PassReason) {
         let snapshot = arbiter.snapshot()
+        if reason == .typedThrough, let shown, snapshot.current?.id == shown.offerID {
+            // The user typed the head of the top candidate: the rest stays as ghost text, and the
+            // other candidates no longer fit, so their underline and list go.
+            let typed = snapshot.typedSinceOffer
+            let remainder = String(shown.offer.text.dropFirst(typed.count))
+            decor.exit(duration: 0)
+            list.exit(duration: 0)
+            if shown.snapshot != nil {
+                ghost.advance(typed: typed, remainder: remainder)
+            } else if let font = shown.ghostFont {
+                let shift = (typed as NSString).size(withAttributes: [.font: font]).width
+                drawOwnGhost(remainder, caret: shown.caret.offsetBy(dx: shift, dy: 0), font: font, color: shown.style?.textColor)
+            }
+            publish()
+            return
+        }
         if let shown, snapshot.current?.id != shown.offerID {
             // Typing: 80 ms (the text itself at once). Esc: 100 ms.
             clear(exit: reason == .closed ? 0.10 : 0.08)
@@ -288,8 +307,38 @@ final class SurfaceCoordinator {
         publish()
     }
 
+    /// Another producer's offer replaced this one in the arbiter.
+    func displaced(_ offer: Offer) {
+        guard let shown, offer.id == shown.offerID else { return }
+        clear(exit: 0.10)
+        publish()
+    }
+
+    /// The frontmost app's focused field changed. An offer bound to another field of that app is
+    /// withdrawn: its panel describes a field the user has left.
+    func focusChanged(_ identity: TargetIdentity?) {
+        guard let shown, let identity, identity.pid == shown.offer.target.pid,
+              identity.elementID != shown.offer.target.elementID else { return }
+        arbiter.invalidate(offerID: shown.offerID)
+        clear(exit: 0.10)
+        status.increment("surface.withdrawn.focusMoved")
+        publish()
+    }
+
     func claimed(_ claim: Claim) {
         guard let shown, claim.offer.id == shown.offerID else { return }
+        // An action is about the field it was offered in. Revalidate that field before handing
+        // the action on: focus may have moved in an app that posts no focus notification.
+        if !claim.insertsText {
+            let live = FieldReader.readFocused(pid: claim.offer.target.pid)?.field.identity
+            if live?.elementID != claim.offer.target.elementID || live?.windowID != claim.offer.target.windowID {
+                arbiter.abandon(claimID: claim.claimID, reason: "targetMoved")
+                clear(exit: 0.10)
+                status.increment("surface.refused.targetMoved")
+                publish()
+                return
+            }
+        }
         if claim.insertsText {
             // Alternatives: the chosen text is on its way into the field; nothing animates.
             clear(exit: 0)
@@ -321,6 +370,8 @@ final class SurfaceCoordinator {
 
     /// The line, in place, becomes the working caption; the figure looks away and leaves.
     private func startWork(_ claim: Claim, offerKey: String, caret: CGRect) {
+        endWork()
+        endResult()
         let app: String
         switch claim.offer.kind {
         case .action(let line): app = line.app
@@ -332,10 +383,12 @@ final class SurfaceCoordinator {
         figureLeft = Motion.reduceMotion
         renderWorking()
         if !figureLeft {
+            let statusID = statusID
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 MainActor.assumeIsolated {
-                    self?.figureLeft = true
-                    self?.renderWorking()
+                    guard let self, self.work?.statusID == statusID else { return }
+                    self.figureLeft = true
+                    self.renderWorking()
                 }
             }
         }
@@ -391,6 +444,13 @@ final class SurfaceCoordinator {
         showResult(LineContent(figure: .done, text: Captions.stopped, emphasis: .plain), text: Captions.stopped, lifetime: 2)
     }
 
+    private func endResult() {
+        resultTimer?.invalidate()
+        resultTimer = nil
+        if let id = resultStatusID { arbiter.clearStatus(id: id) }
+        resultStatusID = nil
+    }
+
     private func endWork() {
         work?.timer?.invalidate()
         if let work { arbiter.clearStatus(id: work.statusID) }
@@ -405,9 +465,10 @@ final class SurfaceCoordinator {
         figureState = content.figure
         if !panel.isVisible { panel.enter() }
         resultTimer?.invalidate()
+        let statusID = resultStatusID
         resultTimer = Timer.scheduledTimer(withTimeInterval: lifetime, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.resultStatusID == statusID else { return }
                 self.resultTimer = nil
                 if let id = self.resultStatusID { self.arbiter.clearStatus(id: id) }
                 self.resultStatusID = nil

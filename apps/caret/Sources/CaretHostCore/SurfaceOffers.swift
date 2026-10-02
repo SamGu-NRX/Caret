@@ -97,7 +97,8 @@ extension Offer {
         case .popup(let popup):
             return ui.revealed.map { popup.spec.applyingReveal(of: $0) } ?? popup.spec
         case .action(let line):
-            return ui.expanded ? line.variants : nil
+            guard ui.expanded, let variants = line.variants else { return nil }
+            return ui.revealed.map { variants.applyingReveal(of: $0) } ?? variants
         case .ghost, .fill:
             return nil
         }

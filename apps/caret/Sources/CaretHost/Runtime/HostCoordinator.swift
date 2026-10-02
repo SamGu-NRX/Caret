@@ -18,6 +18,9 @@ final class HostCoordinator {
     private let overlay: GhostOverlay
     private let policy: TargetPolicy
     var executor: InsertionExecutor?
+    /// The focused field of the frontmost app after every read (nil when there is none), for the
+    /// other coordinators' offers bound to a field.
+    var onFocus: ((TargetIdentity?) -> Void)?
 
     /// The suggestion the visible ghost text derives from.
     private var anchor: GhostSuggestion?
@@ -52,8 +55,10 @@ final class HostCoordinator {
         guard let snapshot = change.snapshot, let element = change.element,
               let field = FieldReader.read(element) else {
             status.update { $0.focus = nil }
+            onFocus?(nil)
             return reset()
         }
+        onFocus?(field.identity)
         let context = snapshot.context
         status.update {
             $0.focus = DebugState.Focus(
@@ -97,6 +102,15 @@ final class HostCoordinator {
             clearOffer()
         }
         startGeneration(snapshot: snapshot, element: element, field: field)
+    }
+
+    /// A newer offer from another producer replaced the engine's: its ghost text goes.
+    func displaced(_ offer: Offer) {
+        guard case .ghost = offer.kind, offer.source == .engine else { return }
+        cancelGeneration()
+        overlay.hide()
+        anchor = nil
+        status.update { $0.presentation = nil }
     }
 
     // MARK: - Tap events (posted to main by the tap thread)

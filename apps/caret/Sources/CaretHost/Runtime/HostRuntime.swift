@@ -109,6 +109,15 @@ public final class HostRuntime {
         coordinator.executor = executor
         fill.executor = executor
         surface.executor = executor
+        coordinator.onFocus = { identity in surface.focusChanged(identity) }
+        // Publishing happens on the main thread, so the displaced offer's owner hears at once.
+        arbiter.onDisplaced = { offer in
+            MainActor.assumeIsolated {
+                coordinator.displaced(offer)
+                fill.displaced(offer)
+                surface.displaced(offer)
+            }
+        }
         helper = HelperClient(path: configuration.helperSocketPath) { message in
             let at = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async { MainActor.assumeIsolated { fill.receive(message, at: at) } }

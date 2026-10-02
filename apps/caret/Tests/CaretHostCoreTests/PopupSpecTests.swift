@@ -25,6 +25,8 @@ final class PopupSpecTests: XCTestCase {
         case .noPrimaryAction(let path): return "noPrimaryAction(\(path))"
         case .actionKeyConflictsWithChoices(let path, _): return "actionKeyConflictsWithChoices(\(path))"
         case .unknownRevealTarget(let path, _): return "unknownRevealTarget(\(path))"
+        case .invalidReveal(let path, _): return "invalidReveal(\(path))"
+        case .duplicateBlock(let type, let path): return "duplicateBlock(\(type), \(path))"
         case .missingBlock(let type): return "missingBlock(\(type))"
         case .unsupportedVersion(let v): return "unsupportedVersion(\(v))"
         default: return error.description
