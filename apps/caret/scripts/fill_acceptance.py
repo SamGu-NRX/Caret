@@ -481,7 +481,9 @@ def realtab(out_dir, ghost):
     field = gold[CLAIM][0]
     visit(pids, pid, CLAIM)
     ax(pids, "focus", pid, frame_arg(field["frame"]))
-    offer = wait_for(lambda: fill_offer(pid, 0), 15)
+    # Since A3's surface gate, an offer for an app that is not frontmost is held, not drawn
+    # (lastSkip "held.appNotFront"); the offer itself is checked again after activation.
+    offer = wait_for(lambda: fill_offer(pid, 0) or host()["fill"].get("lastSkip") == "held.appNotFront", 15)
     if not offer:
         return finish("failed: no fill offer before activation", lastSkip=host()["fill"].get("lastSkip"))
     # The model loads before the foreground is taken, so the fixture is frontmost only for the

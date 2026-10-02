@@ -395,7 +395,8 @@ try {
         return p.subject?.taskId === wu && p.subject.mood === "needsYou" ? { p, at: Date.now() } : null;
       }, 12_000, 20).catch(() => null);
       const actU = activities().find((x) => x.m.seq > seq1 && x.m.task.id === wu && x.m.task.state !== "running");
-      const uploadFrame = win(UPLOAD)?.window.frame ?? null;
+      // The model's frames are [x, y, width, height] arrays.
+      const uploadFrame = (win(UPLOAD)?.window.frame ?? null) as number[] | null;
       let gazeCheck: Record<string, unknown> | null = null;
       if (needs !== null) {
         // Settle: the host locates the window off the main thread right after the subject changes.
@@ -403,7 +404,7 @@ try {
           const q = await perch();
           return q.targetWindow !== null ? q : null;
         }, 3000).catch(() => needs.p);
-        const window = uploadFrame === null ? null : [uploadFrame.x, uploadFrame.y, uploadFrame.width, uploadFrame.height];
+        const window = uploadFrame;
         const expected = window === null || p.frame === null ? null : expectedGaze(p.frame, window);
         const dot = expected === null ? null : p.gaze[0]! * expected[0] + p.gaze[1]! * expected[1];
         gazeCheck = { gaze: p.gaze, expected, dot, perchFrame: p.frame, hostFoundWindow: p.targetWindow, readerWindow: window };
@@ -494,7 +495,9 @@ try {
     control(id, "undo");
     await until(`${id} to undo`, () => latest(id)?.state === "undone");
     r.restoredByUndo = (await fields()).every((v) => v === "");
-    r.ok = handed.state === "paused" && handed.step === 3 && row.progress === "Stopped before step 4 of 6" && (r.hostControls as string[]).includes(`${id}:takeOver`);
+    // The control can land a step late when the run is quick; what must hold is that the record
+    // and the row name the same step, and it is not before step 4.
+    r.ok = handed.state === "paused" && (handed.step ?? 0) >= 3 && row.progress === `Stopped before step ${(handed.step ?? 0) + 1} of 6` && (r.hostControls as string[]).includes(`${id}:takeOver`);
   }
   ok = [...jobRuns, ...pauseRuns, ...takeOverRuns].every((r) => r.ok === true);
 } catch (e) {

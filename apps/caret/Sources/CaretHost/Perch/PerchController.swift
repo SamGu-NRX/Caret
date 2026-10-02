@@ -190,7 +190,11 @@ final class PerchController {
             let taskId = subject.taskId
             locator.locate(pid: pid, title: subject.windowTitle) { [weak self] found in
                 guard let self, self.subject?.taskId == taskId else { return }
+                let screenWas = self.screenFrame()
                 self.target = (taskId, found)
+                // With no field focused, the perch belongs on the screen of the window it watches
+                // (the first on-screen run put it on another display).
+                if self.caret == nil, self.field == nil, self.screenFrame() != screenWas { self.place(reason: "target") }
                 self.aim()
             }
         }
