@@ -4,7 +4,7 @@
 // and code copies the chosen span verbatim.
 import type { FillSource, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
-import { isLabelLike, nearestText } from "./descriptor.ts";
+import { nearestText } from "./descriptor.ts";
 
 export interface Candidate {
   id: string;
@@ -38,12 +38,60 @@ const MAX_CONTEXT_CHARS = 60;
  * at most 255 options. The probe measured 36 of 36 correct at 134 candidates; 80 stays well inside that.
  */
 export const MAX_CANDIDATES = 80;
+/**
+ * Time the generator may spend on one focus before it stops and returns what it has. It runs on the
+ * helper's event loop, which B6 holds to 20 ms per piece of work; 15 ms leaves the rest of the focus
+ * path (form fields, descriptors) room. Spans it did not reach are the least recent, since windows
+ * are taken most recent first.
+ */
+export const GENERATOR_BUDGET_MS = 15;
+/** Nodes or values between clock reads. */
+const CLOCK_EVERY = 64;
 const MIN_LINE = 2;
 const MAX_LINE = 80;
 const LINE_ROLES = new Set(["AXStaticText", "AXCell", "AXHeading", "AXLink"]);
 const LABELLED = /^([^:]{1,32}):\s+(.+)$/;
 
-export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now()): Candidate[] {
+export interface GenerateOptions {
+  max?: number;
+  now?: number;
+  budgetMs?: number;
+  /** Milliseconds, for the budget. Tests pass a fake clock. */
+  clock?: () => number;
+}
+
+export interface GenerateStats {
+  /** Windows, typed values and nodes the generator looked at before it had enough or ran out of time. */
+  windows: number;
+  values: number;
+  nodes: number;
+  /** True when the budget ran out before the cap was reached or every window was read. */
+  overBudget: boolean;
+  ms: number;
+}
+
+/**
+ * The candidates for a fill, in rank order, at most `max`: typed values first, then single lines,
+ * each from the most recently focused window down. The rank is decided before any span is built, and
+ * the expensive facts about a span (its label, section and block) are worked out only for spans that
+ * make the cut, so the cost follows the cap rather than the screen. The output is the same as building
+ * every span and keeping the first `max`, as the generator did before B6 (test/legacy-candidates.ts).
+ */
+export function collectCandidates(model: ScreenModel, targetWindowId: string, o: GenerateOptions = {}): { candidates: Candidate[]; stats: GenerateStats } {
+  const max = o.max ?? MAX_CANDIDATES;
+  const now = o.now ?? Date.now();
+  const clock = o.clock ?? (() => performance.now());
+  const budget = o.budgetMs ?? GENERATOR_BUDGET_MS;
+  const t0 = clock();
+  const stats: GenerateStats = { windows: 0, values: 0, nodes: 0, overBudget: false, ms: 0 };
+  let tick = 0;
+  const outOfTime = (): boolean => {
+    if (++tick % CLOCK_EVERY !== 0) return false;
+    if (clock() - t0 <= budget) return false;
+    stats.overBudget = true;
+    return true;
+  };
+
   const windows = [...model.windows.values()]
     .filter((w) => w.window.windowId !== targetWindowId)
     .sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
@@ -53,18 +101,21 @@ export function generateCandidates(model: ScreenModel, targetWindowId: string, m
 
   const out: Candidate[] = [];
   const seen = new Set<string>();
-  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: string | null): void => {
-    if (out.length >= max || seen.has(text)) return;
+  const full = (): boolean => out.length >= max;
+  /** Adds a span unless the cap is reached or its text is already in; its context is worked out only then. */
+  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): void => {
+    if (full() || seen.has(text)) return;
     seen.add(text);
     out.push({
       id: `c${out.length + 1}`,
       text,
       kind,
-      context,
+      context: context(),
       section: sectionAround(w, node),
       blockHead: blockHead(w, node, text),
       recency: recency(w),
       source: {
+        pid: w.app.pid,
         windowId: w.window.windowId,
         bundleId: w.app.bundleId,
         appName: w.app.name,
@@ -74,16 +125,30 @@ export function generateCandidates(model: ScreenModel, targetWindowId: string, m
       },
     });
   };
+  const touched = new Set<string>();
+  const finish = (): { candidates: Candidate[]; stats: GenerateStats } => {
+    stats.windows = touched.size;
+    stats.ms = clock() - t0;
+    return { candidates: out, stats };
+  };
 
   for (const w of windows) {
+    if (full()) return finish();
+    touched.add(w.window.windowId);
     for (const v of w.values) {
+      if (full() || outOfTime()) return finish();
+      stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined) continue;
-      add(w, node, v.text, v.kind, contextFor(w, node, v.text));
+      add(w, node, v.text, v.kind, () => contextFor(w, node, v.text));
     }
   }
   for (const w of windows) {
+    if (full()) break;
+    touched.add(w.window.windowId);
     for (const node of w.nodes.values()) {
+      if (full() || outOfTime()) return finish();
+      stats.nodes++;
       const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = nodeText(node).split(/\r?\n/);
@@ -93,15 +158,53 @@ export function generateCandidates(model: ScreenModel, targetWindowId: string, m
         if (line.endsWith(":")) continue; // a label, not a value
         const m = LABELLED.exec(line);
         if (m !== null && m[1] !== undefined && m[2] !== undefined) {
-          add(w, node, m[2].trim(), null, m[1].trim());
+          const label = m[1].trim();
+          add(w, node, m[2].trim(), null, () => label);
           continue;
         }
-        const context = lines.length === 1 ? (isSourceField ? (node.label ?? nearestText(w, node, isLabelLike)) : nearestText(w, node, isLabelLike)) : null;
-        add(w, node, line, null, context);
+        add(w, node, line, null, () =>
+          lines.length === 1 ? (isSourceField ? (node.label ?? nearestText(w, node, true)) : nearestText(w, node, true)) : null,
+        );
       }
     }
   }
-  return out;
+  return finish();
+}
+
+/** The candidates for a fill; see collectCandidates. */
+export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now()): Candidate[] {
+  return collectCandidates(model, targetWindowId, { max, now }).candidates;
+}
+
+/**
+ * How many distinct spans the generator could offer with no cap: a cheap full pass for the audit,
+ * which works out no labels, sections or blocks.
+ */
+export function countSpans(model: ScreenModel, targetWindowId: string): { spans: number; typed: number } {
+  const seen = new Set<string>();
+  let typed = 0;
+  for (const w of model.windows.values()) {
+    if (w.window.windowId === targetWindowId) continue;
+    for (const v of w.values) {
+      if (!w.nodes.has(v.nodeKey) || seen.has(v.text)) continue;
+      seen.add(v.text);
+      typed++;
+    }
+  }
+  for (const w of model.windows.values()) {
+    if (w.window.windowId === targetWindowId) continue;
+    for (const node of w.nodes.values()) {
+      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
+      if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
+      for (const raw of nodeText(node).split(/\r?\n/)) {
+        const line = raw.replace(/\s+/g, " ").trim();
+        if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line) || line.endsWith(":")) continue;
+        const m = LABELLED.exec(line);
+        seen.add(m !== null && m[2] !== undefined ? m[2].trim() : line);
+      }
+    }
+  }
+  return { spans: seen.size, typed };
 }
 
 function contextFor(w: WindowState, node: Node, span: string): string | null {
@@ -110,7 +213,7 @@ function contextFor(w: WindowState, node: Node, span: string): string | null {
     if (m !== null && m[1] !== undefined && m[2]?.includes(span)) return m[1].trim();
   }
   if (node.editable === true && node.label !== undefined) return node.label;
-  return nearestText(w, node, isLabelLike);
+  return nearestText(w, node, true);
 }
 
 /** The label of the nearest named ancestor, skipping web areas, whose label is the page title. */
@@ -128,6 +231,24 @@ function sectionAround(w: WindowState, node: Node): string | null {
   return null;
 }
 
+/** Each window state's nodes by parent key, in document order, built once per state for blockHead. */
+const childIndex = new WeakMap<WindowState, Map<string, Node[]>>();
+
+function childrenOf(w: WindowState, parent: string): Node[] {
+  let idx = childIndex.get(w);
+  if (idx === undefined) {
+    idx = new Map();
+    for (const n of w.nodes.values()) {
+      if (n.parent === null) continue;
+      const list = idx.get(n.parent);
+      if (list === undefined) idx.set(n.parent, [n]);
+      else list.push(n);
+    }
+    childIndex.set(w, idx);
+  }
+  return idx.get(parent) ?? [];
+}
+
 /**
  * The first line of the span's block: the first line of a multi-line node, or else the first text
  * line among the node's siblings. Lines equal to the section's own title are skipped, since a group
@@ -139,8 +260,8 @@ function blockHead(w: WindowState, node: Node, span: string): string | null {
   if (own.length > 1) head = own[0];
   else if (node.parent !== null) {
     const section = w.nodes.get(node.parent)?.label;
-    for (const n of w.nodes.values()) {
-      if (n.parent !== node.parent || !LINE_ROLES.has(n.role)) continue;
+    for (const n of childrenOf(w, node.parent)) {
+      if (!LINE_ROLES.has(n.role)) continue;
       const first = nodeText(n).split(/\r?\n/)[0]?.trim();
       if (first === undefined || first.length === 0 || first === section) continue;
       head = first;

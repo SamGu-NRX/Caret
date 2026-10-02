@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { ReaderMessage } from "../src/protocol.ts";
 import { Store } from "../src/store.ts";
+import { field, FIXTURE_APP, MAIL_APP, snap, text, value } from "./builders.ts";
 
 const SESSION = fileURLToPath(new URL("../fixtures/recorded/transfer-session.ndjson", import.meta.url));
 
@@ -76,5 +77,88 @@ describe("transfer detection on the recorded synthetic session", () => {
       }
     }
     store = new Store(dir);
+  });
+});
+
+describe("a message sent within the settle time of its last keystroke", () => {
+  // All names and numbers are invented.
+  const SRC = "6160-1";
+  const CHAT = "5150-1";
+  const COMPOSER = "dev.caret.fixture/standard/textarea:message~0";
+  let dir: string;
+  let store: Store;
+  let helper: Helper;
+
+  const source = (at: number) =>
+    snap([text("m/statictext:a~0", "Ticket QX-77120 for the venue deposit", [0, 0, 300, 10])], {
+      at,
+      windowId: SRC,
+      app: MAIL_APP,
+      values: [value("id", "QX-77120", "m/statictext:a~0")],
+    });
+  const chat = (at: number, message: string, values: ReturnType<typeof value>[] = []) =>
+    snap([field(COMPOSER, message, { role: "AXTextArea", label: "Message" })], { at, windowId: CHAT, app: FIXTURE_APP, focused: true, values });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "caret-helper-test-"));
+    store = new Store(dir);
+    helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => {} });
+  });
+  afterEach(() => {
+    helper.shutdown();
+    helper.memory.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const type = (from: number, message: string, values: ReturnType<typeof value>[] = []): number => {
+    let at = from;
+    for (let i = 1; i <= message.length; i++) {
+      at = from + i * 80;
+      void helper.handleReader(chat(at, message.slice(0, i), i === message.length ? values : []));
+    }
+    return at;
+  };
+
+  it("is judged on the text just before the composer emptied, timed at the last keystroke", () => {
+    void helper.handleReader(source(1000));
+    void helper.handleReader(chat(2000, ""));
+    const last = type(2000, "QX-77120");
+    // Sent 300 ms after the last keystroke: the composer empties before the 1.5 s settle time.
+    void helper.handleReader(chat(last + 300, ""));
+    for (let t = last; t <= last + 5000; t += 250) helper.tick(t);
+    expect(helper.recentTransfers.map((t) => [t.value, t.match, t.src.windowId, t.at, t.attribution])).toEqual([["QX-77120", "exact", SRC, last, "user"]]);
+    expect(store.transfers()).toHaveLength(1);
+  });
+
+  it("finds a typed value inside the sent message although the clear removed it from the model", () => {
+    void helper.handleReader(source(1000));
+    void helper.handleReader(chat(2000, ""));
+    const message = "please file QX-77120 today";
+    const last = type(2000, message, [value("id", "QX-77120", COMPOSER)]);
+    void helper.handleReader(chat(last + 200, ""));
+    helper.tick(last + 5000);
+    expect(helper.recentTransfers.map((t) => [t.value, t.kind])).toEqual([["QX-77120", "id"]]);
+  });
+
+  it("judges an edit once: a clear after the edit settled adds nothing", () => {
+    void helper.handleReader(source(1000));
+    void helper.handleReader(chat(2000, ""));
+    const last = type(2000, "QX-77120");
+    for (let t = last; t <= last + 2000; t += 250) helper.tick(t);
+    void helper.handleReader(chat(last + 2500, ""));
+    helper.tick(last + 6000);
+    expect(helper.recentTransfers).toHaveLength(1);
+  });
+
+  it("starts a fresh edit after the clear, so the next message is judged on its own", () => {
+    void helper.handleReader(source(1000));
+    void helper.handleReader(chat(2000, ""));
+    let last = type(2000, "QX-77120");
+    void helper.handleReader(chat(last + 300, ""));
+    last = type(last + 400, "QX-77120 again", [value("id", "QX-77120", COMPOSER)]);
+    void helper.handleReader(chat(last + 300, ""));
+    helper.tick(last + 5000);
+    expect(helper.recentTransfers.map((t) => t.value)).toEqual(["QX-77120", "QX-77120"]);
   });
 });

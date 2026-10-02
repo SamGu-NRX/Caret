@@ -5,6 +5,17 @@
 //   caret-fixture [--windows reference,claim,schedule] [--gold FILE] [--duration S]
 //                 [--e1 FILE --cycles N --period S] [--webkit URL]
 //                 [--activity FILE] [--focus-forms [--visit reference,distractors]]
+//   --windows executor adds the executor window, driven by lines on stdin:
+//     reset | seed FIELD VALUE | remove FIELD | sheet | dump
+//   --background-only makes the app impossible to activate. Timed focus modes (--focus-forms, --activity,
+//   --e1) were not checked with it; `focus NAME` was (B4).
+//   --windows roster,seating adds a list of eight names and a six-seat chart for the loop recognizer;
+//   the seating window takes stdin lines reset | dump. Only one of executor and seating may be open.
+//   --windows jobs adds a test run that counts up under a progress bar, an upload with a spinner,
+//   and a notes window; stdin `jobs reset | finish N | ask N | dump` drives them.
+//   stdin `focus NAME` makes one of the fixture's own windows key without activating the app, which
+//   moves AX focus inside the fixture only (it works with --background-only too: AppKit reports no
+//   key window, yet the reader sees the focus move). Each command answers one JSON line on stdout.
 import AppKit
 import WebKit
 
@@ -37,6 +48,9 @@ let period = TimeInterval(opt("--period") ?? "1.2") ?? 1.2
 let webkitURL = opt("--webkit")
 let activityPath = opt("--activity")
 let focusForms = has("--focus-forms")
+/// Background-only: AppKit never activates the app, so it cannot take the foreground even for a moment.
+/// Its windows can never be key, so focus-driven modes (--focus-forms, --activity, --e1) need the default.
+let backgroundOnly = has("--background-only")
 /// Windows made key, in this order, before each form is focused: the user looks something up, then goes to the form.
 let visitList = (opt("--visit") ?? "").split(separator: ",").map(String.init)
 if !argv.isEmpty { die("unknown arguments: \(argv.joined(separator: " "))") }
@@ -137,7 +151,17 @@ let scheduleForm: [Field] = [
 // MARK: - windows
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
+// A deactivate-on-activation guard alone still left the fixture frontmost for a second at launch (B3, 2026-10-02).
+app.setActivationPolicy(backgroundOnly ? .prohibited : .accessory)
+// Launched from the frontmost app (a terminal or an agent host), the fixture was made the active app
+// at launch and held the foreground for a whole evaluation run (executor run-3). It never needs to
+// be active: windows are made key without activation. So it hands activation back whenever it gets it.
+var activationsRefused = 0
+let refuseActivation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+    activationsRefused += 1
+    FileHandle.standardError.write(Data("caret-fixture: became active; deactivating (\(activationsRefused))\n".utf8))
+    NSApp.deactivate()
+}
 
 var windows: [String: NSWindow] = [:]
 var formFields: [String: [(Field, NSTextField)]] = [:]
@@ -243,13 +267,303 @@ final class DriftWindow {
 }
 var drift: DriftWindow?
 
+/// The executor's fixture: named fields (two pairs share a label in different sections, so a locator
+/// by label alone is ambiguous), a status line, and buttons with known effects. Stdin commands reset
+/// it, change it behind the reader's back, and report its true state, which is how the evaluation
+/// checks the executor without trusting the executor's own reading.
+final class ExecutorWindow {
+    static let title = "Caret Fixture — Executor"
+    let w = makeWindow(ExecutorWindow.title, NSRect(x: 620, y: 520, width: 560, height: 560))
+    var fields: [String: NSView] = [:]
+    var frames: [String: (NSView, NSRect)] = [:]
+    let notes = NSTextView(frame: NSRect(x: 0, y: 0, width: 300, height: 50))
+    let status = NSTextField(labelWithString: "Status: Active")
+    var noteLabel: NSTextField?
+    var sent = false
+    var sheet: NSWindow?
+
+    init() {
+        let v = w.contentView!
+        func field(_ name: String, _ label: String, _ frame: NSRect, in parent: NSView) {
+            let tf = NSTextField(frame: frame)
+            tf.setAccessibilityLabel(label)
+            parent.addSubview(tf)
+            fields[name] = tf
+            frames[name] = (parent, frame)
+        }
+        var y = 520.0
+        for (name, label) in [("name", "Name"), ("email", "Email"), ("reference", "Reference"), ("message", "Message"), ("eventTitle", "Event title")] {
+            v.addSubview(label_(label + ":", NSRect(x: 16, y: y + 2, width: 110, height: 20)))
+            field(name, label, NSRect(x: 130, y: y, width: 300, height: 24), in: v)
+            y -= 34
+        }
+        let scroll = NSScrollView(frame: NSRect(x: 130, y: y - 30, width: 300, height: 50))
+        notes.setAccessibilityLabel("Notes")
+        notes.isRichText = false
+        scroll.documentView = notes
+        v.addSubview(label_("Notes:", NSRect(x: 16, y: y + 2, width: 110, height: 20)))
+        v.addSubview(scroll)
+        fields["notes"] = notes
+        y -= 90
+        for (i, section) in ["Billing", "Shipping"].enumerated() {
+            let box = NSBox(frame: NSRect(x: 12 + Double(i) * 270, y: y - 40, width: 260, height: 100))
+            box.title = section
+            box.setAccessibilityLabel(section)
+            v.addSubview(box)
+            let key = section.lowercased()
+            field("\(key)City", "City", NSRect(x: 8, y: 40, width: 230, height: 24), in: box.contentView!)
+            field("\(key)Street", "Street", NSRect(x: 8, y: 8, width: 230, height: 24), in: box.contentView!)
+        }
+        status.frame = NSRect(x: 16, y: 70, width: 200, height: 20)
+        v.addSubview(status)
+        for (i, title) in ["Archive", "Add note", "Next page", "Send"].enumerated() {
+            let b = NSButton(title: title, target: self, action: #selector(pressed(_:)))
+            b.frame = NSRect(x: 16 + Double(i) * 130, y: 20, width: 120, height: 30)
+            v.addSubview(b)
+        }
+        w.orderBack(nil)
+    }
+
+    private func label_(_ s: String, _ f: NSRect) -> NSTextField { label(s, f) }
+
+    @objc func pressed(_ b: NSButton) {
+        switch b.title {
+        case "Archive": status.stringValue = "Status: Archived"
+        case "Add note":
+            if noteLabel == nil {
+                let l = NSTextField(labelWithString: "Note added")
+                l.frame = NSRect(x: 240, y: 70, width: 200, height: 20)
+                w.contentView!.addSubview(l)
+                noteLabel = l
+            }
+        case "Next page": w.title = ExecutorWindow.title + " (page 2)"
+        case "Send": sent = true
+        default: break
+        }
+    }
+
+    func value(_ name: String) -> String? {
+        guard let f = fields[name], f.superview != nil || f === notes else { return nil }
+        if f === notes { return notes.enclosingScrollView?.superview == nil ? nil : notes.string }
+        return (f as? NSTextField)?.stringValue
+    }
+
+    func set(_ name: String, _ value: String) -> Bool {
+        guard let f = fields[name] else { return false }
+        if f === notes { notes.string = value } else { (f as? NSTextField)?.stringValue = value }
+        return true
+    }
+
+    func command(_ line: String) -> [String: Any] {
+        let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
+        switch parts.first ?? "" {
+        case "reset":
+            if let s = sheet { w.endSheet(s); sheet = nil }
+            for (name, (parent, frame)) in frames where fields[name]!.superview == nil {
+                fields[name]!.frame = frame
+                parent.addSubview(fields[name]!)
+            }
+            for name in fields.keys { _ = set(name, "") }
+            status.stringValue = "Status: Active"
+            noteLabel?.removeFromSuperview(); noteLabel = nil
+            w.title = ExecutorWindow.title
+            sent = false
+            return ["ok": true]
+        case "seed" where parts.count >= 2:
+            return ["ok": set(parts[1], parts.count == 3 ? parts[2] : "")]
+        case "remove" where parts.count == 2:
+            guard let f = fields[parts[1]], f !== notes else { return ["ok": false] }
+            f.removeFromSuperview()
+            return ["ok": true]
+        case "sheet":
+            let s = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
+            s.contentView!.addSubview(label("Unsaved changes", NSRect(x: 20, y: 60, width: 260, height: 20)))
+            w.beginSheet(s)
+            sheet = s
+            return ["ok": true]
+        case "dump":
+            var values: [String: Any] = [:]
+            for name in fields.keys { values[name] = value(name) ?? NSNull() }
+            return ["ok": true, "title": w.title, "fields": values, "status": status.stringValue, "note": noteLabel != nil, "sent": sent, "sheet": sheet != nil]
+        default:
+            return ["ok": false, "error": "unknown command \(line)"]
+        }
+    }
+}
+var executorWindow: ExecutorWindow?
+
+/// Names for the loop fixture, in list order. Invented, like everything here.
+let rosterNames = ["Dana Whitfield", "Priya Raman", "Marcus Lowe", "Ines Okafor", "Tomas Brandt", "Keiko Sato", "Rafael Duarte", "Amara Nwosu"]
+
+/// The loop recognizer's source: one named group of static text lines, which share an element template.
+func buildRoster() -> NSWindow {
+    let w = makeWindow("Caret Fixture — Roster", NSRect(x: 60, y: 80, width: 300, height: 290))
+    let box = NSBox(frame: NSRect(x: 12, y: 12, width: 276, height: 262))
+    box.title = "Attendees"
+    box.setAccessibilityLabel("Attendees")
+    var y = 212.0
+    for n in rosterNames {
+        box.contentView!.addSubview(label(n, NSRect(x: 8, y: y, width: 250, height: 20)))
+        y -= 26
+    }
+    w.contentView!.addSubview(box)
+    return w
+}
+
+/// The loop recognizer's destination: six fields that share the label "Guest", so their keys differ only by ordinal.
+final class SeatingWindow {
+    static let title = "Caret Fixture — Seating"
+    let w = makeWindow(SeatingWindow.title, NSRect(x: 400, y: 80, width: 360, height: 280))
+    var guests: [NSTextField] = []
+
+    init() {
+        var y = 236.0
+        for i in 0..<6 {
+            w.contentView!.addSubview(label("Seat \(i + 1):", NSRect(x: 16, y: y + 2, width: 70, height: 20)))
+            let f = NSTextField(frame: NSRect(x: 90, y: y, width: 250, height: 24))
+            f.setAccessibilityLabel("Guest")
+            w.contentView!.addSubview(f)
+            guests.append(f)
+            y -= 38
+        }
+        w.orderBack(nil)
+    }
+
+    func command(_ line: String) -> [String: Any] {
+        switch line {
+        case "reset":
+            for g in guests { g.stringValue = "" }
+            return ["ok": true]
+        case "dump":
+            return ["ok": true, "title": w.title, "guests": guests.map { $0.stringValue }]
+        default:
+            return ["ok": false, "error": "unknown command \(line)"]
+        }
+    }
+}
+var seatingWindow: SeatingWindow?
+
+/// Two job windows for the pending-state watch, and a plain notes window to leave them for. The test
+/// run counts up while it runs, under a determinate progress bar, so the reader sees steady changes
+/// that are not the end of the work. The upload shows a spinning busy indicator. `finish N` ends the
+/// test run with one of three wordings; `ask N` turns the upload into a question for the user.
+final class JobWindows {
+    static let testTitle = "Caret Fixture — Test run"
+    static let uploadTitle = "Caret Fixture — Upload"
+    static let notesTitle = "Caret Fixture — Notes"
+    static let finished = [
+        "Done. 48 of 48 tests passed in 1 min 12 s.",
+        "Build succeeded. All 48 tests passed.",
+        "Finished: 48 tests passed, 0 failed.",
+    ]
+    static let questions = [
+        "Approve? Three files with these names already exist on the shared drive. Replace them?",
+        "Waiting for your approval: replace 3 existing files on the shared drive?",
+        "Approve? Sign in again to continue uploading to the shared drive.",
+    ]
+
+    let test = makeWindow(JobWindows.testTitle, NSRect(x: 80, y: 420, width: 440, height: 170))
+    let upload = makeWindow(JobWindows.uploadTitle, NSRect(x: 560, y: 420, width: 440, height: 170))
+    let notes = makeWindow(JobWindows.notesTitle, NSRect(x: 1040, y: 420, width: 360, height: 170))
+    let notesField = NSTextField(frame: NSRect(x: 16, y: 90, width: 320, height: 24))
+    let testStatus = NSTextField(labelWithString: "")
+    let testBar = NSProgressIndicator(frame: NSRect(x: 16, y: 60, width: 400, height: 20))
+    let uploadStatus = NSTextField(labelWithString: "")
+    let spinner = NSProgressIndicator(frame: NSRect(x: 16, y: 60, width: 24, height: 24))
+    var buttons: [NSButton] = []
+    var passed = 0
+    var testRunning = true
+    /// Last state change made by a command, in ms, so a run can measure from the change itself.
+    var changedAt: Int64 = 0
+
+    init() {
+        let tv = test.contentView!
+        tv.addSubview(label("Test suite: checkout service", NSRect(x: 16, y: 130, width: 400, height: 20), bold: true))
+        testStatus.frame = NSRect(x: 16, y: 96, width: 400, height: 20)
+        tv.addSubview(testStatus)
+        testBar.isIndeterminate = false
+        testBar.minValue = 0
+        testBar.maxValue = 48
+        tv.addSubview(testBar)
+
+        let uv = upload.contentView!
+        uv.addSubview(label("Shared drive: Q4 planning", NSRect(x: 16, y: 130, width: 400, height: 20), bold: true))
+        uploadStatus.frame = NSRect(x: 16, y: 96, width: 410, height: 20)
+        uv.addSubview(uploadStatus)
+        spinner.style = .spinning
+        spinner.isIndeterminate = true
+        uv.addSubview(spinner)
+
+        let nv = notes.contentView!
+        nv.addSubview(label("Notes:", NSRect(x: 16, y: 120, width: 320, height: 20)))
+        notesField.setAccessibilityLabel("Notes")
+        nv.addSubview(notesField)
+        reset()
+        for w in [test, upload, notes] { w.orderBack(nil) }
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in self.step() }
+    }
+
+    func step() {
+        guard testRunning else { return }
+        passed = passed % 47 + 1
+        testStatus.stringValue = "Running tests… \(passed) of 48"
+        testBar.doubleValue = Double(passed)
+    }
+
+    func reset() {
+        testRunning = true
+        passed = 0
+        testBar.isHidden = false
+        step()
+        uploadStatus.stringValue = "Uploading 3 files to the shared drive…"
+        for b in buttons { b.removeFromSuperview() }
+        buttons = []
+        spinner.isHidden = false
+        spinner.startAnimation(nil)
+        changedAt = ms()
+    }
+
+    func command(_ parts: [String]) -> [String: Any] {
+        let n = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
+        switch parts.first ?? "" {
+        case "reset":
+            reset()
+        case "finish":
+            testRunning = false
+            testBar.isHidden = true
+            testStatus.stringValue = JobWindows.finished[n % JobWindows.finished.count]
+        case "ask":
+            spinner.stopAnimation(nil)
+            spinner.isHidden = true
+            uploadStatus.stringValue = JobWindows.questions[n % JobWindows.questions.count]
+            for (i, t) in ["Approve", "Cancel"].enumerated() {
+                let b = NSButton(title: t, target: nil, action: nil)
+                b.frame = NSRect(x: 16 + Double(i) * 110, y: 20, width: 100, height: 30)
+                upload.contentView!.addSubview(b)
+                buttons.append(b)
+            }
+        case "dump":
+            return ["ok": true, "test": testStatus.stringValue, "upload": uploadStatus.stringValue, "changedAt": changedAt]
+        default:
+            return ["ok": false, "error": "unknown jobs command \(parts.joined(separator: " "))"]
+        }
+        changedAt = ms()
+        return ["ok": true, "at": changedAt]
+    }
+}
+var jobWindows: JobWindows?
+
 for name in windowList {
     switch name {
     case "drift": drift = DriftWindow()
+    case "executor": executorWindow = ExecutorWindow()
     case "reference": windows[name] = buildReference()
     case "distractors": windows[name] = buildReference("Caret Fixture — Inbox", distractors, x: 300)
     case "claim": windows[name] = buildForm("Caret Fixture — Claim form", claimForm, origin: NSPoint(x: 540, y: 80))
     case "schedule": windows[name] = buildForm("Caret Fixture — Schedule follow-up", scheduleForm, origin: NSPoint(x: 1080, y: 80))
+    case "roster": windows[name] = buildRoster()
+    case "seating": seatingWindow = SeatingWindow()
+    case "jobs": jobWindows = JobWindows()
     default: die("unknown window \(name)")
     }
 }
@@ -463,6 +777,69 @@ if focusForms {
             }
         }
         delay += 6
+    }
+}
+
+/// Every window this fixture opened, by the short names `focus` takes.
+func namedWindows() -> [String: NSWindow] {
+    var out = windows
+    if let e = executorWindow { out["executor"] = e.w }
+    if let s = seatingWindow { out["seating"] = s.w }
+    if let j = jobWindows { out["test"] = j.test; out["upload"] = j.upload; out["notes"] = j.notes }
+    return out
+}
+
+/// `focus NAME` plays the user moving to one of this fixture's windows: the window is made key without
+/// activating the app, and its first text field, if any, becomes first responder. Only this process's
+/// own windows are touched. The reply says which window AppKit now reports as key.
+func focusCommand(_ name: String) -> [String: Any] {
+    guard let w = namedWindows()[name] else { return ["ok": false, "error": "no window named \(name)"] }
+    w.makeKey()
+    let field = w.contentView.flatMap { firstTextField(in: $0) }
+    if let f = field { _ = w.makeFirstResponder(f) } else { _ = w.makeFirstResponder(w.contentView) }
+    return ["ok": true, "at": ms(), "key": NSApp.keyWindow?.title ?? NSNull(), "isKey": w.isKeyWindow]
+}
+
+func firstTextField(in v: NSView) -> NSTextField? {
+    for s in v.subviews {
+        if let t = s as? NSTextField, t.isEditable { return t }
+        if let t = firstTextField(in: s) { return t }
+    }
+    return nil
+}
+
+// Stdin commands, one per line, each answered with one JSON line: `focus NAME`, `jobs ...` for the
+// job windows, and anything else for the executor or seating window.
+if executorWindow != nil && seatingWindow != nil { die("the executor and seating windows both read stdin; open one of them") }
+let windowCommand: ((String) -> [String: Any])? = executorWindow.map { ex in { ex.command($0) } } ?? seatingWindow.map { sw in { sw.command($0) } }
+let stdinCommand: ((String) -> [String: Any])? = { line in
+    let parts = line.split(separator: " ").map(String.init)
+    switch parts.first {
+    case "focus" where parts.count == 2: return focusCommand(parts[1])
+    case "jobs":
+        guard let j = jobWindows else { return ["ok": false, "error": "no job windows; pass --windows jobs"] }
+        return j.command(Array(parts.dropFirst()))
+    default:
+        return windowCommand?(line) ?? ["ok": false, "error": "unknown command \(line)"]
+    }
+}
+if let command = stdinCommand {
+    var pending = Data()
+    FileHandle.standardInput.readabilityHandler = { h in
+        let chunk = h.availableData
+        if chunk.isEmpty { h.readabilityHandler = nil; return }
+        pending.append(chunk)
+        while let nl = pending.firstIndex(of: 0x0A) {
+            let line = String(decoding: pending[pending.startIndex..<nl], as: UTF8.self)
+            pending.removeSubrange(pending.startIndex...nl)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let out = command(line.trimmingCharacters(in: .whitespaces))
+                    let d = (try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])) ?? Data("{\"ok\":false}".utf8)
+                    print(String(decoding: d, as: UTF8.self))
+                }
+            }
+        }
     }
 }
 

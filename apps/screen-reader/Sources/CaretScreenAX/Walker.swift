@@ -17,12 +17,18 @@ public struct WalkLimits: Sendable {
     public static let focused = WalkLimits(deadline: 0.4, maxVisited: 6000, maxDepth: 64, maxChildren: 400, maxValueChars: 20_000)
     /// Background walks may take longer, but a 4 s cap was hit on long tables in the probe, so stop well before that.
     public static let background = WalkLimits(deadline: 1.0, maxVisited: 6000, maxDepth: 64, maxChildren: 400, maxValueChars: 20_000)
+    /// Walks for the executor, which needs a complete read to judge an act and waits for it anyway.
+    /// One focused-limit walk in about 80 was cut short on a loaded Mac; 2 s is assumed, not measured.
+    public static let request = WalkLimits(deadline: 2.0, maxVisited: 6000, maxDepth: 64, maxChildren: 400, maxValueChars: 20_000)
 }
 
 public final class Walker {
     public private(set) var elements: [AXUIElement] = []
     public private(set) var visited = 0
     public private(set) var truncated = false
+    /// True when a child list or the depth limit cut part of the tree without the deadline or budget
+    /// running out. Background walks accept that; the executor's walks refuse to judge a clipped tree.
+    public private(set) var clipped = false
     private let limits: WalkLimits
     private let focused: AXUIElement?
     private let start = CFAbsoluteTimeGetCurrent()
@@ -44,6 +50,7 @@ public final class Walker {
     public func readChildren(of window: AXUIElement) -> [RawNode] {
         AXUIElementSetMessagingTimeout(window, AX.elementTimeout)
         guard let kids = AX.elements(window, kAXChildrenAttribute) else { return [] }
+        if kids.count > limits.maxChildren { clipped = true }
         return kids.prefix(limits.maxChildren).compactMap { read($0, depth: 1) }
     }
 
@@ -80,13 +87,18 @@ public final class Walker {
         node.handle = elements.count
         elements.append(e)
 
-        if secure || Roles.skipped.contains(role) || depth >= limits.maxDepth { return node }
+        if secure || Roles.skipped.contains(role) { return node }
+        if depth >= limits.maxDepth {
+            if let k = a[9] as? [AXUIElement], !k.isEmpty { clipped = true }
+            return node
+        }
         var kids = (a[9] as? [AXUIElement]) ?? []
         if Self.rowContainers.contains(role), let rows = AX.elements(e, kAXVisibleRowsAttribute), !rows.isEmpty {
             kids = rows
         } else if Self.visibleChildContainers.contains(role), let vis = AX.elements(e, kAXVisibleChildrenAttribute), !vis.isEmpty {
             kids = vis
         }
+        if kids.count > limits.maxChildren { clipped = true }
         for k in kids.prefix(limits.maxChildren) {
             if let c = read(k, depth: depth + 1) { node.children.append(c) }
             if truncated { break }

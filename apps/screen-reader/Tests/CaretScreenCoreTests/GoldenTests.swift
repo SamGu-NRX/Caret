@@ -27,9 +27,20 @@ private func goldenLines() throws -> [Data] {
             case .fillRequest: "fillRequest"
             case .fillProposal: "fillProposal"
             case .error: "error"
+            case .readerCommand: "readerCommand"
+            case .verbResult: "verbResult"
+            case .userInput: "userInput"
+            case .taskProgress: "taskProgress"
+            case .fillResult: "fillResult"
+            case .taskControl: "taskControl"
+            case .activityRequest: "activityRequest"
+            case .activity: "activity"
+            case .activityReply: "activityReply"
             }
         }
-        #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error"])
+        #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
+                          "readerCommand", "verbResult", "userInput", "taskProgress",
+                          "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -54,6 +65,33 @@ private func goldenLines() throws -> [Data] {
         #expect(email.states == [.focused])
         #expect(s.nodes.first { $0.subrole == "AXSecureTextField" }?.value == nil)
         #expect(s.values == [TypedValue(kind: .id, text: "ORD-2026-48213", nodeKey: "dev.caret.fixture/standard/statictext:order ord-#-#~0")])
+    }
+
+    @Test func readsAReaderCommand() throws {
+        let lines = try goldenLines()
+        guard case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: lines[9]) else {
+            Issue.record("line 10 is not a readerCommand"); return
+        }
+        guard case let .write(pid, _, _, role, attribute, expect, value) = c.verb else { Issue.record("not a write"); return }
+        #expect(pid == 5150 && role == "AXTextField" && attribute == "value" && expect == "" && value == "dana.whitfield@example.com")
+        let badVerb = Data(#"{"type":"readerCommand","v":1,"id":"x","verb":{"kind":"type","pid":1}}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badVerb) }
+    }
+
+    @Test func readsTheActivityFeedAndWatchCommand() throws {
+        let lines = try goldenLines()
+        guard case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: lines[13]),
+              case let .watchWindows(windows) = c.verb else { Issue.record("line 14 is not a watchWindows command"); return }
+        #expect(windows == [WatchedWindow(pid: 5150, windowId: "5150-4")])
+        guard case .activity(let a) = try JSONDecoder().decode(Message.self, from: lines[17]) else { Issue.record("line 18 is not an activity"); return }
+        #expect(a.from == .running && a.task.state == .needsYou && a.task.kind == .watch && a.task.cause == .screen)
+        #expect(a.task.pending?.waiting == PendingAnswer(choice: "yes", confidence: 0.97))
+        guard case .activityReply(let r) = try JSONDecoder().decode(Message.self, from: lines[18]) else { Issue.record("line 19 is not an activityReply"); return }
+        #expect(r.tasks.first?.step == 2 && r.tasks.first?.remaining.count == 2 && r.tasks.first?.pending == nil)
+        guard case .fillProposal(let p) = try JSONDecoder().decode(Message.self, from: lines[7]) else { Issue.record("line 8 is not a fillProposal"); return }
+        #expect(p.pid == 5150 && p.fields.compactMap(\.source).allSatisfy { $0.pid == 5150 })
+        let badState = Data(#"{"type":"taskControl","v":1,"taskId":"t","action":"cancel"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
     }
 
     @Test func rejectsAWrongVersionAndAnUnknownType() {

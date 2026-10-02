@@ -1,0 +1,1 @@
+Pending watch: a finished job's status text and its vanishing progress bar arrive in separate snapshots; without the trailing debounce the first Jev answer is about a half-changed window and is stale.

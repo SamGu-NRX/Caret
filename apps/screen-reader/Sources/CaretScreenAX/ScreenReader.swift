@@ -17,7 +17,13 @@ public struct ReaderOptions: Sendable {
     /// When non-empty, only these processes are read. For experiments that must not read anything else.
     public var onlyPids: Set<pid_t> = []
     public var denyList: DenyList
+    /// Processes the executor's write and press verbs may act on. Empty means no process: the reader
+    /// only reads unless it is started with --act-pids naming fixture processes.
+    public var actPids: Set<pid_t> = []
     public var pasteboardPoll: TimeInterval = 0.5
+    /// False leaves AXManualAccessibility alone. A read-only audit beside another reader sets nothing in
+    /// any app; the other reader has already asked Chromium and Electron apps for their trees.
+    public var setManualAccessibility = true
     public init(denyList: DenyList) { self.denyList = denyList }
 }
 
@@ -32,6 +38,8 @@ public final class ScreenReader {
     private var lastChangeCount = NSPasteboard.general.changeCount
     private var tokens: [NSObjectProtocol] = []
     private var started = false
+    private var watchedPids: Set<pid_t> = []
+    private var inputMonitor: Any?
 
     public init(ctx: ReaderContext, options: ReaderOptions) {
         self.ctx = ctx
@@ -71,17 +79,99 @@ public final class ScreenReader {
         ctx.log("reading \(workers.count) apps; background every \(Int(opts.backgroundInterval)) s; deny list has \(opts.denyList.count) entries")
     }
 
-    /// After the helper reconnects it has no state, so walk everything again.
+    /// After the helper reconnects it has no state, so walk everything again. Its watches are gone
+    /// with it, so the reader drops its own until the new helper asks for some.
     public func resync() {
-        for w in workers.values { w.backgroundPass(reason: .initial, minAge: 0) }
+        for w in workers.values {
+            w.setWatched([])
+            w.backgroundPass(reason: .initial, minAge: 0)
+        }
         if let f = frontmost { workers[f]?.activate() }
+    }
+
+    // MARK: - executor verbs
+
+    /// Runs a command from the helper and sends its verbResult. Verbs for an app the reader does not
+    /// read (denied, filtered out, or gone) answer noWindow; nothing is ever done to such an app.
+    public func perform(_ cmd: ReaderCommand) {
+        let emitter = ctx.emitter
+        let answer: @Sendable (VerbOutcome, String?) -> Void = { outcome, detail in
+            emitter.send(.verbResult(VerbResult(id: cmd.id, at: nowMs(), outcome: outcome, detail: detail)))
+        }
+        let pid: pid_t
+        switch cmd.verb {
+        case let .watchInput(pids):
+            watch(Set(pids.map { pid_t($0) }))
+            answer(.ok, nil)
+            return
+        case let .watchWindows(list):
+            // The list replaces every watch, so each worker gets its own windows or none.
+            var byPid: [pid_t: Set<String>] = [:]
+            for w in list { byPid[pid_t(w.pid), default: []].insert(w.windowId) }
+            for (p, worker) in workers { worker.setWatched(byPid[p] ?? []) }
+            let unread = byPid.keys.filter { workers[$0] == nil }.sorted()
+            answer(.ok, unread.isEmpty ? nil : "not read, so not watched: \(unread.map(String.init).joined(separator: ","))")
+            return
+        case let .walk(p, _), let .write(p, _, _, _, _, _, _), let .press(p, _, _, _, _):
+            pid = pid_t(p)
+        }
+        guard let w = workers[pid] else {
+            answer(.noWindow, "the reader does not read process \(pid)")
+            return
+        }
+        w.perform(cmd.verb, mayAct: opts.actPids.contains(pid), expires: cmd.expires, reply: answer)
+    }
+
+    /// Reports real key presses and clicks that land in a watched process, so the executor can pause.
+    /// Only the fact, the process and the click location are sent: never key codes or characters.
+    /// The monitor exists only while some process is watched.
+    private func watch(_ pids: Set<pid_t>) {
+        watchedPids = pids
+        if pids.isEmpty {
+            if let m = inputMonitor { NSEvent.removeMonitor(m) }
+            inputMonitor = nil
+            return
+        }
+        guard inputMonitor == nil else { return }
+        inputMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { e in
+            let isKey = e.type == .keyDown
+            let loc = NSEvent.mouseLocation
+            MainActor.assumeIsolated { self.inputSeen(isKey: isKey, location: loc) }
+        }
+    }
+
+    private func inputSeen(isKey: Bool, location: NSPoint) {
+        if isKey {
+            guard let front = NSWorkspace.shared.frontmostApplication?.processIdentifier, watchedPids.contains(front) else { return }
+            ctx.emitter.send(.userInput(UserInput(at: nowMs(), pid: Int(front), kind: .key, point: nil)))
+            return
+        }
+        // Accessibility coordinates have their origin at the top left of the primary screen.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let p = CGPoint(x: location.x, y: primaryHeight - location.y)
+        guard let owner = windowOwner(at: p), watchedPids.contains(owner) else { return }
+        ctx.emitter.send(.userInput(UserInput(at: nowMs(), pid: Int(owner), kind: .mouse, point: [p.x, p.y])))
+    }
+
+    /// The process owning the frontmost normal window under a point. Bounds and owners need no Screen Recording grant.
+    private func windowOwner(at p: CGPoint) -> pid_t? {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        for info in list {
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  let b = info[kCGWindowBounds as String] as? NSDictionary,
+                  let r = CGRect(dictionaryRepresentation: b), r.contains(p) else { continue }
+            return (info[kCGWindowOwnerPID as String] as? Int).map { pid_t($0) }
+        }
+        return nil
     }
 
     private func add(_ app: NSRunningApplication) {
         let pid = app.processIdentifier
         guard workers[pid] == nil, pid != getpid() else { return }
         if !opts.onlyPids.isEmpty && !opts.onlyPids.contains(pid) { return }
-        guard app.activationPolicy == .regular || app.activationPolicy == .accessory || opts.eventPids.contains(pid) else { return }
+        // A process named by --event-pids or --only-pids is read whatever its activation policy, so a
+        // fixture run with --background-only (the prohibited policy) can be read without being event-driven.
+        guard app.activationPolicy == .regular || app.activationPolicy == .accessory || opts.eventPids.contains(pid) || opts.onlyPids.contains(pid) else { return }
         let bundleId = app.bundleIdentifier ?? ""
         if opts.denyList.denies(bundleId) { return }
         if opts.eventBundles.contains(bundleId) { opts.eventPids.insert(pid) }
@@ -135,7 +225,7 @@ public final class ScreenReader {
     /// for it without AXEnhancedUserInterface, which made Chromium replay typed keys in Screenpipe #3884.
     private func enableManualAccessibility(_ app: NSRunningApplication) {
         let pid = app.processIdentifier
-        guard !manualAXSet.contains(pid), let url = app.bundleURL, AppClassifier.isChromiumFamily(bundleURL: url) else { return }
+        guard opts.setManualAccessibility, !manualAXSet.contains(pid), let url = app.bundleURL, AppClassifier.isChromiumFamily(bundleURL: url) else { return }
         manualAXSet.insert(pid)
         let el = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(el, AX.elementTimeout)

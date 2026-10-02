@@ -1,0 +1,1 @@
+Helper reports one window departure up to three times (appSwitch, leave walk, focus elsewhere); count per departure, and detect a return as a focused walk of a departed window, since focusedWindowId does not change across an unreadable app.

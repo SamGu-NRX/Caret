@@ -1,9 +1,13 @@
 // caret-helper: listens on the screen socket for caret-screen and for consumers.
 //   node src/main.ts [--socket PATH] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
+//   node src/main.ts --audit-out FILE --audit-seen FILE --socket PATH --data-dir DIR
+// The second form is the read-only audit (src/audit.ts): shadow mode, Jev off, counts written to
+// --audit-out every minute and at exit, the seen-text hashes to --audit-seen at exit.
 // The Jev key comes from TYPESAFE_API_KEY or the .env file named by CARET_ENV_FILE, read when a request is made.
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { writeFileSync } from "node:fs";
 import { Helper } from "./helper.ts";
 import { HelperServer } from "./server.ts";
 import { Store } from "./store.ts";
@@ -18,12 +22,25 @@ const { values: args } = parseArgs({
     "allow-background-focus": { type: "boolean", default: false },
     "status-every": { type: "string", default: "60" },
     "fill-cutoff": { type: "string" },
+    "audit-out": { type: "string" },
+    "audit-seen": { type: "string" },
   },
 });
 
 const warn = (line: string): void => {
   process.stderr.write(`[caret-helper ${new Date().toISOString()}] ${line}\n`);
 };
+
+const auditOut = args["audit-out"];
+const auditSeen = args["audit-seen"];
+if ((auditOut === undefined) !== (auditSeen === undefined)) throw new Error("--audit-out and --audit-seen go together");
+if (auditOut !== undefined) {
+  // The audit runs beside a shadow logger that must not be disturbed: it needs its own socket and data directory.
+  const given = process.argv.slice(2);
+  if (!given.includes("--socket") || !given.includes("--data-dir")) throw new Error("the audit needs its own --socket and --data-dir");
+  args.shadow = true;
+  args["no-jev"] = true;
+}
 
 if (!args["no-jev"] && !args.shadow) loadJevKey(); // fail at start, not at the first focus, when no key is configured
 
@@ -34,8 +51,10 @@ const helper = new Helper({
   askJev: args["no-jev"] ? null : makeJevClient(() => loadJevKey()),
   shadow: args.shadow,
   allowBackgroundFocus: args["allow-background-focus"],
+  audit: auditOut !== undefined,
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
+  sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
   warn,
 });
 server = new HelperServer(args.socket, () => helper, warn);
@@ -51,14 +70,26 @@ const status = setInterval(() => {
   );
 }, statusMs);
 
+const writeAudit = (): void => {
+  if (helper.audit !== null && auditOut !== undefined) writeFileSync(auditOut, `${JSON.stringify(helper.audit.summary(), null, 2)}\n`, { mode: 0o600 });
+};
+const audit = helper.audit === null ? null : setInterval(writeAudit, 60_000);
+
 let stopping = false;
 const stop = async (signal: string): Promise<void> => {
   if (stopping) return;
   stopping = true;
   clearInterval(tick);
   clearInterval(status);
+  if (audit !== null) clearInterval(audit);
   helper.shutdown();
+  if (helper.audit !== null && auditSeen !== undefined) {
+    helper.audit.stop();
+    writeAudit();
+    writeFileSync(auditSeen, JSON.stringify(helper.audit.seen.toJSON()), { mode: 0o600 });
+  }
   await server?.close();
+  helper.memory.close();
   store.close();
   warn(`stopped on ${signal}`);
   process.exit(0);

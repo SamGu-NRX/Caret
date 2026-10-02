@@ -3,7 +3,7 @@
 // so a value typed one character at a time is matched whole, not at every prefix.
 import { EditSpan, type MatchKind } from "./normalize.ts";
 import type { Change, ScreenModel } from "./model.ts";
-import type { ValueKind } from "./protocol.ts";
+import type { TypedValue, ValueKind } from "./protocol.ts";
 import type { Observation, RollingText } from "./rolling-text.ts";
 
 export interface Transfer {
@@ -15,7 +15,10 @@ export interface Transfer {
   src: Observation;
   dst: { windowId: string; bundleId: string; windowKind: string; key: string };
   ageMs: number;
-  attribution: "user" | "unknown";
+  /** `caret` when the host reported inserting this value for Caret (fillResult). */
+  attribution: "user" | "unknown" | "caret";
+  /** The store's row for this transfer, once recorded. */
+  rowId?: number;
 }
 
 interface PendingEdit {
@@ -25,6 +28,8 @@ interface PendingEdit {
   firstChange: number;
   lastChange: number;
   focused: boolean;
+  /** The field's typed values as of its last non-empty value, so an edit judged after a clear still has them. */
+  values: TypedValue[];
 }
 
 /** A value shorter than this is too likely to occur by chance in another window. */
@@ -46,22 +51,43 @@ export class TransferDetector {
     this.settleMs = settleMs;
   }
 
-  onChanges(changes: readonly Change[]): void {
+  /**
+   * Applies field edits. Returns the edits judged at once: a field that empties after holding entered
+   * text, as a chat composer does on send. Judged after the settle time, such an edit would hold
+   * nothing, and a message sent within SETTLE_MS of its last keystroke would never be a transfer, so
+   * it is judged on the value just before the clear. Clearing a field by hand is judged the same way.
+   */
+  onChanges(changes: readonly Change[]): Transfer[] {
+    const out: Transfer[] = [];
     for (const c of changes) {
       if (c.kind !== "value" || !c.editable || c.key === null) continue;
       const id = `${c.windowId}\u0000${c.key}`;
       const p = this.pending.get(id);
-      const focused = this.model.windows.get(c.windowId)?.focused === true;
+      const w = this.model.windows.get(c.windowId);
+      const focused = w?.focused === true;
+      const after = c.after ?? "";
+      if (after.trim() === "") {
+        // An empty field holds nothing entered; a clear with no open edit needs no judgment.
+        if (p !== undefined && p.span.last.trim() !== "") {
+          this.pending.delete(id);
+          p.focused ||= focused;
+          out.push(...this.judge(p));
+        } else if (p !== undefined) p.span.observe(after);
+        continue;
+      }
+      const values = w?.values.filter((v) => v.nodeKey === c.key) ?? [];
       if (p === undefined) {
         const span = new EditSpan(c.before ?? "");
-        span.observe(c.after ?? "");
-        this.pending.set(id, { windowId: c.windowId, key: c.key, span, firstChange: c.at, lastChange: c.at, focused });
+        span.observe(after);
+        this.pending.set(id, { windowId: c.windowId, key: c.key, span, firstChange: c.at, lastChange: c.at, focused, values });
       } else {
-        p.span.observe(c.after ?? "");
+        p.span.observe(after);
         p.lastChange = c.at;
         p.focused ||= focused;
+        p.values = values;
       }
     }
+    return out;
   }
 
   /** Judges every edit that has been still for the settle time. */
@@ -94,8 +120,8 @@ export class TransferDetector {
 
     const candidates: { value: string; kind: ValueKind | null }[] = [];
     if (inserted.length >= MIN_WHOLE_VALUE && inserted.length <= MAX_VALUE) candidates.push({ value: inserted, kind: null });
-    for (const v of w.values) {
-      if (v.nodeKey !== p.key || v.text.length < MIN_TYPED_VALUE || p.span.initial.includes(v.text)) continue;
+    for (const v of p.values) {
+      if (v.text.length < MIN_TYPED_VALUE || p.span.initial.includes(v.text)) continue;
       if (!inserted.includes(v.text) && !v.text.includes(inserted)) continue;
       if (v.text === inserted) {
         const whole = candidates[0];

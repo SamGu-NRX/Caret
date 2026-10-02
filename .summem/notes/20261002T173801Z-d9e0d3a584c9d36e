@@ -1,0 +1,1 @@
+Human activity on this Mac: only powerd's UserIsActive 'kernel.useractive' in pmset -g log marks hardware input; agents' posted events raise WindowServer per-process assertions, and WindowServer per-device ones stay raised for days (B5).

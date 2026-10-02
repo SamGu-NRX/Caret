@@ -85,6 +85,30 @@ describe("shadow logger", () => {
     expect(store.shadowEpisodes()[0]).toMatchObject({ existed: "exact", enteredLength: 26 });
   });
 
+  it("judges a sent message on what was typed before the composer emptied, then watches the next one", () => {
+    void helper.handleReader(source(1000));
+    void helper.handleReader(form(2000, "", ""));
+    void helper.handleReader(focus(FORM, NOTES, 3000));
+    void helper.handleReader(form(4000, "", "dana.whitfield@example.com"));
+    void helper.handleReader(form(4500, "", "")); // sent: the field empties
+    void helper.handleReader(form(6000, "", "see you at the venue"));
+    helper.shutdown();
+    const rows = store.shadowEpisodes();
+    expect(rows.map((r) => [r.existed, r.enteredLength])).toEqual([
+      ["exact", 26],
+      ["no", 20],
+    ]);
+    expect(rows[1]?.at).toBe(4500);
+  });
+
+  it("does not count clearing a prefilled field as an entry", () => {
+    void helper.handleReader(form(2000, "", "draft from yesterday"));
+    void helper.handleReader(focus(FORM, NOTES, 3000));
+    void helper.handleReader(form(4000, "", ""));
+    helper.shutdown();
+    expect(store.shadowEpisodes()).toEqual([]);
+  });
+
   it("counts short entries without judging them, and never calls Jev or publishes", () => {
     void helper.handleReader(form(2000, "", ""));
     void helper.handleReader(focus(FORM, NOTES, 3000));

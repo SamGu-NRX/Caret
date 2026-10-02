@@ -1,0 +1,1 @@
+v1: .scratch/ never committed; Screenpipe sidecar behind a hard-failing last-N facade; Supabase control plane only; never commit SUPABASE_HACKATHON_TOKEN. CI keeps macos-26 (macos-15 type-checks #available). Caret.app runs own screenpipe@0.4.50 :3031; no CaretProjectRoot: no-op.

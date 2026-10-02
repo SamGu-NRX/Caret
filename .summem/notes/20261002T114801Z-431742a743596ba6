@@ -1,0 +1,1 @@
+Fill recency: take the just-left window from focus history (the window before the form's last focus), not the latest focus; latest-focus made Jev answer none on most fields once the user moved to another form.

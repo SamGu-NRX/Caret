@@ -19,7 +19,7 @@ export interface TransferRow {
   dstKeyHash: string;
   /** Time between the source value first appearing and the destination change. */
   ageMs: number;
-  attribution: "user" | "unknown";
+  attribution: "user" | "unknown" | "caret";
 }
 
 export interface ShadowRow {
@@ -123,13 +123,23 @@ export class Store {
     this.pending = new Map();
   }
 
-  addTransfer(t: TransferRow): void {
-    this.db
+  /** Returns the row id, so a later fillResult can re-attribute or remove the row. */
+  addTransfer(t: TransferRow): number {
+    return Number(this.db
       .prepare(
         `INSERT INTO transfers (at, value_hash, kind, length, match, src_bundle, src_window_kind, src_key_hash,
            dst_bundle, dst_window_kind, dst_key_hash, age_ms, attribution) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(t.at, t.valueHash, t.kind, t.length, t.match, t.srcBundle, t.srcWindowKind, t.srcKeyHash, t.dstBundle, t.dstWindowKind, t.dstKeyHash, t.ageMs, t.attribution);
+      .run(t.at, t.valueHash, t.kind, t.length, t.match, t.srcBundle, t.srcWindowKind, t.srcKeyHash, t.dstBundle, t.dstWindowKind, t.dstKeyHash, t.ageMs, t.attribution)
+      .lastInsertRowid);
+  }
+
+  setAttribution(id: number, attribution: TransferRow["attribution"]): void {
+    this.db.prepare("UPDATE transfers SET attribution = ? WHERE id = ?").run(attribution, id);
+  }
+
+  removeTransfer(id: number): void {
+    this.db.prepare("DELETE FROM transfers WHERE id = ?").run(id);
   }
 
   addShadow(r: ShadowRow): void {
@@ -149,43 +159,52 @@ export class Store {
   }
 
   transfers(): TransferRow[] {
-    return (this.db.prepare("SELECT * FROM transfers ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
-      at: Number(r.at),
-      valueHash: String(r.value_hash),
-      kind: r.kind === null ? null : String(r.kind),
-      length: Number(r.length),
-      match: r.match as TransferRow["match"],
-      srcBundle: String(r.src_bundle),
-      srcWindowKind: String(r.src_window_kind),
-      srcKeyHash: String(r.src_key_hash),
-      dstBundle: String(r.dst_bundle),
-      dstWindowKind: String(r.dst_window_kind),
-      dstKeyHash: String(r.dst_key_hash),
-      ageMs: Number(r.age_ms),
-      attribution: r.attribution as TransferRow["attribution"],
-    }));
+    return readTransfers(this.db);
   }
 
   shadowEpisodes(): ShadowRow[] {
-    return (this.db.prepare("SELECT * FROM shadow_episodes ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
-      at: Number(r.at),
-      trigger: r.trigger as ShadowRow["trigger"],
-      dstBundle: String(r.dst_bundle),
-      dstKeyHash: String(r.dst_key_hash),
-      enteredLength: Number(r.entered_length),
-      enteredHash: String(r.entered_hash),
-      existed: r.existed as ShadowRow["existed"],
-      srcBundle: r.src_bundle === null ? null : String(r.src_bundle),
-      srcKeyHash: r.src_key_hash === null ? null : String(r.src_key_hash),
-      srcAgeMs: r.src_age_ms === null ? null : Number(r.src_age_ms),
-      kind: r.kind === null ? null : String(r.kind),
-    }));
+    return readShadowEpisodes(this.db);
   }
 
   close(): void {
     this.flush();
     this.db.close();
   }
+}
+
+/** Rows of a store's transfers table, also for reading a copy of the store without opening it as a Store. */
+export function readTransfers(db: DatabaseSync): TransferRow[] {
+  return (db.prepare("SELECT * FROM transfers ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
+    at: Number(r.at),
+    valueHash: String(r.value_hash),
+    kind: r.kind === null ? null : String(r.kind),
+    length: Number(r.length),
+    match: r.match as TransferRow["match"],
+    srcBundle: String(r.src_bundle),
+    srcWindowKind: String(r.src_window_kind),
+    srcKeyHash: String(r.src_key_hash),
+    dstBundle: String(r.dst_bundle),
+    dstWindowKind: String(r.dst_window_kind),
+    dstKeyHash: String(r.dst_key_hash),
+    ageMs: Number(r.age_ms),
+    attribution: r.attribution as TransferRow["attribution"],
+  }));
+}
+
+export function readShadowEpisodes(db: DatabaseSync): ShadowRow[] {
+  return (db.prepare("SELECT * FROM shadow_episodes ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
+    at: Number(r.at),
+    trigger: r.trigger as ShadowRow["trigger"],
+    dstBundle: String(r.dst_bundle),
+    dstKeyHash: String(r.dst_key_hash),
+    enteredLength: Number(r.entered_length),
+    enteredHash: String(r.entered_hash),
+    existed: r.existed as ShadowRow["existed"],
+    srcBundle: r.src_bundle === null ? null : String(r.src_bundle),
+    srcKeyHash: r.src_key_hash === null ? null : String(r.src_key_hash),
+    srcAgeMs: r.src_age_ms === null ? null : Number(r.src_age_ms),
+    kind: r.kind === null ? null : String(r.kind),
+  }));
 }
 
 function loadSalt(path: string): Buffer {

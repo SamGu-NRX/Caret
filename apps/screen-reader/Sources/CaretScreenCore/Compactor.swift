@@ -54,6 +54,9 @@ public enum Roles {
         "AXDisclosureTriangle", "AXIncrementor", "AXSegmentedControl", "AXTextField", "AXTextArea", "AXComboBox",
         "AXSearchField", "AXDateField", "AXColorWell",
     ]
+    /// Kept even when unnamed, because their presence matters: a sheet over a window blocks acting in it,
+    /// and a progress or busy indicator marks the window as showing unfinished work (pending-state watch).
+    public static let presence: Set<String> = ["AXSheet", "AXProgressIndicator", "AXBusyIndicator"]
     /// Roles whose AXValue is read. Everything else is skipped to save a round trip per node.
     public static let valueBearing: Set<String> = [
         "AXStaticText", "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXPopUpButton", "AXCheckBox",
@@ -147,7 +150,7 @@ public struct Compactor {
         let placeholder = nonEmpty(n.placeholder)
         let unnamed = label == nil && value == nil
         if unnamed && Roles.containers.contains(n.role) { return nil }
-        if unnamed && placeholder == nil && !Roles.actionable.contains(n.role) && !editable {
+        if unnamed && placeholder == nil && !Roles.actionable.contains(n.role) && !Roles.presence.contains(n.role) && !editable {
             // An unnamed leaf with nothing to show (decorative image, empty text) is dropped;
             // an unnamed node with children is collapsed like a group.
             return nil

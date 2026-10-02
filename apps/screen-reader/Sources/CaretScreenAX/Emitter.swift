@@ -9,7 +9,8 @@ public protocol Emitter: AnyObject, Sendable {
 
 /// NDJSON client for the helper's socket. Writes happen on one serial queue. While the helper is
 /// down, messages wait in a bounded backlog and the client reconnects every second; on reconnect it
-/// sends hello and calls `onConnect`, so the reader can resend full state.
+/// sends hello and calls `onConnect`, so the reader can resend full state. Lines the helper sends
+/// back (the executor's readerCommands) are decoded on the same queue and handed to `onCommand`.
 public final class SocketEmitter: Emitter, @unchecked Sendable {
     private let path: String
     private let hello: Hello
@@ -22,6 +23,11 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     public private(set) var dropped = 0 // guarded by flightLock or the queue
     public private(set) var sent = 0
     public var onConnect: (@Sendable () -> Void)?
+    public var onCommand: (@Sendable (ReaderCommand) -> Void)?
+    private var readSource: DispatchSourceRead?
+    private var inbox = Data()
+    /// A line longer than this from the helper is a bug; the connection is dropped. Commands are small.
+    private let maxInboundLine = 1 << 20
     public var log: @Sendable (String) -> Void = { FileHandle.standardError.write(Data(("[caret-screen] " + $0 + "\n").utf8)) }
 
     public init(path: String, hello: Hello) {
@@ -125,6 +131,7 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         }
         fd = s
         log("connected to \(path)")
+        startReading(s)
         guard let h = try? NDJSON.line(Message.hello(hello)), write(h) else {
             disconnect("hello failed")
             return
@@ -155,8 +162,51 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         return ok
     }
 
+    private func startReading(_ s: Int32) {
+        inbox.removeAll()
+        let src = DispatchSource.makeReadSource(fileDescriptor: s, queue: queue)
+        src.setEventHandler { [weak self] in
+            guard let self else { return }
+            var buf = [UInt8](repeating: 0, count: max(1, Int(src.data)))
+            let n = Darwin.read(s, &buf, buf.count)
+            if n <= 0 {
+                if n == 0 || (errno != EINTR && errno != EAGAIN) { self.disconnect("helper closed the connection") }
+                return
+            }
+            self.inbox.append(contentsOf: buf[0..<n])
+            self.drainInbox()
+        }
+        // Dispatch requires the descriptor to stay open until the source is cancelled, so it is closed here.
+        src.setCancelHandler { close(s) }
+        src.resume()
+        readSource = src
+    }
+
+    private func drainInbox() {
+        while let nl = inbox.firstIndex(of: 0x0A) {
+            let line = inbox[inbox.startIndex..<nl]
+            inbox.removeSubrange(inbox.startIndex...nl)
+            guard !line.isEmpty else { continue }
+            do {
+                if case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: Data(line)) { onCommand?(c) }
+            } catch {
+                // The helper also sends error lines for bad input; anything else undecodable is logged and skipped.
+                if !(String(decoding: line, as: UTF8.self).contains(#""type":"error""#)) { log("cannot decode a helper line: \(error)") }
+            }
+        }
+        if inbox.count > maxInboundLine {
+            inbox.removeAll()
+            disconnect("helper line over \(maxInboundLine) bytes")
+        }
+    }
+
     private func disconnect(_ why: String) {
-        if fd >= 0 { close(fd) }
+        if let src = readSource {
+            src.cancel()
+            readSource = nil
+        } else if fd >= 0 {
+            close(fd)
+        }
         fd = -1
         log("disconnected: \(why)")
         scheduleRetry()

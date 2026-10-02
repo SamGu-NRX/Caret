@@ -1,0 +1,1 @@
+Replaying reader streams in tests: tick helper on a fixed 250 ms grid of stream time like main.ts; ticking only inside gaps >250 ms delays every transfer when messages are dense.

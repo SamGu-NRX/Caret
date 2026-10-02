@@ -69,13 +69,21 @@ export class ShadowLogger {
   }
 
   onChanges(changes: readonly Change[]): void {
-    const ep = this.episode;
-    if (ep === null) return;
     for (const c of changes) {
-      if (c.kind === "value" && c.windowId === ep.windowId && c.key === ep.key) {
-        ep.span.observe(c.after ?? "");
-        ep.lastChange = c.at;
+      const ep = this.episode;
+      if (ep === null) return;
+      if (c.kind !== "value" || c.windowId !== ep.windowId || c.key !== ep.key) continue;
+      const after = c.after ?? "";
+      // A chat composer empties when the message is sent. Judged after the clear, the entry would be
+      // empty and every sent message lost, so it is judged on the value just before the clear, and
+      // the field is watched on from empty.
+      if (after.trim() === "" && ep.lastChange !== null && ep.span.last.trim() !== "") {
+        this.close();
+        this.episode = { ...ep, at: c.at, span: new EditSpan(after), lastChange: null };
+        continue;
       }
+      ep.span.observe(after);
+      ep.lastChange = c.at;
     }
   }
 

@@ -18,6 +18,7 @@ Start the binary directly, not through `open`, so it inherits the Accessibility 
 - **The focused window of the frontmost app**, on Accessibility notifications, at most once per 100 ms, and after a slow walk, three walks' time later. A value change on a field it already knows re-reads that field alone. A focus change also sends a `focus` message.
 - **The window being left**, once, at the moment of the switch.
 - **Every other window**, every 30 s. An unchanged window sends nothing.
+- **Windows under a pending-state watch** (`watchWindows` from the helper), as `watch` walks: when the app posts a notification about that window (at least 0.2 s apart, and four times the walk's average cost), and every 10 s. While an app has a watched window it keeps its observer even when it is not frontmost. Unnamed progress and busy indicators are kept in snapshots, because they mark unfinished work.
 - Each app has its own queue, each element a 0.25 s messaging timeout, and each walk a deadline (0.4 s focused, 1 s background) and a 6,000-node budget. A cut-short walk says `truncated`.
 - Chromium and Electron apps get `AXManualAccessibility` once per process. Electron accepts it; Chrome and Helium answer "unsupported" and expose their web content anyway. `AXEnhancedUserInterface` is never set.
 
@@ -26,13 +27,19 @@ Never read:
 - the value of a secure text field (checked by role and subrole on every read path)
 - apps on the deny list, `~/.caret-run/deny-apps.txt`: one bundle identifier or prefix per line, created with password managers and Keychain Access on first run.
 
+## Acting for the executor
+
+The helper sends `readerCommand` lines back over the same socket. `walk` re-reads one window. `write` (a field's value, or its focus) and `press` re-walk the window and find the element by key. They refuse when the key now names a different element than in the executor's last `walk`, when a sheet covers the window, when the walk left part of the tree out, when the command has expired, or when the role, the label (read from the element itself, right before a press) or the current value differs from what the helper expects. An attribute that cannot be read refuses the act. Then they act, wait 0.15 s, and walk again, so the helper holds the new state before the `verbResult` arrives. A secure field is never written.
+
+Write and press act only in processes named by `--act-pids`, which must be a subset of `--only-pids`. Without the flag the reader only reads, so tonight the executor can act in fixture processes and nowhere else. `watchInput` turns on a global key and mouse monitor for the named processes and reports that input happened, its process and a click's location: never key codes or characters.
+
 ## Element keys
 
 `<app>/<window kind>/<named ancestors>/<role>:<label>~<ordinal>`. Labels are lowercased with digit runs masked as `#`, so counters and dates do not move keys. Unnamed containers are left out, so wrapping does not move keys. Page titles and labels equal to the window title are left out, since Chrome renames its top group and web area on every title change. The ordinal counts earlier siblings with the same role and label. E8 measured the result: 191 of 196 elements kept one key over 100 walks, and every drift was in a window built to cause it.
 
 ## Flags for experiments
 
-`--event-pids`, `--event-bundles` and `--only-pids` make named apps event-driven or restrict reading to them. `--record FILE` tees messages to a file and requires `--only-pids`, because a recording holds screen text. `--e1-log FILE` logs every notification with its callback time. `--e8 --pids … --out FILE` walks windows repeatedly and reports key stability. The scripts in `experiments/` run E1, E8, the shadow logger and the grounded-fill evaluation against `caret-fixture`, which shows synthetic data only.
+`--event-pids`, `--event-bundles` and `--only-pids` make named apps event-driven or restrict reading to them; a process they name is read whatever its activation policy, so a `--background-only` fixture can be read. `--act-pids` allows the executor's verbs in named fixture processes. `--record FILE` tees messages to a file and requires `--only-pids`, because a recording holds screen text. `--e1-log FILE` logs every notification with its callback time. `--e8 --pids … --out FILE` walks windows repeatedly and reports key stability. The scripts in `experiments/` run E1, E8, the shadow logger and the grounded-fill evaluation against `caret-fixture`, which shows synthetic data only. `caret-fixture --windows executor` adds the executor's window, which takes `reset`, `seed`, `remove`, `sheet` and `dump` commands on stdin. The fixture hands activation back whenever it becomes the active app, since a launch from the frontmost app once left it in front for a whole run. `--windows jobs` adds a test run, an upload and a notes window for the pending-state watch, and stdin `focus NAME` moves AX focus between the fixture's own windows, also under `--background-only`.
 
 ## Tests
 
