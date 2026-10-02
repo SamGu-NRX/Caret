@@ -112,8 +112,14 @@ final class FillOverlay {
     private func drawGhost(value: String, fieldFrame: CGRect, style: OverlayTextStyle, masksPlaceholder: Bool) {
         let frame = Screen.cocoa(fieldFrame)
         let font = style.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
-        let isDark = ghost.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        // The field's theme, not Caret's: an app can run light while the system runs dark. Read
+        // it from the field's own text color when the probe found one.
+        let isDark = style.textColor.map(Self.isLight) ?? (ghost.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
         let ink = (style.textColor ?? .labelColor).withAlphaComponent(isDark ? 0.50 : 0.45)
+        var mask = NSColor.textBackgroundColor
+        NSAppearance(named: isDark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
+            mask = NSColor.textBackgroundColor.usingColorSpace(.sRGB) ?? mask
+        }
         ghostLabel.attributedStringValue = NSAttributedString(string: value, attributes: [.font: font, .foregroundColor: ink])
         // NSTextField's bezel and cell padding put the first glyph about 4 pt in; the field's own
         // inset is not exposed through Accessibility.
@@ -122,7 +128,7 @@ final class FillOverlay {
         ghost.setFrame(frame.insetBy(dx: inset, dy: 0), display: false)
         ghostLabel.frame = NSRect(x: 0, y: (frame.height - textHeight) / 2, width: frame.width - inset * 2, height: textHeight)
         ghostLabel.drawsBackground = masksPlaceholder
-        ghostLabel.backgroundColor = .textBackgroundColor
+        ghostLabel.backgroundColor = mask
         // 0 to Ghost opacity over 60 ms, linear: below perception as motion, it only removes flicker.
         ghost.alphaValue = 0
         ghost.orderFrontRegardless()
@@ -131,6 +137,12 @@ final class FillOverlay {
             context.timingFunction = CAMediaTimingFunction(name: .linear)
             ghost.animator().alphaValue = 1
         }
+    }
+
+    /// Light text means a dark field.
+    static func isLight(_ color: NSColor) -> Bool {
+        guard let c = color.usingColorSpace(.sRGB) else { return false }
+        return 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent > 0.5
     }
 
     private func showLine(caption: String, field: CGRect, pid: pid_t) {

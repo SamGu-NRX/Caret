@@ -43,6 +43,16 @@ final class SnapshotTests: XCTestCase {
         }
     }
 
+    func testLayoutFixScenesRender() throws {
+        guard let outDir else { return }
+        for (name, moment) in [("fix-toast-gives-way", LayoutFixScene.Moment.toastGivesWay), ("fix-tight-form-line", .lineAfterToast)] {
+            for dark in [false, true] {
+                let data = try XCTUnwrap(Gallery.png(LayoutFixScene(moment: moment), dark: dark, padding: 0))
+                try write(data, to: outDir.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
+    }
+
     func testFigureGalleryRendersForEveryCharacterAndState() throws {
         for dark in [false, true] {
             let data = try XCTUnwrap(Gallery.png(FigureGalleryView(), dark: dark))

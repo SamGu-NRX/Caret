@@ -204,3 +204,75 @@ struct FigureGalleryView: View {
         }
     }
 }
+
+/// The two A2 layout fixes, drawn at text size over a synthetic form with the claim form's
+/// geometry (fields 23 pt tall, 29 pt apart), with the line placed by `LinePlacement` exactly as
+/// the host places it. Off screen, so both themes render on one Mac whatever the form app's own
+/// appearance.
+struct LayoutFixScene: View {
+    enum Moment { case toastGivesWay, lineAfterToast }
+
+    var moment: Moment
+    var character: FigureCharacter = .pebble
+    @Environment(\.colorScheme) private var scheme
+
+    static let rows = ["Full name", "Email", "Phone", "Order number"]
+    static let values = ["Dana Whitfield", "dana.whitfield@lumenlabs.example", "+1 (512) 555-0142", ""]
+    static let fieldX: CGFloat = 150, fieldW: CGFloat = 320, fieldH: CGFloat = 23, top: CGFloat = 20, pitch: CGFloat = 52
+
+    static func field(_ i: Int) -> CGRect { CGRect(x: fieldX, y: top + CGFloat(i) * pitch, width: fieldW, height: fieldH) }
+
+    var body: some View {
+        let toast = LineContent(figure: .done, lead: "Filled", text: "1 field from Caret Fixture", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])
+        let source = LineContent(figure: .offering, text: "from Caret Fixture, Reference", emphasis: .secondary, hints: [Hint(key: "Tab")])
+        // Toast for row 1 while row 2's value waits; or, after the toast, row 2's own line.
+        let (content, anchorRow) = moment == .toastGivesWay ? (toast, 0) : (source, 2)
+        let width = NSHostingView(rootView: LineView(content: content, character: character, animated: false)).fittingSize.width
+        let compactWidth = NSHostingView(rootView: LineView(content: content, character: character, compact: true, animated: false)).fittingSize.width
+        let obstacles = (0..<Self.rows.count).filter { $0 != anchorRow }.map(Self.field)
+            + [CGRect(x: 0, y: -40, width: 600, height: 40)]
+        let choice = LinePlacement.choose(
+            field: Self.field(anchorRow), width: width, compactWidth: compactWidth, obstacles: obstacles,
+            bounds: CGRect(x: -8, y: -8, width: 516, height: 260)
+        )
+        let filled = moment == .toastGivesWay ? 1 : 2
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(Self.rows.enumerated()), id: \.offset) { i, label in
+                Text(label + ":").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink))
+                    .offset(x: 16, y: Self.field(i).minY + 3)
+                FieldBox(
+                    text: i < filled ? Self.values[i] : (i == filled ? Self.values[i] : ""),
+                    ghost: i == filled, focused: i == filled
+                )
+                .frame(width: Self.fieldW, height: Self.fieldH)
+                .offset(x: Self.field(i).minX, y: Self.field(i).minY)
+            }
+            LineView(content: content, character: character, compact: choice.compact, animated: false)
+                .environment(\.drawsOwnSurface, true)
+                .offset(x: choice.frame.minX, y: choice.frame.minY)
+        }
+        .frame(width: 500, height: Self.top + CGFloat(Self.rows.count) * Self.pitch, alignment: .topLeading)
+        .background(Color(nsColor: Tokens.srgb(scheme == .dark ? 0x323232 : 0xEEEFEE)))
+    }
+
+    /// An AppKit text field, roughly: text background, hairline border, focus ring when focused.
+    struct FieldBox: View {
+        var text: String
+        var ghost: Bool
+        var focused: Bool
+        @Environment(\.colorScheme) private var scheme
+
+        var body: some View {
+            let dark = scheme == .dark
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Color(nsColor: Tokens.srgb(dark ? 0x1E1E1E : 0xFFFFFF)))
+                Text(text)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(token: Tokens.ink).opacity(ghost ? (dark ? 0.5 : 0.45) : 1))
+                    .padding(.leading, 4)
+            }
+            .overlay(Rectangle().strokeBorder(Color(nsColor: Tokens.srgb(dark ? 0x4A4A4A : 0xC8C8C8)), lineWidth: 1))
+            .overlay(focused ? RoundedRectangle(cornerRadius: 3).stroke(Color.accentColor.opacity(0.55), lineWidth: 3).padding(-2) : nil)
+        }
+    }
+}

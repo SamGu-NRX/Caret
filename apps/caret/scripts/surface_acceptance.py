@@ -228,6 +228,8 @@ def rig(out_dir, appearance):
     if appearance == "dark" and not os.path.exists(prefs):
         subprocess.run(["defaults", "write", "caret-fixture", "AppleInterfaceStyle", "Dark"], check=True)
         CLEANUP.append(lambda: subprocess.run(["defaults", "delete", "caret-fixture"]))
+        # `defaults delete` leaves an empty plist behind; it is this run's file.
+        CLEANUP.append(lambda: os.path.exists(prefs) and os.remove(prefs))
     CHECKS.append({"check": "front app before launch", "ok": True,
                    "front": subprocess.run(["lsappinfo", "front"], capture_output=True, text=True).stdout.strip()})
     if os.path.exists(HOST_SOCK):
