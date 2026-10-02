@@ -1,1 +1,0 @@
-Caret.app starts its own screenpipe@0.4.50 on :3031, never attaching to a manual or launchd one (a second recorder can stop the first). INFOPLIST_KEY_CaretProjectRoot is missing from generated Info.plist, so ScreenpipeSupervisor.start is a no-op until it is added.

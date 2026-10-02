@@ -1,1 +1,0 @@
-Mac CI runs macos-26 (Xcode 26, glassEffect): keep the Xcode 26 select in ci.yml, not macos-15 (Xcode 16.4, where #available still type-checks); #if compiler-gate new SDK APIs. Screenpipe 0.4.50 keeps no clipboard history unless --disable-clipboard-capture false.
