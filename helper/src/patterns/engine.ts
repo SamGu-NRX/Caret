@@ -318,8 +318,9 @@ export class PatternEngine {
     if (w === undefined || windowId === undefined) return null;
     const memory = this.deps.memory;
     const bundleId = w.app.bundleId;
-    const decided = this.timings.time("gate", () =>
-      decide(
+    // The gate's time covers reading its context from memory, deciding, and writing the decision log.
+    const decision = this.timings.time("gate", (): Decision => {
+      const decided = decide(
         { offerKind: kind, ...evidence, grounded: evidence.grounded && cells.length > 0 && cells.every((c) => model.windows.has(c.srcWindowId)) },
         {
           shadow: this.deps.shadow(),
@@ -328,10 +329,11 @@ export class PatternEngine {
           ignoredToday: memory.ignoredOn(kind, bundleId, this.clock),
           spokenLastHour: memory.spokenSince(this.clock - 60 * 60 * 1000),
         },
-      ),
-    );
-    const decision: Decision = outranked ? { speak: false, reasons: [...decided.reasons, "outranked"], showProbability: decided.showProbability } : decided;
-    this.log(kind, patternId, windowId, decision);
+      );
+      const d: Decision = outranked ? { speak: false, reasons: [...decided.reasons, "outranked"], showProbability: decided.showProbability } : decided;
+      this.log(kind, patternId, windowId, d);
+      return d;
+    });
     if (!decision.speak) return null;
 
     const id = `offer-${++this.seq}`;

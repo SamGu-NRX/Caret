@@ -318,6 +318,22 @@ export function plantedStream(seed = 7): Stream {
   return { messages: w.messages, loops, routines: [mail, expense] };
 }
 
+/** Two more days of both routines, starting the day after `after`, for a rerun once memory has changed. */
+export function rerunStream(after: number, days: number[] = [6, 7], seed = 13): Stream {
+  const w = new World(seed);
+  w.at = after;
+  w.nextDay();
+  const s = desk(w);
+  const mail: PlantedRoutine = { name: "calendar to mail reply", opens: [] };
+  const expense: PlantedRoutine = { name: "invoice to expense form", opens: [] };
+  days.forEach((d, i) => {
+    if (i > 0) w.nextDay();
+    w.idle(3000);
+    routineDay(w, d, s, mail, expense);
+  });
+  return { messages: w.messages, loops: [], routines: [mail, expense] };
+}
+
 /** The same desk and noise, with near misses of every pattern and nothing that should be offered. */
 export function distractorStream(seed = 11): Stream {
   const w = new World(seed);
@@ -481,7 +497,8 @@ export function checkStream(s: Stream, r: Replayed, helper: Helper): StreamCheck
     const ds: StreamCheck["routines"][number]["decisions"] = [];
     for (const occ of rt.opens) {
       const at = s.messages[occ.index] !== undefined && "at" in s.messages[occ.index]! ? (s.messages[occ.index] as { at: number }).at : -1;
-      const d = decisions.find((x: DecisionRow) => x.at === at);
+      // The engine stamps a decision with its clock, which ticks on a 250 ms grid and so can run just ahead of the snapshot.
+      const d = decisions.find((x: DecisionRow) => x.at >= at && x.at < at + 1000);
       if (d !== undefined) ds.push({ occurrence: occ.occurrence, speak: d.speak, reasons: d.reasons, showProbability: d.showProbability });
       r.offers.forEach((x, i) => {
         if (x.offer.kind !== "routine" || x.offer.windowId !== occ.windowId) return;
