@@ -1,0 +1,1 @@
+Repo and v1 lore: SumMem at .summem/summem; .scratch/ never committed; v1 kept five upstreams, Screenpipe a supervised sidecar (launcher lease) behind a last-N facade that hard-fails when down or empty; Supabase is control plane only; never commit SUPABASE_HACKATHON_TOKEN.
