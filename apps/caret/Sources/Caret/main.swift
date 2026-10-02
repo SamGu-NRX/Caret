@@ -7,6 +7,19 @@ import CaretHost
 
 var configuration = HostRuntime.Configuration()
 
+// Dev mode: `Caret --probe-typing <text>` times one generation per typed prefix.
+if CommandLine.arguments.dropFirst().first == "--probe-typing", CommandLine.arguments.count >= 3 {
+    let text = CommandLine.arguments[2]
+    let modelURL = configuration.modelURL
+    MainActor.assumeIsolated {
+        Task {
+            print(await DevProbe.typing(modelURL: modelURL, text: text), terminator: "")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
+
 // Dev mode: `Caret --probe [--bos on|off] <text>...` prints the engine's offer for each text.
 if CommandLine.arguments.dropFirst().first == "--probe" {
     var rest = Array(CommandLine.arguments.dropFirst(2))
