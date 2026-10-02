@@ -9,15 +9,16 @@
 # The seen-text hashes and their key go to SEEN (keep it outside OUT, run the leak check, delete it).
 #   run-audit.sh OUT SEEN DUR_SECONDS
 set -euo pipefail
-OUT=$1
-SEEN=$2
 DUR=$3
+# Absolute paths: the helper runs from helper/, so a relative OUT or SEEN would land somewhere else.
+mkdir -p "$1"
+OUT="$(cd "$1" && pwd)"
+SEEN="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../.build/debug"
 HELPER="$HERE/../../../helper"
 WORK=$(mktemp -d /tmp/caret-audit.XXXXXX)
 SOCK="$WORK/s.sock"
-mkdir -p "$OUT"
 # Signals only pids this script recorded. An empty or zero pid would make `kill` signal the whole process group.
 stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
 cleanup() { stop "${READER:-}"; sleep 1; stop "${HPID:-}"; sleep 2; rm -rf "$WORK"; }

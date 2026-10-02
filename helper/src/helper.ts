@@ -225,7 +225,7 @@ export class Helper {
         if (this.mode === "shadow") this.shadowLogger.onChanges(changes);
         const moved = prevFocused !== this.model.focusedWindowId;
         if (prevFocused !== null && moved) this.record(this.transfers.flush(prevFocused));
-        this.pending.onSnapshot(m.window.windowId);
+        this.pending.onSnapshot(m.window.windowId, m.stats.truncated);
         this.audit?.onSnapshot(m);
         // The user left a window: the reader's leave walk of it, or focus arriving in another window.
         if (m.reason === "leave") this.left(m.window.windowId, m.at);
