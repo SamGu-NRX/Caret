@@ -1,0 +1,1 @@
+Perch and taskControl checks can run with nothing on screen: real Helper in process with helper/test/fake-app.ts as readerLink, host with --perch hidden and --allow-pids 5150 (no such process).

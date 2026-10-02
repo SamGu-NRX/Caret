@@ -1,1 +1,0 @@
-Mac CI on main: macos-26, Xcode 26 (glassEffect needs it; #available still type-checks, so #if-gate new SDK APIs); never back to macos-15. Screenpipe 0.4.50 keeps no clipboard history unless run with --disable-clipboard-capture false; Caret's pinned launch omits it.
