@@ -2,7 +2,7 @@
 // what they find into offers through the gate, runs a taken offer's plan through the executor, and
 // learns preferences from the user's edits to values it filled. No model is called anywhere here.
 import { performance } from "node:perf_hooks";
-import type { Change, ScreenModel } from "../model.ts";
+import { nodeText, type Change, type ScreenModel } from "../model.ts";
 import {
   PROTOCOL_VERSION,
   type HelperMessage,
@@ -49,7 +49,7 @@ type Cell = LoopCell | RoutineCell;
 
 interface OfferState {
   msg: PatternOffer;
-  cells: (Cell & { written: string; dstShapeHash: string })[];
+  cells: (Cell & { written: string; dstShapeHash: string; memory: string[] })[];
   plan: Plan;
   slots: Record<string, string>;
   loopId: string | null;
@@ -188,8 +188,7 @@ export class PatternEngine {
   /** A new reader numbers windows from scratch: every open bundle closes, and every offer is stale. */
   readerRestarted(): void {
     this.routines.flush();
-    const loop = this.loops.active;
-    if (loop !== null) this.loops.dismissed(loop.id);
+    this.loops.reset();
     for (const o of this.offers.values()) if (o.state === "open") this.withdraw(o, "stale");
     this.watches.clear();
   }
@@ -208,6 +207,11 @@ export class PatternEngine {
       case "take": {
         if (o.state !== "open") return this.fail(`offer ${m.offerId}: already ${o.state === "taken" ? "taken" : "withdrawn"}`);
         if (this.deps.shadow()) return this.fail(`offer ${m.offerId}: the helper is in shadow mode and does not act`);
+        const stale = this.recheck(o);
+        if (stale !== null) {
+          this.withdraw(o, "stale");
+          return this.fail(`offer ${m.offerId}: ${stale}; nothing was written`);
+        }
         o.state = "taken";
         this.withdraw(o, "taken");
         memory.recordReaction(kind, bundleId, "take", this.clock);
@@ -250,18 +254,21 @@ export class PatternEngine {
       if (m.id === undefined) throw new MemoryError(`${m.op} needs the entry's id`);
       const now = Math.max(this.clock, Date.now());
       switch (m.op) {
-        case "edit":
+        case "edit": {
           if (m.fields === undefined) throw new MemoryError("edit needs fields");
-          return reply([memory.edit(m.id, m.fields, now)]);
+          const e = memory.edit(m.id, m.fields, now);
+          this.withdrawDependents(m.id);
+          return reply([e]);
+        }
         case "pause":
         case "resume": {
           const e = memory.setPaused(m.id, m.op === "pause");
-          if (m.op === "pause") this.withdrawRoutine(m.id);
+          if (m.op === "pause") this.withdrawDependents(m.id);
           return reply([e]);
         }
         case "forget":
           memory.forget(m.id, now);
-          this.withdrawRoutine(m.id);
+          this.withdrawDependents(m.id);
           return reply([]);
       }
     } catch (e) {
@@ -370,6 +377,8 @@ export class PatternEngine {
       cells: msgCells,
       showProbability: decision.showProbability,
     };
+    // A memory rule may change what Caret writes; the loop must accept that value when it comes back as a transfer.
+    if (ids.loopId !== null) for (const c of written) if (c.written !== c.value) this.loops.expect(ids.loopId, c.dstKey, c.written, c.kind);
     const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null };
     this.offers.set(id, o);
     this.deps.publish(msg);
@@ -401,7 +410,8 @@ export class PatternEngine {
         end: {
           kind: "valueEquals" as const,
           window: { bundleId, title: "{{title}}" },
-          target: { key: c.dstKey, role: c.dstRole, describe: label === "" ? "the field" : `the ${label} field` },
+          // The exact key only: a key that has gone must stop the step, never fall back to another field with the same role.
+          target: { key: c.dstKey, describe: label === "" ? "the field" : `the ${label} field` },
           value: `{{v${i}}}`,
         },
       };
@@ -415,8 +425,29 @@ export class PatternEngine {
     this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: o.msg.id, reason });
   }
 
-  private withdrawRoutine(routineId: string): void {
-    for (const o of this.offers.values()) if (o.routineId === routineId && o.state === "open") this.withdraw(o, "stale");
+  /** Withdraws every open offer built from this memory entry: its routine, or a value a memory rule changed. */
+  private withdrawDependents(id: string): void {
+    for (const o of this.offers.values()) {
+      if (o.state === "open" && (o.routineId === id || o.cells.some((c) => c.memory.includes(id)))) this.withdraw(o, "stale");
+    }
+  }
+
+  /**
+   * Why an offer can no longer be taken as shown, or null. Every destination must still be there and
+   * empty, and every source must still show the text the offer copied (plan section 4, "Grounded").
+   */
+  private recheck(o: OfferState): string | null {
+    const model = this.deps.model;
+    for (const c of o.cells) {
+      const node = model.windows.get(c.dstWindowId)?.nodes.get(c.dstKey);
+      if (node === undefined) return `the field ${c.dstKey} is gone`;
+      if (node.editable !== true || (node.value ?? "") !== "") return `the field ${c.dstKey} is no longer empty`;
+      const sw = model.windows.get(c.srcWindowId);
+      const src = sw?.nodes.get(c.srcKey);
+      if (sw === undefined || src === undefined) return `the source ${c.srcKey} is gone`;
+      if (nodeText(src) !== c.value && !sw.values.some((v) => v.nodeKey === c.srcKey && v.text === c.value)) return `the source ${c.srcKey} changed`;
+    }
+    return null;
   }
 
   private log(kind: OfferKind, pattern: string, windowId: string, d: Decision): void {
@@ -435,7 +466,7 @@ export class PatternEngine {
       written: c.written,
       kind: c.kind,
       dstShapeHash: c.dstShapeHash,
-      label: c.dstLabel ?? "Field",
+      label: (c.dstLabel ?? "").trim().slice(0, 80) || "Field",
       app: w?.app.name ?? "",
       until: this.clock + EDIT_WATCH_MS,
       pending: null,
@@ -444,7 +475,12 @@ export class PatternEngine {
 
   private judgeEdit(w: Watch): void {
     if (w.pending === null) return;
-    captureEdit(this.deps.memory, this.deps.hash, { source: w.source, written: w.written, edited: w.pending.value, kind: w.kind, dstShapeHash: w.dstShapeHash, fieldLabel: w.label, app: w.app }, w.pending.at);
+    try {
+      captureEdit(this.deps.memory, this.deps.hash, { source: w.source, written: w.written, edited: w.pending.value, kind: w.kind, dstShapeHash: w.dstShapeHash, fieldLabel: w.label, app: w.app }, w.pending.at);
+    } catch (e) {
+      // An edit memory cannot hold (an over-long value) is not learned; it must not stop the tick.
+      if (!(e instanceof MemoryError)) throw e;
+    }
   }
 
   private fail(message: string): null {

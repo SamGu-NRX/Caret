@@ -59,8 +59,8 @@ export interface Loop {
   dstPos: number[];
   /** The round predicted and not yet confirmed; null once confirmed or when nothing more can be predicted. */
   prediction: LoopCell[] | null;
-  /** Every cell this loop predicted or will write, by destination key, with its normalized value. */
-  expected: Map<string, string>;
+  /** Every cell this loop predicted or will write, by destination key, with the normalized values it may take. */
+  expected: Map<string, Set<string>>;
   /** Cells of the current prediction the user has already filled with the predicted value. */
   filled: Set<string>;
   confirmed: boolean;
@@ -94,8 +94,7 @@ export class LoopRecognizer {
     if (loop !== null) {
       if (t.at - loop.lastAt > LOOP_GAP_MS) out.push(this.end("idle"));
       else {
-        const want = loop.expected.get(t.dst.key);
-        if (t.dst.windowId === loop.dstWindowId && want !== undefined && want === normalizeValue(t.value, t.kind)) {
+        if (t.dst.windowId === loop.dstWindowId && loop.expected.get(t.dst.key)?.has(normalizeValue(t.value, t.kind)) === true) {
           loop.lastAt = t.at;
           const ev = this.absorb(loop, t.dst.key);
           if (ev !== null) out.push(ev);
@@ -119,13 +118,24 @@ export class LoopRecognizer {
    */
   onOpaque(at: number, dstWindowId: string, dstKey: string, value: string, kind: ValueKind | null): LoopEvent[] {
     const loop = this.loop;
-    if (loop !== null && dstWindowId === loop.dstWindowId && loop.expected.get(dstKey) === normalizeValue(value, kind)) {
+    if (loop !== null && dstWindowId === loop.dstWindowId && loop.expected.get(dstKey)?.has(normalizeValue(value, kind)) === true) {
       loop.lastAt = at;
       const ev = this.absorb(loop, dstKey);
       return ev === null ? [] : [ev];
     }
     this.history = [];
     return loop === null ? [] : [this.end("diverged")];
+  }
+
+  /** Also accepts `value` in this cell: what Caret will write there after memory rules changed the source text. */
+  expect(loopId: string, dstKey: string, value: string, kind: ValueKind | null): void {
+    if (this.loop?.id === loopId) addExpected(this.loop, dstKey, value, kind);
+  }
+
+  /** Forgets the active loop and the rounds that might found one, as when a new reader renumbers windows. */
+  reset(): void {
+    this.loop = null;
+    this.history = [];
   }
 
   /** Caret wrote the predicted round. */
@@ -177,7 +187,7 @@ export class LoopRecognizer {
       const cells = this.predict(loop, src, dst);
       if (cells === null) break;
       rest.push(cells);
-      for (const c of cells) loop.expected.set(c.dstKey, normalizeValue(c.value, c.kind));
+      for (const c of cells) addExpected(loop, c.dstKey, c.value, c.kind);
       src = src.map((s, i) => s + loop.columns[i]!.srcStride);
       dst = dst.map((d) => d + 1);
     }
@@ -212,7 +222,7 @@ export class LoopRecognizer {
       // Nothing left to predict (the table or the list ended): the loop is real but has nothing to offer.
       if (next === null) return null;
       loop.prediction = next;
-      for (const c of next) loop.expected.set(c.dstKey, normalizeValue(c.value, c.kind));
+      for (const c of next) addExpected(loop, c.dstKey, c.value, c.kind);
       this.loop = loop;
       this.history = [];
       return { type: "predict", loop, cells: next };
@@ -290,4 +300,10 @@ export function valueClass(v: string): "email" | "url" | "number" | "text" {
   const compact = t.replace(/\s/g, "");
   const digits = compact.replace(/\D/g, "").length;
   return digits > 0 && digits * 2 >= compact.length ? "number" : "text";
+}
+
+function addExpected(loop: Loop, dstKey: string, value: string, kind: ValueKind | null): void {
+  let set = loop.expected.get(dstKey);
+  if (set === undefined) loop.expected.set(dstKey, (set = new Set()));
+  set.add(normalizeValue(value, kind));
 }

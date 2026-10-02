@@ -33,7 +33,8 @@ export function captureEdit(memory: MemoryStore, hash: Hash, f: FilledField, at:
   const written = f.written.trim();
   const edited = f.edited.trim();
   // A cleared field is an undo or a rejection, not a preference; "Don't offer this here" covers it.
-  if (edited === "" || edited === written) return null;
+  // A value longer than an About-you entry holds is more likely a paragraph than a correction.
+  if (edited === "" || edited === written || edited.length > 500) return null;
 
   if (f.kind === "phone" && normalizeValue(written, "phone") === normalizeValue(edited, "phone")) {
     const template = edited.replace(/\d/g, "#");

@@ -264,6 +264,10 @@ export class MemoryStore {
 
   /** Adds an entry, or counts another sighting of the entry with the same kind and match key. */
   upsert(kind: Exclude<MemoryKind, "routine" | "permission">, match: string, fields: AboutFields | PeopleFields | PreferenceFields, at: number, app: string | null): string {
+    // Checked on the way in, so an entry that list() could not render is never stored.
+    const schema = kind === "about" ? AboutFields : kind === "people" ? PeopleFields : PreferenceFields;
+    const valid = schema.safeParse(fields);
+    if (!valid.success) throw new MemoryError(`not storing a ${kind} entry: ${valid.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
     const hit = this.db.prepare("SELECT id FROM memory WHERE kind = ? AND match = ?").get(kind, match) as { id: string } | undefined;
     if (hit !== undefined) {
       this.write(kind, hit.id, fields);
@@ -524,14 +528,17 @@ function open(key: Buffer, b: Buffer): string {
 }
 
 function loadKey(path: string): Buffer {
-  if (existsSync(path)) {
-    const b = readFileSync(path);
-    if (b.length !== 32) throw new Error(`memory key ${path} is ${b.length} bytes, expected 32; refusing to use it`);
-    return b;
+  if (!existsSync(path)) {
+    try {
+      // Exclusive create: two helpers starting at once must not each write a different key.
+      writeFileSync(path, randomBytes(32), { mode: 0o600, flag: "wx" });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
   }
-  const b = randomBytes(32);
-  writeFileSync(path, b, { mode: 0o600 });
   chmodSync(path, 0o600);
+  const b = readFileSync(path);
+  if (b.length !== 32) throw new Error(`memory key ${path} is ${b.length} bytes, expected 32; refusing to use it`);
   return b;
 }
 

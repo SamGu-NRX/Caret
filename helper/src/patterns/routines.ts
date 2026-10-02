@@ -151,11 +151,16 @@ export class RoutineRecognizer {
   }
 
   private close(b: Bundle): BundleClose {
-    const first = new Map<string, PatternTransfer>();
-    for (const t of b.transfers) if (!first.has(t.shape)) first.set(t.shape, t);
-    const steps = [...first.values()].map((t) => this.step(t));
-    const doneByShape = new Map(steps.map((s, i) => [s.shapeHash, [...first.values()][i]!]));
+    // The last transfer of each shape counts: a value copied and then replaced from another row is the replacement.
+    const last = new Map<string, PatternTransfer>();
+    for (const t of b.transfers) {
+      last.delete(t.shape);
+      last.set(t.shape, t);
+    }
+    const done = [...last.values()];
+    const steps = done.map((t) => this.step(t));
     const sig = steps.length >= MIN_ROUTINE_STEPS ? this.hash(`routine\u0000${steps.map((s) => s.shapeHash).sort().join(",")}`) : null;
+    const dst = this.model.windows.get(b.dstWindowId);
 
     const scored: BundleClose["scored"] = [];
     for (const p of b.predictions) {
@@ -165,8 +170,12 @@ export class RoutineRecognizer {
         sig === p.routine.sig &&
         p.cells.every((c) => {
           if (c === null) return false;
-          const done = doneByShape.get(p.routine.steps[c.step]!.shapeHash);
-          return done !== undefined && normalizeValue(done.value, c.kind) === normalizeValue(c.value, c.kind);
+          // What the field holds now is what the user ended with, including any edit made after the copy.
+          // The model still has the window here: close runs before a closed window leaves it.
+          const final = dst?.nodes.get(c.dstKey);
+          if (final !== undefined) return normalizeValue(final.value ?? "", c.kind) === normalizeValue(c.value, c.kind);
+          const t = last.get([...last.keys()].find((k) => this.hash(k) === p.routine.steps[c.step]!.shapeHash) ?? "");
+          return t !== undefined && normalizeValue(t.value, c.kind) === normalizeValue(c.value, c.kind);
         });
       this.memory.scoreRoutine(p.routine.id, hit);
       scored.push({ routineId: p.routine.id, hit });

@@ -196,6 +196,76 @@ describe("pattern engine in the helper", () => {
     expect(offers("loopNext").at(-1)?.cells[0]?.value).toBe("Marcus Lowe, Operations");
   });
 
+  describe("found in review", () => {
+    it("refuses to take a prediction whose field the user filled meanwhile, and writes nothing", async () => {
+      const dst = grid();
+      startLoop(dst);
+      const [next] = offers("loopNext");
+      dst.values.set(cellKey(dst, 2, 0), "Someone else");
+      desk.showGrid(dst);
+      expect(await take(next!)).toBeNull();
+      expect(dst.values.get(cellKey(dst, 2, 0))).toBe("Someone else");
+      expect(sent.filter((m) => m.type === "error").at(-1)).toMatchObject({ message: expect.stringContaining("no longer empty") });
+    });
+
+    it("never falls back to another field when the predicted one is gone", async () => {
+      const dst = grid();
+      startLoop(dst);
+      const [next] = offers("loopNext");
+      dst.rows = 2;
+      desk.showGrid(dst);
+      const writes = desk.verbs.length;
+      expect(await take(next!)).toBeNull();
+      expect(desk.verbs.slice(writes).filter((v) => v.kind === "write")).toEqual([]);
+    });
+
+    it("withdraws an open offer when a memory entry it used is paused", () => {
+      const dst = grid();
+      const dstShape = store.hash(`dst\u0000${MAIL_APP.bundleId}\u0000standard\u0000${MAIL_APP.bundleId}/standard/textfield:guest`);
+      captureEdit(helper.memory, (t) => store.hash(t), { source: PEOPLE[2]!, written: PEOPLE[2]!, edited: "Marcus L. (ops)", kind: null, dstShapeHash: dstShape, fieldLabel: "Guest", app: "Mail Fixture" }, 1);
+      startLoop(dst);
+      const [next] = offers("loopNext");
+      expect(next?.cells[0]?.value).toBe("Marcus L. (ops)");
+      const aboutId = ask("list", { kind: "about" }).entries[0]!.id;
+      ask("pause", { id: aboutId });
+      expect(sent.filter((m) => m.type === "offerWithdrawn").at(-1)).toMatchObject({ id: next!.id, reason: "stale" });
+    });
+
+    it("keeps the loop when Caret writes a value a memory rule changed into another name on screen", async () => {
+      const dst = grid();
+      const dstShape = store.hash(`dst\u0000${MAIL_APP.bundleId}\u0000standard\u0000${MAIL_APP.bundleId}/standard/textfield:guest`);
+      captureEdit(helper.memory, (t) => store.hash(t), { source: PEOPLE[2]!, written: PEOPLE[2]!, edited: PEOPLE[5]!, kind: null, dstShapeHash: dstShape, fieldLabel: "Guest", app: "Mail Fixture" }, 1);
+      startLoop(dst);
+      expect((await take(offers("loopNext")[0]!))?.outcome).toBe("done");
+      desk.advance(3000);
+      expect(dst.values.get(cellKey(dst, 2, 0))).toBe(PEOPLE[5]);
+      expect(offers("loopFinish")).toHaveLength(1);
+      expect(sent.some((m) => m.type === "offerWithdrawn" && m.reason === "diverged")).toBe(false);
+    });
+
+    it("forgets the rounds before a reader restart", () => {
+      desk.showList(roster());
+      desk.advance(1000);
+      const before = grid();
+      desk.showGrid(before);
+      desk.fill(before, 0, 0, PEOPLE[0]!);
+      void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 1, version: "t" });
+      desk.showList(roster());
+      desk.advance(1000);
+      const after = grid();
+      desk.showGrid(after);
+      desk.fill(after, 1, 0, PEOPLE[1]!);
+      expect(offers()).toEqual([]);
+    });
+
+    it("does not store an edit too long for memory, and the list still renders", () => {
+      const r = captureEdit(helper.memory, (t) => store.hash(t), { source: "Dana", written: "Dana", edited: "x".repeat(501), kind: null, dstShapeHash: "d", fieldLabel: "Guest", app: "A" }, 1);
+      expect(r).toBeNull();
+      expect(() => helper.memory.upsert("about", "m", { label: "L", value: "y".repeat(501), source: "edit" }, 1, null)).toThrow(MemoryError);
+      expect(ask("list").error).toBeNull();
+    });
+  });
+
   describe("routines across days", () => {
     const calendar = (day: number): ListWindow => ({
       windowId: "5150-20",
@@ -258,6 +328,27 @@ describe("pattern engine in the helper", () => {
       }
       expect(offers("routine")).toEqual([]);
       expect(ask("list", { kind: "routine" }).entries[0]?.fields).toMatchObject({ silent: { hits: 0, misses: 4 } });
+    });
+
+    it("scores a copy the user then replaced from another row as a miss", () => {
+      occurrence(1);
+      for (let d = 2; d <= 4; d++) {
+        desk.at += DAY;
+        const cal = calendar(d);
+        desk.showList(cal);
+        desk.advance(1000);
+        const c = compose(d);
+        desk.showGrid(c);
+        for (let i = 0; i < 3; i++) desk.fill(c, 0, i, cal.lines[i]!);
+        // The subject was wrong: the user replaces it with the room line.
+        c.values.delete(cellKey(c, 0, 0));
+        desk.showGrid(c);
+        desk.fill(c, 0, 0, cal.lines[3] ?? `Room ${d}`);
+        desk.close(c.windowId);
+      }
+      expect(offers("routine")).toEqual([]);
+      const r = ask("list", { kind: "routine" }).entries.find((e) => e.kind === "routine" && e.fields.silent.hits + e.fields.silent.misses > 0);
+      expect(r?.fields).toMatchObject({ silent: { hits: 0 } });
     });
 
     it("pausing a routine stops its predictions and offers until it is resumed", () => {
