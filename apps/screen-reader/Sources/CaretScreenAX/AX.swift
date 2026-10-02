@@ -24,6 +24,21 @@ public enum AX {
 
     public static func string(_ e: AXUIElement, _ name: String) -> String? { copy(e, name) as? String }
 
+    /// True for a password field, by role or subrole. Apps differ in which of the two they set.
+    public static func isSecure(role: String?, subrole: String?) -> Bool {
+        role == "AXSecureTextField" || subrole == "AXSecureTextField"
+    }
+
+    public static func isSecure(_ e: AXUIElement) -> Bool {
+        isSecure(role: string(e, kAXRoleAttribute), subrole: string(e, kAXSubroleAttribute))
+    }
+
+    /// The element's string value, never requested for a secure field. Every value read outside the
+    /// walker's batch goes through here; the walker applies the same test to the role and subrole it already has.
+    public static func valueUnlessSecure(_ e: AXUIElement) -> String? {
+        isSecure(e) ? nil : string(e, kAXValueAttribute)
+    }
+
     public static func element(_ e: AXUIElement, _ name: String) -> AXUIElement? {
         guard let v = copy(e, name), CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
         return (v as! AXUIElement)

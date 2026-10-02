@@ -79,13 +79,20 @@ export class ScreenModel {
 
     if (prior !== undefined) out.push(...diffNodes(prior.nodes, nodes, snap, id));
 
+    // A partial snapshot only knows focus inside its subtree; outside it, the earlier focus stands
+    // as long as that node is still there.
+    let focusedKey = snap.focusedKey;
+    if (snap.root !== null && focusedKey === null && prior !== undefined && prior.focusedKey !== null && nodes.has(prior.focusedKey)) {
+      const replaced = subtreeKeys(prior.nodes, snap.root);
+      if (!replaced.has(prior.focusedKey)) focusedKey = prior.focusedKey;
+    }
     const state: WindowState = {
       app: snap.app,
       window: snap.window,
       focused: snap.focused,
       nodes,
       values,
-      focusedKey: snap.focusedKey,
+      focusedKey,
       updatedAt: snap.at,
       lastFocusedAt: snap.focused ? snap.at : (prior?.lastFocusedAt ?? 0),
     };
@@ -117,6 +124,12 @@ export class ScreenModel {
 
   changeLog(): readonly Change[] {
     return this.changes;
+  }
+
+  /** Forgets every window, for a new reader session whose window ids start over. */
+  reset(): void {
+    this.windows.clear();
+    this.focusedWindowId = null;
   }
 }
 

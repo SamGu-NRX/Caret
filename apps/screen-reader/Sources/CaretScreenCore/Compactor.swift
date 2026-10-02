@@ -139,9 +139,11 @@ public struct Compactor {
         if Roles.skipped.contains(n.role) { return nil }
         let isStatic = n.role == "AXStaticText"
         let label = firstNonEmpty(n.title, n.description, n.titleElementText, isStatic ? n.value : nil)
-        var value = (isStatic || n.secure) ? nil : nonEmpty(n.value)
-        if value != nil, value == label { value = nil }
         let editable = Roles.editable.contains(n.role)
+        var value = (isStatic || n.secure) ? nil : nonEmpty(n.value)
+        // An editable field's value is its content, so it stays even when it repeats the label;
+        // otherwise a filled field would look empty.
+        if value != nil, value == label, !editable { value = nil }
         let placeholder = nonEmpty(n.placeholder)
         let unnamed = label == nil && value == nil
         if unnamed && Roles.containers.contains(n.role) { return nil }

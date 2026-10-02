@@ -58,6 +58,8 @@ let runs = Int(option("--runs") ?? "100") ?? 100
 let interval = TimeInterval(option("--interval") ?? "0.25") ?? 0.25
 let outPath = option("--out")
 if !args.isEmpty { fail("unknown arguments: \(args.joined(separator: " "))") }
+// A recording holds screen text, so it is only allowed for processes named explicitly (fixtures).
+if recordPath != nil && onlyPids.isEmpty { fail("--record writes screen text to disk; it needs --only-pids naming fixture processes") }
 
 guard AXIsProcessTrusted() else {
     fail("not trusted for Accessibility. Launch the binary directly from a process that has the grant.")

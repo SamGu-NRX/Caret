@@ -15,6 +15,11 @@ import Testing
         #expect(r.nodes[2].states == [.disabled, .checked])
     }
 
+    @Test func keepsAnEditableValueThatRepeatsTheLabel() {
+        let r = c.compact(windowChildren: [RawNode(role: "AXTextField", title: "City", value: "City")])
+        #expect(r.nodes[0].value == "City")
+    }
+
     @Test func putsStaticTextInTheLabel() {
         let r = c.compact(windowChildren: [RawNode(role: "AXStaticText", value: "Order total: $48.20")])
         #expect(r.nodes[0].label == "Order total: $48.20")

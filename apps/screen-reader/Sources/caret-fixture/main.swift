@@ -376,7 +376,7 @@ final class Activity {
     let log: LineLog
     var slots: [(window: String, field: Int, gold: String?)] = []
     var i = 0
-    let invented = ["Weekly sync notes", "Blue Cypress Hall", "call back after four", "QX-77120-B", "Westlake Terrace"]
+    let invented = ["Weekly sync notes", "Blue Cypress Hall", "call back after four", "Westlake Terrace", "Second floor lobby"]
 
     init(log: LineLog) {
         self.log = log
@@ -391,12 +391,14 @@ final class Activity {
         }
     }
 
-    /// Entry i uses slot i mod n. A slot alternates between its gold value (on screen in the Reference
-    /// window) and an invented one, so consecutive entries in one field always differ. Invented values carry the entry number, so none repeats.
+    /// Entry i uses slot i mod n. Each round, a slot switches between its gold value (on screen in the
+    /// Reference window) and an invented one, so consecutive entries in one field always differ.
+    /// Invented values carry the entry number and no typed value, so none can appear anywhere else.
     func plan(_ i: Int) -> (window: String, field: Int, text: String, existsElsewhere: Bool) {
-        let s = slots[i % slots.count]
+        let slot = i % slots.count
+        let s = slots[slot]
         let round = i / slots.count
-        if let g = s.gold, (round + i) % 2 == 0 { return (s.window, s.field, g, true) }
+        if let g = s.gold, (round + slot) % 2 == 0 { return (s.window, s.field, g, true) }
         return (s.window, s.field, "\(invented[i % invented.count]) \(i + 1)", false)
     }
 
@@ -404,13 +406,20 @@ final class Activity {
         let p = plan(i)
         i += 1
         guard let w = windows.values.first(where: { $0.title == p.window }), let tf = formFields[p.window]?[p.field].1 else { return }
-        tf.stringValue = ""
         w.makeKey()
         w.makeFirstResponder(tf)
         log.write(["t": ms(), "event": "focus", "window": p.window, "label": formFields[p.window]![p.field].0.label])
+        // Clear the old entry the way a person does, select all and delete, then pause before typing,
+        // so the reader sees the field empty. A programmatic clear posts no notification at all.
+        if let ed = tf.currentEditor() as? NSTextView {
+            ed.selectAll(nil)
+            ed.deleteBackward(nil)
+        }
         let chars = Array(p.text)
         var c = 0
+        var waited = 0
         Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { t in
+            if waited < 6 { waited += 1; return }
             MainActor.assumeIsolated {
                 guard c < chars.count, let ed = tf.currentEditor() as? NSTextView else {
                     t.invalidate()

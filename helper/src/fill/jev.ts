@@ -72,7 +72,8 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
         continue;
       }
       if (!res.ok) {
-        const detail = (await res.text()).slice(0, 300);
+        // The body is the service's own text; the key is cut out in case it is ever echoed back.
+        const detail = (await res.text()).slice(0, 300).split(key()).join("[redacted]");
         throw new Error(`Jev HTTP ${res.status}: ${detail}`);
       }
       const parsed = JevResponse.parse(await res.json());

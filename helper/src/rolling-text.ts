@@ -80,6 +80,13 @@ export class RollingText {
     if (norm.length >= MIN_NORM) addTo(this.byNorm, norm, id);
   }
 
+  /** Forgets everything, for a new reader session. */
+  clear(): void {
+    this.obs.clear();
+    this.byExact.clear();
+    this.byNorm.clear();
+  }
+
   prune(now: number): void {
     const cutoff = now - ROLLING_WINDOW_MS;
     for (const [id, o] of this.obs) {

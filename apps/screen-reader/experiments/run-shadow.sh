@@ -13,7 +13,9 @@ HELPER="$HERE/../../../helper"
 DATA="$OUT/shadow-data"
 mkdir -p "$OUT"
 rm -rf "$DATA"
-trap 'kill ${READER:-0} ${HELPERPID:-0} ${FIX:-0} 2>/dev/null || true' EXIT
+# Signals only pids this script recorded. An empty or zero pid would make `kill` signal the whole process group.
+stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && kill "$p" 2>/dev/null; done; return 0; }
+trap 'stop "${READER:-}" "${HELPERPID:-}" "${FIX:-}"' EXIT
 
 (cd "$HELPER" && exec node src/main.ts --shadow --data-dir "$DATA" --status-every 60 > "$OUT/helper.log" 2>&1) &
 HELPERPID=$!
@@ -26,14 +28,16 @@ sleep 1
 READER=$!
 
 : > "$OUT/resources.tsv"
-printf "t\treader_cpu_s\treader_rss_kb\thelper_cpu_s\thelper_rss_kb\n" >> "$OUT/resources.tsv"
+printf "t\treader_cpu_s\treader_rss_kb\thelper_cpu_s\thelper_rss_kb\treader_footprint_kb\thelper_footprint_kb\n" >> "$OUT/resources.tsv"
 secs() { ps -o time= -p "$1" | awk '{ n=split($1,p,":"); s=0; for(i=1;i<=n;i++) s=s*60+p[i]; printf "%.2f", s }'; }
+# Physical footprint counts compressed memory too; resident size alone shrank under memory pressure in E1.
+fp() { footprint -p "$1" -f bytes --noCategories 2>/dev/null | awk '/Footprint:/ { for(i=1;i<=NF;i++) if ($i=="Footprint:") printf "%d", $(i+1)/1024 }'; }
 for (( i=0; i<=DUR; i+=30 )); do
-  printf "%s\t%s\t%s\t%s\t%s\n" "$i" "$(secs $READER)" "$(ps -o rss= -p $READER | tr -d ' ')" "$(secs $HPID)" "$(ps -o rss= -p $HPID | tr -d ' ')" >> "$OUT/resources.tsv"
+  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$i" "$(secs $READER)" "$(ps -o rss= -p $READER | tr -d ' ')" "$(secs $HPID)" "$(ps -o rss= -p $HPID | tr -d ' ')" "$(fp $READER)" "$(fp $HPID)" >> "$OUT/resources.tsv"
   [[ $i -lt $DUR ]] && sleep 30
 done
-kill $READER
+stop "$READER"
 sleep 1
-kill $HELPERPID $HPID 2>/dev/null || true
+stop "$HELPERPID" "${HPID:-}"
 sleep 1
 echo done

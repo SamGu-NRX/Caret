@@ -20,7 +20,7 @@ public final class NotificationRecorder: @unchecked Sendable {
         var best: (String, String, Double)?
         for e in els {
             AXUIElementSetMessagingTimeout(e, AX.elementTimeout)
-            for case let s? in [AX.string(e, kAXValueAttribute), AX.string(e, kAXTitleAttribute), AX.string(e, kAXDescriptionAttribute)] {
+            for case let s? in [AX.valueUnlessSecure(e), AX.string(e, kAXTitleAttribute), AX.string(e, kAXDescriptionAttribute)] {
                 let ns = s as NSString
                 for m in marker.matches(in: s, range: NSRange(location: 0, length: min(ns.length, 4000))) {
                     let at = Double(ns.substring(with: m.range(at: 1))) ?? 0

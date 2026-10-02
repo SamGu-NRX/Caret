@@ -19,10 +19,10 @@ CHROME_PROFILE="/tmp/caret-e1-chrome-$MODE"
 mkdir -p "$OUT"
 rm -rf "$CHROME_PROFILE"
 
+# Signals only pids this script recorded. An empty or zero pid would make `kill` signal the whole process group.
+stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && kill "$p" 2>/dev/null; done; return 0; }
 cleanup() {
-  [[ -n "${READER:-}" ]] && kill "$READER" 2>/dev/null || true
-  [[ -n "${HELPERPID:-}" ]] && kill "$HELPERPID" 2>/dev/null || true
-  [[ -n "${FIX:-}" ]] && kill "$FIX" 2>/dev/null || true
+  stop "${READER:-}" "${HELPERPID:-}" "${FIX:-}"
   pkill -f "user-data-dir=$CHROME_PROFILE" 2>/dev/null || true
   sleep 1
   rm -rf "$CHROME_PROFILE"

@@ -28,7 +28,7 @@ if (a.gold === undefined || a.record === undefined || a.out === undefined) throw
 
 interface GoldField { label: string; gold: string | null; frame: Frame }
 interface GoldForm { window: string; fields: GoldField[] }
-const gold = JSON.parse(readFileSync(a.gold, "utf8")) as { forms: GoldForm[] };
+const gold = JSON.parse(readFileSync(a.gold, "utf8")) as { pid: number; forms: GoldForm[] };
 
 // Latest full snapshot of each form window.
 const latest = new Map<string, Snapshot>();
@@ -36,6 +36,8 @@ for (const line of readFileSync(a.record, "utf8").trim().split("\n")) {
   const m = JSON.parse(line) as { type: string };
   if (m.type !== "snapshot") continue;
   const s = Snapshot.parse(m);
+  // Proposals are written to disk with their values, so every source must be the synthetic fixture.
+  if (s.app.pid !== gold.pid) throw new Error(`recording has a window from pid ${s.app.pid}; run caret-screen with --only-pids ${gold.pid}`);
   if (s.root === null) latest.set(s.window.title, s);
 }
 

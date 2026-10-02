@@ -99,7 +99,9 @@ export class TransferDetector {
       if (!inserted.includes(v.text) && !v.text.includes(inserted)) continue;
       if (v.text === inserted) {
         const whole = candidates[0];
+        // A typed value shorter than a whole entry may be (a time, a short amount) still counts.
         if (whole !== undefined && whole.value === inserted) whole.kind = v.kind;
+        else candidates.unshift({ value: v.text, kind: v.kind });
         continue;
       }
       candidates.push({ value: v.text, kind: v.kind });

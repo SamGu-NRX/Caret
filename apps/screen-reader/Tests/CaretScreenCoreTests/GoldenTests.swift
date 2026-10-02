@@ -65,6 +65,18 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Node.self, from: falseEditable) }
     }
 
+    /// The same shapes zod rejects: a nullable field left out, and an optional field sent as null.
+    @Test func rejectsWhatZodRejects() {
+        let missingParent = Data(#"{"key":"k","role":"AXButton"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Node.self, from: missingParent) }
+        let nullEditable = Data(#"{"key":"k","parent":null,"role":"AXButton","editable":null}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Node.self, from: nullEditable) }
+        let nullLabel = Data(#"{"key":"k","parent":null,"role":"AXButton","label":null}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Node.self, from: nullLabel) }
+        let noFocusKey = Data(#"{"type":"focus","v":1,"at":1,"app":{"pid":1,"bundleId":"b","name":"n"},"windowId":"w","role":"AXTextField","editable":true,"empty":true,"frontmost":true}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: noFocusKey) }
+    }
+
     @Test func encodesNullableFieldsAsNullAndOmitsAbsentOptionals() throws {
         let n = Node(key: "k", parent: nil, role: "AXButton")
         let obj = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(n)) as! [String: Any]

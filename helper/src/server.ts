@@ -1,7 +1,8 @@
 // Unix socket server. Every client's first line is a hello naming its role. The reader then
 // streams ReaderMessages; consumers send FillRequests and receive every HelperMessage.
 // Invalid lines are answered with an error message and counted, never silently dropped.
-import { chmodSync, existsSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type HelperMessage } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
@@ -11,6 +12,7 @@ const MAX_LINE_CHARS = 32 * 1024 * 1024;
 
 export class HelperServer {
   private readonly consumers = new Set<Socket>();
+  private readonly sockets = new Set<Socket>();
   private server: Server | null = null;
   private readonly helper: () => Helper;
   private readonly path: string;
@@ -28,6 +30,7 @@ export class HelperServer {
   }
 
   async listen(): Promise<void> {
+    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     if (existsSync(this.path)) {
       if (await isAlive(this.path)) throw new Error(`another helper is already listening on ${this.path}`);
       unlinkSync(this.path);
@@ -42,12 +45,14 @@ export class HelperServer {
   }
 
   async close(): Promise<void> {
-    for (const c of this.consumers) c.destroy();
+    // Every connection, readers included: server.close() waits for all of them to end.
+    for (const c of this.sockets) c.destroy();
     await new Promise<void>((r) => (this.server === null ? r() : this.server.close(() => r())));
     if (existsSync(this.path)) unlinkSync(this.path);
   }
 
   private accept(s: Socket): void {
+    this.sockets.add(s);
     let role: "reader" | "consumer" | null = null;
     let buf = "";
     s.setEncoding("utf8");
@@ -99,7 +104,10 @@ export class HelperServer {
         }
       }
     });
-    s.on("close", () => this.consumers.delete(s));
+    s.on("close", () => {
+      this.consumers.delete(s);
+      this.sockets.delete(s);
+    });
     s.on("error", (e) => this.warn(`socket error: ${e.message}`));
   }
 

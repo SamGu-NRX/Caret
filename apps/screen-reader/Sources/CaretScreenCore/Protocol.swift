@@ -12,6 +12,22 @@ public struct ProtocolError: Error, CustomStringConvertible {
     public init(_ description: String) { self.description = description }
 }
 
+// The zod schemas distinguish nullable fields (key always present, value may be null) from optional
+// ones (key may be absent, value never null). Foundation's decoder treats both alike, so these
+// helpers enforce the difference and a message zod would reject is rejected here too.
+extension KeyedDecodingContainer {
+    func decodeNullable<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T? {
+        guard contains(k) else { throw ProtocolError("missing \(k.stringValue); send null instead") }
+        return try decodeIfPresent(t, forKey: k)
+    }
+
+    func decodeOptional<T: Decodable>(_ t: T.Type, forKey k: Key) throws -> T? {
+        guard contains(k) else { return nil }
+        if try decodeNil(forKey: k) { throw ProtocolError("\(k.stringValue) is null; omit it instead") }
+        return try decode(t, forKey: k)
+    }
+}
+
 /// [x, y, width, height] in global screen points, top-left origin.
 public struct Frame: Codable, Equatable, Hashable, Sendable {
     public var x, y, width, height: Double
@@ -48,6 +64,13 @@ public struct WindowRef: Codable, Equatable, Sendable {
         self.windowId = windowId; self.kind = kind; self.title = title; self.frame = frame
     }
     enum CodingKeys: String, CodingKey { case windowId, kind, title, frame }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        windowId = try c.decode(String.self, forKey: .windowId)
+        kind = try c.decode(String.self, forKey: .kind)
+        title = try c.decode(String.self, forKey: .title)
+        frame = try c.decodeNullable(Frame.self, forKey: .frame)
+    }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(windowId, forKey: .windowId)
@@ -85,18 +108,17 @@ public struct Node: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key)
-        parent = try c.decodeIfPresent(String.self, forKey: .parent)
+        parent = try c.decodeNullable(String.self, forKey: .parent)
         role = try c.decode(String.self, forKey: .role)
-        subrole = try c.decodeIfPresent(String.self, forKey: .subrole)
-        label = try c.decodeIfPresent(String.self, forKey: .label)
-        value = try c.decodeIfPresent(String.self, forKey: .value)
-        placeholder = try c.decodeIfPresent(String.self, forKey: .placeholder)
-        frame = try c.decodeIfPresent(Frame.self, forKey: .frame)
-        if let e = try c.decodeIfPresent(Bool.self, forKey: .editable), e == false {
-            throw ProtocolError("editable is either true or absent")
-        }
-        editable = try c.decodeIfPresent(Bool.self, forKey: .editable) ?? false
-        states = try c.decodeIfPresent([NodeState].self, forKey: .states) ?? []
+        subrole = try c.decodeOptional(String.self, forKey: .subrole)
+        label = try c.decodeOptional(String.self, forKey: .label)
+        value = try c.decodeOptional(String.self, forKey: .value)
+        placeholder = try c.decodeOptional(String.self, forKey: .placeholder)
+        frame = try c.decodeOptional(Frame.self, forKey: .frame)
+        let e = try c.decodeOptional(Bool.self, forKey: .editable)
+        if e == false { throw ProtocolError("editable is either true or absent") }
+        editable = e ?? false
+        states = try c.decodeOptional([NodeState].self, forKey: .states) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -215,10 +237,10 @@ public struct Snapshot: Codable, Equatable, Sendable {
         app = try c.decode(AppRef.self, forKey: .app)
         window = try c.decode(WindowRef.self, forKey: .window)
         focused = try c.decode(Bool.self, forKey: .focused)
-        root = try c.decodeIfPresent(String.self, forKey: .root)
+        root = try c.decodeNullable(String.self, forKey: .root)
         nodes = try c.decode([Node].self, forKey: .nodes)
         values = try c.decode([TypedValue].self, forKey: .values)
-        focusedKey = try c.decodeIfPresent(String.self, forKey: .focusedKey)
+        focusedKey = try c.decodeNullable(String.self, forKey: .focusedKey)
         stats = try c.decode(WalkStats.self, forKey: .stats)
     }
     public func encode(to encoder: Encoder) throws {
@@ -250,7 +272,7 @@ public struct Focus: Codable, Equatable, Sendable {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         at = try c.decode(Int64.self, forKey: .at); app = try c.decode(AppRef.self, forKey: .app)
-        windowId = try c.decode(String.self, forKey: .windowId); key = try c.decodeIfPresent(String.self, forKey: .key)
+        windowId = try c.decode(String.self, forKey: .windowId); key = try c.decodeNullable(String.self, forKey: .key)
         role = try c.decode(String.self, forKey: .role); editable = try c.decode(Bool.self, forKey: .editable)
         empty = try c.decode(Bool.self, forKey: .empty); frontmost = try c.decode(Bool.self, forKey: .frontmost)
     }
@@ -274,7 +296,7 @@ public struct AppSwitch: Codable, Equatable, Sendable {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         at = try c.decode(Int64.self, forKey: .at)
-        from = try c.decodeIfPresent(AppRef.self, forKey: .from)
+        from = try c.decodeNullable(AppRef.self, forKey: .from)
         to = try c.decode(AppRef.self, forKey: .to)
     }
     public func encode(to encoder: Encoder) throws {
@@ -346,6 +368,12 @@ public struct FillSource: Codable, Equatable, Sendable {
     public var nodeKey: String
     public var kind: ValueKind?
     enum CodingKeys: String, CodingKey { case windowId, bundleId, appName, windowTitle, nodeKey, kind }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        windowId = try c.decode(String.self, forKey: .windowId); bundleId = try c.decode(String.self, forKey: .bundleId)
+        appName = try c.decode(String.self, forKey: .appName); windowTitle = try c.decode(String.self, forKey: .windowTitle)
+        nodeKey = try c.decode(String.self, forKey: .nodeKey); kind = try c.decodeNullable(ValueKind.self, forKey: .kind)
+    }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(windowId, forKey: .windowId); try c.encode(bundleId, forKey: .bundleId)
@@ -364,6 +392,13 @@ public struct FillField: Codable, Equatable, Sendable {
     public var value: String?
     public var source: FillSource?
     enum CodingKeys: String, CodingKey { case key, frame, descriptor, choice, confidence, value, source }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key); frame = try c.decodeNullable(Frame.self, forKey: .frame)
+        descriptor = try c.decode(String.self, forKey: .descriptor); choice = try c.decode(String.self, forKey: .choice)
+        confidence = try c.decode(Double.self, forKey: .confidence)
+        value = try c.decodeNullable(String.self, forKey: .value); source = try c.decodeNullable(FillSource.self, forKey: .source)
+    }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(key, forKey: .key); try c.encode(frame, forKey: .frame); try c.encode(descriptor, forKey: .descriptor)

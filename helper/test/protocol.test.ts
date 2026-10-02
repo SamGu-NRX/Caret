@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AnyMessage, ConsumerMessage, HelperMessage, ReaderMessage } from "../src/protocol.ts";
+import { AnyMessage, ConsumerMessage, HelperMessage, Node, ReaderMessage } from "../src/protocol.ts";
 import { renderProtocolJsonSchema, SCHEMA_PATH } from "../src/export-schema.ts";
 
 const GOLDEN = fileURLToPath(new URL("../fixtures/golden/protocol.ndjson", import.meta.url));
@@ -28,6 +28,15 @@ describe("golden protocol fixture", () => {
     expect(ConsumerMessage.safeParse(hello).success).toBe(true);
     for (const m of [proposal, error]) expect(HelperMessage.safeParse(m).success).toBe(true);
     expect(ReaderMessage.safeParse(proposal).success).toBe(false);
+  });
+
+  it("rejects the shapes the Swift decoder also rejects", () => {
+    const base = { key: "k", parent: null, role: "AXButton" };
+    expect(Node.safeParse(base).success).toBe(true);
+    expect(Node.safeParse({ key: "k", role: "AXButton" }).success).toBe(false);
+    expect(Node.safeParse({ ...base, editable: null }).success).toBe(false);
+    expect(Node.safeParse({ ...base, editable: false }).success).toBe(false);
+    expect(Node.safeParse({ ...base, label: null }).success).toBe(false);
   });
 
   it("rejects a snapshot with an unknown state and an unversioned message", () => {

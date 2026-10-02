@@ -19,7 +19,7 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     private var retryScheduled = false
     /// Messages kept while disconnected. Older ones are dropped first; a resync follows reconnection anyway.
     private let backlogLimit = 500
-    public private(set) var dropped = 0
+    public private(set) var dropped = 0 // guarded by flightLock or the queue
     public private(set) var sent = 0
     public var onConnect: (@Sendable () -> Void)?
     public var log: @Sendable (String) -> Void = { FileHandle.standardError.write(Data(("[caret-screen] " + $0 + "\n").utf8)) }
@@ -31,13 +31,32 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
 
     public func start() { queue.async { self.connect() } }
 
+    /// Messages handed to the write queue and not yet written. Writes block while the helper is not
+    /// reading, so without this bound a stalled helper would let snapshots pile up in memory.
+    private let flightLock = NSLock()
+    private var inFlight = 0
+    private var resyncAfterDrain = false
+    private let flightLimit = 300
+
     public func send(_ m: Message) {
         let data: Data
         do { data = try NDJSON.line(m) } catch {
             log("encode failed: \(error)")
             return
         }
+        flightLock.lock()
+        // Over the bound, snapshots are dropped and a full resync follows once the queue drains.
+        // Small event messages (focus, switches, closes) still go through.
+        if inFlight >= flightLimit, case .snapshot = m {
+            dropped += 1
+            resyncAfterDrain = true
+            flightLock.unlock()
+            return
+        }
+        inFlight += 1
+        flightLock.unlock()
         queue.async {
+            defer { self.landed() }
             if self.fd < 0 {
                 self.enqueue(data)
                 return
@@ -49,11 +68,23 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         }
     }
 
+    private func landed() {
+        flightLock.lock()
+        inFlight -= 1
+        let resync = resyncAfterDrain && inFlight < flightLimit / 4
+        if resync { resyncAfterDrain = false }
+        flightLock.unlock()
+        if resync {
+            log("write queue drained after drops; resyncing")
+            onConnect?()
+        }
+    }
+
     private func enqueue(_ d: Data) {
         backlog.append(d)
         if backlog.count > backlogLimit {
             backlog.removeFirst(backlog.count - backlogLimit)
-            dropped += 1
+            flightLock.lock(); dropped += 1; flightLock.unlock()
         }
         scheduleRetry()
     }

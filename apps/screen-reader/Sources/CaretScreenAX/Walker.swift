@@ -58,7 +58,7 @@ public final class Walker {
         AXUIElementSetMessagingTimeout(e, AX.elementTimeout)
         guard let a = AX.batch(e, Self.batchNames), let role = a[0] as? String else { return nil }
         let subrole = a[1] as? String
-        let secure = subrole == "AXSecureTextField" || role == "AXSecureTextField"
+        let secure = AX.isSecure(role: role, subrole: subrole)
         var node = RawNode(role: role, subrole: subrole, title: a[2] as? String, description: a[3] as? String,
                            placeholder: a[4] as? String, frame: AX.frame(a[7], a[8]),
                            enabled: (a[5] as? Bool) ?? true, selected: (a[6] as? Bool) ?? false, secure: secure)
@@ -74,7 +74,7 @@ public final class Walker {
         if Roles.editable.contains(role), (node.title ?? "").isEmpty, (node.description ?? "").isEmpty,
            let te = AX.element(e, kAXTitleUIElementAttribute) {
             AXUIElementSetMessagingTimeout(te, AX.elementTimeout)
-            node.titleElementText = AX.string(te, kAXValueAttribute) ?? AX.string(te, kAXTitleAttribute)
+            node.titleElementText = AX.valueUnlessSecure(te) ?? AX.string(te, kAXTitleAttribute)
         }
 
         node.handle = elements.count

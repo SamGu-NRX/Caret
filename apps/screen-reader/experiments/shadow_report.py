@@ -19,7 +19,7 @@ truth_yes = sum(1 for a in entered if a["existsElsewhere"])
 truth_no = len(entered) - truth_yes
 
 res = [l.rstrip("\n").split("\t") for l in open(os.path.join(out, "resources.tsv"))][1:]
-res = [[float(x) for x in r] for r in res if len(r) == 5 and all(r)]
+res = [[float(x) for x in r] for r in res if len(r) == 7 and all(r)]
 span = res[-1][0] - res[0][0]
 r_cpu = res[-1][1] - res[0][1]
 h_cpu = res[-1][3] - res[0][3]
@@ -39,6 +39,8 @@ print(f"| Reader CPU | {r_cpu:.1f} s over {span:.0f} s ({100 * r_cpu / span:.1f}
 print(f"| Helper CPU | {h_cpu:.1f} s ({100 * h_cpu / span:.1f}% of one core) |")
 print(f"| Reader resident memory | start {res[0][2] / 1024:.0f} MB, end {res[-1][2] / 1024:.0f} MB, max {max(r[2] for r in res) / 1024:.0f} MB |")
 print(f"| Helper resident memory | start {res[0][4] / 1024:.0f} MB, end {res[-1][4] / 1024:.0f} MB, max {max(r[4] for r in res) / 1024:.0f} MB |")
+print(f"| Reader physical footprint | start {res[0][5] / 1024:.0f} MB, end {res[-1][5] / 1024:.0f} MB, max {max(r[5] for r in res) / 1024:.0f} MB |")
+print(f"| Helper physical footprint | start {res[0][6] / 1024:.0f} MB, end {res[-1][6] / 1024:.0f} MB, max {max(r[6] for r in res) / 1024:.0f} MB |")
 print("\nCounters persisted (all apps):\n")
 print("| Counter | Value |")
 print("| --- | --- |")

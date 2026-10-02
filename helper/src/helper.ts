@@ -55,6 +55,12 @@ export class Helper {
     const store = this.opts.store;
     switch (m.type) {
       case "hello":
+        // A new reader numbers windows from scratch and walks everything again, so the old session's
+        // windows, text and open edits are judged now and then forgotten.
+        this.record(this.transfers.flush());
+        this.shadowLogger.close();
+        this.model.reset();
+        this.text.clear();
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
         return null;
@@ -92,8 +98,10 @@ export class Helper {
         return null;
       case "windowClosed": {
         this.record(this.transfers.flush(m.windowId));
-        const c = this.model.close(m.windowId, m.at);
-        if (c !== null && this.mode === "shadow") this.shadowLogger.onChanges([c]);
+        // The shadow logger judges an open episode in this window before the window leaves the model,
+        // since the judgment reads the window's typed values.
+        if (this.mode === "shadow") this.shadowLogger.onWindowClosing(m.windowId);
+        this.model.close(m.windowId, m.at);
         return null;
       }
       case "pasteboard":
@@ -113,6 +121,9 @@ export class Helper {
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {
       this.lastPrune = now;
       this.model.prune(now);
+      // The reader skips snapshots of unchanged windows, so text still on screen is marked seen here;
+      // otherwise a window left untouched for ten minutes would drop out of the text window.
+      for (const w of this.model.windows.values()) this.text.observe(w, now);
       this.text.prune(now);
       const cutoff = now - 10 * 60 * 1000;
       while ((this.recentTransfers[0]?.at ?? now) < cutoff) this.recentTransfers.shift();
@@ -173,8 +184,13 @@ export class Helper {
     if (!explicit && now - (this.lastFill.get(formKey) ?? -Infinity) < FILL_REPEAT_MS) return null;
     this.inflight.add(formKey);
     try {
-      const p = await proposeFill(this.model, ask, windowId, key, now);
+      const asked = await proposeFill(this.model, ask, windowId, key, now);
+      const p = this.revalidate(asked);
       this.lastFill.set(formKey, now);
+      if (p === null) {
+        store.count("fill.stale", 1, now);
+        return null;
+      }
       store.count("fill.request", 1, now);
       store.count("fill.fields", p.fields.length, now);
       store.count("fill.proposed_values", p.fields.filter((f) => f.value !== null).length, now);
@@ -187,6 +203,24 @@ export class Helper {
     } finally {
       this.inflight.delete(formKey);
     }
+  }
+
+  /**
+   * Jev answers in a few hundred milliseconds, and the screen can move meanwhile. A proposal is
+   * dropped when the helper left live mode, the window closed, or its trigger field is gone or no
+   * longer empty; a field that has since been filled, or whose source window closed, is left out.
+   */
+  private revalidate(p: FillProposal): FillProposal | null {
+    if (this.mode !== "live") return null;
+    const w = this.model.windows.get(p.windowId);
+    const trigger = w?.nodes.get(p.triggerKey);
+    if (w === undefined || trigger === undefined || (trigger.value ?? "") !== "") return null;
+    const fields = p.fields.filter((f) => {
+      const n = w.nodes.get(f.key);
+      if (n === undefined || (n.value ?? "") !== "") return false;
+      return f.source === null || this.model.windows.has(f.source.windowId);
+    });
+    return { ...p, fields };
   }
 
   private error(message: string): void {

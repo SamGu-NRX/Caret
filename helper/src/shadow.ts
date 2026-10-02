@@ -72,15 +72,16 @@ export class ShadowLogger {
     const ep = this.episode;
     if (ep === null) return;
     for (const c of changes) {
-      if (c.kind === "windowClosed" && c.windowId === ep.windowId) {
-        this.close();
-        return;
-      }
       if (c.kind === "value" && c.windowId === ep.windowId && c.key === ep.key) {
         ep.span.observe(c.after ?? "");
         ep.lastChange = c.at;
       }
     }
+  }
+
+  /** Judges the open episode if it is in this window, while the window is still in the model. */
+  onWindowClosing(windowId: string): void {
+    if (this.episode?.windowId === windowId) this.close();
   }
 
   tick(now: number): void {

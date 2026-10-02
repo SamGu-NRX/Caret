@@ -95,12 +95,17 @@ public final class AppWorker: @unchecked Sendable {
     }
 
     func activate() {
-        queue.async { self.focusChanged(element: nil) }
+        queue.async {
+            // Returning to the same field is a new focus for the helper, so the last emitted one is forgotten.
+            self.lastFocusEmitted = nil
+            self.focusChanged(element: nil)
+        }
     }
 
     /// Walks the window the user is leaving, once, at the moment of the switch.
     func leave() {
         queue.async {
+            self.lastFocusEmitted = nil
             if let w = self.focusedWindow { self.walkWindow(w, reason: .leave, isFocused: false) }
         }
     }
@@ -250,8 +255,8 @@ public final class AppWorker: @unchecked Sendable {
             } else {
                 w = AX.element(fe.el, kAXWindowAttribute).map(AXRef.init)
                 // Read emptiness now, before a throttled walk: typing may start within tens of milliseconds.
-                let secure = AX.string(fe.el, kAXSubroleAttribute) == "AXSecureTextField"
-                focusEmptyAtEvent = (fe, secure ? false : (AX.string(fe.el, kAXValueAttribute) ?? "").isEmpty)
+                let secure = AX.isSecure(fe.el)
+                focusEmptyAtEvent = (fe, secure ? false : (AX.valueUnlessSecure(fe.el) ?? "").isEmpty)
             }
         }
         focusElement = fe
@@ -271,13 +276,12 @@ public final class AppWorker: @unchecked Sendable {
         lastFocusEmitted = f
         let kc = info.contexts[f]
         let role = kc?.role ?? AX.string(fe, kAXRoleAttribute) ?? "AXUnknown"
-        let subrole = AX.string(fe, kAXSubroleAttribute)
-        let secure = subrole == "AXSecureTextField"
+        let secure = AX.isSecure(role: role, subrole: AX.string(fe, kAXSubroleAttribute))
         let editable = Roles.editable.contains(role)
         // Emptiness as read when focus arrived; never read for a secure field.
         let empty: Bool
         if secure { empty = false } else if let (el, e) = focusEmptyAtEvent, el == f { empty = e } else {
-            empty = (AX.string(fe, kAXValueAttribute) ?? "").isEmpty
+            empty = (AX.valueUnlessSecure(fe) ?? "").isEmpty
         }
         ctx.emitter.send(.focus(Focus(at: nowMs(), app: app, windowId: info.id, key: kc?.key, role: role,
                                       editable: editable && !secure, empty: empty, frontmost: frontmost)))
