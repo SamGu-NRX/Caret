@@ -89,6 +89,28 @@ let reference: [(section: String, lines: [String])] = [
     ]),
 ]
 
+/// Near misses for every gold value: another person, another order, another meeting.
+let distractors: [(section: String, lines: [String])] = [
+    ("Inbox: Re: Q4 vendor review", [
+        "From: Priya Raman <priya.raman@northwind.example>",
+        "Engineering Manager, Northwind Traders",
+        "Phone: +1 (415) 555-0199",
+        "https://northwind.example/priya",
+    ]),
+    ("Earlier order", [
+        "Order number: ORD-2026-47109",
+        "Total: $89.20",
+        "Ship to: 455 Congress Ave, Austin, TX 78701",
+        "Support ticket: SUP-30417",
+    ]),
+    ("Calendar", [
+        "Vendor sync, Friday, October 9, 2026",
+        "10:30 AM to 11:00 AM",
+        "https://meet.example.com/abq-mnt-zzp",
+        "Room 4B, Building C",
+    ]),
+]
+
 let claimForm: [Field] = [
     Field(label: "Full name", labelPlacement: "left", placeholder: nil, gold: "Dana Whitfield"),
     Field(label: "Email", labelPlacement: "left", placeholder: nil, gold: "dana.whitfield@lumenlabs.example"),
@@ -132,11 +154,11 @@ func label(_ s: String, _ frame: NSRect, bold: Bool = false) -> NSTextField {
     return l
 }
 
-func buildReference() -> NSWindow {
-    let w = makeWindow("Caret Fixture — Reference", NSRect(x: 60, y: 80, width: 460, height: 520))
+func buildReference(_ title: String = "Caret Fixture — Reference", _ sections: [(section: String, lines: [String])] = reference, x: Double = 60) -> NSWindow {
+    let w = makeWindow(title, NSRect(x: x, y: 80, width: 460, height: 520))
     let v = w.contentView!
     var y = 480.0
-    for (section, lines) in reference {
+    for (section, lines) in sections {
         let box = NSBox(frame: NSRect(x: 12, y: y - Double(lines.count) * 24 - 40, width: 436, height: Double(lines.count) * 24 + 36))
         box.title = section
         box.setAccessibilityLabel(section)
@@ -180,6 +202,7 @@ func buildForm(_ title: String, _ fields: [Field], origin: NSPoint) -> NSWindow 
 for name in windowList {
     switch name {
     case "reference": windows[name] = buildReference()
+    case "distractors": windows[name] = buildReference("Caret Fixture — Inbox", distractors, x: 300)
     case "claim": windows[name] = buildForm("Caret Fixture — Claim form", claimForm, origin: NSPoint(x: 540, y: 80))
     case "schedule": windows[name] = buildForm("Caret Fixture — Schedule follow-up", scheduleForm, origin: NSPoint(x: 1080, y: 80))
     default: die("unknown window \(name)")
@@ -364,11 +387,15 @@ if let p = activityPath {
 
 /// Focuses the first empty field of each form once, a few seconds apart, to exercise focus-triggered fill.
 if focusForms {
-    var delay = 3.0
+    var delay = 6.0
     for title in ["Caret Fixture — Claim form", "Caret Fixture — Schedule follow-up"] {
         guard let w = windows.values.first(where: { $0.title == title }), let tf = formFields[title]?.first?.1 else { continue }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            MainActor.assumeIsolated { _ = w.makeFirstResponder(tf) }
+            MainActor.assumeIsolated {
+                // Without a key window, a background app posts no focus notification for a new first responder.
+                w.makeKey()
+                _ = w.makeFirstResponder(tf)
+            }
         }
         delay += 6
     }

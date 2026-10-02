@@ -60,6 +60,7 @@ public final class AppWorker: @unchecked Sendable {
     private var pendingFocus = false
     private var pendingSubtrees: [AXRef] = []
     private var focusEmptyAtEvent: (AXRef, Bool)?
+    private var focusElement: AXRef?
 
     /// Notifications that schedule work. Registered on the application element while the app is event-driven.
     static let notifications: [String] = [
@@ -93,7 +94,7 @@ public final class AppWorker: @unchecked Sendable {
     }
 
     func activate() {
-        queue.async { self.focusChanged() }
+        queue.async { self.focusChanged(element: nil) }
     }
 
     /// Walks the window the user is leaving, once, at the moment of the switch.
@@ -126,8 +127,10 @@ public final class AppWorker: @unchecked Sendable {
     private func handle(_ name: String, _ el: AXRef) {
         guard eventDriven else { return }
         switch name {
-        case kAXFocusedUIElementChangedNotification, kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification:
-            focusChanged()
+        case kAXFocusedUIElementChangedNotification:
+            focusChanged(element: el)
+        case kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification:
+            focusChanged(element: nil)
         case kAXWindowCreatedNotification:
             walkWindow(el, reason: .event, isFocused: el == currentFocusedWindow())
         case kAXUIElementDestroyedNotification:
@@ -199,7 +202,10 @@ public final class AppWorker: @unchecked Sendable {
                 break
             }
         }
-        if full, let w = currentFocusedWindow() {
+        // The window holding the focused element, as the last focus event named it. A frontmost app's
+        // own focused-window attribute is trusted first; for a background app it can name another window.
+        let target = frontmost ? (currentFocusedWindow() ?? focusedWindow) : (focusedWindow ?? currentFocusedWindow())
+        if full, let w = target {
             focusedWindow = w
             walkWindow(w, reason: focus ? .focus : .event, isFocused: true)
             if focus { emitFocus(window: w) }
@@ -212,13 +218,24 @@ public final class AppWorker: @unchecked Sendable {
         AX.element(ax, kAXFocusedWindowAttribute).map(AXRef.init)
     }
 
-    private func focusChanged() {
-        // Read emptiness now, before a throttled walk: typing may start within tens of milliseconds.
-        if let fe = AX.element(ax, kAXFocusedUIElementAttribute) {
-            let secure = AX.string(fe, kAXSubroleAttribute) == "AXSecureTextField"
-            focusEmptyAtEvent = (AXRef(fe), secure ? false : (AX.string(fe, kAXValueAttribute) ?? "").isEmpty)
+    /// `element` is the newly focused element when the notification named one. Its window comes from
+    /// the element itself, because a background app's focused-window attribute can name a different window.
+    private func focusChanged(element: AXRef?) {
+        let fe = element ?? AX.element(ax, kAXFocusedUIElementAttribute).map(AXRef.init)
+        var w: AXRef?
+        if let fe {
+            AXUIElementSetMessagingTimeout(fe.el, AX.elementTimeout)
+            if AX.string(fe.el, kAXRoleAttribute) == kAXWindowRole {
+                w = fe
+            } else {
+                w = AX.element(fe.el, kAXWindowAttribute).map(AXRef.init)
+                // Read emptiness now, before a throttled walk: typing may start within tens of milliseconds.
+                let secure = AX.string(fe.el, kAXSubroleAttribute) == "AXSecureTextField"
+                focusEmptyAtEvent = (fe, secure ? false : (AX.string(fe.el, kAXValueAttribute) ?? "").isEmpty)
+            }
         }
-        let w = currentFocusedWindow()
+        focusElement = fe
+        w = w ?? currentFocusedWindow()
         if let prev = focusedWindow, prev != w, windows[prev] != nil {
             walkWindow(prev, reason: .leave, isFocused: false)
         }
@@ -228,8 +245,8 @@ public final class AppWorker: @unchecked Sendable {
     }
 
     private func emitFocus(window w: AXRef) {
-        guard let info = windows[w], let fe = AX.element(ax, kAXFocusedUIElementAttribute) else { return }
-        let f = AXRef(fe)
+        guard let info = windows[w], let f = focusElement ?? AX.element(ax, kAXFocusedUIElementAttribute).map(AXRef.init) else { return }
+        let fe = f.el
         if f == lastFocusEmitted { return }
         lastFocusEmitted = f
         let kc = info.contexts[f]
@@ -260,7 +277,7 @@ public final class AppWorker: @unchecked Sendable {
     private func walkWindow(_ w: AXRef, reason: WalkReason, isFocused: Bool) {
         AXUIElementSetMessagingTimeout(w.el, AX.elementTimeout)
         var info = info(for: w)
-        let fe = isFocused ? AX.element(ax, kAXFocusedUIElementAttribute) : nil
+        let fe = isFocused ? (focusElement?.el ?? AX.element(ax, kAXFocusedUIElementAttribute)) : nil
         let limits: WalkLimits = (reason == .background || reason == .initial) ? .background : .focused
         let walker = Walker(limits: limits, focused: fe)
         let raw = walker.readChildren(of: w.el)
@@ -294,8 +311,7 @@ public final class AppWorker: @unchecked Sendable {
     /// depend on anything outside it. Returns false when the whole window must be walked instead.
     private func walkSubtree(_ el: AXRef) -> Bool {
         guard let (w, kc) = lookup(el), kc.leaf || kc.named, var info = windows[w] else { return false }
-        let fe = AX.element(ax, kAXFocusedUIElementAttribute)
-        let walker = Walker(limits: .focused, focused: fe)
+        let walker = Walker(limits: .focused, focused: focusElement?.el)
         guard let raw = walker.readSubtree(el.el), !walker.truncated,
               let result = Compactor(app: appPart, windowKind: info.kind).compactSubtree(raw, context: kc) else { return false }
         for (h, c) in result.contexts { info.contexts[AXRef(walker.elements[h])] = c }
@@ -322,7 +338,7 @@ public final class AppWorker: @unchecked Sendable {
             windows.removeValue(forKey: w)
             ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
         }
-        let focused = eventDriven ? currentFocusedWindow() : nil
+        let focused = eventDriven ? (focusedWindow ?? currentFocusedWindow()) : nil
         let now = CFAbsoluteTimeGetCurrent()
         for w in ws.map(AXRef.init) {
             if let i = windows[w], now - i.lastWalk < minAge { continue }
