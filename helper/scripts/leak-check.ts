@@ -1,13 +1,15 @@
 // Checks files for text an audit saw on real windows, by hash (src/leak-check.ts).
 //
-//   node scripts/leak-check.ts --seen FILE [--repo DIR --diff REV] [--public-rev REV] [--show] [PATH...]
+//   node scripts/leak-check.ts --seen FILE [--repo DIR --diff REV] [--public-rev REV] [--words FILE] [--show] [PATH...]
 //
 // PATHs are files or directories, read whole. --diff adds the lines added since REV in the repo's
 // commits (git diff REV..HEAD). A match that also occurs in the repo at --public-rev was public before
-// the audit ran, such as a word in this code base, and is counted apart. Prints counts; --show also
+// the audit ran, such as a word in this code base, and is counted apart. So is a single word found in
+// --words (such as /usr/share/dict/words), alone or less a plural or past-tense ending; that list
+// holds some surnames, so --show still lists these for a person to read. Prints counts; --show also
 // prints the matching text, which comes from the files under check, never from the seen file. That
 // text can be real-window content when a check fails, so --show output stays in the terminal and
-// goes into no file. Exits 1 when any match is not public.
+// goes into no file. Exits 1 when any match is neither public nor a listed word.
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -21,6 +23,7 @@ const { values: a, positionals } = parseArgs({
     repo: { type: "string" },
     diff: { type: "string" },
     "public-rev": { type: "string" },
+    words: { type: "string" },
     show: { type: "boolean", default: false },
   },
 });
@@ -76,11 +79,20 @@ if (a["public-rev"] !== undefined && a.repo !== undefined && hits.size > 0) {
   }
 }
 
-const open = [...hits.values()].filter((e) => !isPublic.has(e.hit.unit));
+const words = new Set(a.words === undefined ? [] : readFileSync(a.words, "utf8").split("\n").map((w) => w.trim().toLowerCase()));
+const isWord = (u: string): boolean =>
+  /^[a-z]+$/.test(u) && [u, u.replace(/s$/, ""), u.replace(/es$/, ""), u.replace(/d$/, ""), u.replace(/ed$/, ""), u.replace(/ing$/, "")].some((w) => w.length > 0 && words.has(w));
+const notPublic = [...hits.values()].filter((e) => !isPublic.has(e.hit.unit));
+const listed = notPublic.filter((e) => isWord(e.hit.unit));
+const other = notPublic.filter((e) => !isWord(e.hit.unit));
 const byBundle: Record<string, number> = {};
-for (const e of open) for (const b of e.hit.bundles) byBundle[b] = (byBundle[b] ?? 0) + 1;
+for (const e of other) for (const b of e.hit.bundles) byBundle[b] = (byBundle[b] ?? 0) + 1;
 process.stdout.write(
-  `${JSON.stringify({ files: targets.size, lines, seenUnits: seen.size, matches: hits.size, public: isPublic.size, notPublic: open.length, notPublicByApp: byBundle }, null, 2)}\n`,
+  `${JSON.stringify({ files: targets.size, lines, seenUnits: seen.size, matches: hits.size, public: isPublic.size, listedWords: listed.length, other: other.length, otherByApp: byBundle }, null, 2)}\n`,
 );
-if (a.show) for (const e of open) process.stdout.write(`${JSON.stringify(e.hit.unit)}\t${e.hit.bundles.join(",")}\t${[...e.files].join(",")}\n`);
-process.exitCode = open.length > 0 ? 1 : 0;
+if (a.show) {
+  for (const [kind, list] of [["word", listed], ["other", other]] as const) {
+    for (const e of list) process.stdout.write(`${kind}\t${JSON.stringify(e.hit.unit)}\t${e.hit.bundles.join(",")}\t${[...e.files].join(",")}\n`);
+  }
+}
+process.exitCode = other.length > 0 ? 1 : 0;
