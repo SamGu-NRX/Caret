@@ -34,6 +34,8 @@ final class PerchModel: ObservableObject {
     @Published var character: FigureCharacter = .pebble
     /// For screen readers: what the perch reports, in words.
     @Published var summary = ""
+    /// Bumped every 5 s while the eyes are open on something: one blink each time.
+    @Published var blinkTick = 0
     var animated = true
     var onTap: (() -> Void)?
 
@@ -59,7 +61,8 @@ struct PerchView: View {
             if model.presented {
                 FigureView(
                     character: model.character, state: model.mood.figure,
-                    height: PerchModel.figureHeight, animated: model.animated, gaze: model.gaze
+                    height: PerchModel.figureHeight, animated: model.animated, gaze: model.gaze,
+                    blinkTick: model.blinkTick
                 )
                 // Separates the flat figure from whatever is behind the screen's edge. A shadow,
                 // not a glow (`IDENTITY.md`: no gradients, no glow).

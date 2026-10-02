@@ -370,6 +370,11 @@ struct FigureView: View {
     var animated = true
     /// The perch's glance, which replaces `facing`. Nil at text size.
     var gaze: CGVector?
+    /// The perch blinks once each time this changes. With the repeating blink and breath, the
+    /// host used 10.9% of a core while the perch reported one running task, even with the panel
+    /// never ordered on screen; with one-shot blinks and no breath, 1.3% against 0.4% with nothing
+    /// to report (A4 socket runs 1 and 4, `--perch hidden`). Not yet measured with the perch drawn.
+    var blinkTick: Int?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -385,11 +390,7 @@ struct FigureView: View {
                 Color.clear
             } else if moving {
                 KeyframeAnimator(initialValue: Gesture.rest, trigger: state) { g in
-                    KeyframeAnimator(initialValue: CGFloat(1), repeating: blinks) { blink in
-                        drawing.body(end.squinting(g.eyeSquash * blink), fill: fill)
-                    } keyframes: { _ in
-                        Gesture.blink(active: blinks)
-                    }
+                    FigureBlink(drawing: drawing, pose: end, fill: fill, squash: g.eyeSquash, repeating: blinks && gaze == nil, tick: gaze == nil ? nil : blinkTick)
                     .scaleEffect(x: g.scaleX, y: g.scaleY, anchor: .bottom)
                     .offset(y: g.lift * height / drawing.viewBox.height)
                     .opacity(g.opacity)
@@ -412,8 +413,10 @@ struct FigureView: View {
         .accessibilityHidden(true)
     }
 
-    /// Offering breathes; so does the perch while it works, since its motion is the report.
-    private var breathes: Bool { state == .offering || (gaze != nil && state == .working) }
+    /// Offering breathes at text size. The perch does not: a breath is a display link that never
+    /// stops, and the perch can be on screen for the length of a build. Its glance and its blink
+    /// carry the report instead.
+    private var breathes: Bool { state == .offering && gaze == nil }
 
     /// The pebble blinks once every 5 s while offering, 150 ms, and on the perch whenever its eyes
     /// are open on something.
@@ -428,6 +431,33 @@ struct FigureView: View {
     }
 }
 
+/// The body with the eyes' blink: a 5 s repeating cycle at text size, or one blink per `tick` on
+/// the perch.
+struct FigureBlink: View {
+    let drawing: FigureDrawing
+    let pose: FigurePose
+    let fill: Color
+    let squash: CGFloat
+    let repeating: Bool
+    let tick: Int?
+
+    var body: some View {
+        if let tick {
+            KeyframeAnimator(initialValue: CGFloat(1), trigger: tick) { blink in
+                drawing.body(pose.squinting(squash * blink), fill: fill)
+            } keyframes: { _ in
+                Gesture.blinkOnce()
+            }
+        } else {
+            KeyframeAnimator(initialValue: CGFloat(1), repeating: repeating) { blink in
+                drawing.body(pose.squinting(squash * blink), fill: fill)
+            } keyframes: { _ in
+                Gesture.blink(active: repeating)
+            }
+        }
+    }
+}
+
 /// One-shot gestures and the breath, as keyframe tracks over a scale, a lift and an opacity.
 struct Gesture {
     var scaleX: CGFloat = 1
@@ -438,6 +468,14 @@ struct Gesture {
     var eyeSquash: CGFloat = 1
 
     static let rest = Gesture()
+
+    /// One blink, 350 ms: closed (0.1) at 125 ms, open again at 350 ms.
+    static func blinkOnce() -> some Keyframes<CGFloat> {
+        KeyframeTrack(\CGFloat.self) {
+            LinearKeyframe(0.1, duration: 0.125)
+            LinearKeyframe(1, duration: 0.225)
+        }
+    }
 
     /// 5 s cycle: open until 93%, closed (0.1) at 95.5%, open again at 100%.
     static func blink(active: Bool) -> some Keyframes<CGFloat> {

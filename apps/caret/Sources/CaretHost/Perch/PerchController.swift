@@ -61,6 +61,7 @@ final class PerchController {
     private var target: (taskId: String, frame: CGRect?)?
     private var expiryTimer: Timer?
     private var gazeTimer: Timer?
+    private var blinkTimer: Timer?
     private var orderOutWork: DispatchWorkItem?
     private var relocating = false
     private var clickMonitor: Any?
@@ -205,7 +206,8 @@ final class PerchController {
         if !model.presented {
             stats.shows += 1
             let reduce = Motion.reduceMotion
-            model.animated = !reduce
+            // Nothing animates where nothing is drawn.
+            model.animated = !reduce && drawsOnScreen && !hidden
             if drawsOnScreen, !hidden, let frame {
                 panel.setFrame(Screen.cocoa(frame), display: false)
                 panel.orderFrontRegardless()
@@ -221,6 +223,8 @@ final class PerchController {
     private func leave() {
         gazeTimer?.invalidate()
         gazeTimer = nil
+        blinkTimer?.invalidate()
+        blinkTimer = nil
         guard model.presented else { return }
         stats.leaves += 1
         let reduce = Motion.reduceMotion
@@ -239,6 +243,16 @@ final class PerchController {
     /// screen. One Accessibility read of one app's windows. Assumed often enough: a glance that
     /// lags a dragged window by 2 s reads as attention, not a fault.
     private func startGazeTimer() {
+        if blinkTimer == nil {
+            // The pebble blinks every 5 s while its eyes are open on something (IDENTITY.md).
+            blinkTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.model.animated, self.model.presented else { return }
+                    guard [.working, .waiting, .needsYou].contains(self.model.mood) else { return }
+                    self.model.blinkTick &+= 1
+                }
+            }
+        }
         guard gazeTimer == nil else { return }
         gazeTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateGaze(locate: true) }
@@ -313,6 +327,7 @@ final class PerchController {
     func shutdown() {
         expiryTimer?.invalidate()
         gazeTimer?.invalidate()
+        blinkTimer?.invalidate()
         closeList()
         panel.orderOut(nil)
     }
