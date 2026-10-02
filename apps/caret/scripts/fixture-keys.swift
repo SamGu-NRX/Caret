@@ -8,7 +8,7 @@
 //
 // Build: swiftc -O fixture-keys.swift -o ../.build/fixture-keys
 // Usage: fixture-keys <pid> type <text> [interval_ms]
-//        fixture-keys <pid> key tab|left|right|space|delete [count]
+//        fixture-keys <pid> key tab|left|right|down|space|delete|cmd-2 [count]
 //        fixture-keys <pid> check
 
 import ApplicationServices
@@ -65,11 +65,11 @@ func requireTarget(_ target: pid_t, sent: Int = 0) {
     }
 }
 
-func post(keyCode: CGKeyCode, text: String?) {
+func post(keyCode: CGKeyCode, text: String?, flags: CGEventFlags = []) {
     let source = CGEventSource(stateID: .hidSystemState)
     for down in [true, false] {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: down) else { continue }
-        event.flags = []
+        event.flags = flags
         if let text {
             let units = Array(text.utf16)
             event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
@@ -102,13 +102,14 @@ case "type":
 case "key":
     guard args.count >= 4 else { exit(2) }
     let count = args.count >= 5 ? Int(args[4]) ?? 1 : 1
-    let codes: [String: (CGKeyCode, String?)] = [
-        "tab": (48, "\t"), "left": (123, nil), "right": (124, nil), "space": (49, " "), "delete": (51, nil),
+    let codes: [String: (CGKeyCode, String?, CGEventFlags)] = [
+        "tab": (48, "\t", []), "left": (123, nil, []), "right": (124, nil, []), "down": (125, nil, []),
+        "space": (49, " ", []), "delete": (51, nil, []), "cmd-2": (19, nil, .maskCommand),
     ]
-    guard let (code, text) = codes[args[3]] else { exit(2) }
+    guard let (code, text, flags) = codes[args[3]] else { exit(2) }
     for sent in 0..<count {
         requireTarget(target, sent: sent)
-        post(keyCode: code, text: text)
+        post(keyCode: code, text: text, flags: flags)
         usleep(30_000)
     }
 default:

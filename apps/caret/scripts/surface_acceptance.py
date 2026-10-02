@@ -3,6 +3,11 @@
 
   surface_acceptance.py alternatives <evidence_dir> [light|dark]
   surface_acceptance.py fill <evidence_dir> [light|dark]
+  surface_acceptance.py realkeys <evidence_dir> [light|dark]
+
+realkeys: one real down arrow, Command-2 and Tab through the event tap, posted at the HID level by
+fixture-keys, which refuses every key unless the fixture owns both the frontmost app and the
+focused element. Needs the foreground run (300 s idle, gui.lock).
 
 Starts, and stops on exit, only processes it records: one caret-fixture (Reference and Claim form)
 and the host limited to that pid, with ghost text off and no helper. Posts no keyboard or mouse
@@ -551,14 +556,62 @@ def fill(out_dir, appearance):
     return results
 
 
+KEYS = os.path.join(ROOT, "apps", "caret", ".build", "fixture-keys")
+
+
+def real_key(name, pid):
+    """One real key at the HID level, headed for the frontmost fixture. fixture-keys checks
+    LaunchServices' front app and the focused element's pid itself and exits 3 otherwise."""
+    guard_user()
+    now = front_pid()
+    if not (now.get("pid") == pid and now.get("lsappinfo") == pid):
+        raise SystemExit(f"deferred: foreground (front={now} before {name})")
+    expect_synthetic()
+    out = subprocess.run([KEYS, str(pid), "key", name], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"deferred: foreground (fixture-keys {name}: {out.stderr.strip()})")
+    time.sleep(0.15)
+
+
+def realkeys(out_dir, appearance):
+    if not FOREGROUND:
+        raise SystemExit("deferred: realkeys needs the foreground run (CARET_SURFACE_IDLE_MIN > 0)")
+    pid, host_pid, gold = rig(out_dir, appearance)
+    field = next(g for g in gold if g["label"] == "Full name")
+    ax(pid, "focus", pid, frame_arg(field["frame"]))
+    time.sleep(0.3)
+    candidates = ["Dana Whitfield", "Dana R. Whitfield", "D. Whitfield", "Dana Whitfield-Ames"]
+    inject({"kind": "alternatives", "pid": pid, "candidates": candidates})
+    s0 = host()
+    taps0 = s0["tap"]["keyDowns"]
+    real_key("down", pid)
+    sf = host().get("surface") or {}
+    check("a real down arrow through the tap opens the alternatives", (sf.get("ui") or {}).get("open") and sf.get("ghost") == candidates[1],
+          ui=sf.get("ui"), ghost=sf.get("ghost"))
+    real_key("down", pid)
+    real_key("cmd-2", pid)
+    sf = host().get("surface") or {}
+    check("a real Command-2 selects candidate 2", (sf.get("ui") or {}).get("candidate") == 1 and sf.get("ghost") == candidates[1], ui=sf.get("ui"))
+    last = (host().get("lastInsertion") or {}).get("claimID", 0)
+    real_key("tab", pid)
+    wait_for(lambda: (lambda st: st.get("lastInsertion") and st["lastInsertion"]["claimID"] > last)(host()), 5)
+    value = ax(pid, "value", pid, frame_arg(field["frame"]))["value"]
+    s1 = host()
+    check("a real Tab takes candidate 2 into the field", value == candidates[1], value=value)
+    check("the tap saw all four keys and consumed them", s1["tap"]["keyDowns"] - taps0 >= 4 and s1["tap"]["consumed"] - s0["tap"]["consumed"] >= 4,
+          keyDowns=s1["tap"]["keyDowns"] - taps0, consumed=s1["tap"]["consumed"] - s0["tap"]["consumed"])
+    check("no panel was ever the key window", not KEY_PANELS, keyPanels=KEY_PANELS)
+    return {"pid": pid, "value": value, "final": s1}
+
+
 if __name__ == "__main__":
-    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("alternatives", "fill"):
+    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("alternatives", "fill", "realkeys"):
         raise SystemExit(__doc__)
     mode, out = sys.argv[1], sys.argv[2]
     appearance = sys.argv[3] if len(sys.argv) == 4 else "light"
     results = {}
     try:
-        results = (alternatives if mode == "alternatives" else fill)(out, appearance)
+        results = {"alternatives": alternatives, "fill": fill, "realkeys": realkeys}[mode](out, appearance)
     finally:
         stop_all()
         for undo in CLEANUP:
