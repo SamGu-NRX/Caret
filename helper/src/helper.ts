@@ -19,6 +19,7 @@ import {
   type FillProposal,
   type FillResult,
   type FillRequest,
+  type Focus,
   type MemoryReply,
   type MemoryRequest,
   type OfferAccept,
@@ -76,6 +77,8 @@ export interface HelperOptions {
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Makes the random part of proposal and watch ids, so tests can expect exact messages. */
   newId?: () => string;
+  /** The helper's clock for message times, fill proposals and the task feed. Tests pass a fake one. */
+  now?: () => number;
   publish: (m: HelperMessage) => void;
   warn?: (line: string) => void;
 }
@@ -151,19 +154,28 @@ export class Helper {
   readonly audit: Audit | null;
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
   private preFocus: { windowId: string; values: Map<string, string> } | null = null;
-  /** Every alternatives, action and popup message published and not yet withdrawn or expired. */
-  readonly offers = new HostOfferRegistry();
+  /** Every alternatives, action and popup message published and not yet withdrawn. */
+  readonly offers: HostOfferRegistry;
+  /**
+   * Fill pop-ups on offer, by offerKey, with the form's field keys when each was made. A pop-up has no
+   * timer (OFFER_LIFETIMES.fill): focus in another field ends it, and so does any change to the form
+   * or a source; see checkFills and onFillFocus.
+   */
+  private readonly fillPopups = new Map<string, { p: GroundedProposal; form: string }>();
+  private readonly now: () => number;
   /** "Open <app>" action lines for watched windows that finished or need the user. */
   readonly openApp: OpenAppOffers;
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
+    this.now = opts.now ?? Date.now;
+    this.offers = new HostOfferRegistry(this.now);
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
     this.socketLink = opts.readerLink === undefined ? new SocketReaderLink(opts.sendToReader ?? (() => false)) : null;
-    this.tasks = new TaskRegistry((m) => this.publish(m));
+    this.tasks = new TaskRegistry((m) => this.publish(m), this.now);
     this.executor = new Executor({
       model: this.model,
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
@@ -202,7 +214,7 @@ export class Helper {
       ...(opts.newId === undefined ? {} : { newId: opts.newId }),
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
-    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots) });
+    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots), now: this.now });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v) }) : null;
   }
 
@@ -223,9 +235,10 @@ export class Helper {
         this.openApp.readerRestarted();
         // Whatever is still offered (a fill pop-up) names windows and fields of the old session, whose
         // ids the new reader may give to other windows.
-        for (const id of this.offers.keys()) this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: Date.now(), id, reason: "stale" });
+        for (const id of this.offers.keys()) this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id, reason: "stale" });
+        this.fillPopups.clear();
         this.readerSession++;
-        this.audit?.readerRestarted(Date.now());
+        this.audit?.readerRestarted(this.now());
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
         return null;
@@ -252,6 +265,7 @@ export class Helper {
         if (moved && this.model.focusedWindowId !== null && this.model.frontmostPid === m.app.pid) this.openApp.onFocusedWindow(this.model.focusedWindowId);
         if (prevFocused !== null && moved) this.record(this.transfers.flush(prevFocused));
         this.pending.onSnapshot(m.window.windowId, m.stats.truncated);
+        this.checkFills(m.window.windowId);
         this.audit?.onSnapshot(m);
         // The user left a window: the reader's leave walk of it, or focus arriving in another window.
         if (m.reason === "leave") this.left(m.window.windowId, m.at);
@@ -267,7 +281,10 @@ export class Helper {
         if (m.frontmost) this.model.frontmostPid = m.app.pid;
         this.audit?.onFocus(m);
         store.count(m.editable ? "reader.focus_editable" : "reader.focus_other", 1, m.at);
-        if (this.mode === "live") this.openApp.onFocus(m);
+        if (this.mode === "live") {
+          this.openApp.onFocus(m);
+          this.onFillFocus(m);
+        }
         const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus);
         if (!triggers || m.key === null) return null;
         return this.fill(m.windowId, m.key, false);
@@ -289,6 +306,7 @@ export class Helper {
         this.openApp.onWindowClosed(m.windowId);
         this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
+        this.checkFills(m.windowId);
         return null;
       }
       case "pasteboard":
@@ -360,7 +378,7 @@ export class Helper {
     // A second accept of an offer whose run is still going must not end that run's working line; one
     // after the run finished opened a new line on the host, which this ends.
     if (!this.executor.live(offerId)) {
-      this.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: offerId, planId: offerId, phase: "stopped", step: null, steps: 0, says: null, detail: reason });
+      this.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: this.now(), taskId: offerId, planId: offerId, phase: "stopped", step: null, steps: 0, says: null, detail: reason });
     }
     return null;
   }
@@ -429,11 +447,11 @@ export class Helper {
       remaining: e.remaining,
       detail: e.detail,
       undoable: e.undoable,
-      ...(e.window === null ? {} : { app: e.window.app, windowId: e.window.windowId, windowTitle: e.window.title }),
+      ...(e.window === null ? {} : { app: e.window.app, windowId: e.window.windowId, windowTitle: e.window.title, frame: e.window.frame }),
     };
     try {
       if (this.tasks.get(e.taskId) === undefined) {
-        this.tasks.create({ id: e.taskId, kind: "plan", says: e.title, app: null, windowId: null, windowTitle: null, pending: null, ...fields });
+        this.tasks.create({ id: e.taskId, kind: "plan", says: e.title, app: null, windowId: null, windowTitle: null, frame: null, pending: null, ...fields });
       } else this.tasks.update(e.taskId, fields);
     } catch (err) {
       if (!(err instanceof TransitionError)) throw err;
@@ -457,6 +475,7 @@ export class Helper {
         app: w?.app ?? null,
         windowId: m.windowId,
         windowTitle: w?.window.title ?? null,
+        frame: w?.window.frame ?? null,
         step: null,
         steps: null,
         stepSays: null,
@@ -466,7 +485,7 @@ export class Helper {
         pending: null,
       });
     } else if (m.type === "offerWithdrawn" && m.reason !== "taken" && this.tasks.get(m.id)?.state === "ready") {
-      const by: TaskCause = m.reason === "dismissed" || m.reason === "diverged" ? "you" : "screen";
+      const by: TaskCause = m.reason === "dismissed" || m.reason === "diverged" ? "you" : m.reason === "expired" ? "caret" : "screen";
       this.tasks.update(m.id, { state: "undone", cause: by, detail: `withdrawn: ${m.reason}` });
     }
   }
@@ -483,6 +502,7 @@ export class Helper {
         if (this.tasks.get(m.taskId) !== undefined) throw new Error(`task id ${m.taskId} is already in use`);
         return await this.executor.run(m.taskId, m.plan, m.slots);
       }
+      if (m.reason !== undefined && m.action !== "pause") throw new Error(`reason ${m.reason} goes only with pause, not ${m.action}`);
       if (this.pending.has(m.taskId) || this.tasks.get(m.taskId)?.kind === "watch") {
         this.pending.control(m.taskId, m.action);
         return null;
@@ -495,7 +515,7 @@ export class Helper {
         case "pause":
         case "takeOver":
           // The run's own promise resolves as paused at the next step boundary.
-          this.executor.pause(m.taskId, m.action === "takeOver");
+          this.executor.pause(m.taskId, m.action === "takeOver", m.action === "pause" ? m.reason : undefined);
           return null;
         case "stop":
           this.executor.stop(m.taskId);
@@ -508,10 +528,9 @@ export class Helper {
   }
 
   /** Periodic work: settled transfers, idle shadow episodes, pruning and count flushes. */
-  tick(now = Date.now()): void {
+  tick(now = this.now()): void {
     this.record(this.transfers.tick(now));
     this.patterns.tick(now);
-    this.openApp.tick();
     if (this.mode === "shadow") this.shadowLogger.tick(now);
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {
       this.lastPrune = now;
@@ -525,7 +544,6 @@ export class Helper {
       for (const [id, p] of this.proposals) if (now - p.at > PROPOSAL_KEEP_MS) this.proposals.delete(id);
       for (const [id, f] of this.caretFills) if (now - f.at > PROPOSAL_KEEP_MS) this.caretFills.delete(id);
       this.tasks.prune(now);
-      this.offers.prune();
       this.opts.store.flush();
     }
   }
@@ -589,9 +607,11 @@ export class Helper {
       this.error(`fill: ${(e as Error).message}`);
       return null;
     }
-    const now = Date.now();
+    const now = this.now();
     if (this.inflight.has(formKey)) return null;
     if (!explicit && now - (this.lastFill.get(formKey) ?? -Infinity) < FILL_REPEAT_MS) return null;
+    // A pop-up already on offer covers this form, however long ago it was made.
+    if (!explicit && [...this.fillPopups.values()].some((f) => f.form === formKey)) return null;
     this.inflight.add(formKey);
     const session = this.readerSession;
     try {
@@ -614,7 +634,7 @@ export class Helper {
       // always gets one.
       if (!explicit && fillPopupEligible(p)) {
         store.count("fill.popup", 1, now);
-        this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p));
+        if (this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p))) this.fillPopups.set(p.id, { p, form: formKey });
         return p;
       }
       this.proposals.set(p.id, { at: now, windowId: p.windowId, values: new Map(p.fields.flatMap((f) => (f.value === null ? [] : [[f.key, f.value] as const]))) });
@@ -653,17 +673,53 @@ export class Helper {
    */
   private async acceptFill(p: GroundedProposal): Promise<AcceptResult> {
     const stale = recheckFill(this.model, p);
-    const withdraw = (reason: "taken" | "stale"): void => {
-      this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: Date.now(), id: p.id, reason });
-    };
     if (stale !== null) {
-      withdraw("stale");
+      this.withdrawFill(p.id, "stale");
       return { refused: `${stale}; nothing was written` };
     }
     const { plan, slots } = fillPlan(this.model, p);
-    withdraw("taken");
+    this.withdrawFill(p.id, "taken");
     // The destinations were empty just now; one the user fills before the run's first read stops it.
     return this.executor.run(p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+  }
+
+  /**
+   * The form's window or a source window changed or closed: a fill pop-up it no longer matches is
+   * withdrawn as stale. It no longer matches when a destination is gone or filled, a source stops
+   * showing its value (recheckFill), or the form gained or lost a field.
+   */
+  private checkFills(windowId: string): void {
+    for (const [id, { p, form }] of this.fillPopups) {
+      if (p.windowId !== windowId && !p.fields.some((f) => f.source.windowId === windowId)) continue;
+      const w = this.model.windows.get(p.windowId);
+      let changed = recheckFill(this.model, p) !== null;
+      if (!changed && w !== undefined) {
+        try {
+          changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
+        } catch {
+          changed = true;
+        }
+      }
+      if (changed) this.withdrawFill(id, "stale");
+    }
+  }
+
+  /**
+   * Focus in an editable field the pop-up does not fill, in the app the user is in, ends the pop-up's
+   * lifetime. Focus on anything else (a list, a button, another window's text) keeps it: the user may be
+   * checking a source.
+   */
+  private onFillFocus(m: Focus): void {
+    if (!m.editable || m.key === null || !(m.frontmost || this.opts.allowBackgroundFocus)) return;
+    for (const [id, { p }] of this.fillPopups) {
+      const inForm = m.windowId === p.windowId && (m.key === p.triggerKey || p.fields.some((f) => f.key === m.key));
+      if (!inForm) this.withdrawFill(id, "expired");
+    }
+  }
+
+  private withdrawFill(id: string, reason: "taken" | "stale" | "expired"): void {
+    this.fillPopups.delete(id);
+    this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id, reason });
   }
 
   /**
@@ -681,7 +737,7 @@ export class Helper {
         this.opts.store.count("offers.refused", 1);
         const message = `offer ${offerKey} refused: ${issue?.message ?? "invalid"} at ${issuePath(issue?.path ?? [])}`;
         this.opts.warn?.(message);
-        this.opts.publish({ type: "error", v: PROTOCOL_VERSION, at: Date.now(), message });
+        this.opts.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message });
         return false;
       }
       this.offers.record(m as HostOffer, accept ?? null);
@@ -692,7 +748,7 @@ export class Helper {
 
   private error(message: string): void {
     this.opts.warn?.(message);
-    this.publish({ type: "error", v: PROTOCOL_VERSION, at: Date.now(), message });
+    this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message });
   }
 }
 

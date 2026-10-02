@@ -10,7 +10,7 @@ import { Desk, PEOPLE, grid, roster } from "./scene.ts";
 import { ScreenModel } from "../src/model.ts";
 import { HelperMessage, PROTOCOL_VERSION, type FillField, type FillProposal, type OfferAccept, type OfferAction, type OfferPopup } from "../src/protocol.ts";
 import { parsePopupSpec } from "../src/popup.ts";
-import { HostOfferRegistry, OFFER_KEEP_MS, acceptRefusal } from "../src/offers/registry.ts";
+import { HostOfferRegistry, acceptRefusal } from "../src/offers/registry.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
 import { OpenAppOffers } from "../src/offers/open-app.ts";
 import { fillSlots, Plan } from "../src/executor/schema.ts";
@@ -25,13 +25,13 @@ function popup(blocks: OfferPopup["spec"]["blocks"]): OfferPopup {
 }
 
 describe("host-offer registry", () => {
-  it("forgets a record after ten minutes, and on remove", () => {
+  it("keeps a record however old until it is removed: only a withdrawal ends an offer", () => {
     let now = 1000;
     const r = new HostOfferRegistry(() => now);
     r.record(popup([{ type: "header", title: { text: "T", ref } }, { type: "actions", items: [{ id: "go", label: "Go", key: "tab" }] }]), null);
-    now += OFFER_KEEP_MS;
+    now += 24 * 60 * 60 * 1000;
     expect(r.get("p1")?.kind).toBe("popup");
-    now += 1;
+    r.remove("p1");
     expect(r.get("p1")).toBeUndefined();
     r.record(popup([{ type: "header", title: { text: "T", ref } }, { type: "actions", items: [{ id: "go", label: "Go", key: "tab" }] }]), null);
     r.remove("p1");

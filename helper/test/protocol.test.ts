@@ -16,7 +16,20 @@ describe("golden protocol fixture", () => {
       "readerCommand", "verbResult", "userInput", "taskProgress",
       "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
       "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
+      "offerWithdrawn", "taskControl",
     ]);
+  });
+
+  it("carries B8's additions: an expired withdrawal, a pause for input, and task frames", () => {
+    const [expiredLine, pauseLine] = lines.slice(26).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(HelperMessage.parse(expiredLine)).toMatchObject({ type: "offerWithdrawn", reason: "expired" });
+    expect(ConsumerMessage.parse(pauseLine)).toMatchObject({ type: "taskControl", action: "pause", reason: "input" });
+    expect(ConsumerMessage.safeParse({ ...pauseLine, reason: "typing" }).success).toBe(false);
+    const activity = JSON.parse(lines[17] ?? "") as { task: { frame: unknown; says: string } };
+    expect(activity.task.frame).toEqual([640, 120, 520, 380]);
+    expect(activity.task.says).toBe("'Upload' in Caret Fixture is waiting for you");
+    const { frame: _, ...noFrame } = activity.task;
+    expect(HelperMessage.safeParse({ ...activity, task: noFrame }).success).toBe(false);
   });
 
   it("parses every line, and each parse is lossless", () => {

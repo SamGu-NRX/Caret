@@ -774,6 +774,12 @@
                 "takeOver",
                 "undo"
               ]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "input"
+              ]
             }
           },
           "required": [
@@ -1620,7 +1626,8 @@
                 "dismissed",
                 "diverged",
                 "idle",
-                "stale"
+                "stale",
+                "expired"
               ]
             }
           },
@@ -2313,6 +2320,33 @@
                     "null"
                   ]
                 },
+                "frame": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 4,
+                      "maxItems": 4
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "step": {
                   "anyOf": [
                     {
@@ -2460,6 +2494,7 @@
                 "app",
                 "windowId",
                 "windowTitle",
+                "frame",
                 "step",
                 "steps",
                 "stepSays",
@@ -2595,6 +2630,33 @@
                     "type": [
                       "string",
                       "null"
+                    ]
+                  },
+                  "frame": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ],
+                        "items": false,
+                        "minItems": 4,
+                        "maxItems": 4
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "step": {
@@ -2744,6 +2806,7 @@
                   "app",
                   "windowId",
                   "windowTitle",
+                  "frame",
                   "step",
                   "steps",
                   "stepSays",
@@ -2886,6 +2949,33 @@
                         "type": [
                           "string",
                           "null"
+                        ]
+                      },
+                      "frame": {
+                        "anyOf": [
+                          {
+                            "type": "array",
+                            "prefixItems": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "number"
+                              }
+                            ],
+                            "items": false,
+                            "minItems": 4,
+                            "maxItems": 4
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       },
                       "step": {
@@ -3035,6 +3125,7 @@
                       "app",
                       "windowId",
                       "windowTitle",
+                      "frame",
                       "step",
                       "steps",
                       "stepSays",

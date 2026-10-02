@@ -273,16 +273,7 @@ describe("offers over the socket", () => {
     expect(late).toMatchObject({ taskId: "id-1", phase: "stopped", steps: 0 });
   });
 
-  it("loop: closing the other list's window withdraws the alternatives that quote it", async () => {
-    await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
-    await host.waitFor((m) => m.type === "alternatives");
-    reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: DIRECTORY });
-    await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-1");
-    expect(host.received.filter((m) => (m as { type: string }).type === "offerWithdrawn").map((m) => [(m as { id: string }).id, (m as { reason: string }).reason])).toEqual([
-      ["offer-1.0", "stale"],
-      ["offer-1", "stale"],
-    ]);
-  });
+  // Closing a source window of alternatives: offers-lifetimes.test.ts, "partial withdrawal of alternatives".
 
   it("fill: an explicit fillRequest still gets the fillProposal it asks for", async () => {
     await reader.replay(loadRecording("offers-fill.ndjson"), hooks);

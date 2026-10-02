@@ -21,6 +21,7 @@ import {
 } from "../protocol.ts";
 import type { PopupRef, PopupValue } from "../popup.ts";
 import type { AcceptHandler, AcceptResult } from "../offers/registry.ts";
+import { expired } from "../offers/lifetimes.ts";
 import type { Transfer } from "../transfers.ts";
 import type { RollingText } from "../rolling-text.ts";
 import type { TaskResult } from "../executor/executor.ts";
@@ -63,13 +64,13 @@ interface OfferState {
   routineId: string | null;
   state: "open" | "taken" | "closed";
   closedAt: number | null;
-  /** Keys of the alternatives messages published for this offer's cells, withdrawn with it. */
-  derived: string[];
   /**
-   * Source windows and memory entries that only the alternatives read. The host shows those values,
-   * so the offer is withdrawn when one of them goes, as for its own cells.
+   * The alternatives messages published for a loopNext offer's cells, each with the source window of
+   * every candidate, in order. A closed source removes its candidates and the message is sent again;
+   * a message left with none is withdrawn, and the offer with the last of them.
    */
-  altSources: Set<string>;
+  alts: { msg: OfferAlternatives; sources: string[] }[];
+  /** Memory entries that only the alternatives read; the offer is withdrawn when one goes, as for its own cells. */
   altMemory: Set<string>;
 }
 
@@ -196,8 +197,38 @@ export class PatternEngine {
       this.watches.delete(id);
     }
     for (const o of this.offers.values()) {
-      if (o.state === "open" && (o.msg.windowId === windowId || o.cells.some((c) => c.srcWindowId === windowId) || o.altSources.has(windowId))) this.withdraw(o, "stale");
+      if (o.state !== "open") continue;
+      if (o.msg.windowId === windowId) this.withdraw(o, "stale");
+      else if (o.alts.length > 0) this.dropSource(o, windowId);
+      else if (o.cells.some((c) => c.srcWindowId === windowId)) this.withdraw(o, "stale");
     }
+  }
+
+  /**
+   * A source window of a loopNext offer's alternatives closed. Each cell's message loses the candidates
+   * read from it and is sent again under the same key; one left with none is withdrawn. The offer stays
+   * while any message remains, though taking it through offerControl then fails its recheck if its own
+   * source was the one that closed.
+   */
+  private dropSource(o: OfferState, windowId: string): void {
+    const kept: OfferState["alts"] = [];
+    for (const a of o.alts) {
+      if (!a.sources.includes(windowId)) {
+        kept.push(a);
+        continue;
+      }
+      const candidates = a.msg.candidates.filter((_, i) => a.sources[i] !== windowId);
+      if (candidates.length === 0) {
+        this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: a.msg.offerKey, reason: "stale" });
+        continue;
+      }
+      const top = candidates[0] as PopupValue;
+      const msg: OfferAlternatives = { ...a.msg, at: this.clock, candidates, quoted: "node" in top.ref && top.ref.quote === top.text };
+      kept.push({ msg, sources: a.sources.filter((s) => s !== windowId) });
+      this.deps.publish(msg);
+    }
+    o.alts = kept;
+    if (kept.length === 0) this.withdraw(o, "stale");
   }
 
   tick(now: number): void {
@@ -214,6 +245,12 @@ export class PatternEngine {
         if (w.pending === null && now > w.until) this.watches.delete(id);
       }
     });
+    for (const o of this.offers.values()) {
+      if (o.state !== "open" || !expired(o.msg.kind, o.msg.at, this.clock)) continue;
+      // The user let a loop's offer run out; that counts against its kind here today, as walking past it did before lifetimes.
+      if (o.msg.kind !== "routine") this.deps.memory.recordReaction(o.msg.kind, o.msg.bundleId, "ignored", this.clock);
+      this.withdraw(o, "expired");
+    }
     for (const [id, o] of this.offers) if (o.closedAt !== null && now - o.closedAt > OFFER_KEEP_MS) this.offers.delete(id);
     this.timings.time("decisionLog", () => this.deps.memory.flushDecisions());
   }
@@ -339,10 +376,13 @@ export class PatternEngine {
         if (ev.rest.length > 0) this.offer("loopFinish", ev.loop.id, { loopId: ev.loop.id, routineId: null }, ev.rest.flat(), { hits: 2, misses: 0, paused: false, grounded: true });
         return;
       case "ended":
+        // A loop that went quiet leaves its offers to their own lifetimes (OFFER_LIFETIMES), which end
+        // them as expired; the loop's gap would otherwise cut a five-minute loopFinish to two.
+        if (ev.reason === "idle") return;
         for (const o of loopOffers) {
           // An offer the user walked past without a word counts against its kind here today.
           if (ev.reason !== "dismissed") this.deps.memory.recordReaction(o.msg.kind, o.msg.bundleId, "ignored", this.clock);
-          this.withdraw(o, ev.reason === "dismissed" ? "dismissed" : ev.reason);
+          this.withdraw(o, ev.reason);
         }
         return;
     }
@@ -428,7 +468,7 @@ export class PatternEngine {
     };
     // A memory rule may change what Caret writes; the loop must accept that value when it comes back as a transfer.
     if (ids.loopId !== null) for (const c of written) if (c.written !== c.value) this.loops.expect(ids.loopId, c.dstKey, c.written, c.kind);
-    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, derived: [], altSources: new Set(), altMemory: new Set() };
+    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, alts: [], altMemory: new Set() };
     this.offers.set(id, o);
     this.deps.publish(msg);
     if (kind !== "loopNext") this.offerAction(o);
@@ -453,10 +493,11 @@ export class PatternEngine {
       const w = model.windows.get(c.dstWindowId);
       if (w === undefined) return;
       const candidates = [this.cellValue(c.srcWindowId, c.srcKey, c.value, c.written, c.memory)];
+      const sources = [c.srcWindowId];
       for (const alt of alternatives[i] ?? []) {
         const m = applyMemory(this.deps.memory, this.deps.hash, alt.value, alt.kind, c.dstShapeHash);
         if (m.value !== alt.value && o.loopId !== null) this.loops.expect(o.loopId, alt.dstKey, m.value, alt.kind, alt.srcWindowId);
-        o.altSources.add(alt.srcWindowId);
+        sources.push(alt.srcWindowId);
         for (const id of m.used) o.altMemory.add(id);
         candidates.push(this.cellValue(alt.srcWindowId, alt.srcKey, alt.value, m.value, m.used));
       }
@@ -470,7 +511,7 @@ export class PatternEngine {
         candidates,
         quoted: "node" in top.ref && top.ref.quote === top.text,
       };
-      o.derived.push(msg.offerKey);
+      o.alts.push({ msg, sources });
       this.deps.publish(msg);
     });
   }
@@ -535,8 +576,8 @@ export class PatternEngine {
     if (o.state === "open") o.state = "closed";
     o.closedAt = this.clock;
     // The cells' alternatives go first, so the offer's own withdrawal is the last word on it.
-    for (const id of o.derived) this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id, reason });
-    o.derived = [];
+    for (const a of o.alts) this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: a.msg.offerKey, reason });
+    o.alts = [];
     this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: o.msg.id, reason });
   }
 

@@ -9,7 +9,7 @@
 // next step boundary: before the next step starts, or before the current step acts if its reads are
 // still under way. A stop ends it there. Every write goes in an undo ledger with the value it replaced.
 import { randomInt } from "node:crypto";
-import { PROTOCOL_VERSION, type AppRef, type Node, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
+import { PROTOCOL_VERSION, type AppRef, type Frame, type Node, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { CalendarPort, ReaderLink, UrlOpener } from "./means.ts";
@@ -58,7 +58,7 @@ export interface TaskEvent {
   remaining: string[];
   undoable: boolean;
   /** The first window the plan bound, for the activity row. */
-  window: { app: AppRef; windowId: string; title: string } | null;
+  window: { app: AppRef; windowId: string; title: string; frame: Frame | null } | null;
 }
 
 /** Why a run must stop at its next step boundary. `takeOver` is a pause that hands the run back to the user. */
@@ -229,17 +229,20 @@ export class Executor {
   /**
    * Pauses a running task at its next step boundary; the running `run` or `resume` call then resolves
    * as paused. `takeOver` hands the run back to the user: the paused phase names the step it reached.
-   * Taking over an already paused task reports it again as handed back.
+   * Taking over an already paused task reports it again as handed back. A pause for `input` (the host
+   * saw the user's own input) leaves a pending pause from the reader's userInput as it is, since that one
+   * names what the user did and where; a userInput after it replaces its wording in turn.
    */
-  pause(taskId: string, takeOver: boolean): void {
+  pause(taskId: string, takeOver: boolean, reason?: "input"): void {
     const task = this.need(taskId);
-    const by = takeOver ? "takeOver" : "control";
+    const by = takeOver ? "takeOver" : reason ?? "control";
     if (task.finished === "paused") {
       if (takeOver) this.progress(task, "paused", task.next, this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
       return;
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
-    if (task.interrupt?.kind !== "stop") task.interrupt = { kind: "pause", by, why: takeOver ? "you took over" : "you paused it" };
+    if (task.interrupt?.kind === "stop" || (by === "input" && task.interrupt?.by === "input")) return;
+    task.interrupt = { kind: "pause", by, why: takeOver ? "you took over" : by === "input" ? "your input" : "you paused it" };
   }
 
   /** Ends a running task at its next step boundary, or a paused one now. What it wrote stays; undo restores it. */
@@ -724,7 +727,7 @@ export class Executor {
       cause,
       remaining: task.plan.steps.slice(from).map((s) => s.says),
       undoable: task.finished !== null && task.ledger.some((e) => e.kind !== "press"),
-      window: bound === undefined ? null : { app: bound.app, windowId: bound.window.windowId, title: bound.window.title },
+      window: bound === undefined ? null : { app: bound.app, windowId: bound.window.windowId, title: bound.window.title, frame: bound.window.frame },
     });
   }
 

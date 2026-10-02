@@ -8,7 +8,8 @@ import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type Activity, type HelperMessage, type TaskRecord } from "../src/protocol.ts";
 import { PlanError, type Plan, type Step } from "../src/executor/schema.ts";
 import { TaskRegistry, TransitionError } from "../src/tasks/registry.ts";
-import { executorWindow, FakeApp, K, TITLE } from "./fake-app.ts";
+import { executorWindow, FakeApp, K, TITLE, WIN } from "./fake-app.ts";
+import { FIXTURE_APP } from "./builders.ts";
 
 const W = { titleStartsWith: TITLE };
 const FIELDS = ["name", "email", "reference", "message", "eventtitle", "group:billing/textfield:city"];
@@ -190,6 +191,59 @@ describe("task controls on a six-step run", () => {
     expect(records().at(-1)).toMatchObject({ state: "paused", cause: "you" });
   });
 
+  describe("a host pause for input", () => {
+    const clicking = (): void => void helper.handleReader({ type: "userInput", v: PROTOCOL_VERSION, at: 5, pid: FIXTURE_APP.pid, kind: "mouse", point: [50, 50] });
+    const hostPause = (reason?: "input"): void => void helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "t", action: "pause", ...(reason === undefined ? {} : { reason }) });
+    const readerDetail = `paused before step 3 of 6: a click in '${TITLE}'`;
+
+    it("keeps the reader's wording when the reader's input came first", async () => {
+      onWrite = (i) => {
+        if (i !== 1) return;
+        clicking();
+        hostPause("input");
+      };
+      expect(await helper.executor.run("t", SIX, {})).toMatchObject({ outcome: "paused", step: 2, detail: readerDetail });
+      expect(records().at(-1)).toMatchObject({ state: "paused", cause: "you", detail: readerDetail });
+    });
+
+    it("takes the reader's wording when the reader's input comes second", async () => {
+      onWrite = (i) => {
+        if (i !== 1) return;
+        hostPause("input");
+        clicking();
+      };
+      expect(await helper.executor.run("t", SIX, {})).toMatchObject({ outcome: "paused", detail: readerDetail });
+    });
+
+    it("says 'your input' when the reader saw none", async () => {
+      onWrite = (i) => {
+        if (i === 1) hostPause("input");
+      };
+      expect(await helper.executor.run("t", SIX, {})).toMatchObject({ outcome: "paused", detail: "paused before step 3 of 6: your input" });
+    });
+
+    it("lets a plain pause, the user's own control, replace the reader's wording as before", async () => {
+      onWrite = (i) => {
+        if (i !== 1) return;
+        clicking();
+        hostPause();
+      };
+      expect(await helper.executor.run("t", SIX, {})).toMatchObject({ outcome: "paused", detail: "paused before step 3 of 6: you paused it" });
+    });
+
+    it("refuses a reason on anything but pause", async () => {
+      await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "t", action: "stop", reason: "input" });
+      expect(published.find((m) => m.type === "error")).toMatchObject({ message: "task t: reason input goes only with pause, not stop" });
+    });
+  });
+
+  it("puts the task window's frame on its records", async () => {
+    await helper.executor.run("t", SIX, {});
+    const frame = helper.model.windows.get(WIN)?.window.frame;
+    expect(frame).not.toBeNull();
+    expect(records().at(-1)?.frame).toEqual(frame);
+  });
+
   it("refuses a runPlan whose task id is already a record", async () => {
     await helper.executor.run("t", SIX, {});
     await helper.handleTask({ type: "runPlan", v: PROTOCOL_VERSION, taskId: "t", plan: SIX, slots: {} });
@@ -213,6 +267,7 @@ describe("task registry", () => {
     state: "running",
     cause: null,
     says: "Fill six fields",
+    frame: null,
     app: null,
     windowId: null,
     windowTitle: null,
@@ -274,6 +329,29 @@ describe("task registry", () => {
     const gap = reg.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "since", since: 1 });
     expect(gap.truncated).toBe(true);
     expect(gap.events).toHaveLength(1000);
+  });
+
+  it("stops a reply before it passes its byte cap, and flags it truncated", () => {
+    const big = (id: string): Omit<TaskRecord, "startedAt" | "updatedAt"> => rec(id, { says: "x".repeat(400) });
+    const one = Buffer.byteLength(JSON.stringify({ ...big("a0"), startedAt: 1000, updatedAt: 1000 })) + 1;
+    const small = new TaskRegistry(() => {}, () => now, one * 3);
+    for (let i = 0; i < 5; i++) small.create(big(`a${i}`));
+    const list = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" });
+    expect(list.tasks).toHaveLength(3);
+    expect(list.truncated).toBe(true);
+    const since = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "since", since: 0 });
+    expect(since.events.map((e) => e.seq)).toEqual([1, 2]);
+    expect(since.truncated).toBe(true);
+    const whole = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "since", since: 4 });
+    expect(whole).toMatchObject({ truncated: false, events: [{ seq: 5 }] });
+  });
+
+  it("keeps the default cap under 1 MiB however many records there are", () => {
+    for (let i = 0; i < 1500; i++) reg.create(rec(`r${i}`, { says: "y".repeat(1000), remaining: ["z".repeat(500)] }));
+    const reply = reg.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" });
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThan(1024 * 1024);
+    expect(reply.truncated).toBe(true);
+    expect(reply.tasks.length).toBeGreaterThan(0);
   });
 
   it("forgets finished records after a day and keeps unfinished ones", () => {

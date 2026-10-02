@@ -273,6 +273,12 @@ export const TaskControl = z.object({
   v: z.literal(PROTOCOL_VERSION),
   taskId: z.string(),
   action: z.enum(["pause", "resume", "stop", "takeOver", "undo"]),
+  /**
+   * Why the host paused: `input` when it saw the user's own input in the task's window. The pause then
+   * keeps the reader's wording ("typing in 'Claim form'") when the reader reported that input too.
+   * Only with `pause`.
+   */
+  reason: z.enum(["input"]).optional(),
 });
 export type TaskControl = z.infer<typeof TaskControl>;
 
@@ -580,16 +586,18 @@ export type PatternOffer = z.infer<typeof PatternOffer>;
 
 /**
  * The offer is no longer valid; a consumer removes it. `taken`: its values were entered, by Caret or by
- * the user typing them. `diverged`: the user entered something else. `idle`: the loop went quiet.
- * `stale`: a window it reads or writes closed, the reader restarted, or its memory entry was paused or forgotten.
- * `id` is a patternOffer's id, or the offerKey of an alternatives, action or popup message.
+ * the user typing them, or the user went to the window it offered to open. `diverged`: the user entered
+ * something else. `idle`: no longer sent; lifetimes replaced it. `stale`: a window it reads or writes
+ * closed or changed, the reader restarted, or its memory entry was paused or forgotten. `expired`: its
+ * lifetime ended (offers/lifetimes.ts). `id` is a patternOffer's id, or the offerKey of an
+ * alternatives, action or popup message.
  */
 export const OfferWithdrawn = z.object({
   type: z.literal("offerWithdrawn"),
   v: z.literal(PROTOCOL_VERSION),
   at: ms,
   id: z.string(),
-  reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale"]),
+  reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "expired"]),
 });
 export type OfferWithdrawn = z.infer<typeof OfferWithdrawn>;
 
@@ -700,6 +708,12 @@ export const TaskRecord = z.object({
   app: AppRef.nullable(),
   windowId: z.string().nullable(),
   windowTitle: z.string().nullable(),
+  /**
+   * The task window's frame, read when the record was made and on each change of state or step, so the
+   * host can find the window without matching its title. Null when the task has no window yet or the
+   * reader read no frame.
+   */
+  frame: Frame.nullable(),
   /** Zero-based index of the step the run is at, or stopped or paused before. Null for watches and before the first step. */
   step: z.number().int().nonnegative().nullable(),
   steps: z.number().int().nonnegative().nullable(),
@@ -730,8 +744,10 @@ export type Activity = z.infer<typeof Activity>;
 
 /**
  * Sent to the asking consumer only. `seq` is the latest activity sequence number. `list` fills `tasks`,
- * newest first; `since` fills `events`, oldest first. `truncated` means events after `since` were
- * already dropped from the helper's buffer, so the consumer must `list` instead.
+ * newest first; `since` fills `events`, oldest first. Either stops before the reply would pass 1 MiB
+ * (tasks/registry.ts MAX_REPLY_BYTES). `truncated` means the reply is incomplete: for `list`, the oldest
+ * records were left out; for `since`, events after `since` were dropped from the helper's buffer or left
+ * out, so the consumer must `list` instead.
  */
 export const ActivityReply = z.object({
   type: z.literal("activityReply"),

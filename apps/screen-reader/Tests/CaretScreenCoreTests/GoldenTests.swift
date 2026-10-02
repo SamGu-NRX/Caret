@@ -47,7 +47,8 @@ private func goldenLines() throws -> [Data] {
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
                           "readerCommand", "verbResult", "userInput", "taskProgress",
                           "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
-                          "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand"])
+                          "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
+                          "offerWithdrawn", "taskControl"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -101,6 +102,25 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
     }
 
+    @Test func readsExpiryPauseReasonAndTaskFrames() throws {
+        let lines = try goldenLines()
+        guard case .offerWithdrawn(let gone) = try JSONDecoder().decode(Message.self, from: lines[26]) else { Issue.record("line 27 is not an offerWithdrawn"); return }
+        #expect(gone.id == "offer-4" && gone.reason == .expired)
+        guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { Issue.record("line 28 is not a taskControl"); return }
+        #expect(pause == TaskControl(taskId: "task-1", action: .pause, reason: .input))
+        guard case .taskControl(let takeOver) = try JSONDecoder().decode(Message.self, from: lines[15]) else { Issue.record("line 16 is not a taskControl"); return }
+        #expect(takeOver.reason == nil)
+        let nullReason = Data(#"{"type":"taskControl","v":1,"taskId":"t","action":"pause","reason":null}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: nullReason) }
+        guard case .activity(let a) = try JSONDecoder().decode(Message.self, from: lines[17]) else { Issue.record("line 18 is not an activity"); return }
+        #expect(a.task.frame == Frame(x: 640, y: 120, width: 520, height: 380))
+        #expect(a.task.says == "'Upload' in Caret Fixture is waiting for you")
+        guard case .activityReply(let r) = try JSONDecoder().decode(Message.self, from: lines[18]) else { Issue.record("line 19 is not an activityReply"); return }
+        #expect(r.tasks.allSatisfy { $0.frame == Frame(x: 40, y: 60, width: 520, height: 420) })
+        let line = String(decoding: lines[17], as: UTF8.self).replacingOccurrences(of: #""frame":[640,120,520,380],"#, with: "")
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(line.utf8)) }
+    }
+
     @Test func readsTheOfferMessagesAndRaise() throws {
         let lines = try goldenLines()
         guard case .alternatives(let alt) = try JSONDecoder().decode(Message.self, from: lines[19]) else { Issue.record("line 20 is not alternatives"); return }
@@ -150,7 +170,7 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: nullVariants) }
         let negativeRow = Data(#"{"type":"offerAccept","v":1,"offerId":"o","actionId":"a","overrides":{"choices":-1},"at":1}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: negativeRow) }
-        let badReason = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"expired"}"#.utf8)
+        let badReason = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"timedOut"}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badReason) }
     }
 

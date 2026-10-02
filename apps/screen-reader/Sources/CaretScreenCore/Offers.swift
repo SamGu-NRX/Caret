@@ -190,10 +190,11 @@ public struct OfferStop: Codable, Equatable, Sendable {
 /// offerKey of an alternatives, action or popup message.
 public struct OfferWithdrawn: Codable, Equatable, Sendable {
     public static let type = "offerWithdrawn"
-    /// `taken`: its values were entered, by Caret or by the user. `diverged`: the user entered something
-    /// else. `idle`: the loop went quiet. `stale`: a window it reads or writes closed, the reader
-    /// restarted, or its memory entry was paused or forgotten.
-    public enum Reason: String, Codable, Sendable { case taken, dismissed, diverged, idle, stale }
+    /// `taken`: its values were entered, by Caret or by the user, or the user went to the window it
+    /// offered to open. `diverged`: the user entered something else. `idle`: no longer sent. `stale`: a
+    /// window it reads or writes closed or changed, the reader restarted, or its memory entry was paused
+    /// or forgotten. `expired`: its lifetime ended (helper/src/offers/lifetimes.ts).
+    public enum Reason: String, Codable, Sendable { case taken, dismissed, diverged, idle, stale, expired }
     public var at: Int64
     public var id: String
     public var reason: Reason

@@ -1,22 +1,19 @@
 // "Open <app>": when a pending-state watch sees its window finish, or start waiting on the user, the
 // host is offered an action line in the field the user is in now, and Tab brings the watched window to
 // the front through the executor. The line quotes the window's status line from the node that shows
-// it; with no status line, or none on screen, nothing is offered.
+// it; with no status line, or none on screen, nothing is offered. It has no timer (OFFER_LIFETIMES.open):
+// it lasts until the user visits the window, the window closes, or the watch resolves again.
 import { PROTOCOL_VERSION, type Focus, type HelperMessage, type OfferAction, type OfferField, type OfferWithdrawn } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { AcceptHandler, AcceptResult } from "./registry.ts";
 
-/** How long an offer waits for the user to land in a field of another window, and stays offered. Assumed, not measured. */
-export const OPEN_HOLD_MS = 10 * 60 * 1000;
-
 interface Entry {
   offerKey: string;
   watchId: string;
   windowId: string;
   status: string;
-  createdAt: number;
   /** False while the offer waits for a field to be bound to. */
   published: boolean;
 }
@@ -62,7 +59,7 @@ export class OpenAppOffers {
     if (e.status === null) return;
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined || statusNode(w, e.status) === null) return;
-    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, createdAt: this.now(), published: false };
+    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, published: false };
     this.entries.set(offerKey, entry);
     const field = this.fieldNow(e.windowId);
     if (field !== null) this.show(entry, field);
@@ -92,12 +89,6 @@ export class OpenAppOffers {
 
   onWindowClosed(windowId: string): void {
     for (const e of [...this.entries.values()]) if (e.windowId === windowId) this.drop(e.offerKey, "stale");
-  }
-
-  /** Drops offers older than OPEN_HOLD_MS, held or shown. */
-  tick(): void {
-    const now = this.now();
-    for (const e of [...this.entries.values()]) if (now - e.createdAt > OPEN_HOLD_MS) this.drop(e.offerKey, "stale");
   }
 
   /** Window ids start over with a new reader, so every offer names a window that no longer exists. */
