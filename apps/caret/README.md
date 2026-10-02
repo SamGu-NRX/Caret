@@ -8,7 +8,12 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
 ## Layout
 
 - `Sources/CaretHostCore`: decision logic with no AppKit or AX. `OfferArbiter` holds the one
-  offer Tab may take (ghost or fill) and the one write ⌘Z may revert, and hands each out once.
+  offer Tab may take (ghost text and its alternatives, a fill, an action line or a pop-up), its
+  navigation state, the one write ⌘Z may revert and the working or error line, and hands each
+  out once. `KeyOwnership` is the keyboard table of `SURFACES.md` section 8 as code.
+  `PopupSpec` decodes a pop-up from the catalog of eight blocks and refuses an unknown block or a
+  value without a `ref`; its golden file is `Tests/CaretHostCoreTests/Fixtures/popup-specs.json`.
+  `LinePlacement` and `FillLineRule` place a fill's line in tight forms and keep one line on screen.
   `InsertionGuard` is a port of the team repo's guard; `UndoGuard` is its counterpart for ⌘Z.
   `FillSelection` matches a proposal to the focused field; `WriteFallback` decides paste versus AX
   write; `HelperProtocol` decodes helper lines and defines `fillResult`.
@@ -22,6 +27,10 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
   - `Helper/HelperClient`: the consumer connection to the helper's socket.
   - `Fill/`: proposals and form focus in, fill offers and the result toast out.
   - `Overlay/FillOverlay`: the ghost value, the source line and the toast (`SURFACES.md` 3, 5, 6).
+  - `Design/`: tokens, the figure (pebble, seed, wren; `CARET_FIGURE` or the menu's Character),
+    the pop-up blocks, the line, and `Gallery`, the off-screen renders the snapshot tests compare.
+  - `Runtime/SurfaceCoordinator`: alternatives, action lines, pop-ups, and the working, result
+    and error lines after Tab.
   - `Runtime/`: wiring, shared status and the debug socket.
 - `Sources/Caret`: the app shell.
 
@@ -69,9 +78,15 @@ CARET_ALLOW_BUNDLES=com.apple.TextEdit .build/Caret.app/Contents/MacOS/Caret
 ## Debug socket
 
 `~/.caret-run/sockets/host.sock` (override: `--socket`, `CARET_HOST_SOCKET`) answers one
-command per connection with JSON: `state` (default), `latency-reset`, `ping`, and the test hook
-`key <tab|esc|cmd-z|cmd-1|cmd-2|cmd-3|char:c> <pid>`, which routes a key headed for `<pid>`
-through the event tap's own decision code without posting any event.
+command per connection with JSON: `state` (default), `latency-reset`, `ping`, and test hooks:
+
+- `key <tab|shift-tab|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:c> <pid>`
+  routes a key headed for `<pid>` through the event tap's own decision code without posting any
+  event, and replies after the main thread has handled it.
+- `inject <json>` shows an offer for the focused field of the pid it names: alternatives, an
+  action line, a pop-up spec, or a helper line such as a `fillProposal` (`SurfaceInjection`).
+  Injected offers are never reported to the helper.
+- `progress done|error` ends the work an accepted action line or pop-up started.
 `scripts/host-state.py` wraps it and can wait for an offer or an insertion. The state carries
 trust flags, the current offer, the last claim and insertion, tap timing and keystroke-to-paint
 latency. Field text never appears; only digests and lengths, plus the model's own output.
@@ -95,6 +110,13 @@ latency. Field text never appears; only digests and lengths, plus the model's ow
   reads back the keystroke-to-paint samples and the field's text.
 - `scripts/fill_advance_check.py <dir>`: a verified fill moves focus to the next field and the
   next offer follows.
+- `scripts/surface_acceptance.py alternatives|fill <dir> [light|dark]`: alternatives, pop-ups and
+  the fill line on caret-fixture through `inject` and `key`, with composed screenshots. It needs
+  the Mac idle (`CARET_SURFACE_IDLE_MIN`, default 120 s), because caret-fixture takes the
+  foreground when it launches, and stops on any input that is not the host's own.
+- `CARET_RECORD_SNAPSHOTS=1 swift test --filter SnapshotTests` rewrites the reference images in
+  `Tests/CaretHostTests/References`; `CARET_SNAPSHOT_OUT=<dir>` also writes every render there.
+- `--appearance light|dark` (`CARET_APPEARANCE`) pins the overlays' theme for screenshots.
 
 ## Which apps take a pid-posted paste
 
