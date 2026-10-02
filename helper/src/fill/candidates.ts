@@ -58,6 +58,16 @@ export interface GenerateOptions {
   budgetMs?: number;
   /** Milliseconds, for the budget. Tests pass a fake clock. */
   clock?: () => number;
+  /** When given, wall time by part of the work is added to it, for the audit's probe. */
+  profile?: GeneratorProfile;
+}
+
+/** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
+export interface GeneratorProfile {
+  split: number;
+  context: number;
+  section: number;
+  blockHead: number;
 }
 
 export interface GenerateStats {
@@ -103,6 +113,16 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const seen = new Set<string>();
   const full = (): boolean => out.length >= max;
   /** Adds a span unless the cap is reached or its text is already in; its context is worked out only then. */
+  const prof = o.profile;
+  const timed = <T>(part: keyof GeneratorProfile, f: () => T): T => {
+    if (prof === undefined) return f();
+    const t = performance.now();
+    try {
+      return f();
+    } finally {
+      prof[part] += performance.now() - t;
+    }
+  };
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): void => {
     if (full() || seen.has(text)) return;
     seen.add(text);
@@ -110,9 +130,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       id: `c${out.length + 1}`,
       text,
       kind,
-      context: context(),
-      section: sectionAround(w, node),
-      blockHead: blockHead(w, node, text),
+      context: timed("context", context),
+      section: timed("section", () => sectionAround(w, node)),
+      blockHead: timed("blockHead", () => blockHead(w, node, text)),
       recency: recency(w),
       source: {
         pid: w.app.pid,
@@ -151,7 +171,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       stats.nodes++;
       const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-      const lines = nodeText(node).split(/\r?\n/);
+      const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
         // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
         if (full() || outOfTime()) return finish();

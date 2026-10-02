@@ -343,7 +343,8 @@ export type FillResult = z.infer<typeof FillResult>;
 export const ActivityRequest = z.object({
   type: z.literal("activityRequest"),
   v: z.literal(PROTOCOL_VERSION),
-  requestId: z.string(),
+  /** Echoed in the reply, whose size is capped, so it is short. */
+  requestId: z.string().min(1).max(200),
   op: z.enum(["list", "since"]),
   since: z.number().int().nonnegative().optional(),
 });

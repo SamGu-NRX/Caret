@@ -110,6 +110,8 @@ private func goldenLines() throws -> [Data] {
         #expect(pause == TaskControl(taskId: "task-1", action: .pause, reason: .input))
         guard case .taskControl(let takeOver) = try JSONDecoder().decode(Message.self, from: lines[15]) else { Issue.record("line 16 is not a taskControl"); return }
         #expect(takeOver.reason == nil)
+        let longId = Data(#"{"type":"activityRequest","v":1,"requestId":"\#(String(repeating: "r", count: 201))","op":"list"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: longId) }
         let nullReason = Data(#"{"type":"taskControl","v":1,"taskId":"t","action":"pause","reason":null}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: nullReason) }
         guard case .activity(let a) = try JSONDecoder().decode(Message.self, from: lines[17]) else { Issue.record("line 18 is not an activity"); return }

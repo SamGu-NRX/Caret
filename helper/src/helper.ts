@@ -73,6 +73,8 @@ export interface HelperOptions {
    * since the audit's numbers are about what the helper would have done, not what it did.
    */
   audit?: boolean;
+  /** For the audit: how often to probe the generator on the real windows (Audit.tick); absent for never. */
+  auditProbeEveryMs?: number;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Makes the random part of proposal and watch ids, so tests can expect exact messages. */
@@ -162,6 +164,8 @@ export class Helper {
    * or a source; see checkFills and onFillFocus.
    */
   private readonly fillPopups = new Map<string, { p: GroundedProposal; form: string }>();
+  /** The latest focus in an editable field of the app the user is in, for a pop-up whose Jev answer arrives after the user moved on. */
+  private lastEditableFocus: { windowId: string; key: string } | null = null;
   private readonly now: () => number;
   /** "Open <app>" action lines for watched windows that finished or need the user. */
   readonly openApp: OpenAppOffers;
@@ -215,7 +219,7 @@ export class Helper {
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
     this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots), now: this.now });
-    this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v) }) : null;
+    this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
   }
 
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
@@ -532,6 +536,7 @@ export class Helper {
     this.record(this.transfers.tick(now));
     this.patterns.tick(now);
     if (this.mode === "shadow") this.shadowLogger.tick(now);
+    this.audit?.tick(now);
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {
       this.lastPrune = now;
       this.model.prune(now);
@@ -633,6 +638,10 @@ export class Helper {
       // explicit fillRequest asks for the proposal itself (scripts/fill-eval.ts reads its fields), so it
       // always gets one.
       if (!explicit && fillPopupEligible(p)) {
+        if (this.fillOverBeforeShown(p, formKey) !== null) {
+          store.count("fill.popup_stale", 1, now);
+          return p;
+        }
         store.count("fill.popup", 1, now);
         if (this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p))) this.fillPopups.set(p.id, { p, form: formKey });
         return p;
@@ -711,10 +720,27 @@ export class Helper {
    */
   private onFillFocus(m: Focus): void {
     if (!m.editable || m.key === null || !(m.frontmost || this.opts.allowBackgroundFocus)) return;
-    for (const [id, { p }] of this.fillPopups) {
-      const inForm = m.windowId === p.windowId && (m.key === p.triggerKey || p.fields.some((f) => f.key === m.key));
-      if (!inForm) this.withdrawFill(id, "expired");
+    this.lastEditableFocus = { windowId: m.windowId, key: m.key };
+    for (const [id, { p }] of this.fillPopups) if (!inFillForm(p, m.windowId, m.key)) this.withdrawFill(id, "expired");
+  }
+
+  /**
+   * Why a pop-up about to be published would already be over, or null: focus moved to a field outside
+   * the form while Jev answered, a source stopped showing its value, or the form's fields changed. The
+   * events that would have ended it came before it existed.
+   */
+  private fillOverBeforeShown(p: GroundedProposal, form: string): string | null {
+    const f = this.lastEditableFocus;
+    if (f !== null && !inFillForm(p, f.windowId, f.key)) return "focus left the form";
+    const stale = recheckFill(this.model, p);
+    if (stale !== null) return stale;
+    const w = this.model.windows.get(p.windowId);
+    try {
+      if (w === undefined || `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form) return "the form changed";
+    } catch {
+      return "the form changed";
     }
+    return null;
   }
 
   private withdrawFill(id: string, reason: "taken" | "stale" | "expired"): void {
@@ -750,6 +776,11 @@ export class Helper {
     this.opts.warn?.(message);
     this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message });
   }
+}
+
+/** Whether a field is the pop-up's trigger or one of the fields it fills. */
+function inFillForm(p: GroundedProposal, windowId: string, key: string): boolean {
+  return windowId === p.windowId && (key === p.triggerKey || p.fields.some((f) => f.key === key));
 }
 
 /** A zod issue path as a JSON path: ["spec", "blocks", 2, "rows", 0] is spec.blocks[2].rows[0]. */

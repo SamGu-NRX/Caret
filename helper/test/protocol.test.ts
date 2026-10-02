@@ -25,6 +25,9 @@ describe("golden protocol fixture", () => {
     expect(HelperMessage.parse(expiredLine)).toMatchObject({ type: "offerWithdrawn", reason: "expired" });
     expect(ConsumerMessage.parse(pauseLine)).toMatchObject({ type: "taskControl", action: "pause", reason: "input" });
     expect(ConsumerMessage.safeParse({ ...pauseLine, reason: "typing" }).success).toBe(false);
+    const request = JSON.parse(lines[16] ?? "") as Record<string, unknown>;
+    expect(ConsumerMessage.safeParse({ ...request, requestId: "r".repeat(200) }).success).toBe(true);
+    expect(ConsumerMessage.safeParse({ ...request, requestId: "r".repeat(201) }).success).toBe(false);
     const activity = JSON.parse(lines[17] ?? "") as { task: { frame: unknown; says: string } };
     expect(activity.task.frame).toEqual([640, 120, 520, 380]);
     expect(activity.task.says).toBe("'Upload' in Caret Fixture is waiting for you");

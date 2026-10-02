@@ -32,6 +32,7 @@ import { MemoryError, dontOfferMatch, type MemoryStore } from "./memory.ts";
 import { applyMemory, captureEdit } from "./preferences.ts";
 import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
 import { describeTransfer, templateOf } from "./shape.ts";
+import { normalizeValue } from "../normalize.ts";
 
 /** How long after Caret fills a field an edit to it is read as a preference. Assumed. */
 export const EDIT_WATCH_MS = 60_000;
@@ -65,13 +66,20 @@ interface OfferState {
   state: "open" | "taken" | "closed";
   closedAt: number | null;
   /**
-   * The alternatives messages published for a loopNext offer's cells, each with the source window of
-   * every candidate, in order. A closed source removes its candidates and the message is sent again;
-   * a message left with none is withdrawn, and the offer with the last of them.
+   * The alternatives messages published for a loopNext offer's cells, with every candidate's sources:
+   * each window whose list predicts that value, the one its ref quotes first. A closed source leaves
+   * each candidate it supports, which then quotes its next source or, with none left, goes; a changed
+   * message is sent again, one left with no candidate is withdrawn, and the offer with the last of them.
    */
-  alts: { msg: OfferAlternatives; sources: string[] }[];
+  alts: { msg: OfferAlternatives; candidates: AltCandidate[] }[];
   /** Memory entries that only the alternatives read; the offer is withdrawn when one goes, as for its own cells. */
   altMemory: Set<string>;
+}
+
+interface AltCandidate {
+  written: string;
+  memory: string[];
+  sources: { srcWindowId: string; srcKey: string; value: string }[];
 }
 
 interface Watch {
@@ -186,11 +194,35 @@ export class PatternEngine {
         if (w !== undefined) w.pending = c.after === w.written ? null : { value: c.after ?? "", at: c.at };
       }
     }
+    const touched = new Set(changes.filter((c) => c.kind === "value" || c.kind === "removed").map((c) => c.windowId));
+    if (touched.size > 0) this.recheckOpen(touched);
+  }
+
+  /**
+   * An open offer that a change in one of its windows made impossible to take as shown is withdrawn
+   * now, rather than refused when the host accepts it: `taken` when every destination already holds a
+   * value the offer showed for it, `stale` otherwise. A loopNext whose loop is live is left to the loop,
+   * which hears the same edit as a transfer once it settles and confirms or ends the loop.
+   */
+  private recheckOpen(windowIds: ReadonlySet<string>): void {
+    for (const o of this.offers.values()) {
+      if (o.state !== "open") continue;
+      if (o.msg.kind === "loopNext" && o.loopId !== null && this.loops.active?.id === o.loopId) continue;
+      if (!o.cells.some((c) => windowIds.has(c.dstWindowId) || windowIds.has(c.srcWindowId))) continue;
+      if (this.recheck(o) === null) continue;
+      const shown = (c: OfferState["cells"][number], i: number): string[] => [c.written, ...(o.alts[i]?.candidates.map((x) => x.written) ?? [])];
+      const filled = o.cells.every((c, i) => {
+        const v = this.deps.model.windows.get(c.dstWindowId)?.nodes.get(c.dstKey)?.value ?? "";
+        return v !== "" && shown(c, i).includes(v);
+      });
+      this.withdraw(o, filled ? "taken" : "stale");
+    }
   }
 
   /** Called before the window leaves the model. */
   onWindowClosed(windowId: string): void {
     this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId));
+    this.loops.sourceClosed(windowId);
     for (const [id, w] of this.watches) {
       if (w.windowId !== windowId) continue;
       this.judgeEdit(w);
@@ -213,18 +245,17 @@ export class PatternEngine {
   private dropSource(o: OfferState, windowId: string): void {
     const kept: OfferState["alts"] = [];
     for (const a of o.alts) {
-      if (!a.sources.includes(windowId)) {
+      if (!a.candidates.some((x) => x.sources.some((s) => s.srcWindowId === windowId))) {
         kept.push(a);
         continue;
       }
-      const candidates = a.msg.candidates.filter((_, i) => a.sources[i] !== windowId);
+      const candidates = a.candidates.map((x) => ({ ...x, sources: x.sources.filter((s) => s.srcWindowId !== windowId) })).filter((x) => x.sources.length > 0);
       if (candidates.length === 0) {
         this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: a.msg.offerKey, reason: "stale" });
         continue;
       }
-      const top = candidates[0] as PopupValue;
-      const msg: OfferAlternatives = { ...a.msg, at: this.clock, candidates, quoted: "node" in top.ref && top.ref.quote === top.text };
-      kept.push({ msg, sources: a.sources.filter((s) => s !== windowId) });
+      const msg: OfferAlternatives = { ...a.msg, at: this.clock, ...this.altValues(candidates) };
+      kept.push({ msg, candidates });
       this.deps.publish(msg);
     }
     o.alts = kept;
@@ -368,7 +399,7 @@ export class PatternEngine {
     switch (ev.type) {
       case "predict": {
         const o = this.offer("loopNext", ev.loop.id, { loopId: ev.loop.id, routineId: null }, ev.cells, { hits: 1, misses: 0, paused: false, grounded: true });
-        if (o !== null) this.offerAlternatives(o, ev.alternatives);
+        if (o !== null) this.offerAlternatives(o, ev.alternatives, ev.repeats);
         return;
       }
       case "confirmed":
@@ -487,33 +518,41 @@ export class PatternEngine {
    * other source windows' values for the same cell. A value an alternative would write after memory
    * rules is expected by the loop too, under its own fit, so inserting it switches the loop there.
    */
-  private offerAlternatives(o: OfferState, alternatives: readonly LoopCell[][]): void {
+  private offerAlternatives(o: OfferState, alternatives: readonly LoopCell[][], repeats: readonly LoopCell[][]): void {
     const model = this.deps.model;
     o.cells.forEach((c, i) => {
       const w = model.windows.get(c.dstWindowId);
       if (w === undefined) return;
-      const candidates = [this.cellValue(c.srcWindowId, c.srcKey, c.value, c.written, c.memory)];
-      const sources = [c.srcWindowId];
+      const source = (x: LoopCell | Cell) => ({ srcWindowId: x.srcWindowId, srcKey: x.srcKey, value: x.value });
+      const candidates: (AltCandidate & { norm: string })[] = [{ written: c.written, memory: c.memory, sources: [source(c)], norm: normalizeValue(c.value, c.kind) }];
       for (const alt of alternatives[i] ?? []) {
         const m = applyMemory(this.deps.memory, this.deps.hash, alt.value, alt.kind, c.dstShapeHash);
         if (m.value !== alt.value && o.loopId !== null) this.loops.expect(o.loopId, alt.dstKey, m.value, alt.kind, alt.srcWindowId);
-        sources.push(alt.srcWindowId);
         for (const id of m.used) o.altMemory.add(id);
-        candidates.push(this.cellValue(alt.srcWindowId, alt.srcKey, alt.value, m.value, m.used));
+        candidates.push({ written: m.value, memory: m.used, sources: [source(alt)], norm: normalizeValue(alt.value, alt.kind) });
       }
-      const top = candidates[0] as PopupValue;
+      for (const r of repeats[i] ?? []) candidates.find((x) => x.norm === normalizeValue(r.value, r.kind))?.sources.push(source(r));
       const msg: OfferAlternatives = {
         type: "alternatives",
         v: PROTOCOL_VERSION,
         offerKey: `${o.msg.id}.${i}`,
         at: this.clock,
         field: { pid: w.app.pid, windowId: c.dstWindowId, key: c.dstKey, frame: w.nodes.get(c.dstKey)?.frame ?? null },
-        candidates,
-        quoted: "node" in top.ref && top.ref.quote === top.text,
+        ...this.altValues(candidates),
       };
-      o.alts.push({ msg, sources });
+      o.alts.push({ msg, candidates: candidates.map(({ norm: _, ...rest }) => rest) });
       this.deps.publish(msg);
     });
+  }
+
+  /** The candidates as the host shows them, each quoting its first source, and whether the top one is quoted as is. */
+  private altValues(candidates: readonly AltCandidate[]): Pick<OfferAlternatives, "candidates" | "quoted"> {
+    const values = candidates.map((x) => {
+      const s = x.sources[0] as AltCandidate["sources"][number];
+      return this.cellValue(s.srcWindowId, s.srcKey, s.value, x.written, x.memory);
+    });
+    const top = values[0] as PopupValue;
+    return { candidates: values, quoted: "node" in top.ref && top.ref.quote === top.text };
   }
 
   /**

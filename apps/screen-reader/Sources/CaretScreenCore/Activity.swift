@@ -66,6 +66,7 @@ public struct TaskControl: Codable, Equatable, Sendable {
 }
 
 /// `list` asks for every task record; `since` for the activity messages after sequence number `since`.
+/// `requestId` is 1 to 200 characters, since the size-capped reply echoes it.
 public struct ActivityRequest: Codable, Equatable, Sendable {
     public static let type = "activityRequest"
     public enum Op: String, Codable, Sendable { case list, since }
@@ -79,6 +80,8 @@ public struct ActivityRequest: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         requestId = try c.decode(String.self, forKey: .requestId); op = try c.decode(Op.self, forKey: .op)
         since = try c.decodeOptional(Int.self, forKey: .since)
+        // zod counts UTF-16 code units.
+        if requestId.isEmpty || requestId.utf16.count > 200 { throw ProtocolError("requestId must be 1 to 200 characters") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)

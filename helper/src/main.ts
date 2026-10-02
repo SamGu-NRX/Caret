@@ -1,8 +1,9 @@
 // caret-helper: listens on the screen socket for caret-screen and for consumers.
 //   node src/main.ts [--socket PATH] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
-//   node src/main.ts --audit-out FILE --audit-seen FILE --socket PATH --data-dir DIR
+//   node src/main.ts --audit-out FILE --audit-seen FILE --socket PATH --data-dir DIR [--audit-probe-every SECONDS]
 // The second form is the read-only audit (src/audit.ts): shadow mode, Jev off, counts written to
-// --audit-out every minute and at exit, the seen-text hashes to --audit-seen at exit.
+// --audit-out every minute and at exit, the seen-text hashes to --audit-seen at exit. With
+// --audit-probe-every it also times the generator on the real windows at that interval.
 // The Jev key comes from TYPESAFE_API_KEY or the .env file named by CARET_ENV_FILE, read when a request is made.
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +25,7 @@ const { values: args } = parseArgs({
     "fill-cutoff": { type: "string" },
     "audit-out": { type: "string" },
     "audit-seen": { type: "string" },
+    "audit-probe-every": { type: "string" },
   },
 });
 
@@ -52,6 +54,7 @@ const helper = new Helper({
   shadow: args.shadow,
   allowBackgroundFocus: args["allow-background-focus"],
   audit: auditOut !== undefined,
+  ...(args["audit-probe-every"] === undefined ? {} : { auditProbeEveryMs: Number(args["audit-probe-every"]) * 1000 }),
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,

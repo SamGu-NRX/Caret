@@ -6,13 +6,15 @@
 #   OUT/cpu-samples.txt     "<epoch s> <pid> <%cpu> <rss KB> <cpu time>" every 30 s
 #   OUT/hid-idle.tsv        "<epoch s> <HID idle s>" every 30 s, for active minutes
 #   OUT/pids.txt            the pids this script started
+# With PROBE_SECONDS the helper also times the generator on the real windows at that interval (Audit.tick).
 # The seen-text hashes and their key go to SEEN (keep it outside OUT, run the leak check, delete it).
-#   run-audit.sh OUT SEEN MAX_SECONDS [ACTIVE_MINUTES]
+#   run-audit.sh OUT SEEN MAX_SECONDS [ACTIVE_MINUTES] [PROBE_SECONDS]
 # With ACTIVE_MINUTES it stops as soon as that many active minutes are in (a 30 s sample with under
 # 30 s of HID idle time counts as half a minute), or at MAX_SECONDS, whichever comes first.
 set -euo pipefail
 DUR=$3
 TARGET=${4:-0}
+PROBE=${5:-0}
 # Absolute paths: the helper runs from helper/, so a relative OUT or SEEN would land somewhere else.
 mkdir -p "$1"
 OUT="$(cd "$1" && pwd)"
@@ -27,7 +29,7 @@ stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 
 cleanup() { stop "${READER:-}"; sleep 1; stop "${HPID:-}"; sleep 2; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-(cd "$HELPER" && exec node src/main.ts --audit-out "$OUT/audit-counts.json" --audit-seen "$SEEN" --socket "$SOCK" --data-dir "$WORK/data" --status-every 300 > "$WORK/helper.log" 2>&1) &
+(cd "$HELPER" && exec node src/main.ts --audit-out "$OUT/audit-counts.json" --audit-seen "$SEEN" --socket "$SOCK" --data-dir "$WORK/data" --status-every 300 --audit-probe-every "$PROBE" > "$WORK/helper.log" 2>&1) &
 HPID=$!
 for _ in $(seq 1 50); do [[ -S "$SOCK" ]] && break; sleep 0.2; done
 [[ -S "$SOCK" ]] || { echo "helper did not listen"; cat "$WORK/helper.log"; exit 1; }

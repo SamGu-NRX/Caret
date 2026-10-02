@@ -14,8 +14,8 @@ interface Entry {
   watchId: string;
   windowId: string;
   status: string;
-  /** False while the offer waits for a field to be bound to. */
-  published: boolean;
+  /** The field the offer is shown in; null while it waits for one. */
+  boundTo: OfferField | null;
 }
 
 export interface OpenAppDeps {
@@ -49,7 +49,7 @@ export class OpenAppOffers {
 
   /** Offers for watches, held or shown, by offerKey. For tests. */
   pending(): { offerKey: string; published: boolean }[] {
-    return [...this.entries.values()].map((e) => ({ offerKey: e.offerKey, published: e.published }));
+    return [...this.entries.values()].map((e) => ({ offerKey: e.offerKey, published: e.boundTo !== null }));
   }
 
   /** A watch ended as done or became needsYou. A newer resolution of the same watch replaces an older offer. */
@@ -59,7 +59,7 @@ export class OpenAppOffers {
     if (e.status === null) return;
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined || statusNode(w, e.status) === null) return;
-    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, published: false };
+    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, boundTo: null };
     this.entries.set(offerKey, entry);
     const field = this.fieldNow(e.windowId);
     if (field !== null) this.show(entry, field);
@@ -75,7 +75,7 @@ export class OpenAppOffers {
       if (m.windowId === e.windowId) {
         if (m.frontmost) this.drop(e.offerKey, "taken");
       }
-      else if (!e.published && m.frontmost && m.editable && m.key !== null) {
+      else if (e.boundTo === null && m.frontmost && m.editable && m.key !== null) {
         const frame = this.deps.model.windows.get(m.windowId)?.nodes.get(m.key)?.frame ?? null;
         this.show(e, { pid: m.app.pid, windowId: m.windowId, key: m.key, frame });
       }
@@ -87,8 +87,19 @@ export class OpenAppOffers {
     for (const e of [...this.entries.values()]) if (e.windowId === windowId) this.drop(e.offerKey, "taken");
   }
 
+  /**
+   * The watched window closing ends its offer. The window of the field an offer is shown in closing
+   * withdraws that showing: the offer is held again, under a new key, for the next field the user lands in.
+   */
   onWindowClosed(windowId: string): void {
-    for (const e of [...this.entries.values()]) if (e.windowId === windowId) this.drop(e.offerKey, "stale");
+    for (const e of [...this.entries.values()]) {
+      if (e.windowId === windowId) this.drop(e.offerKey, "stale");
+      else if (e.boundTo?.windowId === windowId) {
+        this.drop(e.offerKey, "stale");
+        const held: Entry = { ...e, offerKey: `open-${e.watchId}.${++this.seq}`, boundTo: null };
+        this.entries.set(held.offerKey, held);
+      }
+    }
   }
 
   /** Window ids start over with a new reader, so every offer names a window that no longer exists. */
@@ -125,7 +136,7 @@ export class OpenAppOffers {
       endState: { text: e.status, ref: { node: `${e.windowId}/${node}`, quote: e.status } },
       actions: [{ id: "open", label: `Open ${w.app.name}`, key: "tab" }],
     };
-    if (this.deps.publish(msg, () => this.accept(e.offerKey))) e.published = true;
+    if (this.deps.publish(msg, () => this.accept(e.offerKey))) e.boundTo = field;
     else this.entries.delete(e.offerKey);
   }
 
@@ -133,7 +144,7 @@ export class OpenAppOffers {
     const e = this.entries.get(offerKey);
     if (e === undefined) return;
     this.entries.delete(offerKey);
-    if (e.published) this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
+    if (e.boundTo !== null) this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
 
   /** Raises the watched window as the task `offerKey`. The window's title and app name are slots, read now. */

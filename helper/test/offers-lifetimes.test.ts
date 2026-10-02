@@ -13,7 +13,8 @@ import { PROTOCOL_VERSION, type Activity, type OfferAlternatives, type ReaderMes
 import { OFFER_LIFETIMES } from "../src/offers/lifetimes.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { MAIL_APP, focus, jevPickingText, snap } from "./builders.ts";
-import { Desk, type GridWindow, type ListWindow } from "./scene.ts";
+import { Desk, PEOPLE, grid, roster, type GridWindow, type ListWindow } from "./scene.ts";
+import { captureEdit } from "../src/patterns/preferences.ts";
 import { FIXTURE_APP } from "./builders.ts";
 import { LineClient, SocketReader, loadRecording, until } from "./socket-reader.ts";
 
@@ -33,11 +34,14 @@ const DAY = 24 * 60 * 60 * 1000;
 const MIN = 60 * 1000;
 
 const FILL_VALUES: Record<string, string> = { Name: "Dana Whitfield", Email: "dana.whitfield@example.com", Phone: "+1 (512) 555-0142" };
+/** While set, fill questions wait on it, so a test can change the screen while Jev "answers". */
+let jevGate: Promise<void> | null = null;
 const askJev: AskJev = async (req) => {
   if (req.questions.finished !== undefined) {
     const done = /done|passed/i.test(String((req.state as Record<string, unknown>).now));
     return { model: "jev-test", answers: { finished: { choice: done ? "yes" : "no", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
   }
+  if (jevGate !== null) await jevGate;
   return jevPickingText((_, instructions) => FILL_VALUES[/Label: '([^']+)'/.exec(instructions)?.[1] ?? ""] ?? null)(req);
 };
 
@@ -126,6 +130,7 @@ describe("offer lifetimes over the socket", () => {
   });
 
   afterEach(async () => {
+    jevGate = null;
     host.close();
     reader.close();
     helper.shutdown();
@@ -172,6 +177,23 @@ describe("offer lifetimes over the socket", () => {
       expect(helper.offers.size).toBe(0);
     });
 
+    it("is not shown at all when focus left the form while Jev answered", async () => {
+      let release = (): void => {};
+      jevGate = new Promise((r) => (release = r));
+      await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+      const search = snap([{ key: M("textfield:search~0"), parent: null, role: "AXTextField", label: "Search", editable: true }], { at: reader.clock + 10, windowId: "6160-9", title: "Search", app: MAIL_APP, focused: true, reason: "focus" });
+      reader.send(search);
+      await until(() => hooks.applied("6160-9", search.at));
+      reader.send(focus("6160-9", M("textfield:search~0"), reader.clock + 10, { app: MAIL_APP }));
+      await until(() => helper.model.frontmostPid === MAIL_APP.pid);
+      release();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(host.received.some((m) => (m as Sent).type === "popup")).toBe(false);
+      expect(helper.offers.size).toBe(0);
+      store.flush();
+      expect(store.counts()["fill.popup_stale"]).toBe(1);
+    });
+
     it("is withdrawn as stale when its source window closes", async () => {
       await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
       await host.waitFor((m) => m.type === "popup");
@@ -213,6 +235,23 @@ describe("offer lifetimes over the socket", () => {
       expect(await host.waitFor((m) => m.type === "error")).toMatchObject({ message: "offer offer-2: no such offer, or it expired" });
       expect(reader.verbs.filter((v) => v.kind === "write")).toEqual([]);
     });
+  });
+
+  it("loopFinish outliving its quiet loop is withdrawn when the user fills one of its rows", async () => {
+    await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
+    await host.waitFor((m) => m.type === "alternatives");
+    const typed = reader.setValue(SEATING, guest(2), "Lena Hartmann");
+    await until(() => hooks.applied(SEATING, typed.at));
+    helper.tick(typed.at + 2000);
+    const action = await host.waitFor<{ at: number }>((m) => m.type === "action");
+    await tickAt(action.at + 3 * MIN);
+    expect(helper.patterns.loops.active).toBeNull();
+    expect(withdrawals().filter(([id]) => id === "offer-2")).toEqual([]);
+    reader.clock = action.at + 3 * MIN + 10;
+    const own = reader.setValue(SEATING, guest(4), "Somebody Else");
+    await until(() => hooks.applied(SEATING, own.at));
+    expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-2")).toMatchObject({ reason: "stale" });
+    expect(helper.offers.get("offer-2")).toBeUndefined();
   });
 
   it("routine: expires ten minutes after its window opened", async () => {
@@ -258,6 +297,23 @@ describe("offer lifetimes over the socket", () => {
     expect(await host.waitFor((m) => m.type === "offerWithdrawn")).toMatchObject({ id: action.offerKey, reason: "taken" });
   });
 
+  it("open: closing the window of the field it is shown in withdraws that showing and offers it again in the next field", async () => {
+    await reader.replay(loadRecording("offers-pending.ndjson"), hooks);
+    await helper.pending.whenIdle();
+    const action = await host.waitFor<{ offerKey: string; field: { windowId: string } }>((m) => m.type === "action");
+    expect(action.field.windowId).toBe("6160-4");
+    reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: "6160-4" });
+    expect(await host.waitFor((m) => m.type === "offerWithdrawn")).toMatchObject({ id: action.offerKey, reason: "stale" });
+    const search = snap([{ key: M("textfield:search~0"), parent: null, role: "AXTextField", label: "Search", editable: true }], { at: reader.clock + 20, windowId: "6160-9", title: "Search", app: MAIL_APP, focused: true, reason: "focus" });
+    reader.send(search);
+    await until(() => hooks.applied("6160-9", search.at));
+    reader.send(focus("6160-9", M("textfield:search~0"), reader.clock + 10, { app: MAIL_APP }));
+    const again = await host.waitFor<{ offerKey: string; field: { windowId: string; key: string } }>((m) => m.type === "action" && m.offerKey !== action.offerKey);
+    expect(again.offerKey).toBe("open-watch-id-1.2");
+    expect(again.field).toMatchObject({ windowId: "6160-9", key: M("textfield:search~0") });
+    expect(helper.offers.get(action.offerKey)).toBeUndefined();
+  });
+
   describe("partial withdrawal of alternatives", () => {
     it("drops the other list's candidate when its window closes, and withdraws only when none remain", async () => {
       await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
@@ -283,6 +339,47 @@ describe("offer lifetimes over the socket", () => {
         ["offer-1", "stale"],
       ]);
       expect(helper.offers.size).toBe(0);
+    });
+
+    it("hands the loop to the other list when the main one closes, even when a memory rule made the main value the same name", async () => {
+      const dstShape = store.hash(`dst\u0000${MAIL_APP.bundleId}\u0000standard\u0000${MAIL_APP.bundleId}/standard/textfield:guest`);
+      captureEdit(helper.memory, (t) => store.hash(t), { source: "Marcus Lowe", written: "Marcus Lowe", edited: "Lena Hartmann", kind: null, dstShapeHash: dstShape, fieldLabel: "Guest", app: "Mail Fixture" }, 1);
+      await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
+      const first = await host.waitFor<OfferAlternatives>((m) => m.type === "alternatives");
+      expect(first.candidates.map((c) => c.text)).toEqual(["Lena Hartmann", "Lena Hartmann"]);
+      reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: ROSTER });
+      const again = await host.waitFor<OfferAlternatives>((m) => m.type === "alternatives" && host.received.filter((x) => (x as Sent).type === "alternatives").indexOf(m) === 1);
+      expect(again.candidates).toEqual([{ text: "Lena Hartmann", ref: { node: `${DIRECTORY}/${person("Lena Hartmann")}`, quote: "Lena Hartmann" } }]);
+      const typed = reader.setValue(SEATING, guest(2), "Lena Hartmann");
+      await until(() => hooks.applied(SEATING, typed.at));
+      helper.tick(typed.at + 2000);
+      const action = await host.waitFor<{ endState: { text: string } }>((m) => m.type === "action");
+      expect(action.endState.text).toBe("Finish the rest: 3 more values from Directory Fixture");
+    });
+
+    it("keeps a value two lists both show when one of them closes, quoting the other", async () => {
+      const copy = roster(PEOPLE, "5150-9");
+      const events = recordDesk((desk) => {
+        desk.showList(roster());
+        desk.showList(copy);
+        desk.advance(1000);
+        const g = grid();
+        desk.showGrid(g);
+        desk.fill(g, 0, 0, PEOPLE[0] as string);
+        desk.fill(g, 1, 0, PEOPLE[1] as string);
+      });
+      await replayDesk(events);
+      const first = await host.waitFor<OfferAlternatives>((m) => m.type === "alternatives");
+      expect(first.candidates.map((c) => c.text)).toEqual([PEOPLE[2]]);
+      const quoted = (a: OfferAlternatives): string => String((a.candidates[0]?.ref as { node: string }).node.split("/")[0]);
+      const gone = quoted(first);
+      const other = gone === "5150-1" ? "5150-9" : "5150-1";
+      reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: gone });
+      const again = await host.waitFor<OfferAlternatives>((m) => m.type === "alternatives" && host.received.filter((x) => (x as Sent).type === "alternatives").indexOf(m) === 1);
+      expect(again.candidates.map((c) => c.text)).toEqual([PEOPLE[2]]);
+      expect(quoted(again)).toBe(other);
+      expect(again.quoted).toBe(true);
+      expect(withdrawals()).toEqual([]);
     });
 
     it("keeps the other list's candidate when the main list closes, and inserting it still switches the loop", async () => {

@@ -331,19 +331,34 @@ describe("task registry", () => {
     expect(gap.events).toHaveLength(1000);
   });
 
-  it("stops a reply before it passes its byte cap, and flags it truncated", () => {
+  it("stops a reply at its byte cap, envelope included, and flags it truncated", () => {
+    const bytes = (x: unknown): number => Buffer.byteLength(JSON.stringify(x));
     const big = (id: string): Omit<TaskRecord, "startedAt" | "updatedAt"> => rec(id, { says: "x".repeat(400) });
-    const one = Buffer.byteLength(JSON.stringify({ ...big("a0"), startedAt: 1000, updatedAt: 1000 })) + 1;
-    const small = new TaskRegistry(() => {}, () => now, one * 3);
+    const envelope = bytes({ type: "activityReply", v: PROTOCOL_VERSION, requestId: "r", error: null, seq: 5, tasks: [], events: [], truncated: false });
+    const one = bytes({ ...big("a0"), startedAt: 1000, updatedAt: 1000 });
+    const cap = envelope + 3 * one + 2;
+    const small = new TaskRegistry(() => {}, () => now, cap);
     for (let i = 0; i < 5; i++) small.create(big(`a${i}`));
     const list = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" });
     expect(list.tasks).toHaveLength(3);
     expect(list.truncated).toBe(true);
+    expect(bytes(list)).toBeLessThanOrEqual(cap);
     const since = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "since", since: 0 });
-    expect(since.events.map((e) => e.seq)).toEqual([1, 2]);
     expect(since.truncated).toBe(true);
+    expect(bytes(since)).toBeLessThanOrEqual(cap);
+    expect(since.events.map((e) => e.seq)).toEqual([1, 2]);
     const whole = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "since", since: 4 });
     expect(whole).toMatchObject({ truncated: false, events: [{ seq: 5 }] });
+  });
+
+  it("leaves out a record too big for the reply and still lists the older ones", () => {
+    const small = new TaskRegistry(() => {}, () => now, 4000);
+    small.create(rec("old"));
+    now = 2000;
+    small.create(rec("huge", { says: "x".repeat(5000) }));
+    const list = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" });
+    expect(list.tasks.map((t) => t.id)).toEqual(["old"]);
+    expect(list.truncated).toBe(true);
   });
 
   it("keeps the default cap under 1 MiB however many records there are", () => {

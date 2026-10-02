@@ -9,11 +9,8 @@ import { PROTOCOL_VERSION, type Activity, type ActivityReply, type ActivityReque
 const MAX_EVENTS = 1000;
 /** A finished record stays listed this long, for "Done today". */
 const KEEP_FINISHED_MS = 24 * 60 * 60 * 1000;
-/**
- * The most an activityReply's records or events may take as JSON, in UTF-8 bytes. The host drops lines
- * over 4 MiB without an error (A4); this stays under 1 MiB with room for the envelope.
- */
-export const MAX_REPLY_BYTES = 1024 * 1024 - 4096;
+/** The most an activityReply may take as JSON, in UTF-8 bytes. The host drops lines over 4 MiB without an error (A4). */
+export const MAX_REPLY_BYTES = 1024 * 1024 - 1;
 
 export const FINISHED: ReadonlySet<TaskState> = new Set(["done", "failed", "undone"]);
 
@@ -84,15 +81,19 @@ export class TaskRegistry {
   }
 
   /**
-   * `list` gives records newest first and `since` events oldest first, each until the next one would
-   * pass maxReplyBytes. `truncated` says the reply is incomplete: records were left out, or events after
-   * `since` were dropped from the buffer or left out, in which case the consumer lists instead.
+   * `list` gives records newest first, leaving out any that would take the reply past maxReplyBytes;
+   * `since` gives events oldest first and stops at the first that would, so what it gives has no gap.
+   * The budget counts the reply's envelope (its request id included). `truncated` says the reply is
+   * incomplete: records were left out, or events after `since` were dropped from the buffer or left
+   * out, in which case the consumer lists instead.
    */
   answer(m: ActivityRequest): ActivityReply {
     const base: ActivityReply = { type: "activityReply", v: PROTOCOL_VERSION, requestId: m.requestId, error: null, seq: this.seq, tasks: [], events: [], truncated: false };
+    // Sized with `false`, the longer of the two values the flag can take.
+    const room = this.maxReplyBytes - bytesOf(base);
     if (m.op === "list") {
       const all = this.list();
-      const tasks = this.fit(all);
+      const tasks = fit(all, room, "skip");
       return { ...base, tasks, truncated: tasks.length < all.length };
     }
     if (m.since === undefined) return { ...base, error: "since needs a `since` sequence number" };
@@ -100,20 +101,8 @@ export class TaskRegistry {
     const oldest = this.events[0]?.seq ?? this.seq + 1;
     const since = m.since;
     const after = this.events.filter((e) => e.seq > since);
-    const events = this.fit(after);
+    const events = fit(after, room, "stop");
     return { ...base, events, truncated: since + 1 < oldest || events.length < after.length };
-  }
-
-  /** The longest prefix of `items` whose JSON, with a comma between items, fits maxReplyBytes. */
-  private fit<T>(items: readonly T[]): T[] {
-    let bytes = 0;
-    let n = 0;
-    for (const item of items) {
-      bytes += Buffer.byteLength(JSON.stringify(item), "utf8") + 1;
-      if (bytes > this.maxReplyBytes) break;
-      n++;
-    }
-    return items.slice(0, n);
   }
 
   /** Forgets finished records older than a day. */
@@ -127,6 +116,26 @@ export class TaskRegistry {
     if (this.events.length > MAX_EVENTS) this.events.shift();
     this.publish(m);
   }
+}
+
+function bytesOf(x: unknown): number {
+  return Buffer.byteLength(JSON.stringify(x), "utf8");
+}
+
+/** The items whose JSON, with a comma between each, fits `room` bytes: skipping any that does not, or stopping at the first. */
+function fit<T>(items: readonly T[], room: number, onOver: "skip" | "stop"): T[] {
+  const out: T[] = [];
+  let used = 0;
+  for (const item of items) {
+    const n = bytesOf(item) + (out.length === 0 ? 0 : 1);
+    if (used + n > room) {
+      if (onOver === "stop") break;
+      continue;
+    }
+    used += n;
+    out.push(item);
+  }
+  return out;
 }
 
 /** Equal in everything but the update time, so a repeated report publishes nothing. */
