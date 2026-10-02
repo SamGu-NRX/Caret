@@ -87,6 +87,10 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var elementRevision: String
         /// `inline`, `capsule` or `mirror`.
         public var presentation: String?
+        /// `ghost` or `fill`.
+        public var kind: String?
+        /// Set for a fill offer.
+        public var fill: FillInfo?
 
         public init(
             id: UInt64, text: String, typedSinceOffer: String, ageMs: Double, pid: Int32,
@@ -112,6 +116,12 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var durationMs: Double
         /// The field reread after insertion equals the guard's predicted value.
         public var verified: Bool?
+        /// `ghost` or `fill`.
+        public var kind: String?
+        /// `pastePid` or `axSelectedText`.
+        public var method: String?
+        /// The app ignored a pid-posted paste and the write fell back to AX.
+        public var fellBack: Bool?
 
         public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {
             self.claimID = claimID
@@ -123,6 +133,85 @@ public struct DebugState: Codable, Equatable, Sendable {
         }
     }
 
+    public struct FillInfo: Codable, Equatable, Sendable {
+        public var proposalId: String
+        public var windowId: String
+        public var fieldKey: String
+        /// The caption on screen, such as "from Caret Fixture, Reference".
+        public var source: String
+
+        public init(proposalId: String, windowId: String, fieldKey: String, source: String) {
+            self.proposalId = proposalId
+            self.windowId = windowId
+            self.fieldKey = fieldKey
+            self.source = source
+        }
+    }
+
+    /// The consumer connection to the helper's socket.
+    public struct HelperLink: Codable, Equatable, Sendable {
+        public var connected = false
+        public var connects: UInt64 = 0
+        public var proposals: UInt64 = 0
+        public var errors: UInt64 = 0
+        /// The helper's last error text: window ids and reasons, never screen text.
+        public var lastError: String?
+        /// Messages that were valid but not for a consumer, or of a type this host does not know.
+        public var skipped: [String: UInt64] = [:]
+        public var undecodable: UInt64 = 0
+        public var resultsSent: UInt64 = 0
+        public var resultsDropped: UInt64 = 0
+
+        public init() {}
+    }
+
+    public struct Toast: Codable, Equatable, Sendable {
+        /// `done`, `undone` or `error`.
+        public var kind: String
+        public var caption: String
+        /// Set while ⌘Z can still revert the write.
+        public var grantID: UInt64?
+
+        public init(kind: String, caption: String, grantID: UInt64?) {
+            self.kind = kind
+            self.caption = caption
+            self.grantID = grantID
+        }
+    }
+
+    public struct FillStatus: Codable, Equatable, Sendable {
+        /// Proposals held for windows the user may still move through.
+        public var cachedProposals = 0
+        public var lastProposalID: String?
+        public var lastProposalFields: Int?
+        /// Fields of the last proposal that carry a value (not "none").
+        public var lastProposalValues: Int?
+        /// Why the last evaluation showed no offer (`FillSelection.Skip`, or `notAllowed`).
+        public var lastSkip: String?
+        public var lastResult: FillResult?
+        public var toast: Toast?
+        public var offersShown: UInt64 = 0
+        /// Proposal received to fill offer published, for offers made on a proposal's arrival.
+        public var proposalToOffer: LatencyRecorder.Summary?
+        /// Focus notification in the form's app to fill offer published, for later fields of a
+        /// proposal already held.
+        public var focusToOffer: LatencyRecorder.Summary?
+
+        public init() {}
+    }
+
+    public struct UndoInfo: Codable, Equatable, Sendable {
+        public var grantID: UInt64
+        public var ok: Bool
+        public var error: String?
+
+        public init(grantID: UInt64, ok: Bool, error: String?) {
+            self.grantID = grantID
+            self.ok = ok
+            self.error = error
+        }
+    }
+
     public struct Tap: Codable, Equatable, Sendable {
         public var running: Bool
         public var enabled: Bool
@@ -131,11 +220,17 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var timeoutRecoveries: UInt64
         public var maxCallbackMicros: Double
         public var p99CallbackMicros: Double?
+        /// Keys whose target pid came from the event, and from the frontmost-app fallback.
+        public var targetFromEvent: UInt64?
+        public var targetFromFrontmost: UInt64?
 
         public init(
             running: Bool, enabled: Bool, keyDowns: UInt64, consumed: UInt64,
-            timeoutRecoveries: UInt64, maxCallbackMicros: Double, p99CallbackMicros: Double?
+            timeoutRecoveries: UInt64, maxCallbackMicros: Double, p99CallbackMicros: Double?,
+            targetFromEvent: UInt64? = nil, targetFromFrontmost: UInt64? = nil
         ) {
+            self.targetFromEvent = targetFromEvent
+            self.targetFromFrontmost = targetFromFrontmost
             self.running = running
             self.enabled = enabled
             self.keyDowns = keyDowns
@@ -159,6 +254,11 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// Keystroke (seen by the tap) to ghost-text paint, for paints caused by a keystroke.
     public var latency: LatencyRecorder.Summary
     public var counters: [String: UInt64]
+    public var helper: HelperLink?
+    public var fill: FillStatus?
+    public var lastUndo: UndoInfo?
+    /// Apps that ignored a pid-posted paste and now take AX writes, by bundle id or `exe:` name.
+    public var writeMethods: [String: String]?
 
     public init(
         pid: Int32, uptimeSeconds: Double, trust: Trust, engine: Engine, focus: Focus?, offer: OfferInfo?,

@@ -29,6 +29,13 @@ enum FieldReader {
         AXRead.focusedElement().flatMap(read)
     }
 
+    /// The focused field of one app. The insertion queue rereads an offer's target through this,
+    /// so a Tab can only ever write into the app the offer was made for.
+    static func readFocused(pid: pid_t) -> (element: AXUIElement, field: FieldState)? {
+        guard let element = AXRead.focusedElement(pid: pid), let field = read(element), field.identity.pid == pid else { return nil }
+        return (element, field)
+    }
+
     static func read(_ element: AXUIElement) -> FieldState? {
         guard let pid = AXRead.pid(of: element),
               let value = AXRead.string(kAXValueAttribute, on: element),

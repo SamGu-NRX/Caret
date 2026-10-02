@@ -10,6 +10,7 @@ public struct Offer: Equatable, Sendable {
     public internal(set) var id: UInt64 = 0
     /// The text Tab would insert at the caret.
     public var text: String
+    public var kind: OfferKind
     public var target: TargetIdentity
     public var fieldValue: String
     public var caretUTF16: Int
@@ -18,6 +19,7 @@ public struct Offer: Equatable, Sendable {
 
     public init(
         text: String,
+        kind: OfferKind = .ghost,
         target: TargetIdentity,
         fieldValue: String,
         caretUTF16: Int,
@@ -25,6 +27,7 @@ public struct Offer: Equatable, Sendable {
         maxAgeSeconds: Double = 30
     ) {
         self.text = text
+        self.kind = kind
         self.target = target
         self.fieldValue = fieldValue
         self.caretUTF16 = caretUTF16
@@ -79,6 +82,13 @@ public struct Claim: Equatable, Sendable {
 /// `CGEvent` without any Accessibility call.
 public struct KeyStroke: Equatable, Sendable {
     public static let tabKeyCode: Int64 = 48
+    public static let escapeKeyCode: Int64 = 53
+    /// ANSI Z. ⌘Z is matched by key code, not by character as AppKit menus match it, so on a layout
+    /// that moves Z (Dvorak, AZERTY) Caret's undo sits on a different key from the host's. Untested
+    /// on those layouts.
+    public static let zKeyCode: Int64 = 6
+    /// ANSI 1, 2, 3.
+    public static let digitKeyCodes: [Int64: Int] = [18: 1, 19: 2, 20: 3]
 
     public var keyCode: Int64
     public var command: Bool
@@ -87,6 +97,9 @@ public struct KeyStroke: Equatable, Sendable {
     public var shift: Bool
     /// The plain text the key types, or nil for control, navigation and modified keys.
     public var text: String?
+    /// The process the window server will deliver this key to (`kCGEventTargetUnixProcessID`).
+    /// Nil when unknown. An offer is only taken by a key headed for the offer's own app.
+    public var targetPID: Int32?
 
     public init(
         keyCode: Int64,
@@ -94,7 +107,8 @@ public struct KeyStroke: Equatable, Sendable {
         control: Bool = false,
         option: Bool = false,
         shift: Bool = false,
-        text: String? = nil
+        text: String? = nil,
+        targetPID: Int32? = nil
     ) {
         self.keyCode = keyCode
         self.command = command
@@ -102,9 +116,14 @@ public struct KeyStroke: Equatable, Sendable {
         self.option = option
         self.shift = shift
         self.text = text
+        self.targetPID = targetPID
     }
 
     public static let tab = KeyStroke(keyCode: tabKeyCode)
+
+    public static func tab(to pid: Int32) -> KeyStroke {
+        KeyStroke(keyCode: tabKeyCode, targetPID: pid)
+    }
 
     public static func typing(_ text: String) -> KeyStroke {
         KeyStroke(keyCode: 0, text: text)
@@ -113,5 +132,25 @@ public struct KeyStroke: Equatable, Sendable {
     /// Tab with no modifiers. Shift+Tab and other chords keep their native meaning.
     public var isPlainTab: Bool {
         keyCode == Self.tabKeyCode && !command && !control && !option && !shift
+    }
+
+    /// ⌘Z alone. ⇧⌘Z (redo) and other chords stay the host's.
+    public var isUndo: Bool {
+        keyCode == Self.zKeyCode && command && !control && !option && !shift
+    }
+
+    public var isPlainEscape: Bool {
+        keyCode == Self.escapeKeyCode && !command && !control && !option && !shift
+    }
+
+    /// 1, 2 or 3 for ⌘1, ⌘2, ⌘3 with no other modifier; nil otherwise.
+    public var commandDigit: Int? {
+        guard command, !control, !option, !shift else { return nil }
+        return Self.digitKeyCodes[keyCode]
+    }
+
+    /// A key with no target or the offer's own target may act on that offer.
+    func isHeaded(to pid: Int32) -> Bool {
+        targetPID.map { $0 == pid } ?? true
     }
 }

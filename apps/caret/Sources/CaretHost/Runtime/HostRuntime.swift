@@ -1,4 +1,5 @@
 import AppCompatibility
+import AppKit
 import CaretHostCore
 import Foundation
 
@@ -8,19 +9,34 @@ import Foundation
 public final class HostRuntime {
     public struct Configuration {
         public var socketPath: String
+        public var helperSocketPath: String
         public var modelURL: URL
         /// When set, offers are made only in these apps. For test runs on a shared Mac, so the host
         /// never draws over or takes Tab from windows it did not create. Nil means every app.
         public var allowedBundleIDs: Set<String>?
+        /// When set, offers are made and writes go only to these pids (`CARET_ALLOW_PIDS`).
+        public var allowedPIDs: Set<Int32>?
+        /// False skips loading the model: fill only (`--no-ghost`, `CARET_GHOST=off`).
+        public var ghostEnabled: Bool
+        /// After a verified fill, post Tab to the form so its focus moves on (SURFACES.md section 5).
+        public var fillAdvances: Bool
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
+            helperSocketPath: String = HostRuntime.defaultHelperSocketPath,
             modelURL: URL = EngineLoader.defaultModelURL,
-            allowedBundleIDs: Set<String>? = HostRuntime.allowedBundleIDsFromEnvironment
+            allowedBundleIDs: Set<String>? = HostRuntime.allowedBundleIDsFromEnvironment,
+            allowedPIDs: Set<Int32>? = HostRuntime.pids(ProcessInfo.processInfo.environment["CARET_ALLOW_PIDS"]),
+            ghostEnabled: Bool = ProcessInfo.processInfo.environment["CARET_GHOST"] != "off",
+            fillAdvances: Bool = ProcessInfo.processInfo.environment["CARET_FILL_ADVANCE"] != "off"
         ) {
             self.socketPath = socketPath
+            self.helperSocketPath = helperSocketPath
             self.modelURL = modelURL
             self.allowedBundleIDs = allowedBundleIDs
+            self.allowedPIDs = allowedPIDs
+            self.ghostEnabled = ghostEnabled
+            self.fillAdvances = fillAdvances
         }
     }
 
@@ -31,6 +47,12 @@ public final class HostRuntime {
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".caret-run/sockets/host.sock").path
     }
+
+    /// The helper's socket: `CARET_SCREEN_SOCKET`, else `~/.caret-run/sockets/screen.sock`.
+    public nonisolated static var defaultHelperSocketPath: String { HelperClient.defaultPath }
+
+    /// Comma-separated pids, as `CARET_ALLOW_PIDS` and `--allow-pids` take them.
+    public nonisolated static func pids(_ raw: String?) -> Set<Int32>? { TargetPolicy.pids(from: raw) }
 
     /// `CARET_ALLOW_BUNDLES`, comma-separated bundle identifiers.
     public nonisolated static var allowedBundleIDsFromEnvironment: Set<String>? {
@@ -46,6 +68,8 @@ public final class HostRuntime {
     private let overlay: GhostOverlay
     private let focus = FocusObserver()
     private let coordinator: HostCoordinator
+    private let fill: FillCoordinator
+    private let helper: HelperClient
     private let executor: InsertionExecutor
     private let tap: TapThread
     private let socket: DebugStateSocket
@@ -55,31 +79,65 @@ public final class HostRuntime {
         self.configuration = configuration
         let arbiter = self.arbiter
         let status = self.status
+        let policy = TargetPolicy(allowedBundleIDs: configuration.allowedBundleIDs, allowedPIDs: configuration.allowedPIDs)
         engine = GhostTextEngine(compatibilityStore: compatibilityStore)
         overlay = GhostOverlay(compatibilityStore: compatibilityStore)
-        let coordinator = HostCoordinator(
-            arbiter: arbiter, status: status, engine: engine, overlay: overlay,
-            allowedBundleIDs: configuration.allowedBundleIDs
-        )
+        let coordinator = HostCoordinator(arbiter: arbiter, status: status, engine: engine, overlay: overlay, policy: policy)
         self.coordinator = coordinator
-        let executor = InsertionExecutor(arbiter: arbiter, status: status, compatibilityStore: compatibilityStore) { result in
-            DispatchQueue.main.async { MainActor.assumeIsolated { coordinator.insertionFinished(result) } }
-        }
+        let fill = FillCoordinator(arbiter: arbiter, status: status, overlay: FillOverlay(), watcher: FillTargetWatcher(), policy: policy)
+        self.fill = fill
+        let executor = InsertionExecutor(
+            arbiter: arbiter, status: status, compatibilityStore: compatibilityStore, policy: policy,
+            advanceAfterFill: configuration.fillAdvances,
+            onFinished: { result in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        coordinator.insertionFinished(result)
+                        fill.insertionFinished(result)
+                    }
+                }
+            },
+            onUndone: { result in
+                DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoFinished(result) } }
+            }
+        )
         self.executor = executor
         coordinator.executor = executor
+        fill.executor = executor
+        helper = HelperClient(path: configuration.helperSocketPath) { message in
+            let at = DispatchTime.now().uptimeNanoseconds
+            DispatchQueue.main.async { MainActor.assumeIsolated { fill.receive(message, at: at) } }
+        }
+        fill.client = helper
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
                 executor.submit(claim)
-                DispatchQueue.main.async { MainActor.assumeIsolated { coordinator.claimed(claim) } }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        coordinator.claimed(claim)
+                        fill.claimed(claim)
+                    }
+                }
             },
             offerChanged: { reason, key in
-                DispatchQueue.main.async { MainActor.assumeIsolated { coordinator.offerChanged(reason, key: key) } }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        coordinator.offerChanged(reason, key: key)
+                        fill.offerChanged(reason)
+                    }
+                }
+            },
+            undo: { grant in
+                executor.submitUndo(grant)
+                DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoStarted(grant) } }
             },
             keyDown: { status.noteKeyDown($0) }
         ))
         let tap = self.tap
+        let helper = self.helper
+        let writeMethods = executor.writeMethods
         socket = DebugStateSocket(path: configuration.socketPath) { command in
-            Self.respond(to: command, arbiter: arbiter, status: status, tap: tap)
+            Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
         }
     }
 
@@ -89,9 +147,17 @@ public final class HostRuntime {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
         if !tap.start() { status.increment("tap.createFailed") }
+        trackFrontmost()
         focus.onChange = { [coordinator] change in coordinator.handle(change) }
         focus.start()
-        status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: self.configuration.modelURL.lastPathComponent) }
+        helper.start()
+        let modelFile = configuration.modelURL.lastPathComponent
+        guard configuration.ghostEnabled else {
+            engine.disable()
+            status.update { $0.engine = DebugState.Engine(state: "disabled", modelFile: modelFile) }
+            return
+        }
+        status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
         let modelURL = configuration.modelURL
         engineTask = Task { [weak self] in
             guard let self else { return }
@@ -106,6 +172,8 @@ public final class HostRuntime {
     public func shutdown() async {
         tap.stop()
         focus.stop()
+        helper.stop()
+        fill.shutdown()
         overlay.hide()
         arbiter.invalidate()
         // A paste in progress must finish and put the user's clipboard back before exit.
@@ -125,6 +193,17 @@ public final class HostRuntime {
         }
     }
 
+    /// Keeps the tap's fallback target pid on LaunchServices' frontmost app.
+    private func trackFrontmost() {
+        tap.setFrontmostPID(NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [tap] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            tap.setFrontmostPID(app?.processIdentifier)
+        }
+    }
+
     private func publishEngineState() {
         let state: DebugState.Engine
         switch engine.state {
@@ -137,30 +216,46 @@ public final class HostRuntime {
 
     // MARK: - Debug socket (socket thread)
 
-    private nonisolated static func respond(to command: String, arbiter: OfferArbiter, status: HostStatus, tap: TapThread) -> Data {
+    private nonisolated static func respond(
+        to command: String, arbiter: OfferArbiter, status: HostStatus, tap: TapThread,
+        helper: HelperClient, writeMethods: WriteMethodTable
+    ) -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        switch command {
+        let words = command.split(separator: " ").map(String.init)
+        switch words.first ?? "state" {
         case "ping":
             return Data("{\"ok\":true}\n".utf8)
         case "latency-reset":
             status.latency.reset()
+            status.proposalToOffer.reset()
+            status.focusToOffer.reset()
             return Data("{\"ok\":true}\n".utf8)
+        case "key":
+            // Test hook: `key <name> <pid>` routes a constructed key-down, headed for <pid>, through
+            // the same arbiter and callbacks as the event tap. No event is posted anywhere.
+            guard words.count == 3, let pid = Int32(words[2]), let key = TestKeys.key(words[1], pid: pid) else {
+                return Data("{\"error\":\"usage: key tab|esc|cmd-z|cmd-1|cmd-2|cmd-3|char:<c> <pid>\"}\n".utf8)
+            }
+            let consumed = tap.route(key)
+            return Data("{\"ok\":true,\"consumed\":\(consumed)}\n".utf8)
         case "state":
-            let state = makeState(arbiter: arbiter, status: status, tap: tap)
+            let state = makeState(arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
             return ((try? encoder.encode(state)) ?? Data("{}".utf8)) + Data("\n".utf8)
         default:
             return Data("{\"error\":\"unknown command\"}\n".utf8)
         }
     }
 
-    private nonisolated static func makeState(arbiter: OfferArbiter, status: HostStatus, tap: TapThread) -> DebugState {
+    private nonisolated static func makeState(
+        arbiter: OfferArbiter, status: HostStatus, tap: TapThread, helper: HelperClient, writeMethods: WriteMethodTable
+    ) -> DebugState {
         let fields = status.read()
         let arbiterState = arbiter.snapshot()
         let tapState = tap.debugState()
         let offer = arbiterState.current.map { offer in
-            DebugState.OfferInfo(
+            var info = DebugState.OfferInfo(
                 id: offer.id,
                 text: String(offer.text.dropFirst(arbiterState.typedSinceOffer.count)),
                 typedSinceOffer: arbiterState.typedSinceOffer,
@@ -169,14 +264,19 @@ public final class HostRuntime {
                 bundleID: offer.target.bundleID,
                 caretUTF16: offer.caretUTF16,
                 elementRevision: offer.target.elementRevision,
-                presentation: fields.presentation
+                presentation: offer.kind == .ghost ? fields.presentation : "fill"
             )
+            info.kind = offer.kind.name
+            info.fill = offer.kind.fillOrigin.map {
+                DebugState.FillInfo(proposalId: $0.proposalID, windowId: $0.windowID, fieldKey: $0.fieldKey, source: $0.sourceCaption)
+            }
+            return info
         }
         var counters = fields.counters
         counters["offers.published"] = arbiterState.publishedCount
         counters["offers.claimed"] = arbiterState.claimCount
         counters["offers.refused"] = arbiterState.refusedPublishCount
-        return DebugState(
+        var state = DebugState(
             pid: ProcessInfo.processInfo.processIdentifier,
             uptimeSeconds: Date().timeIntervalSince(status.startedAt),
             trust: TrustProbe.current(eventTapEnabled: tapState.enabled),
@@ -189,5 +289,30 @@ public final class HostRuntime {
             latency: status.latency.summary(),
             counters: counters
         )
+        var fill = fields.fill
+        fill.proposalToOffer = status.proposalToOffer.summary()
+        fill.focusToOffer = status.focusToOffer.summary()
+        state.fill = fill
+        state.helper = helper.snapshot()
+        state.lastUndo = fields.lastUndo
+        state.writeMethods = writeMethods.snapshot()
+        return state
+    }
+}
+
+/// Keys the debug socket's test hook can route.
+enum TestKeys {
+    static func key(_ name: String, pid: Int32) -> KeyStroke? {
+        switch name {
+        case "tab": return .tab(to: pid)
+        case "esc": return KeyStroke(keyCode: KeyStroke.escapeKeyCode, targetPID: pid)
+        case "cmd-z": return KeyStroke(keyCode: KeyStroke.zKeyCode, command: true, targetPID: pid)
+        case "cmd-1": return KeyStroke(keyCode: 18, command: true, targetPID: pid)
+        case "cmd-2": return KeyStroke(keyCode: 19, command: true, targetPID: pid)
+        case "cmd-3": return KeyStroke(keyCode: 20, command: true, targetPID: pid)
+        default:
+            guard name.hasPrefix("char:"), name.count == 6 else { return nil }
+            return KeyStroke(keyCode: 0, text: String(name.suffix(1)), targetPID: pid)
+        }
     }
 }

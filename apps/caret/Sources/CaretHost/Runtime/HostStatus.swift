@@ -12,6 +12,8 @@ final class HostStatus: @unchecked Sendable {
         var focus: DebugState.Focus?
         var presentation: String?
         var lastInsertion: DebugState.Insertion?
+        var lastUndo: DebugState.UndoInfo?
+        var fill = DebugState.FillStatus()
         var counters: [String: UInt64] = [:]
     }
 
@@ -21,6 +23,10 @@ final class HostStatus: @unchecked Sendable {
     }
 
     let latency = LatencyRecorder()
+    /// Fill proposal received, to the offer for it published.
+    let proposalToOffer = LatencyRecorder()
+    /// A focus notification in a form's app, to the fill offer for the newly focused field.
+    let focusToOffer = LatencyRecorder()
     let startedAt = Date()
     private let fields = OSAllocatedUnfairLock(initialState: Fields())
     private let lastKey = OSAllocatedUnfairLock(initialState: KeyStamp(sequence: 0, uptimeNanos: 0))

@@ -2,8 +2,10 @@ import AppKit
 import CaretHost
 
 // Launch by direct exec of Caret.app/Contents/MacOS/Caret so the process inherits the launching
-// app's Accessibility grant. Flags: --socket <path>, --model <path>, --allow <bundle,ids>.
-// Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES.
+// app's Accessibility grant. Flags: --socket <path>, --model <path>, --allow <bundle,ids>,
+// --allow-pids <pid,pid>, --helper-socket <path>, --no-ghost, --no-fill-advance.
+// Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES,
+// CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off.
 
 var configuration = HostRuntime.Configuration()
 
@@ -43,6 +45,10 @@ while let argument = arguments.next() {
     switch argument {
     case "--socket": if let value = arguments.next() { configuration.socketPath = value }
     case "--model": if let value = arguments.next() { configuration.modelURL = URL(fileURLWithPath: value) }
+    case "--allow-pids": configuration.allowedPIDs = HostRuntime.pids(arguments.next())
+    case "--helper-socket": if let value = arguments.next() { configuration.helperSocketPath = value }
+    case "--no-ghost": configuration.ghostEnabled = false
+    case "--no-fill-advance": configuration.fillAdvances = false
     case "--allow":
         if let value = arguments.next() {
             configuration.allowedBundleIDs = Set(value.split(separator: ",").map(String.init))

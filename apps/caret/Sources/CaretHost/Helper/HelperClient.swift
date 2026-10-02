@@ -1,0 +1,178 @@
+import CaretHostCore
+import CaretScreenCore
+import Darwin
+import Foundation
+import os
+
+/// The host's connection to the helper's socket, as a consumer.
+///
+/// One thread connects, says hello, and reads NDJSON until the connection drops, then reconnects
+/// with backoff; a helper started after the host is picked up within `maxBackoff`. Decoded
+/// messages go to `onMessage` on that thread, which must only enqueue. `send` writes from any
+/// thread under a lock, so a `fillResult` line is never interleaved with another.
+final class HelperClient: @unchecked Sendable {
+    typealias Stats = DebugState.HelperLink
+
+    static var defaultPath: String {
+        if let override = ProcessInfo.processInfo.environment["CARET_SCREEN_SOCKET"], !override.isEmpty {
+            return override
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".caret-run/sockets/screen.sock").path
+    }
+
+    let path: String
+    private let onMessage: @Sendable (HelperInbound) -> Void
+    private let stats = OSAllocatedUnfairLock(initialState: Stats())
+    /// The connected descriptor, or -1. Writers hold this lock for the whole line.
+    private let connection = OSAllocatedUnfairLock(initialState: Int32(-1))
+    private let running = OSAllocatedUnfairLock(initialState: false)
+    private let minBackoff: TimeInterval = 0.25
+    private let maxBackoff: TimeInterval = 2
+
+    init(path: String = HelperClient.defaultPath, onMessage: @escaping @Sendable (HelperInbound) -> Void) {
+        self.path = path
+        self.onMessage = onMessage
+    }
+
+    func start() {
+        let alreadyRunning = running.withLock { r -> Bool in
+            defer { r = true }
+            return r
+        }
+        guard !alreadyRunning else { return }
+        let thread = Thread { [self] in runLoop() }
+        thread.name = "dev.caret.host.helper-client"
+        thread.qualityOfService = .userInitiated
+        thread.start()
+    }
+
+    func stop() {
+        running.withLock { $0 = false }
+        connection.withLock { fd in
+            if fd >= 0 { shutdown(fd, SHUT_RDWR) }
+        }
+    }
+
+    func snapshot() -> Stats { stats.withLock { $0 } }
+
+    /// Writes one message. Dropped (and counted) when the helper is not connected: a result for a
+    /// write the helper cannot hear about is not worth queueing across a reconnect, because the
+    /// new helper session has forgotten the proposal.
+    func send(_ result: FillResult) {
+        guard let line = try? NDJSON.line(result) else { return }
+        let sent = connection.withLock { fd -> Bool in
+            guard fd >= 0 else { return false }
+            return Self.writeAll(fd, line)
+        }
+        stats.withLock { s in
+            if sent { s.resultsSent &+= 1 } else { s.resultsDropped &+= 1 }
+        }
+    }
+
+    // MARK: - Client thread
+
+    private func runLoop() {
+        var backoff = minBackoff
+        while running.withLock({ $0 }) {
+            if let fd = connect() {
+                backoff = minBackoff
+                readUntilClosed(fd)
+                connection.withLock { current in
+                    if current == fd { current = -1 }
+                }
+                close(fd)
+                stats.withLock { $0.connected = false }
+            }
+            guard running.withLock({ $0 }) else { break }
+            Thread.sleep(forTimeInterval: backoff)
+            backoff = min(maxBackoff, backoff * 2)
+        }
+    }
+
+    private func connect() -> Int32? {
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return nil }
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: bytes)
+            raw[bytes.count] = 0
+        }
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        var noSigPipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        guard result == 0 else {
+            close(fd)
+            return nil
+        }
+        let hello = Hello(role: .consumer, mode: .live, pid: Int(getpid()), version: "caret-host 0.2.0")
+        guard let line = try? NDJSON.line(hello), Self.writeAll(fd, line) else {
+            close(fd)
+            return nil
+        }
+        connection.withLock { $0 = fd }
+        stats.withLock {
+            $0.connected = true
+            $0.connects &+= 1
+        }
+        return fd
+    }
+
+    private func readUntilClosed(_ fd: Int32) {
+        var framer = LineFramer()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while running.withLock({ $0 }) {
+            let count = read(fd, &buffer, buffer.count)
+            if count <= 0 {
+                if count < 0, errno == EINTR { continue }
+                return
+            }
+            for item in framer.append(Data(buffer[0..<count])) {
+                switch item {
+                case .oversized:
+                    stats.withLock { $0.undecodable &+= 1 }
+                case .line(let line):
+                    handle(line)
+                }
+            }
+        }
+    }
+
+    private func handle(_ line: Data) {
+        let message: HelperInbound
+        do {
+            message = try HelperInbound.decode(line)
+        } catch {
+            stats.withLock { $0.undecodable &+= 1 }
+            return
+        }
+        stats.withLock { s in
+            switch message {
+            case .fillProposal: s.proposals &+= 1
+            case .error(let e):
+                s.errors &+= 1
+                // The helper's error text names windows and reasons, never screen text.
+                s.lastError = String(e.message.prefix(200))
+            case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1
+            }
+        }
+        onMessage(message)
+    }
+
+    private static func writeAll(_ fd: Int32, _ data: Data) -> Bool {
+        data.withUnsafeBytes { raw in
+            var offset = 0
+            while offset < raw.count {
+                let written = write(fd, raw.baseAddress! + offset, raw.count - offset)
+                if written < 0, errno == EINTR { continue }
+                if written <= 0 { return false }
+                offset += written
+            }
+            return true
+        }
+    }
+}

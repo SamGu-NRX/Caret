@@ -16,6 +16,55 @@ enum AXRead {
         element(kAXFocusedUIElementAttribute, on: AXUIElementCreateSystemWide())
     }
 
+    /// The focused element of one app, whether or not it is frontmost. Every read that leads to a
+    /// write goes through this, so the write's target is the app the offer was made for and never
+    /// whichever app happens to be in front.
+    static func focusedElement(pid: pid_t) -> AXUIElement? {
+        element(kAXFocusedUIElementAttribute, on: AXUIElementCreateApplication(pid))
+    }
+
+    static func elements(_ attribute: String, on element: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let array = value as? [AnyObject]
+        else { return [] }
+        return array.compactMap { item in
+            CFGetTypeID(item) == AXUIElementGetTypeID() ? unsafeBitCast(item, to: AXUIElement.self) : nil
+        }
+    }
+
+    /// Position and size in global top-left-origin points, as the reader reports frames.
+    static func frame(of element: AXUIElement) -> CGRect? {
+        guard let origin = axValue(kAXPositionAttribute, on: element, type: .cgPoint, as: CGPoint.self),
+              let size = axValue(kAXSizeAttribute, on: element, type: .cgSize, as: CGSize.self)
+        else { return nil }
+        return CGRect(origin: origin, size: size)
+    }
+
+    private static func axValue<T>(_ attribute: String, on element: AXUIElement, type: AXValueType, as: T.Type) -> T? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID()
+        else { return nil }
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard AXValueGetType(axValue) == type else { return nil }
+        let pointer = UnsafeMutablePointer<T>.allocate(capacity: 1)
+        defer { pointer.deallocate() }
+        return AXValueGetValue(axValue, type, pointer) ? pointer.pointee : nil
+    }
+
+    @discardableResult
+    static func setString(_ attribute: String, _ string: String, on element: AXUIElement) -> AXError {
+        AXUIElementSetAttributeValue(element, attribute as CFString, string as CFString)
+    }
+
+    @discardableResult
+    static func setRange(_ attribute: String, location: Int, length: Int, on element: AXUIElement) -> AXError {
+        var range = CFRange(location: location, length: length)
+        guard let value = AXValueCreate(.cfRange, &range) else { return .failure }
+        return AXUIElementSetAttributeValue(element, attribute as CFString, value)
+    }
+
     static func pid(of element: AXUIElement) -> pid_t? {
         var pid: pid_t = 0
         return AXUIElementGetPid(element, &pid) == .success ? pid : nil

@@ -14,18 +14,23 @@ public final class TapThread: @unchecked Sendable {
     public struct Callbacks: Sendable {
         /// A plain Tab claimed the current offer. Runs on the tap thread; enqueue and return.
         public var claimed: @Sendable (Claim) -> Void
-        /// The arbiter removed or shortened the offer. Runs on the tap thread; enqueue and return.
+        /// The arbiter removed or shortened the offer, or closed the toast. Runs on the tap thread;
+        /// enqueue and return.
         public var offerChanged: @Sendable (OfferArbiter.PassReason, KeyStroke) -> Void
+        /// ⌘Z took the toast's grant. Runs on the tap thread; enqueue and return.
+        public var undo: @Sendable (UndoGrant) -> Void
         /// Every user key-down, with its uptime in nanoseconds, for latency measurement.
         public var keyDown: @Sendable (UInt64) -> Void
 
         public init(
             claimed: @escaping @Sendable (Claim) -> Void,
             offerChanged: @escaping @Sendable (OfferArbiter.PassReason, KeyStroke) -> Void,
+            undo: @escaping @Sendable (UndoGrant) -> Void,
             keyDown: @escaping @Sendable (UInt64) -> Void
         ) {
             self.claimed = claimed
             self.offerChanged = offerChanged
+            self.undo = undo
             self.keyDown = keyDown
         }
     }
@@ -37,11 +42,16 @@ public final class TapThread: @unchecked Sendable {
         var timeoutRecoveries: UInt64 = 0
         var maxCallbackNanos: UInt64 = 0
         var recentCallbackNanos: [UInt64] = []
+        var targetFromEvent: UInt64 = 0
+        var targetFromFrontmost: UInt64 = 0
     }
 
     private let arbiter: OfferArbiter
     private let callbacks: Callbacks
     private let stats = OSAllocatedUnfairLock(initialState: Stats())
+    /// LaunchServices' frontmost app, kept current by the main thread, for keys whose event carries
+    /// no target pid. Reading it is a lock and a copy; no Accessibility or AppKit on the tap thread.
+    private let frontmost = OSAllocatedUnfairLock<Int32?>(initialState: nil)
     /// Set on the tap thread; read from the main and socket threads, hence the lock.
     private let port = OSAllocatedUnfairLock<CFMachPort?>(uncheckedState: nil)
     private var tap: CFMachPort? { port.withLockUnchecked { $0 } }
@@ -76,6 +86,11 @@ public final class TapThread: @unchecked Sendable {
         thread = nil
     }
 
+    /// Main thread, on every app activation.
+    public func setFrontmostPID(_ pid: Int32?) {
+        frontmost.withLock { $0 = pid }
+    }
+
     public var isEnabled: Bool {
         guard let tap else { return false }
         return CGEvent.tapIsEnabled(tap: tap)
@@ -93,7 +108,9 @@ public final class TapThread: @unchecked Sendable {
             consumed: s.consumed,
             timeoutRecoveries: s.timeoutRecoveries,
             maxCallbackMicros: Double(s.maxCallbackNanos) / 1_000,
-            p99CallbackMicros: LatencyRecorder.percentile(sorted, 0.99)
+            p99CallbackMicros: LatencyRecorder.percentile(sorted, 0.99),
+            targetFromEvent: s.targetFromEvent,
+            targetFromFrontmost: s.targetFromFrontmost
         )
     }
 
@@ -157,22 +174,40 @@ public final class TapThread: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
 
-        callbacks.keyDown(started)
-        let key = KeyStroke(event: event)
-        let decision = arbiter.handleKeyDown(key)
-        let consumed: Bool
-        switch decision {
-        case .consume(let claim):
-            callbacks.claimed(claim)
-            consumed = true
-        case .pass(.noOffer):
-            consumed = false
-        case .pass(let reason):
-            callbacks.offerChanged(reason, key)
-            consumed = false
+        var key = KeyStroke(event: event)
+        if key.targetPID == nil {
+            key.targetPID = frontmost.withLock { $0 }
+            stats.withLock { $0.targetFromFrontmost &+= 1 }
+        } else {
+            stats.withLock { $0.targetFromEvent &+= 1 }
         }
+        let consumed = route(key, stampedAt: started)
         record(started: started, consumed: consumed)
         return consumed ? nil : Unmanaged.passUnretained(event)
+    }
+
+    /// Decides one key and hands the result on. True when the key is Caret's and must not reach
+    /// the app. The tap callback calls this for every user key-down; the debug socket's test hook
+    /// calls it with a constructed key, so tests exercise this exact path without a global event.
+    @discardableResult
+    public func route(_ key: KeyStroke, stampedAt uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
+        callbacks.keyDown(uptimeNanos)
+        switch arbiter.handleKeyDown(key) {
+        case .consume(let claim):
+            callbacks.claimed(claim)
+            return true
+        case .undo(let grant):
+            callbacks.undo(grant)
+            return true
+        case .closeToast:
+            callbacks.offerChanged(.toastDismissed, key)
+            return true
+        case .pass(.noOffer), .pass(.otherApp):
+            return false
+        case .pass(let reason):
+            callbacks.offerChanged(reason, key)
+            return false
+        }
     }
 
     private func record(started: UInt64, consumed: Bool) {
@@ -193,13 +228,16 @@ extension KeyStroke {
         let flags = event.flags
         let command = flags.contains(.maskCommand)
         let control = flags.contains(.maskControl)
+        // The window server stamps the receiving process on events it routes to a session tap.
+        let target = event.getIntegerValueField(.eventTargetUnixProcessID)
         self.init(
             keyCode: event.getIntegerValueField(.keyboardEventKeycode),
             command: command,
             control: control,
             option: flags.contains(.maskAlternate),
             shift: flags.contains(.maskShift),
-            text: (command || control) ? nil : Self.typedText(event)
+            text: (command || control) ? nil : Self.typedText(event),
+            targetPID: target > 0 ? Int32(truncatingIfNeeded: target) : nil
         )
     }
 

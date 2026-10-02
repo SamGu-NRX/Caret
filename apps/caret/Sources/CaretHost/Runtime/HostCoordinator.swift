@@ -16,7 +16,7 @@ final class HostCoordinator {
     private let status: HostStatus
     private let engine: GhostTextEngine
     private let overlay: GhostOverlay
-    private let allowedBundleIDs: Set<String>?
+    private let policy: TargetPolicy
     var executor: InsertionExecutor?
 
     /// The suggestion the visible ghost text derives from.
@@ -37,13 +37,13 @@ final class HostCoordinator {
         status: HostStatus,
         engine: GhostTextEngine,
         overlay: GhostOverlay,
-        allowedBundleIDs: Set<String>?
+        policy: TargetPolicy
     ) {
         self.arbiter = arbiter
         self.status = status
         self.engine = engine
         self.overlay = overlay
-        self.allowedBundleIDs = allowedBundleIDs
+        self.policy = policy
     }
 
     // MARK: - Focus
@@ -63,7 +63,7 @@ final class HostCoordinator {
             )
         }
         guard engine.state == .ready,
-              allowedBundleIDs?.contains(field.identity.bundleID) ?? true,
+              policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
               !field.secure, !context.traits.isSecureTextEntry, !context.traits.isPasswordField,
               field.selection.isEmpty
         else { return reset() }
@@ -121,12 +121,13 @@ final class HostCoordinator {
             overlay.hide()
             anchor = nil
             status.update { $0.presentation = nil }
-        case .noOffer:
+        case .noOffer, .otherApp, .toastDismissed:
             break
         }
     }
 
     func claimed(_ claim: Claim) {
+        guard case .ghost = claim.offer.kind else { return }
         // If the claim was already rejected and a newer offer drawn, leave that one alone.
         if let current = arbiter.snapshot().current, current.id > claim.offer.id { return }
         cancelGeneration()
@@ -137,6 +138,7 @@ final class HostCoordinator {
     }
 
     func insertionFinished(_ result: InsertionExecutor.Result) {
+        guard case .ghost = result.claim.offer.kind else { return }
         status.increment(result.insertion.ok ? "insertion.ok" : "insertion.\(result.insertion.error ?? "failed")")
     }
 
@@ -259,7 +261,8 @@ final class HostCoordinator {
     }
 
     private func clearOffer() {
-        arbiter.invalidate()
+        // Ghost state only: a fill offer in another field is the fill coordinator's.
+        arbiter.invalidate(kind: "ghost")
         overlay.hide()
         anchor = nil
         status.update { $0.presentation = nil }

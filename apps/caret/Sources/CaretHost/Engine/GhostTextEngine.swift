@@ -65,6 +65,11 @@ final class GhostTextEngine {
         }
     }
 
+    /// Ghost text turned off for this run (`--no-ghost`): the model is never loaded.
+    func disable() {
+        state = .unavailable("disabled")
+    }
+
     func shutdown() async {
         let engine = self.engine
         self.engine = nil
