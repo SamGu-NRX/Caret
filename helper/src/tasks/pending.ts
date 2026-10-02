@@ -270,9 +270,15 @@ const FINISHED_CRITERIA: Record<Finished, string> = {
   failed: "It ended in an error or a failure, or it was cancelled.",
   no: "No. The work is still going, or it has stopped partway and is waiting for the user.",
 };
+/**
+ * "Before it continues" is the test. Without the second sentence of `no`, Jev called an agent turn
+ * that ended in an error waiting on the user on 8 of 8 asks, and waiting wins, so a failure showed as
+ * needsYou; with it, 8 of 8 were failed and B4's fixture texts kept their answers
+ * (~/.caret-run/evidence/screen/b6/jev-agent-v1 and jev-agent, synthetic windows, 2 asks per case).
+ */
 const WAITING_CRITERIA: Record<Waiting, string> = {
   yes: "Yes. It asks the user to act before it continues.",
-  no: "No. Nothing in the window needs the user to act now.",
+  no: "No. Nothing in the window needs the user to act before the work can go on. Work that has ended, finished or failed, is not waiting, even if the user may want to look at it.",
 };
 
 /**
