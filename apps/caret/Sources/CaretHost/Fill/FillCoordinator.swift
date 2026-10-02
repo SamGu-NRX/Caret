@@ -222,9 +222,8 @@ final class FillCoordinator {
             valueLength: verified ? UTF16Text.length(result.claim.insertionText) : 0
         ))
 
-        if verified, let grant = result.undo, let element = result.element {
+        if verified, let grant = result.undo {
             let id = arbiter.showToast(grant)
-            executor?.bind(grantID: id, to: element.element)
             toastGrantID = id
             // The toast names the app only ("Filled 4 fields from Mail", SURFACES.md section 6); the
             // offer line already named the window.

@@ -122,6 +122,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var method: String?
         /// The app ignored a pid-posted paste and the write fell back to AX.
         public var fellBack: Bool?
+        /// After the fallback, a late paste doubled the text and was set back.
+        public var repairedLatePaste: Bool?
 
         public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {
             self.claimID = claimID
@@ -159,8 +161,11 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// Messages that were valid but not for a consumer, or of a type this host does not know.
         public var skipped: [String: UInt64] = [:]
         public var undecodable: UInt64 = 0
+        /// fillResult lines written to the socket, written while disconnected, and answered by the
+        /// helper with "invalid consumer message".
         public var resultsSent: UInt64 = 0
         public var resultsDropped: UInt64 = 0
+        public var resultsRejected: UInt64 = 0
 
         public init() {}
     }
@@ -250,17 +255,17 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var timeoutRecoveries: UInt64
         public var maxCallbackMicros: Double
         public var p99CallbackMicros: Double?
-        /// Keys whose target pid came from the event, and from the frontmost-app fallback.
+        /// Keys whose event named the receiving pid, and keys whose event did not (those take nothing).
         public var targetFromEvent: UInt64?
-        public var targetFromFrontmost: UInt64?
+        public var targetMissing: UInt64?
 
         public init(
             running: Bool, enabled: Bool, keyDowns: UInt64, consumed: UInt64,
             timeoutRecoveries: UInt64, maxCallbackMicros: Double, p99CallbackMicros: Double?,
-            targetFromEvent: UInt64? = nil, targetFromFrontmost: UInt64? = nil
+            targetFromEvent: UInt64? = nil, targetMissing: UInt64? = nil
         ) {
             self.targetFromEvent = targetFromEvent
-            self.targetFromFrontmost = targetFromFrontmost
+            self.targetMissing = targetMissing
             self.running = running
             self.enabled = enabled
             self.keyDowns = keyDowns

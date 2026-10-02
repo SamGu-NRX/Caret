@@ -43,15 +43,12 @@ public final class TapThread: @unchecked Sendable {
         var maxCallbackNanos: UInt64 = 0
         var recentCallbackNanos: [UInt64] = []
         var targetFromEvent: UInt64 = 0
-        var targetFromFrontmost: UInt64 = 0
+        var targetMissing: UInt64 = 0
     }
 
     private let arbiter: OfferArbiter
     private let callbacks: Callbacks
     private let stats = OSAllocatedUnfairLock(initialState: Stats())
-    /// LaunchServices' frontmost app, kept current by the main thread, for keys whose event carries
-    /// no target pid. Reading it is a lock and a copy; no Accessibility or AppKit on the tap thread.
-    private let frontmost = OSAllocatedUnfairLock<Int32?>(initialState: nil)
     /// Set on the tap thread; read from the main and socket threads, hence the lock.
     private let port = OSAllocatedUnfairLock<CFMachPort?>(uncheckedState: nil)
     private var tap: CFMachPort? { port.withLockUnchecked { $0 } }
@@ -86,11 +83,6 @@ public final class TapThread: @unchecked Sendable {
         thread = nil
     }
 
-    /// Main thread, on every app activation.
-    public func setFrontmostPID(_ pid: Int32?) {
-        frontmost.withLock { $0 = pid }
-    }
-
     public var isEnabled: Bool {
         guard let tap else { return false }
         return CGEvent.tapIsEnabled(tap: tap)
@@ -110,7 +102,7 @@ public final class TapThread: @unchecked Sendable {
             maxCallbackMicros: Double(s.maxCallbackNanos) / 1_000,
             p99CallbackMicros: LatencyRecorder.percentile(sorted, 0.99),
             targetFromEvent: s.targetFromEvent,
-            targetFromFrontmost: s.targetFromFrontmost
+            targetMissing: s.targetMissing
         )
     }
 
@@ -174,13 +166,10 @@ public final class TapThread: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
 
-        var key = KeyStroke(event: event)
-        if key.targetPID == nil {
-            key.targetPID = frontmost.withLock { $0 }
-            stats.withLock { $0.targetFromFrontmost &+= 1 }
-        } else {
-            stats.withLock { $0.targetFromEvent &+= 1 }
-        }
+        // No fallback for a key without a target pid: a cached frontmost app can be stale by the
+        // time the key is delivered. Such a key takes nothing; the counter says how often it happens.
+        let key = KeyStroke(event: event)
+        stats.withLock { key.targetPID == nil ? ($0.targetMissing &+= 1) : ($0.targetFromEvent &+= 1) }
         let consumed = route(key, stampedAt: started)
         record(started: started, consumed: consumed)
         return consumed ? nil : Unmanaged.passUnretained(event)

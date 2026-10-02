@@ -52,7 +52,7 @@ final class OfferArbiterTests: XCTestCase {
             let lock = NSLock()
             var decisions: [OfferArbiter.Decision] = []
             DispatchQueue.concurrentPerform(iterations: 2) { _ in
-                let decision = arbiter.handleKeyDown(.tab)
+                let decision = arbiter.handleKeyDown(.tab(to: 4242))
                 lock.lock(); decisions.append(decision); lock.unlock()
             }
             let claims = decisions.filter { if case .consume = $0 { return true } else { return false } }
@@ -67,7 +67,7 @@ final class OfferArbiterTests: XCTestCase {
         let lock = NSLock()
         var consumed = 0
         DispatchQueue.concurrentPerform(iterations: 64) { _ in
-            if case .consume = arbiter.handleKeyDown(.tab) {
+            if case .consume = arbiter.handleKeyDown(.tab(to: 4242)) {
                 lock.lock(); consumed += 1; lock.unlock()
             }
         }
@@ -76,7 +76,7 @@ final class OfferArbiterTests: XCTestCase {
     }
 
     func testTabWithNoOfferPassesThrough() {
-        XCTAssertEqual(OfferArbiter().handleKeyDown(.tab), .pass(.noOffer))
+        XCTAssertEqual(OfferArbiter().handleKeyDown(.tab(to: 4242)), .pass(.noOffer))
     }
 
     // MARK: - Expiry and invalidation
@@ -84,16 +84,16 @@ final class OfferArbiterTests: XCTestCase {
     func testAnExpiredOfferPassesTabThroughAndIsRemoved() {
         let arbiter = OfferArbiter()
         arbiter.publish(offer(createdAt: Date(timeIntervalSinceNow: -31), maxAgeSeconds: 30))
-        XCTAssertEqual(arbiter.handleKeyDown(.tab), .pass(.expired))
+        XCTAssertEqual(arbiter.handleKeyDown(.tab(to: 4242)), .pass(.expired))
         XCTAssertNil(arbiter.snapshot().current)
-        XCTAssertEqual(arbiter.handleKeyDown(.tab), .pass(.noOffer))
+        XCTAssertEqual(arbiter.handleKeyDown(.tab(to: 4242)), .pass(.noOffer))
     }
 
     func testAnInvalidatedOfferPassesTabThrough() {
         let arbiter = OfferArbiter()
         arbiter.publish(offer())
         arbiter.invalidate()
-        XCTAssertEqual(arbiter.handleKeyDown(.tab), .pass(.noOffer))
+        XCTAssertEqual(arbiter.handleKeyDown(.tab(to: 4242)), .pass(.noOffer))
     }
 
     func testInvalidatingAnOlderOfferKeepsTheNewerOne() throws {
@@ -101,23 +101,23 @@ final class OfferArbiterTests: XCTestCase {
         let first = try XCTUnwrap(arbiter.publish(offer(text: "first")))
         arbiter.publish(offer(text: "second"))
         arbiter.invalidate(offerID: first)
-        let claim = try claim(arbiter.handleKeyDown(.tab))
+        let claim = try claim(arbiter.handleKeyDown(.tab(to: 4242)))
         XCTAssertEqual(claim.insertionText, "second")
     }
 
     func testADivergentKeyDismissesSoTheNextTabPassesThrough() {
         let arbiter = OfferArbiter()
         arbiter.publish(offer(text: "summary"))
-        XCTAssertEqual(arbiter.handleKeyDown(.typing("x")), .pass(.dismissed))
-        XCTAssertEqual(arbiter.handleKeyDown(.tab), .pass(.noOffer))
+        XCTAssertEqual(arbiter.handleKeyDown(.typing("x", to: 4242)), .pass(.dismissed))
+        XCTAssertEqual(arbiter.handleKeyDown(.tab(to: 4242)), .pass(.noOffer))
     }
 
     func testModifiedTabIsNotAnAccept() {
         for key in [
-            KeyStroke(keyCode: KeyStroke.tabKeyCode, shift: true),
-            KeyStroke(keyCode: KeyStroke.tabKeyCode, command: true),
-            KeyStroke(keyCode: KeyStroke.tabKeyCode, control: true),
-            KeyStroke(keyCode: KeyStroke.tabKeyCode, option: true),
+            KeyStroke(keyCode: KeyStroke.tabKeyCode, shift: true, targetPID: 4242),
+            KeyStroke(keyCode: KeyStroke.tabKeyCode, command: true, targetPID: 4242),
+            KeyStroke(keyCode: KeyStroke.tabKeyCode, control: true, targetPID: 4242),
+            KeyStroke(keyCode: KeyStroke.tabKeyCode, option: true, targetPID: 4242),
         ] {
             let arbiter = OfferArbiter()
             arbiter.publish(offer())
@@ -128,7 +128,7 @@ final class OfferArbiterTests: XCTestCase {
     func testCommandChordWithTextDismissesInsteadOfTypingThrough() {
         let arbiter = OfferArbiter()
         arbiter.publish(offer(text: "summary"))
-        XCTAssertEqual(arbiter.handleKeyDown(KeyStroke(keyCode: 1, command: true, text: "s")), .pass(.dismissed))
+        XCTAssertEqual(arbiter.handleKeyDown(KeyStroke(keyCode: 1, command: true, text: "s", targetPID: 4242)), .pass(.dismissed))
     }
 
     // MARK: - Type-through
@@ -136,9 +136,9 @@ final class OfferArbiterTests: XCTestCase {
     func testTypingTheOffersHeadKeepsItAndShortensTheInsertion() throws {
         let arbiter = OfferArbiter()
         arbiter.publish(offer(text: "summary"))
-        XCTAssertEqual(arbiter.handleKeyDown(.typing("s")), .pass(.typedThrough))
-        XCTAssertEqual(arbiter.handleKeyDown(.typing("u")), .pass(.typedThrough))
-        let claim = try claim(arbiter.handleKeyDown(.tab))
+        XCTAssertEqual(arbiter.handleKeyDown(.typing("s", to: 4242)), .pass(.typedThrough))
+        XCTAssertEqual(arbiter.handleKeyDown(.typing("u", to: 4242)), .pass(.typedThrough))
+        let claim = try claim(arbiter.handleKeyDown(.tab(to: 4242)))
         XCTAssertEqual(claim.insertionText, "mmary")
 
         let edit = try XCTUnwrap(claim.edit())
@@ -153,9 +153,9 @@ final class OfferArbiterTests: XCTestCase {
     func testTypingTheWholeOfferEndsIt() {
         let arbiter = OfferArbiter()
         arbiter.publish(offer(text: "ok"))
-        XCTAssertEqual(arbiter.handleKeyDown(.typing("o")), .pass(.typedThrough))
-        XCTAssertEqual(arbiter.handleKeyDown(.typing("k")), .pass(.dismissed))
-        XCTAssertEqual(arbiter.handleKeyDown(.tab), .pass(.noOffer))
+        XCTAssertEqual(arbiter.handleKeyDown(.typing("o", to: 4242)), .pass(.typedThrough))
+        XCTAssertEqual(arbiter.handleKeyDown(.typing("k", to: 4242)), .pass(.dismissed))
+        XCTAssertEqual(arbiter.handleKeyDown(.tab(to: 4242)), .pass(.noOffer))
     }
 
     // MARK: - Confirmation against the live field
@@ -163,7 +163,7 @@ final class OfferArbiterTests: XCTestCase {
     func testAFingerprintMismatchAbortsTheClaim() throws {
         let arbiter = OfferArbiter()
         arbiter.publish(offer())
-        let claim = try claim(arbiter.handleKeyDown(.tab))
+        let claim = try claim(arbiter.handleKeyDown(.tab(to: 4242)))
         let changed = "X" + Self.value
         let result = arbiter.confirm(claim, live: live(changed, caret: UTF16Text.length(changed)))
         guard case .failure(.fieldContentChanged) = result else {
@@ -178,7 +178,7 @@ final class OfferArbiterTests: XCTestCase {
     func testADifferentProcessAbortsTheClaim() throws {
         let arbiter = OfferArbiter()
         arbiter.publish(offer())
-        let claim = try claim(arbiter.handleKeyDown(.tab))
+        let claim = try claim(arbiter.handleKeyDown(.tab(to: 4242)))
         let result = arbiter.confirm(claim, live: live(Self.value, caret: UTF16Text.length(Self.value), pid: 5150))
         guard case .failure(.targetMoved) = result else { return XCTFail("expected targetMoved, got \(result)") }
     }
@@ -186,7 +186,7 @@ final class OfferArbiterTests: XCTestCase {
     func testAMovedCaretAbortsTheClaim() throws {
         let arbiter = OfferArbiter()
         arbiter.publish(offer())
-        let claim = try claim(arbiter.handleKeyDown(.tab))
+        let claim = try claim(arbiter.handleKeyDown(.tab(to: 4242)))
         let result = arbiter.confirm(claim, live: live(Self.value, caret: 3))
         guard case .failure(.selectionMoved) = result else { return XCTFail("expected selectionMoved, got \(result)") }
     }
@@ -194,7 +194,7 @@ final class OfferArbiterTests: XCTestCase {
     func testOffersAreRefusedWhileAClaimIsInsertedAndForTheConsumedRevision() throws {
         let arbiter = OfferArbiter()
         arbiter.publish(offer())
-        let claim = try claim(arbiter.handleKeyDown(.tab))
+        let claim = try claim(arbiter.handleKeyDown(.tab(to: 4242)))
         XCTAssertNil(arbiter.publish(offer()), "no new offer while the claim is pending")
 
         let result = arbiter.confirm(claim, live: live(Self.value, caret: UTF16Text.length(Self.value)))

@@ -11,6 +11,9 @@ public struct UndoGrant: Equatable, Sendable {
 
     /// Assigned by `OfferArbiter.showToast`.
     public internal(set) var id: UInt64 = 0
+    /// The executor's id for the write, under which it keeps the written element, so ⌘Z can find
+    /// the element the moment the grant is visible.
+    public var writeID: UInt64
     /// The field as the write left it: `elementRevision` is the digest of `writtenValue`.
     public var target: TargetIdentity
     public var priorValue: String
@@ -24,9 +27,10 @@ public struct UndoGrant: Equatable, Sendable {
 
     public init(
         target: TargetIdentity, priorValue: String, writtenValue: String, insertedStart: Int,
-        insertedLength: Int, origin: FillOrigin?, createdAt: Date = Date(),
+        insertedLength: Int, origin: FillOrigin?, writeID: UInt64 = 0, createdAt: Date = Date(),
         lifetimeSeconds: Double = UndoGrant.defaultLifetime
     ) {
+        self.writeID = writeID
         self.target = target
         self.priorValue = priorValue
         self.writtenValue = writtenValue

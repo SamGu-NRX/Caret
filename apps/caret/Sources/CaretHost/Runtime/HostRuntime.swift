@@ -147,7 +147,6 @@ public final class HostRuntime {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
         if !tap.start() { status.increment("tap.createFailed") }
-        trackFrontmost()
         focus.onChange = { [coordinator] change in coordinator.handle(change) }
         focus.start()
         helper.start()
@@ -190,17 +189,6 @@ public final class HostRuntime {
         case .loading: return "Loading model"
         case .ready: return "Ready"
         case .unavailable(let reason): return "Unavailable: \(reason)"
-        }
-    }
-
-    /// Keeps the tap's fallback target pid on LaunchServices' frontmost app.
-    private func trackFrontmost() {
-        tap.setFrontmostPID(NSWorkspace.shared.frontmostApplication?.processIdentifier)
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [tap] note in
-            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            tap.setFrontmostPID(app?.processIdentifier)
         }
     }
 

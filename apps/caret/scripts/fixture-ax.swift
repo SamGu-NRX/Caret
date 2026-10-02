@@ -239,7 +239,9 @@ case "key-if-front" where args.count == 3 || args.count == 4:
             let units = Array(text.utf16)
             event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
         }
-        if down, !isFront(pid) { emit(["posted": false, "reason": "lostFront"]); exit(3) }
+        // Checked before the key-up too: if the fixture lost the foreground, the release is not
+        // sent at all rather than to whichever app took it.
+        if !isFront(pid) { emit(["posted": false, "reason": down ? "lostFront" : "lostFrontBeforeKeyUp"]); exit(3) }
         event.post(tap: .cghidEventTap)
         usleep(4_000)
     }

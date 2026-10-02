@@ -32,14 +32,6 @@ final class InsertionExecutor: @unchecked Sendable {
         let reason: String?
         let rejected: Bool
         let method: FillResult.Method?
-        /// The element a verified fill wrote into, for binding to its toast's grant.
-        let element: WrittenElement?
-    }
-
-    /// An AX element handed across queues. AXUIElement is an immutable CF reference, safe to use
-    /// from any thread.
-    struct WrittenElement: @unchecked Sendable {
-        let element: AXUIElement
     }
 
     struct UndoResult: Sendable {
@@ -69,9 +61,10 @@ final class InsertionExecutor: @unchecked Sendable {
     /// Policy-relevant context of recent offers, so the planner can pick the app's insertion
     /// strategy (paste-and-match-style, NBSP workaround, chunked injection).
     private let contexts = OSAllocatedUnfairLock(initialState: [(UInt64, TextFieldContext)]())
-    /// The element each recent fill wrote into, so ⌘Z can reread exactly that element even after
-    /// focus moved to the next field.
-    private let written = OSAllocatedUnfairLock(initialState: [(UInt64, AXUIElement)]())
+    /// The element each recent fill wrote into, and its process's start time, by write id, so ⌘Z
+    /// can reread exactly that element even after focus moved to the next field.
+    private let written = OSAllocatedUnfairLock(initialState: [(UInt64, AXUIElement, UInt64)]())
+    private let writeIDs = OSAllocatedUnfairLock(initialState: UInt64(0))
 
     init(
         arbiter: OfferArbiter,
@@ -95,14 +88,6 @@ final class InsertionExecutor: @unchecked Sendable {
     func remember(offerID: UInt64, context: TextFieldContext) {
         contexts.withLock { list in
             list.append((offerID, context))
-            if list.count > 8 { list.removeFirst(list.count - 8) }
-        }
-    }
-
-    /// Main thread, when a fill's toast is shown: binds the toast's grant to the written element.
-    func bind(grantID: UInt64, to element: AXUIElement) {
-        written.withLock { list in
-            list.append((grantID, element))
             if list.count > 8 { list.removeFirst(list.count - 8) }
         }
     }
@@ -134,7 +119,7 @@ final class InsertionExecutor: @unchecked Sendable {
 
         func finish(
             ok: Bool, error: String?, verified: Bool?, method: FillResult.Method? = nil,
-            fellBack: Bool = false, undo: UndoGrant? = nil, rejected: Bool = false, element: AXUIElement? = nil
+            fellBack: Bool = false, undo: UndoGrant? = nil, rejected: Bool = false, repaired: Bool = false
         ) {
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: ok, error: error, text: text,
@@ -144,24 +129,24 @@ final class InsertionExecutor: @unchecked Sendable {
             insertion.kind = claim.offer.kind.name
             insertion.method = method?.rawValue
             insertion.fellBack = fellBack
+            insertion.repairedLatePaste = repaired
             status.update { $0.lastInsertion = insertion }
-            onFinished(Result(
-                claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected, method: method,
-                element: element.map(WrittenElement.init)
-            ))
+            onFinished(Result(claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected, method: method))
         }
         func refuse(_ reason: String) {
             arbiter.abandon(claimID: claim.claimID, reason: reason)
             finish(ok: false, error: reason, verified: nil, rejected: true)
         }
 
-        guard policy.allowsLive(pid: pid) else { return refuse("targetNotAllowed") }
-        guard let reread = FieldReader.readFocused(pid: pid) else { return refuse("fieldUnreadable") }
-        let (element, live) = reread
+        guard policy.allowsLive(pid: pid), let processStart = ProcessStart.of(pid) else { return refuse("targetNotAllowed") }
+        // The source walk can take up to its deadline; the field is reread after it, so the guard
+        // approves the field as it is immediately before the write.
         if let origin {
             let source = SourceCheck.check(value: claim.offer.text, origin: origin)
             guard source == .present else { return refuse("source.\(source)") }
         }
+        guard let reread = FieldReader.readFocused(pid: pid) else { return refuse("fieldUnreadable") }
+        let (element, live) = reread
         let approved: InsertionGuard.ApprovedEdit
         switch arbiter.confirm(claim, live: live.liveField) {
         case .failure(let rejection):
@@ -171,14 +156,21 @@ final class InsertionExecutor: @unchecked Sendable {
         }
 
         let appKey = WriteMethodTable.appKey(pid: pid)
-        let stillTarget = { [policy] in policy.allowsLive(pid: pid) }
+        // Checked before every event and AX write: the same process (not a new one reusing the
+        // pid), still allowed, and the approved element still focused, since a pid-posted ⌘V goes
+        // to whichever field of the app has focus.
+        let stillTarget = { [policy] in
+            ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid)
+                && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
+        }
         var method: FillResult.Method
         var fellBack = false
+        var repairedLatePaste = false
         var step: WriteFallback.Step
 
         if writeMethods.method(for: appKey) == .axSelectedText {
             method = .axSelectedText
-            step = WriteFallback.afterAX(axWrite(approved, element: element, unchanged: live.value))
+            step = stillTarget() ? WriteFallback.afterAX(axWrite(approved, element: element, unchanged: live.value)) : .failed("targetNotAllowed")
         } else {
             method = .pastePid
             let synthesizer = PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget)
@@ -211,6 +203,10 @@ final class InsertionExecutor: @unchecked Sendable {
                     step = .failed("writeMismatch")
                 }
             }
+            if fellBack, step == .verified,
+               let duplicate = WriteFallback.lateDuplicate(original: live.value, start: approved.replaceStart, end: approved.replaceEnd, replacement: approved.replacement) {
+                repairedLatePaste = repairLatePaste(element: element, duplicate: duplicate, expected: approved.resultingValue)
+            }
             if usesPasteboard { pasteboard.restore() }
         }
 
@@ -223,16 +219,41 @@ final class InsertionExecutor: @unchecked Sendable {
         if verified, let origin {
             var target = live.identity
             target.elementRevision = UTF16Text.digest(approved.resultingValue)
+            let writeID = writeIDs.withLock { id -> UInt64 in
+                id &+= 1
+                return id
+            }
+            // Bound before the grant exists anywhere else, so a ⌘Z that takes it always finds it.
+            written.withLock { list in
+                list.append((writeID, element, processStart))
+                if list.count > 8 { list.removeFirst(list.count - 8) }
+            }
             grant = UndoGrant(
                 target: target, priorValue: live.value, writtenValue: approved.resultingValue,
                 insertedStart: approved.replaceStart, insertedLength: UTF16Text.length(approved.replacement),
-                origin: origin
+                origin: origin, writeID: writeID
             )
             if advanceAfterFill, stillTarget() {
                 PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget).tab()
             }
         }
-        finish(ok: error == nil, error: error, verified: verified, method: method, fellBack: fellBack, undo: grant, element: grant == nil ? nil : element)
+        finish(ok: error == nil, error: error, verified: verified, method: method, fellBack: fellBack, undo: grant, repaired: repairedLatePaste)
+    }
+
+    /// After an AX fallback, watches briefly for a paste the app took before the clipboard was
+    /// emptied and applied late, which would leave the text twice. Only that exact value is set
+    /// back to the expected one. How long an app can hold a paste is not measured; this window is
+    /// an assumption, and a paste applied after it is not caught.
+    private func repairLatePaste(element: AXUIElement, duplicate: String, expected: String) -> Bool {
+        let deadline = Date().addingTimeInterval(0.75)
+        repeat {
+            if FieldReader.read(element)?.value == duplicate {
+                return AXRead.setString(kAXValueAttribute, expected, on: element) == .success
+                    && FieldReader.read(element)?.value == expected
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        } while Date() < deadline
+        return false
     }
 
     /// Replaces the approved span through `AXSelectedText` on the element itself.
@@ -268,8 +289,12 @@ final class InsertionExecutor: @unchecked Sendable {
             status.update { $0.lastUndo = DebugState.UndoInfo(grantID: grant.id, ok: ok, error: error) }
             onUndone(UndoResult(grant: grant, ok: ok, error: error))
         }
-        guard policy.allowsLive(pid: grant.target.pid) else { return done(false, "targetNotAllowed") }
-        guard let element = written.withLock({ list in list.last { $0.0 == grant.id }?.1 }) else { return done(false, "elementUnknown") }
+        guard let (_, element, processStart) = written.withLock({ list in list.last { $0.0 == grant.writeID } }) else {
+            return done(false, "elementUnknown")
+        }
+        guard policy.allowsLive(pid: grant.target.pid), ProcessStart.of(grant.target.pid) == processStart else {
+            return done(false, "targetNotAllowed")
+        }
         guard let live = FieldReader.read(element) else { return done(false, "fieldUnreadable") }
         let revert: UndoGuard.Revert
         switch UndoGuard.approve(grant, live: live.liveField) {

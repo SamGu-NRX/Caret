@@ -44,6 +44,17 @@ public enum WriteFallback {
         }
     }
 
+    /// What the field holds if a paste the app had already taken lands after the AX fallback
+    /// wrote the same text: the insertion twice at the caret. Only this exact value is repaired;
+    /// anything else may be the user typing and is left alone. Nil for an invalid span.
+    public static func lateDuplicate(original: String, start: Int, end: Int, replacement: String) -> String? {
+        let total = UTF16Text.length(original)
+        guard let prefix = UTF16Text.slice(original, start: 0, end: start),
+              let suffix = UTF16Text.slice(original, start: end, end: total)
+        else { return nil }
+        return prefix + replacement + replacement + suffix
+    }
+
     /// What to do after the AX write settled.
     public static func afterAX(_ settle: Settle) -> Step {
         switch settle {

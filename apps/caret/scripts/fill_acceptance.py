@@ -503,7 +503,7 @@ def realtab(out_dir, ghost):
         "offer": offer["text"], "gold": field["gold"], "value": value, "exact": value == field["gold"],
         "insertion": ins, "tapBefore": before, "tapAfter": after,
         "consumedDelta": after["consumed"] - before["consumed"],
-        "cua": cua_verify(pid, CLAIM, field["gold"]),
+        "cua": cua_read(pid, CLAIM, field["frame"]),
     }
     if ghost:
         extra["paint"] = keystroke_to_paint(pids, pid, gold)

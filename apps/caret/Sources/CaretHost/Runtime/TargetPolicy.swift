@@ -1,5 +1,18 @@
 import AppKit
+import Darwin
 import Foundation
+
+/// When a process started, from the kernel. A pid can be reused by a new process; the pair of pid
+/// and start time cannot, so a write bound to both can never reach a process that took the pid
+/// over.
+enum ProcessStart {
+    static func of(_ pid: pid_t) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
+    }
+}
 
 /// Which processes the host may offer into and write into.
 ///

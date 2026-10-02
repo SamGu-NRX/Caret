@@ -155,6 +155,9 @@ final class HelperClient: @unchecked Sendable {
             case .fillProposal: s.proposals &+= 1
             case .error(let e):
                 s.errors &+= 1
+                // The helper answers a message it cannot parse with this error; until its schema
+                // has fillResult, every result the host writes is rejected (see the A2 report).
+                if e.message.hasPrefix("invalid consumer message") { s.resultsRejected &+= 1 }
                 // The helper's error text names windows and reasons, never screen text.
                 s.lastError = String(e.message.prefix(200))
             case .notForConsumer(let type), .unknown(let type): s.skipped[type, default: 0] &+= 1

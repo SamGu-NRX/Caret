@@ -53,6 +53,13 @@ final class FillOfferLifecycleTests: XCTestCase {
         XCTAssertNotNil(arbiter.snapshot().current, "a key that is not the form's leaves the offer")
     }
 
+    func testAGhostOfferIsNotTakenByAKeyWhoseTargetIsUnknown() {
+        let arbiter = OfferArbiter()
+        arbiter.publish(ghostOffer())
+        XCTAssertEqual(arbiter.handleKeyDown(.tab), .pass(.otherApp))
+        XCTAssertNotNil(arbiter.snapshot().current)
+    }
+
     func testTabHeadedForAnotherAppPassesThroughAndLeavesTheOffer() {
         let arbiter = OfferArbiter()
         arbiter.publish(fillOffer())
@@ -188,6 +195,13 @@ final class UndoToastTests: XCTestCase {
         let arbiter = OfferArbiter()
         arbiter.showToast(grant())
         XCTAssertEqual(arbiter.handleKeyDown(cmd(KeyStroke.zKeyCode, pid: 999)), .pass(.noOffer))
+        XCTAssertNotNil(arbiter.snapshot().toast)
+    }
+
+    func testCommandZWithAnUnknownTargetLeavesTheToastAndIsNotTaken() {
+        let arbiter = OfferArbiter()
+        arbiter.showToast(grant())
+        XCTAssertEqual(arbiter.handleKeyDown(cmd(KeyStroke.zKeyCode, pid: nil)), .pass(.noOffer))
         XCTAssertNotNil(arbiter.snapshot().toast)
     }
 

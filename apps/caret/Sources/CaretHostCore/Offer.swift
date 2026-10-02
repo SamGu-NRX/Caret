@@ -98,7 +98,7 @@ public struct KeyStroke: Equatable, Sendable {
     /// The plain text the key types, or nil for control, navigation and modified keys.
     public var text: String?
     /// The process the window server will deliver this key to (`kCGEventTargetUnixProcessID`).
-    /// Nil when unknown. An offer is only taken by a key headed for the offer's own app.
+    /// Nil when unknown, and then the key takes no offer and no undo.
     public var targetPID: Int32?
 
     public init(
@@ -125,8 +125,8 @@ public struct KeyStroke: Equatable, Sendable {
         KeyStroke(keyCode: tabKeyCode, targetPID: pid)
     }
 
-    public static func typing(_ text: String) -> KeyStroke {
-        KeyStroke(keyCode: 0, text: text)
+    public static func typing(_ text: String, to pid: Int32? = nil) -> KeyStroke {
+        KeyStroke(keyCode: 0, text: text, targetPID: pid)
     }
 
     /// Tab with no modifiers. Shift+Tab and other chords keep their native meaning.
@@ -149,8 +149,10 @@ public struct KeyStroke: Equatable, Sendable {
         return Self.digitKeyCodes[keyCode]
     }
 
-    /// A key with no target or the offer's own target may act on that offer.
+    /// Only a key known to be headed for `pid` may act on that app's offer or toast. A key whose
+    /// target is unknown acts on nothing: guessing the target is how a key meant for one app takes
+    /// another app's offer.
     func isHeaded(to pid: Int32) -> Bool {
-        targetPID.map { $0 == pid } ?? true
+        targetPID == pid
     }
 }

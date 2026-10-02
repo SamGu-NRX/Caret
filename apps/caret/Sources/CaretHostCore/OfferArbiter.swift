@@ -26,8 +26,8 @@ public final class OfferArbiter: @unchecked Sendable {
         case typedThrough
         /// The key diverged from the offer; it was removed.
         case dismissed
-        /// The key is headed for a different app than the offer's (or, for a fill, its target is
-        /// unknown). Nothing was taken or dismissed.
+        /// The key is headed for a different app than the offer's, or its target is unknown.
+        /// Nothing was taken or dismissed.
         case otherApp
         /// No offer, but the key dismissed the result toast.
         case toastDismissed
@@ -176,10 +176,6 @@ public final class OfferArbiter: @unchecked Sendable {
             }
 
             guard let offer = s.current else { return .pass(dismissedToast ? .toastDismissed : .noOffer) }
-            // A fill is a write into another app's field; it is taken only by a key known to be
-            // headed there. Ghost offers come from the frontmost field, so an unknown target is
-            // that field.
-            if case .fill = offer.kind, key.targetPID == nil { return .pass(.otherApp) }
             guard key.isHeaded(to: offer.target.pid) else { return .pass(.otherApp) }
             if offer.isExpired(at: now) {
                 s.current = nil

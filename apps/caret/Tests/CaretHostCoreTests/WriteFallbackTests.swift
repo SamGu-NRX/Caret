@@ -52,6 +52,12 @@ final class WriteFallbackTests: XCTestCase {
         XCTAssertEqual(WriteFallback.afterPaste(.matched, usedPasteboard: true, postError: nil), .verified)
     }
 
+    func testALatePasteAfterTheFallbackIsTheInsertionTwiceAtTheCaret() {
+        XCTAssertEqual(WriteFallback.lateDuplicate(original: "", start: 0, end: 0, replacement: "Lumen Labs"), "Lumen LabsLumen Labs")
+        XCTAssertEqual(WriteFallback.lateDuplicate(original: "Dear , hi", start: 5, end: 5, replacement: "Dana"), "Dear DanaDana, hi")
+        XCTAssertNil(WriteFallback.lateDuplicate(original: "ab", start: 3, end: 3, replacement: "x"))
+    }
+
     func testTheAXRouteHasNoFurtherFallback() {
         XCTAssertEqual(WriteFallback.afterAX(.matched), .verified)
         XCTAssertEqual(WriteFallback.afterAX(.unchanged), .failed("writeIgnored"))
