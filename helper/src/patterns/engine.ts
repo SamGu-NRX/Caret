@@ -235,7 +235,7 @@ export class PatternEngine {
         memory.recordReaction(kind, bundleId, "take", this.clock);
         let r: TaskResult;
         try {
-          r = await this.deps.run(`offer-${o.msg.id}`, o.plan, o.slots);
+          r = await this.deps.run(o.msg.id, o.plan, o.slots);
         } catch (e) {
           return this.fail(`offer ${m.offerId}: ${e instanceof Error ? e.message : String(e)}`);
         }

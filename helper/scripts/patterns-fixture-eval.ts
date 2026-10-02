@@ -47,7 +47,6 @@ function front(): Front {
 }
 const frontBefore = front();
 const fronts: Front[] = [frontBefore];
-const frontPoll = setInterval(() => fronts.push(front()), 250);
 
 // MARK: - helper in process
 
@@ -74,7 +73,7 @@ const tick = setInterval(() => helper.tick(), 250);
 
 // MARK: - fixture and reader, the only processes this script may signal
 
-const fixture: ChildProcessWithoutNullStreams = spawn(join(a.bin, "caret-fixture"), ["--windows", "roster,seating", "--duration", "600"]);
+const fixture: ChildProcessWithoutNullStreams = spawn(join(a.bin, "caret-fixture"), ["--windows", "roster,seating", "--duration", "600", "--background-only"]);
 let reader: ChildProcessWithoutNullStreams | null = null;
 process.on("exit", () => {
   reader?.kill("SIGTERM");
@@ -82,6 +81,19 @@ process.on("exit", () => {
 });
 let fixturePid = 0;
 let fixtureErr = "";
+/** Set when the fixture or the reader was seen frontmost; both are stopped at once and the run is deferred. */
+let foreground: Front | null = null;
+const ours = (pid: number): boolean => pid > 0 && (pid === fixture.pid || pid === fixturePid || pid === (reader?.pid ?? -1));
+const frontPoll = setInterval(() => {
+  const f = front();
+  fronts.push(f);
+  if (foreground === null && ours(f.pid)) {
+    foreground = f;
+    reader?.kill("SIGTERM");
+    fixture.kill("SIGTERM");
+  }
+}, 100);
+
 const replies: ((o: Record<string, unknown>) => void)[] = [];
 let buf = "";
 fixture.stderr.setEncoding("utf8");
@@ -138,6 +150,9 @@ try {
   const userWrites: { seat: number; at: number; outcome: string }[] = [];
   for (const r of [0, 1]) {
     const w = win(SEATING)!;
+    // The reader writes only elements it has walked for this link, as it does for the executor.
+    const walk = await helper.readerVerb({ kind: "walk", pid: fixturePid, windowId: w.window.windowId });
+    if (walk.outcome !== "ok") throw new Error(`walk before seat ${r + 1}: ${walk.outcome} ${walk.detail ?? ""}`);
     const res = await helper.readerVerb({ kind: "write", pid: fixturePid, windowId: w.window.windowId, key: seats[r]!, role: "AXTextField", attribute: "value", expect: "", value: NAMES[r]! });
     userWrites.push({ seat: r + 1, at: res.at, outcome: res.outcome });
     if (res.outcome !== "ok") throw new Error(`user write to seat ${r + 1}: ${res.outcome} ${res.detail ?? ""}`);
@@ -189,11 +204,12 @@ try {
 }
 
 const frontAfter = fronts[fronts.length - 1]!;
-const foreign = fronts.filter((f) => f.pid === fixturePid || f.pid === result.readerPid);
+const foreign = fronts.filter((f) => ours(f.pid) || f.pid === result.readerPid);
 result.frontAfter = frontAfter;
 result.frontSamples = fronts.length;
 result.frontChanged = fronts.filter((f) => f.pid !== frontBefore.pid).map((f) => ({ at: f.at, pid: f.pid, name: f.name }));
 result.fixtureOrReaderWasFront = foreign.length > 0;
+result.deferred = foreground === null ? null : `deferred: foreground (${JSON.stringify(foreground)})`;
 result.fixtureStderr = fixtureErr.split("\n").filter((l) => l.length > 0).slice(-5);
 result.ok = ok && frontAfter.pid === frontBefore.pid && foreign.length === 0;
 writeFileSync(join(OUT, "fixture-loop.json"), JSON.stringify(result, null, 2));

@@ -7,6 +7,9 @@
 //                 [--activity FILE] [--focus-forms [--visit reference,distractors]]
 //   --windows executor adds the executor window, driven by lines on stdin:
 //     reset | seed FIELD VALUE | remove FIELD | sheet | dump
+//   --background-only makes the app impossible to activate (no key windows, so no focus-driven modes).
+//   --windows roster,seating adds a list of eight names and a six-seat chart for the loop recognizer;
+//   the seating window takes stdin lines reset | dump. Only one stdin-driven window may be open.
 //   Each command answers one JSON line on stdout.
 import AppKit
 import WebKit
@@ -40,6 +43,9 @@ let period = TimeInterval(opt("--period") ?? "1.2") ?? 1.2
 let webkitURL = opt("--webkit")
 let activityPath = opt("--activity")
 let focusForms = has("--focus-forms")
+/// Background-only: AppKit never activates the app, so it cannot take the foreground even for a moment.
+/// Its windows can never be key, so focus-driven modes (--focus-forms, --activity, --e1) need the default.
+let backgroundOnly = has("--background-only")
 /// Windows made key, in this order, before each form is focused: the user looks something up, then goes to the form.
 let visitList = (opt("--visit") ?? "").split(separator: ",").map(String.init)
 if !argv.isEmpty { die("unknown arguments: \(argv.joined(separator: " "))") }
@@ -140,7 +146,8 @@ let scheduleForm: [Field] = [
 // MARK: - windows
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
+// A deactivate-on-activation guard alone still left the fixture frontmost for a second at launch (B3, 2026-10-02).
+app.setActivationPolicy(backgroundOnly ? .prohibited : .accessory)
 // Launched from the frontmost app (a terminal or an agent host), the fixture was made the active app
 // at launch and held the foreground for a whole evaluation run (executor run-3). It never needs to
 // be active: windows are made key without activation. So it hands activation back whenever it gets it.
@@ -380,6 +387,57 @@ final class ExecutorWindow {
 }
 var executorWindow: ExecutorWindow?
 
+/// Names for the loop fixture, in list order. Invented, like everything here.
+let rosterNames = ["Dana Whitfield", "Priya Raman", "Marcus Lowe", "Ines Okafor", "Tomas Brandt", "Keiko Sato", "Rafael Duarte", "Amara Nwosu"]
+
+/// The loop recognizer's source: one named group of static text lines, which share an element template.
+func buildRoster() -> NSWindow {
+    let w = makeWindow("Caret Fixture — Roster", NSRect(x: 60, y: 80, width: 300, height: 290))
+    let box = NSBox(frame: NSRect(x: 12, y: 12, width: 276, height: 262))
+    box.title = "Attendees"
+    box.setAccessibilityLabel("Attendees")
+    var y = 212.0
+    for n in rosterNames {
+        box.contentView!.addSubview(label(n, NSRect(x: 8, y: y, width: 250, height: 20)))
+        y -= 26
+    }
+    w.contentView!.addSubview(box)
+    return w
+}
+
+/// The loop recognizer's destination: six fields that share the label "Guest", so their keys differ only by ordinal.
+final class SeatingWindow {
+    static let title = "Caret Fixture — Seating"
+    let w = makeWindow(SeatingWindow.title, NSRect(x: 400, y: 80, width: 360, height: 280))
+    var guests: [NSTextField] = []
+
+    init() {
+        var y = 236.0
+        for i in 0..<6 {
+            w.contentView!.addSubview(label("Seat \(i + 1):", NSRect(x: 16, y: y + 2, width: 70, height: 20)))
+            let f = NSTextField(frame: NSRect(x: 90, y: y, width: 250, height: 24))
+            f.setAccessibilityLabel("Guest")
+            w.contentView!.addSubview(f)
+            guests.append(f)
+            y -= 38
+        }
+        w.orderBack(nil)
+    }
+
+    func command(_ line: String) -> [String: Any] {
+        switch line {
+        case "reset":
+            for g in guests { g.stringValue = "" }
+            return ["ok": true]
+        case "dump":
+            return ["ok": true, "title": w.title, "guests": guests.map { $0.stringValue }]
+        default:
+            return ["ok": false, "error": "unknown command \(line)"]
+        }
+    }
+}
+var seatingWindow: SeatingWindow?
+
 for name in windowList {
     switch name {
     case "drift": drift = DriftWindow()
@@ -388,6 +446,8 @@ for name in windowList {
     case "distractors": windows[name] = buildReference("Caret Fixture — Inbox", distractors, x: 300)
     case "claim": windows[name] = buildForm("Caret Fixture — Claim form", claimForm, origin: NSPoint(x: 540, y: 80))
     case "schedule": windows[name] = buildForm("Caret Fixture — Schedule follow-up", scheduleForm, origin: NSPoint(x: 1080, y: 80))
+    case "roster": windows[name] = buildRoster()
+    case "seating": seatingWindow = SeatingWindow()
     default: die("unknown window \(name)")
     }
 }
@@ -604,8 +664,10 @@ if focusForms {
     }
 }
 
-// Stdin commands for the executor window, one per line, each answered with one JSON line.
-if let ex = executorWindow {
+// Stdin commands for the executor or seating window, one per line, each answered with one JSON line.
+if executorWindow != nil && seatingWindow != nil { die("the executor and seating windows both read stdin; open one of them") }
+let stdinCommand: ((String) -> [String: Any])? = executorWindow.map { ex in { ex.command($0) } } ?? seatingWindow.map { sw in { sw.command($0) } }
+if let command = stdinCommand {
     var pending = Data()
     FileHandle.standardInput.readabilityHandler = { h in
         let chunk = h.availableData
@@ -616,7 +678,7 @@ if let ex = executorWindow {
             pending.removeSubrange(pending.startIndex...nl)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    let out = ex.command(line.trimmingCharacters(in: .whitespaces))
+                    let out = command(line.trimmingCharacters(in: .whitespaces))
                     let d = (try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])) ?? Data("{\"ok\":false}".utf8)
                     print(String(decoding: d, as: UTF8.self))
                 }
