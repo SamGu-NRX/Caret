@@ -121,7 +121,7 @@ export function renderMarkerAudit(s: AuditSummary, cpu: readonly ProcessCpu[] = 
   const app = (set: RuleSet, k: string): MarkerAppCounts | undefined => s.markers[set].byApp[k];
   const cleared = (set: RuleSet, k: string): number => s.markers[set].episodes.filter((e) => e.bundleId === k && e.clearedAfterMs !== null).length;
   const active = [
-    activity.hidMinutes === null ? null : `${activity.hidMinutes.toFixed(0)} active minutes by the HID idle timer (which also counts events that agents post)`,
+    activity.hidMinutes === null ? null : `${activity.hidMinutes.toFixed(0)} active minute${activity.hidMinutes.toFixed(0) === "1" ? "" : "s"} by the HID idle timer (which also counts events that agents post)`,
     activity.powerdMinutes === null ? null : `${activity.powerdMinutes.toFixed(0)} by powerd's hardware-input spans`,
   ].filter((x) => x !== null);
   const out = [
