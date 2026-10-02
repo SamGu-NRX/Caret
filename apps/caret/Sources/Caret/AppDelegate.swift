@@ -17,13 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        do {
-            try runtime.start()
-        } catch {
-            FileHandle.standardError.write(Data("caret: \(error)\n".utf8))
-            exit(1)
-        }
-        installStatusItem()
         // SIGTERM and SIGINT free llama/Metal before exiting, so a scripted relaunch never kills
         // the process mid-model. Not via NSApp.terminate: called from this main-queue block, its
         // terminateLater wait would starve the main queue the shutdown Task needs.
@@ -34,6 +27,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             source.resume()
             signalSources.append(source)
         }
+        do {
+            try runtime.start()
+        } catch {
+            FileHandle.standardError.write(Data("caret: \(error)\n".utf8))
+            exit(1)
+        }
+        installStatusItem()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
