@@ -58,6 +58,13 @@ final class InsertionExecutor: @unchecked Sendable {
         }
     }
 
+    /// Resumes once every claim submitted so far has finished, clipboard restore included.
+    func waitUntilIdle() async {
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            queue.async { done.resume() }
+        }
+    }
+
     /// Tap thread. Only enqueues.
     func submit(_ claim: Claim) {
         queue.async { [self] in run(claim) }

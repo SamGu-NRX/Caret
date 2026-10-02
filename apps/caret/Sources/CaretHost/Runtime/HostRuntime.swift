@@ -108,7 +108,11 @@ public final class HostRuntime {
         focus.stop()
         overlay.hide()
         arbiter.invalidate()
+        // A paste in progress must finish and put the user's clipboard back before exit.
+        await executor.waitUntilIdle()
         await engineTask?.value
+        // No generation may still be inside llama when its resources are freed.
+        await coordinator.drain()
         await engine.shutdown()
         socket.stop()
     }

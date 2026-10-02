@@ -25,6 +25,10 @@ final class HostCoordinator {
     private var lastCaretRect: CGRect?
     private var generation: Task<Void, Never>?
     private var generationSerial: UInt64 = 0
+    /// Every generation task that may still be inside the model, including cancelled ones:
+    /// cancellation is a request, and shutdown must not free llama while one is running.
+    private var inFlight: [UInt64: Task<Void, Never>] = [:]
+    private var isShuttingDown = false
     /// The key-down whose paint was last measured, so one keystroke yields at most one sample.
     private var measuredKeySequence: UInt64 = 0
 
@@ -68,12 +72,14 @@ final class HostCoordinator {
             return reset()
         }
 
-        let key = Self.contextKey(context)
+        let key = Self.contextKey(context, field: field.identity)
         if key == lastContextKey {
-            // Same text, possibly scrolled: re-pin what is shown to the new caret.
+            // Same field and text, possibly scrolled: re-pin what is shown to the new caret.
             if let shown = overlay.shownText, let rect = snapshot.caretRect, rect != lastCaretRect {
                 lastCaretRect = rect
-                overlay.show(shown, at: snapshot, style: FieldStyleProbe.style(of: element))
+                if overlay.show(shown, at: snapshot, style: FieldStyleProbe.style(of: element)) == nil {
+                    clearOffer()
+                }
             }
             return
         }
@@ -98,11 +104,16 @@ final class HostCoordinator {
     func offerChanged(_ reason: OfferArbiter.PassReason, key: KeyStroke) {
         // A newer offer may have been published after the tap acted; only react if the arbiter
         // really holds nothing, so visible text and the current offer never come apart.
-        let current = arbiter.snapshot().current
+        let snapshot = arbiter.snapshot()
+        let current = snapshot.current
         switch reason {
         case .typedThrough:
-            if let typed = key.text, let shown = overlay.shownText, shown.hasPrefix(typed), current != nil {
-                overlay.advance(typed: typed, remainder: String(shown.dropFirst(typed.count)))
+            // Redraw to what the arbiter now holds, not "shown minus this key": a callback that
+            // arrives after a newer offer was drawn must not shorten that one.
+            guard let current else { return }
+            let remainder = String(current.text.dropFirst(snapshot.typedSinceOffer.count))
+            if let shown = overlay.shownText, shown != remainder, shown.hasSuffix(remainder) {
+                overlay.advance(typed: String(shown.dropLast(remainder.count)), remainder: remainder)
             }
         case .dismissed, .expired:
             guard current == nil else { return }
@@ -116,6 +127,8 @@ final class HostCoordinator {
     }
 
     func claimed(_ claim: Claim) {
+        // If the claim was already rejected and a newer offer drawn, leave that one alone.
+        if let current = arbiter.snapshot().current, current.id > claim.offer.id { return }
         cancelGeneration()
         overlay.hide()
         anchor = nil
@@ -135,7 +148,9 @@ final class HostCoordinator {
         let keyStamp = status.lastKeyDown()
         let gateNanos = Self.presentationGateNanos(lastGenerationMs: engine.lastGenerationMs)
         let engine = self.engine
-        generation = Task { [weak self] in
+        guard !isShuttingDown else { return }
+        let task = Task { [weak self] in
+            defer { self?.inFlight.removeValue(forKey: serial) }
             // Generation starts at once; the adaptive gate only delays presentation (ADR-080).
             let gate = Task { try? await Task.sleep(nanoseconds: gateNanos) }
             let outcome: GhostTextEngine.Outcome
@@ -148,6 +163,18 @@ final class HostCoordinator {
             await gate.value
             guard let self, !Task.isCancelled, serial == self.generationSerial else { return }
             self.finishGeneration(outcome, snapshot: snapshot, element: element, field: field, keyStamp: keyStamp)
+        }
+        generation = task
+        inFlight[serial] = task
+    }
+
+    /// Stops new generations and waits for every started one to leave the model.
+    func drain() async {
+        isShuttingDown = true
+        cancelGeneration()
+        reset()
+        for task in Array(inFlight.values) {
+            await task.value
         }
     }
 
@@ -167,25 +194,41 @@ final class HostCoordinator {
         guard status.lastKeyDown().sequence == keyStamp.sequence else {
             return status.increment("discarded.keyAfterSnapshot")
         }
-        guard let fresh = FieldReader.read(element),
+        guard let fresh = FieldReader.readFocused(),
               fresh.identity == field.identity, fresh.selection == field.selection else {
             return status.increment("discarded.fieldMoved")
         }
         anchor = suggestion
-        guard present(suggestion.text, snapshot: snapshot, element: element, field: fresh) else { return }
+        guard present(suggestion.text, snapshot: snapshot, element: element, field: fresh, keyStamp: keyStamp) else { return }
         recordPaintLatency(keyStamp)
     }
 
     /// Publishes the offer, then draws it. False when either step refused.
+    ///
+    /// With `keyStamp`, the offer is withdrawn if any key-down arrived since that stamp: a key
+    /// that landed before the publish saw no offer, so the tap could not dismiss it.
     @discardableResult
-    private func present(_ text: String, snapshot: FocusedFieldSnapshot, element: AXUIElement, field: FieldState) -> Bool {
+    private func present(
+        _ text: String,
+        snapshot: FocusedFieldSnapshot,
+        element: AXUIElement,
+        field: FieldState,
+        keyStamp: HostStatus.KeyStamp? = nil
+    ) -> Bool {
+        let style = FieldStyleProbe.style(of: element)
         let offer = Offer(text: text, target: field.identity, fieldValue: field.value, caretUTF16: field.selection.start)
         guard let offerID = arbiter.publish(offer) else {
             status.increment("offer.refused")
             overlay.hide()
             return false
         }
-        guard let presentation = overlay.show(text, at: snapshot, style: FieldStyleProbe.style(of: element)) else {
+        if let keyStamp, status.lastKeyDown().sequence != keyStamp.sequence {
+            arbiter.invalidate(offerID: offerID)
+            overlay.hide()
+            status.increment("discarded.keyDuringPublish")
+            return false
+        }
+        guard let presentation = overlay.show(text, at: snapshot, style: style) else {
             arbiter.invalidate(offerID: offerID)
             status.increment("offer.noPlacement")
             return false
@@ -251,7 +294,9 @@ final class HostCoordinator {
             && after.hasPrefix(String(context.afterCursor.prefix(64)))
     }
 
-    nonisolated static func contextKey(_ context: TextFieldContext) -> String {
-        context.beforeCursor + "\u{1}" + context.afterCursor + "\u{1}" + context.target.bundleIdentifier
+    /// Text around the caret plus which field holds it, so two fields with equal text differ.
+    nonisolated static func contextKey(_ context: TextFieldContext, field: TargetIdentity) -> String {
+        [context.beforeCursor, context.afterCursor, field.bundleID, String(field.pid), field.windowID, field.elementID]
+            .joined(separator: "\u{1}")
     }
 }

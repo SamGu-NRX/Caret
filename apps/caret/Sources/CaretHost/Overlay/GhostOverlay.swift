@@ -71,6 +71,12 @@ final class GhostOverlay {
             style: effective,
             mirrorContext: mirrorContext
         )
+        // The window can decline to draw (for example single-line overflow). The caller must then
+        // withdraw the offer, so report what is really on screen.
+        guard presenter.isVisible else {
+            hide()
+            return nil
+        }
         let shown: Presentation = placement.presentation == .capsule ? .capsule : (canMirror ? .mirror : .inline)
         presentation = shown
         shownText = text

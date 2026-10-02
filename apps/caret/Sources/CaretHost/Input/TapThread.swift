@@ -42,8 +42,9 @@ public final class TapThread: @unchecked Sendable {
     private let arbiter: OfferArbiter
     private let callbacks: Callbacks
     private let stats = OSAllocatedUnfairLock(initialState: Stats())
-    /// Written once on the tap thread before `start` returns, then only read.
-    private var tap: CFMachPort?
+    /// Set on the tap thread; read from the main and socket threads, hence the lock.
+    private let port = OSAllocatedUnfairLock<CFMachPort?>(uncheckedState: nil)
+    private var tap: CFMachPort? { port.withLockUnchecked { $0 } }
     private var runLoop: CFRunLoop?
     private var thread: Thread?
 
@@ -82,18 +83,18 @@ public final class TapThread: @unchecked Sendable {
 
     public func debugState() -> DebugState.Tap {
         let enabled = isEnabled
-        return stats.withLock { s in
-            let sorted = s.recentCallbackNanos.sorted().map { Double($0) / 1_000 }
-            return DebugState.Tap(
-                running: s.running,
-                enabled: enabled,
-                keyDowns: s.keyDowns,
-                consumed: s.consumed,
-                timeoutRecoveries: s.timeoutRecoveries,
-                maxCallbackMicros: Double(s.maxCallbackNanos) / 1_000,
-                p99CallbackMicros: LatencyRecorder.percentile(sorted, 0.99)
-            )
-        }
+        // Copy under the lock and sort outside it, so a socket read never holds up the callback.
+        let s = stats.withLock { $0 }
+        let sorted = s.recentCallbackNanos.sorted().map { Double($0) / 1_000 }
+        return DebugState.Tap(
+            running: s.running,
+            enabled: enabled,
+            keyDowns: s.keyDowns,
+            consumed: s.consumed,
+            timeoutRecoveries: s.timeoutRecoveries,
+            maxCallbackMicros: Double(s.maxCallbackNanos) / 1_000,
+            p99CallbackMicros: LatencyRecorder.percentile(sorted, 0.99)
+        )
     }
 
     // MARK: - Tap thread
@@ -116,7 +117,7 @@ public final class TapThread: @unchecked Sendable {
         let loop = CFRunLoopGetCurrent()
         CFRunLoopAddSource(loop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        self.tap = tap
+        port.withLockUnchecked { $0 = tap }
         self.runLoop = loop
         stats.withLock { $0.running = true }
         ready.signal()
