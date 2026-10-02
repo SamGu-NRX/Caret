@@ -21,6 +21,9 @@ public struct ReaderOptions: Sendable {
     /// only reads unless it is started with --act-pids naming fixture processes.
     public var actPids: Set<pid_t> = []
     public var pasteboardPoll: TimeInterval = 0.5
+    /// False leaves AXManualAccessibility alone. A read-only audit beside another reader sets nothing in
+    /// any app; the other reader has already asked Chromium and Electron apps for their trees.
+    public var setManualAccessibility = true
     public init(denyList: DenyList) { self.denyList = denyList }
 }
 
@@ -222,7 +225,7 @@ public final class ScreenReader {
     /// for it without AXEnhancedUserInterface, which made Chromium replay typed keys in Screenpipe #3884.
     private func enableManualAccessibility(_ app: NSRunningApplication) {
         let pid = app.processIdentifier
-        guard !manualAXSet.contains(pid), let url = app.bundleURL, AppClassifier.isChromiumFamily(bundleURL: url) else { return }
+        guard opts.setManualAccessibility, !manualAXSet.contains(pid), let url = app.bundleURL, AppClassifier.isChromiumFamily(bundleURL: url) else { return }
         manualAXSet.insert(pid)
         let el = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(el, AX.elementTimeout)

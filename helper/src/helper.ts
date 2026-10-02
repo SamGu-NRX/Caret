@@ -36,6 +36,7 @@ import { MemoryStore } from "./patterns/memory.ts";
 import { PatternEngine } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
+import { Audit } from "./audit.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -58,6 +59,11 @@ export interface HelperOptions {
   /** Memory entries, the decision log and reactions. Defaults to a store beside `store`'s database. */
   memory?: MemoryStore;
   urls?: UrlOpener | null;
+  /**
+   * Runs the read-only audit beside the helper (src/audit.ts). Only with shadow mode and Jev off,
+   * since the audit's numbers are about what the helper would have done, not what it did.
+   */
+  audit?: boolean;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   publish: (m: HelperMessage) => void;
@@ -129,11 +135,14 @@ export class Helper {
   readonly pending: PendingWatcher;
   private readonly socketLink: SocketReaderLink | null;
   private readonly changeListeners = new Set<(changes: readonly Change[]) => void>();
+  /** The read-only audit, when the helper runs one. */
+  readonly audit: Audit | null;
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
   private preFocus: { windowId: string; values: Map<string, string> } | null = null;
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
+    if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
@@ -175,6 +184,7 @@ export class Helper {
       live: () => this.mode === "live",
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
+    this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v) }) : null;
   }
 
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
@@ -191,6 +201,7 @@ export class Helper {
         this.executor.readerRestarted();
         this.patterns.readerRestarted();
         this.pending.readerRestarted();
+        this.audit?.readerRestarted(Date.now());
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
         return null;
@@ -210,11 +221,13 @@ export class Helper {
         this.transfers.onChanges(changes);
         this.patterns.onChanges(changes);
         if (this.mode === "shadow") this.shadowLogger.onChanges(changes);
-        if (prevFocused !== null && prevFocused !== this.model.focusedWindowId) this.record(this.transfers.flush(prevFocused));
-        // The user left a window: the reader's leave walk of it, or focus arriving in another window.
+        const moved = prevFocused !== this.model.focusedWindowId;
+        if (prevFocused !== null && moved) this.record(this.transfers.flush(prevFocused));
         this.pending.onSnapshot(m.window.windowId);
-        if (m.reason === "leave") this.pending.left(m.window.windowId);
-        if (prevFocused !== null && prevFocused !== this.model.focusedWindowId) this.pending.left(prevFocused);
+        this.audit?.onSnapshot(m, moved ? this.model.focusedWindowId : null);
+        // The user left a window: the reader's leave walk of it, or focus arriving in another window.
+        if (m.reason === "leave") this.left(m.window.windowId, m.at);
+        if (prevFocused !== null && moved) this.left(prevFocused, m.at);
         return null;
       }
       case "focus": {
@@ -223,6 +236,7 @@ export class Helper {
           this.shadowLogger.onFocus(m, before);
         }
         this.preFocus = null;
+        this.audit?.onFocus(m);
         store.count(m.editable ? "reader.focus_editable" : "reader.focus_other", 1, m.at);
         const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus);
         if (!triggers || m.key === null) return null;
@@ -231,7 +245,7 @@ export class Helper {
       case "appSwitch":
         if (this.mode === "shadow") this.shadowLogger.onAppSwitch(m);
         // The app being left may send no leave walk when its window did not change; its focused window was left all the same.
-        if (m.from !== null) for (const w of this.model.windows.values()) if (w.app.pid === m.from.pid && w.focused) this.pending.left(w.window.windowId);
+        if (m.from !== null) for (const w of this.model.windows.values()) if (w.app.pid === m.from.pid && w.focused) this.left(w.window.windowId, m.at);
         store.count("reader.app_switch", 1, m.at);
         return null;
       case "windowClosed": {
@@ -241,6 +255,7 @@ export class Helper {
         if (this.mode === "shadow") this.shadowLogger.onWindowClosing(m.windowId);
         this.patterns.onWindowClosed(m.windowId);
         this.pending.onWindowClosed(m.windowId);
+        this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
         return null;
       }
@@ -254,6 +269,12 @@ export class Helper {
         this.executor.onUserInput(m);
         return null;
     }
+  }
+
+  /** The user left a window: the pending watch, and the audit when one runs, look for markers. */
+  private left(windowId: string, at: number): void {
+    this.pending.left(windowId);
+    this.audit?.left(windowId, at);
   }
 
   handleConsumer(m: FillRequest): Promise<FillProposal | null> {

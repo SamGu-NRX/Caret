@@ -22,18 +22,30 @@ const VERBS = [
   "rendering", "deploying", "thinking", "working", "analyzing", "analysing", "indexing", "testing", "copying",
   "transcribing", "importing", "converting",
 ].join("|");
-const MARKER_RULES: RegExp[] = [
+const TEXT_RULES = [
   // The verb followed by an ellipsis: "Running tests…", "Uploading 3 files...".
-  new RegExp(`\\b(?:${VERBS})\\b[^\\n]{0,60}(?:…|\\.\\.\\.)`, "i"),
+  { id: "verbEllipsis", re: new RegExp(`\\b(?:${VERBS})\\b[^\\n]{0,60}(?:…|\\.\\.\\.)`, "i") },
   // The whole text is the status word: "Running", "● Building".
-  new RegExp(`^\\W{0,3}(?:${VERBS}|in progress|queued)\\W{0,3}$`, "i"),
+  { id: "statusWord", re: new RegExp(`^\\W{0,3}(?:${VERBS}|in progress|queued)\\W{0,3}$`, "i") },
   // The verb with a count or percentage: "Exporting 40%", "Testing 12 of 48".
-  new RegExp(`\\b(?:${VERBS})\\b.{0,40}?\\d+\\s*(?:%|of\\s+\\d+|/\\s*\\d+)`, "i"),
+  { id: "verbCount", re: new RegExp(`\\b(?:${VERBS})\\b.{0,40}?\\d+\\s*(?:%|of\\s+\\d+|/\\s*\\d+)`, "i") },
   // A labelled status: "Status: running".
-  new RegExp(`^(?:status|state)\\s*:\\s*(?:${VERBS}|in progress|queued|pending)\\b`, "i"),
-];
+  { id: "labelledStatus", re: new RegExp(`^(?:status|state)\\s*:\\s*(?:${VERBS}|in progress|queued|pending)\\b`, "i") },
+] as const;
 const INDICATORS: Record<string, string> = { AXProgressIndicator: "[progress bar]", AXBusyIndicator: "[busy indicator]" };
-const INDICATOR_LINES = new Set(Object.values(INDICATORS));
+const INDICATOR_RULES: Record<string, MarkerRule> = { "[progress bar]": "progressBar", "[busy indicator]": "busyIndicator" };
+
+/** Names for the marker rules, so a real-window audit can count which one fired without keeping the text. */
+export type MarkerRule = (typeof TEXT_RULES)[number]["id"] | "progressBar" | "busyIndicator";
+export const MARKER_RULE_IDS: readonly MarkerRule[] = ["progressBar", "busyIndicator", ...TEXT_RULES.map((r) => r.id)];
+
+/** The rule that makes this watch line a marker, the first in rule order, or null. Button labels never are. */
+export function markerRule(line: string): MarkerRule | null {
+  const indicator = INDICATOR_RULES[line];
+  if (indicator !== undefined) return indicator;
+  if (line.startsWith("[button] ")) return null;
+  return TEXT_RULES.find((r) => r.re.test(line))?.id ?? null;
+}
 
 /** Concurrent watches. Assumed; a registration beyond it is skipped and counted. */
 export const MAX_WATCHES = 8;
@@ -94,7 +106,7 @@ export function watchLines(w: WindowState): string[] {
 
 /** The lines that mark the window as showing unfinished work, first marker first. Empty means no watch. */
 export function pendingMarkers(lines: readonly string[]): string[] {
-  return lines.filter((l) => INDICATOR_LINES.has(l) || (!l.startsWith("[button] ") && MARKER_RULES.some((r) => r.test(l))));
+  return lines.filter((l) => markerRule(l) !== null);
 }
 
 export function signature(w: WindowState, lines: readonly string[]): string {

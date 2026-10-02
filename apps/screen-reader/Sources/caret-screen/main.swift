@@ -2,7 +2,7 @@
 //
 //   caret-screen [--shadow] [--socket PATH] [--deny-list PATH] [--background-interval S]
 //                [--event-pids P,P] [--event-bundles B,B] [--only-pids P,P] [--act-pids P,P]
-//                [--record FILE] [--e1-log FILE]
+//                [--record FILE] [--e1-log FILE] [--no-manual-ax]
 //   caret-screen --e8 --pids P,P [--title-match REGEX] [--runs N] [--interval S] --out FILE
 //
 // Default mode streams NDJSON to the helper's socket. --shadow tells the helper to log
@@ -44,6 +44,8 @@ func pids(_ s: String?) -> Set<pid_t> {
 
 let home = FileManager.default.homeDirectoryForCurrentUser.path
 let shadow = flag("--shadow")
+// Sets no AXManualAccessibility in any app: for a read-only audit beside a reader that already did.
+let noManualAX = flag("--no-manual-ax")
 let e8 = flag("--e8")
 let socketPath = option("--socket") ?? "\(home)/.caret-run/sockets/screen.sock"
 let denyPath = option("--deny-list") ?? "\(home)/.caret-run/deny-apps.txt"
@@ -118,6 +120,7 @@ options.eventPids = eventPids
 options.onlyPids = onlyPids
 options.eventBundles = eventBundles
 options.actPids = actPids
+options.setManualAccessibility = !noManualAX
 let reader = MainActor.assumeIsolated { ScreenReader(ctx: ctx, options: options) }
 var connectedOnce = false
 socket.onConnect = {
