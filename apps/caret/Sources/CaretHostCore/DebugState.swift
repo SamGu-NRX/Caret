@@ -65,6 +65,15 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var caretUTF16: Int?
         public var valueLength: Int
         public var valueDigest: String
+
+        public init(pid: Int32, bundleID: String, role: String?, caretUTF16: Int?, valueLength: Int, valueDigest: String) {
+            self.pid = pid
+            self.bundleID = bundleID
+            self.role = role
+            self.caretUTF16 = caretUTF16
+            self.valueLength = valueLength
+            self.valueDigest = valueDigest
+        }
     }
 
     public struct OfferInfo: Codable, Equatable, Sendable {
@@ -76,8 +85,23 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var bundleID: String
         public var caretUTF16: Int
         public var elementRevision: String
-        /// `inline` or `capsule`.
+        /// `inline`, `capsule` or `mirror`.
         public var presentation: String?
+
+        public init(
+            id: UInt64, text: String, typedSinceOffer: String, ageMs: Double, pid: Int32,
+            bundleID: String, caretUTF16: Int, elementRevision: String, presentation: String?
+        ) {
+            self.id = id
+            self.text = text
+            self.typedSinceOffer = typedSinceOffer
+            self.ageMs = ageMs
+            self.pid = pid
+            self.bundleID = bundleID
+            self.caretUTF16 = caretUTF16
+            self.elementRevision = elementRevision
+            self.presentation = presentation
+        }
     }
 
     public struct Insertion: Codable, Equatable, Sendable {
@@ -88,6 +112,15 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var durationMs: Double
         /// The field reread after insertion equals the guard's predicted value.
         public var verified: Bool?
+
+        public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {
+            self.claimID = claimID
+            self.ok = ok
+            self.error = error
+            self.text = text
+            self.durationMs = durationMs
+            self.verified = verified
+        }
     }
 
     public struct Tap: Codable, Equatable, Sendable {
@@ -98,6 +131,19 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var timeoutRecoveries: UInt64
         public var maxCallbackMicros: Double
         public var p99CallbackMicros: Double?
+
+        public init(
+            running: Bool, enabled: Bool, keyDowns: UInt64, consumed: UInt64,
+            timeoutRecoveries: UInt64, maxCallbackMicros: Double, p99CallbackMicros: Double?
+        ) {
+            self.running = running
+            self.enabled = enabled
+            self.keyDowns = keyDowns
+            self.consumed = consumed
+            self.timeoutRecoveries = timeoutRecoveries
+            self.maxCallbackMicros = maxCallbackMicros
+            self.p99CallbackMicros = p99CallbackMicros
+        }
     }
 
     public var schema = DebugState.schemaVersion
@@ -113,4 +159,22 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// Keystroke (seen by the tap) to ghost-text paint, for paints caused by a keystroke.
     public var latency: LatencyRecorder.Summary
     public var counters: [String: UInt64]
+
+    public init(
+        pid: Int32, uptimeSeconds: Double, trust: Trust, engine: Engine, focus: Focus?, offer: OfferInfo?,
+        lastClaim: OfferArbiter.ClaimRecord?, lastInsertion: Insertion?, tap: Tap,
+        latency: LatencyRecorder.Summary, counters: [String: UInt64]
+    ) {
+        self.pid = pid
+        self.uptimeSeconds = uptimeSeconds
+        self.trust = trust
+        self.engine = engine
+        self.focus = focus
+        self.offer = offer
+        self.lastClaim = lastClaim
+        self.lastInsertion = lastInsertion
+        self.tap = tap
+        self.latency = latency
+        self.counters = counters
+    }
 }

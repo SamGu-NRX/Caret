@@ -1,0 +1,208 @@
+import AutocompleteCore
+import CaretHostCore
+import CoreGraphics
+import Foundation
+import os
+
+/// The host's only key tap, on its own thread with its own run loop.
+///
+/// Keeping the tap off the main run loop means a busy main thread (AX reads, overlay layout) cannot
+/// delay the user's keystrokes or get the tap disabled by the system's timeout. The callback does
+/// no Accessibility calls: it builds a `KeyStroke`, asks the `OfferArbiter`, and hands any claim or
+/// dismissal to other queues through the closures below, which must only enqueue.
+public final class TapThread: @unchecked Sendable {
+    public struct Callbacks: Sendable {
+        /// A plain Tab claimed the current offer. Runs on the tap thread; enqueue and return.
+        public var claimed: @Sendable (Claim) -> Void
+        /// The arbiter removed or shortened the offer. Runs on the tap thread; enqueue and return.
+        public var offerChanged: @Sendable (OfferArbiter.PassReason, KeyStroke) -> Void
+        /// Every user key-down, with its uptime in nanoseconds, for latency measurement.
+        public var keyDown: @Sendable (UInt64) -> Void
+
+        public init(
+            claimed: @escaping @Sendable (Claim) -> Void,
+            offerChanged: @escaping @Sendable (OfferArbiter.PassReason, KeyStroke) -> Void,
+            keyDown: @escaping @Sendable (UInt64) -> Void
+        ) {
+            self.claimed = claimed
+            self.offerChanged = offerChanged
+            self.keyDown = keyDown
+        }
+    }
+
+    private struct Stats {
+        var running = false
+        var keyDowns: UInt64 = 0
+        var consumed: UInt64 = 0
+        var timeoutRecoveries: UInt64 = 0
+        var maxCallbackNanos: UInt64 = 0
+        var recentCallbackNanos: [UInt64] = []
+    }
+
+    private let arbiter: OfferArbiter
+    private let callbacks: Callbacks
+    private let stats = OSAllocatedUnfairLock(initialState: Stats())
+    /// Written once on the tap thread before `start` returns, then only read.
+    private var tap: CFMachPort?
+    private var runLoop: CFRunLoop?
+    private var thread: Thread?
+
+    public init(arbiter: OfferArbiter, callbacks: Callbacks) {
+        self.arbiter = arbiter
+        self.callbacks = callbacks
+    }
+
+    /// Creates the tap on a new thread and waits for it. False when the system refused the tap,
+    /// which means Accessibility or Input Monitoring is missing.
+    @discardableResult
+    public func start() -> Bool {
+        guard thread == nil else { return tap != nil }
+        let ready = DispatchSemaphore(value: 0)
+        let thread = Thread { [unowned self] in
+            self.runTapLoop(signal: ready)
+        }
+        thread.name = "dev.caret.host.tap"
+        thread.qualityOfService = .userInteractive
+        self.thread = thread
+        thread.start()
+        ready.wait()
+        return tap != nil
+    }
+
+    public func stop() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let runLoop { CFRunLoopStop(runLoop) }
+        thread = nil
+    }
+
+    public var isEnabled: Bool {
+        guard let tap else { return false }
+        return CGEvent.tapIsEnabled(tap: tap)
+    }
+
+    public func debugState() -> DebugState.Tap {
+        let enabled = isEnabled
+        return stats.withLock { s in
+            let sorted = s.recentCallbackNanos.sorted().map { Double($0) / 1_000 }
+            return DebugState.Tap(
+                running: s.running,
+                enabled: enabled,
+                keyDowns: s.keyDowns,
+                consumed: s.consumed,
+                timeoutRecoveries: s.timeoutRecoveries,
+                maxCallbackMicros: Double(s.maxCallbackNanos) / 1_000,
+                p99CallbackMicros: LatencyRecorder.percentile(sorted, 0.99)
+            )
+        }
+    }
+
+    // MARK: - Tap thread
+
+    private func runTapLoop(signal ready: DispatchSemaphore) {
+        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: Self.callback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            ready.signal()
+            return
+        }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        let loop = CFRunLoopGetCurrent()
+        CFRunLoopAddSource(loop, source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        self.tap = tap
+        self.runLoop = loop
+        stats.withLock { $0.running = true }
+        ready.signal()
+        CFRunLoopRun()
+        CFRunLoopRemoveSource(loop, source, .commonModes)
+        stats.withLock { $0.running = false }
+    }
+
+    private static let callback: CGEventTapCallBack = { _, type, event, refcon in
+        guard let refcon else { return Unmanaged.passUnretained(event) }
+        let owner = Unmanaged<TapThread>.fromOpaque(refcon).takeUnretainedValue()
+        return owner.process(type: type, event: event)
+    }
+
+    private func process(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        let started = DispatchTime.now().uptimeNanoseconds
+
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            stats.withLock { $0.timeoutRecoveries &+= 1 }
+            return Unmanaged.passUnretained(event)
+        }
+        guard type == .keyDown else { return Unmanaged.passUnretained(event) }
+        // Our own paste and typed keystrokes come back through the tap (ADR-039). They must
+        // neither claim nor dismiss.
+        if event.getIntegerValueField(.eventSourceUserData) == SynthesizedEventMarker.userData {
+            return Unmanaged.passUnretained(event)
+        }
+
+        callbacks.keyDown(started)
+        let key = KeyStroke(event: event)
+        let decision = arbiter.handleKeyDown(key)
+        let consumed: Bool
+        switch decision {
+        case .consume(let claim):
+            callbacks.claimed(claim)
+            consumed = true
+        case .pass(.noOffer):
+            consumed = false
+        case .pass(let reason):
+            callbacks.offerChanged(reason, key)
+            consumed = false
+        }
+        record(started: started, consumed: consumed)
+        return consumed ? nil : Unmanaged.passUnretained(event)
+    }
+
+    private func record(started: UInt64, consumed: Bool) {
+        let elapsed = DispatchTime.now().uptimeNanoseconds &- started
+        stats.withLock { s in
+            s.keyDowns &+= 1
+            if consumed { s.consumed &+= 1 }
+            s.maxCallbackNanos = max(s.maxCallbackNanos, elapsed)
+            s.recentCallbackNanos.append(elapsed)
+            if s.recentCallbackNanos.count > 512 { s.recentCallbackNanos.removeFirst(256) }
+        }
+    }
+}
+
+extension KeyStroke {
+    /// Reads the key code, modifiers and typed text from a key-down. No Accessibility, no AppKit.
+    init(event: CGEvent) {
+        let flags = event.flags
+        let command = flags.contains(.maskCommand)
+        let control = flags.contains(.maskControl)
+        self.init(
+            keyCode: event.getIntegerValueField(.keyboardEventKeycode),
+            command: command,
+            control: control,
+            option: flags.contains(.maskAlternate),
+            shift: flags.contains(.maskShift),
+            text: (command || control) ? nil : Self.typedText(event)
+        )
+    }
+
+    /// The plain text a key types, or nil for C0 controls, DEL and AppKit's private-use range for
+    /// arrows and function keys (the same rule KeyType's acceptance tap uses).
+    private static func typedText(_ event: CGEvent) -> String? {
+        var chars = [UniChar](repeating: 0, count: 8)
+        var length = 0
+        event.keyboardGetUnicodeString(maxStringLength: chars.count, actualStringLength: &length, unicodeString: &chars)
+        guard length > 0 else { return nil }
+        let text = String(utf16CodeUnits: chars, count: length)
+        guard let scalar = text.unicodeScalars.first else { return nil }
+        if scalar.value < 0x20 || scalar.value == 0x7F || (0xF700...0xF8FF).contains(scalar.value) {
+            return nil
+        }
+        return text
+    }
+}
