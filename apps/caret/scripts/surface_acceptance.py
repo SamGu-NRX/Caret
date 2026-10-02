@@ -53,10 +53,15 @@ RUN_START = None
 # Launched without --background-only, caret-fixture took the foreground (measured 2026-10-02:
 # lsappinfo front was the fixture pid within 0.5 s, three runs between 10:56 and 11:01 CDT). Now it
 # is launched with --background-only under gui.lock, the frontmost app is checked after launch, and
-# a fixture that is frontmost anyway is killed at once (checked on every socket read). With that,
-# a run can share the Mac with its user: it posts no input event, only pid-targeted writes by the
-# host. CARET_SURFACE_IDLE_MIN > 0 additionally waits for an idle Mac and stops on any input.
-IDLE_MIN = float(os.environ.get("CARET_SURFACE_IDLE_MIN", "0"))
+# a fixture that is frontmost anyway is killed at once (checked on every socket read).
+#
+# Since the host draws only in the frontmost app's focused field (SurfaceGate), a run that checks
+# what is drawn needs the fixture in front, and so needs the Mac to itself: the lead's rule after
+# a test panel appeared over Sam's Messages window. The run starts only after 300 s without input,
+# under gui.lock, activates the fixture normally and confirms it is frontmost, and stops (killing
+# its own fixture and host) the moment input arrives that is not the host's own pid-posted keys.
+IDLE_MIN = float(os.environ.get("CARET_SURFACE_IDLE_MIN", "300"))
+FOREGROUND = IDLE_MIN > 0
 
 
 def hid_idle_seconds():
@@ -84,7 +89,7 @@ def guard_user():
     if RUN_START is None:
         return
     fixture = next((p for n, p in STARTED if n == "fixture" and p.poll() is None), None)
-    if fixture is not None:
+    if fixture is not None and not FOREGROUND:
         now = front_pid()
         if fixture.pid in (now.get("pid"), now.get("lsappinfo")):
             fixture.kill()
@@ -93,7 +98,7 @@ def guard_user():
     idle = hid_idle_seconds()
     last_input = time.time() - idle
     IDLE_LOG.append((round(time.time() - RUN_START, 2), round(idle, 2)))
-    if IDLE_MIN > 0 and last_input > RUN_START + 0.5 and not any(a - 0.2 <= last_input <= b for a, b in SYNTHETIC):
+    if IDLE_MIN > 0 and idle < 5 and last_input > RUN_START + 0.5 and not any(a - 0.2 <= last_input <= b for a, b in SYNTHETIC):
         raise SystemExit(f"deferred: user active during the run (input at {time.strftime('%H:%M:%S', time.localtime(last_input))})")
 
 
@@ -243,6 +248,18 @@ def front_pid():
 
 def launch_fixture(out_dir):
     before = front_pid()
+    if FOREGROUND:
+        # The Mac is idle and gui.lock is held: the fixture is brought to the front on purpose, by
+        # a normal activation request, and must actually be frontmost before any check runs.
+        fx = start("fixture", [FIXTURE, "--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
+                               "--duration", "900"], out_dir)
+        time.sleep(1)
+        act = ax(fx.pid, "activate", fx.pid)
+        now = front_pid()
+        if not (now.get("pid") == fx.pid and now.get("lsappinfo") == fx.pid):
+            raise SystemExit(f"deferred: foreground (activate={act}, front={now})")
+        check("fixture activated and frontmost (NSWorkspace and lsappinfo)", True, before=before, after=now)
+        return fx
     fx = start("fixture", [FIXTURE, "--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
                            "--duration", "900", "--background-only"], out_dir)
     # Watch the first two seconds: the fixture must never be frontmost.
@@ -297,7 +314,8 @@ def rig(out_dir, appearance):
         raise SystemExit("host did not open its socket")
     time.sleep(1)
     r = ax(fx.pid, "key-window", fx.pid, CLAIM)
-    check("key-window switch leaves the frontmost app alone", r["frontAfter"] == r["frontBefore"] and r["frontAfter"] != fx.pid, result=r)
+    check("key-window switch leaves the frontmost app alone", r["frontAfter"] == r["frontBefore"]
+          and (FOREGROUND or r["frontAfter"] != fx.pid), result=r)
     return fx.pid, h.pid, gold
 
 
@@ -323,8 +341,8 @@ def alternatives(out_dir, appearance):
     reply = inject({"kind": "alternatives", "pid": pid, "candidates": candidates})
     s = host()
     sf = s.get("surface") or {}
-    check("injected alternatives appear", reply.get("ok") and sf.get("ghost") == candidates[0] and sf.get("decor") and not sf.get("list"),
-          reply=reply, ghost=sf.get("ghost"), decor=bool(sf.get("decor")))
+    check("injected alternatives appear collapsed: the faint value alone", reply.get("ok") and sf.get("ghost") == candidates[0]
+          and not sf.get("decor") and not sf.get("list"), reply=reply, ghost=sf.get("ghost"), decor=bool(sf.get("decor")))
     step("shown", shot=shot(out_dir, pid, host_pid, "alt-1-shown"), surface=sf)
 
     k = key("down", pid)
