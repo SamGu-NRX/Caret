@@ -87,13 +87,17 @@ interface CaretFill {
   proposalId: string;
   at: number;
   value: string;
-  undone: boolean;
-  transfer: Transfer | null;
+  /** When the host reported the undo. Only edits from before it belong to the fill. */
+  undoneAt: number | null;
+  /** Every transfer the fill explains: usually one, more when the inserted text holds several values. */
+  transfers: Transfer[];
 }
 
 const fieldId = (windowId: string, key: string): string => `${windowId}\u0000${key}`;
 
+/** Whether a transfer comes from this fill: the same field (checked by the caller), close in time, overlapping values, and an edit made before any undo. */
 function fillMatches(f: CaretFill, t: Transfer): boolean {
+  if (f.undoneAt !== null && t.at > f.undoneAt) return false;
   return Math.abs(t.at - f.at) <= CARET_FILL_MATCH_MS && (f.value.includes(t.value) || t.value.includes(f.value));
 }
 
@@ -295,29 +299,28 @@ export class Helper {
     store.count(`fill.result_${m.outcome}`, 1, m.at);
     const id = fieldId(m.windowId, m.fieldKey);
     if (m.outcome === "inserted") {
-      const fill: CaretFill = { proposalId: m.proposalId, at: m.at, value, undone: false, transfer: null };
+      const fill: CaretFill = { proposalId: m.proposalId, at: m.at, value, undoneAt: null, transfers: [] };
       this.caretFills.set(id, fill);
-      // The transfer may have been judged before the result arrived.
-      const t = this.recentTransfers.findLast((x) => fillMatches(fill, x) && fieldId(x.dst.windowId, x.dst.key) === id);
-      if (t !== undefined) this.markCaret(fill, t);
+      // The transfers may have been judged before the result arrived.
+      for (const t of this.recentTransfers) if (fieldId(t.dst.windowId, t.dst.key) === id && fillMatches(fill, t)) this.markCaret(fill, t);
       return;
     }
     if (m.outcome === "undone") {
       const fill = this.caretFills.get(id);
       if (fill === undefined || fill.proposalId !== m.proposalId) return this.error(`fillResult: undone for ${m.fieldKey}, but no insert of proposal ${m.proposalId} was reported`);
-      fill.undone = true;
-      const t = fill.transfer;
-      if (t === null) return;
-      const i = this.recentTransfers.indexOf(t);
-      if (i >= 0) this.recentTransfers.splice(i, 1);
-      if (t.rowId !== undefined) store.removeTransfer(t.rowId);
-      fill.transfer = null;
+      fill.undoneAt = m.at;
+      for (const t of fill.transfers) {
+        const i = this.recentTransfers.indexOf(t);
+        if (i >= 0) this.recentTransfers.splice(i, 1);
+        if (t.rowId !== undefined) store.removeTransfer(t.rowId);
+      }
+      fill.transfers = [];
     }
   }
 
   private markCaret(fill: CaretFill, t: Transfer): void {
     t.attribution = "caret";
-    fill.transfer = t;
+    fill.transfers.push(t);
     if (t.rowId !== undefined) this.opts.store.setAttribution(t.rowId, "caret");
   }
 
@@ -383,7 +386,11 @@ export class Helper {
       return null;
     }
     try {
-      if (m.type === "runPlan") return await this.executor.run(m.taskId, m.plan, m.slots);
+      if (m.type === "runPlan") {
+        // A task id names one piece of work in the activity feed; a run may not take over another's record.
+        if (this.tasks.get(m.taskId) !== undefined) throw new Error(`task id ${m.taskId} is already in use`);
+        return await this.executor.run(m.taskId, m.plan, m.slots);
+      }
       if (this.pending.has(m.taskId) || this.tasks.get(m.taskId)?.kind === "watch") {
         this.pending.control(m.taskId, m.action);
         return null;
@@ -443,8 +450,8 @@ export class Helper {
     for (const t of judged) {
       const fill = this.caretFills.get(fieldId(t.dst.windowId, t.dst.key));
       const caret = fill !== undefined && fillMatches(fill, t);
-      // A Caret fill the host already undid leaves nothing to log.
-      if (caret && fill.undone) continue;
+      // An edit from before the host undid the fill leaves nothing to log: it is gone from the field.
+      if (caret && fill.undoneAt !== null) continue;
       if (caret) t.attribution = "caret";
       ts.push(t);
       this.recentTransfers.push(t);
@@ -464,7 +471,7 @@ export class Helper {
         ageMs: t.ageMs,
         attribution: t.attribution,
       });
-      if (caret) fill.transfer = t;
+      if (caret) fill.transfers.push(t);
     }
     if (ts.length > 0) this.patterns.onTransfers(ts);
   }

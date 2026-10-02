@@ -78,6 +78,16 @@ describe("fillResult", () => {
     expect(store.transfers()).toEqual([]);
   });
 
+  it("counts a value the user types again after an undo as the user's", () => {
+    showForm(t0, VALUE);
+    result("inserted", t0 + 20);
+    result("undone", t0 + 500);
+    showForm(t0 + 600, "");
+    showForm(t0 + 2500, VALUE);
+    helper.tick(t0 + 2500 + SETTLE_MS + 10);
+    expect(helper.recentTransfers.map((t) => [t.value, t.attribution])).toEqual([[VALUE, "user"]]);
+  });
+
   it("leaves a user's own entry alone and only counts rejected and failed results", () => {
     result("rejected", t0, { reason: "the field changed" });
     result("failed", t0, { method: null });

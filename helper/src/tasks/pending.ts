@@ -57,8 +57,9 @@ const MAX_THEN_LINES = 20;
 const MAX_LINE = 200;
 /** Lines read from one window for markers and the signature, so a huge window costs a bounded pass. */
 const MAX_READ_LINES = 400;
-/** A failed question is tried again this many times, a second apart. */
+/** A failed question is tried again this many times, a second apart; after that, only a new change asks again. */
 const RETRIES = 2;
+const RETRY_MS = 1000;
 
 const clip = (s: string): string => (s.length <= MAX_LINE ? s : `${s.slice(0, MAX_LINE - 1)}…`);
 /** Digits masked, so a counter or a percentage moving is not a change worth a question. */
@@ -183,12 +184,14 @@ interface Watch {
   timer: ReturnType<typeof setTimeout> | null;
   /** When the burst the timer is waiting out began. */
   burstAt: number;
-  inflight: Promise<void> | null;
+  inflight: Promise<boolean> | null;
   /** Answers in a row that said the work is still running, and when the last question was asked. */
   runningStreak: number;
   lastAskAt: number;
   paused: boolean;
+  /** Failed questions in a row for the current text; a retry waits RETRY_MS and stops after RETRIES. */
   tries: number;
+  retry: ReturnType<typeof setTimeout> | null;
   info: PendingInfo;
 }
 
@@ -282,6 +285,7 @@ export class PendingWatcher {
       lastAskAt: 0,
       paused: false,
       tries: 0,
+      retry: null,
       info: { markedBy: markers[0] ?? "", status: null, finished: null, waiting: null, asks: 0 },
     };
     this.watches.set(windowId, watch);
@@ -316,6 +320,8 @@ export class PendingWatcher {
     const sig = signature(w, lines);
     if (sig === watch.sig) return;
     watch.sig = sig;
+    // New text gets fresh retries.
+    watch.tries = 0;
     const before = new Set(watch.then.map(mask));
     watch.info.status = lines.find((l) => !before.has(mask(l))) ?? null;
     if (!watch.paused) this.schedule(watch);
@@ -346,8 +352,7 @@ export class PendingWatcher {
       case "pause":
         if (watch.paused) return;
         watch.paused = true;
-        if (watch.timer !== null) clearTimeout(watch.timer);
-        watch.timer = null;
+        this.clearTimers(watch);
         this.deps.tasks.update(watch.id, { state: "paused", cause: "you", detail: "you paused this watch" });
         this.syncReader();
         return;
@@ -369,15 +374,22 @@ export class PendingWatcher {
   /** Resolves when no question is scheduled or in flight. For tests and evaluations. */
   async whenIdle(): Promise<void> {
     for (;;) {
-      const busy = [...this.watches.values()].filter((w) => w.timer !== null || w.inflight !== null);
+      const busy = [...this.watches.values()].filter((w) => w.timer !== null || w.inflight !== null || w.retry !== null);
       if (busy.length === 0) return;
       await Promise.all(busy.map((w) => w.inflight ?? new Promise((r) => setTimeout(r, this.debounceMs + 5))));
     }
   }
 
   shutdown(): void {
-    for (const w of this.watches.values()) if (w.timer !== null) clearTimeout(w.timer);
+    for (const w of this.watches.values()) this.clearTimers(w);
     this.watches.clear();
+  }
+
+  private clearTimers(w: Watch): void {
+    if (w.timer !== null) clearTimeout(w.timer);
+    if (w.retry !== null) clearTimeout(w.retry);
+    w.timer = null;
+    w.retry = null;
   }
 
   private byId(taskId: string): Watch | undefined {
@@ -411,15 +423,29 @@ export class PendingWatcher {
     const sig = watch.sig;
     const run = this.askOnce(askJev, watch, w, sig);
     watch.inflight = run;
+    let failed: boolean;
     try {
-      await run;
+      failed = await run;
     } finally {
       watch.inflight = null;
     }
-    if (this.live(watch) && !watch.paused && watch.sig !== watch.asked) this.schedule(watch);
+    if (!this.live(watch) || watch.paused) return;
+    // A failure is retried by its own timer, within budget; only an answer about older text asks again now.
+    if (failed) {
+      if (watch.sig !== sig) this.schedule(watch);
+      else if (watch.tries <= RETRIES && watch.retry === null) {
+        watch.retry = setTimeout(() => {
+          watch.retry = null;
+          if (this.live(watch) && !watch.paused) this.schedule(watch);
+        }, RETRY_MS);
+      }
+      return;
+    }
+    if (watch.sig !== watch.asked) this.schedule(watch);
   }
 
-  private async askOnce(askJev: AskJev, watch: Watch, w: WindowState, sig: string): Promise<void> {
+  /** Asks once and applies the answer. Resolves true when the question failed. */
+  private async askOnce(askJev: AskJev, watch: Watch, w: WindowState, sig: string): Promise<boolean> {
     const t0 = Date.now();
     watch.lastAskAt = t0;
     let answer: ReturnType<typeof readPendingAnswer>;
@@ -430,9 +456,9 @@ export class PendingWatcher {
       answer = readPendingAnswer(r);
     } catch (e) {
       this.stats.errors++;
-      this.deps.warn?.(`pending: question for '${w.window.title}' failed: ${e instanceof Error ? e.message : String(e)}`);
-      if (this.live(watch) && watch.tries++ < RETRIES) setTimeout(() => this.schedule(watch), 1000);
-      return;
+      watch.tries++;
+      this.deps.warn?.(`pending: question for '${w.window.title}' failed (${watch.tries} in a row): ${e instanceof Error ? e.message : String(e)}`);
+      return true;
     }
     this.stats.asks++;
     watch.tries = 0;
@@ -443,7 +469,7 @@ export class PendingWatcher {
     this.asks.push({ watchId: watch.id, at: t0, latencyMs, finished: answer.finished.choice, waiting: answer.waiting.choice, state, stale });
     if (stale) {
       this.stats.stale++;
-      return;
+      return false;
     }
     watch.asked = sig;
     watch.runningStreak = state === "running" ? watch.runningStreak + 1 : 0;
@@ -452,11 +478,11 @@ export class PendingWatcher {
     const detail = state === "needsYou" ? "the window is waiting for you" : state === "done" ? "the work finished" : state === "failed" ? "the work ended in an error" : null;
     if (FINISHED.has(state)) this.end(watch, state, "screen", detail);
     else this.deps.tasks.update(watch.id, { state, cause: state === "running" ? null : "screen", detail, pending: { ...watch.info } });
+    return false;
   }
 
   private end(watch: Watch, state: TaskState, cause: TaskCause, detail: string | null): void {
-    if (watch.timer !== null) clearTimeout(watch.timer);
-    watch.timer = null;
+    this.clearTimers(watch);
     this.watches.delete(watch.windowId);
     this.resolved.set(watch.windowId, watch.sig);
     this.deps.tasks.update(watch.id, { state, cause, detail, pending: { ...watch.info } });

@@ -132,6 +132,70 @@ describe("task controls on a six-step run", () => {
     await expect(helper.executor.resume("t")).rejects.toThrow(/not paused/);
   });
 
+  it("undo of a paused run cannot race a resume or a second undo", async () => {
+    onWrite = (i) => {
+      if (i === 1) helper.executor.pause("t", false);
+    };
+    await helper.executor.run("t", SIX, {});
+    onWrite = () => {};
+    // All three are issued before the first restore's await returns, as two consumers racing would.
+    const undoing = helper.executor.undo("t");
+    const resumed = helper.executor.resume("t");
+    const again = helper.executor.undo("t");
+    await expect(resumed).rejects.toThrow(/not paused/);
+    await expect(again).rejects.toThrow(/already being undone/);
+    expect(await undoing).toMatchObject({ restored: 2 });
+    expect(writes()).toBe(4); // two writes, two restores, and nothing from a resumed run
+  });
+
+  it("a pause that arrives as the step announces its act still stops it before the write", async () => {
+    const seen: string[] = [];
+    const inner = helper;
+    helper = new Helper({
+      store,
+      askJev: null,
+      shadow: false,
+      allowBackgroundFocus: false,
+      readerLink: app,
+      publish: (m) => {
+        published.push(m);
+        if (m.type === "taskProgress" && m.taskId === "t" && m.phase === "acting" && m.step === 2) {
+          seen.push("acting@2");
+          helper.executor.pause("t", false);
+        }
+      },
+    });
+    app.helper = helper;
+    app.show();
+    const r = await helper.executor.run("t", SIX, {});
+    expect(seen).toEqual(["acting@2"]);
+    expect(r).toMatchObject({ outcome: "paused", step: 2 });
+    expect(app.node(key(FIELDS[2]!))?.value).toBeUndefined();
+    helper.memory.close();
+    helper = inner;
+  });
+
+  it("a take-over that lands while a step reads pauses the run even if the user is already editing", async () => {
+    let walks = 0;
+    app.afterVerb = (a, v) => {
+      // Step 3's opening walk: the user takes over and types into a field the plan already wrote.
+      if (v.kind === "walk" && ++walks === 4) {
+        helper.executor.pause("t", true);
+        a.setValue(key(FIELDS[0]!), "Dana W.");
+        a.show();
+      }
+    };
+    const r = await helper.executor.run("t", SIX, {});
+    expect(r.outcome).toBe("paused");
+    expect(records().at(-1)).toMatchObject({ state: "paused", cause: "you" });
+  });
+
+  it("refuses a runPlan whose task id is already a record", async () => {
+    await helper.executor.run("t", SIX, {});
+    await helper.handleTask({ type: "runPlan", v: PROTOCOL_VERSION, taskId: "t", plan: SIX, slots: {} });
+    expect(published.at(-1)).toMatchObject({ type: "error", message: "task t: task id t is already in use" });
+  });
+
   it("a stop requested over the socket is answered as a control, not as undo", async () => {
     onWrite = (i) => {
       if (i === 1) void helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "t", action: "stop" });

@@ -196,6 +196,30 @@ describe("pending-state watch", () => {
     expect(last()).toMatchObject({ state: "running" });
   });
 
+  it("tries a failing question twice more, a second apart, then waits for the next change", async () => {
+    const failing = (): Promise<JevResult> => {
+      fails++;
+      return Promise.reject(new Error("Jev HTTP 503"));
+    };
+    let fails = 0;
+    const h = new Helper({ store, askJev: failing, shadow: false, allowBackgroundFocus: false, publish: (m) => sent.push(m), readerLink: reader });
+    const original = helper;
+    helper = h;
+    leaveJob("Running tests… 12 of 48");
+    show(JOB, jobNodes("Done. 48 of 48 tests passed.", []));
+    await h.pending.whenIdle();
+    expect(fails).toBe(3);
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(fails).toBe(3);
+    show(JOB, jobNodes("Finished with warnings.", []));
+    await h.pending.whenIdle();
+    expect(fails).toBe(6);
+    expect(h.pending.stats.errors).toBe(6);
+    h.shutdown();
+    h.memory.close();
+    helper = original;
+  }, 15_000);
+
   it("registers no watch for a window without markers, nor again for work it already resolved", async () => {
     show(NOTES, [field(K("textfield:notes~0"), "Running tests…"), text(K("statictext:hint~0"), "Write anything here")], { focused: true, reason: "focus" });
     show(JOB, jobNodes("All quiet", []), { focused: true, reason: "focus" });

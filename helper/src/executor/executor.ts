@@ -115,6 +115,8 @@ interface Task {
   resolved: Map<string, Resolution>;
   /** The reader session the task's window ids belong to. */
   session: number;
+  /** True while undo is restoring this task's writes. */
+  undoing: boolean;
 }
 
 class StepStop extends Error {
@@ -176,6 +178,7 @@ export class Executor {
       finished: null,
       resolved: new Map(),
       session: this.session,
+      undoing: false,
     };
     this.tasks.set(taskId, task);
     this.progress(task, "started", null, null);
@@ -259,25 +262,32 @@ export class Executor {
     const task = this.tasks.get(taskId);
     if (task === undefined) throw new PlanError(`no task ${taskId}`);
     if (task.finished === null) throw new PlanError(`task ${taskId} is still running`);
+    if (task.undoing) throw new PlanError(`task ${taskId} is already being undone`);
     if (task.session !== this.session) throw new PlanError(`task ${taskId} ran under an earlier reader session; its window ids no longer apply, so nothing is restored`);
+    // A paused run whose writes are being restored cannot continue from where it was, so it stops
+    // being resumable before the first restore is awaited.
+    if (task.finished === "paused") task.finished = "stopped";
+    task.undoing = true;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
-    for (const e of [...task.ledger].reverse()) {
-      if (e.kind === "press") {
-        out.notUndoable++;
-        remaining.push(e);
-        continue;
+    try {
+      for (const e of [...task.ledger].reverse()) {
+        if (e.kind === "press") {
+          out.notUndoable++;
+          remaining.push(e);
+          continue;
+        }
+        const reason = task.session !== this.session ? "the reader restarted during undo" : e.kind === "write" ? await this.undoWrite(e) : await this.undoCalendar(e);
+        if (reason === null) out.restored++;
+        else {
+          out.notRestored.push({ step: e.step, reason });
+          remaining.push(e);
+        }
       }
-      const reason = task.session !== this.session ? "the reader restarted during undo" : e.kind === "write" ? await this.undoWrite(e) : await this.undoCalendar(e);
-      if (reason === null) out.restored++;
-      else {
-        out.notRestored.push({ step: e.step, reason });
-        remaining.push(e);
-      }
+      task.ledger = remaining.reverse();
+    } finally {
+      task.undoing = false;
     }
-    task.ledger = remaining.reverse();
-    // A paused run whose writes were restored cannot continue from where it was.
-    if (task.finished === "paused") task.finished = "stopped";
     const detail = `restored ${out.restored}; not restored ${out.notRestored.length}; presses not undoable ${out.notUndoable}`;
     this.progress(task, "undone", null, detail);
     return out;
@@ -468,6 +478,8 @@ export class Executor {
   /** Sends a verb and returns every change the model recorded while it ran. */
   private async act(task: Task, verb: ReaderVerb, windowId: string): Promise<Change[]> {
     this.checkSession(task);
+    // The last boundary: a pause or stop that arrived while the step published or prepared its act.
+    this.checkInterrupt(task);
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === windowId) seen.push(c);
@@ -514,6 +526,9 @@ export class Executor {
     const id = this.bind(task, sel);
     const w = this.window(id);
     await this.walk(w);
+    // A pause or take-over that came in during the walk wins over anything the walk found: the user
+    // may already be changing the window, and the run must pause, not fail.
+    this.checkInterrupt(task);
     const fresh = this.window(id);
     for (const n of fresh.nodes.values()) {
       if (n.role === "AXSheet") throw new StepStop("stopped", `a sheet covers '${fresh.window.title}'`, "screen");

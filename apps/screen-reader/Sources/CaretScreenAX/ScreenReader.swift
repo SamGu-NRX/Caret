@@ -76,9 +76,13 @@ public final class ScreenReader {
         ctx.log("reading \(workers.count) apps; background every \(Int(opts.backgroundInterval)) s; deny list has \(opts.denyList.count) entries")
     }
 
-    /// After the helper reconnects it has no state, so walk everything again.
+    /// After the helper reconnects it has no state, so walk everything again. Its watches are gone
+    /// with it, so the reader drops its own until the new helper asks for some.
     public func resync() {
-        for w in workers.values { w.backgroundPass(reason: .initial, minAge: 0) }
+        for w in workers.values {
+            w.setWatched([])
+            w.backgroundPass(reason: .initial, minAge: 0)
+        }
         if let f = frontmost { workers[f]?.activate() }
     }
 
