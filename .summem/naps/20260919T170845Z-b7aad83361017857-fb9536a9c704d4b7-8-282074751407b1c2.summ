@@ -1,0 +1,1 @@
+SumMem at .summem/summem; never commit .scratch/. Screenpipe is a sidecar plus last-N facade: Caret launches the pinned binary (TCC on it, launcher lease); history inference hard-fails on a miss. Supabase is control plane only. Never commit the CI token.

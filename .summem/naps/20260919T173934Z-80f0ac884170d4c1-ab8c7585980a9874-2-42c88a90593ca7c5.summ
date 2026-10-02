@@ -1,1 +1,0 @@
-Five upstreams: KeyType, GhostType, Computer Use Jev, Skyvern, Screenpipe. docs/input-pipeline.md has the proposed Jev/context/workflow handoff (action UI does not call it yet). Screenpipe is a sidecar plus last-N facade: never vendor its engine or inherit its CLI's TCC.

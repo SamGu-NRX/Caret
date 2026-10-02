@@ -1,0 +1,1 @@
+caret-fixture ignores a pid-posted Cmd-V (no Edit menu); the host falls back to an AXSelectedText write and learns it per app (exe:caret-fixture).

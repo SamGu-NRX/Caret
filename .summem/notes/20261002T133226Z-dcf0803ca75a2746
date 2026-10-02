@@ -1,0 +1,1 @@
+Fill tests: caret-fixture's --gold frames are view frames; AX (reader and host) reports text fields 1 pt larger on every side, so match by AX frame.

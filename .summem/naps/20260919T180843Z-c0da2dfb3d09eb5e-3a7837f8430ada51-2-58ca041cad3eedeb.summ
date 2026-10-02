@@ -1,0 +1,1 @@
+Mac CI on main runs macos-26 (glassEffect needs Xcode 26); do not move it back to macos-15. Screenpipe 0.4.50 keeps no clipboard history unless launched with --disable-clipboard-capture false, which Caret's pinned launch does not pass.
