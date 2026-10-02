@@ -1,4 +1,5 @@
 import AppCompatibility
+import AutocompleteCore
 import ConstrainedGeneration
 import Foundation
 import LlamaModelRuntime
@@ -27,6 +28,12 @@ public enum EngineLoader {
         let engine: ConstrainedGenerationEngine
         let family: String
         let profileBuiltNow: Bool
+        let prependsBOS: Bool
+    }
+
+    /// Gemma is trained with `<bos>` first; KeyType's Qwen models are not. See `BOSRuntime`.
+    static func requiresBOS(family: String) -> Bool {
+        family.lowercased().hasPrefix("gemma")
     }
 
     /// The dev model: Cotypist's Gemma 4 E2B base quant, read by path and never copied.
@@ -45,7 +52,8 @@ public enum EngineLoader {
 
     /// Heavy: maps the model, creates the llama context and, the first time, classifies the whole
     /// vocabulary into an ACPF profile. Call off the main actor.
-    static func load(modelURL: URL, compatibilityStore: AppCompatibilityStore) throws -> Loaded {
+    /// `prependBOS` overrides the family rule; the dev probe uses it to compare both.
+    static func load(modelURL: URL, compatibilityStore: AppCompatibilityStore, prependBOS: Bool? = nil) throws -> Loaded {
         guard ModelContainer.modelExists(at: modelURL) else {
             throw LoadError.modelMissing(modelURL.path)
         }
@@ -74,8 +82,18 @@ public enum EngineLoader {
             profile = try open()
         }
 
+        var decodingRuntime: LocalModelRuntime = runtime
+        var prependsBOS = false
+        if prependBOS ?? requiresBOS(family: family) {
+            let introspector = runtime.makeIntrospector()
+            if let bos = (0..<TokenID(vocabSize)).first(where: { introspector.role(of: $0) == .bos }) {
+                decodingRuntime = BOSRuntime(base: runtime, bos: bos)
+                prependsBOS = true
+            }
+        }
+
         let engine = ConstrainedGenerationEngine(
-            runtime: runtime,
+            runtime: decodingRuntime,
             profile: profile,
             compatibilityStore: compatibilityStore,
             // KeyType's shipped configuration: decoder defaults plus native FIM for mid-line
@@ -83,7 +101,7 @@ public enum EngineLoader {
             configuration: DecodingConfiguration(enableFillInMiddle: true),
             wordRecognizer: SystemWordRecognizer()
         )
-        return Loaded(engine: engine, family: family, profileBuiltNow: builtNow)
+        return Loaded(engine: engine, family: family, profileBuiltNow: builtNow, prependsBOS: prependsBOS)
     }
 
     /// Writes the profile through a temporary sibling so a failed self-check never leaves a usable

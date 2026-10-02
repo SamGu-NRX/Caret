@@ -6,6 +6,25 @@ import CaretHost
 // Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES.
 
 var configuration = HostRuntime.Configuration()
+
+// Dev mode: `Caret --probe [--bos on|off] <text>...` prints the engine's offer for each text.
+if CommandLine.arguments.dropFirst().first == "--probe" {
+    var rest = Array(CommandLine.arguments.dropFirst(2))
+    var bos: Bool?
+    if rest.first == "--bos", rest.count >= 2 {
+        bos = rest[1] == "on"
+        rest.removeFirst(2)
+    }
+    let texts = rest
+    let modelURL = configuration.modelURL
+    MainActor.assumeIsolated {
+        Task {
+            print(await DevProbe.run(modelURL: modelURL, texts: texts, prependBOS: bos), terminator: "")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
 var arguments = CommandLine.arguments.dropFirst().makeIterator()
 while let argument = arguments.next() {
     switch argument {

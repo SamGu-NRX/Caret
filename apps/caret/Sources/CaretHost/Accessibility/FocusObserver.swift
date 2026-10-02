@@ -81,6 +81,10 @@ final class FocusObserver {
         let appElement = AXUIElementCreateApplication(pid)
         add(kAXFocusedUIElementChangedNotification, on: appElement, observer: created)
         add(kAXFocusedWindowChangedNotification, on: appElement, observer: created)
+        // A moved or resized window moves the caret on screen without changing the text; the
+        // coordinator re-pins visible ghost text on the resulting read.
+        add(kAXWindowMovedNotification, on: appElement, observer: created)
+        add(kAXWindowResizedNotification, on: appElement, observer: created)
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
         observer = created
         observedPID = pid
