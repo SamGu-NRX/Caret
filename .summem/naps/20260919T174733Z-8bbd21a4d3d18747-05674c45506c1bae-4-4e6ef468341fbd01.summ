@@ -1,0 +1,1 @@
+v1 Screenpipe and secrets: last-N inference hard-fails when the sidecar is down or empty; Caret supervises pinned Screenpipe via a launcher lease; Supabase is control plane only; never commit SUPABASE_HACKATHON_TOKEN.

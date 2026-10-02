@@ -1,1 +1,0 @@
-{"c":[{"name":"20260919T174733Z-8bbd21a4d3d18747","text":"Caret inference that needs Screenpipe history hard-fails if the sidecar is down or last-N is empty; do not continue on a miss","type":"note"},{"name":"20260919T175112Z-813e2fb0e5f124b2","text":"GitHub Actions repo secret SUPABASE_HACKATHON_TOKEN is available for CI; do not commit the value.","type":"note"}]}

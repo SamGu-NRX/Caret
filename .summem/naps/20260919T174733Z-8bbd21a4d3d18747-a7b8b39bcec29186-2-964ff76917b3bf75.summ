@@ -1,1 +1,0 @@
-v1: inference needing Screenpipe last-N hard-fails when the sidecar is down or empty; CI has secret SUPABASE_HACKATHON_TOKEN, never commit its value.
