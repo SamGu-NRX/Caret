@@ -159,43 +159,52 @@ export class Store {
   }
 
   transfers(): TransferRow[] {
-    return (this.db.prepare("SELECT * FROM transfers ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
-      at: Number(r.at),
-      valueHash: String(r.value_hash),
-      kind: r.kind === null ? null : String(r.kind),
-      length: Number(r.length),
-      match: r.match as TransferRow["match"],
-      srcBundle: String(r.src_bundle),
-      srcWindowKind: String(r.src_window_kind),
-      srcKeyHash: String(r.src_key_hash),
-      dstBundle: String(r.dst_bundle),
-      dstWindowKind: String(r.dst_window_kind),
-      dstKeyHash: String(r.dst_key_hash),
-      ageMs: Number(r.age_ms),
-      attribution: r.attribution as TransferRow["attribution"],
-    }));
+    return readTransfers(this.db);
   }
 
   shadowEpisodes(): ShadowRow[] {
-    return (this.db.prepare("SELECT * FROM shadow_episodes ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
-      at: Number(r.at),
-      trigger: r.trigger as ShadowRow["trigger"],
-      dstBundle: String(r.dst_bundle),
-      dstKeyHash: String(r.dst_key_hash),
-      enteredLength: Number(r.entered_length),
-      enteredHash: String(r.entered_hash),
-      existed: r.existed as ShadowRow["existed"],
-      srcBundle: r.src_bundle === null ? null : String(r.src_bundle),
-      srcKeyHash: r.src_key_hash === null ? null : String(r.src_key_hash),
-      srcAgeMs: r.src_age_ms === null ? null : Number(r.src_age_ms),
-      kind: r.kind === null ? null : String(r.kind),
-    }));
+    return readShadowEpisodes(this.db);
   }
 
   close(): void {
     this.flush();
     this.db.close();
   }
+}
+
+/** Rows of a store's transfers table, also for reading a copy of the store without opening it as a Store. */
+export function readTransfers(db: DatabaseSync): TransferRow[] {
+  return (db.prepare("SELECT * FROM transfers ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
+    at: Number(r.at),
+    valueHash: String(r.value_hash),
+    kind: r.kind === null ? null : String(r.kind),
+    length: Number(r.length),
+    match: r.match as TransferRow["match"],
+    srcBundle: String(r.src_bundle),
+    srcWindowKind: String(r.src_window_kind),
+    srcKeyHash: String(r.src_key_hash),
+    dstBundle: String(r.dst_bundle),
+    dstWindowKind: String(r.dst_window_kind),
+    dstKeyHash: String(r.dst_key_hash),
+    ageMs: Number(r.age_ms),
+    attribution: r.attribution as TransferRow["attribution"],
+  }));
+}
+
+export function readShadowEpisodes(db: DatabaseSync): ShadowRow[] {
+  return (db.prepare("SELECT * FROM shadow_episodes ORDER BY id").all() as Record<string, unknown>[]).map((r) => ({
+    at: Number(r.at),
+    trigger: r.trigger as ShadowRow["trigger"],
+    dstBundle: String(r.dst_bundle),
+    dstKeyHash: String(r.dst_key_hash),
+    enteredLength: Number(r.entered_length),
+    enteredHash: String(r.entered_hash),
+    existed: r.existed as ShadowRow["existed"],
+    srcBundle: r.src_bundle === null ? null : String(r.src_bundle),
+    srcKeyHash: r.src_key_hash === null ? null : String(r.src_key_hash),
+    srcAgeMs: r.src_age_ms === null ? null : Number(r.src_age_ms),
+    kind: r.kind === null ? null : String(r.kind),
+  }));
 }
 
 function loadSalt(path: string): Buffer {
