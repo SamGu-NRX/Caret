@@ -1,10 +1,12 @@
 // Pending-state watch (deep plan section 6.4). When the user leaves a window that shows unfinished
-// work, code (no model) finds the markers: a progress or busy indicator, or a status line such as
-// "Running tests…". The window then gets a watch: the reader re-reads that one window when its app
-// posts a notification about it, and every 10 s. Whenever the window's text changes, ignoring digits
-// so a counter or percentage does not count, Jev answers the two pending questions for it: has the
-// work finished, and is the window waiting on the user. The answer becomes the watch's task state:
-// needsYou, done, failed, or still running. Done and failed end the watch.
+// work, code (no model) finds the markers: a progress or busy indicator, an enabled Stop button by
+// the window's message composer (how agent threads such as Codex, T3 Code and browser chats show a
+// turn still running), or a status line such as "Running tests…" that is the window's own status
+// rather than an item in a list or sidebar. The window then gets a watch: the reader re-reads that
+// one window when its app posts a notification about it, and every 10 s. Whenever the window's text
+// or markers change, ignoring digits so a counter or percentage does not count, Jev answers the two
+// pending questions for it: has the work finished, and is the window waiting on the user. The answer
+// becomes the watch's task state: needsYou, done, failed, or still running. Done and failed end the watch.
 import { randomUUID } from "node:crypto";
 import type { PendingInfo, ReaderVerb, TaskCause, TaskState, VerbResult } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
@@ -17,11 +19,12 @@ import { FINISHED, type TaskRegistry } from "./registry.ts";
  * every page load and autosave. No measurement behind the list; the false-watch count on real windows
  * is the number to check.
  */
-const VERBS = [
+export const STATUS_VERBS = [
   "running", "building", "compiling", "uploading", "downloading", "generating", "installing", "processing", "exporting",
   "rendering", "deploying", "thinking", "working", "analyzing", "analysing", "indexing", "testing", "copying",
   "transcribing", "importing", "converting",
-].join("|");
+] as const;
+const VERBS = STATUS_VERBS.join("|");
 const TEXT_RULES = [
   // The verb followed by an ellipsis: "Running tests…", "Uploading 3 files...".
   { id: "verbEllipsis", re: new RegExp(`\\b(?:${VERBS})\\b[^\\n]{0,60}(?:…|\\.\\.\\.)`, "i") },
@@ -40,10 +43,13 @@ const INDICATOR_RULES = new Map<string, MarkerRule>([
 ]);
 
 /** Names for the marker rules, so a real-window audit can count which one fired without keeping the text. */
-export type MarkerRule = (typeof TEXT_RULES)[number]["id"] | "progressBar" | "busyIndicator";
-export const MARKER_RULE_IDS: readonly MarkerRule[] = ["progressBar", "busyIndicator", ...TEXT_RULES.map((r) => r.id)];
+export type MarkerRule = (typeof TEXT_RULES)[number]["id"] | "progressBar" | "busyIndicator" | "stopButton";
+export const MARKER_RULE_IDS: readonly MarkerRule[] = ["progressBar", "busyIndicator", "stopButton", ...TEXT_RULES.map((r) => r.id)];
 
-/** The rule that makes this watch line a marker, the first in rule order, or null. Button labels never are. */
+/**
+ * The rule that makes this line of text a marker by its words alone, the first in rule order, or null.
+ * Button labels never are. This is B5's whole rule set; windowMarkers adds where a line sits.
+ */
 export function markerRule(line: string): MarkerRule | null {
   const indicator = INDICATOR_RULES.get(line);
   if (indicator !== undefined) return indicator;
@@ -71,8 +77,10 @@ const BACKOFF_MAX_MS = 20_000;
 const MAX_NOW_LINES = 30;
 const MAX_THEN_LINES = 20;
 const MAX_LINE = 200;
-/** Lines read from one window for markers and the signature, so a huge window costs a bounded pass. */
+/** Lines of one window kept for the signature and the question, so a huge window costs a bounded pass. */
 const MAX_READ_LINES = 400;
+/** Of those, the first lines; the rest are the window's last lines. */
+const MAX_HEAD_LINES = 100;
 /** A failed question is tried again this many times, a second apart; after that, only a new change asks again. */
 const RETRIES = 2;
 const RETRY_MS = 1000;
@@ -85,11 +93,15 @@ export const mask = (s: string): string => s.replace(/\d+/g, "#");
  * The window's text as lines, in document order: static text and headings, button labels marked
  * as buttons, and indicators by role. Editable fields are left out: what the user types is not the
  * window's status. Secure fields never carry a value.
+ *
+ * A window longer than MAX_READ_LINES keeps its first MAX_HEAD_LINES lines and its last ones. An agent
+ * thread's news is at its end, under a long transcript; B5's version kept only the first lines, so a
+ * finished turn changed nothing it read. `head` reproduces that version for the audit's comparison.
  */
-export function watchLines(w: WindowState): string[] {
+export function watchLines(w: WindowState, mode: "headTail" | "head" = "headTail"): string[] {
   const out: string[] = [];
   for (const n of w.nodes.values()) {
-    if (out.length >= MAX_READ_LINES) break;
+    if (mode === "head" && out.length >= MAX_READ_LINES) break;
     if (n.editable === true || n.states?.includes("secure")) continue;
     const indicator = INDICATORS[n.role];
     if (indicator !== undefined) {
@@ -105,16 +117,147 @@ export function watchLines(w: WindowState): string[] {
       if (t !== "") out.push(clip(t));
     }
   }
-  return out;
+  if (out.length <= MAX_READ_LINES) return out;
+  return [...out.slice(0, MAX_HEAD_LINES), ...out.slice(out.length - (MAX_READ_LINES - MAX_HEAD_LINES))];
 }
 
-/** The lines that mark the window as showing unfinished work, first marker first. Empty means no watch. */
+/** B5's markers: the lines whose words alone match a rule, first marker first. Kept for the audit's before column and for tests of the words. */
 export function pendingMarkers(lines: readonly string[]): string[] {
   return lines.filter((l) => markerRule(l) !== null);
 }
 
-export function signature(w: WindowState, lines: readonly string[]): string {
-  return mask([w.window.title, ...lines].join("\n"));
+// MARK: - markers by structure
+
+/** A marker found in a window: the rule and the line that showed it, as the watch's text holds it. */
+export interface Marker {
+  rule: MarkerRule;
+  line: string;
+}
+
+/**
+ * Roles that make a text an item's title or status, not the window's own: a text inside a button, link,
+ * row or tab names one thing in a list. In the B6 census of Sam's windows, 1,454 of 1,463 status words in
+ * T3 Code and 185 of 194 in Codex sat inside sidebar buttons, one per agent thread, and stayed for more
+ * than ten minutes; those watches never cleared.
+ */
+const ITEM_ROLES = new Set([
+  "AXLink", "AXButton", "AXRow", "AXCell", "AXOutline", "AXList", "AXTab", "AXRadioButton", "AXMenuButton", "AXPopUpButton", "AXMenuItem",
+  "AXCheckBox", "AXDisclosureTriangle",
+]);
+/**
+ * A text whose centre is in the left 30% of a window at least 700 points wide sits in a sidebar, the
+ * list of a window's other threads, jobs or pages. The census found every remaining status word in
+ * T3 Code and Codex there, and 138 of Helium's 154 counted statuses. The width keeps small job and
+ * progress windows, whose status starts at the left margin, out of the rule. Both numbers are judgment,
+ * not measurement.
+ */
+const SIDEBAR_FRACTION = 0.3;
+const SIDEBAR_MIN_WIDTH = 700;
+const BUTTON_ROLES = new Set(["AXButton", "AXMenuButton"]);
+const STOP_WORDS = new Set(["stop", "interrupt", "abort", "cancel"]);
+/** Second words that keep a stop button about the work: "Stop generating", not "Stop sharing" or "Stop recording". */
+const STOP_OBJECTS = new Set([
+  "generation", "generating", "streaming", "response", "responding", "run", "running", "task", "agent", "turn", "reply", "answer",
+  "thinking", "query", "search", "request", "job", "build", "process",
+]);
+
+/**
+ * A button label that stops running work: "Stop", "Interrupt" or "Abort" alone, or any of those or
+ * "Cancel" followed by what it stops ("Stop generation" in T3 Code, "Stop" in Codex, "Stop streaming"
+ * in ChatGPT, "Stop response" in Claude). "Cancel" alone is a dialog's button, so it does not count.
+ */
+export function isStopLabel(label: string | undefined): boolean {
+  if (label === undefined) return false;
+  const words = label.toLowerCase().replace(/[^\p{L}\s]/gu, " ").split(/\s+/).filter((x) => x.length > 0);
+  const [first, second] = words;
+  if (first === undefined || !STOP_WORDS.has(first)) return false;
+  if (second === undefined) return first !== "cancel";
+  return STOP_OBJECTS.has(second);
+}
+
+/**
+ * Where the user writes to an agent: an editable text field or area, not secure, in the lower 40% of
+ * the window and at least a quarter of its width. The census found one in 117 of 139 T3 Code snapshots
+ * and 68 of 71 Codex ones.
+ */
+export function composers(w: WindowState): readonly [number, number, number, number][] {
+  const win = w.window.frame;
+  if (win === null || win[3] <= 0) return [];
+  const out: [number, number, number, number][] = [];
+  for (const n of w.nodes.values()) {
+    if (n.editable !== true || n.frame === undefined || n.states?.includes("secure")) continue;
+    if (n.role !== "AXTextArea" && n.role !== "AXTextField") continue;
+    const [, y, wd, h] = n.frame;
+    if ((y + h / 2 - win[1]) / win[3] >= 0.6 && wd >= win[2] * 0.25) out.push(n.frame);
+  }
+  return out;
+}
+
+/** Level with a composer or within 80 points above or below it, and over it horizontally within 40 points. */
+export function nearComposer(f: readonly [number, number, number, number] | undefined, comps: readonly (readonly [number, number, number, number])[]): boolean {
+  if (f === undefined) return false;
+  const cy = f[1] + f[3] / 2;
+  const cx = f[0] + f[2] / 2;
+  return comps.some(([x, y, wd, h]) => cy >= y - 80 && cy <= y + h + 80 && cx >= x - 40 && cx <= x + wd + 40);
+}
+
+function inSidebar(w: WindowState, f: readonly [number, number, number, number] | undefined): boolean {
+  const win = w.window.frame;
+  if (f === undefined || win === null || win[2] < SIDEBAR_MIN_WIDTH) return false;
+  return (f[0] + f[2] / 2 - win[0]) / win[2] < SIDEBAR_FRACTION;
+}
+
+function insideItem(w: WindowState, parent: string | null): boolean {
+  for (let key = parent, hops = 0; key !== null && hops < 32; hops++) {
+    const p = w.nodes.get(key);
+    if (p === undefined) return false;
+    if (ITEM_ROLES.has(p.role)) return true;
+    key = p.parent;
+  }
+  return false;
+}
+
+/**
+ * The window's markers in document order, read from its structure: indicators by role, an enabled
+ * stop button by a composer, and text lines that match a text rule and are the window's own status,
+ * neither inside a list item nor in a sidebar. Every node is read, since an agent's composer comes
+ * last in a long transcript.
+ */
+export function windowMarkers(w: WindowState): Marker[] {
+  const out: Marker[] = [];
+  let comps: readonly [number, number, number, number][] | null = null;
+  for (const n of w.nodes.values()) {
+    if (n.editable === true || n.states?.includes("secure")) continue;
+    const indicator = INDICATORS[n.role];
+    if (indicator !== undefined) {
+      out.push({ rule: INDICATOR_RULES.get(indicator) as MarkerRule, line: indicator });
+      continue;
+    }
+    if (BUTTON_ROLES.has(n.role)) {
+      if (!isStopLabel(n.label) || n.states?.includes("disabled")) continue;
+      comps ??= composers(w);
+      if (nearComposer(n.frame, comps)) out.push({ rule: "stopButton", line: `[button] ${clip((n.label as string).trim())}` });
+      continue;
+    }
+    if (ITEM_ROLES.has(n.role)) continue;
+    const text = nodeText(n);
+    if (text === "") continue;
+    let placed: boolean | null = null;
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (line === "") continue;
+      const rule = TEXT_RULES.find((r) => r.re.test(line))?.id;
+      if (rule === undefined) continue;
+      placed ??= !inSidebar(w, n.frame) && !insideItem(w, n.parent);
+      if (placed) out.push({ rule, line: clip(line) });
+    }
+  }
+  return out;
+}
+
+/** What a question is about: the title, the lines and the markers, digits masked. A marker past the lines read still counts. */
+export function signature(w: WindowState, lines: readonly string[], markers: readonly Marker[] = []): string {
+  return mask([w.window.title, ...lines, "--markers--", ...markers.map((m) => m.line)].join("\n"));
 }
 
 // MARK: - the question
@@ -137,19 +280,33 @@ const WAITING_CRITERIA: Record<Waiting, string> = {
  * what it showed when the user left, and what it shows now, with changed lines and markers kept
  * first when a large window has to be cut.
  */
-export function buildPendingRequest(w: WindowState, then: readonly string[], now: readonly string[]): JevRequest {
+export function buildPendingRequest(
+  w: WindowState,
+  then: readonly string[],
+  now: readonly string[],
+  thenMarkers: readonly Marker[] = [],
+  nowMarkers: readonly Marker[] = [],
+): JevRequest {
   const before = new Set(then.map(mask));
-  const keep = new Set<string>([...now.slice(0, 3), ...now.filter((l) => !before.has(mask(l))), ...pendingMarkers(now)]);
+  const markerLines = new Set(nowMarkers.map((m) => m.line));
+  const keep = new Set<string>([...now.slice(0, 3), ...now.filter((l) => !before.has(mask(l))), ...now.filter((l) => markerLines.has(l))]);
   for (const l of now) {
     if (keep.size >= MAX_NOW_LINES) break;
     keep.add(l);
   }
+  // A long window's changed lines can all be in its tail; the last ones are where an agent thread's turn ends.
+  const kept = now.filter((l) => keep.has(l));
+  const nowText = kept.length <= MAX_NOW_LINES ? kept : [...kept.slice(0, 3), ...kept.slice(-(MAX_NOW_LINES - 3))];
+  const thenText = then.length <= MAX_THEN_LINES ? then : [...then.slice(0, 3), ...then.slice(-(MAX_THEN_LINES - 3))];
+  const list = (ms: readonly Marker[]): string => (ms.length === 0 ? "none" : [...new Set(ms.map((m) => m.line))].join("\n"));
   return {
     state: {
       window: `${w.app.name} window '${w.window.title}'`,
       situation: "The user left this window while it showed unfinished work. Caret watches it so it can tell the user when the work is done or needs them.",
-      when_the_user_left: then.slice(0, MAX_THEN_LINES).join("\n"),
-      now: now.filter((l) => keep.has(l)).slice(0, MAX_NOW_LINES).join("\n"),
+      when_the_user_left: thenText.join("\n"),
+      now: nowText.join("\n"),
+      signs_of_running_work_when_the_user_left: list(thenMarkers),
+      signs_of_running_work_now: list(nowMarkers),
     },
     questions: {
       finished: {
@@ -192,8 +349,9 @@ interface Watch {
   id: string;
   windowId: string;
   pid: number;
-  /** Lines when the watch began; the "then" of every question. */
+  /** Lines and markers when the watch began; the "then" of every question. */
   then: string[];
+  thenMarkers: Marker[];
   /** Signature of the latest snapshot, and of the last one Jev answered about. */
   sig: string;
   asked: string;
@@ -271,13 +429,13 @@ export class PendingWatcher {
     const w = this.deps.model.windows.get(windowId);
     if (w === undefined) return null;
     this.stats.checked++;
-    const lines = watchLines(w);
-    const markers = pendingMarkers(lines);
+    const markers = windowMarkers(w);
     if (markers.length === 0) {
       this.stats.noMarkers++;
       return null;
     }
-    const sig = signature(w, lines);
+    const lines = watchLines(w);
+    const sig = signature(w, lines, markers);
     if (this.resolved.get(windowId) === sig) {
       this.stats.alreadyResolved++;
       return null;
@@ -292,6 +450,7 @@ export class PendingWatcher {
       windowId,
       pid: w.app.pid,
       then: lines,
+      thenMarkers: markers,
       sig,
       asked: sig,
       timer: null,
@@ -302,7 +461,7 @@ export class PendingWatcher {
       paused: false,
       tries: 0,
       retry: null,
-      info: { markedBy: markers[0] ?? "", status: null, finished: null, waiting: null, asks: 0 },
+      info: { markedBy: markers[0]?.line ?? "", status: null, finished: null, waiting: null, asks: 0 },
     };
     this.watches.set(windowId, watch);
     this.stats.registered++;
@@ -333,7 +492,7 @@ export class PendingWatcher {
     const w = this.deps.model.windows.get(windowId);
     if (watch === undefined || w === undefined) return;
     const lines = watchLines(w);
-    const sig = signature(w, lines);
+    const sig = signature(w, lines, windowMarkers(w));
     if (sig === watch.sig) return;
     watch.sig = sig;
     // New text gets fresh retries.
@@ -467,7 +626,7 @@ export class PendingWatcher {
     let answer: ReturnType<typeof readPendingAnswer>;
     let latencyMs: number;
     try {
-      const r = await askJev(buildPendingRequest(w, watch.then, watchLines(w)));
+      const r = await askJev(buildPendingRequest(w, watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w)));
       latencyMs = r.latencyMs;
       answer = readPendingAnswer(r);
     } catch (e) {

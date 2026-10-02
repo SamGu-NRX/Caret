@@ -87,11 +87,11 @@ describe("audit", () => {
     void helper.handleReader(job(80_000, "Export finished", true, false)); // the user comes back 78 s after the leave
 
     const s = helper.audit?.summary();
-    expect(s?.markers.byApp["dev.caret.jobs"]).toMatchObject({ checks: 1, withMarkers: 1, windowsWithMarkers: 1, watches: 1 });
-    expect(s?.markers.byApp["dev.caret.jobs"]?.checksByRule).toMatchObject({ progressBar: 1, verbCount: 1, verbEllipsis: 0 });
-    expect(s?.markers.byApp["dev.caret.mail"]).toMatchObject({ checks: 1, withMarkers: 0, watches: 0 });
-    expect(s?.markers.watches).toEqual({ registered: 1, overLimit: 0, maxConcurrent: 1 });
-    expect(s?.markers.episodes).toEqual([
+    expect(s?.markers.b5.byApp["dev.caret.jobs"]).toMatchObject({ checks: 1, withMarkers: 1, windowsWithMarkers: 1, watches: 1 });
+    expect(s?.markers.b5.byApp["dev.caret.jobs"]?.checksByRule).toMatchObject({ progressBar: 1, verbCount: 1, verbEllipsis: 0 });
+    expect(s?.markers.b5.byApp["dev.caret.mail"]).toMatchObject({ checks: 1, withMarkers: 0, watches: 0 });
+    expect(s?.markers.b5.watches).toEqual({ registered: 1, overLimit: 0, maxConcurrent: 1 });
+    expect(s?.markers.b5.episodes).toEqual([
       { bundleId: "dev.caret.jobs", rule: "verbCount", end: "returned", clearedAfterMs: 7000, returnedAfterMs: 78_000, returnsWhileRunning: 0 },
     ]);
     // The reader was asked to watch the window, then to stop once the markers cleared.
@@ -107,11 +107,11 @@ describe("audit", () => {
     void helper.handleReader(job(3000, "Exporting 40%", true, true)); // back while it still runs
     void helper.handleReader(mail(4000, true)); // and away again: a second leave, no second watch
     let s = helper.audit?.summary();
-    expect(s?.markers.byApp["dev.caret.jobs"]).toMatchObject({ checks: 2, withMarkers: 2, windowsWithMarkers: 1, watches: 1 });
-    expect(s?.markers.episodes).toEqual([]);
+    expect(s?.markers.b5.byApp["dev.caret.jobs"]).toMatchObject({ checks: 2, withMarkers: 2, windowsWithMarkers: 1, watches: 1 });
+    expect(s?.markers.b5.episodes).toEqual([]);
     helper.audit?.stop(5000);
     s = helper.audit?.summary();
-    expect(s?.markers.episodes).toEqual([
+    expect(s?.markers.b5.episodes).toEqual([
       { bundleId: "dev.caret.jobs", rule: "verbCount", end: "auditEnded", clearedAfterMs: null, returnedAfterMs: null, returnsWhileRunning: 1 },
     ]);
   });
@@ -121,8 +121,8 @@ describe("audit", () => {
     void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 1500, from: JOBS, to: MAIL_APP });
     void helper.handleReader({ ...job(1600, "Running", false, false), reason: "leave" });
     void helper.handleReader(mail(1700, true));
-    expect(helper.audit?.summary().markers.byApp["dev.caret.jobs"]).toMatchObject({ checks: 1, withMarkers: 1, watches: 1 });
-    expect(helper.audit?.summary().markers.byApp["dev.caret.jobs"]?.linesByRule.statusWord).toBe(1);
+    expect(helper.audit?.summary().markers.b5.byApp["dev.caret.jobs"]).toMatchObject({ checks: 1, withMarkers: 1, watches: 1 });
+    expect(helper.audit?.summary().markers.b5.byApp["dev.caret.jobs"]?.linesByRule.statusWord).toBe(1);
   });
 
   it("sees a return through an app it cannot read", () => {
@@ -132,7 +132,7 @@ describe("audit", () => {
     void helper.handleReader(job(9000, "Done", false, false));
     void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 90_000, from: other, to: JOBS });
     void helper.handleReader({ ...job(90_100, "Done", true, false), reason: "focus" });
-    expect(helper.audit?.summary().markers.episodes).toEqual([
+    expect(helper.audit?.summary().markers.b5.episodes).toEqual([
       { bundleId: "dev.caret.jobs", rule: "statusWord", end: "returned", clearedAfterMs: 7000, returnedAfterMs: 88_100, returnsWhileRunning: 0 },
     ]);
   });
@@ -142,14 +142,14 @@ describe("audit", () => {
     void helper.handleReader(mail(2000, true));
     void helper.handleReader({ ...snap([], { at: 5000, windowId: JOB, app: JOBS, title: "Export queue" }), stats: { walkMs: 900, visited: 4000, truncated: true } });
     helper.audit?.stop(6000);
-    expect(helper.audit?.summary().markers.episodes[0]).toMatchObject({ end: "auditEnded", clearedAfterMs: null });
+    expect(helper.audit?.summary().markers.b5.episodes[0]).toMatchObject({ end: "auditEnded", clearedAfterMs: null });
   });
 
   it("ends a watch whose window closes", () => {
     void helper.handleReader(job(1000, "Running", true, false));
     void helper.handleReader(mail(2000, true));
     void helper.handleReader({ type: "windowClosed", v: PROTOCOL_VERSION, at: 5000, windowId: JOB });
-    expect(helper.audit?.summary().markers.episodes).toEqual([
+    expect(helper.audit?.summary().markers.b5.episodes).toEqual([
       { bundleId: "dev.caret.jobs", rule: "statusWord", end: "closed", clearedAfterMs: null, returnedAfterMs: null, returnsWhileRunning: 0 },
     ]);
   });
@@ -212,10 +212,16 @@ describe("audit", () => {
     void helper.handleReader(job(80_000, "Export finished", true, false));
     const s = helper.audit?.summary();
     if (s === undefined) throw new Error("audit missing");
-    const markers = renderMarkerAudit({ ...s, startedAt: 0, updatedAt: 3_600_000 }, [{ name: "audit reader", meanPct: 2.5, peakPct: 9, peakRssMb: 50 }]);
-    expect(markers).toContain("| dev.caret.jobs | 1 | 1 | 1.0 | 1 | 1 |");
+    const markers = renderMarkerAudit({ ...s, startedAt: 0, updatedAt: 3_600_000 }, [{ name: "audit reader", meanPct: 2.5, peakPct: 9, peakRssMb: 50 }], {
+      hidMinutes: 40,
+      powerdMinutes: 31,
+    });
+    expect(markers).toContain("with 40 minutes by the HID idle timer");
+    // App, leaves, with markers B5 and B6, watches B5 and B6, cleared B5 and B6.
+    expect(markers).toContain("| dev.caret.jobs | 1 | 1 | 1 | 1 | 1 | 1 | 1 |");
+    expect(markers).toContain("| Leaves with markers per hour | 1.0 | 1.0 |");
+    expect(markers).toContain("| Of those, more than 60 s after the clear | 1 | 1 |");
     expect(markers).toContain("| verbCount | 1 | 1 | 1 |");
-    expect(markers).toContain("Of the 1 returns after the work cleared, 1 came more than 60 s after the clear");
     expect(markers).toContain("| audit reader | 2.5% | 9.0% | 50 MB |");
     const fill = renderFillReadiness(s);
     expect(fill).toContain("Measured: 0 focuses");

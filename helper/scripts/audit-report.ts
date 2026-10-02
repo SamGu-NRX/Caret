@@ -1,17 +1,28 @@
-// Writes marker-audit.md and fill-readiness.md from an audit's --audit-out file (src/audit-report.ts).
+// Writes marker-audit.md, fill-readiness.md and census.md from an audit's --audit-out file (src/audit-report.ts).
 //
-//   node scripts/audit-report.ts --audit FILE --out-dir DIR [--cpu FILE --name PID=LABEL ...]
+//   node scripts/audit-report.ts --audit FILE --out-dir DIR [--cpu FILE --name PID=LABEL ...] [--hid FILE] [--pmset]
 //
+// --hid reads run-audit.sh's hid-idle.tsv: a 30 s sample with under 30 s of HID idle time counts as
+// half an active minute. --pmset reads `pmset -g log` for powerd's hardware-input spans in the run.
 // The CPU file holds `ps` samples, one per line: "<epoch s> <pid> <%cpu> <rss KB> <cpu time>", with
 // cpu time as [[h:]m]m:ss.cc. Mean CPU per process is the change in cpu time over the change in wall time.
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { AuditSummary } from "../src/audit.ts";
-import { renderFillReadiness, renderMarkerAudit, type ProcessCpu } from "../src/audit-report.ts";
+import { renderCensus, renderFillReadiness, renderMarkerAudit, type Activity, type ProcessCpu } from "../src/audit-report.ts";
+import { clip, humanActiveSpans } from "../src/opportunity.ts";
 
 const { values: a } = parseArgs({
-  options: { audit: { type: "string" }, "out-dir": { type: "string" }, cpu: { type: "string" }, name: { type: "string", multiple: true } },
+  options: {
+    audit: { type: "string" },
+    "out-dir": { type: "string" },
+    cpu: { type: "string" },
+    name: { type: "string", multiple: true },
+    hid: { type: "string" },
+    pmset: { type: "boolean", default: false },
+  },
 });
 if (a.audit === undefined || a["out-dir"] === undefined) throw new Error("--audit and --out-dir are required");
 const summary = JSON.parse(readFileSync(a.audit, "utf8")) as AuditSummary;
@@ -43,5 +54,17 @@ if (a.cpu !== undefined) {
   }
 }
 
-writeFileSync(join(a["out-dir"], "marker-audit.md"), renderMarkerAudit(summary, cpu));
+const activity: Activity = { hidMinutes: null, powerdMinutes: null };
+if (a.hid !== undefined) {
+  const samples = readFileSync(a.hid, "utf8").split("\n").map((l) => l.split("\t")).filter((f) => f.length === 2 && f[1] !== "");
+  activity.hidMinutes = samples.filter((f) => Number(f[1]) < 30).length / 2;
+}
+if (a.pmset) {
+  const log = execFileSync("pmset", ["-g", "log"], { encoding: "utf8", maxBuffer: 1 << 30, stdio: ["ignore", "pipe", "ignore"] });
+  const spans = clip(humanActiveSpans(log), { from: summary.startedAt, to: summary.updatedAt });
+  activity.powerdMinutes = spans.reduce((n, x) => n + (x.to - x.from), 0) / 60_000;
+}
+
+writeFileSync(join(a["out-dir"], "marker-audit.md"), renderMarkerAudit(summary, cpu, activity));
 writeFileSync(join(a["out-dir"], "fill-readiness.md"), renderFillReadiness(summary));
+writeFileSync(join(a["out-dir"], "census.md"), renderCensus(summary));

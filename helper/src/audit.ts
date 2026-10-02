@@ -1,23 +1,25 @@
-// The read-only audit (brief B5). It rides on a helper in shadow mode with Jev off and counts, on
-// real windows, what B4's pending watch and the grounded-fill generator would have done:
+// The read-only audit (briefs B5 and B6). It rides on a helper in shadow mode with Jev off and counts,
+// on real windows, what the pending watch and the grounded-fill generator would have done:
 //   - each time the user leaves a window, which marker rules fire, per app, and whether the window
 //     would have become a watch; for those windows, when the markers cleared and when the user next
 //     came back after that, the code-only proxy for deep plan section 6.4's kill experiment. With Jev
 //     off, markers clearing stands in for Jev answering that the work finished, so a simulated watch
-//     ends there, where B4's would end on Jev's answer;
+//     ends there, where the product's would end on Jev's answer. Two rule sets run side by side on the
+//     same leaves: B5's (the words of the first 400 lines) and B6's (windowMarkers, by structure);
 //   - at every focus of an empty editable field, whether code derives a field descriptor and from
 //     what, and how many candidate spans the generator collects (section 6.1, experiment E3).
 // It keeps counts, bundle identifiers and keyed hashes. The only text it holds is the screen
 // model's, in memory, as the helper already does. Its one message to the reader is watchWindows,
 // which only reads.
 import { createHmac, randomBytes } from "node:crypto";
-import type { ScreenModel } from "./model.ts";
+import type { ScreenModel, WindowState } from "./model.ts";
 import type { Focus, ReaderVerb, Snapshot, VerbResult } from "./protocol.ts";
-import { MARKER_RULE_IDS, MAX_WATCHES, markerRule, watchLines, type MarkerRule } from "./tasks/pending.ts";
+import { MARKER_RULE_IDS, MAX_WATCHES, markerRule, watchLines, windowMarkers, type Marker, type MarkerRule } from "./tasks/pending.ts";
 import { describeField } from "./fill/descriptor.ts";
-import { generateCandidates, MAX_CANDIDATES } from "./fill/candidates.ts";
+import { collectCandidates, countSpans, MAX_CANDIDATES } from "./fill/candidates.ts";
 import { formFields } from "./fill/fill.ts";
 import { SeenSet } from "./leak-check.ts";
+import { Census, type CensusApp } from "./audit-census.ts";
 
 type RuleCounts = Record<MarkerRule, number>;
 const zeroRules = (): RuleCounts => Object.fromEntries(MARKER_RULE_IDS.map((r) => [r, 0])) as RuleCounts;
@@ -72,24 +74,39 @@ export interface FillFocus {
   bundleId: string;
   role: string;
   source: DescriptorSource;
-  /** Candidate spans before the generator's cap, typed values among them, and empty fields in the form. */
+  /** Distinct spans available with no cap (countSpans), typed values among them, and empty fields in the form. */
   candidates: number;
   typedCandidates: number;
   formFields: number;
+  /** Time of the capped generator the product runs, and whether it stopped on its budget. Before B6 this was the uncapped generator's time. */
   generatorMs: number;
+  overBudget?: boolean;
 }
+
+export interface MarkerSummary {
+  rules: readonly MarkerRule[];
+  byApp: Record<string, MarkerAppCounts>;
+  /** Distinct marker lines per rule, counted by hash. */
+  distinctLines: RuleCounts;
+  watches: { registered: number; overLimit: number; maxConcurrent: number };
+  episodes: WatchEpisode[];
+}
+
+/** The rule sets the audit compares: B5's words-only rules and B6's structure rules. */
+export type RuleSet = "b5" | "b6";
+export const RULE_SETS: Record<RuleSet, (w: WindowState) => Marker[]> = {
+  b5: (w) =>
+    watchLines(w, "head").flatMap((line) => {
+      const rule = markerRule(line);
+      return rule === null ? [] : [{ rule, line }];
+    }),
+  b6: windowMarkers,
+};
 
 export interface AuditSummary {
   startedAt: number;
   updatedAt: number;
-  markers: {
-    rules: readonly MarkerRule[];
-    byApp: Record<string, MarkerAppCounts>;
-    /** Distinct marker lines per rule, counted by hash. */
-    distinctLines: RuleCounts;
-    watches: { registered: number; overLimit: number; maxConcurrent: number };
-    episodes: WatchEpisode[];
-  };
+  markers: Record<RuleSet, MarkerSummary>;
   fill: {
     /** Every focus message, editable ones, and empty editable ones. */
     focuses: number;
@@ -106,11 +123,14 @@ export interface AuditSummary {
     candidateCap: number;
   };
   seen: { units: number };
+  /** Structure counts per app from every complete snapshot (src/audit-census.ts). */
+  census: Record<string, CensusApp>;
 }
 
-/** A watch B4 would hold: registered on a leave with markers, ended when the markers clear or the window closes. */
-interface SimWatch {
-  pid: number;
+/** One departure from a window: the helper may report it up to three times (app switch, leave walk, focus elsewhere). */
+interface Departure {
+  marked: boolean;
+  skipCounted: boolean;
 }
 
 interface OpenEpisode {
@@ -121,15 +141,157 @@ interface OpenEpisode {
   returnsWhileRunning: number;
 }
 
-/** One departure from a window: the helper may report it up to three times (app switch, leave walk, focus elsewhere). */
-interface Departure {
-  marked: boolean;
-  skipCounted: boolean;
+/**
+ * The watches one rule set would hold: registered on a leave with markers, ended when the markers
+ * clear or the window closes, with the counts and episodes the report needs.
+ */
+class MarkerTrack {
+  private readonly find: (w: WindowState) => Marker[];
+  private readonly hash: (s: string) => string;
+  private readonly apps = new Map<string, MarkerAppCounts>();
+  private readonly markerWindows = new Map<string, Set<string>>();
+  private readonly markerLines = new Map<MarkerRule, Set<string>>();
+  /** Watched window id to its app's pid. */
+  readonly watches = new Map<string, number>();
+  private readonly open = new Map<string, OpenEpisode>();
+  private readonly departed = new Map<string, Departure>();
+  private readonly watchStats = { registered: 0, overLimit: 0, maxConcurrent: 0 };
+  private readonly episodes: WatchEpisode[] = [];
+
+  constructor(find: (w: WindowState) => Marker[], hash: (s: string) => string) {
+    this.find = find;
+    this.hash = hash;
+  }
+
+  /** Returns true when the set of watched windows changed. */
+  onSnapshot(m: Snapshot, w: WindowState | undefined): boolean {
+    const id = m.window.windowId;
+    let changed = false;
+    // A truncated walk may have missed the indicator, so it is no evidence that the markers cleared.
+    if (this.watches.has(id) && w !== undefined && !m.stats.truncated && this.find(w).length === 0) {
+      const ep = this.open.get(id);
+      if (ep !== undefined && ep.clearedAt === null) ep.clearedAt = m.at;
+      this.watches.delete(id);
+      changed = true;
+    }
+    // The user is back in a window they left: its focused walk, after any check above.
+    if (m.focused && this.departed.delete(id)) {
+      const ep = this.open.get(id);
+      if (ep !== undefined) {
+        if (ep.clearedAt === null) ep.returnsWhileRunning++;
+        else this.finish(id, ep, "returned", m.at);
+      }
+    }
+    return changed;
+  }
+
+  /** The user left this window: the moments PendingWatcher.left is called. Returns true when a watch was added. */
+  left(windowId: string, w: WindowState, at: number): boolean {
+    const bundle = w.app.bundleId;
+    const app = this.app(bundle);
+    let dep = this.departed.get(windowId);
+    if (dep === undefined) {
+      this.departed.set(windowId, (dep = { marked: false, skipCounted: false }));
+      app.checks++;
+    }
+    const markers = this.find(w);
+    const first = markers[0]?.rule;
+    for (const mk of markers) {
+      let set = this.markerLines.get(mk.rule);
+      if (set === undefined) this.markerLines.set(mk.rule, (set = new Set()));
+      set.add(this.hash(mk.line));
+    }
+    if (first === undefined) return false;
+    // A departure counts once; a later report of it (a fresher leave walk) may be the one that shows markers.
+    if (!dep.marked) {
+      dep.marked = true;
+      app.withMarkers++;
+      for (const r of new Set(markers.map((mk) => mk.rule))) app.checksByRule[r]++;
+      for (const mk of markers) app.linesByRule[mk.rule]++;
+      let wins = this.markerWindows.get(bundle);
+      if (wins === undefined) this.markerWindows.set(bundle, (wins = new Set()));
+      if (!wins.has(windowId)) {
+        wins.add(windowId);
+        app.windowsWithMarkers++;
+      }
+    }
+
+    // The watcher's registration rules, applied on every report as it does: one watch per window, at
+    // most MAX_WATCHES. It also skips a window left again with the text Jev called finished; here a
+    // watch ends only when its markers are gone, so that text never carries markers and the rule never applies.
+    if (this.watches.has(windowId)) return false;
+    if (this.watches.size >= MAX_WATCHES) {
+      if (!dep.skipCounted) {
+        dep.skipCounted = true;
+        this.watchStats.overLimit++;
+      }
+      return false;
+    }
+    const prior = this.open.get(windowId);
+    if (prior !== undefined) this.finish(windowId, prior, "replaced", at);
+    this.watches.set(windowId, w.app.pid);
+    this.open.set(windowId, { bundleId: bundle, rule: first, at, clearedAt: null, returnsWhileRunning: 0 });
+    this.watchStats.registered++;
+    this.watchStats.maxConcurrent = Math.max(this.watchStats.maxConcurrent, this.watches.size);
+    app.watches++;
+    return true;
+  }
+
+  /** Returns true when a watched window closed. */
+  onWindowClosed(windowId: string, at: number): boolean {
+    const ep = this.open.get(windowId);
+    if (ep !== undefined) this.finish(windowId, ep, "closed", at);
+    this.departed.delete(windowId);
+    return this.watches.delete(windowId);
+  }
+
+  readerRestarted(at: number): void {
+    this.stop(at);
+    this.watches.clear();
+    this.departed.clear();
+  }
+
+  stop(at: number): void {
+    for (const [id, ep] of [...this.open]) this.finish(id, ep, "auditEnded", at);
+  }
+
+  summary(): MarkerSummary {
+    const distinctLines = zeroRules();
+    for (const [r, set] of this.markerLines) distinctLines[r] = set.size;
+    return {
+      rules: MARKER_RULE_IDS,
+      byApp: structuredClone(Object.fromEntries(this.apps)),
+      distinctLines,
+      watches: { ...this.watchStats },
+      episodes: [...this.episodes],
+    };
+  }
+
+  private finish(windowId: string, ep: OpenEpisode, end: WatchEpisode["end"], at: number): void {
+    this.open.delete(windowId);
+    this.episodes.push({
+      bundleId: ep.bundleId,
+      rule: ep.rule,
+      end,
+      clearedAfterMs: ep.clearedAt === null ? null : ep.clearedAt - ep.at,
+      returnedAfterMs: end === "returned" ? at - ep.at : null,
+      returnsWhileRunning: ep.returnsWhileRunning,
+    });
+  }
+
+  private app(bundle: string): MarkerAppCounts {
+    let a = this.apps.get(bundle);
+    if (a === undefined) {
+      a = { checks: 0, withMarkers: 0, checksByRule: zeroRules(), linesByRule: zeroRules(), windowsWithMarkers: 0, watches: 0 };
+      this.apps.set(bundle, a);
+    }
+    return a;
+  }
 }
 
 export interface AuditOptions {
   model: ScreenModel;
-  /** Sends watchWindows to the audit's own reader, so watched windows are re-read as B4 would have them. */
+  /** Sends watchWindows to the audit's own reader, so watched windows are re-read as the watcher would have them. */
   reader?: (verb: ReaderVerb) => Promise<VerbResult>;
   salt?: Buffer;
   now?: () => number;
@@ -141,14 +303,8 @@ export class Audit {
   /** In-memory key for hashing marker lines and field ids; never written anywhere. */
   private readonly key = randomBytes(32);
   readonly seen: SeenSet;
-  private readonly markerApps = new Map<string, MarkerAppCounts>();
-  private readonly markerWindows = new Map<string, Set<string>>();
-  private readonly markerLines = new Map<MarkerRule, Set<string>>();
-  private readonly watches = new Map<string, SimWatch>();
-  private readonly open = new Map<string, OpenEpisode>();
-  private readonly departed = new Map<string, Departure>();
-  private readonly watchStats = { registered: 0, overLimit: 0, maxConcurrent: 0 };
-  private readonly episodes: WatchEpisode[] = [];
+  private readonly census = new Census();
+  private readonly tracks: Record<RuleSet, MarkerTrack>;
   private readonly fill = { focuses: 0, editableFocuses: 0, emptyEditable: 0, nodeMissing: 0, secure: 0, measured: 0 };
   private readonly fields = new Set<string>();
   private readonly fillApps = new Map<string, FillAppCounts>();
@@ -160,6 +316,8 @@ export class Audit {
     this.opts = opts;
     this.seen = new SeenSet(opts.salt);
     this.startedAt = this.now();
+    const hash = (t: string): string => this.hash(t);
+    this.tracks = { b5: new MarkerTrack(RULE_SETS.b5, hash), b6: new MarkerTrack(RULE_SETS.b6, hash) };
   }
 
   private now(): number {
@@ -171,8 +329,8 @@ export class Audit {
   }
 
   /**
-   * A snapshot was applied. Records what it showed (hashes only), checks whether a watched window's
-   * markers cleared, and notes the user's return to a watched window.
+   * A snapshot was applied. Records what it showed (hashes only), counts its structure, checks
+   * whether a watched window's markers cleared, and notes the user's return to a watched window.
    */
   onSnapshot(m: Snapshot): void {
     const bundle = m.app.bundleId;
@@ -184,97 +342,31 @@ export class Audit {
     }
     for (const v of m.values) this.seen.add(v.text, bundle);
 
-    const id = m.window.windowId;
-    const w = this.model.windows.get(id);
-    // A truncated walk may have missed the indicator, so it is no evidence that the markers cleared.
-    if (this.watches.has(id) && w !== undefined && !m.stats.truncated) {
-      const lines = watchLines(w);
-      if (!lines.some((l) => markerRule(l) !== null)) {
-        const ep = this.open.get(id);
-        if (ep !== undefined && ep.clearedAt === null) ep.clearedAt = m.at;
-        this.watches.delete(id);
-        this.syncReader();
-      }
-    }
-    // The user is back in a window they left: its focused walk, after any check above.
-    if (m.focused && this.departed.delete(id)) {
-      const ep = this.open.get(id);
-      if (ep !== undefined) {
-        if (ep.clearedAt === null) ep.returnsWhileRunning++;
-        else this.finish(id, ep, "returned", m.at);
-      }
-    }
+    const w = this.model.windows.get(m.window.windowId);
+    if (w !== undefined && !m.stats.truncated) this.census.observe(w, m.at);
+    let changed = false;
+    for (const t of Object.values(this.tracks)) changed = t.onSnapshot(m, w) || changed;
+    if (changed) this.syncReader();
   }
 
-  /** The user left this window: the same moments B4's PendingWatcher.left is called. */
+  /** The user left this window: the same moments PendingWatcher.left is called. */
   left(windowId: string, at: number): void {
     const w = this.model.windows.get(windowId);
     if (w === undefined) return;
-    const bundle = w.app.bundleId;
-    const app = this.markerApp(bundle);
-    let dep = this.departed.get(windowId);
-    if (dep === undefined) {
-      this.departed.set(windowId, (dep = { marked: false, skipCounted: false }));
-      app.checks++;
-    }
-    const lines = watchLines(w);
-    const rules = lines.map((l) => markerRule(l));
-    let first: MarkerRule | null = null;
-    for (const [i, r] of rules.entries()) {
-      if (r === null) continue;
-      first ??= r;
-      let set = this.markerLines.get(r);
-      if (set === undefined) this.markerLines.set(r, (set = new Set()));
-      set.add(this.hash(lines[i] as string));
-    }
-    if (first === null) return;
-    // A departure counts once; a later report of it (a fresher leave walk) may be the one that shows markers.
-    if (!dep.marked) {
-      dep.marked = true;
-      app.withMarkers++;
-      for (const r of new Set(rules)) if (r !== null) app.checksByRule[r]++;
-      for (const r of rules) if (r !== null) app.linesByRule[r]++;
-      let wins = this.markerWindows.get(bundle);
-      if (wins === undefined) this.markerWindows.set(bundle, (wins = new Set()));
-      if (!wins.has(windowId)) {
-        wins.add(windowId);
-        app.windowsWithMarkers++;
-      }
-    }
-
-    // B4's registration rules, applied on every report as B4 does: one watch per window, at most
-    // MAX_WATCHES. B4 also skips a window left again with the text Jev called finished; here a watch
-    // ends only when its markers are gone, so that text never carries markers and the rule never applies.
-    if (this.watches.has(windowId)) return;
-    if (this.watches.size >= MAX_WATCHES) {
-      if (!dep.skipCounted) {
-        dep.skipCounted = true;
-        this.watchStats.overLimit++;
-      }
-      return;
-    }
-    const prior = this.open.get(windowId);
-    if (prior !== undefined) this.finish(windowId, prior, "replaced", at);
-    this.watches.set(windowId, { pid: w.app.pid });
-    this.open.set(windowId, { bundleId: bundle, rule: first, at, clearedAt: null, returnsWhileRunning: 0 });
-    this.watchStats.registered++;
-    this.watchStats.maxConcurrent = Math.max(this.watchStats.maxConcurrent, this.watches.size);
-    app.watches++;
-    this.syncReader();
+    let added = false;
+    for (const t of Object.values(this.tracks)) added = t.left(windowId, w, at) || added;
+    if (added) this.syncReader();
   }
 
   onWindowClosed(windowId: string, at: number): void {
-    const ep = this.open.get(windowId);
-    if (ep !== undefined) this.finish(windowId, ep, "closed", at);
-    if (this.watches.delete(windowId)) this.syncReader();
-    this.departed.delete(windowId);
+    let changed = false;
+    for (const t of Object.values(this.tracks)) changed = t.onWindowClosed(windowId, at) || changed;
+    if (changed) this.syncReader();
   }
 
   /** A new reader numbers windows from scratch; open episodes end as if the audit stopped. */
   readerRestarted(at: number): void {
-    this.stop(at);
-    this.watches.clear();
-    this.departed.clear();
+    for (const t of Object.values(this.tracks)) t.readerRestarted(at);
   }
 
   onFocus(m: Focus): void {
@@ -306,68 +398,44 @@ export class Audit {
     if (d.placeholder !== null) app.hasPlaceholder++;
     if (d.nearest !== null) app.hasNearest++;
     if (d.section !== null) app.hasSection++;
-    const t0 = performance.now();
-    const candidates = generateCandidates(this.model, m.windowId, Number.POSITIVE_INFINITY, m.at);
-    const generatorMs = performance.now() - t0;
+    // The product's generator, capped and on its budget, as a live helper would run it on this focus.
+    const { stats } = collectCandidates(this.model, m.windowId, { now: m.at });
+    const all = countSpans(this.model, m.windowId);
     this.focusesList.push({
       bundleId: w.app.bundleId,
       role: node.role,
       source,
-      candidates: candidates.length,
-      typedCandidates: candidates.filter((c) => c.kind !== null).length,
+      candidates: all.spans,
+      typedCandidates: all.typed,
       formFields: formFields(w, m.key).length,
-      generatorMs: Math.round(generatorMs * 10) / 10,
+      generatorMs: Math.round(stats.ms * 10) / 10,
+      overBudget: stats.overBudget,
     });
   }
 
   /** Ends every open episode; call once when the audit stops. */
   stop(at = this.now()): void {
-    for (const [id, ep] of [...this.open]) this.finish(id, ep, "auditEnded", at);
+    for (const t of Object.values(this.tracks)) t.stop(at);
   }
 
   summary(): AuditSummary {
-    const distinctLines = zeroRules();
-    for (const [r, s] of this.markerLines) distinctLines[r] = s.size;
     return {
       startedAt: this.startedAt,
       updatedAt: this.now(),
-      markers: {
-        rules: MARKER_RULE_IDS,
-        byApp: Object.fromEntries(this.markerApps),
-        distinctLines,
-        watches: { ...this.watchStats },
-        episodes: [...this.episodes],
-      },
+      markers: { b5: this.tracks.b5.summary(), b6: this.tracks.b6.summary() },
       fill: { ...this.fill, distinctFields: this.fields.size, byApp: Object.fromEntries(this.fillApps), focusesList: [...this.focusesList], candidateCap: MAX_CANDIDATES },
       seen: { units: this.seen.size },
+      census: this.census.summary(),
     };
   }
 
-  private finish(windowId: string, ep: OpenEpisode, end: WatchEpisode["end"], at: number): void {
-    this.open.delete(windowId);
-    this.episodes.push({
-      bundleId: ep.bundleId,
-      rule: ep.rule,
-      end,
-      clearedAfterMs: ep.clearedAt === null ? null : ep.clearedAt - ep.at,
-      returnedAfterMs: end === "returned" ? at - ep.at : null,
-      returnsWhileRunning: ep.returnsWhileRunning,
-    });
-  }
-
+  /** Asks the reader to re-read every window either rule set watches. */
   private syncReader(): void {
     const send = this.opts.reader;
     if (send === undefined) return;
-    void send({ kind: "watchWindows", windows: [...this.watches.entries()].map(([windowId, w]) => ({ pid: w.pid, windowId })) }).catch(() => undefined);
-  }
-
-  private markerApp(bundle: string): MarkerAppCounts {
-    let a = this.markerApps.get(bundle);
-    if (a === undefined) {
-      a = { checks: 0, withMarkers: 0, checksByRule: zeroRules(), linesByRule: zeroRules(), windowsWithMarkers: 0, watches: 0 };
-      this.markerApps.set(bundle, a);
-    }
-    return a;
+    const windows = new Map<string, number>();
+    for (const t of Object.values(this.tracks)) for (const [id, pid] of t.watches) windows.set(id, pid);
+    void send({ kind: "watchWindows", windows: [...windows].map(([windowId, pid]) => ({ pid, windowId })) }).catch(() => undefined);
   }
 
   private fillApp(bundle: string): FillAppCounts {
