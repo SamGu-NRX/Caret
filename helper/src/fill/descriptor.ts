@@ -45,30 +45,57 @@ export function isLabelLike(t: string): boolean {
   return t.length <= 32 && (t.endsWith(":") || (!/\d/.test(t) && t.split(" ").length <= 4));
 }
 
-/** Nearest short static text to the left on the same row, else directly above. */
-export function nearestText(w: WindowState, target: Node, accept: (t: string) => boolean = () => true): string | null {
+/** A static text that could name a field: its frame and cleaned text, at most MAX_LABEL_CHARS long. */
+interface LabelText {
+  key: string;
+  frame: Frame;
+  t: string;
+  labelLike: boolean;
+}
+
+/**
+ * Each window's label texts, built once per window state. The model replaces a window's state on every
+ * snapshot, so a state never changes under its entry; the candidate generator asks for the nearest
+ * label of many spans in one window, and scanning every node for each was most of its time.
+ */
+const labelIndex = new WeakMap<WindowState, LabelText[]>();
+
+function labelTexts(w: WindowState): LabelText[] {
+  let out = labelIndex.get(w);
+  if (out !== undefined) return out;
+  out = [];
+  for (const n of w.nodes.values()) {
+    if (n.role !== "AXStaticText" || n.frame === undefined) continue;
+    const t = clean(n.label ?? n.value);
+    if (t === null || t.length > MAX_LABEL_CHARS) continue;
+    out.push({ key: n.key, frame: n.frame, t, labelLike: isLabelLike(t) });
+  }
+  labelIndex.set(w, out);
+  return out;
+}
+
+/** Nearest short static text to the left on the same row, else directly above. `labelOnly` keeps texts that pass isLabelLike. */
+export function nearestText(w: WindowState, target: Node, labelOnly = false): string | null {
   const f = target.frame;
   if (f === undefined) return null;
   const [fx, fy, , fh] = f;
   const cy = fy + fh / 2;
   let left: { d: number; t: string } | null = null;
   let above: { d: number; t: string } | null = null;
-  for (const n of w.nodes.values()) {
-    if (n.role !== "AXStaticText" || n.frame === undefined || n.key === target.key) continue;
-    const t = clean(n.label ?? n.value);
-    if (t === null || t.length > MAX_LABEL_CHARS || !accept(t)) continue;
-    const [x, y, wd, h] = n.frame;
+  for (const e of labelTexts(w)) {
+    if (e.key === target.key || (labelOnly && !e.labelLike)) continue;
+    const [x, y, wd, h] = e.frame;
     const right = x + wd;
     const textCy = y + h / 2;
     if (Math.abs(textCy - cy) <= Math.max(fh, h) / 2 && right <= fx + 4) {
       const d = fx - right;
-      if (d <= MAX_LEFT_GAP && (left === null || d < left.d)) left = { d, t };
+      if (d <= MAX_LEFT_GAP && (left === null || d < left.d)) left = { d, t: e.t };
       continue;
     }
     const bottom = y + h;
-    if (bottom <= fy + 4 && overlapsHorizontally(n.frame, f)) {
+    if (bottom <= fy + 4 && overlapsHorizontally(e.frame, f)) {
       const d = fy - bottom;
-      if (d <= MAX_ABOVE_GAP && (above === null || d < above.d)) above = { d, t };
+      if (d <= MAX_ABOVE_GAP && (above === null || d < above.d)) above = { d, t: e.t };
     }
   }
   return stripColon((left ?? above)?.t ?? null);
