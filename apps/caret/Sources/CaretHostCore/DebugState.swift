@@ -250,6 +250,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var ui: OfferUI?
         /// The ghost text drawn at the caret (model or injected output, never field text).
         public var ghost: String?
+        /// The ghost text's own panel, when Caret drew it (KeyType's renderer had no placement).
+        public var ghostPanel: Panel?
         public var panel: Panel?
         public var decor: Panel?
         public var list: Panel?

@@ -105,9 +105,10 @@ final class HostedPanel {
     /// Replaces the content and resizes about the anchor. No animation: content changes come from
     /// keys (an arrow, a reveal) or from results, which should land at once.
     func setContent<V: View>(_ view: V) {
+        // Measured on a fresh hosting view: the panel's own host has no sizing constraints (so
+        // AppKit never resizes the panel behind our back), and so reports no fitting size.
+        let size = measure(view)
         host.rootView = AnyView(view)
-        host.layoutSubtreeIfNeeded()
-        let size = host.fittingSize
         setFrame(size: size)
     }
 

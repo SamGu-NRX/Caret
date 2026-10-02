@@ -51,6 +51,7 @@ final class SurfaceCoordinator {
     private let ghost: GhostOverlay
     private let reader = FocusedFieldReader()
     private let decor = HostedPanel(radius: 0, material: false)
+    private let ownGhost = HostedPanel(radius: 0, material: false)
     private let list = HostedPanel(radius: 8)
     private var panel = HostedPanel(radius: 10)
     var executor: InsertionExecutor?
@@ -104,24 +105,26 @@ final class SurfaceCoordinator {
     private func present(pid: Int32, make: (FieldState) -> Offer) -> String {
         guard policy.allowsLive(pid: pid) else { return #"{"error":"pid not allowed"}"# }
         guard let (element, field) = FieldReader.readFocused(pid: pid) else { return #"{"error":"no focused text field in pid"}"# }
-        guard let snapshot = reader.snapshot(of: element), let caret = snapshot.caretRect ?? AXRead.frame(of: element) else {
+        guard let snapshot = reader.snapshot(of: element) else { return #"{"error":"no snapshot of the field"}"# }
+        let style = FieldStyleProbe.style(of: element)
+        let font = style.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        guard let caret = snapshot.caretRect ?? Self.derivedCaret(field: field, frame: AXRead.frame(of: element), font: font) else {
             return #"{"error":"no caret"}"#
         }
         clear(exit: 0)
         let offer = make(field)
         guard let offerID = arbiter.publish(offer) else { return #"{"error":"arbiter refused (an insertion is running)"}"# }
         let stamped = arbiter.snapshot().current.flatMap { $0.id == offerID ? $0 : nil } ?? offer
-        let style = FieldStyleProbe.style(of: element)
         var ghostFont: NSFont?
+        var usesKeyTypeGhost = false
         if case .ghost = offer.kind {
-            guard ghost.show(offer.text, at: snapshot, style: style) != nil else {
-                arbiter.invalidate(offerID: offerID)
-                return #"{"error":"no ghost placement"}"#
-            }
+            usesKeyTypeGhost = ghost.show(offer.text, at: snapshot, style: style) != nil
+            if !usesKeyTypeGhost { drawOwnGhost(offer.text, caret: caret, font: font, color: style.textColor) }
             executor?.remember(offerID: offerID, context: snapshot.context)
-            ghostFont = style.font ?? NSFont.systemFont(ofSize: max(11, caret.height * 0.78))
+            ghostFont = font
+            status.increment(usesKeyTypeGhost ? "surface.ghost.keytype" : "surface.ghost.own")
         }
-        shown = Shown(offerID: offerID, offer: stamped, caret: caret, snapshot: snapshot, style: style, ghostFont: ghostFont)
+        shown = Shown(offerID: offerID, offer: stamped, caret: caret, snapshot: usesKeyTypeGhost ? snapshot : nil, style: style, ghostFont: ghostFont)
         draw(ui: arbiter.snapshot().ui, entering: true)
         status.increment("surface.injected.\(offer.kind.name)")
         return #"{"ok":true,"offerId":\#(offerID)}"#
@@ -160,8 +163,12 @@ final class SurfaceCoordinator {
     private func drawAlternatives(_ shown: Shown, ui: OfferUI, entering: Bool) {
         let candidates = shown.offer.candidates
         let text = candidates[min(ui.candidate, candidates.count - 1)]
-        if let snapshot = shown.snapshot, let style = shown.style, !entering {
-            ghost.show(text, at: snapshot, style: style)
+        if !entering {
+            if let snapshot = shown.snapshot, let style = shown.style {
+                ghost.show(text, at: snapshot, style: style)
+            } else if let font = shown.ghostFont {
+                drawOwnGhost(text, caret: shown.caret, font: font, color: shown.style?.textColor)
+            }
         }
         guard candidates.count > 1 else {
             decor.exit(duration: 0)
@@ -224,6 +231,32 @@ final class SurfaceCoordinator {
         if entering || !panel.isVisible { panel.enter() }
     }
 
+    /// Ghost text drawn by Caret when KeyType's renderer finds no placement (it needs the caret's
+    /// bounds, which an empty AppKit field does not report): the field's font at Ghost opacity,
+    /// starting at the caret.
+    private func drawOwnGhost(_ text: String, caret: CGRect, font: NSFont, color: NSColor?) {
+        let view = Text(text)
+            .font(Font(font))
+            .foregroundStyle(Color(nsColor: color ?? .labelColor).opacity(0.45))
+            .fixedSize()
+            .frame(height: caret.height)
+        ownGhost.pin(HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: caret.maxX, y: Screen.cocoa(caret).maxY)))
+        ownGhost.setContent(view)
+        ownGhost.text = text
+        ownGhost.panel.alphaValue = 1
+        ownGhost.panel.orderFrontRegardless()
+    }
+
+    /// Where the caret is when Accessibility gives no bounds for it: after the text before it, at
+    /// the field's text inset (about 4 pt for an AppKit field), centered on one line.
+    static func derivedCaret(field: FieldState, frame: CGRect?, font: NSFont) -> CGRect? {
+        guard let frame else { return nil }
+        let before = UTF16Text.slice(field.value, start: 0, end: field.selection.start) ?? ""
+        let width = (before as NSString).size(withAttributes: [.font: font]).width
+        let line = ceil(font.ascender - font.descender + font.leading)
+        return CGRect(x: frame.minX + 4 + width, y: frame.minY + (frame.height - line) / 2, width: 1, height: line)
+    }
+
     static func hints(_ actions: [PopupSpec.Action]) -> [Hint] {
         actions.map { Hint(key: Hint.key($0.key), label: $0.key == .tab ? nil : $0.label) }
     }
@@ -271,6 +304,7 @@ final class SurfaceCoordinator {
         )
         if claim.offer.source == .helper, let accept { client?.send(accept) }
         ghost.hide()
+        ownGhost.exit(duration: 0)
         decor.exit(duration: 0)
         list.exit(duration: 0)
         self.shown = nil
@@ -388,7 +422,10 @@ final class SurfaceCoordinator {
     // MARK: -
 
     private func clear(exit duration: TimeInterval) {
-        if shown != nil, case .ghost? = shown?.offer.kind { ghost.hide() }
+        if shown != nil, case .ghost? = shown?.offer.kind {
+            ghost.hide()
+            ownGhost.exit(duration: 0)
+        }
         decor.exit(duration: 0)
         list.exit(duration: 0)
         if shown != nil, work == nil, resultTimer == nil { panel.exit(duration: duration) }
@@ -414,7 +451,8 @@ final class SurfaceCoordinator {
             info.candidates = shown.offer.candidates.count > 1 || shown.offer.kind == .ghost ? shown.offer.candidates : nil
             info.ui = snapshot.current?.id == shown.offerID ? snapshot.ui : nil
         }
-        info.ghost = ghost.shownText
+        info.ghost = ghost.shownText ?? (ownGhost.isVisible ? ownGhost.text : nil)
+        info.ghostPanel = ownGhost.debugInfo()
         info.panel = panel.debugInfo()
         info.decor = decor.debugInfo()
         info.list = list.debugInfo()
