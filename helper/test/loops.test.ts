@@ -29,7 +29,7 @@ describe("loop recognizer over the helper's transfers", () => {
   /** Feeds every transfer the helper has detected since the last call to the recognizer. */
   const feed = (): void => {
     for (const t of helper.recentTransfers.slice(seen)) {
-      const p = describeTransfer(helper.model, t);
+      const p = describeTransfer(helper.model, t, helper.text.findAll(t.value, t.kind, { excludeWindowId: t.dst.windowId, seenBy: t.at }));
       if (p !== null) events.push(...loops.onTransfer(p));
     }
     seen = helper.recentTransfers.length;
@@ -112,6 +112,28 @@ describe("loop recognizer over the helper's transfers", () => {
     fill(dst, 1, 0, PEOPLE[6]!);
     feed();
     expect(events).toEqual([]);
+  });
+
+  it("does not pair a name with an email from the same list, though they share a template", () => {
+    const src = roster(PEOPLE.flatMap((n) => [n, emailOf(n)]));
+    const dst = grid();
+    desk.showList(src);
+    desk.advance(1000);
+    desk.showGrid(dst);
+    fill(dst, 0, 0, PEOPLE[0]!);
+    fill(dst, 1, 0, emailOf(PEOPLE[1]!));
+    expect(events).toEqual([]);
+  });
+
+  it("keeps a loop whose values are also on screen in a second window", () => {
+    desk.showList(roster());
+    desk.showList(roster(PEOPLE.slice(0, 4), "5150-8"));
+    desk.advance(1000);
+    const dst = grid();
+    desk.showGrid(dst);
+    fill(dst, 0, 0, PEOPLE[0]!);
+    fill(dst, 1, 0, PEOPLE[1]!);
+    expect(events.map((e) => e.type)).toEqual(["predict"]);
   });
 
   it("offers nothing when the next destination is already filled", () => {

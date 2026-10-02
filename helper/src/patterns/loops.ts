@@ -9,7 +9,7 @@
 import { normalizeValue } from "../normalize.ts";
 import type { ScreenModel } from "../model.ts";
 import type { ValueKind } from "../protocol.ts";
-import { locate, type Part, type PatternTransfer } from "./shape.ts";
+import { locate, shapeOf, type Part, type PatternTransfer, type SrcOption } from "./shape.ts";
 
 /** Largest number of transfers in one round. Three covers a name, an email and a phone per row. */
 export const MAX_PERIOD = 3;
@@ -25,6 +25,8 @@ export const MAX_FINISH_ROUNDS = 50;
 
 export interface LoopColumn {
   shape: string;
+  /** Every value in this column looked like this (valueClass); a source item that does not is not predicted. */
+  valueClass: string;
   part: Part;
   kind: ValueKind | null;
   srcTemplate: string;
@@ -111,6 +113,21 @@ export class LoopRecognizer {
     return out;
   }
 
+  /**
+   * A transfer the recognizers cannot describe, such as a copy whose source line has since scrolled
+   * away. It still breaks "in a row", unless it is a cell the active loop expected.
+   */
+  onOpaque(at: number, dstWindowId: string, dstKey: string, value: string, kind: ValueKind | null): LoopEvent[] {
+    const loop = this.loop;
+    if (loop !== null && dstWindowId === loop.dstWindowId && loop.expected.get(dstKey) === normalizeValue(value, kind)) {
+      loop.lastAt = at;
+      const ev = this.absorb(loop, dstKey);
+      return ev === null ? [] : [ev];
+    }
+    this.history = [];
+    return loop === null ? [] : [this.end("diverged")];
+  }
+
   /** Caret wrote the predicted round. */
   taken(loopId: string): LoopEvent | null {
     const loop = this.loop;
@@ -173,32 +190,17 @@ export class LoopRecognizer {
       if (h.length < 2 * k) break;
       const a = h.slice(h.length - 2 * k, h.length - k);
       const b = h.slice(h.length - k);
+      const fit = this.fit(a, b);
+      if (fit === null) continue;
+      const { columns, srcWindowId, srcPos } = fit;
       const first = a[0] as PatternTransfer;
-      const columns: LoopColumn[] = [];
-      let ok = true;
-      for (let i = 0; i < k && ok; i++) {
-        const x = a[i] as PatternTransfer;
-        const y = b[i] as PatternTransfer;
-        const stride = y.src.pos - x.src.pos;
-        ok =
-          x.shape === y.shape &&
-          x.src.windowId === first.src.windowId &&
-          y.src.windowId === first.src.windowId &&
-          x.dst.windowId === first.dst.windowId &&
-          y.dst.windowId === first.dst.windowId &&
-          y.dst.pos - x.dst.pos === 1 &&
-          stride >= 1 &&
-          stride <= MAX_SRC_STRIDE;
-        columns.push({ shape: x.shape, part: x.part, kind: x.kind, srcTemplate: x.src.template, dstTemplate: x.dst.template, srcStride: stride });
-      }
-      if (!ok) continue;
       const loop: Loop = {
         id: `loop-${++this.seq}`,
-        srcWindowId: first.src.windowId,
+        srcWindowId,
         dstWindowId: first.dst.windowId,
         columns,
         rounds: 2,
-        srcPos: b.map((t) => t.src.pos),
+        srcPos,
         dstPos: b.map((t) => t.dst.pos),
         prediction: null,
         expected: new Map(),
@@ -219,6 +221,37 @@ export class LoopRecognizer {
   }
 
   /**
+   * Whether round `b` repeats round `a` one row down, reading every transfer from one source window.
+   * Windows are tried in the order the first transfer offers them, credited source first.
+   */
+  private fit(a: PatternTransfer[], b: PatternTransfer[]): { columns: LoopColumn[]; srcWindowId: string; srcPos: number[] } | null {
+    const all = [...a, ...b];
+    const dstWindowId = all[0]!.dst.windowId;
+    if (all.some((t) => t.dst.windowId !== dstWindowId)) return null;
+    for (const first of all[0]!.srcOptions) {
+      const w = first.side.windowId;
+      const pick = (t: PatternTransfer): SrcOption | undefined => t.srcOptions.find((o) => o.side.windowId === w);
+      const columns: LoopColumn[] = [];
+      const srcPos: number[] = [];
+      for (let i = 0; i < a.length; i++) {
+        const x = a[i]!;
+        const y = b[i]!;
+        const sx = pick(x);
+        const sy = pick(y);
+        if (sx === undefined || sy === undefined) break;
+        const shape = shapeOf(sx.side, sx.part, x.dst);
+        const stride = sy.side.pos - sx.side.pos;
+        const cls = valueClass(x.value);
+        if (shape !== shapeOf(sy.side, sy.part, y.dst) || cls !== valueClass(y.value) || y.dst.pos - x.dst.pos !== 1 || stride < 1 || stride > MAX_SRC_STRIDE) break;
+        columns.push({ shape, valueClass: cls, part: sx.part, kind: x.kind, srcTemplate: sx.side.template, dstTemplate: x.dst.template, srcStride: stride });
+        srcPos.push(sy.side.pos);
+      }
+      if (columns.length === a.length) return { columns, srcWindowId: w, srcPos };
+    }
+    return null;
+  }
+
+  /**
    * The round after the one at `srcPos`/`dstPos`, read from the screen now. Null when any column's
    * next destination is missing, not editable or already filled, or its next source has no such part.
    */
@@ -229,7 +262,7 @@ export class LoopRecognizer {
       const dst = locate(this.model, loop.dstWindowId, col.dstTemplate, dstPos[i]! + 1, "whole");
       if (dst === null || dst.node.editable !== true || (dst.node.value ?? "") !== "") return null;
       const src = locate(this.model, loop.srcWindowId, col.srcTemplate, srcPos[i]! + col.srcStride, col.part);
-      if (src === null || src.text === null) return null;
+      if (src === null || src.text === null || valueClass(src.text) !== col.valueClass) return null;
       cells.push({
         column: i,
         dstWindowId: loop.dstWindowId,
@@ -244,4 +277,17 @@ export class LoopRecognizer {
     }
     return cells;
   }
+}
+
+/**
+ * A coarse kind for any value, typed or not: a list of names followed by a list of emails shares one
+ * element template, and only this tells the two apart.
+ */
+export function valueClass(v: string): "email" | "url" | "number" | "text" {
+  const t = v.trim();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return "email";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return "url";
+  const compact = t.replace(/\s/g, "");
+  const digits = compact.replace(/\D/g, "").length;
+  return digits > 0 && digits * 2 >= compact.length ? "number" : "text";
 }

@@ -10,6 +10,7 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { normalizeValue } from "../normalize.ts";
 import type { Node, ValueKind } from "../protocol.ts";
 import type { Transfer } from "../transfers.ts";
+import type { Observation } from "../rolling-text.ts";
 
 /** Roles whose label is the element's content rather than its name. */
 const CONTENT_ROLES = new Set(["AXStaticText"]);
@@ -65,16 +66,28 @@ export interface Side {
   pos: number;
 }
 
+export interface SrcOption {
+  side: Side & { key: string };
+  part: Part;
+}
+
 /** A transfer as the recognizers see it. `value` stays in memory; persisted forms hash it. */
 export interface PatternTransfer {
   at: number;
   value: string;
   kind: ValueKind | null;
   part: Part;
+  /** The source the transfer log credited: the most recently seen window showing the value. */
   src: Side & { key: string };
   dst: Side & { key: string };
   /** Everything but positions and windows: two rounds of one loop, or one step of a routine on two days, share it. */
   shape: string;
+  /**
+   * Every live window showing the whole value, one element each, the credited source first. The same
+   * name can be on screen in a roster and a directory; the loop recognizer picks the window that
+   * explains every round.
+   */
+  srcOptions: SrcOption[];
 }
 
 /**
@@ -82,7 +95,7 @@ export interface PatternTransfer {
  * its source or destination is no longer in the model, or it took a fragment of a longer text,
  * which a later round could not be predicted from.
  */
-export function describeTransfer(model: ScreenModel, t: Transfer): PatternTransfer | null {
+export function describeTransfer(model: ScreenModel, t: Transfer, alternatives: readonly Observation[] = []): PatternTransfer | null {
   const sw = model.windows.get(t.src.windowId);
   const dw = model.windows.get(t.dst.windowId);
   if (sw === undefined || dw === undefined) return null;
@@ -103,15 +116,15 @@ export function describeTransfer(model: ScreenModel, t: Transfer): PatternTransf
   });
   const src = side(sw, sSlot, t.src.nodeKey);
   const dst = side(dw, dSlot, t.dst.key);
-  return {
-    at: t.at,
-    value: t.value,
-    kind: t.kind,
-    part,
-    src,
-    dst,
-    shape: shapeOf(src, part, dst),
-  };
+  const srcOptions: SrcOption[] = [{ side: src, part }];
+  for (const o of alternatives) {
+    if (srcOptions.some((x) => x.side.windowId === o.windowId)) continue;
+    const w = model.windows.get(o.windowId);
+    const slot = w === undefined ? undefined : windowIndex(w).slots.get(o.nodeKey);
+    if (w === undefined || slot === undefined) continue;
+    srcOptions.push({ side: side(w, slot, o.nodeKey), part: o.kind ?? "whole" });
+  }
+  return { at: t.at, value: t.value, kind: t.kind, part, src, dst, shape: shapeOf(src, part, dst), srcOptions };
 }
 
 export function shapeOf(src: Omit<Side, "pos" | "windowId" | "appName">, part: Part, dst: Omit<Side, "pos" | "windowId" | "appName">): string {

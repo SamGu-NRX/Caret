@@ -98,6 +98,28 @@ export class RollingText {
   }
 
   /**
+   * Every observation outside `excludeWindowId` whose whole text equals `value`, exactly or after
+   * normalization. Unlike find(), never a text that merely contains it. Used when the same value is
+   * on screen in several windows and the caller must choose the source that fits a pattern.
+   */
+  findAll(value: string, kind: ValueKind | null, opts: FindOptions): Observation[] {
+    const span = opts.windowMs ?? ROLLING_WINDOW_MS;
+    const out = new Map<string, Observation>();
+    const add = (ids: Set<string> | undefined): void => {
+      for (const id of ids ?? []) {
+        const o = this.obs.get(id);
+        if (o !== undefined && o.windowId !== opts.excludeWindowId && o.firstSeen <= opts.seenBy && o.lastSeen >= opts.seenBy - span) out.set(id, o);
+      }
+    };
+    add(this.byExact.get(value));
+    for (const k of kind === null ? [null] : [kind, null]) {
+      const key = normalizeValue(value, k);
+      if (key.length >= MIN_NORM) add(this.byNorm.get(key));
+    }
+    return [...out.values()];
+  }
+
+  /**
    * Finds a source for `value` in another window: an exact equal text or typed value first,
    * then the same after normalization, then an exact or normalized occurrence inside a longer text.
    * Editable sources count, since a value typed into one form can be the source for another.

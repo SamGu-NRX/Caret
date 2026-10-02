@@ -76,6 +76,24 @@ describe("helper socket", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("answers a memory request to the asking consumer only, and rejects a bad edit with its reason", async () => {
+    const asker = await connect(path);
+    const other = await connect(path);
+    const hello = { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "t" };
+    send(asker.s, hello);
+    send(other.s, hello);
+    send(asker.s, { type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "q1", op: "list", kind: "permission" });
+    const reply = (await asker.next()) as { type: string; requestId: string; error: string | null; entries: { id: string; says: string }[] };
+    expect(reply).toMatchObject({ type: "memoryReply", requestId: "q1", error: null });
+    expect(reply.entries.map((e) => e.says)).toContain("Write where you are: ask first");
+    send(asker.s, { type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "q2", op: "edit", id: "permission-sensitive", fields: { rule: "act" } });
+    expect(await asker.next()).toMatchObject({ requestId: "q2", error: "sensitive can be handoff, not act", entries: [] });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(other.lines).toEqual([]);
+    asker.s.destroy();
+    other.s.destroy();
+  });
+
   it("turns a reader focus on an empty field into a proposal that consumers receive", async () => {
     const consumer = await connect(path);
     send(consumer.s, { type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "test" });

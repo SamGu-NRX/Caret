@@ -99,6 +99,7 @@ export class Helper {
     this.memory = opts.memory ?? new MemoryStore(opts.store.dir);
     this.patterns = new PatternEngine({
       model: this.model,
+      text: this.text,
       memory: this.memory,
       hash: (t) => opts.store.hash(t),
       publish: (m) => {

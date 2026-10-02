@@ -16,6 +16,7 @@ import {
   type ValueKind,
 } from "../protocol.ts";
 import type { Transfer } from "../transfers.ts";
+import type { RollingText } from "../rolling-text.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import { decide, type Decision } from "./gate.ts";
@@ -34,6 +35,8 @@ const OFFER_KEEP_MS = 10 * 60 * 1000;
 
 export interface EngineDeps {
   model: ScreenModel;
+  /** For every window that shows a transferred value, not only the one the transfer log credited. */
+  text: RollingText;
   memory: MemoryStore;
   hash: Hash;
   publish: (m: HelperMessage) => void;
@@ -123,8 +126,14 @@ export class PatternEngine {
   onTransfers(ts: readonly Transfer[]): void {
     for (const t of ts) {
       this.clock = Math.max(this.clock, t.at);
-      const p = this.timings.time("shape", () => describeTransfer(this.deps.model, t));
-      if (p === null) continue;
+      const p = this.timings.time("shape", () =>
+        describeTransfer(this.deps.model, t, this.deps.text.findAll(t.value, t.kind, { excludeWindowId: t.dst.windowId, seenBy: t.at })),
+      );
+      if (p === null) {
+        const events = this.timings.time("loops", () => this.loops.onOpaque(t.at, t.dst.windowId, t.dst.key, t.value, t.kind));
+        for (const ev of events) this.onLoop(ev);
+        continue;
+      }
       const events = this.timings.time("loops", () => this.loops.onTransfer(p));
       this.timings.time("routines", () => this.routines.onTransfer(p));
       for (const ev of events) this.onLoop(ev);
