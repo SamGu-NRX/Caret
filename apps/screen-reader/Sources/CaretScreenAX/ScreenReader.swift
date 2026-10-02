@@ -112,7 +112,7 @@ public final class ScreenReader {
             let unread = byPid.keys.filter { workers[$0] == nil }.sorted()
             answer(.ok, unread.isEmpty ? nil : "not read, so not watched: \(unread.map(String.init).joined(separator: ","))")
             return
-        case let .walk(p, _), let .write(p, _, _, _, _, _, _), let .press(p, _, _, _, _):
+        case let .walk(p, _), let .write(p, _, _, _, _, _, _), let .press(p, _, _, _, _), let .raise(p, _):
             pid = pid_t(p)
         }
         guard let w = workers[pid] else {

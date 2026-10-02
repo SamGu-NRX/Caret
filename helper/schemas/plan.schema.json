@@ -279,6 +279,35 @@
                     "properties": {
                       "kind": {
                         "type": "string",
+                        "const": "windowFocused"
+                      },
+                      "window": {
+                        "type": "object",
+                        "properties": {
+                          "bundleId": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "titleStartsWith": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "window"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
                         "const": "calendarEvent"
                       },
                       "calendar": {
@@ -624,6 +653,35 @@
             "kind",
             "window",
             "title"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "windowFocused"
+            },
+            "window": {
+              "type": "object",
+              "properties": {
+                "bundleId": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "titleStartsWith": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "window"
           ],
           "additionalProperties": false
         },

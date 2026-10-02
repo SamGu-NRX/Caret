@@ -67,6 +67,7 @@ export class FakeApp implements ReaderLink {
       this.failWalks--;
       return { outcome: "axError", detail: "the walk was cut short" };
     }
+    if (verb.kind === "raise") return { outcome: "notAllowed", detail: "the fake app does not raise its window" };
     this.show();
     if (verb.kind === "walk") return { outcome: "ok", detail: null };
     const n = this.node(verb.key);

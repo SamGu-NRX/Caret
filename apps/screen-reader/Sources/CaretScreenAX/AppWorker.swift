@@ -1,6 +1,7 @@
 // One worker per app process. All of its Accessibility reads run on its own serial queue, so a
 // slow or hung app delays only its own walks. The worker owns the app's window registry, the map
 // from live elements to keys from its latest walks, and the event-driven walk schedule.
+import AppKit
 import ApplicationServices
 import CaretScreenCore
 import Foundation
@@ -485,8 +486,10 @@ public final class AppWorker: @unchecked Sendable {
     /// the window, find the element by key, check it is the same element the key named before, recheck
     /// role, label and value against what the helper expects, act, wait for the app to settle, and
     /// walk again, so the helper has the new state before the answer arrives. Every recheck fails
-    /// closed: an attribute that cannot be read refuses the act. `mayAct` is false unless the reader
-    /// was started with --act-pids for this app; `expires` is when the helper stops waiting.
+    /// closed: an attribute that cannot be read refuses the act. Raise brings a window to the front and
+    /// activates the app, which moves the user's focus, so it is gated like write and press. `mayAct` is
+    /// false unless the reader was started with --act-pids for this app; `expires` is when the helper
+    /// stops waiting.
     func perform(_ verb: ReaderVerb, mayAct: Bool, expires: Int64, reply: @escaping @Sendable (VerbOutcome, String?) -> Void) {
         queue.async {
             let (outcome, detail) = self.performNow(verb, mayAct: mayAct, expires: expires)
@@ -550,6 +553,23 @@ public final class AppWorker: @unchecked Sendable {
             if nowMs() > expires { return (.axError, "the command expired before it could act") }
             let err = AXUIElementPerformAction(el, kAXPressAction as CFString)
             guard err == .success else { return (.axError, "AXUIElementPerformAction \(err.rawValue)") }
+            Thread.sleep(forTimeInterval: Self.settle)
+            requestWalk(w)
+            return (.ok, nil)
+        case let .raise(_, windowId):
+            guard mayAct else { return (.notAllowed, "the reader was not started with --act-pids \(pid)") }
+            guard let w = window(id: windowId) else { return (.noWindow, windowId) }
+            if nowMs() > expires { return (.axError, "the command expired before it could act") }
+            let err = AXUIElementPerformAction(w.el, kAXRaiseAction as CFString)
+            guard err == .success else { return (.axError, "AXUIElementPerformAction \(err.rawValue)") }
+            // AXRaise orders the window front within its app; activation brings the app itself forward.
+            // NSRunningApplication is documented as thread safe and is not main-actor isolated, so this
+            // runs on the worker's queue. activate returns false when the request could not be sent
+            // (the app quit, or its policy forbids activation). True does not promise the app came
+            // forward: macOS 14 may decline a request from a process that is not active itself, and
+            // the snapshot that follows is what shows whether it did.
+            guard let running = NSRunningApplication(processIdentifier: pid) else { return (.noWindow, "process \(pid) has exited") }
+            guard running.activate(options: []) else { return (.axError, "the system refused to activate process \(pid)") }
             Thread.sleep(forTimeInterval: Self.settle)
             requestWalk(w)
             return (.ok, nil)

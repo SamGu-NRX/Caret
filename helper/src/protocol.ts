@@ -4,6 +4,7 @@
 // schemas/screen-protocol.schema.json, and the Swift side decodes the golden fixture
 // in fixtures/golden/ in its own tests.
 import * as z from "zod";
+import { ActionBar, CheckedValue, PopupSpec } from "./popup.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -156,6 +157,8 @@ export type Pasteboard = z.infer<typeof Pasteboard>;
  * `watchWindows` replaces the set of windows under a pending-state watch: the reader re-reads each
  * when the app posts a notification about it and every 10 s, as `watch` walks that send a snapshot
  * only when something changed. An empty list ends every watch. It only reads, so it needs no `--act-pids`.
+ * `raise` brings one window to the front and activates its app (AXRaise, then activation), re-walks it
+ * and sends the snapshot; it writes nothing, but it moves focus, so it too needs `--act-pids`.
  */
 export const ReaderCommand = z.object({
   type: z.literal("readerCommand"),
@@ -191,6 +194,7 @@ export const ReaderCommand = z.object({
     }),
     z.object({ kind: z.literal("watchInput"), pids: z.array(z.number().int()) }),
     z.object({ kind: z.literal("watchWindows"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
+    z.object({ kind: z.literal("raise"), pid: z.number().int(), windowId: z.string() }),
   ]),
 });
 export type ReaderCommand = z.infer<typeof ReaderCommand>;
@@ -339,7 +343,95 @@ export const ActivityRequest = z.object({
 });
 export type ActivityRequest = z.infer<typeof ActivityRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest]);
+// MARK: - offers to the host (plan section 2): alternatives, action lines and pop-ups
+
+/**
+ * The field an offer belongs to. The host shows an offer only while this field has focus, and matches
+ * it by frame, since it cannot recompute the reader's element keys.
+ */
+export const OfferField = z.object({
+  pid: z.number().int(),
+  windowId: z.string(),
+  /** The reader's element key. */
+  key: z.string(),
+  frame: Frame.nullable(),
+});
+export type OfferField = z.infer<typeof OfferField>;
+
+/**
+ * Values for the focused field, best first: the top one shows faintly at the caret, the arrows reveal
+ * the rest, Tab inserts the one shown. The host inserts the text itself; the helper sees it arrive as a
+ * transfer, so there is no offerAccept for alternatives. `quoted`: the top value is quoted from a
+ * source on screen, so it carries the uneven underline while collapsed.
+ */
+export const OfferAlternatives = z.object({
+  type: z.literal("alternatives"),
+  v: z.literal(PROTOCOL_VERSION),
+  offerKey: z.string(),
+  at: ms,
+  field: OfferField,
+  candidates: z.array(CheckedValue).min(1).max(3),
+  quoted: z.boolean(),
+});
+export type OfferAlternatives = z.infer<typeof OfferAlternatives>;
+
+/**
+ * One action in another app, as a line: "Calendar  Coffee with Dana, Thu 3:00 to 3:30  Tab". `endState`
+ * is the work's result in one sentence. `actions` follow the rules of a pop-up's actions block, with a
+ * Tab action. `variants` is what the down arrow opens.
+ */
+export const OfferAction = z.object({
+  type: z.literal("action"),
+  v: z.literal(PROTOCOL_VERSION),
+  offerKey: z.string(),
+  at: ms,
+  field: OfferField,
+  /** The app the action happens in, as the line names it. */
+  app: z.string().min(1),
+  endState: CheckedValue,
+  actions: ActionBar,
+  variants: PopupSpec.optional(),
+});
+export type OfferAction = z.infer<typeof OfferAction>;
+
+/** Help bigger than a sentence: a validated PopupSpec (popup.ts). */
+export const OfferPopup = z.object({
+  type: z.literal("popup"),
+  v: z.literal(PROTOCOL_VERSION),
+  offerKey: z.string(),
+  at: ms,
+  field: OfferField,
+  spec: PopupSpec,
+});
+export type OfferPopup = z.infer<typeof OfferPopup>;
+
+/**
+ * The user took an action of an action line or pop-up. `overrides` holds the rows the user picked
+ * first: the highlighted row of a choices block by the block's id (`choices` when it has none), or
+ * `variants` for an action line's picker, zero-based. The work runs as a task whose id is `offerId`,
+ * so its taskProgress and activity messages carry that id, and the last taskProgress (done, stopped
+ * or handoff) ends the host's working line.
+ */
+export const OfferAccept = z.object({
+  type: z.literal("offerAccept"),
+  v: z.literal(PROTOCOL_VERSION),
+  offerId: z.string(),
+  actionId: z.string(),
+  overrides: z.record(z.string(), z.number().int().nonnegative()),
+  at: ms,
+});
+export type OfferAccept = z.infer<typeof OfferAccept>;
+
+/** Esc on running work: the same as taskControl stop for the task the offer started. */
+export const OfferStop = z.object({
+  type: z.literal("offerStop"),
+  v: z.literal(PROTOCOL_VERSION),
+  offerId: z.string(),
+  at: ms,
+});
+export type OfferStop = z.infer<typeof OfferStop>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -490,6 +582,7 @@ export type PatternOffer = z.infer<typeof PatternOffer>;
  * The offer is no longer valid; a consumer removes it. `taken`: its values were entered, by Caret or by
  * the user typing them. `diverged`: the user entered something else. `idle`: the loop went quiet.
  * `stale`: a window it reads or writes closed, the reader restarted, or its memory entry was paused or forgotten.
+ * `id` is a patternOffer's id, or the offerKey of an alternatives, action or popup message.
  */
 export const OfferWithdrawn = z.object({
   type: z.literal("offerWithdrawn"),
@@ -652,7 +745,11 @@ export const ActivityReply = z.object({
 });
 export type ActivityReply = z.infer<typeof ActivityReply>;
 
-export const HelperMessage = z.discriminatedUnion("type", [FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply]);
+export const HelperMessage = z.discriminatedUnion("type", [
+  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup,
+]);
+/** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
+export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
 /** What the helper sends the reader. */
 export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand]);
 export type HelperMessage = z.infer<typeof HelperMessage>;

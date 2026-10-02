@@ -65,6 +65,10 @@
       }
     },
     {
+      "says": "The executor window is in front",
+      "end": { "kind": "windowFocused", "window": { "bundleId": "dev.caret.fixture", "titleStartsWith": "Caret Fixture — Executor" } }
+    },
+    {
       "says": "The help page is open",
       "end": { "kind": "windowTitle", "window": { "titleStartsWith": "Caret Fixture — Help" }, "title": "Caret Fixture — Help" },
       "via": { "kind": "openUrl", "url": "https://example.com/help" }

@@ -15,6 +15,7 @@ describe("golden protocol fixture", () => {
       "hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
       "readerCommand", "verbResult", "userInput", "taskProgress",
       "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
+      "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
     ]);
   });
 
@@ -41,6 +42,16 @@ describe("golden protocol fixture", () => {
     expect(HelperToReader.safeParse(command).success).toBe(true);
     expect(ReaderMessage.safeParse(proposal).success).toBe(false);
     expect(ReaderMessage.safeParse(command).success).toBe(false);
+  });
+
+  it("routes the offer messages: three to the host, accept and stop from it", () => {
+    const [alternatives, action, popup, accept, stop, withdrawn, raise] = lines.slice(19).map((l) => JSON.parse(l) as unknown);
+    for (const m of [alternatives, action, popup, withdrawn]) {
+      expect(HelperMessage.safeParse(m).success).toBe(true);
+      expect(ConsumerMessage.safeParse(m).success).toBe(false);
+    }
+    for (const m of [accept, stop]) expect(ConsumerMessage.safeParse(m).success).toBe(true);
+    expect(HelperToReader.safeParse(raise).success).toBe(true);
   });
 
   it("rejects the shapes the Swift decoder also rejects", () => {
@@ -76,7 +87,7 @@ describe("plan schema", () => {
   it("parses the golden plan losslessly, with one step of every end-state kind and both vias", () => {
     const p = Plan.parse(golden);
     expect(p).toEqual(golden);
-    expect(new Set(p.steps.map((s) => s.end.kind))).toEqual(new Set(["valueEquals", "exists", "absent", "focused", "windowTitle", "calendarEvent"]));
+    expect(new Set(p.steps.map((s) => s.end.kind))).toEqual(new Set(["valueEquals", "exists", "absent", "focused", "windowTitle", "windowFocused", "calendarEvent"]));
     expect(new Set(p.steps.flatMap((s) => (s.via === undefined ? [] : [s.via.kind])))).toEqual(new Set(["press", "openUrl"]));
   });
 

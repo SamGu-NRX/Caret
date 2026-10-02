@@ -1,7 +1,7 @@
 // The executor (deep plan section 7). For each step of a plan:
 //   1. Re-read the step's window and stop if anything it saw at the start has changed under it.
 //   2. If the end state already holds, skip the step. A finished plan therefore reruns as a no-op.
-//   3. Pick the means: a value or focus write, a press, the calendar, or a URL. A press whose label
+//   3. Pick the means: a value or focus write, a press, a raise, the calendar, or a URL. A press whose label
 //      reads as send, submit, delete or pay is never made; the run stops and hands it to the user.
 //   4. Predict the change, act through a reader verb that rechecks the exact target, re-read the
 //      window, and compare what changed against the prediction. A mismatch stops the run at that step.
@@ -152,6 +152,11 @@ export class Executor {
   /** A new reader numbers windows from scratch; every existing task's window ids now mean nothing. */
   readerRestarted(): void {
     this.session++;
+  }
+
+  /** Whether a run with this id exists, running or finished. */
+  has(taskId: string): boolean {
+    return this.tasks.has(taskId);
   }
 
   ledger(taskId: string): readonly LedgerEntry[] {
@@ -376,6 +381,7 @@ export class Executor {
       this.progress(task, "skipped", i, "already true");
       return;
     }
+    if (end.kind === "windowFocused") return this.raiseStep(task, i, w, step);
 
     if (end.kind === "valueEquals" || end.kind === "focused") {
       const node = await this.resolve(task, i, w, end.target, step.says);
@@ -440,6 +446,17 @@ export class Executor {
     await this.deps.beforeAct?.(task.id, i);
     const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label }, w.window.windowId);
     task.ledger.push({ kind: "press", step: i, label });
+    await this.awaitEffect(task, i, step, w.window.windowId, seen);
+    this.checkUnexpected(seen, null);
+    await this.verified(task, i, step);
+  }
+
+  /** Brings the window to the front. Nothing is written, so nothing goes in the ledger. */
+  private async raiseStep(task: Task, i: number, w: WindowState, step: Step): Promise<void> {
+    this.checkInterrupt(task);
+    this.progress(task, "acting", i, `raise; expect '${clip(w.window.title)}' in ${w.app.name} to be the focused window`);
+    await this.deps.beforeAct?.(task.id, i);
+    const seen = await this.act(task, { kind: "raise", pid: w.app.pid, windowId: w.window.windowId }, w.window.windowId);
     await this.awaitEffect(task, i, step, w.window.windowId, seen);
     this.checkUnexpected(seen, null);
     await this.verified(task, i, step);
@@ -625,6 +642,8 @@ export class Executor {
     switch (end.kind) {
       case "windowTitle":
         return w.window.title === end.title;
+      case "windowFocused":
+        return this.deps.model.focusedWindowId === w.window.windowId;
       case "exists":
       case "absent": {
         const r = resolveLocally(w, end.target);
