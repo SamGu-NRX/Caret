@@ -78,6 +78,11 @@ let package = Package(
             // Read by #filePath, so a test can name the golden file the helper's schema also uses.
             exclude: ["Fixtures"]
         ),
-        .testTarget(name: "CaretHostTests", dependencies: ["CaretHost", "CaretHostCore"]),
+        .testTarget(
+            name: "CaretHostTests",
+            dependencies: ["CaretHost", "CaretHostCore"],
+            // Reference images, read and rewritten by #filePath (SnapshotTests).
+            exclude: ["References"]
+        ),
     ]
 )

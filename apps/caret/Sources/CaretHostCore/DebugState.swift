@@ -205,6 +205,10 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var ghost: Panel?
         public var line: Panel?
         public var toast: Panel?
+        /// Where the line went: `above` or `below` the field, with `,compact` for the 20 pt line.
+        public var placement: String?
+        /// An offer's line is waiting for the toast before it to end (`FillLineRule.deferLine`).
+        public var lineDeferred: Bool?
 
         public init(ghost: Panel? = nil, line: Panel? = nil, toast: Panel? = nil) {
             self.ghost = ghost

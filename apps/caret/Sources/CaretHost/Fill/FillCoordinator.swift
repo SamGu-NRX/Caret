@@ -147,7 +147,18 @@ final class FillCoordinator {
         executor?.remember(offerID: offerID, context: TextFieldContext(
             beforeCursor: "", target: AppTarget(bundleIdentifier: field.identity.bundleID, appName: "")
         ))
-        overlay.showOffer(value: value, fieldFrame: frame, style: FieldStyleProbe.style(of: element), caption: origin.sourceCaption)
+        let outcome = overlay.showOffer(
+            value: value, fieldFrame: frame, style: FieldStyleProbe.style(of: element),
+            caption: origin.sourceCaption, pid: field.identity.pid
+        )
+        if outcome == .replaceToast, let toastGrantID {
+            // The toast gave way to an offer from another source, and its undo went with it.
+            arbiter.dismissToast(grantID: toastGrantID)
+            self.toastGrantID = nil
+            toastGrantTimer?.invalidate()
+            status.update { $0.fill.toast = nil }
+        }
+        status.increment("fill.line.\(outcome)")
 
         let elapsedMs: (UInt64) -> Double = { Double(DispatchTime.now().uptimeNanoseconds &- $0) / 1_000_000 }
         switch trigger {
@@ -228,7 +239,10 @@ final class FillCoordinator {
             // The toast names the app only ("Filled 4 fields from Mail", SURFACES.md section 6); the
             // offer line already named the window.
             let caption = "1 field from \(origin.sourceAppName)"
-            overlay.showToast(.done, lead: "Filled", text: caption, keycap: "⌘Z Undo", lifetime: grant.lifetimeSeconds, anchor: lastFieldFrame)
+            overlay.showToast(
+                .done, lead: "Filled", text: caption, keycap: Hint(key: "⌘Z", label: "Undo"), lifetime: grant.lifetimeSeconds,
+                field: lastFieldFrame, pid: pid, source: origin.sourceCaption
+            )
             status.update { $0.fill.toast = DebugState.Toast(kind: "done", caption: "Filled \(caption)", grantID: id) }
             toastGrantTimer?.invalidate()
             toastGrantTimer = Timer.scheduledTimer(withTimeInterval: grant.lifetimeSeconds, repeats: false) { [weak self] _ in
@@ -241,7 +255,7 @@ final class FillCoordinator {
             }
         } else {
             let caption = Self.errorCaption(result.reason)
-            overlay.showToast(.error, lead: nil, text: caption, keycap: nil, lifetime: 6, anchor: lastFieldFrame)
+            overlay.showToast(.error, lead: nil, text: caption, keycap: nil, lifetime: 6, field: lastFieldFrame, pid: pid, source: origin.sourceCaption)
             status.update { $0.fill.toast = DebugState.Toast(kind: "error", caption: caption, grantID: nil) }
         }
         // A verified fill moves focus on; the watcher reports it, but re-read now in case the app
@@ -253,6 +267,7 @@ final class FillCoordinator {
 
     func undoFinished(_ result: InsertionExecutor.UndoResult) {
         guard let origin = result.grant.origin else { return }
+        let pid = result.grant.target.pid
         if result.ok {
             suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: result.grant.writtenValue))
         }
@@ -262,11 +277,11 @@ final class FillCoordinator {
             valueLength: result.ok ? 0 : UTF16Text.length(result.grant.writtenValue)
         ))
         if result.ok {
-            overlay.showToast(.undone, lead: nil, text: "Cleared 1 field", keycap: nil, lifetime: 2, anchor: lastFieldFrame)
+            overlay.showToast(.undone, lead: nil, text: "Cleared 1 field", keycap: nil, lifetime: 2, field: lastFieldFrame, pid: pid, source: origin.sourceCaption)
             status.update { $0.fill.toast = DebugState.Toast(kind: "undone", caption: "Cleared 1 field", grantID: nil) }
         } else {
             let caption = "The field changed after the fill, so it was left as it is."
-            overlay.showToast(.error, lead: nil, text: caption, keycap: nil, lifetime: 6, anchor: lastFieldFrame)
+            overlay.showToast(.error, lead: nil, text: caption, keycap: nil, lifetime: 6, field: lastFieldFrame, pid: pid, source: origin.sourceCaption)
             status.update { $0.fill.toast = DebugState.Toast(kind: "error", caption: caption, grantID: nil) }
         }
     }

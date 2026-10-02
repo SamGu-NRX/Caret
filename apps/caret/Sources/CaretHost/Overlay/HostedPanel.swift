@@ -1,0 +1,219 @@
+import AppKit
+import ApplicationServices
+import CaretHostCore
+import SwiftUI
+
+/// A borderless, non-activating, click-through panel that never becomes key or main, so the app
+/// being typed in keeps focus and every key keeps going to it.
+final class OverlayPanel: NSPanel {
+    static func make() -> OverlayPanel {
+        let panel = OverlayPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle, .fullScreenAuxiliary]
+        panel.contentView = NSView()
+        return panel
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+enum Screen {
+    /// Accessibility frames are global, top-left origin on the primary display; AppKit's are
+    /// bottom-left.
+    static func cocoa(_ ax: CGRect) -> NSRect {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSRect(x: ax.minX, y: primaryHeight - ax.maxY, width: ax.width, height: ax.height)
+    }
+
+    static func ax(_ cocoa: NSRect) -> CGRect {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGRect(x: cocoa.minX, y: primaryHeight - cocoa.maxY, width: cocoa.width, height: cocoa.height)
+    }
+
+    static func containing(_ rect: NSRect) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.intersects(rect) } ?? NSScreen.main
+    }
+
+    /// The visible frame of the screen holding an Accessibility rect, in Accessibility coordinates.
+    static func axVisibleFrame(around ax: CGRect) -> CGRect {
+        let screen = containing(cocoa(ax))
+        return Self.ax(screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900))
+    }
+}
+
+/// One SwiftUI surface in an `OverlayPanel` over the system popover material.
+///
+/// The panel keeps one corner pinned (`Anchor`), the corner nearest what it describes, so content
+/// that grows or shrinks (a toast replacing an offer, a reveal adding rows) never moves away from
+/// it, and the entrance scales from that corner.
+@MainActor
+final class HostedPanel {
+    enum Corner { case topLeft, topRight, bottomLeft, bottomRight }
+
+    struct Anchor: Equatable {
+        var corner: Corner
+        /// Cocoa coordinates.
+        var point: NSPoint
+    }
+
+    let panel = OverlayPanel.make()
+    private let material = NSVisualEffectView()
+    private let host = NSHostingView(rootView: AnyView(EmptyView()))
+    private(set) var anchor = Anchor(corner: .topLeft, point: .zero)
+    /// What the panel says, for the debug socket.
+    var text = ""
+    private(set) var isExiting = false
+
+    init(radius: CGFloat) {
+        material.material = .popover
+        material.blendingMode = .behindWindow
+        material.state = .active
+        material.wantsLayer = true
+        material.layer?.cornerRadius = radius
+        material.layer?.cornerCurve = .continuous
+        material.layer?.masksToBounds = true
+        material.autoresizingMask = [.width, .height]
+        host.autoresizingMask = [.width, .height]
+        // The panel sizes the host from its fitting size; no constraints of its own.
+        host.sizingOptions = []
+        material.addSubview(host)
+        panel.contentView = material
+        panel.hasShadow = true
+    }
+
+    var isVisible: Bool { panel.isVisible && !isExiting }
+
+    /// Replaces the content and resizes about the anchor. No animation: content changes come from
+    /// keys (an arrow, a reveal) or from results, which should land at once.
+    func setContent<V: View>(_ view: V) {
+        host.rootView = AnyView(view)
+        host.layoutSubtreeIfNeeded()
+        let size = host.fittingSize
+        setFrame(size: size)
+    }
+
+    var size: NSSize { panel.frame.size }
+
+    /// The content's size without placing it, for choosing among placements.
+    func measure<V: View>(_ view: V) -> NSSize {
+        let probe = NSHostingView(rootView: view)
+        return probe.fittingSize
+    }
+
+    func pin(_ anchor: Anchor) {
+        self.anchor = anchor
+        setFrame(size: panel.frame.size)
+    }
+
+    private func setFrame(size: NSSize) {
+        var origin = anchor.point
+        switch anchor.corner {
+        case .topLeft: origin.y -= size.height
+        case .topRight: origin.x -= size.width; origin.y -= size.height
+        case .bottomLeft: break
+        case .bottomRight: origin.x -= size.width
+        }
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        material.frame = NSRect(origin: .zero, size: size)
+        host.frame = material.bounds
+    }
+
+    /// Opacity 0 to 1, scale 0.96 to 1 and a 2 pt settle toward the anchor, 160 ms `--ease-out`,
+    /// scaled about the anchored corner. Reduce Motion keeps a 120 ms fade and drops the movement.
+    func enter() {
+        isExiting = false
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        let reduce = Motion.reduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduce ? 0.12 : 0.16
+            context.timingFunction = Motion.caCurve(Motion.easeOut)
+            panel.animator().alphaValue = 1
+        }
+        guard !reduce, let layer = material.layer else { return }
+        let w = material.bounds.width, h = material.bounds.height
+        // Layer space is bottom-left; the pivot is the anchored corner.
+        let px: CGFloat = (anchor.corner == .topRight || anchor.corner == .bottomRight) ? w : 0
+        let py: CGFloat = (anchor.corner == .topLeft || anchor.corner == .topRight) ? h : 0
+        // Settle 2 pt toward the anchor: from above when pinned at the top, from below otherwise.
+        let settle: CGFloat = py == h ? 2 : -2
+        let start = CATransform3DConcat(
+            CATransform3DMakeTranslation(-px, -py, 0),
+            CATransform3DConcat(CATransform3DMakeScale(0.96, 0.96, 1), CATransform3DMakeTranslation(px, py + settle, 0))
+        )
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = NSValue(caTransform3D: start)
+        animation.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        animation.duration = 0.16
+        animation.timingFunction = Motion.caCurve(Motion.easeOut)
+        layer.add(animation, forKey: "enter")
+    }
+
+    /// Opacity to 0, linear: 100 ms on Esc or timeout, 80 ms on typing, 0 for at once.
+    func exit(duration: TimeInterval) {
+        guard duration > 0, panel.isVisible else {
+            isExiting = false
+            panel.orderOut(nil)
+            return
+        }
+        isExiting = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .linear)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.isExiting else { return }
+                self.isExiting = false
+                self.panel.orderOut(nil)
+            }
+        }
+    }
+
+    func debugInfo() -> DebugState.Panel? {
+        guard panel.isVisible else { return nil }
+        let f = panel.frame
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return DebugState.Panel(
+            windowNumber: panel.windowNumber,
+            frame: [f.minX, primaryHeight - f.maxY, f.width, f.height].map { Double($0) },
+            isKey: panel.isKeyWindow,
+            text: isExiting ? "(exiting) " + text : text
+        )
+    }
+}
+
+/// What a line would cover: the frames of the app's own elements under each candidate spot,
+/// found by Accessibility hit-testing a few points per candidate. Containers (the window, groups,
+/// scroll areas) are empty space; anything else (a field, a label, a button, the title) is in the
+/// way.
+enum ObstacleProbe {
+    static let containerRoles: Set<String> = ["AXWindow", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXUnknown", "AXSheet"]
+
+    static func obstacles(pid: pid_t, under candidates: [CGRect]) -> [CGRect] {
+        let app = AXUIElementCreateApplication(pid)
+        var found: [CGRect] = []
+        for rect in candidates {
+            for fx in [0.04, 0.35, 0.65, 0.96] as [CGFloat] {
+                for fy in [0.2, 0.8] as [CGFloat] {
+                    let point = CGPoint(x: rect.minX + rect.width * fx, y: rect.minY + rect.height * fy)
+                    var hit: AXUIElement?
+                    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
+                          let hit, AXRead.pid(of: hit) == pid else { continue }
+                    let role = AXRead.string(kAXRoleAttribute, on: hit) ?? "AXUnknown"
+                    guard !containerRoles.contains(role), let frame = AXRead.frame(of: hit) else { continue }
+                    if !found.contains(frame) { found.append(frame) }
+                }
+            }
+        }
+        return found
+    }
+}
