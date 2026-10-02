@@ -1,0 +1,29 @@
+name: tcc-probe
+on:
+  push:
+    branches: [ci/tcc-probe]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Machine
+        run: sw_vers; sysctl -n machdep.cpu.brand_string hw.memsize hw.ncpu; df -h / | tail -1; csrutil status || true
+      - name: Build probe as a plain binary and as an app bundle
+        run: |
+          swiftc -O ci-probe/axcheck.swift -o axcheck
+          mkdir -p Probe.app/Contents/MacOS
+          cp axcheck Probe.app/Contents/MacOS/Probe
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string dev.caret.ciprobe" -c "Add :CFBundleExecutable string Probe" -c "Add :CFBundlePackageType string APPL" Probe.app/Contents/Info.plist
+          codesign -s - -f Probe.app
+      - name: Grants inherited by a plain binary
+        run: ./axcheck
+      - name: Grants inherited by an app bundle exec'd directly
+        run: ./Probe.app/Contents/MacOS/Probe
