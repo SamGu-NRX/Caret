@@ -1,0 +1,134 @@
+// Transfer detection. A transfer is a value seen in one window that then appears in an
+// editable element of another. Each edited field is judged once its value has settled,
+// so a value typed one character at a time is matched whole, not at every prefix.
+import { insertedText, type MatchKind } from "./normalize.ts";
+import type { Change, ScreenModel } from "./model.ts";
+import type { ValueKind } from "./protocol.ts";
+import type { Observation, RollingText } from "./rolling-text.ts";
+
+export interface Transfer {
+  at: number;
+  /** Plain text. Held in memory only; the store receives its hash. */
+  value: string;
+  kind: ValueKind | null;
+  match: MatchKind;
+  src: Observation;
+  dst: { windowId: string; bundleId: string; windowKind: string; key: string };
+  ageMs: number;
+  attribution: "user" | "unknown";
+}
+
+interface PendingEdit {
+  windowId: string;
+  key: string;
+  before: string;
+  after: string;
+  firstChange: number;
+  lastChange: number;
+  focused: boolean;
+}
+
+/** A value shorter than this is too likely to occur by chance in another window. */
+export const MIN_WHOLE_VALUE = 6;
+const MIN_TYPED_VALUE = 4;
+const MAX_VALUE = 300;
+/** How long a field must stay unchanged before it is judged. An assumption, not a measurement. */
+export const SETTLE_MS = 1500;
+
+export class TransferDetector {
+  private readonly pending = new Map<string, PendingEdit>();
+  private readonly model: ScreenModel;
+  private readonly text: RollingText;
+  private readonly settleMs: number;
+
+  constructor(model: ScreenModel, text: RollingText, settleMs = SETTLE_MS) {
+    this.model = model;
+    this.text = text;
+    this.settleMs = settleMs;
+  }
+
+  onChanges(changes: readonly Change[]): void {
+    for (const c of changes) {
+      if (c.kind !== "value" || !c.editable || c.key === null) continue;
+      const id = `${c.windowId}\u0000${c.key}`;
+      const p = this.pending.get(id);
+      const focused = this.model.windows.get(c.windowId)?.focused === true;
+      if (p === undefined) {
+        this.pending.set(id, {
+          windowId: c.windowId,
+          key: c.key,
+          before: c.before ?? "",
+          after: c.after ?? "",
+          firstChange: c.at,
+          lastChange: c.at,
+          focused,
+        });
+      } else {
+        p.after = c.after ?? "";
+        p.lastChange = c.at;
+        p.focused ||= focused;
+      }
+    }
+  }
+
+  /** Judges every edit that has been still for the settle time. */
+  tick(now: number): Transfer[] {
+    const out: Transfer[] = [];
+    for (const [id, p] of this.pending) {
+      if (now - p.lastChange < this.settleMs) continue;
+      this.pending.delete(id);
+      out.push(...this.judge(p));
+    }
+    return out;
+  }
+
+  /** Judges pending edits now, for a window being left or closed, or for all windows at shutdown. */
+  flush(windowId?: string): Transfer[] {
+    const out: Transfer[] = [];
+    for (const [id, p] of this.pending) {
+      if (windowId !== undefined && p.windowId !== windowId) continue;
+      this.pending.delete(id);
+      out.push(...this.judge(p));
+    }
+    return out;
+  }
+
+  private judge(p: PendingEdit): Transfer[] {
+    const w = this.model.windows.get(p.windowId);
+    if (w === undefined) return [];
+    const inserted = insertedText(p.before, p.after).trim();
+    if (inserted.length === 0) return [];
+
+    const candidates: { value: string; kind: ValueKind | null }[] = [];
+    if (inserted.length >= MIN_WHOLE_VALUE && inserted.length <= MAX_VALUE) candidates.push({ value: inserted, kind: null });
+    for (const v of w.values) {
+      if (v.nodeKey !== p.key || v.text.length < MIN_TYPED_VALUE || p.before.includes(v.text)) continue;
+      if (!inserted.includes(v.text) && !v.text.includes(inserted)) continue;
+      if (v.text === inserted) {
+        const whole = candidates[0];
+        if (whole !== undefined && whole.value === inserted) whole.kind = v.kind;
+        continue;
+      }
+      candidates.push({ value: v.text, kind: v.kind });
+    }
+
+    const out: Transfer[] = [];
+    for (const c of candidates) {
+      const found = this.text.find(c.value, c.kind, { excludeWindowId: p.windowId, seenBy: p.lastChange });
+      if (found === null) continue;
+      out.push({
+        at: p.lastChange,
+        value: c.value,
+        kind: c.kind ?? found.obs.kind,
+        match: found.match,
+        src: found.obs,
+        dst: { windowId: p.windowId, bundleId: w.app.bundleId, windowKind: w.window.kind, key: p.key },
+        ageMs: Math.max(0, p.lastChange - found.obs.firstSeen),
+        attribution: p.focused ? "user" : "unknown",
+      });
+      // The whole entry matched; its typed parts would only repeat the same transfer.
+      if (c.value === inserted) break;
+    }
+    return out;
+  }
+}
