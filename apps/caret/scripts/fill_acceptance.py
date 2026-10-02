@@ -484,6 +484,12 @@ def realtab(out_dir, ghost):
     offer = wait_for(lambda: fill_offer(pid, 0), 15)
     if not offer:
         return finish("failed: no fill offer before activation", lastSkip=host()["fill"].get("lastSkip"))
+    # The model loads before the foreground is taken, so the fixture is frontmost only for the
+    # seconds the keys need.
+    if ghost and not wait_for(lambda: host()["engine"]["state"] == "ready", 120, 0.5):
+        return finish("failed: model did not load", engine=host()["engine"])
+    if hid_idle_seconds() < IDLE_MIN:
+        return finish("deferred: user active", idleSeconds=hid_idle_seconds())
     before = host()["tap"]
     act = ax(pids, "activate", pid)
     if not act.get("front"):
@@ -520,8 +526,10 @@ def keystroke_to_paint(pids, pid, gold):
     engine = wait_for(lambda: host()["engine"]["state"] == "ready", 90, 0.5)
     if not engine:
         return "failed: model did not load"
-    ax(pids, "focus", pid, frame_arg(gold[CLAIM][8]["frame"]))
+    promo = gold[CLAIM][8]["frame"]
+    ax(pids, "focus", pid, frame_arg(promo))
     host("latency-reset")
+    keys_before = host()["tap"]["keyDowns"]
     text = "Please send the meeting notes to the team before lunch"
     for ch in text:
         args = ["space"] if ch == " " else ["char", ch]
@@ -530,7 +538,13 @@ def keystroke_to_paint(pids, pid, gold):
             return "deferred: foreground"
         time.sleep(0.15)
     time.sleep(1)
-    return host()["latency"]
+    s = host()
+    # Read back that every key landed in the fixture's field and nowhere else: the field holds
+    # exactly the typed text, and the tap saw exactly that many key-downs.
+    value = ax(pids, "value", pid, frame_arg(promo))["value"]
+    return {"latency": s["latency"], "typed": text, "fieldValue": value, "landed": value == text,
+            "tapKeyDowns": s["tap"]["keyDowns"] - keys_before, "keysSent": len(text),
+            "ghostCounters": {k: v for k, v in s["counters"].items() if k.startswith(("suppressed", "discarded", "offer"))}}
 
 
 if __name__ == "__main__":

@@ -90,7 +90,11 @@ latency. Field text never appears; only digests and lengths, plus the model's ow
   Jev. It starts and stops its own helper, fixtures, reader and host on their own sockets, moves
   focus with AX writes (`scripts/fixture-ax.swift`), and claims through the test hook. Under
   `lockf -k ~/.long-run/locks/gui.lock`, `realtab <dir>` presses one real Tab through the tap, only
-  after the Mac has been idle for 5 minutes and only while the fixture is frontmost.
+  after the Mac has been idle for 5 minutes and only while the fixture is frontmost;
+  `realtab-ghost <dir>` also loads the model, types a sentence into a fixture field key by key and
+  reads back the keystroke-to-paint samples and the field's text.
+- `scripts/fill_advance_check.py <dir>`: a verified fill moves focus to the next field and the
+  next offer follows.
 
 ## Which apps take a pid-posted paste
 
