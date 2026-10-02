@@ -136,6 +136,8 @@ export class Helper {
   /** Host-reported inserts, by window and field. */
   private readonly caretFills = new Map<string, CaretFill>();
   private lastPrune = 0;
+  /** Bumped on each reader hello; a fill whose Jev answer arrives in a later session is dropped. */
+  private readerSession = 0;
   readonly executor: Executor;
   readonly memory: MemoryStore;
   readonly patterns: PatternEngine;
@@ -187,7 +189,7 @@ export class Helper {
         this.publish(m, accept);
         this.onPatternMessage(m);
       },
-      run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots),
+      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect),
       shadow: () => this.mode === "shadow",
     });
     this.pending = new PendingWatcher({
@@ -219,6 +221,10 @@ export class Helper {
         this.patterns.readerRestarted();
         this.pending.readerRestarted();
         this.openApp.readerRestarted();
+        // Whatever is still offered (a fill pop-up) names windows and fields of the old session, whose
+        // ids the new reader may give to other windows.
+        for (const id of this.offers.keys()) this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: Date.now(), id, reason: "stale" });
+        this.readerSession++;
         this.audit?.readerRestarted(Date.now());
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
@@ -242,7 +248,8 @@ export class Helper {
         this.record(cleared);
         if (this.mode === "shadow") this.shadowLogger.onChanges(changes);
         const moved = prevFocused !== this.model.focusedWindowId;
-        if (moved && this.model.focusedWindowId !== null) this.openApp.onFocusedWindow(this.model.focusedWindowId);
+        // Only when the user is in that app: a request walk marks a background app's own window focused.
+        if (moved && this.model.focusedWindowId !== null && this.model.frontmostPid === m.app.pid) this.openApp.onFocusedWindow(this.model.focusedWindowId);
         if (prevFocused !== null && moved) this.record(this.transfers.flush(prevFocused));
         this.pending.onSnapshot(m.window.windowId, m.stats.truncated);
         this.audit?.onSnapshot(m);
@@ -257,6 +264,7 @@ export class Helper {
           this.shadowLogger.onFocus(m, before);
         }
         this.preFocus = null;
+        if (m.frontmost) this.model.frontmostPid = m.app.pid;
         this.audit?.onFocus(m);
         store.count(m.editable ? "reader.focus_editable" : "reader.focus_other", 1, m.at);
         if (this.mode === "live") this.openApp.onFocus(m);
@@ -265,6 +273,7 @@ export class Helper {
         return this.fill(m.windowId, m.key, false);
       }
       case "appSwitch":
+        this.model.frontmostPid = m.to.pid;
         if (this.mode === "shadow") this.shadowLogger.onAppSwitch(m);
         // The app being left may send no leave walk when its window did not change; its focused window was left all the same.
         if (m.from !== null) for (const w of this.model.windows.values()) if (w.app.pid === m.from.pid && w.focused) this.left(w.window.windowId, m.at);
@@ -348,8 +357,9 @@ export class Helper {
 
   private refuseAccept(offerId: string, reason: string): null {
     this.error(`offer ${offerId}: ${reason}`);
-    // A second accept of an offer that is already running must not end that run's working line.
-    if (!this.executor.has(offerId)) {
+    // A second accept of an offer whose run is still going must not end that run's working line; one
+    // after the run finished opened a new line on the host, which this ends.
+    if (!this.executor.live(offerId)) {
       this.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: offerId, planId: offerId, phase: "stopped", step: null, steps: 0, says: null, detail: reason });
     }
     return null;
@@ -583,12 +593,13 @@ export class Helper {
     if (this.inflight.has(formKey)) return null;
     if (!explicit && now - (this.lastFill.get(formKey) ?? -Infinity) < FILL_REPEAT_MS) return null;
     this.inflight.add(formKey);
+    const session = this.readerSession;
     try {
       const asked = await proposeFill(this.model, ask, windowId, key, now, {
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
       });
-      const p = this.revalidate(asked);
+      const p = session === this.readerSession ? this.revalidate(asked) : null;
       this.lastFill.set(formKey, now);
       if (p === null) {
         store.count("fill.stale", 1, now);
@@ -651,7 +662,8 @@ export class Helper {
     }
     const { plan, slots } = fillPlan(this.model, p);
     withdraw("taken");
-    return this.executor.run(p.id, plan, slots);
+    // The destinations were empty just now; one the user fills before the run's first read stops it.
+    return this.executor.run(p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
   }
 
   /**

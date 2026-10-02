@@ -159,12 +159,23 @@ export class Executor {
     return this.tasks.has(taskId);
   }
 
+  /** Whether a run with this id is under way or paused, so a working line for it is still open. */
+  live(taskId: string): boolean {
+    const t = this.tasks.get(taskId);
+    return t !== undefined && (t.finished === null || t.finished === "paused");
+  }
+
   ledger(taskId: string): readonly LedgerEntry[] {
     return this.tasks.get(taskId)?.ledger ?? [];
   }
 
-  /** Validates the plan, fills its slots, and runs it from the first step. */
-  async run(taskId: string, rawPlan: unknown, slots: Record<string, string>): Promise<TaskResult> {
+  /**
+   * Validates the plan, fills its slots, and runs it from the first step. `expect` names field values,
+   * by window id and key, that must still hold when the task first reads each window: an offer checked
+   * its fields empty when the user took it, and a value typed while the first walk was under way must
+   * stop the run, not become the value the write expects and replaces.
+   */
+  async run(taskId: string, rawPlan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>): Promise<TaskResult> {
     if (this.tasks.has(taskId)) throw new PlanError(`task ${taskId} already exists`);
     const parsed = Plan.safeParse(rawPlan);
     if (!parsed.success) throw new PlanError(`invalid plan: ${parsed.error.message.slice(0, 400)}`);
@@ -185,6 +196,7 @@ export class Executor {
       session: this.session,
       undoing: false,
     };
+    for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
     this.progress(task, "started", null, null);
     return this.loop(task);
@@ -643,7 +655,9 @@ export class Executor {
       case "windowTitle":
         return w.window.title === end.title;
       case "windowFocused":
-        return this.deps.model.focusedWindowId === w.window.windowId;
+        // The window must be the app's focused one and the app the one the user is in: a request walk
+        // marks a background app's own focused window as focused, which alone would skip the raise.
+        return this.deps.model.focusedWindowId === w.window.windowId && this.deps.model.frontmostPid === w.app.pid;
       case "exists":
       case "absent": {
         const r = resolveLocally(w, end.target);

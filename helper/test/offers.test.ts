@@ -74,6 +74,26 @@ describe("host-offer registry", () => {
     expect(acceptRefusal(new HostOfferRegistry().record(withReveal, null), m)).toBe(reason);
   });
 
+  it("checks an accept against the pop-up as the reveal left it", () => {
+    const row = (t: string) => ({ label: { text: t, ref } });
+    // A one-row picker that a reveal swaps for three rows of the same id.
+    const grows = popup([
+      { type: "header", title: { text: "T", ref } },
+      { type: "choices", id: "times", rows: [row("3:00")], selected: 0 },
+      { type: "actions", items: [{ id: "go", label: "Go", key: "tab" }, { id: "more", label: "More times", key: "down", reveal: { replace: "times", with: { type: "choices", id: "times", rows: [row("2:30"), row("3:00"), row("3:30")], selected: 1 } } }] },
+    ]);
+    // A reveal that swaps the whole bar for one whose Tab action finishes the pop-up.
+    const newBar = popup([
+      { type: "header", title: { text: "T", ref } },
+      { type: "actions", id: "bar", items: [{ id: "go", label: "Go", key: "tab" }, { id: "edit", label: "Edit", key: "cmd-2", reveal: { replace: "bar", with: { type: "actions", items: [{ id: "save", label: "Save", key: "tab" }] } } }] },
+    ]);
+    for (const m of [grows, newBar]) expect(HelperMessage.safeParse(m).success).toBe(true);
+    expect(acceptRefusal(new HostOfferRegistry().record(grows, null), accept("p1", "go", { times: 2 }))).toBeNull();
+    expect(acceptRefusal(new HostOfferRegistry().record(grows, null), accept("p1", "go", { times: 3 }))).toBe("times row 3 does not exist; there are 3");
+    expect(acceptRefusal(new HostOfferRegistry().record(newBar, null), accept("p1", "save"))).toBeNull();
+    expect(acceptRefusal(new HostOfferRegistry().record(newBar, null), accept("p1", "edit"))).toBe("action edit changes the pop-up; it does not finish it");
+  });
+
   it("checks variants against an action line's picker, and refuses any accept of alternatives", () => {
     const line: OfferAction = {
       type: "action",
@@ -275,7 +295,7 @@ describe("Open <app> for a watched window", () => {
       {
         type: "action",
         v: PROTOCOL_VERSION,
-        offerKey: "open-watch-1",
+        offerKey: "open-watch-1.1",
         at: expect.any(Number),
         field: { pid: MAIL_APP.pid, windowId: COMPOSE, key: TO, frame: [100, 40, 300, 24] },
         app: "Caret Fixture",
@@ -296,11 +316,29 @@ describe("Open <app> for a watched window", () => {
   it("holds the offer until focus lands in an editable field of another window", () => {
     const { sent, offers } = setup(false);
     offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
-    expect(offers.pending()).toEqual([{ offerKey: "open-watch-1", published: false }]);
+    expect(offers.pending()).toEqual([{ offerKey: "open-watch-1.1", published: false }]);
     offers.onFocus(focus(COMPOSE, TO, 2000, { app: MAIL_APP, editable: false }));
     expect(sent).toEqual([]);
     offers.onFocus(focus(COMPOSE, TO, 2100, { app: MAIL_APP }));
     expect(sent).toMatchObject([{ type: "action", field: { windowId: COMPOSE, key: TO } }]);
+  });
+
+  it("gives each resolution of a watch its own key, so each can run as its own task", () => {
+    const { sent, offers } = setup(true);
+    offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    expect(sent.map((m) => [m.type, "offerKey" in m ? m.offerKey : (m as { id: string }).id])).toEqual([
+      ["action", "open-watch-1.1"],
+      ["offerWithdrawn", "open-watch-1.1"],
+      ["action", "open-watch-1.2"],
+    ]);
+  });
+
+  it("ignores focus in the watched window while its app is in the background", () => {
+    const { sent, offers } = setup(true);
+    offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    offers.onFocus({ ...focus(JOB, null, 2000, { editable: false }), frontmost: false });
+    expect(sent.map((m) => m.type)).toEqual(["action"]);
   });
 
   it("drops a held offer, and withdraws a shown one as taken, when the user goes to the watched window first", () => {
@@ -314,7 +352,7 @@ describe("Open <app> for a watched window", () => {
     shown.offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
     shown.offers.onFocusedWindow(JOB);
     expect(shown.sent.map((m) => m.type)).toEqual(["action", "offerWithdrawn"]);
-    expect(shown.sent[1]).toMatchObject({ id: "open-watch-1", reason: "taken" });
+    expect(shown.sent[1]).toMatchObject({ id: "open-watch-1.1", reason: "taken" });
   });
 });
 

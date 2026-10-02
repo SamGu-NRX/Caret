@@ -222,7 +222,7 @@ describe("offers over the socket", () => {
     expect(at0(action)).toEqual({
       type: "action",
       v: 1,
-      offerKey: "open-watch-id-1",
+      offerKey: "open-watch-id-1.1",
       at: 0,
       field: { pid: 6160, windowId: COMPOSE, key: M("textfield:to~0"), frame: [100, 40, 300, 24] },
       app: "Caret Fixture",
@@ -230,12 +230,58 @@ describe("offers over the socket", () => {
       actions: [{ id: "open", label: "Open Caret Fixture", key: "tab" }],
     });
 
-    host.send(accept("open-watch-id-1", "open"));
-    expect(await phases("open-watch-id-1")).toEqual(["started", "acting", "verified", "done"]);
+    host.send(accept("open-watch-id-1.1", "open"));
+    expect(await phases("open-watch-id-1.1")).toEqual(["started", "acting", "verified", "done"]);
     expect(reader.verbs.filter((v) => v.kind === "raise")).toEqual([{ kind: "raise", pid: 5150, windowId: JOB }]);
     expect(reader.focusedWindow()).toBe(JOB);
     expect(reader.frontmostPid).toBe(5150);
     expect(helper.model.focusedWindowId).toBe(JOB);
+  });
+
+  it("fill: a value the user types while the run first reads the form stops it, and Caret writes nothing", async () => {
+    await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+    await host.waitFor((m) => m.type === "popup");
+    reader.delayMs.walk = 200;
+    host.send(accept("id-1", "fillAll"));
+    await until(() => reader.verbs.some((v) => v.kind === "walk"));
+    reader.setValue(FORM, F("textfield:email~0"), "typed@example.com");
+    expect(await phases("id-1")).toEqual(["started", "stopped"]);
+    expect(host.received.find((m) => (m as { phase?: string }).phase === "stopped")).toMatchObject({ detail: expect.stringContaining("changed since the plan started") });
+    expect(reader.verbs.filter((v) => v.kind === "write")).toEqual([]);
+    expect([F("textfield:name~0"), F("textfield:email~0"), F("textfield:phone~0")].map((k) => reader.value(FORM, k))).toEqual(["", "typed@example.com", ""]);
+  });
+
+  it("fill: a new reader session withdraws the pop-up, and an accept of it is refused", async () => {
+    await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+    await host.waitFor((m) => m.type === "popup");
+    reader.send({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 1, version: "socket-reader" });
+    expect(await host.waitFor((m) => m.type === "offerWithdrawn")).toMatchObject({ id: "id-1", reason: "stale" });
+    host.send(accept("id-1", "fillAll"));
+    expect(await host.waitFor((m) => m.type === "error")).toMatchObject({ message: "offer id-1: no such offer, or it expired" });
+    expect(reader.verbs.filter((v) => v.kind === "write")).toEqual([]);
+  });
+
+  it("fill: an accept after the run finished is refused, and its own working line still ends", async () => {
+    await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+    await host.waitFor((m) => m.type === "popup");
+    host.send(accept("id-1", "fillAll"));
+    await phases("id-1");
+    const before = host.received.length;
+    host.send(accept("id-1", "fillAll"));
+    await host.waitFor((m) => m.type === "error" && String(m.message).startsWith("offer id-1"));
+    const late = await host.waitFor((m) => m.type === "taskProgress" && host.received.indexOf(m) >= before);
+    expect(late).toMatchObject({ taskId: "id-1", phase: "stopped", steps: 0 });
+  });
+
+  it("loop: closing the other list's window withdraws the alternatives that quote it", async () => {
+    await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
+    await host.waitFor((m) => m.type === "alternatives");
+    reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: DIRECTORY });
+    await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-1");
+    expect(host.received.filter((m) => (m as { type: string }).type === "offerWithdrawn").map((m) => [(m as { id: string }).id, (m as { reason: string }).reason])).toEqual([
+      ["offer-1.0", "stale"],
+      ["offer-1", "stale"],
+    ]);
   });
 
   it("fill: an explicit fillRequest still gets the fillProposal it asks for", async () => {

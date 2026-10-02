@@ -3,7 +3,7 @@
 // offer. A record goes when its offer is withdrawn or after OFFER_KEEP_MS.
 import type { OfferAccept, OfferAction, OfferAlternatives, OfferField, OfferPopup } from "../protocol.ts";
 import type { TaskResult } from "../executor/executor.ts";
-import { specActions, specChoices, type PopupBlock, type PopupSpecT } from "../popup.ts";
+import { applyingReveal, specActions, specChoices, type PopupAction, type PopupBlock, type PopupSpecT } from "../popup.ts";
 
 export type HostOffer = OfferAlternatives | OfferAction | OfferPopup;
 
@@ -51,6 +51,11 @@ export class HostOfferRegistry {
     return r;
   }
 
+  /** Every key recorded, expired or not. */
+  keys(): string[] {
+    return [...this.records.keys()];
+  }
+
   remove(offerKey: string): void {
     this.records.delete(offerKey);
   }
@@ -65,42 +70,79 @@ export class HostOfferRegistry {
   }
 }
 
-/** Every choices block the user can reach in a spec, top-level or behind a reveal, by its override key. */
-export function reachableChoices(spec: PopupSpecT): Map<string, Extract<PopupBlock, { type: "choices" }>> {
-  const out = new Map<string, Extract<PopupBlock, { type: "choices" }>>();
-  const add = (b: PopupBlock): void => {
-    if (b.type === "choices" && !out.has(b.id ?? "choices")) out.set(b.id ?? "choices", b);
-  };
-  for (const b of spec.blocks) {
-    add(b);
-    if (b.type === "actions") for (const a of b.items) if (a.reveal !== undefined) add(a.reveal.with);
+/** Specs a chain of reveals can lead to. Each reveal removes an action, so chains end; the cap only guards a malformed cycle. */
+const MAX_REACHABLE = 32;
+
+/** The spec and every spec a chain of reveals leads to, each once: what the host can show the user. */
+export function reachableSpecs(spec: PopupSpecT): PopupSpecT[] {
+  const out = [spec];
+  const seen = new Set([JSON.stringify(spec)]);
+  for (let i = 0; i < out.length && out.length < MAX_REACHABLE; i++) {
+    const s = out[i] as PopupSpecT;
+    for (const a of specActions(s)) {
+      if (a.reveal === undefined) continue;
+      const r = applyingReveal(s, a.id);
+      const k = JSON.stringify(r);
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(r);
+      }
+    }
   }
   return out;
 }
 
 /**
- * Why an offerAccept cannot finish this offer, or null when it can. Checks what the host could have
- * sent from what it was shown: the action exists and finishes the offer, and each override names a
- * picker the offer has and a row inside it. Does not check expiry, mode or a previous accept.
+ * Why `m` cannot finish the offer as the host showed it in this state, or null. The action must be in
+ * the state's bar and not a reveal; the override, if any, must name the state's choices block (by id,
+ * `choices` when it has none, `variants` for an action line's picker) and a row it has.
+ */
+interface Refusal {
+  /** How close the accept came in this state: 0 a row out of range, 1 no such picker, 2 a reveal, 3 no such action. */
+  rank: number;
+  why: string;
+}
+
+function stateRefusal(actions: readonly PopupAction[], choices: Extract<PopupBlock, { type: "choices" }> | undefined, choicesKey: string | null, m: OfferAccept): Refusal | null {
+  const action = actions.find((a) => a.id === m.actionId);
+  if (action === undefined) return { rank: 3, why: `the offer has no action ${m.actionId}` };
+  if (action.reveal !== undefined) return { rank: 2, why: `action ${m.actionId} changes the pop-up; it does not finish it` };
+  for (const [key, row] of Object.entries(m.overrides)) {
+    if (choices === undefined || key !== choicesKey) return { rank: 1, why: key === "variants" ? "the offer has no variants to pick from" : `the offer has no choices block ${key}` };
+    if (row >= choices.rows.length) return { rank: 0, why: `${key} row ${row} does not exist; there are ${choices.rows.length}` };
+  }
+  return null;
+}
+
+/**
+ * Why an offerAccept cannot finish this offer, or null when it can. The host sends the action and the
+ * highlighted row of the pop-up as it was drawn: after any reveal, and for an action line, its own bar
+ * or the variants picker it opened. The accept must fit one of those states. Does not check expiry,
+ * mode or a previous accept.
  */
 export function acceptRefusal(r: OfferRecord, m: OfferAccept): string | null {
   const msg = r.message;
   if (msg.type === "alternatives") return "the host inserts alternatives itself; there is nothing to accept";
-  const actions = msg.type === "action" ? msg.actions : specActions(msg.spec);
-  const action = actions.find((a) => a.id === m.actionId);
-  if (action === undefined) return `the offer has no action ${m.actionId}`;
-  if (action.reveal !== undefined) return `action ${m.actionId} changes the pop-up; it does not finish it`;
-  const choices = msg.type === "popup" ? reachableChoices(msg.spec) : new Map<string, Extract<PopupBlock, { type: "choices" }>>();
-  for (const [key, row] of Object.entries(m.overrides)) {
-    if (key === "variants") {
-      if (msg.type !== "action" || msg.variants === undefined) return "the offer has no variants to pick from";
-      const rows = specChoices(msg.variants)?.rows.length ?? 0;
-      if (row >= rows) return `variants row ${row} does not exist; there are ${rows}`;
-      continue;
+  const states: { actions: readonly PopupAction[]; choices: Extract<PopupBlock, { type: "choices" }> | undefined; key: string | null }[] = [];
+  if (msg.type === "popup") {
+    for (const s of reachableSpecs(msg.spec)) {
+      const c = specChoices(s);
+      states.push({ actions: specActions(s), choices: c, key: c === undefined ? null : (c.id ?? "choices") });
     }
-    const block = choices.get(key);
-    if (block === undefined) return `the offer has no choices block ${key}`;
-    if (row >= block.rows.length) return `${key} row ${row} does not exist; there are ${block.rows.length}`;
+  } else {
+    // The closed line: its own bar, with a row only of the variants picker when it has one.
+    const variants = msg.variants === undefined ? [] : reachableSpecs(msg.variants);
+    states.push({ actions: msg.actions, choices: variants.map(specChoices).find((c) => c !== undefined), key: "variants" });
+    // The line opened into its variants: the picker's own bar and rows.
+    for (const s of variants) states.push({ actions: specActions(s), choices: specChoices(s), key: "variants" });
   }
-  return null;
+  // Refused in every state: the reason from the state that came closest, and of equals the last, the
+  // furthest the user can have gone into the pop-up.
+  let best: Refusal | null = null;
+  for (const s of states) {
+    const r = stateRefusal(s.actions, s.choices, s.key, m);
+    if (r === null) return null;
+    if (best === null || r.rank <= best.rank) best = r;
+  }
+  return best?.why ?? "the offer has nothing to accept";
 }

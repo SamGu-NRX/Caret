@@ -198,6 +198,40 @@ describe("loop recognizer over the helper's transfers", () => {
       expect(loops.active?.srcWindowId).toBe(chosen.windowId);
       expect(loops.active?.others).toEqual([]);
     });
+
+    it("ends the loop when one round takes a column from each list", () => {
+      const both = (l: string[]): string[] => l.flatMap((n) => [n, emailOf(n)]);
+      const a = roster(both(PEOPLE));
+      const b = directory("5150-8", both(["Lena Hartmann", "Oskar Lindqvist"]));
+      b.lines = both([PEOPLE[0]!, PEOPLE[1]!, "Lena Hartmann", "Oskar Lindqvist"]);
+      for (const l of [a, b]) desk.showList(l);
+      desk.advance(1000);
+      const dst = grid(["Name", "Email"], 5);
+      desk.showGrid(dst);
+      for (let r = 0; r < 2; r++) {
+        fill(dst, r, 0, PEOPLE[r]!);
+        fill(dst, r, 1, emailOf(PEOPLE[r]!));
+      }
+      const p = predicted();
+      expect(p.alternatives.map((alts) => alts.length)).toEqual([1, 1]);
+      // The name from the main list, then the email from the other one: no single list explains the row.
+      fill(dst, 2, 0, p.cells[0]!.value);
+      fill(dst, 2, 1, p.alternatives[1]![0]!.value);
+      expect(events.map((e) => e.type)).toEqual(["predict", "ended"]);
+      expect(events[1]).toMatchObject({ type: "ended", reason: "diverged" });
+    });
+
+    it("keeps the main list when the value taken is what memory makes of the main list's own value", () => {
+      const dst = start(directory(), roster());
+      const p = predicted();
+      const main = p.cells[0]!;
+      const alt = p.alternatives[0]![0]!;
+      // As if a memory rule turned the main list's value into the text the other list shows.
+      loops.expect(p.loop.id, main.dstKey, alt.value, alt.kind);
+      fill(dst, 2, 0, alt.value);
+      expect(events.map((e) => e.type)).toEqual(["predict", "confirmed"]);
+      expect(loops.active?.srcWindowId).toBe(main.srcWindowId);
+    });
   });
 
   it("offers nothing when the next destination is already filled", () => {

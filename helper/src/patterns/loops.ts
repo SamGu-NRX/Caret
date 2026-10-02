@@ -53,8 +53,8 @@ export interface LoopCell {
 
 /**
  * Another source window that explains both founding rounds, and the next round it predicts. `accepts`
- * holds, per destination key, the normalized values offered from this fit: the ones that, typed or
- * inserted, mean the user chose this list over the main one.
+ * holds, per destination key, every normalized value this fit predicts or would write there, including
+ * ones it shares with the main fit, so a round can be checked against one fit as a whole.
  */
 export interface LoopFit {
   srcWindowId: string;
@@ -78,10 +78,12 @@ export interface Loop {
   prediction: LoopCell[] | null;
   /** Fits other than the main one whose prediction offered at least one alternative value; empty once confirmed. */
   others: LoopFit[];
+  /** The main fit's values for the predicted round, by destination key: its source text and what memory rules make of it. */
+  mainAccepts: Map<string, Set<string>>;
   /** Every cell this loop predicted or will write, by destination key, with the normalized values it may take. */
   expected: Map<string, Set<string>>;
-  /** Cells of the current prediction the user has already filled with the predicted value. */
-  filled: Set<string>;
+  /** Cells of the current prediction the user has already filled, with the normalized value each got. */
+  filled: Map<string, string>;
   confirmed: boolean;
   lastAt: number;
 }
@@ -159,8 +161,12 @@ export class LoopRecognizer {
     const loop = this.loop;
     if (loop?.id !== loopId) return;
     addExpected(loop, dstKey, value, kind);
-    const fit = srcWindowId === undefined || srcWindowId === loop.srcWindowId ? undefined : loop.others.find((f) => f.srcWindowId === srcWindowId);
-    if (fit !== undefined) addTo(fit.accepts, dstKey, normalizeValue(value, kind));
+    const v = normalizeValue(value, kind);
+    if (srcWindowId === undefined || srcWindowId === loop.srcWindowId) addTo(loop.mainAccepts, dstKey, v);
+    else {
+      const fit = loop.others.find((f) => f.srcWindowId === srcWindowId);
+      if (fit !== undefined) addTo(fit.accepts, dstKey, v);
+    }
   }
 
   /** Forgets the active loop and the rounds that might found one, as when a new reader renumbers windows. */
@@ -196,17 +202,23 @@ export class LoopRecognizer {
   }
 
   /**
-   * A transfer into a cell the loop expected. A value that only another fit offered switches the loop to
-   * that fit first, so the rest of the loop reads from the list the user chose. Confirms the prediction
-   * when it completes the predicted round.
+   * A transfer into a cell the loop expected. A value only another fit offered switches the loop to that
+   * fit first, so the rest of the loop reads from the list the user chose; the cells already filled in
+   * this round must fit it too, or the round mixes two lists and the loop has diverged. Confirms the
+   * prediction when it completes the predicted round.
    */
   private absorb(loop: Loop, dstKey: string, v: string): LoopEvent | null {
     const p = loop.prediction;
     if (p === null || !p.some((c) => c.dstKey === dstKey)) return null;
-    const main = p.some((c) => c.dstKey === dstKey && normalizeValue(c.value, c.kind) === v);
-    const j = main ? -1 : loop.others.findIndex((f) => f.accepts.get(dstKey)?.has(v) === true);
-    if (j >= 0) switchFit(loop, j);
-    loop.filled.add(dstKey);
+    if (loop.mainAccepts.get(dstKey)?.has(v) !== true) {
+      const j = loop.others.findIndex((f) => f.accepts.get(dstKey)?.has(v) === true);
+      if (j >= 0) {
+        const fit = loop.others[j] as LoopFit;
+        for (const [k, done] of loop.filled) if (fit.accepts.get(k)?.has(done) !== true) return this.end("diverged");
+        switchFit(loop, j);
+      }
+    }
+    loop.filled.set(dstKey, v);
     if (!p.every((c) => loop.filled.has(c.dstKey))) return null;
     return this.confirm(loop);
   }
@@ -214,6 +226,7 @@ export class LoopRecognizer {
   private confirm(loop: Loop): LoopEvent {
     loop.prediction = null;
     loop.others = [];
+    loop.mainAccepts = new Map();
     loop.filled.clear();
     loop.confirmed = true;
     loop.rounds++;
@@ -253,8 +266,9 @@ export class LoopRecognizer {
         dstPos: b.map((t) => t.dst.pos),
         prediction: null,
         others: [],
+        mainAccepts: new Map(),
         expected: new Map(),
-        filled: new Set(),
+        filled: new Map(),
         confirmed: false,
         lastAt: (b[k - 1] as PatternTransfer).at,
       };
@@ -262,7 +276,10 @@ export class LoopRecognizer {
       // Nothing left to predict (the table or the list ended): the loop is real but has nothing to offer.
       if (next === null) return null;
       loop.prediction = next;
-      for (const c of next) addExpected(loop, c.dstKey, c.value, c.kind);
+      for (const c of next) {
+        addExpected(loop, c.dstKey, c.value, c.kind);
+        addTo(loop.mainAccepts, c.dstKey, normalizeValue(c.value, c.kind));
+      }
       const alternatives = this.alternatives(loop, next, rest);
       this.loop = loop;
       this.history = [];
@@ -283,19 +300,21 @@ export class LoopRecognizer {
       const prediction = this.predict({ srcWindowId: f.srcWindowId, dstWindowId: loop.dstWindowId, columns: f.columns }, f.srcPos, loop.dstPos);
       if (prediction === null) continue;
       const fit: LoopFit = { ...f, prediction, accepts: new Map() };
+      let offered = false;
       cells.forEach((c, i) => {
         const alt = prediction.find((x) => x.dstKey === c.dstKey);
+        if (alt === undefined) return;
+        const v = normalizeValue(alt.value, alt.kind);
+        addTo(fit.accepts, c.dstKey, v);
         const list = out[i] as LoopCell[];
         const taken = seen[i] as Set<string>;
-        if (alt === undefined || list.length >= MAX_ALTERNATIVES) return;
-        const v = normalizeValue(alt.value, alt.kind);
-        if (taken.has(v)) return;
+        if (list.length >= MAX_ALTERNATIVES || taken.has(v)) return;
         taken.add(v);
         list.push(alt);
-        addTo(fit.accepts, c.dstKey, v);
+        offered = true;
         addExpected(loop, c.dstKey, alt.value, alt.kind);
       });
-      if (fit.accepts.size > 0) loop.others.push(fit);
+      if (offered) loop.others.push(fit);
     }
     return out;
   }
@@ -383,12 +402,11 @@ function addTo(m: Map<string, Set<string>>, key: string, v: string): void {
   set.add(v);
 }
 
-/** Makes `loop.others[j]` the main fit; the old main fit takes its place among the others. */
+/** Makes `loop.others[j]` the main fit; the old main fit, with every value it accepts, takes its place among the others. */
 function switchFit(loop: Loop, j: number): void {
   const f = loop.others[j] as LoopFit;
-  const accepts = new Map<string, Set<string>>();
-  for (const c of loop.prediction ?? []) addTo(accepts, c.dstKey, normalizeValue(c.value, c.kind));
-  loop.others[j] = { srcWindowId: loop.srcWindowId, columns: loop.columns, srcPos: loop.srcPos, prediction: loop.prediction ?? [], accepts };
+  loop.others[j] = { srcWindowId: loop.srcWindowId, columns: loop.columns, srcPos: loop.srcPos, prediction: loop.prediction ?? [], accepts: loop.mainAccepts };
+  loop.mainAccepts = f.accepts;
   loop.srcWindowId = f.srcWindowId;
   loop.columns = f.columns;
   loop.srcPos = f.srcPos;

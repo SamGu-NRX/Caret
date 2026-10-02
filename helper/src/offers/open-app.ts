@@ -13,6 +13,7 @@ export const OPEN_HOLD_MS = 10 * 60 * 1000;
 
 interface Entry {
   offerKey: string;
+  watchId: string;
   windowId: string;
   status: string;
   createdAt: number;
@@ -39,6 +40,8 @@ export function statusNode(w: WindowState, status: string): string | null {
 
 export class OpenAppOffers {
   private readonly entries = new Map<string, Entry>();
+  /** Numbers each offer of a watch: a watch can resolve twice (needsYou, then done), and each offer runs as its own task. */
+  private seq = 0;
   private readonly deps: OpenAppDeps;
   private readonly now: () => number;
 
@@ -54,25 +57,27 @@ export class OpenAppOffers {
 
   /** A watch ended as done or became needsYou. A newer resolution of the same watch replaces an older offer. */
   resolved(e: { watchId: string; windowId: string; status: string | null }): void {
-    const offerKey = `open-${e.watchId}`;
-    this.drop(offerKey, "stale");
+    for (const old of [...this.entries.values()]) if (old.watchId === e.watchId) this.drop(old.offerKey, "stale");
+    const offerKey = `open-${e.watchId}.${++this.seq}`;
     if (e.status === null) return;
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined || statusNode(w, e.status) === null) return;
-    const entry: Entry = { offerKey, windowId: e.windowId, status: e.status, createdAt: this.now(), published: false };
+    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, createdAt: this.now(), published: false };
     this.entries.set(offerKey, entry);
     const field = this.fieldNow(e.windowId);
     if (field !== null) this.show(entry, field);
   }
 
   /**
-   * A focus event. Focus in the watched window means the user went there on their own: the offer is
-   * dropped, or withdrawn as taken. Focus in an editable field of another window, in the frontmost app,
-   * binds a held offer to that field.
+   * A focus event. Focus in the watched window, in the frontmost app, means the user went there on
+   * their own: the offer is dropped, or withdrawn as taken. Focus in an editable field of another
+   * window, in the frontmost app, binds a held offer to that field.
    */
   onFocus(m: Focus): void {
     for (const e of [...this.entries.values()]) {
-      if (m.windowId === e.windowId) this.drop(e.offerKey, "taken");
+      if (m.windowId === e.windowId) {
+        if (m.frontmost) this.drop(e.offerKey, "taken");
+      }
       else if (!e.published && m.frontmost && m.editable && m.key !== null) {
         const frame = this.deps.model.windows.get(m.windowId)?.nodes.get(m.key)?.frame ?? null;
         this.show(e, { pid: m.app.pid, windowId: m.windowId, key: m.key, frame });
@@ -80,7 +85,7 @@ export class OpenAppOffers {
     }
   }
 
-  /** The model's focused window changed to this one. */
+  /** The model's focused window changed to this one, in the app the user is in. */
   onFocusedWindow(windowId: string): void {
     for (const e of [...this.entries.values()]) if (e.windowId === windowId) this.drop(e.offerKey, "taken");
   }

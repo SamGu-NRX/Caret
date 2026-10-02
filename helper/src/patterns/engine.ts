@@ -47,8 +47,8 @@ export interface EngineDeps {
   hash: Hash;
   /** `accept` is how an action this message offers the host is taken. */
   publish: (m: HelperMessage, accept?: AcceptHandler) => void;
-  /** Runs a plan through the executor. */
-  run: (taskId: string, plan: Plan, slots: Record<string, string>) => Promise<TaskResult>;
+  /** Runs a plan through the executor; `expect` holds field values, by window and key, that must still hold at its first read. */
+  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>) => Promise<TaskResult>;
   shadow: () => boolean;
 }
 
@@ -65,6 +65,12 @@ interface OfferState {
   closedAt: number | null;
   /** Keys of the alternatives messages published for this offer's cells, withdrawn with it. */
   derived: string[];
+  /**
+   * Source windows and memory entries that only the alternatives read. The host shows those values,
+   * so the offer is withdrawn when one of them goes, as for its own cells.
+   */
+  altSources: Set<string>;
+  altMemory: Set<string>;
 }
 
 interface Watch {
@@ -190,7 +196,7 @@ export class PatternEngine {
       this.watches.delete(id);
     }
     for (const o of this.offers.values()) {
-      if (o.state === "open" && (o.msg.windowId === windowId || o.cells.some((c) => c.srcWindowId === windowId))) this.withdraw(o, "stale");
+      if (o.state === "open" && (o.msg.windowId === windowId || o.cells.some((c) => c.srcWindowId === windowId) || o.altSources.has(windowId))) this.withdraw(o, "stale");
     }
   }
 
@@ -243,7 +249,10 @@ export class PatternEngine {
     this.deps.memory.recordReaction(o.msg.kind, o.msg.bundleId, "take", this.clock);
     let r: TaskResult;
     try {
-      r = await this.deps.run(o.msg.id, o.plan, o.slots);
+      // recheck found every destination empty; one the user fills before the run's first read stops it.
+      const empty: Record<string, Record<string, string>> = {};
+      for (const c of o.cells) (empty[c.dstWindowId] ??= {})[c.dstKey] = "";
+      r = await this.deps.run(o.msg.id, o.plan, o.slots, empty);
     } catch (e) {
       return { refused: e instanceof Error ? e.message : String(e) };
     }
@@ -419,7 +428,7 @@ export class PatternEngine {
     };
     // A memory rule may change what Caret writes; the loop must accept that value when it comes back as a transfer.
     if (ids.loopId !== null) for (const c of written) if (c.written !== c.value) this.loops.expect(ids.loopId, c.dstKey, c.written, c.kind);
-    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, derived: [] };
+    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, derived: [], altSources: new Set(), altMemory: new Set() };
     this.offers.set(id, o);
     this.deps.publish(msg);
     if (kind !== "loopNext") this.offerAction(o);
@@ -447,6 +456,8 @@ export class PatternEngine {
       for (const alt of alternatives[i] ?? []) {
         const m = applyMemory(this.deps.memory, this.deps.hash, alt.value, alt.kind, c.dstShapeHash);
         if (m.value !== alt.value && o.loopId !== null) this.loops.expect(o.loopId, alt.dstKey, m.value, alt.kind, alt.srcWindowId);
+        o.altSources.add(alt.srcWindowId);
+        for (const id of m.used) o.altMemory.add(id);
         candidates.push(this.cellValue(alt.srcWindowId, alt.srcKey, alt.value, m.value, m.used));
       }
       const top = candidates[0] as PopupValue;
@@ -532,7 +543,7 @@ export class PatternEngine {
   /** Withdraws every open offer built from this memory entry: its routine, or a value a memory rule changed. */
   private withdrawDependents(id: string): void {
     for (const o of this.offers.values()) {
-      if (o.state === "open" && (o.routineId === id || o.cells.some((c) => c.memory.includes(id)))) this.withdraw(o, "stale");
+      if (o.state === "open" && (o.routineId === id || o.cells.some((c) => c.memory.includes(id)) || o.altMemory.has(id))) this.withdraw(o, "stale");
     }
   }
 

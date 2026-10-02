@@ -93,6 +93,8 @@ export class SocketReader {
   /** Milliseconds to hold the answer to a verb of this kind, to keep a run in flight. */
   readonly delayMs: Partial<Record<ReaderVerb["kind"], number>> = {};
   frontmostPid: number | null = null;
+  /** Each app's own focused window, which it keeps while it is in the background. */
+  private readonly appFocus = new Map<number, string>();
   /** The recording's clock, carried on into the snapshots verbs produce. */
   clock = 0;
   private seq = 0;
@@ -135,11 +137,15 @@ export class SocketReader {
     hooks.tick(this.clock);
   }
 
-  /** Resends a window as a fresh walk would, stamped after everything sent so far. */
+  /**
+   * Resends a window as a fresh walk would, stamped after everything sent so far. Like caret-screen's
+   * request walk, it marks the window focused when it is its app's own focused window, even while that
+   * app is in the background.
+   */
   show(windowId: string): Snapshot {
     const w = this.window(windowId);
     this.clock += 10;
-    const s: Snapshot = { ...structuredClone(w), seq: ++this.seq, at: this.clock, reason: "request" };
+    const s: Snapshot = { ...structuredClone(w), seq: ++this.seq, at: this.clock, reason: "request", focused: this.appFocus.get(w.app.pid) === windowId };
     this.windows.set(windowId, s);
     this.client.send(s);
     return s;
@@ -158,8 +164,9 @@ export class SocketReader {
     return this.window(windowId).nodes.find((n) => n.key === key)?.value ?? "";
   }
 
+  /** The focused window of the frontmost app: the one the user is in. */
   focusedWindow(): string | null {
-    return [...this.windows.values()].find((w) => w.focused)?.window.windowId ?? null;
+    return this.frontmostPid === null ? null : (this.appFocus.get(this.frontmostPid) ?? null);
   }
 
   close(): void {
@@ -172,10 +179,12 @@ export class SocketReader {
     return w;
   }
 
-  /** One focused window at a time, and its app frontmost. */
+  /** The window becomes its app's focused window, and its app frontmost. */
   private focus(windowId: string): void {
-    for (const [id, w] of this.windows) w.focused = id === windowId;
-    this.frontmostPid = this.window(windowId).app.pid;
+    const pid = this.window(windowId).app.pid;
+    this.appFocus.set(pid, windowId);
+    for (const w of this.windows.values()) if (w.app.pid === pid) w.focused = w.window.windowId === windowId;
+    this.frontmostPid = pid;
   }
 
   private async answer(cmd: ReaderCommand): Promise<void> {
@@ -193,10 +202,16 @@ export class SocketReader {
       case "walk":
         this.show(verb.windowId);
         return reply("ok");
-      case "raise":
+      case "raise": {
+        // As caret-screen does on activation: an appSwitch, then the raised window's walk.
+        const to = this.window(verb.windowId).app;
+        const from = [...this.windows.values()].find((x) => x.app.pid === this.frontmostPid)?.app ?? null;
+        this.clock += 10;
+        if (from?.pid !== to.pid) this.client.send({ type: "appSwitch", v: PROTOCOL_VERSION, at: this.clock, from, to });
         this.focus(verb.windowId);
         this.show(verb.windowId);
         return reply("ok");
+      }
       case "press":
         return reply("noElement", verb.key);
       case "write": {

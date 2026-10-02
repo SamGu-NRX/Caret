@@ -68,8 +68,11 @@ describe("executor", () => {
     expect(app.verbs.filter((v) => v.kind === "raise")).toEqual([{ kind: "raise", pid: FIXTURE_APP.pid, windowId: WIN }]);
     expect(helper.executor.ledger("t1")).toEqual([]);
 
+    // Focused within its app is not enough: the app must also be the one the user is in.
     void helper.handleReader(snap(structuredClone(app.nodes), { at: 5000, windowId: WIN, title: TITLE, focused: true }));
-    expect(await helper.executor.run("t2", plan([front], "p2"), {})).toMatchObject({ outcome: "done", acted: 0, skipped: 1 });
+    expect(await helper.executor.run("t2", plan([front], "p2"), {})).toMatchObject({ outcome: "stopped", step: 0 });
+    void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 5100, from: null, to: FIXTURE_APP });
+    expect(await helper.executor.run("t3", plan([front], "p3"), {})).toMatchObject({ outcome: "done", acted: 0, skipped: 1 });
   });
 
   it("aborts on a mismatch and names the step: the write reports success but nothing changed", async () => {
