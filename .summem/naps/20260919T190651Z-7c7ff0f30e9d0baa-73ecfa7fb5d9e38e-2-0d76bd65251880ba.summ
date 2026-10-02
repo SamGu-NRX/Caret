@@ -1,1 +1,0 @@
-Caret runs screenpipe@0.4.50 as launchd job dev.caret.hackathon.screenpipe on :3031, exec'ing the cli-darwin Mach-O (TCC is that binary), not the npx shim; it logged screen=false accessibility=false and System Settings ON did not flip those preflights.
