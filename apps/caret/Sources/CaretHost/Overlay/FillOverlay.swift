@@ -85,8 +85,10 @@ final class FillOverlay {
     /// Draws the value in the field and names its source. Returns what happened to a toast that
     /// was still up; on `.replaceToast` the caller drops the toast's undo grant.
     @discardableResult
-    func showOffer(value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, pid: pid_t) -> FillLineRule.Outcome {
-        drawGhost(value: value, fieldFrame: fieldFrame, style: style)
+    func showOffer(
+        value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, pid: pid_t, hasPlaceholder: Bool = false
+    ) -> FillLineRule.Outcome {
+        drawGhost(value: value, fieldFrame: fieldFrame, style: style, masksPlaceholder: hasPlaceholder)
         let toastSource = line?.role == .toast ? line?.source : nil
         let outcome = FillLineRule.resolve(toastSource: toastSource, offerSource: caption)
         switch outcome {
@@ -102,7 +104,12 @@ final class FillOverlay {
         return outcome
     }
 
-    private func drawGhost(value: String, fieldFrame: CGRect, style: OverlayTextStyle) {
+    /// `masksPlaceholder`: the field shows placeholder text where the value goes, and the two
+    /// overlapped into an unreadable smear (A3 run, Phone: "+1 (512) 555-0142" over
+    /// "(555) 555-5555"). The ghost then sits on the system text background, which hides the
+    /// placeholder; an AppKit field's background is that color. Untested on fields drawn with
+    /// another background.
+    private func drawGhost(value: String, fieldFrame: CGRect, style: OverlayTextStyle, masksPlaceholder: Bool) {
         let frame = Screen.cocoa(fieldFrame)
         let font = style.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
         let isDark = ghost.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -114,6 +121,8 @@ final class FillOverlay {
         let inset: CGFloat = 4
         ghost.setFrame(frame.insetBy(dx: inset, dy: 0), display: false)
         ghostLabel.frame = NSRect(x: 0, y: (frame.height - textHeight) / 2, width: frame.width - inset * 2, height: textHeight)
+        ghostLabel.drawsBackground = masksPlaceholder
+        ghostLabel.backgroundColor = .textBackgroundColor
         // 0 to Ghost opacity over 60 ms, linear: below perception as motion, it only removes flicker.
         ghost.alphaValue = 0
         ghost.orderFrontRegardless()

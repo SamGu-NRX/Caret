@@ -42,6 +42,7 @@ CLAIM = "Caret Fixture — Claim form"
 REFERENCE = "Caret Fixture — Reference"
 
 STARTED = []
+CLEANUP = []
 CHECKS = []
 KEY_PANELS = []
 RUN_START = None
@@ -221,6 +222,12 @@ def rig(out_dir, appearance):
     if idle < IDLE_MIN:
         raise SystemExit(f"deferred: user active (idle {idle:.0f} s < {IDLE_MIN:.0f} s)")
     RUN_START = time.time()
+    # The fixture has no appearance flag; its own defaults domain (created here, removed on exit)
+    # sets it for this run only.
+    prefs = os.path.expanduser("~/Library/Preferences/caret-fixture.plist")
+    if appearance == "dark" and not os.path.exists(prefs):
+        subprocess.run(["defaults", "write", "caret-fixture", "AppleInterfaceStyle", "Dark"], check=True)
+        CLEANUP.append(lambda: subprocess.run(["defaults", "delete", "caret-fixture"]))
     CHECKS.append({"check": "front app before launch", "ok": True,
                    "front": subprocess.run(["lsappinfo", "front"], capture_output=True, text=True).stdout.strip()})
     if os.path.exists(HOST_SOCK):
@@ -415,10 +422,12 @@ def fill(out_dir, appearance):
             "descriptor": f"Text field. Label: '{label}'.", "choice": f"c{i}", "confidence": 0.97,
             "value": by_label[label]["gold"],
             "source": {"windowId": f"{pid}-1", "bundleId": "dev.caret.fixture", "appName": "Caret Fixture",
-                       "windowTitle": REFERENCE, "nodeKey": f"reference/{i}", "kind": "text"},
+                       "windowTitle": REFERENCE, "nodeKey": f"reference/{i}", "kind": None},
             "withheld": None,
             "asks": [{"choice": f"c{i}", "confidence": 0.97, "value": by_label[label]["gold"]}] * 2,
         } for i, label in enumerate(labels)],
+        "candidates": len(labels), "cutoff": 0.9,
+        "jev": {"model": "synthetic", "latencyMs": 0, "inputTokens": 0, "costUsd": 0},
     }
     ax(pid, "focus", pid, frame_arg(by_label["Full name"]["frame"]))
     time.sleep(0.3)
@@ -485,6 +494,8 @@ if __name__ == "__main__":
         results = (alternatives if mode == "alternatives" else fill)(out, appearance)
     finally:
         stop_all()
+        for undo in CLEANUP:
+            undo()
         os.makedirs(out, exist_ok=True)
         results["checks"] = CHECKS
         results["idleLog"] = IDLE_LOG

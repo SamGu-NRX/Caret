@@ -149,7 +149,8 @@ final class FillCoordinator {
         ))
         let outcome = overlay.showOffer(
             value: value, fieldFrame: frame, style: FieldStyleProbe.style(of: element),
-            caption: origin.sourceCaption, pid: field.identity.pid
+            caption: origin.sourceCaption, pid: field.identity.pid,
+            hasPlaceholder: !(AXRead.string(kAXPlaceholderValueAttribute, on: element) ?? "").isEmpty
         )
         if outcome == .replaceToast, let toastGrantID {
             // The toast gave way to an offer from another source, and its undo went with it.

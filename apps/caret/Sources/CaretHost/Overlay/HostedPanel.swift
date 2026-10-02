@@ -204,10 +204,14 @@ final class HostedPanel {
 }
 
 /// What a line would cover: the frames of the app's own elements under each candidate spot,
-/// found by Accessibility hit-testing a few points per candidate. Containers (the window, groups,
-/// scroll areas) are empty space; anything else (a field, a label, a button, the title) is in the
-/// way.
+/// found by Accessibility hit-testing a few points per candidate. Containers (groups, scroll
+/// areas) are empty space; anything else (a field, a label, a button) is in the way, and so is a
+/// window's title bar, which hit-tests as the window itself.
 enum ObstacleProbe {
+    /// A standard macOS title bar. Assumed: Accessibility exposes no title bar frame, and windows
+    /// with a toolbar or a hidden title bar differ.
+    static let titleBarHeight: CGFloat = 28
+
     static let containerRoles: Set<String> = ["AXWindow", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXUnknown", "AXSheet"]
 
     static func obstacles(pid: pid_t, under candidates: [CGRect]) -> [CGRect] {
@@ -221,6 +225,11 @@ enum ObstacleProbe {
                     guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
                           let hit, AXRead.pid(of: hit) == pid else { continue }
                     let role = AXRead.string(kAXRoleAttribute, on: hit) ?? "AXUnknown"
+                    if role == "AXWindow", let window = AXRead.frame(of: hit), point.y < window.minY + titleBarHeight {
+                        let bar = CGRect(x: window.minX, y: window.minY, width: window.width, height: titleBarHeight)
+                        if !found.contains(bar) { found.append(bar) }
+                        continue
+                    }
                     guard !containerRoles.contains(role), let frame = AXRead.frame(of: hit) else { continue }
                     if !found.contains(frame) { found.append(frame) }
                 }
