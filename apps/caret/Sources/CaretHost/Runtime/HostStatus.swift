@@ -14,6 +14,7 @@ final class HostStatus: @unchecked Sendable {
         var lastInsertion: DebugState.Insertion?
         var lastUndo: DebugState.UndoInfo?
         var fill = DebugState.FillStatus()
+        var surface: DebugState.SurfaceInfo?
         var counters: [String: UInt64] = [:]
     }
 

@@ -72,8 +72,17 @@ public struct Choice: Equatable, Sendable {
     public var wordOnly: Bool
     /// Command-1 over ghost fill: every empty field.
     public var fillAll: Bool
+    /// The reveal applied when the action was taken, so the row can be named by its block.
+    public var revealed: String?
+    /// The action line had been opened into its variants.
+    public var expanded: Bool
 
-    public init(candidate: Int = 0, actionID: String? = nil, row: Int? = nil, wordOnly: Bool = false, fillAll: Bool = false) {
+    public init(
+        candidate: Int = 0, actionID: String? = nil, row: Int? = nil, wordOnly: Bool = false, fillAll: Bool = false,
+        revealed: String? = nil, expanded: Bool = false
+    ) {
+        self.revealed = revealed
+        self.expanded = expanded
         self.candidate = candidate
         self.actionID = actionID
         self.row = row

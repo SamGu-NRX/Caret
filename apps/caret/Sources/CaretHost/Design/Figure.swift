@@ -479,11 +479,11 @@ extension FigurePose {
 
 // MARK: - Menu bar glyph
 
-enum FigureGlyph {
+public enum FigureGlyph {
     /// A 16 pt template image of the character, 12 pt tall, eyes cut out. While working it is
     /// drawn in Carrot instead (`IDENTITY.md`, the one time the glyph changes).
     @MainActor
-    static func image(_ character: FigureCharacter, working: Bool) -> NSImage {
+    public static func image(_ character: FigureCharacter, working: Bool) -> NSImage {
         let drawing = character.drawing
         let height: CGFloat = 12
         let width = height * drawing.viewBox.width / drawing.viewBox.height

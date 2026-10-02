@@ -278,7 +278,7 @@ public final class OfferArbiter: @unchecked Sendable {
             .consume(claim(offer, choice: choice, state: &s, now: now))
         }
         func takeAction(_ action: PopupSpec.Action?) -> Decision {
-            take(Choice(actionID: action?.id, row: rows > 0 ? s.ui.highlight : nil))
+            take(Choice(actionID: action?.id, row: rows > 0 ? s.ui.highlight : nil, revealed: s.ui.revealed, expanded: s.ui.expanded))
         }
 
         switch (key, surface) {

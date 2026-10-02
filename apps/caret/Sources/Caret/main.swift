@@ -3,7 +3,8 @@ import CaretHost
 
 // Launch by direct exec of Caret.app/Contents/MacOS/Caret so the process inherits the launching
 // app's Accessibility grant. Flags: --socket <path>, --model <path>, --allow <bundle,ids>,
-// --allow-pids <pid,pid>, --helper-socket <path>, --no-ghost, --no-fill-advance.
+// --allow-pids <pid,pid>, --helper-socket <path>, --no-ghost, --no-fill-advance,
+// --appearance light|dark.
 // Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES,
 // CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off.
 
@@ -40,6 +41,9 @@ if CommandLine.arguments.dropFirst().first == "--probe" {
     }
     RunLoop.main.run()
 }
+// `--appearance light|dark` (CARET_APPEARANCE) pins the overlays' appearance, for screenshots of
+// both themes on one Mac without changing the system setting.
+var appearanceName = ProcessInfo.processInfo.environment["CARET_APPEARANCE"]
 var arguments = CommandLine.arguments.dropFirst().makeIterator()
 while let argument = arguments.next() {
     switch argument {
@@ -49,6 +53,7 @@ while let argument = arguments.next() {
     case "--helper-socket": if let value = arguments.next() { configuration.helperSocketPath = value }
     case "--no-ghost": configuration.ghostEnabled = false
     case "--no-fill-advance": configuration.fillAdvances = false
+    case "--appearance": appearanceName = arguments.next()
     case "--allow":
         if let value = arguments.next() {
             configuration.allowedBundleIDs = Set(value.split(separator: ",").map(String.init))
@@ -63,5 +68,10 @@ MainActor.assumeIsolated {
     let delegate = AppDelegate(configuration: launchConfiguration)
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
+    switch appearanceName {
+    case "dark": app.appearance = NSAppearance(named: .darkAqua)
+    case "light": app.appearance = NSAppearance(named: .aqua)
+    default: break
+    }
     app.run()
 }

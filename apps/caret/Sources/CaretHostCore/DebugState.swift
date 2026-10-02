@@ -239,6 +239,50 @@ public struct DebugState: Codable, Equatable, Sendable {
         public init() {}
     }
 
+    /// Alternatives, action lines, pop-ups and the lines after an accepted action.
+    public struct SurfaceInfo: Codable, Equatable, Sendable {
+        public var offerId: UInt64?
+        /// `ghost` (alternatives), `action` or `popup`.
+        public var kind: String?
+        public var source: String?
+        public var candidates: [String]?
+        /// The arbiter's navigation state for the shown offer.
+        public var ui: OfferUI?
+        /// The ghost text drawn at the caret (model or injected output, never field text).
+        public var ghost: String?
+        public var panel: Panel?
+        public var decor: Panel?
+        public var list: Panel?
+        public var figure: String?
+        public var character: String?
+        public var lineText: String?
+        /// Seconds the accepted work has run.
+        public var working: Double?
+        public var lastAccepted: AcceptInfo?
+
+        public init() {}
+    }
+
+    public struct AcceptInfo: Codable, Equatable, Sendable {
+        public var offerKey: String?
+        public var actionId: String?
+        public var candidate: Int?
+        public var row: Int?
+        public var overrides: [String: Int]?
+        public var source: String
+        public var kind: String
+
+        public init(offerKey: String?, actionId: String?, candidate: Int?, row: Int?, overrides: [String: Int]?, source: String, kind: String) {
+            self.offerKey = offerKey
+            self.actionId = actionId
+            self.candidate = candidate
+            self.row = row
+            self.overrides = overrides
+            self.source = source
+            self.kind = kind
+        }
+    }
+
     public struct UndoInfo: Codable, Equatable, Sendable {
         public var grantID: UInt64
         public var ok: Bool
@@ -296,6 +340,7 @@ public struct DebugState: Codable, Equatable, Sendable {
     public var helper: HelperLink?
     public var fill: FillStatus?
     public var lastUndo: UndoInfo?
+    public var surface: SurfaceInfo?
     /// Apps that ignored a pid-posted paste and now take AX writes, by bundle id or `exe:` name.
     public var writeMethods: [String: String]?
 

@@ -88,10 +88,19 @@ final class DebugStateSocket: @unchecked Sendable {
         var noSigPipe: Int32 = 1
         setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
 
-        var buffer = [UInt8](repeating: 0, count: 512)
-        let count = read(client, &buffer, buffer.count)
-        let request = count > 0 ? String(decoding: buffer[0..<count], as: UTF8.self) : ""
-        let command = request.trimmingCharacters(in: .whitespacesAndNewlines)
+        // One line, up to 64 KB (an injected pop-up spec runs to a few KB), ended by a newline or
+        // by the client closing its side.
+        var received = Data()
+        var chunk = [UInt8](repeating: 0, count: 8192)
+        while received.count < 65_536 {
+            let count = read(client, &chunk, chunk.count)
+            if count <= 0 { break }
+            received.append(contentsOf: chunk[0..<count])
+            if chunk[0..<count].contains(0x0A) { break }
+        }
+        let firstLine = String(decoding: received, as: UTF8.self)
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        let command = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
         let reply = respond(command.isEmpty ? "state" : command)
         reply.withUnsafeBytes { raw in
             var offset = 0

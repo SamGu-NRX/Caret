@@ -108,6 +108,10 @@ extension Offer {
 public struct StatusLine: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case working(startedAt: Date)
+        /// A result with nothing to undo ("Done, in Calendar", "Stopped"). Keys as the error line:
+        /// Esc closes it, anything else passes and dismisses it. A result with an undo is the
+        /// toast, held as an `UndoGrant`.
+        case result
         case error
     }
 
@@ -131,7 +135,7 @@ public struct StatusLine: Equatable, Sendable {
     public func surface(at now: Date) -> Surface {
         switch kind {
         case .working(let started): return .working(stoppable: now.timeIntervalSince(started) >= Self.stoppableAfter)
-        case .error: return .errorLine
+        case .error, .result: return .errorLine
         }
     }
 }

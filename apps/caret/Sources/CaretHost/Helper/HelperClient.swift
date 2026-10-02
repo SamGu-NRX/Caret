@@ -59,7 +59,16 @@ final class HelperClient: @unchecked Sendable {
     /// write the helper cannot hear about is not worth queueing across a reconnect, because the
     /// new helper session has forgotten the proposal.
     func send(_ result: FillResult) {
-        guard let line = try? NDJSON.line(result) else { return }
+        sendLine(try? NDJSON.line(result))
+    }
+
+    /// `offerAccept` for an action line or pop-up the helper offered. Counted with the results.
+    func send(_ accept: OfferAccept) {
+        sendLine(try? NDJSON.line(accept))
+    }
+
+    private func sendLine(_ line: Data?) {
+        guard let line else { return }
         let sent = connection.withLock { fd -> Bool in
             guard fd >= 0 else { return false }
             return Self.writeAll(fd, line)

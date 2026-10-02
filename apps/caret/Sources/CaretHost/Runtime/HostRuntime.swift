@@ -69,6 +69,7 @@ public final class HostRuntime {
     private let focus = FocusObserver()
     private let coordinator: HostCoordinator
     private let fill: FillCoordinator
+    private let surface: SurfaceCoordinator
     private let helper: HelperClient
     private let executor: InsertionExecutor
     private let tap: TapThread
@@ -86,6 +87,8 @@ public final class HostRuntime {
         self.coordinator = coordinator
         let fill = FillCoordinator(arbiter: arbiter, status: status, overlay: FillOverlay(), watcher: FillTargetWatcher(), policy: policy)
         self.fill = fill
+        let surface = SurfaceCoordinator(arbiter: arbiter, status: status, policy: policy, compatibilityStore: compatibilityStore)
+        self.surface = surface
         let executor = InsertionExecutor(
             arbiter: arbiter, status: status, compatibilityStore: compatibilityStore, policy: policy,
             advanceAfterFill: configuration.fillAdvances,
@@ -94,6 +97,7 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         coordinator.insertionFinished(result)
                         fill.insertionFinished(result)
+                        surface.insertionFinished(result)
                     }
                 }
             },
@@ -104,11 +108,13 @@ public final class HostRuntime {
         self.executor = executor
         coordinator.executor = executor
         fill.executor = executor
+        surface.executor = executor
         helper = HelperClient(path: configuration.helperSocketPath) { message in
             let at = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async { MainActor.assumeIsolated { fill.receive(message, at: at) } }
         }
         fill.client = helper
+        surface.client = helper
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
                 if claim.insertsText { executor.submit(claim) }
@@ -116,6 +122,7 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         coordinator.claimed(claim)
                         fill.claimed(claim)
+                        surface.claimed(claim)
                     }
                 }
             },
@@ -124,6 +131,7 @@ public final class HostRuntime {
                     MainActor.assumeIsolated {
                         coordinator.offerChanged(reason, key: key)
                         fill.offerChanged(reason)
+                        surface.offerChanged(reason)
                     }
                 }
             },
@@ -131,18 +139,49 @@ public final class HostRuntime {
                 executor.submitUndo(grant)
                 DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoStarted(grant) } }
             },
-            keyDown: { status.noteKeyDown($0) }
+            keyDown: { status.noteKeyDown($0) },
+            navigated: { offerID, ui in
+                DispatchQueue.main.async { MainActor.assumeIsolated { surface.navigated(offerID: offerID, ui: ui) } }
+            },
+            stopWork: { line in
+                DispatchQueue.main.async { MainActor.assumeIsolated { surface.stopWork(line) } }
+            }
         ))
         let tap = self.tap
         let helper = self.helper
         let writeMethods = executor.writeMethods
+        let hooks = MainHooks(
+            inject: { data in
+                MainActor.assumeIsolated {
+                    do {
+                        let injection = try SurfaceInjection.decode(data)
+                        if case .helperLine(let line) = injection {
+                            let message = try HelperInbound.decode(line)
+                            fill.receive(message, at: DispatchTime.now().uptimeNanoseconds)
+                            return #"{"ok":true}"#
+                        }
+                        return surface.inject(injection)
+                    } catch {
+                        return "{\"error\":\(Self.jsonString(String(describing: error)))}"
+                    }
+                }
+            },
+            progress: { phase in MainActor.assumeIsolated { surface.progress(phase) } },
+            surface: { MainActor.assumeIsolated { surface.debugInfo() } }
+        )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
-            Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
+            Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods, hooks: hooks)
         }
     }
 
     /// Throws when another host already serves the socket; the caller should exit rather than run
     /// a second key tap.
+    /// True while accepted work runs (the menu bar glyph tints Carrot).
+    public var onWorkingChanged: ((Bool) -> Void)? {
+        get { surface.onWorkingChanged }
+        set { surface.onWorkingChanged = newValue }
+    }
+
     public func start() throws {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
@@ -173,6 +212,7 @@ public final class HostRuntime {
         focus.stop()
         helper.stop()
         fill.shutdown()
+        surface.shutdown()
         overlay.hide()
         arbiter.invalidate()
         // A paste in progress must finish and put the user's clipboard back before exit.
@@ -204,9 +244,21 @@ public final class HostRuntime {
 
     // MARK: - Debug socket (socket thread)
 
+    /// Socket-thread entry points that must run on the main thread. Each call blocks the socket
+    /// thread until main has run it, so a reply reflects what is on screen.
+    struct MainHooks: Sendable {
+        let inject: @Sendable (Data) -> String
+        let progress: @Sendable (String) -> String
+        let surface: @Sendable () -> DebugState.SurfaceInfo
+    }
+
+    nonisolated static func jsonString(_ text: String) -> String {
+        (try? String(decoding: JSONEncoder().encode(text), as: UTF8.self)) ?? "\"\""
+    }
+
     private nonisolated static func respond(
         to command: String, arbiter: OfferArbiter, status: HostStatus, tap: TapThread,
-        helper: HelperClient, writeMethods: WriteMethodTable
+        helper: HelperClient, writeMethods: WriteMethodTable, hooks: MainHooks
     ) -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -224,12 +276,24 @@ public final class HostRuntime {
             // Test hook: `key <name> <pid>` routes a constructed key-down, headed for <pid>, through
             // the same arbiter and callbacks as the event tap. No event is posted anywhere.
             guard words.count == 3, let pid = Int32(words[2]), let key = TestKeys.key(words[1], pid: pid) else {
-                return Data("{\"error\":\"usage: key tab|esc|cmd-z|cmd-1|cmd-2|cmd-3|char:<c> <pid>\"}\n".utf8)
+                return Data("{\"error\":\"usage: key \(TestKeys.names) <pid>\"}\n".utf8)
             }
             let consumed = tap.route(key)
+            // The tap's callbacks post to main; wait for them, so the next read sees their effect.
+            DispatchQueue.main.sync {}
             return Data("{\"ok\":true,\"consumed\":\(consumed)}\n".utf8)
+        case "inject":
+            // `inject <json>`: an offer for the focused field of the pid it names (SurfaceInjection).
+            let json = command.dropFirst("inject".count).trimmingCharacters(in: .whitespaces)
+            let reply = DispatchQueue.main.sync { hooks.inject(Data(json.utf8)) }
+            return Data((reply + "\n").utf8)
+        case "progress":
+            guard words.count == 2 else { return Data("{\"error\":\"usage: progress done|error\"}\n".utf8) }
+            let reply = DispatchQueue.main.sync { hooks.progress(words[1]) }
+            return Data((reply + "\n").utf8)
         case "state":
-            let state = makeState(arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
+            var state = makeState(arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
+            state.surface = DispatchQueue.main.sync { hooks.surface() }
             return ((try? encoder.encode(state)) ?? Data("{}".utf8)) + Data("\n".utf8)
         default:
             return Data("{\"error\":\"unknown command\"}\n".utf8)
@@ -252,7 +316,7 @@ public final class HostRuntime {
                 bundleID: offer.target.bundleID,
                 caretUTF16: offer.caretUTF16,
                 elementRevision: offer.target.elementRevision,
-                presentation: offer.kind == .ghost ? fields.presentation : "fill"
+                presentation: offer.kind == .ghost && offer.source == .engine ? fields.presentation : offer.kind.name
             )
             info.kind = offer.kind.name
             info.fill = offer.kind.fillOrigin.map {
@@ -290,9 +354,18 @@ public final class HostRuntime {
 
 /// Keys the debug socket's test hook can route.
 enum TestKeys {
+    static let names = "tab|shift-tab|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
+
     static func key(_ name: String, pid: Int32) -> KeyStroke? {
         switch name {
         case "tab": return .tab(to: pid)
+        case "shift-tab": return KeyStroke(keyCode: KeyStroke.tabKeyCode, shift: true, targetPID: pid)
+        case "up": return KeyStroke(keyCode: KeyStroke.upKeyCode, targetPID: pid)
+        case "down": return KeyStroke(keyCode: KeyStroke.downKeyCode, targetPID: pid)
+        case "left": return KeyStroke(keyCode: KeyStroke.leftKeyCode, targetPID: pid)
+        case "right": return KeyStroke(keyCode: KeyStroke.rightKeyCode, targetPID: pid)
+        case "return": return KeyStroke(keyCode: KeyStroke.returnKeyCode, targetPID: pid)
+        case "space": return KeyStroke(keyCode: KeyStroke.spaceKeyCode, text: " ", targetPID: pid)
         case "esc": return KeyStroke(keyCode: KeyStroke.escapeKeyCode, targetPID: pid)
         case "cmd-z": return KeyStroke(keyCode: KeyStroke.zKeyCode, command: true, targetPID: pid)
         case "cmd-1": return KeyStroke(keyCode: 18, command: true, targetPID: pid)

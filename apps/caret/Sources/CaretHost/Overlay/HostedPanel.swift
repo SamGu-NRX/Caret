@@ -72,22 +72,33 @@ final class HostedPanel {
     var text = ""
     private(set) var isExiting = false
 
-    init(radius: CGFloat) {
-        material.material = .popover
-        material.blendingMode = .behindWindow
-        material.state = .active
-        material.wantsLayer = true
-        material.layer?.cornerRadius = radius
-        material.layer?.cornerCurve = .continuous
-        material.layer?.masksToBounds = true
-        material.autoresizingMask = [.width, .height]
+    /// `material: false` for decoration drawn straight over the app (the underline and count),
+    /// which has no surface, blur or shadow of its own.
+    init(radius: CGFloat, material hasMaterial: Bool = true) {
         host.autoresizingMask = [.width, .height]
         // The panel sizes the host from its fitting size; no constraints of its own.
         host.sizingOptions = []
-        material.addSubview(host)
-        panel.contentView = material
-        panel.hasShadow = true
+        if hasMaterial {
+            material.material = .popover
+            material.blendingMode = .behindWindow
+            material.state = .active
+            material.wantsLayer = true
+            material.layer?.cornerRadius = radius
+            material.layer?.cornerCurve = .continuous
+            material.layer?.masksToBounds = true
+            material.autoresizingMask = [.width, .height]
+            material.addSubview(host)
+            panel.contentView = material
+            panel.hasShadow = true
+        } else {
+            host.wantsLayer = true
+            panel.contentView = host
+            bare = true
+        }
     }
+
+    /// True for a panel with no material: `host` sits directly in the content view.
+    private var bare = false
 
     var isVisible: Bool { panel.isVisible && !isExiting }
 
@@ -123,7 +134,7 @@ final class HostedPanel {
         }
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
         material.frame = NSRect(origin: .zero, size: size)
-        host.frame = material.bounds
+        host.frame = NSRect(origin: .zero, size: size)
     }
 
     /// Opacity 0 to 1, scale 0.96 to 1 and a 2 pt settle toward the anchor, 160 ms `--ease-out`,
@@ -138,8 +149,8 @@ final class HostedPanel {
             context.timingFunction = Motion.caCurve(Motion.easeOut)
             panel.animator().alphaValue = 1
         }
-        guard !reduce, let layer = material.layer else { return }
-        let w = material.bounds.width, h = material.bounds.height
+        guard !reduce, let layer = (bare ? host : material).layer else { return }
+        let w = panel.frame.width, h = panel.frame.height
         // Layer space is bottom-left; the pivot is the anchored corner.
         let px: CGFloat = (anchor.corner == .topRight || anchor.corner == .bottomRight) ? w : 0
         let py: CGFloat = (anchor.corner == .topLeft || anchor.corner == .topRight) ? h : 0
