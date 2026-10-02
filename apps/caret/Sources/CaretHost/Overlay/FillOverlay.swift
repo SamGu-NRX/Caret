@@ -1,4 +1,5 @@
 import AppKit
+import CaretHostCore
 import CompletionUI
 import QuartzCore
 
@@ -25,6 +26,27 @@ final class FillOverlay {
 
     var isShowingOffer: Bool { offerLine != nil }
     var isShowingToast: Bool { toastLine != nil }
+    /// Called after every change of what is shown, including the toast's own timeout.
+    var onChange: (() -> Void)?
+
+    func debugInfo() -> DebugState.Overlay {
+        DebugState.Overlay(
+            ghost: ghost.isVisible ? Self.panel(ghost, text: ghostLabel.stringValue) : nil,
+            line: offerLine.map { Self.panel($0.panel, text: $0.text) },
+            toast: toastLine.map { Self.panel($0.panel, text: $0.text) }
+        )
+    }
+
+    private static func panel(_ window: NSWindow, text: String?) -> DebugState.Panel {
+        let f = window.frame
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return DebugState.Panel(
+            windowNumber: window.windowNumber,
+            frame: [f.minX, primaryHeight - f.maxY, f.width, f.height].map { Double($0) },
+            isKey: window.isKeyWindow,
+            text: text
+        )
+    }
 
     init() {
         ghostLabel.lineBreakMode = .byClipping
@@ -52,17 +74,20 @@ final class FillOverlay {
         line.place(aboveRightOf: frame)
         if offerLine == nil { line.enter() }
         offerLine = line
+        onChange?()
     }
 
     /// Tab was taken: the real text is on its way, so the ghost goes; the line stays for the result.
     func markWorking() {
         ghost.orderOut(nil)
+        onChange?()
     }
 
     func hideOffer(byTyping: Bool) {
         ghost.orderOut(nil)
         offerLine?.exit(duration: byTyping ? 0.08 : 0.10)
         offerLine = nil
+        onChange?()
     }
 
     /// Turns the offer line into the result toast where it stands, or shows a toast at `anchor` if
@@ -87,6 +112,7 @@ final class FillOverlay {
         toastTimer = Timer.scheduledTimer(withTimeInterval: lifetime, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.hideToast(byTyping: false) }
         }
+        onChange?()
     }
 
     func hideToast(byTyping: Bool) {
@@ -94,6 +120,7 @@ final class FillOverlay {
         toastTimer = nil
         toastLine?.exit(duration: byTyping ? 0.08 : 0.20)
         toastLine = nil
+        onChange?()
     }
 
     func hideAll() {
@@ -112,6 +139,8 @@ private final class OfferLine {
     private let figure = FigureView()
     private let label = NSTextField(labelWithString: "")
     private let keycap = Keycap()
+    /// What the line says, for the debug socket.
+    private(set) var text = ""
 
     init() {
         surface.material = .popover
@@ -142,6 +171,7 @@ private final class OfferLine {
             .foregroundColor: secondary ? NSColor.secondaryLabelColor : NSColor.labelColor,
         ]))
         label.attributedStringValue = body
+        self.text = [lead, text, cap].compactMap { $0 }.joined(separator: " ")
         keycap.isHidden = cap == nil
         keycap.text = cap ?? ""
         layout()
@@ -168,11 +198,13 @@ private final class OfferLine {
     private func layout() {
         let height: CGFloat = 28
         let figureSize = FigureView.size
-        let labelSize = label.attributedStringValue.size()
+        // The control's own fitting size includes the cell's padding; the string's size does not,
+        // and sizing from it truncated "Tab" to "Ta" (run4 screenshots).
+        let labelSize = label.fittingSize
         var x: CGFloat = 9
         figure.frame = NSRect(x: x, y: (height - figureSize.height) / 2, width: figureSize.width, height: figureSize.height)
         x += figureSize.width + 8
-        let labelWidth = min(ceil(labelSize.width) + 2, 320)
+        let labelWidth = min(ceil(labelSize.width), 400)
         label.frame = NSRect(x: x, y: (height - 16) / 2, width: labelWidth, height: 16)
         x += labelWidth
         if !keycap.isHidden {
@@ -235,7 +267,7 @@ private final class Keycap: NSView {
         }
     }
 
-    var fittingWidth: CGFloat { ceil(label.attributedStringValue.size().width) + 12 }
+    var fittingWidth: CGFloat { ceil(label.fittingSize.width) + 10 }
 
     override init(frame: NSRect) {
         super.init(frame: frame)

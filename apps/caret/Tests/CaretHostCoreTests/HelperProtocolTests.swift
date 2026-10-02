@@ -212,6 +212,16 @@ final class FillSelectionTests: XCTestCase {
         XCTAssertEqual(bare.sourceCaption, "from Caret Fixture")
     }
 
+    func testARefusedOrUndoneValueIsNotOfferedInThatFieldAgain() throws {
+        let p = try goldenProposal()
+        let key = FillSelection.suppressionKey(windowID: p.windowId, fieldKey: p.fields[0].key, value: "dana.whitfield@example.com")
+        XCTAssertEqual(FillSelection.select(p, focusedFrame: emailFrame, focusedValue: "", secure: false, suppressed: [key]), .skip(.suppressed))
+        let otherValue = FillSelection.suppressionKey(windowID: p.windowId, fieldKey: p.fields[0].key, value: "someone@else.example")
+        guard case .offer = FillSelection.select(p, focusedFrame: emailFrame, focusedValue: "", secure: false, suppressed: [otherValue]) else {
+            return XCTFail("a different value for the field is still offerable")
+        }
+    }
+
     func testWindowIDsParseToPIDs() {
         XCTAssertEqual(FillSelection.pid(fromWindowID: "5150-2"), 5150)
         XCTAssertNil(FillSelection.pid(fromWindowID: "nodash"))

@@ -45,6 +45,8 @@ final class FillCoordinator {
     private var shownKey: String?
     private var lastFieldFrame: CGRect?
     private var toastGrantID: UInt64?
+    /// Values refused or undone, per field (`FillSelection.suppressionKey`).
+    private var suppressed: Set<String> = []
     private var toastGrantTimer: Timer?
 
     init(arbiter: OfferArbiter, status: HostStatus, overlay: FillOverlay, watcher: FillTargetWatcher, policy: TargetPolicy) {
@@ -54,6 +56,11 @@ final class FillCoordinator {
         self.watcher = watcher
         self.policy = policy
         watcher.onChange = { [weak self] pid, at in self?.evaluate(pid: pid, trigger: .focus(at)) }
+        overlay.onChange = { [weak self, weak overlay] in
+            guard let self, let overlay else { return }
+            let info = overlay.debugInfo()
+            self.status.update { $0.fill.overlay = info }
+        }
     }
 
     // MARK: - Helper messages
@@ -80,6 +87,11 @@ final class FillCoordinator {
     // MARK: - Evaluation
 
     private func evaluate(pid: pid_t, trigger: Trigger) {
+        switch trigger {
+        case .proposal: status.increment("fill.eval.proposal")
+        case .focus: status.increment("fill.eval.focus")
+        case .other: status.increment("fill.eval.afterWrite")
+        }
         let now = Date()
         held = held.filter { now.timeIntervalSince($0.value.receivedAt) <= proposalMaxAge }
         let candidates = held.values
@@ -91,7 +103,9 @@ final class FillCoordinator {
             return withdraw("noProposal")
         }
         // A claim on its way into this app: its own write will change the field; leave the line.
-        if arbiter.snapshot().insertingClaimID != nil { return }
+        if arbiter.snapshot().insertingClaimID != nil {
+            return status.increment("fill.skip.inserting")
+        }
 
         guard let reread = FieldReader.readFocused(pid: pid), let frame = AXRead.frame(of: reread.element) else {
             return withdraw("fieldUnreadable")
@@ -103,7 +117,7 @@ final class FillCoordinator {
         let focusedFrame = Frame(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
         var skip = FillSelection.Skip.noFieldAtFocus
         for candidate in candidates {
-            switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: field.value, secure: field.secure) {
+            switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: field.value, secure: field.secure, suppressed: suppressed) {
             case .offer(let proposed, let origin):
                 return present(proposed, origin: origin, element: element, field: field, frame: frame, trigger: trigger)
             case .skip(let reason):
@@ -149,6 +163,7 @@ final class FillCoordinator {
 
     private func withdraw(_ reason: String) {
         status.update { $0.fill.lastSkip = reason }
+        status.increment("fill.skip.\(reason)")
         guard let shownOfferID else { return }
         arbiter.invalidate(offerID: shownOfferID)
         overlay.hideOffer(byTyping: false)
@@ -197,6 +212,9 @@ final class FillCoordinator {
         guard let origin = result.claim.offer.kind.fillOrigin else { return }
         let pid = result.claim.offer.target.pid
         let verified = result.insertion.verified == true
+        if !verified {
+            suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: result.claim.offer.text))
+        }
         let outcome: FillResult.Outcome = result.rejected ? .rejected : (verified ? .inserted : .failed)
         report(FillResult(
             at: Self.nowMs(), proposalId: origin.proposalID, windowId: origin.windowID, fieldKey: origin.fieldKey,
@@ -208,7 +226,9 @@ final class FillCoordinator {
             let id = arbiter.showToast(grant)
             executor?.bind(grantID: id, to: element.element)
             toastGrantID = id
-            let caption = "1 field \(origin.sourceCaption)"
+            // The toast names the app only ("Filled 4 fields from Mail", SURFACES.md section 6); the
+            // offer line already named the window.
+            let caption = "1 field from \(origin.sourceAppName)"
             overlay.showToast(.done, lead: "Filled", text: caption, keycap: "⌘Z Undo", lifetime: grant.lifetimeSeconds, anchor: lastFieldFrame)
             status.update { $0.fill.toast = DebugState.Toast(kind: "done", caption: "Filled \(caption)", grantID: id) }
             toastGrantTimer?.invalidate()
@@ -221,7 +241,7 @@ final class FillCoordinator {
                 }
             }
         } else {
-            let caption = Self.errorCaption(result.reason, app: origin.sourceAppName)
+            let caption = Self.errorCaption(result.reason)
             overlay.showToast(.error, lead: nil, text: caption, keycap: nil, lifetime: 6, anchor: lastFieldFrame)
             status.update { $0.fill.toast = DebugState.Toast(kind: "error", caption: caption, grantID: nil) }
         }
@@ -234,6 +254,9 @@ final class FillCoordinator {
 
     func undoFinished(_ result: InsertionExecutor.UndoResult) {
         guard let origin = result.grant.origin else { return }
+        if result.ok {
+            suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: result.grant.writtenValue))
+        }
         report(FillResult(
             at: Self.nowMs(), proposalId: origin.proposalID, windowId: origin.windowID, fieldKey: origin.fieldKey,
             outcome: result.ok ? .undone : .undoFailed, reason: result.error, method: .axValue,
@@ -262,10 +285,10 @@ final class FillCoordinator {
     }
 
     /// What went wrong and what next, without blame or probabilities (`IDENTITY.md` captions).
-    nonisolated static func errorCaption(_ reason: String?, app: String) -> String {
+    nonisolated static func errorCaption(_ reason: String?) -> String {
         switch reason ?? "" {
         case let r where r.hasPrefix("source."):
-            return "The value changed in \(app), so nothing was filled."
+            return "The source changed, so nothing was filled."
         case "targetMoved", "fieldContentChanged", "selectionMoved", "replacedTextChanged":
             return "The field changed, so nothing was filled."
         case "offerExpired":

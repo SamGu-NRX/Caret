@@ -84,6 +84,14 @@ public enum FillSelection {
         case fieldNotEmpty
         /// The focused element is secure, or its frame is unknown.
         case unsuitableField
+        /// This value was refused or undone in this field already; it is not offered there again
+        /// (IDENTITY.md: the same offer never comes back for the same phrase in the same field).
+        case suppressed
+    }
+
+    /// Identifies one value in one field of one window, for `suppressed`.
+    public static func suppressionKey(windowID: String, fieldKey: String, value: String) -> String {
+        [windowID, fieldKey, value].joined(separator: "\u{1}")
     }
 
     /// Frames are compared to within this many points, which absorbs rounding between readers.
@@ -93,15 +101,19 @@ public enum FillSelection {
         _ proposal: FillProposal,
         focusedFrame: Frame?,
         focusedValue: String,
-        secure: Bool
+        secure: Bool,
+        suppressed: Set<String> = []
     ) -> Result {
         guard !secure, let focusedFrame else { return .skip(.unsuitableField) }
         guard let field = proposal.fields.first(where: { $0.frame.map { matches($0, focusedFrame) } ?? false }) else {
             return .skip(.noFieldAtFocus)
         }
         guard focusedValue.isEmpty else { return .skip(.fieldNotEmpty) }
-        guard field.choice != "none", field.value?.isEmpty == false, let source = field.source else {
+        guard field.choice != "none", let value = field.value, !value.isEmpty, let source = field.source else {
             return .skip(.answerNone)
+        }
+        guard !suppressed.contains(suppressionKey(windowID: proposal.windowId, fieldKey: field.key, value: value)) else {
+            return .skip(.suppressed)
         }
         let origin = FillOrigin(
             proposalID: proposal.id,

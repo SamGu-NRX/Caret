@@ -179,6 +179,35 @@ public struct DebugState: Codable, Equatable, Sendable {
         }
     }
 
+    /// One of the host's overlay panels, for tests: where it is and that it never took key.
+    public struct Panel: Codable, Equatable, Sendable {
+        /// The window server's id, usable with `screencapture -l`.
+        public var windowNumber: Int
+        /// Global points, top-left origin, like Accessibility frames.
+        public var frame: [Double]
+        public var isKey: Bool
+        public var text: String?
+
+        public init(windowNumber: Int, frame: [Double], isKey: Bool, text: String?) {
+            self.windowNumber = windowNumber
+            self.frame = frame
+            self.isKey = isKey
+            self.text = text
+        }
+    }
+
+    public struct Overlay: Codable, Equatable, Sendable {
+        public var ghost: Panel?
+        public var line: Panel?
+        public var toast: Panel?
+
+        public init(ghost: Panel? = nil, line: Panel? = nil, toast: Panel? = nil) {
+            self.ghost = ghost
+            self.line = line
+            self.toast = toast
+        }
+    }
+
     public struct FillStatus: Codable, Equatable, Sendable {
         /// Proposals held for windows the user may still move through.
         public var cachedProposals = 0
@@ -190,6 +219,7 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var lastSkip: String?
         public var lastResult: FillResult?
         public var toast: Toast?
+        public var overlay: Overlay?
         public var offersShown: UInt64 = 0
         /// Proposal received to fill offer published, for offers made on a proposal's arrival.
         public var proposalToOffer: LatencyRecorder.Summary?
