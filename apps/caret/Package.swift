@@ -74,7 +74,9 @@ let package = Package(
         ),
         .testTarget(
             name: "CaretHostCoreTests",
-            dependencies: ["CaretHostCore", .product(name: "CaretScreenCore", package: "screen-reader")]
+            dependencies: ["CaretHostCore", .product(name: "CaretScreenCore", package: "screen-reader")],
+            // Read by #filePath, so a test can name the golden file the helper's schema also uses.
+            exclude: ["Fixtures"]
         ),
         .testTarget(name: "CaretHostTests", dependencies: ["CaretHost", "CaretHostCore"]),
     ]

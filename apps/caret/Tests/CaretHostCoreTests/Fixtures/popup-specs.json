@@ -1,0 +1,110 @@
+{
+  "about": "Golden PopupSpec fixtures for the host decoder and the helper's zod schema. All content is synthetic. valid: the three pop-ups of the Fable plan, section 2. invalid: each must be refused with the named error.",
+  "valid": {
+    "eventCard": {
+      "v": 1,
+      "id": "popup-event-1",
+      "figure": "offering",
+      "blocks": [
+        {"type": "header", "title": {"text": "Coffee with Dana", "ref": {"rule": "eventTitle", "derived": [{"node": "4242-1/compose/body", "quote": "grab coffee with Dana"}]}}},
+        {"type": "facts", "id": "when", "rows": [
+          {"value": {"text": "Thursday Oct 9, 3:00 to 3:30 pm", "ref": {"rule": "parseTime+30m", "derived": [{"node": "4242-1/compose/body", "quote": "Thursday at 3"}]}}},
+          {"value": {"text": "Personal", "ref": {"memory": "calendar-default"}}, "secondary": true}
+        ]},
+        {"type": "source", "value": {"text": "your message to Dana", "ref": {"node": "4242-1/compose"}}},
+        {"type": "actions", "items": [
+          {"id": "add", "label": "Add", "key": "tab"},
+          {"id": "changeTime", "label": "Change time", "key": "cmd-2", "reveal": {"replace": "when", "with":
+            {"type": "choices", "id": "time", "selected": 1, "rows": [
+              {"label": {"text": "2:30 to 3:00 pm", "ref": {"rule": "shift-30m", "derived": [{"node": "4242-1/compose/body", "quote": "Thursday at 3"}]}}},
+              {"label": {"text": "3:00 to 3:30 pm", "ref": {"rule": "parseTime+30m", "derived": [{"node": "4242-1/compose/body", "quote": "Thursday at 3"}]}}},
+              {"label": {"text": "3:30 to 4:00 pm", "ref": {"rule": "shift+30m", "derived": [{"node": "4242-1/compose/body", "quote": "Thursday at 3"}]}}}
+            ]}}}
+        ]}
+      ]
+    },
+    "fillPreview": {
+      "v": 1,
+      "id": "popup-fill-1",
+      "figure": "offering",
+      "blocks": [
+        {"type": "header", "title": {"text": "Fill 4 fields", "ref": {"rule": "count", "derived": [{"node": "5151-2/form"}]}}},
+        {"type": "source", "value": {"text": "Mail, Invoice 2041", "ref": {"node": "6060-1/message"}}},
+        {"type": "fields", "rows": [
+          {"destination": {"text": "Name", "ref": {"node": "5151-2/form/name/label"}}, "value": {"text": "Dana Reyes", "ref": {"node": "6060-1/message/body", "quote": "Dana Reyes"}}, "state": "ready"},
+          {"destination": {"text": "Email", "ref": {"node": "5151-2/form/email/label"}}, "value": {"text": "dana@northline.example", "ref": {"node": "6060-1/message/from", "quote": "dana@northline.example"}}, "state": "ready"},
+          {"destination": {"text": "Company", "ref": {"node": "5151-2/form/company/label"}}, "value": {"text": "Northline", "ref": {"node": "6060-1/message/body", "quote": "Northline"}}, "state": "unsure"},
+          {"destination": {"text": "Amount", "ref": {"node": "5151-2/form/amount/label"}}, "value": {"text": "$1,240.00", "ref": {"node": "6060-1/message/body", "quote": "$1,240.00"}}, "state": "ready"}
+        ]},
+        {"type": "actions", "items": [
+          {"id": "fillAll", "label": "Fill all", "key": "tab"},
+          {"id": "reviewOne", "label": "Review one by one", "key": "down"}
+        ]}
+      ]
+    },
+    "picker": {
+      "v": 1,
+      "id": "popup-which-1",
+      "figure": "needsYou",
+      "blocks": [
+        {"type": "header", "title": {"text": "Which Dana?", "ref": {"rule": "ambiguousName", "derived": [{"node": "4242-1/compose/body", "quote": "Dana"}]}}},
+        {"type": "choices", "selected": 0, "rows": [
+          {"label": {"text": "Dana Reyes", "ref": {"memory": "person-reyes"}}, "hint": {"text": "Northline", "ref": {"memory": "person-reyes"}}},
+          {"label": {"text": "Dana Kim", "ref": {"memory": "person-kim"}}, "hint": {"text": "climbing", "ref": {"memory": "person-kim"}}},
+          {"label": {"text": "Dana Okafor", "ref": {"memory": "person-okafor"}}, "hint": {"text": "dentist", "ref": {"memory": "person-okafor"}}}
+        ]},
+        {"type": "actions", "items": [
+          {"id": "choose", "label": "Choose", "key": "tab"}
+        ]}
+      ]
+    }
+  },
+  "invalid": [
+    {"name": "unknown block", "error": "unknownBlock(chart, blocks[1])", "spec":
+      {"v": 1, "id": "x", "figure": "offering", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"memory": "m"}}},
+        {"type": "chart", "series": []},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "tab"}]}]}},
+    {"name": "value given as a bare string", "error": "missingReference(blocks[1].rows[0].value)", "spec":
+      {"v": 1, "id": "x", "figure": "offering", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"memory": "m"}}},
+        {"type": "facts", "rows": [{"value": "Thursday at 3"}]},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "tab"}]}]}},
+    {"name": "value object without ref", "error": "missingReference(blocks[0].title)", "spec":
+      {"v": 1, "id": "x", "figure": "offering", "blocks": [
+        {"type": "header", "title": {"text": "Coffee with Dana"}},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "tab"}]}]}},
+    {"name": "choice hint without ref", "error": "missingReference(blocks[1].rows[1].hint)", "spec":
+      {"v": 1, "id": "x", "figure": "needsYou", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"memory": "m"}}},
+        {"type": "choices", "rows": [{"label": {"text": "A", "ref": {"memory": "a"}}}, {"label": {"text": "B", "ref": {"memory": "b"}}, "hint": {"text": "climbing", "ref": null}}]},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "tab"}]}]}},
+    {"name": "derived from nothing", "error": "invalidReference(blocks[0].title.ref)", "spec":
+      {"v": 1, "id": "x", "figure": "offering", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"rule": "guess", "derived": []}}},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "tab"}]}]}},
+    {"name": "four choices", "error": "tooManyChoices(blocks[1].rows)", "spec":
+      {"v": 1, "id": "x", "figure": "needsYou", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"memory": "m"}}},
+        {"type": "choices", "rows": [{"label": {"text": "1", "ref": {"memory": "a"}}}, {"label": {"text": "2", "ref": {"memory": "b"}}}, {"label": {"text": "3", "ref": {"memory": "c"}}}, {"label": {"text": "4", "ref": {"memory": "d"}}}]},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "tab"}]}]}},
+    {"name": "no tab action", "error": "noPrimaryAction(blocks[1])", "spec":
+      {"v": 1, "id": "x", "figure": "offering", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"memory": "m"}}},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "cmd-2"}]}]}},
+    {"name": "command digit next to choices", "error": "actionKeyConflictsWithChoices(blocks[2].items[1])", "spec":
+      {"v": 1, "id": "x", "figure": "needsYou", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"memory": "m"}}},
+        {"type": "choices", "rows": [{"label": {"text": "A", "ref": {"memory": "a"}}}]},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "tab"}, {"id": "b", "label": "B", "key": "cmd-1"}]}]}},
+    {"name": "reveal names a missing block", "error": "unknownRevealTarget(blocks[1].items[1].reveal)", "spec":
+      {"v": 1, "id": "x", "figure": "offering", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"memory": "m"}}},
+        {"type": "actions", "items": [{"id": "a", "label": "A", "key": "tab"}, {"id": "b", "label": "B", "key": "cmd-2", "reveal": {"replace": "when", "with": {"type": "choices", "rows": [{"label": {"text": "A", "ref": {"memory": "a"}}}]}}}]}]}},
+    {"name": "no actions block", "error": "missingBlock(actions)", "spec":
+      {"v": 1, "id": "x", "figure": "offering", "blocks": [
+        {"type": "header", "title": {"text": "T", "ref": {"memory": "m"}}}]}},
+    {"name": "future version", "error": "unsupportedVersion(2)", "spec":
+      {"v": 2, "id": "x", "figure": "offering", "blocks": []}}
+  ]
+}
