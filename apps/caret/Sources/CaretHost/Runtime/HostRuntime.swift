@@ -111,7 +111,7 @@ public final class HostRuntime {
         fill.client = helper
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
-                executor.submit(claim)
+                if claim.insertsText { executor.submit(claim) }
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         coordinator.claimed(claim)

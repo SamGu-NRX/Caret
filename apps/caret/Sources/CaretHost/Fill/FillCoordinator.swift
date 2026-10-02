@@ -180,7 +180,7 @@ final class FillCoordinator {
             self.shownOfferID = nil
             shownKey = nil
         }
-        syncToast(snapshot, byTyping: reason != .toastDismissed)
+        syncToast(snapshot, byTyping: reason != .toastDismissed && reason != .closed)
     }
 
     func claimed(_ claim: Claim) {

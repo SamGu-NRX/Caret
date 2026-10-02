@@ -16,9 +16,17 @@ public struct Offer: Equatable, Sendable {
     public var caretUTF16: Int
     public var createdAt: Date
     public var maxAgeSeconds: Double
+    /// Alternatives after the top candidate (`text`), in order. Empty for a single suggestion.
+    public var moreCandidates: [String]
+    public var source: OfferSource
+
+    /// The top candidate first, then the alternatives.
+    public var candidates: [String] { [text] + moreCandidates }
 
     public init(
         text: String,
+        moreCandidates: [String] = [],
+        source: OfferSource = .engine,
         kind: OfferKind = .ghost,
         target: TargetIdentity,
         fieldValue: String,
@@ -27,6 +35,8 @@ public struct Offer: Equatable, Sendable {
         maxAgeSeconds: Double = 30
     ) {
         self.text = text
+        self.moreCandidates = moreCandidates
+        self.source = source
         self.kind = kind
         self.target = target
         self.fieldValue = fieldValue
@@ -40,6 +50,38 @@ public struct Offer: Equatable, Sendable {
     }
 }
 
+/// Who made an offer. Each producer clears only its own offers.
+public enum OfferSource: String, Codable, Sendable {
+    /// The ghost-text engine in this process.
+    case engine
+    /// The helper, over its socket.
+    case helper
+    /// The debug socket's `inject` test hook. Never reported to the helper.
+    case debug
+}
+
+/// What the user took with Tab (or Shift+Tab, or a Command-digit action).
+public struct Choice: Equatable, Sendable {
+    /// Index into `Offer.candidates`.
+    public var candidate: Int
+    /// For an action line or pop-up: the action taken.
+    public var actionID: String?
+    /// For a pop-up with choice rows: the highlighted row when the action was taken.
+    public var row: Int?
+    /// Shift+Tab: only the next word of the candidate.
+    public var wordOnly: Bool
+    /// Command-1 over ghost fill: every empty field.
+    public var fillAll: Bool
+
+    public init(candidate: Int = 0, actionID: String? = nil, row: Int? = nil, wordOnly: Bool = false, fillAll: Bool = false) {
+        self.candidate = candidate
+        self.actionID = actionID
+        self.row = row
+        self.wordOnly = wordOnly
+        self.fillAll = fillAll
+    }
+}
+
 /// A single-use grant to insert one offer, handed out by `OfferArbiter.handleKeyDown` for exactly
 /// one Tab press.
 public struct Claim: Equatable, Sendable {
@@ -49,6 +91,23 @@ public struct Claim: Equatable, Sendable {
     /// before Tab. The field is expected to contain them at the caret.
     public let typedSinceOffer: String
     public let claimedAt: Date
+    public var choice: Choice
+
+    public init(claimID: UInt64, offer: Offer, typedSinceOffer: String, claimedAt: Date, choice: Choice = Choice()) {
+        self.claimID = claimID
+        self.offer = offer
+        self.typedSinceOffer = typedSinceOffer
+        self.claimedAt = claimedAt
+        self.choice = choice
+    }
+
+    /// Ghost text and fill values are inserted; action lines and pop-ups are handed to the helper.
+    public var insertsText: Bool {
+        switch offer.kind {
+        case .ghost, .fill: return !choice.fillAll
+        case .action, .popup: return false
+        }
+    }
 
     /// What Tab inserts: the offer minus the part the user already typed.
     public var insertionText: String {
@@ -89,6 +148,16 @@ public struct KeyStroke: Equatable, Sendable {
     public static let zKeyCode: Int64 = 6
     /// ANSI 1, 2, 3.
     public static let digitKeyCodes: [Int64: Int] = [18: 1, 19: 2, 20: 3]
+    public static let leftKeyCode: Int64 = 123
+    public static let rightKeyCode: Int64 = 124
+    public static let downKeyCode: Int64 = 125
+    public static let upKeyCode: Int64 = 126
+    public static let returnKeyCode: Int64 = 36
+    public static let deleteKeyCode: Int64 = 51
+    public static let spaceKeyCode: Int64 = 49
+    /// Shift, Command, Option, Control, Caps Lock and Fn, left and right. They arrive as
+    /// flags-changed events, not key-downs; listed so a stray one can never dismiss anything.
+    public static let modifierKeyCodes: Set<Int64> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
 
     public var keyCode: Int64
     public var command: Bool

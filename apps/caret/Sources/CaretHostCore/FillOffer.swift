@@ -16,6 +16,9 @@ public struct FillOrigin: Equatable, Sendable {
     public var sourcePID: Int32?
     /// When the helper stamped the proposal, in milliseconds since the epoch.
     public var proposedAtMs: Int64
+    /// Command-1 fills every empty field of the form. False until the host can write fields other
+    /// than the focused one; while false, Command-1 keeps the app's meaning.
+    public var fillAll = false
 
     public init(
         proposalID: String, windowID: String, fieldKey: String, sourceAppName: String,
@@ -49,11 +52,17 @@ public enum OfferKind: Equatable, Sendable {
     case ghost
     /// A value copied from another window into an empty field.
     case fill(FillOrigin)
+    /// One action in another app, shown as an offer line (`SURFACES.md` section 3).
+    case action(ActionLine)
+    /// Help bigger than a sentence (`SURFACES.md` section 4).
+    case popup(PopupOffer)
 
     public var name: String {
         switch self {
         case .ghost: return "ghost"
         case .fill: return "fill"
+        case .action: return "action"
+        case .popup: return "popup"
         }
     }
 

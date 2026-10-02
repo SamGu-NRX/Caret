@@ -115,30 +115,32 @@ final class HostCoordinator {
             if let shown = overlay.shownText, shown != remainder, shown.hasSuffix(remainder) {
                 overlay.advance(typed: String(shown.dropLast(remainder.count)), remainder: remainder)
             }
-        case .dismissed, .expired:
+        case .dismissed, .expired, .closed:
             guard current == nil else { return }
             cancelGeneration()
             overlay.hide()
             anchor = nil
             status.update { $0.presentation = nil }
-        case .noOffer, .otherApp, .toastDismissed:
+        case .noOffer, .otherApp, .toastDismissed, .statusDismissed, .modifierOnly:
             break
         }
     }
 
     func claimed(_ claim: Claim) {
-        guard case .ghost = claim.offer.kind else { return }
+        guard case .ghost = claim.offer.kind, claim.offer.source == .engine else { return }
         // If the claim was already rejected and a newer offer drawn, leave that one alone.
         if let current = arbiter.snapshot().current, current.id > claim.offer.id { return }
         cancelGeneration()
         overlay.hide()
-        anchor = nil
+        // Shift+Tab took one word: keep the suggestion, so the field change that follows re-offers
+        // the rest of it (SuggestionAnchor.remaining) instead of generating anew.
+        if !claim.choice.wordOnly { anchor = nil }
         lastContextKey = nil
         status.update { $0.presentation = nil }
     }
 
     func insertionFinished(_ result: InsertionExecutor.Result) {
-        guard case .ghost = result.claim.offer.kind else { return }
+        guard case .ghost = result.claim.offer.kind, result.claim.offer.source == .engine else { return }
         status.increment(result.insertion.ok ? "insertion.ok" : "insertion.\(result.insertion.error ?? "failed")")
     }
 
@@ -261,8 +263,9 @@ final class HostCoordinator {
     }
 
     private func clearOffer() {
-        // Ghost state only: a fill offer in another field is the fill coordinator's.
-        arbiter.invalidate(kind: "ghost")
+        // The engine's ghost state only: a fill offer, or an offer injected through the debug
+        // socket, belongs to another coordinator.
+        arbiter.invalidate(kind: "ghost", source: .engine)
         overlay.hide()
         anchor = nil
         status.update { $0.presentation = nil }

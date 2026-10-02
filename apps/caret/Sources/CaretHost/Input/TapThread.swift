@@ -21,17 +21,25 @@ public final class TapThread: @unchecked Sendable {
         public var undo: @Sendable (UndoGrant) -> Void
         /// Every user key-down, with its uptime in nanoseconds, for latency measurement.
         public var keyDown: @Sendable (UInt64) -> Void
+        /// An arrow, Esc or Command-digit moved within the offer. Runs on the tap thread; enqueue.
+        public var navigated: @Sendable (UInt64, OfferUI) -> Void
+        /// Esc on a working line that has run 3 s. Runs on the tap thread; enqueue.
+        public var stopWork: @Sendable (StatusLine) -> Void
 
         public init(
             claimed: @escaping @Sendable (Claim) -> Void,
             offerChanged: @escaping @Sendable (OfferArbiter.PassReason, KeyStroke) -> Void,
             undo: @escaping @Sendable (UndoGrant) -> Void,
-            keyDown: @escaping @Sendable (UInt64) -> Void
+            keyDown: @escaping @Sendable (UInt64) -> Void,
+            navigated: @escaping @Sendable (UInt64, OfferUI) -> Void = { _, _ in },
+            stopWork: @escaping @Sendable (StatusLine) -> Void = { _ in }
         ) {
             self.claimed = claimed
             self.offerChanged = offerChanged
             self.undo = undo
             self.keyDown = keyDown
+            self.navigated = navigated
+            self.stopWork = stopWork
         }
     }
 
@@ -191,7 +199,19 @@ public final class TapThread: @unchecked Sendable {
         case .closeToast:
             callbacks.offerChanged(.toastDismissed, key)
             return true
-        case .pass(.noOffer), .pass(.otherApp):
+        case .navigate(let offerID, let ui):
+            callbacks.navigated(offerID, ui)
+            return true
+        case .closeOffer:
+            callbacks.offerChanged(.closed, key)
+            return true
+        case .stopWork(let line):
+            callbacks.stopWork(line)
+            return true
+        case .closeStatus:
+            callbacks.offerChanged(.statusDismissed, key)
+            return true
+        case .pass(.noOffer), .pass(.otherApp), .pass(.modifierOnly):
             return false
         case .pass(let reason):
             callbacks.offerChanged(reason, key)

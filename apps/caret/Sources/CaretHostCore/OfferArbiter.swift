@@ -13,9 +13,12 @@ import os
 /// next characters removes it too. While a claim is being inserted, `publish` refuses new offers
 /// so a stale snapshot cannot re-offer text that is already on its way into the field.
 ///
-/// Key ownership follows `SURFACES.md` section 8. Two surfaces can hold keys here: the current
-/// offer (ghost text or a fill value: Tab) and the result toast (⌘Z, Esc). A key headed for an app
-/// other than the offer's own (`KeyStroke.targetPID`) neither takes nor dismisses anything.
+/// Key ownership follows `SURFACES.md` section 8 through `KeyOwnership`. Three things can hold
+/// keys here: the current offer (ghost text and its alternatives, a fill value, an action line or
+/// a pop-up), the result toast (⌘Z, Esc), and a status line (working, error). The offer's
+/// navigation state (`OfferUI`: which alternative, which row) lives here too, so two quick arrow
+/// presses move two steps even before the main thread has drawn the first. A key headed for an
+/// app other than the surface's own (`KeyStroke.targetPID`) neither takes nor dismisses anything.
 public final class OfferArbiter: @unchecked Sendable {
     public enum PassReason: String, Codable, Sendable {
         /// No offer exists; the key keeps its native meaning.
@@ -31,6 +34,12 @@ public final class OfferArbiter: @unchecked Sendable {
         case otherApp
         /// No offer, but the key dismissed the result toast.
         case toastDismissed
+        /// No offer, but the key dismissed the working or error line.
+        case statusDismissed
+        /// Esc closed the offer (consumed, not passed; reported through the same callback).
+        case closed
+        /// A modifier key alone. Never dismisses anything (`SURFACES.md` section 8).
+        case modifierOnly
     }
 
     public enum Decision: Equatable, Sendable {
@@ -40,6 +49,15 @@ public final class OfferArbiter: @unchecked Sendable {
         case undo(UndoGrant)
         /// Swallow Esc: it closed the toast.
         case closeToast
+        /// Swallow the key: it moved within the offer (an alternative, a row, a reveal). Redraw
+        /// from this state.
+        case navigate(offerID: UInt64, ui: OfferUI)
+        /// Swallow Esc: it closed the offer.
+        case closeOffer(offerID: UInt64)
+        /// Swallow Esc on a working line that has run 3 s: stop the work and revert partial writes.
+        case stopWork(StatusLine)
+        /// Swallow Esc: it closed the error line.
+        case closeStatus(StatusLine)
         case pass(PassReason)
     }
 
@@ -49,6 +67,8 @@ public final class OfferArbiter: @unchecked Sendable {
         case approved
         case inserted
         case insertFailed(String)
+        /// An action line or pop-up action, handed to whoever runs it. Nothing is inserted here.
+        case accepted
     }
 
     public struct ClaimRecord: Equatable, Codable, Sendable {
@@ -57,6 +77,11 @@ public final class OfferArbiter: @unchecked Sendable {
         public var claimedAt: Date
         public var insertionLength: Int
         public var outcome: ClaimOutcome
+        /// Which candidate, action and row were taken.
+        public var candidate: Int?
+        public var actionID: String?
+        public var row: Int?
+        public var wordOnly: Bool?
     }
 
     public struct Snapshot: Equatable, Sendable {
@@ -65,6 +90,8 @@ public final class OfferArbiter: @unchecked Sendable {
         public var lastClaim: ClaimRecord?
         public var insertingClaimID: UInt64?
         public var toast: UndoGrant?
+        public var statusLine: StatusLine?
+        public var ui: OfferUI
         public var publishedCount: UInt64
         public var claimCount: UInt64
         public var refusedPublishCount: UInt64
@@ -72,6 +99,9 @@ public final class OfferArbiter: @unchecked Sendable {
 
     private struct State {
         var current: Offer?
+        var ui = OfferUI()
+        var statusLine: StatusLine?
+        var nextStatusID: UInt64 = 1
         var typedSinceOffer = ""
         var nextOfferID: UInt64 = 1
         var nextClaimID: UInt64 = 1
@@ -110,6 +140,7 @@ public final class OfferArbiter: @unchecked Sendable {
             stamped.id = s.nextOfferID
             s.nextOfferID &+= 1
             s.current = stamped
+            s.ui = OfferUI(initialFor: stamped)
             s.typedSinceOffer = ""
             s.publishedCount &+= 1
             return stamped.id
@@ -126,13 +157,36 @@ public final class OfferArbiter: @unchecked Sendable {
         }
     }
 
-    /// Removes the current offer only if it is of the given kind, so the ghost-text path clearing
-    /// its own state cannot take down a fill offer, or the reverse.
-    public func invalidate(kind: String) {
+    /// Removes the current offer only if it is of the given kind (and, with `source`, from that
+    /// producer), so the ghost-text path clearing its own state cannot take down a fill offer or an
+    /// injected one, or the reverse.
+    public func invalidate(kind: String, source: OfferSource? = nil) {
         state.withLock { s in
             guard let current = s.current, current.kind.name == kind else { return }
+            if let source, current.source != source { return }
             s.current = nil
             s.typedSinceOffer = ""
+        }
+    }
+
+    /// Shows a working or error line, replacing any earlier one. Returns its id.
+    @discardableResult
+    public func showStatus(_ line: StatusLine) -> UInt64 {
+        state.withLock { s in
+            var stamped = line
+            stamped.id = s.nextStatusID
+            s.nextStatusID &+= 1
+            s.statusLine = stamped
+            return stamped.id
+        }
+    }
+
+    /// Removes the status line. With `id`, only that one.
+    public func clearStatus(id: UInt64? = nil) {
+        state.withLock { s in
+            guard let line = s.statusLine else { return }
+            if let id, line.id != id { return }
+            s.statusLine = nil
         }
     }
 
@@ -161,8 +215,10 @@ public final class OfferArbiter: @unchecked Sendable {
 
     /// Decides one key-down. Constant time apart from a prefix check on the offer text.
     public func handleKeyDown(_ key: KeyStroke, now: Date = Date()) -> Decision {
-        state.withLock { s in
-            var dismissedToast = false
+        if KeyStroke.modifierKeyCodes.contains(key.keyCode) { return .pass(.modifierOnly) }
+        let keyClass = KeyClass(key)
+        return state.withLock { s in
+            var dismissedLine: PassReason?
             if let toast = s.toast {
                 if toast.isExpired(at: now) {
                     s.toast = nil
@@ -171,64 +227,178 @@ public final class OfferArbiter: @unchecked Sendable {
                     if key.isUndo { return .undo(toast) }
                     if key.isPlainEscape { return .closeToast }
                     // Any other key passes through and dismisses the toast; ⌘Z is the host's again.
-                    dismissedToast = true
+                    dismissedLine = .toastDismissed
                 }
             }
+            if let line = s.statusLine, key.isHeaded(to: line.pid) {
+                s.statusLine = nil
+                if KeyOwnership.owns(line.surface(at: now), keyClass) {
+                    if case .working = line.kind { return .stopWork(line) }
+                    return .closeStatus(line)
+                }
+                dismissedLine = dismissedLine ?? .statusDismissed
+            }
 
-            guard let offer = s.current else { return .pass(dismissedToast ? .toastDismissed : .noOffer) }
+            guard let offer = s.current else { return .pass(dismissedLine ?? .noOffer) }
             guard key.isHeaded(to: offer.target.pid) else { return .pass(.otherApp) }
             if offer.isExpired(at: now) {
-                s.current = nil
-                s.typedSinceOffer = ""
+                Self.clearOffer(&s)
                 return .pass(.expired)
             }
 
-            if key.isPlainTab {
-                let claim = Claim(
-                    claimID: s.nextClaimID,
-                    offer: offer,
-                    typedSinceOffer: s.typedSinceOffer,
-                    claimedAt: now
-                )
-                s.nextClaimID &+= 1
-                s.current = nil
-                s.typedSinceOffer = ""
-                s.insertingClaimID = claim.claimID
-                s.consumedTarget = nil
-                s.claimCount &+= 1
-                s.lastClaim = ClaimRecord(
-                    claimID: claim.claimID,
-                    offerID: offer.id,
-                    claimedAt: now,
-                    insertionLength: claim.insertionText.count,
-                    outcome: .pending
-                )
-                return .consume(claim)
-            }
-
-            // ⌘1, ⌘2 and ⌘3 choose among visible alternatives or actions. Neither ghost text nor a
-            // single fill shows any, so they keep the host's meaning (⌘1 switches browser tabs) and,
-            // like every key that passes through, dismiss the offer (Fable plan, section 5,
-            // change 6; SURFACES.md section 8).
-            if key.commandDigit != nil {
-                s.current = nil
-                s.typedSinceOffer = ""
+            let surface = Self.surface(of: offer, ui: s.ui, typed: s.typedSinceOffer)
+            guard KeyOwnership.owns(surface, keyClass) else {
+                // Typing the head of ghost text keeps the rest on offer. Everything else that passes
+                // through dismisses: a fill value is all or nothing (SURFACES.md section 5), open
+                // alternatives close on typing, and a Command-digit with nothing numbered visible
+                // keeps the host's meaning (Fable plan, section 5, change 6).
+                if case .ghost = surface, let typed = key.text, !typed.isEmpty, !key.command, !key.control {
+                    let remaining = offer.text.dropFirst(s.typedSinceOffer.count)
+                    if remaining.hasPrefix(typed), remaining.count > typed.count {
+                        s.typedSinceOffer += typed
+                        return .pass(.typedThrough)
+                    }
+                }
+                Self.clearOffer(&s)
                 return .pass(.dismissed)
             }
+            return Self.act(keyClass, on: offer, surface: surface, state: &s, now: now)
+        }
+    }
 
-            // Typing the head of ghost text keeps the rest on offer. A fill value is all or nothing:
-            // typing into the field removes its ghost (SURFACES.md section 5).
-            if case .ghost = offer.kind, let typed = key.text, !typed.isEmpty, !key.command, !key.control {
-                let remaining = offer.text.dropFirst(s.typedSinceOffer.count)
-                if remaining.hasPrefix(typed), remaining.count > typed.count {
-                    s.typedSinceOffer += typed
-                    return .pass(.typedThrough)
+    /// An owned key on the current offer.
+    private static func act(_ key: KeyClass, on offer: Offer, surface: Surface, state s: inout State, now: Date) -> Decision {
+        let spec = offer.visibleSpec(ui: s.ui)
+        let rows = spec?.rowCount ?? 0
+        func navigate(_ change: (inout OfferUI) -> Void) -> Decision {
+            change(&s.ui)
+            return .navigate(offerID: offer.id, ui: s.ui)
+        }
+        func take(_ choice: Choice) -> Decision {
+            .consume(claim(offer, choice: choice, state: &s, now: now))
+        }
+        func takeAction(_ action: PopupSpec.Action?) -> Decision {
+            take(Choice(actionID: action?.id, row: rows > 0 ? s.ui.highlight : nil))
+        }
+
+        switch (key, surface) {
+        case (.tab, .ghost), (.tab, .alternatives), (.tab, .ghostFill):
+            return take(Choice(candidate: s.ui.candidate))
+        case (.tab, _):
+            return takeAction(spec?.actions.first { $0.key == .tab } ?? offer.kind.actionLine?.primary)
+        case (.shiftTab, _):
+            return take(Choice(candidate: s.ui.candidate, wordOnly: true))
+
+        case (.escape, .alternatives):
+            // Back to the first candidate, list closed; the ghost stays (SURFACES.md section 2).
+            return navigate { $0.open = false; $0.candidate = 0 }
+        case (.escape, _):
+            clearOffer(&s)
+            return .closeOffer(offerID: offer.id)
+
+        case (.down, .ghost(let count)):
+            return navigate { $0.open = true; $0.candidate = 1 % count }
+        case (.down, .alternatives(let count)):
+            return navigate { $0.candidate = ($0.candidate + 1) % count }
+        case (.up, .alternatives(let count)):
+            return navigate { $0.candidate = ($0.candidate + count - 1) % count }
+        case (.down, .actionLine):
+            return navigate { ui in
+                ui.expanded = true
+                ui.highlight = offer.kind.actionLine?.variants?.choices?.selected ?? 0
+            }
+        case (.down, .popup) where rows > 0:
+            return navigate { $0.highlight = (($0.highlight ?? 0) + 1) % rows }
+        case (.up, .popup) where rows > 0:
+            return navigate { $0.highlight = (($0.highlight ?? 0) + rows - 1) % rows }
+        case (.down, .popup):
+            return takeAction(spec?.actions.first { $0.key == .down })
+
+        case (.commandDigit(let n), .alternatives):
+            return navigate { $0.candidate = n - 1 }
+        case (.commandDigit(let n), .popup) where n <= rows:
+            return navigate { $0.highlight = n - 1 }
+        case (.commandDigit(1), .ghostFill):
+            return take(Choice(fillAll: true))
+        case (.commandDigit(let n), _):
+            let actions = spec?.actions ?? offer.kind.actionLine?.actions ?? []
+            guard let action = actions.first(where: { $0.key.digit == n }) else { return .pass(.noOffer) }
+            if action.reveal != nil {
+                return navigate { ui in
+                    ui.revealed = action.id
+                    ui.highlight = spec?.applyingReveal(of: action.id).choices?.selected
                 }
             }
+            return takeAction(action)
 
-            s.current = nil
-            s.typedSinceOffer = ""
-            return .pass(.dismissed)
+        default:
+            // Unreachable while `KeyOwnership` and this switch agree; pass rather than swallow.
+            return .pass(.noOffer)
+        }
+    }
+
+    private static func claim(_ offer: Offer, choice: Choice, state s: inout State, now: Date) -> Claim {
+        var chosen = offer
+        var typed = s.typedSinceOffer
+        if case .ghost = offer.kind, offer.candidates.indices.contains(choice.candidate) {
+            if choice.candidate != 0 { typed = "" }
+            chosen.text = offer.candidates[choice.candidate]
+            if choice.wordOnly {
+                chosen.text = typed + nextWord(String(chosen.text.dropFirst(typed.count)))
+            }
+        }
+        let claim = Claim(claimID: s.nextClaimID, offer: chosen, typedSinceOffer: typed, claimedAt: now, choice: choice)
+        s.nextClaimID &+= 1
+        clearOffer(&s)
+        s.claimCount &+= 1
+        s.lastClaim = ClaimRecord(
+            claimID: claim.claimID,
+            offerID: offer.id,
+            claimedAt: now,
+            insertionLength: claim.insertsText ? claim.insertionText.count : 0,
+            outcome: claim.insertsText ? .pending : .accepted,
+            candidate: offer.kind.name == "ghost" ? choice.candidate : nil,
+            actionID: choice.actionID,
+            row: choice.row,
+            wordOnly: choice.wordOnly ? true : nil
+        )
+        if claim.insertsText {
+            s.insertingClaimID = claim.claimID
+            s.consumedTarget = nil
+        }
+        return claim
+    }
+
+    private static func clearOffer(_ s: inout State) {
+        s.current = nil
+        s.typedSinceOffer = ""
+        s.ui = OfferUI()
+    }
+
+    /// Leading spaces, then one word: what Shift+Tab takes (`OPEN-QUESTIONS.md` 4, pick a).
+    static func nextWord(_ text: String) -> String {
+        let leading = text.prefix { $0.isWhitespace }
+        let word = text.dropFirst(leading.count).prefix { !$0.isWhitespace }
+        return String(leading + word)
+    }
+
+    /// The surface an offer shows in its navigation state.
+    static func surface(of offer: Offer, ui: OfferUI, typed: String) -> Surface {
+        switch offer.kind {
+        case .ghost:
+            if ui.open { return .alternatives(count: offer.candidates.count) }
+            // Once the user has typed into the top candidate, the others no longer fit the field.
+            return .ghost(candidates: typed.isEmpty ? offer.candidates.count : 1)
+        case .fill(let origin):
+            return .ghostFill(fillAll: origin.fillAll)
+        case .action(let line):
+            if ui.expanded, let variants = line.variants {
+                return .popup(rows: variants.rowCount, numbered: variants.numberedDigits, hasDown: variants.hasDownAction)
+            }
+            return .actionLine(numbered: Set(line.actions.compactMap(\.key.digit)), hasVariants: line.variants != nil)
+        case .popup:
+            let spec = offer.visibleSpec(ui: ui) ?? PopupSpec(id: "", figure: .offering, blocks: [])
+            return .popup(rows: spec.rowCount, numbered: spec.numberedDigits, hasDown: spec.hasDownAction)
         }
     }
 
@@ -294,6 +464,8 @@ public final class OfferArbiter: @unchecked Sendable {
                 lastClaim: s.lastClaim,
                 insertingClaimID: s.insertingClaimID,
                 toast: s.toast,
+                statusLine: s.statusLine,
+                ui: s.ui,
                 publishedCount: s.publishedCount,
                 claimCount: s.claimCount,
                 refusedPublishCount: s.refusedPublishCount
