@@ -179,6 +179,23 @@ describe("pending-state watch", () => {
     expect(records().map((r) => r.state)).toEqual(["running", "done"]);
   });
 
+  it("asks less and less often while a streaming window keeps saying it is still running", async () => {
+    leaveJob("Running tests… 12 of 48");
+    const words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu".split(" ");
+    const t0 = Date.now();
+    for (const w of words) {
+      show(JOB, jobNodes("Running tests…", [node(K("progressindicator:~0"), "AXProgressIndicator"), text(K("statictext:log~0"), `checked ${w}`)]));
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    await helper.pending.whenIdle();
+    const spanS = (Date.now() - t0) / 1000;
+    // 26 changes over about 3 s: the first question, then 1 s and 2 s of backoff, so at most four.
+    expect(spanS).toBeGreaterThan(2.5);
+    expect(jev.requests.length).toBeGreaterThanOrEqual(2);
+    expect(jev.requests.length).toBeLessThanOrEqual(4);
+    expect(last()).toMatchObject({ state: "running" });
+  });
+
   it("registers no watch for a window without markers, nor again for work it already resolved", async () => {
     show(NOTES, [field(K("textfield:notes~0"), "Running tests…"), text(K("statictext:hint~0"), "Write anything here")], { focused: true, reason: "focus" });
     show(JOB, jobNodes("All quiet", []), { focused: true, reason: "focus" });

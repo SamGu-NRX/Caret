@@ -70,6 +70,13 @@ public final class AppWorker: @unchecked Sendable {
     private var watchTimer: DispatchSourceTimer?
     private var watchScheduled = false
     private var lastWatchWalk: CFAbsoluteTime = 0
+    /** When the next notification-driven watch walk may start: the last one's start plus a gap that grows with its cost. */
+    private var nextWatchAllowed: CFAbsoluteTime = 0
+    /** Moving average of a watch walk's duration, in seconds, so one slow walk on a loaded Mac does not stall the next. */
+    private var watchCost: Double = 0
+    /** Watched windows a notification named since the last watch walk; `watchAll` when one could not be placed. */
+    private var watchDirty: Set<String> = []
+    private var watchAll = false
 
     /// Notifications that schedule work. Registered on the application element while the app is event-driven.
     static let notifications: [String] = [
@@ -106,9 +113,15 @@ public final class AppWorker: @unchecked Sendable {
 
     /// Re-read interval for a watched window with no notifications (brief B4: every 10 s).
     static let watchInterval: TimeInterval = 10
-    /// Least time between two notification-driven watch walks of one app. Assumed, not measured: it
-    /// bounds a progress bar's notification stream to two walks a second, inside the 2 s report target.
-    static let watchMinGap: TimeInterval = 0.5
+    /// Least time between two notification-driven watch walks of one app, and the multiple of the average
+    /// walk's duration that the gap grows to. With a flat 0.5 s gap, a finished job's indicator was
+    /// seen up to 0.5 s after its status text, so the first question was often about a half-changed
+    /// window and was asked again (B4 pending-run3: 3 stale answers in 32). The multiple keeps a large,
+    /// busy window (a 150 ms walk) to at most a fifth of its app's queue. Both numbers are assumptions;
+    /// the average is used because single walks of the fixture's small windows ranged 2 to 180 ms
+    /// on the shared Mac, and a gap of four times the last one stalled reports by up to 0.7 s.
+    static let watchMinGap: TimeInterval = 0.2
+    static let watchCostFactor: Double = 4
     /// Wait after the first notification, so a burst of them costs one walk. Assumed.
     static let watchCoalesce: TimeInterval = 0.1
 
@@ -127,7 +140,7 @@ public final class AppWorker: @unchecked Sendable {
             if self.watchTimer == nil {
                 let t = DispatchSource.makeTimerSource(queue: self.queue)
                 t.schedule(deadline: .now() + Self.watchInterval, repeating: Self.watchInterval, leeway: .seconds(1))
-                t.setEventHandler { self.watchWalk() }
+                t.setEventHandler { self.watchWalk(all: true) }
                 t.resume()
                 self.watchTimer = t
             }
@@ -142,19 +155,33 @@ public final class AppWorker: @unchecked Sendable {
         if let (w, _) = lookup(el) { owner = w } else if windows[el] != nil { owner = el } else {
             owner = AX.element(el.el, kAXWindowAttribute).map(AXRef.init)
         }
-        if let o = owner, let id = windows[o]?.id, !watched.contains(id) { return }
+        if let o = owner, let id = windows[o]?.id {
+            guard watched.contains(id) else { return }
+            watchDirty.insert(id)
+        } else {
+            watchAll = true
+        }
         guard !watchScheduled else { return }
         watchScheduled = true
-        let delay = max(Self.watchCoalesce, lastWatchWalk + Self.watchMinGap - CFAbsoluteTimeGetCurrent())
-        queue.asyncAfter(deadline: .now() + delay) { self.watchWalk() }
+        let delay = max(Self.watchCoalesce, nextWatchAllowed - CFAbsoluteTimeGetCurrent())
+        queue.asyncAfter(deadline: .now() + delay) { self.watchWalk(all: false) }
     }
 
-    /// Walks every watched window. A walk sends a snapshot only when the window changed. A window
-    /// whose element is gone is reported closed and leaves the watch.
-    private func watchWalk() {
-        watchScheduled = false
+    /// Walks the watched windows a notification named, or every watched window on the timer. A walk
+    /// sends a snapshot only when the window changed. A window whose element is gone is reported
+    /// closed and leaves the watch.
+    private func watchWalk(all: Bool) {
+        let targets = all || watchAll ? watched : watchDirty
+        if !all { watchScheduled = false }
+        watchDirty = []
+        watchAll = false
         lastWatchWalk = CFAbsoluteTimeGetCurrent()
-        for (w, info) in windows where watched.contains(info.id) {
+        defer {
+            let took = CFAbsoluteTimeGetCurrent() - lastWatchWalk
+            watchCost = watchCost == 0 ? took : 0.7 * watchCost + 0.3 * took
+            nextWatchAllowed = lastWatchWalk + max(Self.watchMinGap, Self.watchCostFactor * watchCost)
+        }
+        for (w, info) in windows where targets.contains(info.id) {
             if case .failed(.invalidUIElement) = AX.read(w.el, kAXRoleAttribute) {
                 windows.removeValue(forKey: w)
                 watched.remove(info.id)

@@ -162,7 +162,9 @@ public final class ScreenReader {
         let pid = app.processIdentifier
         guard workers[pid] == nil, pid != getpid() else { return }
         if !opts.onlyPids.isEmpty && !opts.onlyPids.contains(pid) { return }
-        guard app.activationPolicy == .regular || app.activationPolicy == .accessory || opts.eventPids.contains(pid) else { return }
+        // A process named by --event-pids or --only-pids is read whatever its activation policy, so a
+        // fixture run with --background-only (the prohibited policy) can be read without being event-driven.
+        guard app.activationPolicy == .regular || app.activationPolicy == .accessory || opts.eventPids.contains(pid) || opts.onlyPids.contains(pid) else { return }
         let bundleId = app.bundleIdentifier ?? ""
         if opts.denyList.denies(bundleId) { return }
         if opts.eventBundles.contains(bundleId) { opts.eventPids.insert(pid) }

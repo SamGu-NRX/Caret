@@ -37,8 +37,20 @@ const INDICATOR_LINES = new Set(Object.values(INDICATORS));
 
 /** Concurrent watches. Assumed; a registration beyond it is skipped and counted. */
 export const MAX_WATCHES = 8;
-/** Wait after a change before asking, so a burst of partial snapshots costs one question. Assumed. */
+/**
+ * Wait after a change before asking, restarted by each further change but never past ASK_MAX_WAIT_MS
+ * from the first, so a status line and the indicator that disappears with it, which arrive in
+ * separate snapshots, cost one question. Assumed.
+ */
 export const ASK_DEBOUNCE_MS = 150;
+export const ASK_MAX_WAIT_MS = 400;
+/**
+ * After each answer that the work is still running, the next question waits longer: 1 s, doubling to
+ * 20 s, until the answer changes. A window that streams text (a build log) would otherwise cost a
+ * question every few hundred milliseconds. The price is that its end may be reported up to 20 s late.
+ */
+const BACKOFF_START_MS = 1000;
+const BACKOFF_MAX_MS = 20_000;
 /** Lines of window text sent to Jev, the "few dozen lines" rule of deep plan section 5. */
 const MAX_NOW_LINES = 30;
 const MAX_THEN_LINES = 20;
@@ -169,7 +181,12 @@ interface Watch {
   sig: string;
   asked: string;
   timer: ReturnType<typeof setTimeout> | null;
+  /** When the burst the timer is waiting out began. */
+  burstAt: number;
   inflight: Promise<void> | null;
+  /** Answers in a row that said the work is still running, and when the last question was asked. */
+  runningStreak: number;
+  lastAskAt: number;
   paused: boolean;
   tries: number;
   info: PendingInfo;
@@ -212,10 +229,12 @@ export class PendingWatcher {
   readonly asks: { watchId: string; at: number; latencyMs: number; finished: Finished; waiting: Waiting; state: TaskState; stale: boolean }[] = [];
   private readonly deps: PendingDeps;
   private readonly debounceMs: number;
+  private readonly maxWaitMs: number;
 
   constructor(deps: PendingDeps) {
     this.deps = deps;
     this.debounceMs = deps.debounceMs ?? ASK_DEBOUNCE_MS;
+    this.maxWaitMs = Math.max(this.debounceMs, ASK_MAX_WAIT_MS);
   }
 
   /** The id of the watch on a window, if any. */
@@ -257,7 +276,10 @@ export class PendingWatcher {
       sig,
       asked: sig,
       timer: null,
+      burstAt: 0,
       inflight: null,
+      runningStreak: 0,
+      lastAskAt: 0,
       paused: false,
       tries: 0,
       info: { markedBy: markers[0] ?? "", status: null, finished: null, waiting: null, asks: 0 },
@@ -364,11 +386,16 @@ export class PendingWatcher {
   }
 
   private schedule(watch: Watch): void {
-    if (watch.timer !== null) return;
+    const now = Date.now();
+    if (watch.timer === null) watch.burstAt = now;
+    else clearTimeout(watch.timer);
+    const backoff = watch.runningStreak === 0 ? 0 : Math.min(BACKOFF_MAX_MS, BACKOFF_START_MS * 2 ** (watch.runningStreak - 1));
+    const settle = Math.min(this.debounceMs, Math.max(0, watch.burstAt + this.maxWaitMs - now));
+    const delay = Math.max(settle, watch.lastAskAt + backoff - now);
     watch.timer = setTimeout(() => {
       watch.timer = null;
       void this.ask(watch);
-    }, this.debounceMs);
+    }, delay);
   }
 
   private live(watch: Watch): boolean {
@@ -394,6 +421,7 @@ export class PendingWatcher {
 
   private async askOnce(askJev: AskJev, watch: Watch, w: WindowState, sig: string): Promise<void> {
     const t0 = Date.now();
+    watch.lastAskAt = t0;
     let answer: ReturnType<typeof readPendingAnswer>;
     let latencyMs: number;
     try {
@@ -418,6 +446,7 @@ export class PendingWatcher {
       return;
     }
     watch.asked = sig;
+    watch.runningStreak = state === "running" ? watch.runningStreak + 1 : 0;
     watch.info.finished = answer.finished;
     watch.info.waiting = answer.waiting;
     const detail = state === "needsYou" ? "the window is waiting for you" : state === "done" ? "the work finished" : state === "failed" ? "the work ended in an error" : null;
