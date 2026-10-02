@@ -24,6 +24,9 @@ final class SurfaceCoordinator {
         let snapshot: FocusedFieldSnapshot?
         let style: OverlayTextStyle?
         let ghostFont: NSFont?
+        /// The field's frame, Accessibility coordinates.
+        let field: CGRect
+        let quoted: Bool
     }
 
     private struct Work {
@@ -52,6 +55,9 @@ final class SurfaceCoordinator {
     private let reader = FocusedFieldReader()
     private let decor = HostedPanel(radius: 0, material: false)
     private let ownGhost = HostedPanel(radius: 0, material: false)
+    /// Where the open list went for the shown offer, chosen once so the arrows never move it.
+    private var listFrame: CGRect?
+    private var listAbove = false
     private let list = HostedPanel(radius: 8)
     private var panel = HostedPanel(radius: 10)
     var executor: InsertionExecutor?
@@ -60,11 +66,18 @@ final class SurfaceCoordinator {
     var onWorkingChanged: ((Bool) -> Void)?
 
     private var shown: Shown?
+    /// An injected offer held by `SurfaceGate`, retried until it may be drawn or 30 s pass.
+    private var pending: (injection: SurfaceInjection, since: Date, hold: SurfaceGate.Hold)?
+    private var pendingTimer: Timer?
+    private let watch = VisibilityWatch()
     private var work: Work?
     private var resultTimer: Timer?
     private var resultStatusID: UInt64?
     /// The figure has looked away and left the working line.
     private var figureLeft = false
+    /// The working or result line was taken down because its app went behind or was covered; it
+    /// stays down until the next offer.
+    private var lineSuppressed = false
     private(set) var lastAccepted: Accepted?
     private var lineText: String?
     private var figureState: FigureState?
@@ -82,18 +95,18 @@ final class SurfaceCoordinator {
     /// Publishes and draws an injected offer for the focused field of `pid`. Returns a JSON reply.
     func inject(_ injection: SurfaceInjection) -> String {
         switch injection {
-        case .alternatives(let pid, let candidates):
-            return present(pid: pid) { field in
+        case .alternatives(let pid, let candidates, _):
+            return present(pid: pid, injection: injection) { field in
                 Offer(text: candidates[0], moreCandidates: Array(candidates.dropFirst()), source: .debug,
                       target: field.identity, fieldValue: field.value, caretUTF16: field.selection.start, maxAgeSeconds: 120)
             }
         case .action(let pid, let line):
-            return present(pid: pid) { field in
+            return present(pid: pid, injection: injection) { field in
                 Offer(text: "", source: .debug, kind: .action(line), target: field.identity,
                       fieldValue: field.value, caretUTF16: field.selection.start, maxAgeSeconds: 120)
             }
         case .popup(let pid, let popup):
-            return present(pid: pid) { field in
+            return present(pid: pid, injection: injection) { field in
                 Offer(text: "", source: .debug, kind: .popup(popup), target: field.identity,
                       fieldValue: field.value, caretUTF16: field.selection.start, maxAgeSeconds: 120)
             }
@@ -102,15 +115,33 @@ final class SurfaceCoordinator {
         }
     }
 
-    private func present(pid: Int32, make: (FieldState) -> Offer) -> String {
+    private func present(pid: Int32, injection: SurfaceInjection, make: (FieldState) -> Offer) -> String {
         guard policy.allowsLive(pid: pid) else { return #"{"error":"pid not allowed"}"# }
+        // Gate first, before any Accessibility read of a background app (SurfaceGate).
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return hold(injection, .appNotFront) }
         guard let (element, field) = FieldReader.readFocused(pid: pid) else { return #"{"error":"no focused text field in pid"}"# }
         guard let snapshot = reader.snapshot(of: element) else { return #"{"error":"no snapshot of the field"}"# }
         let style = FieldStyleProbe.style(of: element)
         let font = style.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
-        guard let caret = snapshot.caretRect ?? Self.derivedCaret(field: field, frame: AXRead.frame(of: element), font: font) else {
+        let fieldFrame = AXRead.frame(of: element)
+        guard let caret = snapshot.caretRect ?? Self.derivedCaret(field: field, frame: fieldFrame, font: font) else {
             return #"{"error":"no caret"}"#
         }
+        let anchors = [CGPoint(x: caret.midX, y: caret.midY)]
+        if let held = Visibility.hold(for: field.identity, anchors: anchors) { return hold(injection, held) }
+        var quoted = false
+        if case .alternatives(_, let candidates, let q) = injection {
+            quoted = q
+            // Ghost text and its underline stay inside the field, clear of the app's own text:
+            // the widest candidate must fit after the caret with nothing after it.
+            let widest = candidates.map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
+            let ghostRect = CGRect(x: caret.maxX, y: caret.minY, width: widest, height: caret.height + 3)
+            let textAfter = field.selection.end < UTF16Text.length(field.value)
+            if let fieldFrame, !SurfaceGate.fitsInField(ghost: ghostRect, field: fieldFrame, textAfterCaret: textAfter) {
+                return hold(injection, .wouldOverlapText, retry: false)
+            }
+        }
+        cancelPending()
         clear(exit: 0)
         // A new offer takes the one panel: whatever work line or result was on it ends.
         endWork()
@@ -127,10 +158,51 @@ final class SurfaceCoordinator {
             ghostFont = font
             status.increment(usesKeyTypeGhost ? "surface.ghost.keytype" : "surface.ghost.own")
         }
-        shown = Shown(offerID: offerID, offer: stamped, caret: caret, snapshot: usesKeyTypeGhost ? snapshot : nil, style: style, ghostFont: ghostFont)
+        shown = Shown(
+            offerID: offerID, offer: stamped, caret: caret, snapshot: usesKeyTypeGhost ? snapshot : nil, style: style,
+            ghostFont: ghostFont, field: fieldFrame ?? caret, quoted: quoted
+        )
         draw(ui: arbiter.snapshot().ui, entering: true)
+        let target = field.identity
+        watch.start(check: { Visibility.hold(for: target, anchors: anchors) }, onLost: { [weak self] hold in
+            guard let self, let shown = self.shown, shown.offerID == offerID else { return }
+            self.arbiter.invalidate(offerID: offerID)
+            self.clear(exit: 0)
+            self.status.increment("surface.withdrawn.\(hold.rawValue)")
+            self.publish()
+        })
         status.increment("surface.injected.\(offer.kind.name)")
         return #"{"ok":true,"offerId":\#(offerID)}"#
+    }
+
+    /// Nothing is drawn; the offer waits, and is tried again every half second for 30 s (or not at
+    /// all when only the field's own content could change the answer).
+    private func hold(_ injection: SurfaceInjection, _ reason: SurfaceGate.Hold, retry: Bool = true) -> String {
+        status.increment("surface.held.\(reason.rawValue)")
+        if retry {
+            let since = pending?.since ?? Date()
+            pending = (injection, since, reason)
+            if pendingTimer == nil {
+                pendingTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.retryPending() }
+                }
+            }
+        }
+        publish()
+        return #"{"held":"\#(reason.rawValue)"}"#
+    }
+
+    private func retryPending() {
+        guard let pending else { return cancelPending() }
+        if Date().timeIntervalSince(pending.since) > 30 { return cancelPending() }
+        _ = inject(pending.injection)
+    }
+
+    private func cancelPending() {
+        pendingTimer?.invalidate()
+        pendingTimer = nil
+        pending = nil
+        publish()
     }
 
     // MARK: - Drawing
@@ -182,14 +254,25 @@ final class SurfaceCoordinator {
         let font = shown.ghostFont ?? NSFont.systemFont(ofSize: 13)
         let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
         let figureHeight = min(max((caret.height * 0.6).rounded(), 9), 14)
+        let tag = AlternativesTag(current: ui.candidate, count: candidates.count, character: character, figureHeight: figureHeight)
+        // Collapsed, one mark at most: the faint value, underlined only when it is quoted from a
+        // source. The figure and the count come with the down arrow, and only where they fit
+        // inside the field after the text.
+        let tagWidth = NSHostingView(rootView: tag).fittingSize.width + font.pointSize * 0.3
+        let showTag = ui.open && caret.maxX + width + tagWidth <= shown.field.maxX - 2
+        guard shown.quoted || showTag else {
+            decor.exit(duration: 0)
+            drawList(shown, ui: ui)
+            return
+        }
         let decorView = HStack(alignment: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
-                UnevenUnderline(width: width, animated: entering)
+                if shown.quoted { UnevenUnderline(width: width, animated: entering) }
             }
             .frame(width: width, height: caret.height + 4)
-            if ui.open {
-                AlternativesTag(current: ui.candidate, count: candidates.count, character: character, figureHeight: figureHeight)
+            if showTag {
+                tag
                     .padding(.leading, font.pointSize * 0.3)
                     .padding(.bottom, caret.height * 0.22 + 4)
             }
@@ -202,14 +285,34 @@ final class SurfaceCoordinator {
         decor.text = ui.open ? "\(ui.candidate + 1) of \(candidates.count)" : "underline"
         if !decor.panel.isVisible || decor.isExiting { decor.panel.alphaValue = 1; decor.panel.orderFrontRegardless() }
 
-        if ui.open {
-            list.pin(HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: caret.maxX - 12, y: Screen.cocoa(caret).minY - 6)))
-            list.setContent(AlternativesListView(candidates: candidates, current: ui.candidate))
-            list.text = candidates.prefix(3).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: " | ")
-            if !list.panel.isVisible || list.isExiting { list.panel.alphaValue = 1; list.panel.orderFrontRegardless() }
-        } else {
-            list.exit(duration: 0)
+        drawList(shown, ui: ui)
+    }
+
+    /// The open list sits below the field, clear of the next field and its label; it flips above
+    /// only when below would cover something and above would not.
+    private func drawList(_ shown: Shown, ui: OfferUI) {
+        guard ui.open else { return list.exit(duration: 0) }
+        let candidates = shown.offer.candidates
+        let view = AlternativesListView(candidates: candidates, current: ui.candidate)
+        let size = list.measure(view)
+        let x = shown.caret.minX - 12
+        let below = CGRect(x: x, y: shown.field.maxY + 6, width: size.width, height: size.height)
+        let above = CGRect(x: x, y: shown.field.minY - 6 - size.height, width: size.width, height: size.height)
+        if !list.isVisible || listFrame == nil {
+            let obstacles = ObstacleProbe.obstacles(pid: shown.offer.target.pid, under: [below, above])
+                .filter { !$0.insetBy(dx: -2, dy: -2).contains(shown.field) }
+            let choice = PanelPlacement.choose([below, above], obstacles: obstacles, bounds: Screen.axVisibleFrame(around: shown.field))
+            listFrame = choice.frame
+            listAbove = choice.index == 1
         }
+        let frame = Screen.cocoa(listFrame ?? below)
+        list.pin(HostedPanel.Anchor(
+            corner: listAbove ? .bottomLeft : .topLeft,
+            point: NSPoint(x: frame.minX, y: listAbove ? frame.minY : frame.maxY)
+        ))
+        list.setContent(view)
+        list.text = candidates.prefix(3).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: " | ")
+        if !list.panel.isVisible || list.isExiting { list.panel.alphaValue = 1; list.panel.orderFrontRegardless() }
     }
 
     /// The offer line or pop-up: left edge 12 pt left of the caret, top 6 pt below it, flipped
@@ -356,8 +459,20 @@ final class SurfaceCoordinator {
         ownGhost.exit(duration: 0)
         decor.exit(duration: 0)
         list.exit(duration: 0)
+        watch.stop()
         self.shown = nil
         startWork(claim, offerKey: accept?.offerId ?? "?", caret: shown.caret)
+        // The working line and its result follow the same rule as the offer: the app in front and
+        // the line's anchor uncovered. Focus may move; the line reports on work, not on a field.
+        let target = claim.offer.target
+        let anchor = CGPoint(x: shown.caret.midX, y: shown.caret.midY)
+        watch.start(check: { Visibility.hold(for: target, anchors: [anchor], requireFocus: false) }, onLost: { [weak self] hold in
+            guard let self else { return }
+            self.lineSuppressed = true
+            self.panel.exit(duration: 0)
+            self.status.increment("surface.lineHidden.\(hold.rawValue)")
+            self.publish()
+        })
         publish()
     }
 
@@ -372,6 +487,7 @@ final class SurfaceCoordinator {
     private func startWork(_ claim: Claim, offerKey: String, caret: CGRect) {
         endWork()
         endResult()
+        lineSuppressed = false
         let app: String
         switch claim.offer.kind {
         case .action(let line): app = line.app
@@ -409,6 +525,7 @@ final class SurfaceCoordinator {
             hints: stoppable ? [Hint(key: "Esc", label: "Stop")] : [], appGlyphOnly: true
         )
         guard arbiter.snapshot().statusLine?.id == work.statusID else { return }
+        guard !lineSuppressed else { return }
         panel.setContent(LineView(content: content, character: character))
         panel.text = caption
         figureState = .working
@@ -460,6 +577,7 @@ final class SurfaceCoordinator {
 
     /// The working line becomes the result where it stands, and leaves after `lifetime`.
     private func showResult(_ content: LineContent, text: String, lifetime: TimeInterval) {
+        guard !lineSuppressed else { return }
         panel.setContent(LineView(content: content, character: character))
         panel.text = text
         figureState = content.figure
@@ -483,6 +601,8 @@ final class SurfaceCoordinator {
     // MARK: -
 
     private func clear(exit duration: TimeInterval) {
+        watch.stop()
+        listFrame = nil
         if shown != nil, case .ghost? = shown?.offer.kind {
             ghost.hide()
             ownGhost.exit(duration: 0)
@@ -495,6 +615,8 @@ final class SurfaceCoordinator {
     }
 
     func shutdown() {
+        cancelPending()
+        watch.stop()
         endWork()
         resultTimer?.invalidate()
         clear(exit: 0)
@@ -521,6 +643,7 @@ final class SurfaceCoordinator {
         info.character = character.rawValue
         info.lineText = panel.isVisible ? panel.text : nil
         info.working = work.map { Date().timeIntervalSince($0.startedAt) }
+        info.held = pending?.hold.rawValue
         info.lastAccepted = lastAccepted.map {
             DebugState.AcceptInfo(offerKey: $0.offerKey, actionId: $0.actionId, candidate: $0.candidate, row: $0.row, overrides: $0.overrides, source: $0.source, kind: $0.kind)
         }

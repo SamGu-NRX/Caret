@@ -48,6 +48,10 @@ final class FillCoordinator {
     /// Values refused or undone, per field (`FillSelection.suppressionKey`).
     private var suppressed: Set<String> = []
     private var toastGrantTimer: Timer?
+    /// Watches whatever fill surface is shown (the offer, then its toast) and takes it down when
+    /// the form is no longer where the user is looking.
+    private let watch = VisibilityWatch()
+    private var activationObserver: NSObjectProtocol?
 
     init(arbiter: OfferArbiter, status: HostStatus, overlay: FillOverlay, watcher: FillTargetWatcher, policy: TargetPolicy) {
         self.arbiter = arbiter
@@ -56,6 +60,17 @@ final class FillCoordinator {
         self.watcher = watcher
         self.policy = policy
         watcher.onChange = { [weak self] pid, at in self?.evaluate(pid: pid, trigger: .focus(at)) }
+        // A held proposal's app coming to the front is a reason to look again.
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let pid = app.processIdentifier
+            MainActor.assumeIsolated {
+                guard let self, self.held.values.contains(where: { FillSelection.pid(fromWindowID: $0.proposal.windowId) == pid }) else { return }
+                self.evaluate(pid: pid, trigger: .other)
+            }
+        }
         overlay.onChange = { [weak self, weak overlay] in
             guard let self, let overlay else { return }
             let info = overlay.debugInfo()
@@ -132,6 +147,13 @@ final class FillCoordinator {
         guard let value = proposed.value else { return withdraw(FillSelection.Skip.answerNone.rawValue) }
         let key = [origin.proposalID, origin.fieldKey, field.identity.elementID, field.identity.elementRevision].joined(separator: "\u{1}")
         if key == shownKey, let shownOfferID, arbiter.snapshot().current?.id == shownOfferID { return }
+        // The value is drawn in the field and the line by its top right corner: both must be
+        // visible, in the frontmost app's focused field (SurfaceGate). Otherwise hold the proposal
+        // and draw nothing; activation or a focus change looks again.
+        let anchors = [CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.maxX - 2, y: frame.minY + 2)]
+        if let hold = Visibility.hold(for: field.identity, anchors: anchors) {
+            return withdraw("held.\(hold.rawValue)")
+        }
 
         let offer = Offer(
             text: value, kind: .fill(origin), target: field.identity, fieldValue: field.value,
@@ -160,6 +182,7 @@ final class FillCoordinator {
             status.update { $0.fill.toast = nil }
         }
         status.increment("fill.line.\(outcome)")
+        watchShown(target: field.identity, anchors: anchors)
 
         let elapsedMs: (UInt64) -> Double = { Double(DispatchTime.now().uptimeNanoseconds &- $0) / 1_000_000 }
         switch trigger {
@@ -171,6 +194,21 @@ final class FillCoordinator {
             s.fill.offersShown &+= 1
             s.fill.lastSkip = nil
         }
+    }
+
+    private func watchShown(target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool = true) {
+        watch.start(check: { Visibility.hold(for: target, anchors: anchors, requireFocus: requireFocus) }, onLost: { [weak self] hold in
+            guard let self else { return }
+            self.status.increment("fill.withdrawn.\(hold.rawValue)")
+            self.withdraw("held.\(hold.rawValue)")
+            if let grant = self.toastGrantID {
+                self.arbiter.dismissToast(grantID: grant)
+                self.toastGrantID = nil
+                self.toastGrantTimer?.invalidate()
+                self.status.update { $0.fill.toast = nil }
+            }
+            self.overlay.hideAll()
+        })
     }
 
     private func withdraw(_ reason: String) {
@@ -243,6 +281,9 @@ final class FillCoordinator {
         ))
 
         if verified, let grant = result.undo {
+            if let frame = lastFieldFrame {
+                watchShown(target: grant.target, anchors: [CGPoint(x: frame.maxX - 2, y: frame.minY + 2)], requireFocus: false)
+            }
             let id = arbiter.showToast(grant)
             toastGrantID = id
             // The toast names the app only ("Filled 4 fields from Mail", SURFACES.md section 6); the
@@ -296,6 +337,8 @@ final class FillCoordinator {
     }
 
     func shutdown() {
+        watch.stop()
+        if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         watcher.stop()
         toastGrantTimer?.invalidate()
         overlay.hideAll()

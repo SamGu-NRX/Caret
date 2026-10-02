@@ -130,6 +130,7 @@ enum Gallery {
             line("line-fill-source", LineContent(figure: .offering, text: "from Mail, Invoice 2041", emphasis: .secondary, hints: [Hint(key: "Tab")])),
             line("line-fill-source-compact", LineContent(figure: .offering, text: "from Mail, Invoice 2041", emphasis: .secondary, hints: [Hint(key: "Tab")]), compact: true),
             line("line-fill-toast", LineContent(figure: .done, lead: "Filled", text: "1 field from Mail", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])),
+            Item(name: "alternatives-collapsed-quoted", view: AnyView(AlternativesScene(character: character, collapsed: true))),
             Item(name: "alternatives-open", view: AnyView(AlternativesScene(character: character))),
         ]
     }
@@ -140,6 +141,8 @@ enum Gallery {
 struct AlternativesScene: View {
     var character: FigureCharacter
     var current = 1
+    /// Collapsed: the faint value alone, underlined because it is quoted from a source.
+    var collapsed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -148,17 +151,21 @@ struct AlternativesScene: View {
                     .foregroundStyle(Color(token: Tokens.ink))
                 Rectangle().fill(Color(token: Tokens.ink)).frame(width: 1, height: 15).offset(y: 3)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(Gallery.alternatives[current])
+                    Text(Gallery.alternatives[collapsed ? 0 : current])
                         .foregroundStyle(Color(token: Tokens.ink).opacity(0.45))
-                    UnevenUnderline(width: 196, animated: false)
+                    if collapsed { UnevenUnderline(width: 262, animated: false) }
                 }
-                .alignmentGuide(.lastTextBaseline) { $0[.lastTextBaseline] - 5 }
-                AlternativesTag(current: current, count: Gallery.alternatives.count, character: character, figureHeight: 9, animated: false)
-                    .padding(.leading, 4)
+                .alignmentGuide(.lastTextBaseline) { $0[.lastTextBaseline] - (collapsed ? 5 : 0) }
+                if !collapsed {
+                    AlternativesTag(current: current, count: Gallery.alternatives.count, character: character, figureHeight: 9, animated: false)
+                        .padding(.leading, 4)
+                }
             }
             .font(.system(size: 13))
-            AlternativesListView(candidates: Gallery.alternatives, current: current)
-                .padding(.leading, 300)
+            if !collapsed {
+                AlternativesListView(candidates: Gallery.alternatives, current: current)
+                    .padding(.leading, 300)
+            }
         }
         .fixedSize()
     }

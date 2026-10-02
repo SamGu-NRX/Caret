@@ -260,6 +260,9 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var lineText: String?
         /// Seconds the accepted work has run.
         public var working: Double?
+        /// An injected offer waiting for its field to be where the user is looking
+        /// (`SurfaceGate.Hold`), drawn nowhere meanwhile.
+        public var held: String?
         public var lastAccepted: AcceptInfo?
 
         public init() {}

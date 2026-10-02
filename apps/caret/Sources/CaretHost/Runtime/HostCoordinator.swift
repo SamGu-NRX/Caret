@@ -34,6 +34,7 @@ final class HostCoordinator {
     private var isShuttingDown = false
     /// The key-down whose paint was last measured, so one keystroke yields at most one sample.
     private var measuredKeySequence: UInt64 = 0
+    private let watch = VisibilityWatch()
 
     init(
         arbiter: OfferArbiter,
@@ -234,6 +235,14 @@ final class HostCoordinator {
         keyStamp: HostStatus.KeyStamp? = nil
     ) -> Bool {
         let style = FieldStyleProbe.style(of: element)
+        // Drawn only where the user is looking (SurfaceGate); otherwise held, which for ghost text
+        // means dropped: the next keystroke generates again.
+        let anchors = snapshot.caretRect.map { [CGPoint(x: $0.midX, y: $0.midY)] } ?? []
+        if let hold = Visibility.hold(for: field.identity, anchors: anchors) {
+            status.increment("held.ghost.\(hold.rawValue)")
+            overlay.hide()
+            return false
+        }
         let offer = Offer(text: text, target: field.identity, fieldValue: field.value, caretUTF16: field.selection.start)
         guard let offerID = arbiter.publish(offer) else {
             status.increment("offer.refused")
@@ -253,6 +262,11 @@ final class HostCoordinator {
         }
         executor?.remember(offerID: offerID, context: snapshot.context)
         status.update { $0.presentation = presentation.rawValue }
+        let target = field.identity
+        watch.start(check: { Visibility.hold(for: target, anchors: anchors) }, onLost: { [weak self] hold in
+            self?.status.increment("withdrawn.ghost.\(hold.rawValue)")
+            self?.clearOffer()
+        })
         return true
     }
 
@@ -277,6 +291,7 @@ final class HostCoordinator {
     }
 
     private func clearOffer() {
+        watch.stop()
         // The engine's ghost state only: a fill offer, or an offer injected through the debug
         // socket, belongs to another coordinator.
         arbiter.invalidate(kind: "ghost", source: .engine)

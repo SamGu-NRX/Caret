@@ -6,14 +6,16 @@ import Foundation
 /// to the helper (`OfferSource.debug`).
 ///
 /// ```
-/// {"kind":"alternatives","pid":123,"candidates":["…","…"]}
+/// {"kind":"alternatives","pid":123,"candidates":["…","…"],"quoted":false}
 /// {"kind":"action","pid":123,"offerKey":"k","app":"Calendar","endState":{"text":"…","ref":{…}},
 ///  "actions":[{"id":"add","label":"Add","key":"tab"}],"variants":<PopupSpec>?}
 /// {"kind":"popup","pid":123,"offerKey":"k","spec":<PopupSpec>}
 /// {"kind":"helperLine","line":<one helper protocol message>}
 /// ```
 public enum SurfaceInjection: Equatable, Sendable {
-    case alternatives(pid: Int32, candidates: [String])
+    /// `quoted`: the top value is quoted from a source on screen, so it carries the uneven
+    /// underline while collapsed. Model-written alternatives show the faint text alone.
+    case alternatives(pid: Int32, candidates: [String], quoted: Bool)
     case action(pid: Int32, ActionLine)
     case popup(pid: Int32, PopupOffer)
     /// A raw helper message (a `fillProposal`), delivered as if the helper had sent it.
@@ -47,7 +49,9 @@ public enum SurfaceInjection: Equatable, Sendable {
             guard !candidates.isEmpty, candidates.count == raw.count, candidates.allSatisfy({ !$0.isEmpty }) else {
                 throw Invalid("candidates must be non-empty strings")
             }
-            return .alternatives(pid: try pid(), candidates: candidates)
+            var quoted = false
+            if case .bool(let q)? = o["quoted"] { quoted = q }
+            return .alternatives(pid: try pid(), candidates: candidates, quoted: quoted)
         case "action":
             guard let endState = o["endState"], case .array(let rawActions)? = o["actions"] else {
                 throw Invalid("needs endState and actions")

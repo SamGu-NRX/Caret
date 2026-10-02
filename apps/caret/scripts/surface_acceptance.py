@@ -53,9 +53,10 @@ RUN_START = None
 # Launched without --background-only, caret-fixture took the foreground (measured 2026-10-02:
 # lsappinfo front was the fixture pid within 0.5 s, three runs between 10:56 and 11:01 CDT). Now it
 # is launched with --background-only under gui.lock, the frontmost app is checked after launch, and
-# a fixture that is frontmost anyway is killed at once. A run also only starts after the Mac has
-# been idle this long, and stops on any input. This script itself posts no input events.
-IDLE_MIN = float(os.environ.get("CARET_SURFACE_IDLE_MIN", "120"))
+# a fixture that is frontmost anyway is killed at once (checked on every socket read). With that,
+# a run can share the Mac with its user: it posts no input event, only pid-targeted writes by the
+# host. CARET_SURFACE_IDLE_MIN > 0 additionally waits for an idle Mac and stops on any input.
+IDLE_MIN = float(os.environ.get("CARET_SURFACE_IDLE_MIN", "0"))
 
 
 def hid_idle_seconds():
@@ -92,7 +93,7 @@ def guard_user():
     idle = hid_idle_seconds()
     last_input = time.time() - idle
     IDLE_LOG.append((round(time.time() - RUN_START, 2), round(idle, 2)))
-    if last_input > RUN_START + 0.5 and not any(a - 0.2 <= last_input <= b for a, b in SYNTHETIC):
+    if IDLE_MIN > 0 and last_input > RUN_START + 0.5 and not any(a - 0.2 <= last_input <= b for a, b in SYNTHETIC):
         raise SystemExit(f"deferred: user active during the run (input at {time.strftime('%H:%M:%S', time.localtime(last_input))})")
 
 
