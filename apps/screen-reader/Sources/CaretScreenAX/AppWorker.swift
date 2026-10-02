@@ -30,6 +30,8 @@ struct WindowInfo {
     var lastWalk: CFAbsoluteTime = 0
     var contentHash: Int?
     var contexts: [AXRef: KeyContext] = [:]
+    /// Key to element as of the last walk the executor asked for: the tree its decision was based on.
+    var decided: [String: AXRef] = [:]
 }
 
 private let observerCallback: AXObserverCallback = { _, element, notification, refcon in
@@ -298,7 +300,8 @@ public final class AppWorker: @unchecked Sendable {
         return i
     }
 
-    /// Walks one window and sends its snapshot unless nothing changed. Returns the compacted nodes and whether the walk was cut short.
+    /// Walks one window and sends its snapshot unless nothing changed. Returns the compacted nodes and
+    /// whether any part of the tree was left out (deadline, budget, a long child list or the depth limit).
     /// `focusedElement` overrides how the focused element is found, for verbs that need the app's
     /// focus as it is now, whatever the reader last saw.
     @discardableResult
@@ -326,7 +329,7 @@ public final class AppWorker: @unchecked Sendable {
         let unchanged = info.contentHash == hash && reason != .initial && reason != .focus && reason != .request
         info.contentHash = hash
         windows[w] = info
-        if unchanged { return (result.nodes, walker.truncated) }
+        if unchanged { return (result.nodes, walker.truncated || walker.clipped) }
 
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: reason, app: app,
                             window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: frame),
@@ -334,7 +337,7 @@ public final class AppWorker: @unchecked Sendable {
                             focusedKey: result.focusedKey,
                             stats: WalkStats(walkMs: (walkMs * 10).rounded() / 10, visited: walker.visited, truncated: walker.truncated))
         ctx.emitter.send(.snapshot(snap))
-        return (result.nodes, walker.truncated)
+        return (result.nodes, walker.truncated || walker.clipped)
     }
 
     /// Re-reads just the element a notification named, when it was a kept node whose key does not
@@ -402,20 +405,22 @@ public final class AppWorker: @unchecked Sendable {
         case let .walk(_, windowId):
             guard let w = window(id: windowId) else { return (.noWindow, windowId) }
             if requestWalk(w).truncated { return (.axError, "the walk was cut short, so the window cannot be judged") }
+            let contexts = windows[w]?.contexts ?? [:]
+            windows[w]?.decided = Dictionary(contexts.map { ($0.value.key, $0.key) }, uniquingKeysWith: { a, _ in a })
             return (.ok, nil)
         case let .write(_, windowId, key, role, attribute, expect, value):
             guard mayAct else { return (.notAllowed, "the reader was not started with --act-pids \(pid)") }
             let found = target(windowId: windowId, key: key, role: role)
-            guard case let .success((w, el, _)) = found else { return found.failure }
+            guard case let .success((w, el)) = found else { return found.failure }
             switch AX.read(el, kAXSubroleAttribute) {
             case .failed(let e): return (.axError, "cannot read the subrole (\(e.rawValue)), so the field may be a password field")
             case .value(let v) where (v as? String) == "AXSecureTextField": return (.secure, nil)
             default: break
             }
             if role == "AXSecureTextField" { return (.secure, nil) }
-            if nowMs() > expires { return (.axError, "the command expired before it could act") }
             let err: AXError
             if attribute == "focused" {
+                if nowMs() > expires { return (.axError, "the command expired before it could act") }
                 err = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             } else {
                 // The value is read again right before the write, so a change since the walk is caught too.
@@ -428,6 +433,7 @@ public final class AppWorker: @unchecked Sendable {
                     current = str
                 }
                 guard current == expect else { return (.changed, "value is '\(current.prefix(80))'") }
+                if nowMs() > expires { return (.axError, "the command expired before it could act") }
                 err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
             }
             guard err == .success else { return (.axError, "AXUIElementSetAttributeValue \(err.rawValue)") }
@@ -437,7 +443,7 @@ public final class AppWorker: @unchecked Sendable {
         case let .press(_, windowId, key, role, label):
             guard mayAct else { return (.notAllowed, "the reader was not started with --act-pids \(pid)") }
             let found = target(windowId: windowId, key: key, role: role)
-            guard case let .success((w, el, _)) = found else { return found.failure }
+            guard case let .success((w, el)) = found else { return found.failure }
             // The label is read from the element itself, not from the walk, right before the press:
             // the helper's risk check ran on `label`, so a control renamed since then is not pressed.
             guard let live = liveLabel(el) else { return (.axError, "cannot read the control's label") }
@@ -452,7 +458,7 @@ public final class AppWorker: @unchecked Sendable {
     }
 
     private enum Found {
-        case success((AXRef, AXUIElement, Node))
+        case success((AXRef, AXUIElement))
         case fail(VerbOutcome, String?)
         var failure: (VerbOutcome, String?) {
             if case let .fail(o, d) = self { return (o, d) }
@@ -460,19 +466,21 @@ public final class AppWorker: @unchecked Sendable {
         }
     }
 
-    /// Re-walks the window and finds the element for `key`. The element must be the same one the key
-    /// named in the walk before, so a removed field cannot pass its key on to a sibling with the same
-    /// label, and must still have the expected role.
+    /// Re-walks the window and finds the element for `key`. The element must be the one the key named
+    /// in the last walk the executor asked for, the tree it decided on, so a removed field cannot pass
+    /// its key on to a sibling with the same label. It must still have the expected role, and no sheet
+    /// may cover the window.
     private func target(windowId: String, key: String, role: String) -> Found {
         guard let w = window(id: windowId) else { return .fail(.noWindow, windowId) }
-        let before = element(key: key, in: w)
+        guard let decided = windows[w]?.decided[key] else { return .fail(.changed, "the executor has not read this element in a walk of its own") }
         let walk = requestWalk(w)
         if walk.truncated { return .fail(.axError, "the walk was cut short, so the target cannot be checked") }
-        guard let el = element(key: key, in: w), let node = walk.nodes.first(where: { $0.key == key }) else { return .fail(.noElement, key) }
-        if let b = before, !CFEqual(b, el) { return .fail(.changed, "another element now has this key") }
+        if walk.nodes.contains(where: { $0.role == "AXSheet" }) { return .fail(.changed, "a sheet covers the window") }
+        guard let el = element(key: key, in: w), walk.nodes.contains(where: { $0.key == key }) else { return .fail(.noElement, key) }
+        if !CFEqual(decided.el, el) { return .fail(.changed, "another element now has this key") }
         AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
         switch AX.read(el, kAXRoleAttribute) {
-        case .value(let v) where (v as? String) == role: return .success((w, el, node))
+        case .value(let v) where (v as? String) == role: return .success((w, el))
         case .value(let v): return .fail(.changed, "role is \((v as? String) ?? "not text")")
         case .absent: return .fail(.changed, "the element has no role")
         case .failed(let e): return .fail(.axError, "cannot read the role (\(e.rawValue))")

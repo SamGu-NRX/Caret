@@ -227,6 +227,16 @@ describe("executor", () => {
     expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
   });
 
+  it("records a write whose answer was lost, so undo can still restore it", async () => {
+    app.timeoutAfterWrite = true;
+    const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "dana@example.com")]), {});
+    expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("dana@example.com");
+    app.timeoutAfterWrite = false;
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+  });
+
   it("refuses to undo or resume across a reader restart, since window ids start over", async () => {
     await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
     void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "t" });

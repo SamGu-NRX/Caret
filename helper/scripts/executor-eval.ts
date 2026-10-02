@@ -89,6 +89,9 @@ process.on("exit", () => {
   fixture.kill("SIGTERM");
 });
 let fixtureBuf = "";
+let fixtureErr = "";
+fixture.stderr.setEncoding("utf8");
+fixture.stderr.on("data", (d: string) => (fixtureErr += d));
 let fixturePid = 0;
 const replies: ((o: Record<string, unknown>) => void)[] = [];
 fixture.stdout.setEncoding("utf8");
@@ -395,10 +398,12 @@ md.push(
   "",
   `${tc.length} questions; asks agreed on ${agreedConf.length}; acted on ${tc.filter((c) => c.chose !== null).length}; acted on an element outside the Shipping section: ${wrongPick}. Agreed lower confidence: min ${Math.min(...agreedConf).toFixed(2)}, median ${med(agreedConf).toFixed(2)}, max ${Math.max(...agreedConf).toFixed(2)}. Disagreements: ${tc.length - agreedConf.length}.`,
 );
+md.push("", `The fixture became the active app ${(fixtureErr.match(/became active/g) ?? []).length} times and gave activation back each time.`);
 md.push("", `Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}. Fake calendar calls: ${JSON.stringify(count(calendar.calls))}. Helper errors: ${errors.length}.`);
 writeFileSync(join(OUT, "executor-eval.md"), md.join("\n") + "\n");
 writeFileSync(join(OUT, "executor-eval.json"), JSON.stringify({ rows, riskRows, faultRows, progress, errors, jevCalls, jevCost, calendarCalls: calendar.calls, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
 writeFileSync(join(OUT, "reader.log"), readerLog);
+writeFileSync(join(OUT, "fixture.log"), fixtureErr);
 console.log(md.join("\n"));
 process.exit(0);
 

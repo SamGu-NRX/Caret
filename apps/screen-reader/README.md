@@ -28,7 +28,7 @@ Never read:
 
 ## Acting for the executor
 
-The helper sends `readerCommand` lines back over the same socket. `walk` re-reads one window. `write` (a field's value, or its focus) and `press` re-walk the window, find the element by key, recheck its role, label and current value against what the helper expects, act, wait 0.15 s, and walk again, so the helper holds the new state before the `verbResult` arrives. A secure field is never written.
+The helper sends `readerCommand` lines back over the same socket. `walk` re-reads one window. `write` (a field's value, or its focus) and `press` re-walk the window and find the element by key. They refuse when the key now names a different element than in the executor's last `walk`, when a sheet covers the window, when the walk left part of the tree out, when the command has expired, or when the role, the label (read from the element itself, right before a press) or the current value differs from what the helper expects. An attribute that cannot be read refuses the act. Then they act, wait 0.15 s, and walk again, so the helper holds the new state before the `verbResult` arrives. A secure field is never written.
 
 Write and press act only in processes named by `--act-pids`, which must be a subset of `--only-pids`. Without the flag the reader only reads, so tonight the executor can act in fixture processes and nowhere else. `watchInput` turns on a global key and mouse monitor for the named processes and reports that input happened, its process and a click's location: never key codes or characters.
 
@@ -38,7 +38,7 @@ Write and press act only in processes named by `--act-pids`, which must be a sub
 
 ## Flags for experiments
 
-`--event-pids`, `--event-bundles` and `--only-pids` make named apps event-driven or restrict reading to them. `--act-pids` allows the executor's verbs in named fixture processes. `--record FILE` tees messages to a file and requires `--only-pids`, because a recording holds screen text. `--e1-log FILE` logs every notification with its callback time. `--e8 --pids … --out FILE` walks windows repeatedly and reports key stability. The scripts in `experiments/` run E1, E8, the shadow logger and the grounded-fill evaluation against `caret-fixture`, which shows synthetic data only. `caret-fixture --windows executor` adds the executor's window, which takes `reset`, `seed`, `remove`, `sheet` and `dump` commands on stdin.
+`--event-pids`, `--event-bundles` and `--only-pids` make named apps event-driven or restrict reading to them. `--act-pids` allows the executor's verbs in named fixture processes. `--record FILE` tees messages to a file and requires `--only-pids`, because a recording holds screen text. `--e1-log FILE` logs every notification with its callback time. `--e8 --pids … --out FILE` walks windows repeatedly and reports key stability. The scripts in `experiments/` run E1, E8, the shadow logger and the grounded-fill evaluation against `caret-fixture`, which shows synthetic data only. `caret-fixture --windows executor` adds the executor's window, which takes `reset`, `seed`, `remove`, `sheet` and `dump` commands on stdin. The fixture hands activation back whenever it becomes the active app, since a launch from the frontmost app once left it in front for a whole run.
 
 ## Tests
 

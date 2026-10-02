@@ -141,6 +141,15 @@ let scheduleForm: [Field] = [
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+// Launched from the frontmost app (a terminal or an agent host), the fixture was made the active app
+// at launch and held the foreground for a whole evaluation run (executor run-3). It never needs to
+// be active: windows are made key without activation. So it hands activation back whenever it gets it.
+var activationsRefused = 0
+let refuseActivation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+    activationsRefused += 1
+    FileHandle.standardError.write(Data("caret-fixture: became active; deactivating (\(activationsRefused))\n".utf8))
+    NSApp.deactivate()
+}
 
 var windows: [String: NSWindow] = [:]
 var formFields: [String: [(Field, NSTextField)]] = [:]

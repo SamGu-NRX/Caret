@@ -189,7 +189,7 @@ export class Executor {
         remaining.push(e);
         continue;
       }
-      const reason = e.kind === "write" ? await this.undoWrite(e) : await this.undoCalendar(e);
+      const reason = task.session !== this.session ? "the reader restarted during undo" : e.kind === "write" ? await this.undoWrite(e) : await this.undoCalendar(e);
       if (reason === null) out.restored++;
       else {
         out.notRestored.push({ step: e.step, reason });
@@ -227,6 +227,7 @@ export class Executor {
           return this.result(task, "paused", i, task.interrupt);
         }
         await this.deps.beforeStep?.(task.id, i);
+        await this.updateWatch();
         await this.runStep(task, i, step);
         task.next = i + 1;
       }
@@ -293,7 +294,17 @@ export class Executor {
     this.progress(task, "acting", i, `write ${attribute}; expect ${prediction}`);
     const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value };
     await this.deps.beforeAct?.(task.id, i);
-    const seen = await this.act(verb, w.window.windowId);
+    let seen: Change[];
+    try {
+      seen = await this.act(task, verb, w.window.windowId);
+    } catch (e) {
+      // An axError may come after the value was set (a timeout while the reader settles and re-walks),
+      // so the write is recorded as if it happened. Undo restores it only if the field holds `value`.
+      if (attribute === "value" && e instanceof StepStop && e.message.includes("axError")) {
+        task.ledger.push({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value });
+      }
+      throw e;
+    }
 
     const after = this.window(w.window.windowId);
     const now = after.nodes.get(node.key);
@@ -323,7 +334,7 @@ export class Executor {
     if (risk !== "safe") throw new StepStop("handoff", `'${label}' reads as ${risk}; Caret leaves that press to you`);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
-    const seen = await this.act({ kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label }, w.window.windowId);
+    const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label }, w.window.windowId);
     task.ledger.push({ kind: "press", step: i, label });
     await this.awaitEffect(task, i, step, w.window.windowId, seen);
     this.checkUnexpected(seen, null);
@@ -347,6 +358,7 @@ export class Executor {
       return;
     }
     this.progress(task, "acting", i, `add event '${end.title}' to ${end.calendar}; expect it to be found there`);
+    this.checkSession(task);
     const ev = await cal.add(end.calendar, end.title, end.start, end.end);
     const found = await cal.find(end.calendar, end.title, end.start, end.end);
     if (found === null || found.id !== ev.id) throw new StepStop("stopped", "mismatch: the added event is not found by the same query");
@@ -358,7 +370,8 @@ export class Executor {
   // MARK: - acting and comparing
 
   /** Sends a verb and returns every change the model recorded while it ran. */
-  private async act(verb: ReaderVerb, windowId: string): Promise<Change[]> {
+  private async act(task: Task, verb: ReaderVerb, windowId: string): Promise<Change[]> {
+    this.checkSession(task);
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === windowId) seen.push(c);
@@ -441,8 +454,12 @@ export class Executor {
     return seen;
   }
 
-  private bind(task: Task, sel: WindowSel): string {
+  private checkSession(task: Task): void {
     if (task.session !== this.session) throw new StepStop("stopped", "the reader restarted since this task began, so its window ids no longer apply");
+  }
+
+  private bind(task: Task, sel: WindowSel): string {
+    this.checkSession(task);
     const k = JSON.stringify(sel);
     const bound = task.windows.get(k);
     if (bound !== undefined) {
@@ -520,6 +537,9 @@ export class Executor {
   private async undoWrite(e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null> {
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined) return "the window closed";
+    // The reader acts only on an element it saw in a walk the executor asked for, so undo reads first.
+    const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
+    if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
     const r = await this.deps.reader.run({ kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before });
     if (r.outcome !== "ok") return r.outcome === "changed" ? `the field changed after Caret wrote it (${r.detail ?? "no detail"})` : `${r.outcome}: ${r.detail ?? ""}`;
     const now = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);

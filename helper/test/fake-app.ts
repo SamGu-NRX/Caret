@@ -19,6 +19,8 @@ export class FakeApp implements ReaderLink {
   readonly buttons = new Map<string, (app: FakeApp) => void>();
   /** Makes value writes report success while changing nothing, as Chromium does in the background. */
   dropWrites = false;
+  /** Sets the value but answers axError, as a reader that timed out while settling does. */
+  timeoutAfterWrite = false;
   /** Answers this many walks with axError first, as a walk cut short by a busy app is. */
   failWalks = 0;
   /** Rewrites each written value, as an app that formats input does. */
@@ -75,6 +77,7 @@ export class FakeApp implements ReaderLink {
       if (verb.attribute === "value") {
         if ((n.value ?? "") !== verb.expect) return { outcome: "changed", detail: `value is '${n.value ?? ""}'` };
         if (!this.dropWrites) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
+        if (this.timeoutAfterWrite) return { outcome: "axError", detail: "no answer from the reader within 5000 ms" };
       } else this.focusedKey = verb.key;
     } else {
       if ((n.label ?? "") !== verb.label) return { outcome: "changed", detail: `label is '${n.label ?? ""}'` };
