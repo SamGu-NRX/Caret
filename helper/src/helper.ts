@@ -54,6 +54,7 @@ import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
 import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
+import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
 import { OpenAppOffers } from "./offers/open-app.ts";
 import { EventCards } from "./offers/event-card.ts";
@@ -234,7 +235,21 @@ export class Helper {
     this.readerConnected = opts.readerLink !== undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
-    this.ask = jev === null ? null : (req) => (this.recordRead(req), jev(req));
+    // Recorded once the request has gone and been answered, or as failed: a client that throws before
+    // sending (no key) must not leave a use that says text was sent.
+    this.ask =
+      jev === null
+        ? null
+        : async (req) => {
+            try {
+              const r = await jev(req);
+              this.recordRead(req, "done");
+              return r;
+            } catch (e) {
+              this.recordRead(req, "failed");
+              throw e;
+            }
+          };
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
@@ -249,6 +264,7 @@ export class Helper {
       publish: (m) => this.publish(m),
       onTask: (e) => this.onTaskEvent(e),
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
+      memoryHolds: (id, value) => this.aboutNow(id)?.value === value,
       onChanges: (l) => {
         this.changeListeners.add(l);
         return () => this.changeListeners.delete(l);
@@ -486,13 +502,15 @@ export class Helper {
     this.opts.store.count("firstLook.request", 1);
     const r = await this.firstLookRunner.run(m);
     this.opts.store.count(`firstLook.${r.outcome}`, 1);
+    // Shown from this reply, not published, so recorded here as a use of "Show in Caret's UI".
+    if (r.found !== null) this.recordShownOffer(r.found.offerKey, r.found.window.windowId, specSays(r.found.spec));
     return r;
   }
 
   /** Memory the planner may copy from: About values and people's names, not paused. */
   private plannerMemory(): MemoryValue[] {
     const out: MemoryValue[] = [];
-    for (const e of this.memory.list()) {
+    for (const e of [...this.memory.list("about"), ...this.memory.list("people")]) {
       if (e.status === "paused") continue;
       if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value });
       else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name });
@@ -545,6 +563,7 @@ export class Helper {
     const checked = HelperMessage.safeParse(msg);
     if (!checked.success) return fail("schema", `the proposal's pop-up failed the protocol check: ${checked.error.issues[0]?.message ?? "invalid"}`);
     this.offers.record(msg, () => this.acceptPlan(offerKey));
+    this.recordShownOffer(offerKey, w.window.windowId, specSays(spec));
     const expect = { [w.window.windowId]: Object.fromEntries(draft.checked.writes.map((wr) => [wr.node.key, wr.node.value ?? ""])) };
     this.planOffers.set(offerKey, { at: this.now(), draft, instruction: m.instruction, expect });
     store.count("plan.proposed", 1);
@@ -642,13 +661,25 @@ export class Helper {
   /** Answers a memory request; the server sends the reply to the asking consumer only, since entries hold personal values. */
   handleMemory(m: MemoryRequest): MemoryReply {
     const reply = this.patterns.memoryRequest(m);
-    // A fill pop-up that offers a value the user just edited, paused or forgot no longer holds.
-    if (reply.error === null && m.id !== undefined && m.op !== "list" && m.op !== "add") {
-      for (const [id, { p }] of this.fillPopups) {
-        if (p.fields.some((f) => f.memory?.id === m.id) && recheckFill(this.model, p, this.aboutNow) !== null) this.withdrawFill(id, "stale");
-      }
+    // An offer showing a value the user just edited, paused, forgot or typed again no longer holds: every
+    // recorded offer that refers to the entry ({memory: id}, a fill pop-up's or a first look's) is withdrawn.
+    // A per-field fillProposal cannot be withdrawn; its write is checked against memory again (recheckFill,
+    // Step.memory). The engine withdraws its own loop and routine offers (withdrawDependents).
+    if (reply.error === null && (m.op === "edit" || m.op === "pause" || m.op === "forget" || m.op === "add")) {
+      const ids = m.op === "add" ? reply.entries.map((e) => e.id) : m.id === undefined ? [] : [m.id];
+      for (const id of ids) this.withdrawMemoryOffers(id);
     }
     return reply;
+  }
+
+  private withdrawMemoryOffers(memoryId: string): void {
+    for (const key of this.offers.keys()) {
+      const r = this.offers.get(key);
+      if (r === undefined || !refersToMemory(r.message, memoryId)) continue;
+      if (this.fillPopups.has(key)) this.withdrawFill(key, "stale");
+      else if (this.firstLooks.has(key)) this.withdrawFirstLook(key, "stale");
+      else this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: key, reason: "stale" });
+    }
   }
 
   /** The values the user told Caret that fills may offer: active typed About entries (fill/about.ts). */
@@ -656,10 +687,10 @@ export class Helper {
     return aboutValues(this.memory.active("about"));
   }
 
-  /** What an About entry holds now, as aboutValues gives it, or null when it is gone, paused or not typed. */
-  private readonly aboutNow = (id: string): string | null => {
+  /** An About entry as aboutValues gives it now, or null when it is gone, paused, not typed or fits no field. */
+  private readonly aboutNow = (id: string): AboutValue | null => {
     const a = this.memory.about(id);
-    return a === null || a.source !== "typed" ? null : a.value.trim();
+    return a === null ? null : (aboutValues([{ id, fields: a }])[0] ?? null);
   };
 
   /** Answers an activity request; the server sends the reply to the asking consumer only. */
@@ -984,7 +1015,10 @@ export class Helper {
     const fields = p.fields.filter((f) => {
       const n = w.nodes.get(f.key);
       if (n === undefined || (n.value ?? "") !== "" || describeField(w, n).text !== f.descriptor) return false;
-      if (f.memory !== null) return this.aboutNow(f.memory.id) === f.value;
+      if (f.memory !== null) {
+        const now = this.aboutNow(f.memory.id);
+        return now !== null && now.value === f.value && now.label === f.memory.label;
+      }
       return f.source === null || this.model.windows.has(f.source.windowId);
     });
     return { ...p, fields };
@@ -1095,32 +1129,31 @@ export class Helper {
    * snippets), and what the user told Caret. The second ask of a question declares the same text and is
    * not counted again; the comparison is kept in memory only.
    */
-  private recordRead(req: JevRequest): void {
+  private recordRead(req: JevRequest, outcome: "done" | "failed"): void {
     const apps = [...new Set(req.snippets.flatMap((x) => (x.windowId === MEMORY_SNIPPETS || x.windowId === "plan" ? [] : [this.model.windows.get(x.windowId)?.app.name ?? "a closed window"])))];
     const told = req.snippets.some((x) => x.windowId === MEMORY_SNIPPETS);
     const planned = req.snippets.some((x) => x.windowId === "plan");
     const parts = [...(apps.length === 0 ? [] : [`snippets from ${andList(apps)}`]), ...(told ? ["what you told Caret"] : []), ...(planned ? ["your instruction"] : [])];
-    const says = parts.length === 0 ? "Asked Jev a question with no screen text" : `Sent ${andList(parts)} to Jev`;
+    const what = parts.length === 0 ? "a question with no screen text" : andList(parts);
+    const says = outcome === "done" ? (parts.length === 0 ? `Asked Jev ${what}` : `Sent ${what} to Jev`) : `Tried to send ${what} to Jev; the request failed`;
     const at = this.now();
-    const declared = req.snippets.map((x) => `${x.windowId}\u0000${x.text}`).sort().join("\u0001");
+    const declared = `${outcome}\u0002${req.snippets.map((x) => `${x.windowId}\u0000${x.text}`).sort().join("\u0001")}`;
     if (this.lastRead !== null && this.lastRead.declared === declared && at - this.lastRead.at < READ_REPEAT_MS) return;
     this.lastRead = { declared, at };
-    this.memory.recordUse("read", { at, says, app: apps[0] ?? null, outcome: "done" });
+    this.memory.recordUse("read", { at, says, app: apps[0] ?? null, outcome });
   }
 
-  /** Records an offer the user can see as a use of "Show in Caret's UI", once per offer. */
+  /** Records a published offer the user can see as a use of "Show in Caret's UI", once per offer. */
   private recordShown(m: HelperMessage): void {
     let key: string;
     let windowId: string;
     let what: string;
     switch (m.type) {
-      case "popup": {
+      case "popup":
         key = m.offerKey;
         windowId = m.field.windowId;
-        const head = m.spec.blocks.find((b) => b.type === "header");
-        what = head?.type === "header" ? `"${clipUse(head.title.text)}"` : "a pop-up";
+        what = specSays(m.spec);
         break;
-      }
       case "action":
         key = m.offerKey;
         windowId = m.field.windowId;
@@ -1142,6 +1175,11 @@ export class Helper {
       default:
         return;
     }
+    this.recordShownOffer(key, windowId, what);
+  }
+
+  /** One "Show in Caret's UI" use for the offer with this key, the first time it is shown. */
+  private recordShownOffer(key: string, windowId: string, what: string): void {
     if (this.shown.has(key)) return;
     if (this.shown.size >= SHOWN_KEYS) this.shown.clear();
     this.shown.add(key);
@@ -1163,6 +1201,21 @@ const SHOWN_KEYS = 500;
 /** "A", "A and B", "A, B and C". */
 function andList(xs: readonly string[]): string {
   return xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+}
+
+/** Whether a value anywhere in an offer message is a {memory: id} ref to this entry (popup.ts PopupRef). */
+function refersToMemory(v: unknown, id: string): boolean {
+  if (Array.isArray(v)) return v.some((x) => refersToMemory(x, id));
+  if (v === null || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  if (o.memory === id && Object.keys(o).length === 1) return true;
+  return Object.values(o).some((x) => refersToMemory(x, id));
+}
+
+/** A pop-up as a use quotes it: its header's title, or "a pop-up". */
+function specSays(spec: PopupSpecT): string {
+  const head = spec.blocks.find((b) => b.type === "header");
+  return head?.type === "header" ? `"${clipUse(head.title.text)}"` : "a pop-up";
 }
 
 /** A use's quote of an offer, cut to 60 characters. */

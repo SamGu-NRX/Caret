@@ -106,6 +106,18 @@ describe("the executor's uses", () => {
     expect(uses("writeHere")).toEqual([]);
   });
 
+  it("writes a value from memory only while the entry still holds it (review B17 #2)", async () => {
+    const id = helper.memory.addTyped({ label: "Name", value: "Sam Rivera", source: "typed" }, (l) => `typed:${l.toLowerCase()}`, 1).id;
+    const step = (key: string, memory: string): Step => ({ ...write(K(key), "Sam Rivera"), memory });
+    expect((await helper.executor.run("ok", plan([step("textfield:name~0", id)]), {})).outcome).toBe("done");
+    helper.memory.forget(id, 2);
+    // Email holds another value, so the write is needed, and the entry it came from is gone.
+    const r = await helper.executor.run("gone", plan([step("textfield:email~0", id)], "q"), {});
+    expect(r).toMatchObject({ outcome: "stopped", acted: 0 });
+    expect(r.detail).toMatch(/what you told Caret .* changed or is gone/);
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+  });
+
   it("files a Pay hand-off under sensitive, a safe hand-off under nothing, and says when a run stopped", async () => {
     await helper.executor.run("t1", plan([{ says: "You press Pay", end: { kind: "handoff", window: W, target: { key: K("button:pay invoice~0"), describe: "the Pay invoice button" }, why: "money" } }]), {});
     await helper.executor.run("t2", plan([{ says: "You press Archive", end: { kind: "handoff", window: W, target: { key: K("button:archive~0"), describe: "the Archive button" }, why: "unverifiable" } }]), {});
@@ -115,6 +127,28 @@ describe("the executor's uses", () => {
     const r = await helper.executor.run("t3", plan([write(K("textfield:name~0"), "Ines"), write(K("textfield:gone~0"), "x")]), {});
     expect(r.outcome).toBe("stopped");
     expect(uses("writeElsewhere")[0]).toMatchObject({ says: "Filled Name in Caret Fixture, then stopped", outcome: "stopped" });
+  });
+});
+
+describe("a Jev request that fails", () => {
+  it("is recorded as tried, not as sent (review B17 #8)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caret-uses-fail-"));
+    const store = new Store(join(dir, "data"));
+    const app = new FakeApp(executorWindow());
+    const helper = new Helper({ store, askJev: () => Promise.reject(new Error("Jev key missing")), shadow: false, allowBackgroundFocus: false, publish: () => undefined, readerLink: app });
+    app.helper = helper;
+    app.show();
+    try {
+      const r = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "r", at: 1, instruction: "Set Name to Dana Whitfield" });
+      expect(r.error?.code).toBe("jevFailed");
+      const read = usesOf(helper.memory.list("permission"), "read");
+      expect(read).toHaveLength(1);
+      expect(read[0]).toMatchObject({ outcome: "failed", says: expect.stringMatching(/^Tried to send .* to Jev; the request failed$/) });
+    } finally {
+      helper.memory.close();
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -197,6 +231,17 @@ describe("permission uses over the socket", () => {
     expect(usesOf(listed.entries, "writeElsewhere")).toEqual([]);
     // Every use has the host's three keys: at, says, app.
     for (const u of [...here, ...shown, ...read]) expect(Object.keys(u).sort()).toEqual(["app", "at", "outcome", "says"]);
+  });
+
+  it("records a first look's offer as shown, and a Jev request that failed as tried, not sent (review B17 #7, #8)", async () => {
+    await memory("a1", { op: "add", kind: "about", fields: { label: "Name", value: "Sam Rivera", source: "typed" } });
+    await memory("a2", { op: "add", kind: "about", fields: { label: "Email", value: "sam.rivera@example.com", source: "typed" } });
+    const nodes = ["Name", "Email"].map((l, j) => field(F(`textfield:${l.toLowerCase()}~0`), "", { label: l, frame: [100, 40 + 40 * j, 200, 24] }));
+    await reader.replay([snap(nodes, { at: 3000, windowId: "5150-51", title: "Sign up" })], hooks);
+    const look = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "look", at: 3100, families: ["fill"], level: "eager", deadlineMs: 4000 });
+    expect(look.found).not.toBeNull();
+    const shown = usesOf((await memory("l1", { op: "list", kind: "permission" })).entries, "show");
+    expect(shown.map((u) => u.says)).toEqual(['Offered "Fill 2 fields" in Caret Fixture']);
   });
 
   it("records the host's own fill of one field, and one it could not make", async () => {

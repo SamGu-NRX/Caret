@@ -524,6 +524,12 @@ export class PatternEngine {
       switch (m.op) {
         case "edit": {
           if (m.fields === undefined) throw new MemoryError("edit needs fields");
+          // One typed entry per label: renaming one onto another's label would leave two answering to it.
+          const cur = memory.get(m.id);
+          if (cur.kind === "about" && cur.fields.source === "typed" && typeof m.fields.label === "string") {
+            const owner = memory.owner("about", typedMatch(m.fields.label));
+            if (owner !== null && owner !== m.id) throw new MemoryError(`you already told Caret your ${m.fields.label.trim()}; change or forget that entry instead`);
+          }
           const e = memory.edit(m.id, m.fields, now);
           // A typed entry is found by its label, so a renamed one answers to its new label.
           if (e.kind === "about" && e.fields.source === "typed") memory.rekey(e.id, typedMatch(e.fields.label));

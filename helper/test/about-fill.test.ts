@@ -9,7 +9,7 @@ import { ScreenModel } from "../src/model.ts";
 import { aboutKind, aboutValues, fieldAsksFor, ABOUT_SAYS, type AboutValue } from "../src/fill/about.ts";
 import { FillError, proposeFill } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { buildFillPopup, fillPopupEligible, recheckFill } from "../src/offers/fill-popup.ts";
+import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill } from "../src/offers/fill-popup.ts";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
@@ -106,7 +106,8 @@ describe("proposeFill with values the user told Caret", () => {
       expect(Object.keys(r.questions)).toHaveLength(2);
       const crit = Object.values(r.questions).map((q) => Object.values(q.criteria).filter((c) => c?.includes("which the user told Caret")));
       expect(crit.map((c) => c.length)).toEqual([1, 1]);
-      expect(r.snippets.filter((s) => s.windowId === "memory").map((s) => s.text).sort()).toEqual(["Sam Rivera", "sam.rivera@example.com"]);
+      // Values and their labels both go into the question, so both are declared (review B17 #1).
+      expect(r.snippets.filter((s) => s.windowId === "memory").map((s) => s.text).sort()).toEqual(["Email", "Name", "Sam Rivera", "sam.rivera@example.com"]);
     }
   });
 
@@ -129,7 +130,7 @@ describe("proposeFill with values the user told Caret", () => {
     const email = p.fields.find((f) => f.key === key("Email"));
     expect(email).toMatchObject({ value: "sam.rivera@example.com", memory: null, source: { windowId: SRC } });
     expect(p.fields.find((f) => f.key === key("Name"))).toMatchObject({ value: "Sam Rivera", memory: { id: NAME.id } });
-    expect(requests[0]?.snippets.filter((s) => s.windowId === "memory").map((s) => s.text)).toEqual(["Sam Rivera"]);
+    expect(requests[0]?.snippets.filter((s) => s.windowId === "memory").map((s) => s.text)).toEqual(["Sam Rivera", "Name"]);
   });
 
   it("charges a window that shows a memory value inside a line, as sending the value reveals it", async () => {
@@ -168,10 +169,16 @@ describe("proposeFill with values the user told Caret", () => {
       { text: "sam.rivera@example.com", ref: { memory: EMAIL.id } },
     ]);
     expect(popup.sourceApps).toBeUndefined();
-    const held = new Map([[NAME.id, "Sam Rivera"], [EMAIL.id, "sam.rivera@example.com"]]);
+    const held = new Map<string, AboutValue>([[NAME.id, NAME], [EMAIL.id, EMAIL]]);
     expect(recheckFill(m, p, (id) => held.get(id) ?? null)).toBeNull();
+    // Renamed with the same value: the label decided where it was offered, so the offer ends.
+    held.set(NAME.id, { ...NAME, label: "Organization" });
+    expect(recheckFill(m, p, (id) => held.get(id) ?? null)).toBe("what you told Caret as Name changed");
+    held.set(NAME.id, NAME);
     held.delete(EMAIL.id);
     expect(recheckFill(m, p, (id) => held.get(id) ?? null)).toBe("what you told Caret as Email changed");
+    // Each write from memory names its entry, for the executor's check right before it writes.
+    expect(fillPlan(m, p).plan.steps.map((s) => s.memory)).toEqual([NAME.id, EMAIL.id]);
   });
 });
 
@@ -271,6 +278,19 @@ describe("typed name and email over the socket, as the host sends them", () => {
     await host.waitFor((m) => m.type === "error" && /no candidate values in any window other than 5150-13/.test(String(m.message)));
     const after = host.received.slice(before).map((m) => (m as { type: string }).type);
     expect(after.filter((t) => t === "popup" || t === "fillProposal")).toEqual([]);
+  });
+
+  it("withdraws a first look's fill offer when an entry it shows is paused, and refuses a write from memory once it is gone", async () => {
+    const name = await memory("add-name", { op: "add", kind: "about", fields: { label: "Name", value: "Sam Rivera", source: "typed" } });
+    await memory("add-email", { op: "add", kind: "about", fields: { label: "Email", value: "sam.rivera@example.com", source: "typed" } });
+    // The form arrives without focus, so only the first look offers it.
+    const nodes = ["Name", "Email"].map((l, i) => field(F(`textfield:${l.toLowerCase()}~0`), "", { label: l, frame: [100, 40 + 40 * i, 200, 24] }));
+    await reader.replay([snap(nodes, { at: 3000, windowId: "5150-31", title: "Sign up" })], hooks);
+    const look = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "look", at: 3100, families: ["fill"], level: "eager", deadlineMs: 4000 });
+    expect(look.found?.family).toBe("fill");
+    const key = look.found?.offerKey as string;
+    await memory("pause-name", { op: "pause", id: name.entries[0]?.id });
+    expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === key)).toMatchObject({ reason: "stale" });
   });
 
   it("withdraws an open pop-up when the entry it offers is forgotten", async () => {

@@ -660,10 +660,10 @@ export const FillField = z.object({
   source: FillSource.nullable(),
   /**
    * The memory entry the value came from, when it came from one; null otherwise. A value has exactly one
-   * of `source` and `memory`. A host that reads only `source` finds none here and offers nothing, which
+   * of `source` and `memory`. A line from a helper before B17 has no key, which reads as null. A host that reads only `source` finds none here and offers nothing, which
    * is safe; offering it needs the host to name "what you told Caret" and to skip its source-window check.
    */
-  memory: FillMemory.nullable(),
+  memory: FillMemory.nullable().default(null),
   /**
    * Why no value was proposed although one might have been: the two asks picked different candidates,
    * they agreed below the confidence cutoff, or a window's privacy budget cut a value of the kind the

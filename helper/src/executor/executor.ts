@@ -43,6 +43,8 @@ export interface ExecutorDeps {
   targetCutoff?: number;
   /** Each use of a permission a run made, reported when the run ends (B17; the helper keeps the last few in memory). */
   onUse?: (u: TaskUse) => void;
+  /** Whether memory entry `id` still holds `value` (Step.memory). Without it, a step that names an entry is refused. */
+  memoryHolds?: (id: string, value: string) => boolean;
 }
 
 /** One use of a permission by a run: its action type, what it did as a sentence, the app, and how it ended. */
@@ -552,6 +554,9 @@ export class Executor {
     if (node.states?.includes("secure")) {
       task.handedOff = { action: "sensitive", what: "a password field", windowId: w.window.windowId };
       throw StepStop.handoff(`'${step.says}' targets a password field; that is left to you`);
+    }
+    if (step.memory !== undefined && this.deps.memoryHolds?.(step.memory, value) !== true) {
+      throw StepStop.stop("changed", `what you told Caret for '${step.says}' changed or is gone, so Caret did not write it`);
     }
     const before = node.value ?? "";
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;

@@ -18,8 +18,8 @@ const TYPED: readonly RegExp[] = [
 
 /** Clauses of an instruction: split at semicolons, sentence ends, and commas or "and" that open a new instruction. */
 const CLAUSE = /\s*(?:;|\.(?=\s|$)|,\s*(?:and\s+)?|\s+and\s+(?=(?:the|set|put|write|enter|type|change|make|fill|add|my)\b))\s*/i;
-/** "… to A and B to C": a clause that holds a second "X to Y" splits before its "and". */
-const AND_NEXT = /\s+and\s+(?=(?:\S+\s+){0,4}(?:to|as)\s)/i;
+/** "… to A and B to C" or "… is A and B is C": a clause that holds a second assignment splits before its "and". */
+const AND_NEXT = /\s+and\s+(?=(?:\S+\s+){0,4}(?:to|as|is)\s)/i;
 const TO_TAIL = /\b(?:to|as|is)\s+(.+)$/i;
 const PUT_HEAD = /^(?:put|write|enter|type|add|paste|insert)\s+(.+?)\s+(?:in|into)\s+\S/i;
 const DESCRIBES = /^(?:the|my|his|her|their|our|your|its|a|an|this|that|these|those)\b/i;

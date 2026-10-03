@@ -108,17 +108,18 @@ function formSnapshot(f: Form, windowId: string, at: number): { snap: Snapshot; 
 
 // MARK: - Jev
 
-/** Which form field a question is about, by its label or placeholder as the descriptor quotes it. */
-let current: { form: Form; byDescriptorName: Map<string, FormField> } | null = null;
-const fieldOf = (instructions: string): FormField | undefined => {
+/** Which form field a question is about, by its label or placeholder and its section as the descriptor quotes them. */
+let current: Form | null = null;
+const fieldOf = (instructions: string): FormField => {
   // Up to the quote that ends the sentence, so a label with an apostrophe ("Manager's name") reads whole.
   const m = /Label: '(.*?)'\.(?: |$)|Placeholder: '(.*?)'\.(?: |$)/.exec(instructions);
   const name = m?.[1] ?? m?.[2] ?? "";
-  const exact = current?.byDescriptorName.get(name);
-  if (exact !== undefined || !name.endsWith("…")) return exact;
+  const section = /Section: '(.*?)'\.(?: |$)/.exec(instructions)?.[1] ?? null;
   // The descriptor cuts a long label with an ellipsis (descriptor.ts).
-  const head = name.slice(0, -1);
-  return [...(current?.byDescriptorName ?? [])].find(([k]) => k.startsWith(head))?.[1];
+  const same = (x: string | null): boolean => x !== null && (x === name || (name.endsWith("…") && x.startsWith(name.slice(0, -1))));
+  const hits = (current?.fields ?? []).filter((x) => same(x.label ?? x.placeholder) && x.section === section);
+  if (hits.length !== 1) throw new Error(`question names '${name}' in section '${section}', which matches ${hits.length} fields of ${current?.id}`);
+  return hits[0] as FormField;
 };
 const MEMORY = "which the user told Caret";
 const scripted =
@@ -127,7 +128,6 @@ const scripted =
     const answers: Record<string, { choice: string; confidence: number }> = {};
     for (const [id, q] of Object.entries(req.questions)) {
       const f = fieldOf(String(q.instructions));
-      if (f === undefined) throw new Error(`no form field for question ${id}`);
       const crit = Object.entries(q.criteria);
       const own = crit.find(([, d]) => d?.includes(MEMORY));
       const want = expected(f.expect);
@@ -174,7 +174,7 @@ for (const f of forms) {
   const windowId = `9100-${++windowN}`;
   const { snap, keys } = formSnapshot(f, windowId, 2000);
   m.apply(snap);
-  current = { form: f, byDescriptorName: new Map(f.fields.map((x) => [x.label ?? x.placeholder ?? "", x])) };
+  current = f;
   let p: FillProposal | null = null;
   try {
     p = await proposeFill(m, ask, windowId, keys[0] as string, 3000, { about: ABOUT });

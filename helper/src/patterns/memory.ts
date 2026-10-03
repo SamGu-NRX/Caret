@@ -323,6 +323,11 @@ export class MemoryStore {
     return this.get(this.upsert("about", match(label), { label, value, source: "typed" }, at, null));
   }
 
+  /** The entry of this kind with this match key, or null. */
+  owner(kind: MemoryKind, match: string): string | null {
+    return (this.stmt("SELECT id FROM memory WHERE kind = ? AND match = ?").get(kind, match) as { id: string } | undefined)?.id ?? null;
+  }
+
   /** Moves an entry to another match key: a typed About entry whose label the user edited. */
   rekey(id: string, match: string): void {
     this.stmt("UPDATE memory SET match = ? WHERE id = ?").run(match, id);

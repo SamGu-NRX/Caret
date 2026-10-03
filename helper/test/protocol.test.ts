@@ -9,6 +9,13 @@ const GOLDEN = fileURLToPath(new URL("../fixtures/golden/protocol.ndjson", impor
 const lines = readFileSync(GOLDEN, "utf8").trim().split("\n");
 
 describe("golden protocol fixture", () => {
+  it("reads a fill field from a helper before B17, which sends no memory key, as one with memory null (review B17 #6)", () => {
+    const line = JSON.parse(lines[7] as string) as { fields: Record<string, unknown>[] };
+    const old = { ...line, fields: line.fields.filter((f) => f.memory === null).map(({ memory: _m, ...rest }) => rest) };
+    const parsed = HelperMessage.parse(old) as { fields: { memory: unknown }[] };
+    expect(parsed.fields.map((f) => f.memory)).toEqual([null, null]);
+  });
+
   it("holds one of every message type", () => {
     const types = lines.map((l) => (JSON.parse(l) as { type: string }).type);
     expect(types).toEqual([

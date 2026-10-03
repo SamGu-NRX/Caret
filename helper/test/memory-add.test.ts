@@ -121,6 +121,15 @@ describe("memoryRequest add", () => {
     expect(ask("list", { kind: "about" }).entries).toEqual([]);
   });
 
+  it("refuses to rename a typed entry onto a label another typed entry has (review B17 #5)", () => {
+    const email = add({ label: "Email", value: "dana@example.com", source: "typed" }).entries[0] as MemoryEntry;
+    add({ label: "Work email", value: "dana@lumen.example", source: "typed" });
+    expect(ask("edit", { id: email.id, fields: { label: " work email" } }).error).toMatch(/already told Caret your work email/);
+    expect(ask("list", { kind: "about" }).entries.map((e) => (e.kind === "about" ? e.fields.label : "")).sort()).toEqual(["Email", "Work email"]);
+    // Renaming to its own label, in another case, is fine.
+    expect(ask("edit", { id: email.id, fields: { label: "EMAIL" } }).error).toBeNull();
+  });
+
   it("holds an edit of a typed entry to the same rules", () => {
     const e = add({ label: "Email", value: "dana@example.com", source: "typed" }).entries[0] as MemoryEntry;
     expect(ask("edit", { id: e.id, fields: { value: "not an address" } }).error).toMatch(/invalid edit: Email must be one email address/);

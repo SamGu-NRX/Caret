@@ -76,6 +76,7 @@ describe("instruction spans", () => {
     expect(instructionValues("Company is Lumen Labs")).toEqual(["Lumen Labs"]);
     expect(instructionValues("Title is Design review, and the room is 4B")).toEqual(["Design review", "4B"]);
     expect(instructionValues("Shipping city is my home town")).toEqual([]);
+    expect(instructionValues("Name is Sam Rivera and Company is Lumen Labs")).toEqual(["Sam Rivera", "Lumen Labs"]);
   });
 
   it("offers no description as a value, and nothing from Dana's apostrophe", () => {
@@ -256,6 +257,11 @@ describe("planTask", () => {
     const d = await planTask("Set the billing city to Lisbon", desk(), mem(), opts(jev));
     expect(sectionsAsked(jev.requests[0] as JevRequest)).toEqual(["Billing City"]);
     expect(d.slots).toEqual({ v1: "Lisbon" });
+    // A label only another section has is still named by its own words (review B17 #11).
+    const contact = desk([...executorWindow(), { key: K("group:contact~0"), parent: null, role: "AXGroup", label: "Contact details" }, { key: K("group:contact/textfield:phone~0"), parent: K("group:contact~0"), role: "AXTextField", label: "Phone", editable: true }]);
+    const two = plannerJev({ fields: { "Billing City": "Lisbon", "Contact details Phone": "555-0100" } });
+    await planTask("Set the billing city to Lisbon and the phone to 555-0100", contact, mem(), opts(two));
+    expect(sectionsAsked(two.requests[0] as JevRequest).sort()).toEqual(["Billing City", "Contact details Phone"]);
     // With no section named, a city is a city in either.
     const both = plannerJev({ fields: { "Shipping City": "Lisbon" } });
     await planTask("Set the city to Lisbon", desk(), mem(), opts(both));

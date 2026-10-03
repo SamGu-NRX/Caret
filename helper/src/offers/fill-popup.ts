@@ -3,7 +3,7 @@
 // destination and value, and Tab fills them all through the executor. Pure: it reads the screen model,
 // memory and the proposal and builds the message, the recheck and the plan; publishing and running
 // are the helper's.
-import { ABOUT_SAYS } from "../fill/about.ts";
+import { ABOUT_SAYS, type AboutValue } from "../fill/about.ts";
 import { PROTOCOL_VERSION, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
 import { nodeText, type ScreenModel } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
@@ -18,8 +18,8 @@ type GroundedField = FillField & { value: string } & ({ source: FillSource; memo
 /** A proposal every field of which carries a value and where it came from: a window, or memory. */
 export type GroundedProposal = Omit<FillProposal, "fields"> & { fields: GroundedField[] };
 
-/** The value an About entry holds now, or null when it is gone, paused or no longer typed (the helper reads memory). */
-export type AboutNow = (id: string) => string | null;
+/** An About entry as a fill may use it now, or null when it is gone, paused, not typed or fits no field (the helper reads memory). */
+export type AboutNow = (id: string) => AboutValue | null;
 
 /** A pop-up is offered only for two or more fields, each with a value and the window or memory entry it came from. */
 export function fillPopupEligible(p: FillProposal): p is GroundedProposal {
@@ -101,7 +101,9 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal, about: Abou
     if (node.editable !== true || (node.value ?? "") !== "") return `the field ${f.key} is no longer empty`;
     if (describeField(w, node).text !== f.descriptor) return `the field ${f.key} now reads differently`;
     if (f.source === null) {
-      if (about(f.memory.id) !== f.value) return `what you told Caret as ${f.memory.label} changed`;
+      // The label decided which fields the entry was offered to (about.ts), so a renamed entry ends the offer too.
+      const now = about(f.memory.id);
+      if (now === null || now.value !== f.value || now.label !== f.memory.label) return `what you told Caret as ${f.memory.label} changed`;
       continue;
     }
     const sw = model.windows.get(f.source.windowId);
@@ -133,6 +135,8 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
     declared[`l${i}`] = `the name of field ${i + 1}`;
     return {
       says: `{{l${i}}} holds {{v${i}}}`,
+      // A value from memory is checked against the entry again right before it is written (executor.ts).
+      ...(f.memory === null ? {} : { memory: f.memory.id }),
       end: {
         kind: "valueEquals" as const,
         window: { bundleId: p.bundleId, title: "{{title}}" },

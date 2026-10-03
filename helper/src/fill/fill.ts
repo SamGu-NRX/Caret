@@ -241,7 +241,8 @@ export async function proposeFill(
   // memory go through the ledger too (privacy.ts memory), and when one cannot, none is offered.
   const uncut = fields.filter((f) => !fieldCut(f));
   const aboutSent = [...new Map(uncut.flatMap((f) => f.about).map((a) => [a.id, a])).values()];
-  if (aboutSent.length > 0 && !ledger.memory(aboutSent.map((a) => a.value))) for (const f of fields) f.about = [];
+  // Both the value and its label go into the question (describeAbout), so both are declared and priced.
+  if (aboutSent.length > 0 && !ledger.memory(aboutSent.flatMap((a) => [a.value, a.label]))) for (const f of fields) f.about = [];
   const asked = uncut.filter((f) => candidates.length > 0 || f.about.length > 0);
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
