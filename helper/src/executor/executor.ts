@@ -611,6 +611,9 @@ export class Executor {
       this.checkInterrupt(task);
       this.progress(task, "acting", i, `insert; the value write changed nothing, so focus, select all and replace; expect ${prediction}`);
       seen = [...seen, ...(await sent({ ...verb, attribute: "insert" }))];
+      // A WebKit window that is not key can leave the field out of the walk right after the insert (B15: the
+      // field read as gone); one more read tells a field that is back unchanged from one that really went.
+      if (this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
       // Every means answered ok and the field holds what it held: this app takes no text written this way, as a
       // WebKit window that is not key does (B15, B20). Nothing was written, so the field is the user's to fill,
       // said plainly, not a failed run.

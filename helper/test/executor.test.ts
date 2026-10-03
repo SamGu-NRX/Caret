@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
+import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type Node, type StopReason } from "../src/protocol.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
 import { classifyLabel } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
@@ -92,6 +92,27 @@ describe("executor", () => {
     expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "insert"]);
     expect(helper.executor.ledger("t1")).toEqual([]);
     expect(app.node(K("textfield:name~0"))?.value ?? "").toBe("");
+  });
+
+  it("reads the window once more when the field is missing right after the insert, then hands it off if it is back unchanged", async () => {
+    app.dropWrites = true;
+    app.dropInserts = true;
+    const name = K("textfield:name~0");
+    let hidden: Node | undefined;
+    app.afterVerb = (a, v) => {
+      if (v.kind === "write" && v.attribute === "insert") {
+        hidden = a.node(name);
+        a.nodes = a.nodes.filter((n) => n.key !== name);
+        a.show();
+      } else if (v.kind === "walk" && hidden !== undefined) {
+        a.nodes.push(hidden);
+        hidden = undefined;
+        a.show();
+      }
+    };
+    const r = await helper.executor.run("t1", plan([write(name, "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0 });
+    expect(app.verbs.at(-2)).toMatchObject({ kind: "walk" });
   });
 
   it("still stops on a mismatch when the insert fallback lands something other than the value", async () => {

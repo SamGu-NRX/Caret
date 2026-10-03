@@ -198,8 +198,10 @@ public final class ScreenReader {
             return
         }
         guard pressMonitor == nil else { return }
-        pressMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { _ in
-            let loc = NSEvent.mouseLocation
+        pressMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { e in
+            // Where the click was, not where the cursor is by the time this runs: for another app's event,
+            // locationInWindow is in screen coordinates.
+            let loc = e.window == nil ? e.locationInWindow : NSEvent.mouseLocation
             let at = nowMs()
             MainActor.assumeIsolated { self.pressSeen(location: loc, at: at) }
         }
