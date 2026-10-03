@@ -104,6 +104,32 @@ describe("naming a routine from its structure", () => {
     expect(second).toMatchObject({ by: "jev", asks: 2 });
   });
 
+  it("keeps an app named like a copied value, and short values, out of the request and the name", async () => {
+    // "Airtable" copied into Airtable: the app name is a value here.
+    const app = safeFacts(facts({ dstApp: "Airtable", values: [...values, "Airtable"] }));
+    expect(app.dstApp).toBe("");
+    expect(nameCandidates(app).every((n) => !/airtable/i.test(n))).toBe(true);
+    const seen: JevRequest[] = [];
+    await nameRoutine(facts({ dstApp: "Airtable", values: [...values, "Airtable"] }), answering(first, 0.9, seen), () => model.windows.values(), () => 0);
+    expect(JSON.stringify([seen[0]!.state, seen[0]!.questions]).includes("Airtable")).toBe(false);
+    // A two-character value is a word, not a substring: "42" knocks out "Account 42", not "Link".
+    const short = safeFacts(facts({ dstLabels: ["Account 42", "Link"], values: ["42"] }));
+    expect(short.dstLabels).toEqual(["Link"]);
+    expect(checkName("Account 42 into Mail Fixture", facts({ values: ["42"] }))).toMatch(/holds a value/);
+    expect(checkName("Link into Mail Fixture", facts({ values: ["42"] }))).toBeNull();
+  });
+
+  it("declares a line another window shows when a composed name holds it", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([...dst.nodes.values()], { at: 1, windowId: "6160-1", app: MAIL_APP, title: "New message" }));
+    m.apply(snap([{ key: "n/line", parent: null, role: "AXStaticText", label: "Subject and To into Mail Fixture" }], { at: 1, windowId: "9090-1", title: "Notes" }));
+    const seen: JevRequest[] = [];
+    await nameRoutine(facts({ dstWindow: m.windows.get("6160-1")! }), answering(first, 0.9, seen), () => m.windows.values(), () => 0);
+    expect(seen[0]!.snippets).toContainEqual({ windowId: "9090-1", kind: "candidate", text: "Subject and To into Mail Fixture" });
+    // At least the line; the ledger also charges the labels and app name the line contains, counting overlaps twice.
+    expect(seen[0]!.charged["9090-1"]).toBeGreaterThanOrEqual("Subject and To into Mail Fixture".length);
+  });
+
   it("names by code at once with Jev off", async () => {
     expect(await nameRoutine(facts(), null, () => model.windows.values())).toMatchObject({ by: "code", asks: 0, name: fallbackName(safeFacts(facts())) });
   });
@@ -276,7 +302,13 @@ describe("skills in the helper", () => {
     namingHeld = null;
     desk = new Desk();
     desk.enforceGrants = true;
-    helper = new Helper({
+    helper = makeHelper();
+    desk.attach(helper);
+    desk.grants.now = () => Date.now();
+  });
+  /** A helper on this test's store and desk; called again to stand for a restart. */
+  const makeHelper = (): Helper =>
+    new Helper({
       store,
       askJev: namer,
       shadow: false,
@@ -290,9 +322,6 @@ describe("skills in the helper", () => {
         },
       },
     });
-    desk.attach(helper);
-    desk.grants.now = () => Date.now();
-  });
   afterEach(() => {
     helper.memory.close();
     store.close();
@@ -518,6 +547,144 @@ describe("skills in the helper", () => {
     const routineId = routines()[0]!.id;
     expect(ask("forget", { id: routineId }).error).toBeNull();
     expect(ask("list").entries.filter((e) => e.kind === "skill" || e.kind === "routine")).toEqual([]);
+  });
+
+  /** Kept, then ten clean runs with Tab, then the promote offer accepted. */
+  const promote = async (): Promise<string> => {
+    const skillId = await keep();
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    expect(skills()[0]!.status).toBe("active");
+    return skillId;
+  };
+  const unprompted = (from: number): TaskProgress[] => since("taskProgress", from).filter((p) => p.unprompted === true);
+
+  it("checks everything again when a run with no Tab is about to start (review B19)", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await promote();
+    // Paused between the window opening and the run's start: nothing runs, and a paused skill is not offered.
+    let at = sent.length;
+    let c = open();
+    expect(ask("pause", { id: skillId }).error).toBeNull();
+    await helper.patterns.unpromptedSettled();
+    expect(unprompted(at)).toEqual([]);
+    expect(since("patternOffer", at)).toEqual([]);
+    desk.close(c.windowId);
+    ask("resume", { id: skillId });
+    // The rule went back to ask first: offered with Tab instead.
+    at = sent.length;
+    c = open();
+    setRule("writeElsewhere", "ask");
+    await helper.patterns.unpromptedSettled();
+    expect(unprompted(at)).toEqual([]);
+    expect(since("patternOffer", at).map((o) => o.kind)).toEqual(["routine"]);
+    expect(values(c)).toEqual(["", "", ""]);
+    desk.close(c.windowId);
+    setRule("writeElsewhere", "actIfApproved");
+    // A source changed before the start: nothing is written from the old value, and nothing is offered.
+    at = sent.length;
+    c = open();
+    desk.showList({ ...calendar(day), lines: ["Moved to Friday", ...calendar(day).lines.slice(1)] });
+    await helper.patterns.unpromptedSettled();
+    expect(unprompted(at)).toEqual([]);
+    expect(values(c)).toEqual(["", "", ""]);
+    desk.close(c.windowId);
+    // Caret paused: nothing.
+    at = sent.length;
+    c = open();
+    helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: true });
+    await helper.patterns.unpromptedSettled();
+    expect(unprompted(at)).toEqual([]);
+    desk.close(c.windowId);
+  });
+
+  it("resets a skill whose run ends in an error rather than a result", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    await promote();
+    desk.refuseLastWatch = true;
+    const at = sent.length;
+    const r = await caretRun();
+    desk.refuseLastWatch = false;
+    finish(r);
+    expect(since("error", at).some((e) => e.message.includes("cannot watch for input"))).toBe(true);
+    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+  });
+
+  it("does not count a run the user took over while its last write was answering", async () => {
+    await keep();
+    for (let i = 0; i < 2; i++) finish(await caretRun());
+    expect(skills()[0]!.fields.cleanRuns).toBe(2);
+    let link = "";
+    desk.afterWrite = (v) => {
+      if (v.kind === "write" && v.key === link && v.taskId !== undefined) void helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: v.taskId, action: "takeOver" });
+    };
+    link = cellKey(compose(day + 1), 0, 2);
+    const r = await caretRun();
+    desk.afterWrite = null;
+    finish(r);
+    expect(r.result).toMatchObject({ outcome: "paused", step: null, detail: "Caret handed this back to you after the last of 3 steps" });
+    expect(skills()[0]!.fields).toMatchObject({ cleanRuns: 0, runs: 3 });
+  });
+
+  it("counts no run of a re-offer that only fills what the user left", async () => {
+    await keep();
+    const at = sent.length;
+    const c = open();
+    desk.fill(c, 0, 0, calendar(day).lines[0]!);
+    desk.fill(c, 0, 1, calendar(day).lines[1]!);
+    const last = since("patternOffer", at).at(-1)!;
+    expect(last.cells.map((x) => x.value)).toEqual([calendar(day).lines[2]]);
+    const r = (await helper.handleOffer({ type: "offerControl", v: PROTOCOL_VERSION, offerId: last.id, action: "take" })) as TaskResult;
+    expect(r.outcome).toBe("done");
+    desk.close(c.windowId);
+    expect(skills()[0]!.fields).toMatchObject({ runs: 0, cleanRuns: 0 });
+    expect(since("skillOffer", at)).toEqual([]);
+  });
+
+  it("resets a skill when the user changes a value its run wrote", async () => {
+    await keep();
+    finish(await caretRun());
+    const r = await caretRun();
+    expect(skills()[0]!.fields.cleanRuns).toBe(2);
+    desk.fill(r.window, 0, 0, "Design review, moved");
+    expect(skills()[0]!.fields.cleanRuns).toBe(0);
+    finish(r);
+  });
+
+  it("forgets an offer that was out when the helper stopped, and never reuses its id", async () => {
+    const r = await proveAndRun();
+    const old = r.skillOffers[0]!;
+    const routineId = routines()[0]!.id;
+    expect(helper.memory.routine(routineId)?.keep).toBe("offered");
+    helper.shutdown();
+    helper.memory.close();
+    helper = makeHelper();
+    desk.attach(helper);
+    expect(helper.memory.routine(routineId)?.keep).toBeNull();
+    const at = sent.length;
+    answer(old, "accept");
+    expect(since("error", at)[0]?.message).toMatch(/no such offer/);
+    const again = await caretRun();
+    finish(again);
+    expect(again.skillOffers.map((o) => o.kind)).toEqual(["keep"]);
+    expect(again.skillOffers[0]!.id).not.toBe(old.id);
+  });
+
+  it("never promotes a skill whose window has two sends it cannot tell apart, and hands neither off", async () => {
+    buttons = ["Send", "Send later"];
+    setRule("writeElsewhere", "actIfApproved");
+    await keep();
+    expect(skills()[0]!.fields.handsOff).toEqual({ label: "Send or Send later", why: "outbound" });
+    for (let i = 1; i <= PROMOTE_AFTER + 1; i++) {
+      const r = await caretRun();
+      finish(r);
+      expect(r.result?.outcome).toBe("done");
+      expect(r.skillOffers).toEqual([]);
+    }
+    expect(desk.pressed).toEqual([]);
   });
 
   it("names nothing and offers nothing for a routine whose predictions miss", async () => {

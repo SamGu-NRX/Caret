@@ -51,6 +51,14 @@ describe("golden protocol fixture", () => {
     const badSkill = structuredClone(reply) as { entries: { fields: Record<string, unknown> }[] };
     badSkill.entries[1]!.fields.handsOff = { label: "Send", why: "unverifiable" };
     expect(HelperMessage.safeParse(badSkill).success).toBe(false);
+    // The two shapes CaretScreenCore refuses too: a hands-off skill on its own, and a status its fields contradict.
+    const onItsOwn = structuredClone(reply) as { entries: { status: string; fields: Record<string, unknown> }[] };
+    onItsOwn.entries[1]!.fields.onItsOwn = true;
+    onItsOwn.entries[1]!.status = "active";
+    expect(HelperMessage.safeParse(onItsOwn).success).toBe(false);
+    const wrongStatus = structuredClone(reply) as { entries: { status: string }[] };
+    wrongStatus.entries[0]!.status = "active";
+    expect(HelperMessage.safeParse(wrongStatus).success).toBe(false);
     for (const p of [started, done]) expect(HelperMessage.parse(p)).toMatchObject({ unprompted: true });
     expect(HelperMessage.safeParse({ ...done, unprompted: false }).success).toBe(false);
   });

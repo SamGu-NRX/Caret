@@ -76,6 +76,11 @@ export const RoutineFinish = z.object({
   why: PressRisk,
   templateHash: z.string(),
   pos: z.number().int().nonnegative(),
+  /**
+   * The window held several such buttons ("Send" and "Send later") and code cannot tell which the user
+   * presses: `label` names them all, no plan hands one of them off, and the skill is never run on its own.
+   */
+  ambiguous: z.boolean().optional(),
 });
 export type RoutineFinish = z.infer<typeof RoutineFinish>;
 
@@ -492,6 +497,17 @@ export class MemoryStore {
   }
 
   // MARK: - skills (B19)
+
+  /** Keep and promote offers live in memory only; one marked out when the helper stopped is not out any more. */
+  clearOfferedSkillStates(): void {
+    this.batch(() => {
+      for (const r of this.rows("routine")) if (routineJson(r).keep === "offered") this.patchRoutine(r.id, { keep: null });
+      for (const r of this.rows("skill")) {
+        const s = toSkill(r);
+        if (s.promote === "offered") this.updateSkill(s.id, { promote: null }, Number(r.last_seen));
+      }
+    });
+  }
 
   /**
    * Makes a routine a skill, in the learning state: on Tab, no runs counted yet. The routine is marked

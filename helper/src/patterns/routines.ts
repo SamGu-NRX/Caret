@@ -123,7 +123,7 @@ export class RoutineRecognizer {
         );
       }
       if (!applies) continue;
-      const f = routine.finish;
+      const f = routine.finish?.ambiguous === true ? null : routine.finish;
       const button = f === null ? undefined : templates.get(f.templateHash);
       const hit = button === undefined || f === null ? null : locate(this.model, windowId, button, f.pos, "whole");
       // The press must still read as it did, or the plan would name a control the risk table sees otherwise.
@@ -210,7 +210,9 @@ export class RoutineRecognizer {
       scored.push({ routineId: p.routine.id, hit, cells: p.cells.filter((c): c is RoutineCell => c !== null) });
     }
     if (sig !== null) this.keepValues(sig, [...done.map((t) => t.value), ...b.predictions.flatMap((p) => p.cells.flatMap((c) => (c === null ? [] : [c.value])))]);
-    const finish = windowClosed && dst !== undefined ? this.finishOf(dst) : undefined;
+    // Read from the destination whether it closed or went idle; a press once learned is never forgotten, so a
+    // routine that has ended in a risky press stays one that never runs on its own.
+    const finish = dst === undefined ? undefined : (this.finishOf(dst) ?? undefined);
     const recorded = sig === null ? null : this.memory.recordRoutine(sig, steps, b.lastAt, finish);
     return { dstWindowId: b.dstWindowId, sig, recorded, scored };
   }
@@ -229,11 +231,11 @@ export class RoutineRecognizer {
   }
 
   /**
-   * The press an occurrence ended with, read from its destination window as it closes: the window's one
-   * button whose label reads as outbound, or failing that its one button that reads as destructive or
-   * money (executor/risk.ts). Null when it has none, or several of a kind, since code cannot tell which
-   * the user pressed. The guess only ever adds a hand-off: Caret never presses it, and a skill with one
-   * is never run on its own.
+   * The press an occurrence may end with, read from its destination window when its bundle closes: the
+   * window's one button whose label reads as outbound, or failing that its one button that reads as
+   * destructive or money (executor/risk.ts). Several of them with none to pick come back `ambiguous`,
+   * naming them all. Null when the window has none. The guess only ever adds a hand-off or holds a skill on
+   * Tab: Caret never presses it.
    */
   private finishOf(w: WindowState): RoutineFinish | null {
     const risky: { key: string; label: string; why: RoutineFinish["why"] }[] = [];
@@ -243,12 +245,16 @@ export class RoutineRecognizer {
       const why = label === "" ? "safe" : classifyLabel(label);
       if (why !== "safe") risky.push({ key: n.key, label, why });
     }
+    const first = risky[0];
+    if (first === undefined) return null;
     const outbound = risky.filter((r) => r.why === "outbound");
-    const pick = outbound.length === 1 ? outbound[0] : risky.length === 1 ? risky[0] : undefined;
-    if (pick === undefined) return null;
-    const slot = windowIndex(w).slots.get(pick.key);
+    const pick = outbound.length === 1 ? outbound[0] : risky.length === 1 ? first : undefined;
+    const at = pick ?? outbound[0] ?? first;
+    const slot = windowIndex(w).slots.get(at.key);
     if (slot === undefined) return null;
-    return { label: pick.label, why: pick.why, templateHash: this.templateHash(slot.template), pos: slot.pos };
+    const base = { why: at.why, templateHash: this.templateHash(slot.template), pos: slot.pos };
+    if (pick !== undefined) return { ...base, label: pick.label };
+    return { ...base, label: [...new Set(risky.map((r) => r.label))].join(" or "), ambiguous: true };
   }
 
   private step(t: PatternTransfer): RoutineStep {

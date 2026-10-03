@@ -840,7 +840,7 @@ export class Helper {
         case "undo": {
           const undone = await this.executor.undo(m.taskId);
           // Undoing a skill's run resets its clean runs and puts it back on Tab (B19).
-          this.patterns.skills.undone(m.taskId, this.now());
+          this.patterns.skills.reversed(m.taskId, this.now());
           return undone;
         }
         case "pause":

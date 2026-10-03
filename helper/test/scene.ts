@@ -77,6 +77,10 @@ export class Desk implements ReaderLink {
   rewriteNext: ((v: string) => string) | null = null;
   /** Labels of buttons pressed. */
   readonly pressed: string[] = [];
+  /** Called after a write lands and before its answer goes back: a control the user sends while the answer is on its way. */
+  afterWrite: ((v: ReaderVerb) => void) | null = null;
+  /** Refuses the watch a run asks for as it ends (no pids left), which makes the run's promise reject. */
+  refuseLastWatch = false;
 
   /** Must be called once the helper exists; the helper takes the desk as its reader link first. */
   attach(helper: Helper): this {
@@ -99,6 +103,7 @@ export class Desk implements ReaderLink {
     const answer = (outcome: VerbResult["outcome"], detail: string | null = null): VerbResult => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "desk", at: this.at, outcome, detail });
     const refused = this.enforceGrants ? this.grants.refusal(verb) : null;
     if (refused !== null) return answer("notAllowed", refused);
+    if (verb.kind === "watchInput" && verb.pids.length === 0 && this.refuseLastWatch) return answer("notAllowed", "the desk refused the last watch");
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return answer("ok");
     if (isCalendarVerb(verb)) return answer("notAllowed", "the desk has no calendar");
     // A list window is read-only here: its walk changes nothing, as a walk of an unchanged window sends nothing new.
@@ -126,6 +131,7 @@ export class Desk implements ReaderLink {
     this.rewriteNext = null;
     g.values.set(verb.key, rewrite === null ? verb.value : rewrite(verb.value));
     this.showGrid(g);
+    this.afterWrite?.(verb);
     return answer("ok");
   }
 

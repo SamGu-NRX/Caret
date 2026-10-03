@@ -956,8 +956,19 @@ export const MemoryEntry = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields }),
   /** `uses`: the permission's last MAX_PERMISSION_USES uses, newest first; this helper always sends it, empty when none. */
   z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields, uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
-  /** Status: `learning` while it runs on Tab, `active` once it runs on its own, `paused` when the user paused it. */
-  z.object({ kind: z.literal("skill"), ...entryBase, fields: SkillFields }),
+  /**
+   * Status: `learning` while it runs on Tab, `active` once it runs on its own, `paused` when the user paused
+   * it. A skill that hands a press to the user never runs on its own. CaretScreenCore's MemoryEntry refuses
+   * the same two shapes.
+   */
+  z
+    .object({ kind: z.literal("skill"), ...entryBase, fields: SkillFields })
+    .superRefine((e, ctx) => {
+      if (e.fields.onItsOwn && e.fields.handsOff !== null) ctx.addIssue({ code: "custom", message: "a skill that hands a press to the user never runs on its own", path: ["fields", "onItsOwn"] });
+      if (e.status !== "paused" && e.status !== (e.fields.onItsOwn ? "active" : "learning")) {
+        ctx.addIssue({ code: "custom", message: `a skill ${e.fields.onItsOwn ? "on its own is active" : "on Tab is learning"}, or paused`, path: ["status"] });
+      }
+    }),
 ]);
 export type MemoryEntry = z.infer<typeof MemoryEntry>;
 

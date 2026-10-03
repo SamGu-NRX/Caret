@@ -97,6 +97,11 @@ interface OfferState {
   shown: boolean;
   /** A routine's finish press (B19), handed to the user as the plan's last step; null for none. */
   finish: SilentPrediction["finish"];
+  /**
+   * Offers only the cells the user left of an earlier offer (reoffer). Its run proves nothing about the
+   * whole routine, so it counts for no skill and brings no keep or promote offer.
+   */
+  narrowed: boolean;
 }
 
 interface AltCandidate {
@@ -106,6 +111,8 @@ interface AltCandidate {
 }
 
 interface Watch {
+  /** The run that wrote the value: a skill whose write the user corrects goes back on Tab (B19). */
+  taskId: string;
   windowId: string;
   key: string;
   /** The source text before memory rules; preference rules are keyed on it. */
@@ -327,7 +334,7 @@ export class PatternEngine {
     });
     const { plan, slots } = this.plan(id, o.msg.kind, w.window.title, o.msg.bundleId, cells, o.finish, o.routineId);
     const msg: PatternOffer = { ...o.msg, id, at: this.clock, says: this.says(o.msg.kind, msgCells, o.routineId), cells: msgCells };
-    const n: OfferState = { msg, cells, plan, slots, loopId: o.loopId, routineId: o.routineId, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null, shown: true, finish: o.finish };
+    const n: OfferState = { msg, cells, plan, slots, loopId: o.loopId, routineId: o.routineId, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null, shown: true, finish: o.finish, narrowed: true };
     this.withdraw(o, "reoffered", id);
     this.offers.set(id, n);
     this.deps.publish(msg);
@@ -496,7 +503,7 @@ export class PatternEngine {
       return { refused: e instanceof Error ? e.message : String(e) };
     }
     if (!cleanRun(o.plan, r)) return r;
-    for (const c of o.cells) this.watch(c);
+    for (const c of o.cells) this.watch(c, taskId);
     // The round Caret wrote came from the offer's own list; if that list closed during the run and the
     // loop moved to another, the round does not confirm the other list's loop.
     if (o.loopId !== null && this.loops.active?.srcWindowId === o.cells[0]?.srcWindowId) {
@@ -514,9 +521,17 @@ export class PatternEngine {
     // The offer checked every destination empty; one the user fills before the run's first read stops it.
     const empty: Record<string, Record<string, string>> = {};
     for (const c of o.cells) (empty[c.dstWindowId] ??= {})[c.dstKey] = "";
-    if (o.routineId !== null) this.skills.runStarted(taskId, o.routineId, this.writeAction(o.msg.windowId));
-    const r = await this.deps.run(taskId, o.plan, o.slots, empty, unprompted ? { unprompted: true } : undefined);
-    if (o.routineId !== null) this.skills.afterRun(taskId, o.routineId, o.plan, o.cells, r, this.clock);
+    const routineId = o.narrowed ? null : o.routineId;
+    if (routineId !== null) this.skills.runStarted(taskId, routineId, this.writeAction(o.msg.windowId));
+    let r: TaskResult;
+    try {
+      r = await this.deps.run(taskId, o.plan, o.slots, empty, unprompted ? { unprompted: true } : undefined);
+    } catch (e) {
+      // A run that ends in an error (the reader refusing the last watch, say) is a failure like any other.
+      if (routineId !== null) this.skills.afterRun(taskId, routineId, o.plan, o.cells, { outcome: "stopped", step: null }, this.clock);
+      throw e;
+    }
+    if (routineId !== null) this.skills.afterRun(taskId, routineId, o.plan, o.cells, r, this.clock);
     return r;
   }
 
@@ -529,17 +544,32 @@ export class PatternEngine {
 
   /**
    * Starts a promoted skill's run from its trigger, with no Tab (B19). The offer is built as for a Tab but
-   * never shown: it exists so the run, its rechecks and the edits it watches work as for a taken offer.
+   * not shown: it exists so the run, its rechecks and the edits it watches work as for a taken offer. The
+   * run starts once the reader event that triggered it has been handled, never in the middle of it, and
+   * everything that allowed it is checked again then: the user may have paused Caret or the skill,
+   * changed a permission, or moved to another window, and a source may have changed. If the skill may no
+   * longer run on its own but the offer still holds, it is offered with Tab instead.
    */
   private startUnprompted(o: OfferState): void {
     o.state = "taken";
     o.closedAt = this.clock;
     this.offers.set(o.msg.id, o);
-    // Started once the reader event that triggered it has been handled, never in the middle of it.
     const p = Promise.resolve()
-      .then(() => this.runOffer(o, o.msg.id, true))
-      .then((r) => {
-        if (cleanRun(o.plan, r)) for (const c of o.cells) this.watch(c);
+      .then(async () => {
+        const stale = this.recheck(o);
+        const held = this.deps.shadow() || this.deps.gate.holds("routine", this.clock).some((h) => h !== "hourlyBudget");
+        const routine = o.routineId === null ? null : this.deps.memory.routine(o.routineId);
+        const live = stale === null && !held && routine !== null && !routine.paused && !routine.skillPaused;
+        if (live && o.routineId !== null && this.skills.runsOnItsOwn(o.routineId, this.writeAction(o.msg.windowId), o.plan)) {
+          const r = await this.runOffer(o, o.msg.id, true);
+          if (cleanRun(o.plan, r)) for (const c of o.cells) this.watch(c, o.msg.id);
+          return;
+        }
+        if (live) {
+          o.state = "open";
+          o.closedAt = null;
+          this.show(o);
+        }
       })
       .catch((e: unknown) => {
         this.fail(`skill run ${o.msg.id}: ${e instanceof Error ? e.message : String(e)}`);
@@ -807,7 +837,7 @@ export class PatternEngine {
     };
     // A memory rule may change what Caret writes; the loop must accept that value when it comes back as a transfer.
     if (ids.loopId !== null) for (const c of written) if (c.written !== c.value) this.loops.expect(ids.loopId, c.dstKey, c.written, c.kind);
-    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null, shown: show, finish };
+    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null, shown: show, finish, narrowed: false };
     return show ? this.show(o) : o;
   }
 
@@ -1011,9 +1041,10 @@ export class PatternEngine {
 
   // MARK: - edits to filled values
 
-  private watch(c: Cell & { written: string; dstShapeHash: string }): void {
+  private watch(c: Cell & { written: string; dstShapeHash: string }, taskId: string): void {
     const w = this.deps.model.windows.get(c.dstWindowId);
     this.watches.set(`${c.dstWindowId}\u0000${c.dstKey}`, {
+      taskId,
       windowId: c.dstWindowId,
       key: c.dstKey,
       source: c.value,
@@ -1029,6 +1060,8 @@ export class PatternEngine {
 
   private judgeEdit(w: Watch): void {
     if (w.pending === null) return;
+    // The user changed what the run wrote: for a skill, as good as an undo.
+    this.skills.reversed(w.taskId, w.pending.at);
     try {
       captureEdit(this.deps.memory, this.deps.hash, { source: w.source, written: w.written, edited: w.pending.value, kind: w.kind, dstShapeHash: w.dstShapeHash, fieldLabel: w.label, app: w.app }, w.pending.at);
     } catch (e) {

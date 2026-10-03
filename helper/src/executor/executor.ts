@@ -352,7 +352,7 @@ export class Executor {
     if (task.finished === "paused") {
       task.finished = "stopped";
       releaseSources(task);
-      this.stopped(task, task.next, `stopped by you before step ${task.next + 1} of ${task.plan.steps.length}`, "you", "you");
+      this.stopped(task, task.next, `stopped by you ${this.boundary(task)}`, "you", "you");
       this.reportUses(task, "stopped");
       return;
     }
@@ -378,8 +378,14 @@ export class Executor {
     if (task.interrupt !== null) throw new Interrupted();
   }
 
+  /** Where a run stands between steps, in words: before a step, or after the last one. */
+  private boundary(task: Task): string {
+    const n = task.plan.steps.length;
+    return task.next >= n ? `after the last of ${n} steps` : `before step ${task.next + 1} of ${n}`;
+  }
+
   private pauseDetail(task: Task, it: Interrupt): string {
-    const where = `before step ${task.next + 1} of ${task.plan.steps.length}`;
+    const where = this.boundary(task);
     if (it.by === "takeOver") return `Caret handed this back to you ${where}`;
     return `paused ${where}: ${it.why}`;
   }
@@ -469,6 +475,10 @@ export class Executor {
         await this.runStep(task, i, step);
         task.next = i + 1;
       }
+      // A take over, pause or stop that came in while the last act was on its way: the act landed and stays
+      // in the ledger for undo, but the run ends as the user asked rather than as done (B19 review: a skill
+      // must not count a run the user interrupted as clean).
+      this.checkInterrupt(task);
       task.finished = "done";
       // Fields this run wrote, each once however many writes it took; presses and calendar events are not fields.
       const written = new Set(task.ledger.flatMap((e) => (e.kind === "write" ? [`${e.windowId}\u0000${e.key}`] : []))).size;
@@ -480,17 +490,19 @@ export class Executor {
       const it = task.interrupt;
       if (e instanceof Interrupted && it !== null) {
         task.interrupt = null;
+        // Past the last step there is no step to name.
+        const at = i < steps.length ? i : null;
         if (it.kind === "stop") {
-          const detail = `stopped by you before step ${i + 1} of ${steps.length}`;
+          const detail = `stopped by you ${this.boundary(task)}`;
           task.finished = "stopped";
-          this.stopped(task, i, detail, "you", "you");
+          this.stopped(task, at, detail, "you", "you");
           this.reportUses(task, "stopped");
-          return this.result(task, "stopped", i, detail);
+          return this.result(task, "stopped", at, detail);
         }
         const detail = this.pauseDetail(task, it);
         task.finished = "paused";
-        this.progress(task, "paused", i, detail, "you");
-        return this.result(task, "paused", i, detail);
+        this.progress(task, "paused", at, detail, "you");
+        return this.result(task, "paused", at, detail);
       }
       const outcome = e instanceof StepStop ? e.outcome : "stopped";
       const detail = e instanceof Error ? e.message : String(e);

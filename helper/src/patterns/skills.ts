@@ -13,6 +13,7 @@
 //   Never promoted: a skill whose plan has a step that hands a press to the user (risk.ts decides each
 //     step from its control's label), and a skill whose runs wrote under a permission the user's rule
 //     does not let run unasked (mayRunUnasked).
+import { randomUUID } from "node:crypto";
 import { classifyLabel } from "../executor/risk.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { TaskResult } from "../executor/executor.ts";
@@ -86,7 +87,10 @@ interface OpenOffer {
   trigger: string | null;
 }
 
-/** A run of a skill, by task id, until its result is in and while an undo could still reset it. */
+/**
+ * A run of a skill, by task id. Kept as long as the executor keeps the task, which is for good, since its
+ * undo can come any time and must reset the skill.
+ */
 interface SkillRun {
   skillId: string;
   action: WriteAction;
@@ -97,13 +101,14 @@ export class Skills {
   private readonly offers = new Map<string, OpenOffer>();
   private readonly runs = new Map<string, SkillRun>();
   private readonly naming = new Set<Promise<void>>();
-  private seq = 0;
   private clock = 0;
   /** Every naming that finished, newest last, for evaluations and the debug view. Bounded. */
   readonly named: { routineId: string; result: Omit<NameResult, "requests"> }[] = [];
 
   constructor(deps: SkillsDeps) {
     this.deps = deps;
+    // An offer out when the helper last stopped is gone with it; its routine or skill may be asked again.
+    deps.memory.clearOfferedSkillStates();
   }
 
   // MARK: - naming
@@ -234,8 +239,11 @@ export class Skills {
     );
   }
 
-  /** The user undid a run: a skill's run resets its count, and a promote offer that run brought is withdrawn. */
-  undone(taskId: string, at: number): void {
+  /**
+   * The user undid a run, or changed a value it wrote: a skill's run resets its count, and a promote offer
+   * that run brought is withdrawn.
+   */
+  reversed(taskId: string, at: number): void {
     const run = this.runs.get(taskId);
     if (run === undefined) return;
     const s = this.deps.memory.skill(run.skillId);
@@ -277,7 +285,8 @@ export class Skills {
     const msg: SkillOffer = {
       type: "skillOffer",
       v: PROTOCOL_VERSION,
-      id: `skill-offer-${++this.seq}`,
+      // Unique across helper restarts, so a late answer to an offer from before one cannot land on another.
+      id: `skill-offer-${randomUUID().slice(0, 13)}`,
       at: this.clock,
       kind: o.kind,
       taskId: o.taskId,
@@ -330,8 +339,6 @@ export class Skills {
   tick(now: number): void {
     this.clock = Math.max(this.clock, now);
     for (const o of [...this.offers.values()]) if (expired("skill", o.msg.at, this.clock)) this.close(o, "expired");
-    // A run's undo can come long after it ended, so runs are kept until there are many, oldest dropped first. Bounded; the number is assumed.
-    if (this.runs.size > 5000) for (const k of [...this.runs.keys()].slice(0, 1000)) this.runs.delete(k);
   }
 
   /** Withdraws an offer. Unless it was answered, the routine or skill goes back to where it stood before the offer, so a later run may make it again. */
@@ -358,5 +365,5 @@ export class Skills {
 /** When a kept routine is offered, as a clause: "a Tracker window opens with Order, Carrier and Tracking empty". */
 function trigger(f: RoutineFacts): string {
   const fields = f.dstLabels.length === 0 ? "its fields" : list(f.dstLabels.slice(0, 4));
-  return `a ${f.dstApp} window opens with ${fields} empty`;
+  return f.dstApp === "" ? `a window opens with ${fields} empty` : `a ${f.dstApp} window opens with ${fields} empty`;
 }

@@ -78,13 +78,26 @@ function namesLabel(name: string, label: string): boolean {
   return hasPhrase(name, label, CONNECTIVES.includes(norm(label)));
 }
 
-/** Whether a label holds a value, or a value holds the label: such a label is screen content, not structure. */
-function touchesValue(label: string, values: readonly string[]): boolean {
-  const l = norm(label);
+/**
+ * Whether a text holds a value, or a value holds the text: such a label or app name is screen content, not
+ * structure. A value of one or two characters ("42", "B") is looked for as whole words only, since a
+ * letter or two is inside most words.
+ */
+function touchesValue(text: string, values: readonly string[]): boolean {
+  const l = norm(text);
   return values.some((v) => {
     const x = norm(v);
-    return x.length >= MIN_VALUE_CHARS && (l.includes(x) || (l.length >= MIN_VALUE_CHARS && x.includes(l)));
+    if (x === "") return false;
+    if (x.length < MIN_VALUE_CHARS) return holdsShortValue(text, x);
+    return l.includes(x) || (l.length >= MIN_VALUE_CHARS && x.includes(l));
   });
+}
+
+/** Whether every word of a short value stands as a word of `text`. */
+function holdsShortValue(text: string, value: string): boolean {
+  const v = tokens(value);
+  const t = new Set(tokens(text));
+  return v.length > 0 && v.every((w) => t.has(w));
 }
 
 /** The facts with every label that touches a value, or is too long to be a label, left out. */
@@ -102,6 +115,8 @@ export function safeFacts(f: RoutineFacts): RoutineFacts {
     dstLabels: f.dstLabels.map((t) => t.trim()).filter((t) => ok(t) && once(t)),
     srcLabels: f.srcLabels.map((x) => ({ ...x, text: x.text.trim() })).filter((x) => ok(x.text) && once(x.text)),
     srcApps: f.srcApps.filter((a) => !touchesValue(a, f.values)),
+    // An app named like a value it received ("Airtable" copied into Airtable) is not sent, and no name uses it.
+    dstApp: touchesValue(f.dstApp, f.values) ? "" : f.dstApp,
   };
 }
 
@@ -120,7 +135,8 @@ export function checkName(name: string, f: RoutineFacts): string | null {
   const lower = norm(n);
   for (const v of f.values) {
     const x = norm(v);
-    if (x.length >= MIN_VALUE_CHARS && lower.includes(x)) return "the name holds a value the routine copied";
+    if (x === "") continue;
+    if (x.length >= MIN_VALUE_CHARS ? lower.includes(x) : holdsShortValue(n, x)) return "the name holds a value the routine copied";
   }
   const structure = new Set([f.dstApp, ...f.srcApps, ...f.dstLabels, ...f.srcLabels.map((x) => x.text), ...CONNECTIVES].flatMap(tokens));
   const valueWords = new Set(f.values.flatMap(tokens).filter((t) => t.length >= MIN_VALUE_CHARS && !structure.has(t)));
@@ -146,16 +162,18 @@ export function nameCandidates(f: RoutineFacts): string[] {
   const src = f.srcApps[0] ?? "";
   const [l0, l1] = f.dstLabels;
   const s0 = f.srcLabels[0]?.text;
+  // With no app name to use (safeFacts left it out), only the field labels can name the routine.
+  const a = app !== "";
   const raw = [
-    f.dstLabels.length >= 2 ? `${list(f.dstLabels.slice(0, 3))} into ${app}` : null,
-    l0 !== undefined && l1 !== undefined ? `${l0} and ${l1} into ${app}` : null,
-    s0 !== undefined ? `${s0} to ${app}` : null,
-    src !== "" && src !== app ? `${src} to ${app}` : null,
-    src !== "" && src !== app ? `Fill ${app} from ${src}` : null,
-    l0 !== undefined ? `Copy ${l0} into ${app}` : null,
-    l0 !== undefined ? `Log ${l0} in ${app}` : null,
+    a && f.dstLabels.length >= 2 ? `${list(f.dstLabels.slice(0, 3))} into ${app}` : null,
+    a && l0 !== undefined && l1 !== undefined ? `${l0} and ${l1} into ${app}` : null,
+    a && s0 !== undefined ? `${s0} to ${app}` : null,
+    a && src !== "" && src !== app ? `${src} to ${app}` : null,
+    a && src !== "" && src !== app ? `Fill ${app} from ${src}` : null,
+    l0 !== undefined ? (a ? `Copy ${l0} into ${app}` : `Copy ${l0}`) : null,
+    a && l0 !== undefined ? `Log ${l0} in ${app}` : null,
     f.dstLabels.length >= 2 ? list(f.dstLabels.slice(0, 3)) : null,
-    `Fill ${app}`,
+    a ? `Fill ${app}` : null,
   ];
   const out: string[] = [];
   for (const c of raw) {
@@ -175,26 +193,31 @@ export function fallbackName(f: RoutineFacts): string | null {
   return null;
 }
 
+const appOr = (app: string, other: string): string => (app === "" ? other : app);
 const WORDINGS = [
   (f: RoutineFacts) =>
-    `Someone copied values from ${list(f.srcApps)} into ${f.dstApp} the same way ${f.count} times. Which short name would they recognize this routine by?`,
+    `Someone copied values from ${appOr(list(f.srcApps), "one app")} into ${appOr(f.dstApp, "another")} the same way ${f.count} times. Which short name would they recognize this routine by?`,
   (f: RoutineFacts) =>
-    `A repeated task: fields of a ${f.dstApp} window filled from ${list(f.srcApps)}, seen ${f.count} times. Pick the clearest label for it in a list of saved tasks.`,
+    `A repeated task: fields of a ${appOr(f.dstApp, "form")} window filled from ${appOr(list(f.srcApps), "another window")}, seen ${f.count} times. Pick the clearest label for it in a list of saved tasks.`,
 ];
 
 /**
  * One naming request, built through a ledger over `windows` (normally the screen model's): the
  * destination's labels as its descriptors, the source labels as candidates of their windows, the app
- * names as plan text. A label the ledger refuses is left out, and so are the names that use it.
+ * names as plan text, and then the composed names and question as plan text too, since a name built from
+ * two labels can be a line some other window shows. A text the ledger refuses is left out, and so are the
+ * names that use it; null when no name or the question itself cannot go.
  */
 export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, wording: number, rand: (n: number) => number): { req: JevRequest; ids: Map<string, string> } | null {
   const ledger = new SnippetLedger(windows);
   const dstLabels = f.dstWindow === null ? [] : f.dstLabels.filter((l) => ledger.take(f.dstWindow as WindowState, "descriptor", [l]));
   const srcLabels = f.srcLabels.filter((x) => ledger.take(x.window, "candidate", [x.text]));
-  const apps = [...new Set([f.dstApp, ...f.srcApps])];
+  const apps = [...new Set([f.dstApp, ...f.srcApps])].filter((x) => x !== "");
   if (!ledger.plan(apps)) return null;
   const facts: RoutineFacts = { ...f, dstLabels, srcLabels };
-  const names = nameCandidates(facts);
+  const instructions = WORDINGS[wording % WORDINGS.length]!(facts);
+  if (!ledger.plan([instructions])) return null;
+  const names = nameCandidates(facts).filter((n) => ledger.plan([n]));
   if (names.length === 0) return null;
   const order = shuffle(names, rand);
   const ids = new Map<string, string>();
@@ -208,7 +231,7 @@ export function namingRequest(f: RoutineFacts, windows: Iterable<WindowState>, w
   return {
     req: {
       state: { into: facts.dstApp, intoFields: dstLabels, from: facts.srcApps, fromSections: srcLabels.map((x) => x.text), timesSeen: facts.count },
-      questions: { name: { type: "choice", instructions: WORDINGS[wording % WORDINGS.length]!(facts), criteria } },
+      questions: { name: { type: "choice", instructions, criteria } },
       snippets: declared.snippets,
       charged: declared.charged,
     },
