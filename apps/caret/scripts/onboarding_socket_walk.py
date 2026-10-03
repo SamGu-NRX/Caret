@@ -249,12 +249,12 @@ def main():
         check("the host sends its settings right after hello", connected and types[:2] == ["hello", "settings"], types[:4])
         first = helper.settings()[0] if helper.settings() else {}
         check("the settings line is the gate's roles, level and pause",
-              first.get("roles") == ["fill", "repeat", "watch", "words"] and first.get("level") == "balanced"
+              first.get("roles") == ["fill", "repeat", "watch", "calendar", "words"] and first.get("level") == "balanced"
               and first.get("paused") is False and isinstance(first.get("at"), int), first)
         check("a hidden launch opens the flow at welcome, with no window", r.get("step") == "welcome" and r.get("windowShown") is False, r)
         s = settings()
         check("defaults: every role, balanced, pebble, not paused, not onboarded",
-              s["settings"]["roles"] == ["fill", "repeat", "watch", "words"] and s["settings"]["level"] == "balanced"
+              s["settings"]["roles"] == ["fill", "repeat", "watch", "calendar", "words"] and s["settings"]["level"] == "balanced"
               and s["settings"]["character"] == "pebble" and not s["settings"]["paused"] and not s["settings"]["onboarded"], s["settings"])
         check("balanced: grounded offers from day one, routines need history",
               {r["family"]: (r["on"], r["seenBefore"]) for r in s["gate"]["rules"]}.get("fill") == (True, 0)
@@ -264,7 +264,7 @@ def main():
         ob("next", "work")
         ob("role repeat off")
         r = ob("level eager")
-        check("work screen holds the choices", r["roles"] == ["fill", "watch", "words"] and r["level"] == "eager", r)
+        check("work screen holds the choices", r["roles"] == ["fill", "watch", "calendar", "words"] and r["level"] == "eager", r)
         # The run's own grants: both off, so the permission screen asks for both.
         ob("permissions off off")
         # What Caret knows so far (A11): typed by hand, an incomplete email held, then kept. Shown
@@ -292,17 +292,17 @@ def main():
         check("Continue waits for Accessibility", r["canContinue"] is False, r)
         s = settings()
         check("leaving the work screen wrote the roles and level",
-              s["settings"]["roles"] == ["fill", "watch", "words"] and s["settings"]["level"] == "eager", s["settings"])
+              s["settings"]["roles"] == ["fill", "watch", "calendar", "words"] and s["settings"]["level"] == "eager", s["settings"])
         wait_for(lambda: len(helper.settings()) >= 2, 2)
         latest = helper.settings()[-1]
         check("the helper hears the new roles and level at once",
-              len(helper.settings()) == 2 and latest.get("roles") == ["fill", "watch", "words"] and latest.get("level") == "eager", helper.settings())
+              len(helper.settings()) == 2 and latest.get("roles") == ["fill", "watch", "calendar", "words"] and latest.get("level") == "eager", helper.settings())
         check("each choice is a memory entry from onboarding",
               [(m["key"], m["value"], m["source"]) for m in s["settings"]["memory"]]
               == [("role.fill", "on", "onboarding"), ("role.repeat", "off", "onboarding"), ("role.watch", "on", "onboarding"),
-                  ("role.words", "on", "onboarding"), ("level", "eager", "onboarding")], s["settings"]["memory"])
+                  ("role.calendar", "on", "onboarding"), ("role.words", "on", "onboarding"), ("level", "eager", "onboarding")], s["settings"]["memory"])
         check("the gate follows: loop and routine off, rewrites on at eager",
-              {r["family"]: r["on"] for r in s["gate"]["rules"]} == {"ghost": True, "fill": True, "pending": True, "loop": False, "routine": False, "rewrite": True}
+              {r["family"]: r["on"] for r in s["gate"]["rules"]} == {"ghost": True, "fill": True, "pending": True, "loop": False, "routine": False, "event": True, "rewrite": True}
               and s["gate"]["offersPerHour"] == 8, s["gate"])
         r = ob("next", "permissions")
         granted = time.monotonic()
@@ -356,7 +356,7 @@ def main():
               and [c["message"] for c in helper.controls] == [{"type": "taskControl", "v": 1, "taskId": found_key, "action": "undo"}], r)
         check("no window after the run", host.windows() == [])
         check("the request named the families the choices enable",
-              helper.requests and helper.requests[-1]["request"]["families"] == ["fill", "pending"]
+              helper.requests and helper.requests[-1]["request"]["families"] == ["fill", "pending", "event"]
               and helper.requests[-1]["request"]["level"] == "eager", helper.requests[-1:] and helper.requests[-1]["request"])
 
         helper.mode = "nothing"
@@ -414,7 +414,7 @@ def main():
         changes = helper.settings()[sent_before:]
         check("the helper hears role, level and pause changes, and not the character",
               [(m["roles"], m["level"], m["paused"]) for m in changes]
-              == [(["fill", "words"], "eager", False), (["fill", "words"], "quiet", False), (["fill", "words"], "quiet", True)], changes)
+              == [(["fill", "calendar", "words"], "eager", False), (["fill", "calendar", "words"], "quiet", False), (["fill", "calendar", "words"], "quiet", True)], changes)
         before = host.ask("state")["counters"].get("gate.refused.fillProposal", 0)
         helper.send(PROPOSAL)
         time.sleep(0.5)
@@ -430,7 +430,7 @@ def main():
         s = host.ask("settings")
         check("settings survive a relaunch",
               "error" not in s and s["settings"]["onboarded"] and s["settings"]["paused"] and s["settings"]["level"] == "quiet"
-              and s["settings"]["roles"] == ["fill", "words"] and s["settings"]["character"] == "pebble", s)
+              and s["settings"]["roles"] == ["fill", "calendar", "words"] and s["settings"]["character"] == "pebble", s)
         r = host.ask("onboarding")
         check("a hidden launch reopens the flow but no window", r.get("step") == "welcome" and host.windows() == [], r)
     finally:
