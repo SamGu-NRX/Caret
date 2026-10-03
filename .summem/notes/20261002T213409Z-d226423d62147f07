@@ -1,1 +1,0 @@
-In XCTestCase subclasses a free function named record(...) is shadowed by XCTestCase.record(_:); name test builders taskRecord or similar.

@@ -1,1 +1,0 @@
-Caret host test runs: pass --settings <own file> and --status-item off; --onboarding defaults to off so a launch never puts a window up (auto opens it until finished once).

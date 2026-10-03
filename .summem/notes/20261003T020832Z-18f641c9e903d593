@@ -1,1 +1,0 @@
-apps/caret: surface decisions (hold, retry, withdraw, work line, toast undo, Esc/Cmd-Z) live in CaretHostCore SurfaceMachine; SurfaceCoordinator only reads AppKit and draws. Test a surface change with SurfaceRig steps and a ManualClock, not on screen.

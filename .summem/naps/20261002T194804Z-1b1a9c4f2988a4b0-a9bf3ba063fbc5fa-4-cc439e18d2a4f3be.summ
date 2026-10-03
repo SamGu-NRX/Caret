@@ -1,1 +1,0 @@
-Host: NSHostingView with sizingOptions [] reports fittingSize 0; empty AppKit fields give no caret bounds, so Caret draws its own ghost. Host pid-posted keys reset HIDIdleTime; fixture without --background-only takes the front in 0.5 s. leak-check.ts: one string per line.
