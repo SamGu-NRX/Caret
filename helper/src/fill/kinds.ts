@@ -149,3 +149,104 @@ export function overlap(field: ReadonlySet<string>, cand: ReadonlySet<string>): 
   for (const t of field) if (cand.has(t)) n++;
   return n;
 }
+
+/**
+ * What a value Caret would write reads as, judged on the whole value (B18). The planner writes text from
+ * an instruction or memory as well as from windows, and that text has no reader kind, so the check reads
+ * the value itself. A value that only mentions an email or a link ("Reach me at sam@…") is text.
+ *   street   a street line: a house number, then words ("455 Congress Ave").
+ *   address  a street line followed by more after a comma ("455 Congress Ave, Austin, TX 78701").
+ */
+export type TextKind = "email" | "url" | "phone" | "amount" | "address" | "street" | "text";
+
+const WHOLE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+const WHOLE_URL = /^(?:https?:\/\/|www\.)\S+$/iu;
+/** Digits with phone punctuation only, 7 to 15 digits; an ISO date ("2026-10-08") is not one. */
+const PHONE_CHARS = /^\+?[\d\s().-]+$/u;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
+const WHOLE_AMOUNT = /^[$€£¥]\s?\d[\d,]*(?:\.\d{1,2})?$/u;
+const STREET_LINE = /^\d+[A-Za-z]?\s+\p{L}[\p{L}\p{N}.'’-]*(?:\s+[\p{L}\p{N}.'’-]+)*$/u;
+
+export function textKind(value: string): TextKind {
+  const v = value.trim().replace(/\s+/g, " ");
+  if (WHOLE_EMAIL.test(v)) return "email";
+  if (WHOLE_URL.test(v)) return "url";
+  if (WHOLE_AMOUNT.test(v)) return "amount";
+  const digits = v.replace(/\D/g, "").length;
+  if (PHONE_CHARS.test(v) && !ISO_DATE.test(v) && digits >= 7 && digits <= 15) return "phone";
+  const [head, ...rest] = v.split(",");
+  if (STREET_LINE.test((head ?? "").trim())) return rest.length > 0 ? "address" : "street";
+  return "text";
+}
+
+/** Shapes a field's label can ask for that code can check a value against. */
+type Fit = "email" | "phone" | "url" | "city" | "street" | "address" | "name" | "date" | "time" | "amount";
+const CITY = /\b(?:city|town)\b/;
+const STREET = /\bstreet\b|\baddress line\b/;
+const PERSON_NAME = /\bname\b/;
+/** Kinds of value that have their own shape: none of them is a city, a street line or a name. */
+const SHAPED: ReadonlySet<TextKind> = new Set(["email", "url", "phone", "amount", "address", "street"]);
+
+/** For each checkable shape, the value kinds it takes. A field that names none (Notes, Reference, Message) takes anything. */
+const TAKES: Record<Fit, (k: TextKind, value: string) => boolean> = {
+  email: (k) => k === "email",
+  phone: (k) => k === "phone",
+  url: (k) => k === "url",
+  // A city has no digits: "Austin" fits, "Austin, TX 78701" and a whole address do not.
+  city: (k, v) => k === "text" && !/\d/.test(v),
+  street: (k) => k === "street" || k === "text",
+  address: (k) => k === "address" || k === "street" || k === "text",
+  name: (k) => !SHAPED.has(k),
+  // "10-08-2026" reads as a phone number by its characters, so a date field takes those too.
+  date: (k) => !SHAPED.has(k) || k === "phone",
+  time: (k) => !SHAPED.has(k),
+  amount: (k) => k === "amount" || k === "text",
+};
+
+const KIND_SAYS: Record<TextKind, string> = {
+  email: "an email address",
+  url: "a web link",
+  phone: "a phone number",
+  amount: "an amount",
+  address: "a whole address",
+  street: "a street line",
+  text: "plain text",
+};
+const FIT_SAYS: Record<Fit, string> = {
+  email: "an email address",
+  phone: "a phone number",
+  url: "a web link",
+  city: "a city",
+  street: "a street line",
+  address: "an address",
+  name: "a name",
+  date: "a date",
+  time: "a time",
+  amount: "an amount",
+};
+
+/**
+ * Why a value does not fit a field with these label words, or null when it fits or the field names no
+ * shape code can check. A field that names several (an "Email or phone" field) takes a value that fits
+ * any of them. "Street" outranks "address": a Street field takes a street line, not a whole address. Read
+ * from label words the way fieldKinds reads them, so "Email address" is an email field and not a postal
+ * one. The rules are written for common form labels, not measured on real forms; "Reference" and other
+ * ID words are left unchecked because B16 and B17 put links and order numbers in the same Reference field.
+ */
+export function misfit(value: string, labelWords: readonly (string | null | undefined)[]): string | null {
+  const s = labelWords.filter((w): w is string => typeof w === "string").join(" ").toLowerCase();
+  const fits = new Set<Fit>();
+  for (const k of fieldKinds(labelWords)) if (k !== "id") fits.add(k);
+  if (CITY.test(s)) fits.add("city");
+  if (STREET.test(s)) {
+    fits.add("street");
+    fits.delete("address");
+  }
+  if (PERSON_NAME.test(s)) fits.add("name");
+  if (fits.size === 0) return null;
+  const k = textKind(value);
+  const v = value.trim();
+  if ([...fits].some((f) => TAKES[f](k, v))) return null;
+  const said = k === "text" && fits.has("city") && /\d/.test(v) ? "text with digits" : KIND_SAYS[k];
+  return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is ${said}, and the field takes ${[...fits].map((f) => FIT_SAYS[f]).join(" or ")}`;
+}

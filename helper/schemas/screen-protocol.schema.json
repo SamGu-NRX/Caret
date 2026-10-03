@@ -6035,6 +6035,7 @@
                         "ambiguousTarget",
                         "notEditable",
                         "untracedValue",
+                        "wrongKind",
                         "stepAfterHandoff",
                         "riskMismatch",
                         "unavailable",

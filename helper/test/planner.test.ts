@@ -13,8 +13,9 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import { instructionValues } from "../src/planner/spans.ts";
 import { occursBounded, traceValue, type MemoryValue } from "../src/planner/trace.ts";
+import { misfit, textKind, type TextKind } from "../src/fill/kinds.ts";
 import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
-import { byRelevance, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
+import { asksToFillForm, byRelevance, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
@@ -145,6 +146,10 @@ describe("the plan check", () => {
     expect(code(() => validatePlan(plan([write(K("textfield:pin~0"), "Dana Whitfield")]), {}, ctx("", noMemory, secure)))).toBe("notEditable");
     expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "Dana W.")]), {}, ctx()))).toBe("untracedValue");
     expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "")]), {}, ctx()))).toBe("untracedValue");
+    // A value whose kind does not fit its field (B18): an email in Name, a whole address in City; a city in City passes.
+    expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "dana.whitfield@lumenlabs.example")]), {}, ctx()))).toBe("wrongKind");
+    expect(code(() => validatePlan(plan([write(K("group:billing/textfield:city~0"), "455 Congress Ave, Austin, TX 78701")]), {}, ctx("ship to 455 Congress Ave, Austin, TX 78701")))).toBe("wrongKind");
+    expect(code(() => validatePlan(plan([write(K("group:billing/textfield:city~0"), "Austin")]), {}, ctx("ship to 455 Congress Ave, Austin, TX 78701")))).toBe("passed");
     expect(code(() => validatePlan(plan([handoff(K("button:archive~0"), "unverifiable"), ok]), {}, ctx()))).toBe("stepAfterHandoff");
     expect(code(() => validatePlan(plan([handoff(K("button:send~0"), "unverifiable")]), {}, ctx()))).toBe("riskMismatch");
     expect(code(() => validatePlan(plan([handoff(K("button:archive~0"), "money")]), {}, ctx()))).toBe("riskMismatch");
@@ -153,6 +158,47 @@ describe("the plan check", () => {
 
   it("reads hand-off reasons from the risk table", () => {
     expect([handoffWhy("Send"), handoffWhy("Delete draft"), handoffWhy("Pay invoice"), handoffWhy("Archive"), handoffWhy("")]).toEqual(["outbound", "destructive", "money", "unverifiable", "unverifiable"]);
+  });
+});
+
+describe("whether a value's kind fits a field (B18, kinds.ts)", () => {
+  const table: [string, string, TextKind, boolean][] = [
+    ["455 Congress Ave, Austin, TX 78701", "City", "address", false],
+    ["Austin, TX 78701", "City", "text", false],
+    ["Austin", "City", "text", true],
+    ["Porto", "Town", "text", true],
+    ["455 Congress Ave", "Street", "street", true],
+    ["455 Congress Ave, Austin, TX 78701", "Street", "address", false],
+    ["455 Congress Ave, Austin, TX 78701", "Shipping address", "address", true],
+    ["455 Congress Ave, Austin, TX 78701", "Address line 1", "address", false],
+    ["sam.rivera@example.com", "Phone", "email", false],
+    ["+1 (512) 555-0142", "Phone", "phone", true],
+    ["+1 (512) 555-0142", "Email or phone", "phone", true],
+    ["sam.rivera@example.com", "Email address", "email", true],
+    ["Sam Rivera", "Email", "text", false],
+    ["https://lumenlabs.example/dana", "Website", "url", true],
+    ["Dana Whitfield", "Website", "text", false],
+    ["dana@lumenlabs.example", "Name", "email", false],
+    ["+1 (512) 555-0142", "Full name", "phone", false],
+    ["Dana Whitfield", "Name", "text", true],
+    ["$1,315.50", "Total", "amount", true],
+    ["sam.rivera@example.com", "Amount", "email", false],
+    ["2026-10-08", "Date", "text", true],
+    ["10-08-2026", "Due date", "phone", true],
+    ["https://meet.example.com/xqp-rtz-kfa", "Reference", "url", true],
+    ["ORD-2026-48213", "Reference", "text", true],
+    ["455 Congress Ave, Austin, TX 78701", "Notes", "address", true],
+    ["Reach me at sam.rivera@example.com", "Phone", "text", false],
+    ["Senior Product Designer", "Event title", "text", true],
+  ];
+  it.each(table)("'%s' in a field labelled %s reads as %s and fits: %s", (value, label, kind, fits) => {
+    expect(textKind(value)).toBe(kind);
+    expect(misfit(value, [label]) === null).toBe(fits);
+  });
+
+  it("says what the value is and what the field takes", () => {
+    expect(misfit("455 Congress Ave, Austin, TX 78701", ["City"])).toBe("'455 Congress Ave, Austin, TX 78701' is a whole address, and the field takes a city");
+    expect(misfit("sam.rivera@example.com", ["Phone"])).toBe("'sam.rivera@example.com' is an email address, and the field takes a phone number");
   });
 });
 
@@ -268,8 +314,8 @@ describe("planTask", () => {
     await planTask("Set the billing city to Lisbon", cased, mem(), opts(lower));
     expect(sectionsAsked(lower.requests[0] as JevRequest)).toEqual(["Billing City"]);
     // A value copied from memory names its entry on the step, for the executor's check at the write.
-    const fromMemory = plannerJev({ fields: { Name: "sam@work.example" } });
-    const dm = await planTask("Put my work email in Name", desk(), mem([{ id: "about-w", label: "Work email", text: "sam@work.example" }]), opts(fromMemory));
+    const fromMemory = plannerJev({ fields: { Email: "sam@work.example" } });
+    const dm = await planTask("Put my work email in Email", desk(), mem([{ id: "about-w", label: "Work email", text: "sam@work.example" }]), opts(fromMemory));
     expect(dm.plan.steps.map((s) => s.memory)).toEqual(["about-w"]);
     // With no section named, a city is a city in either.
     const both = plannerJev({ fields: { "Shipping City": "Lisbon" } });
@@ -277,14 +323,51 @@ describe("planTask", () => {
     expect(sectionsAsked(both.requests[0] as JevRequest).sort()).toEqual(["Billing City", "Shipping City"]);
   });
 
-  it("asks only about the fields an instruction names, or every field when it names none", async () => {
+  it("asks only about the fields an instruction names, or every field when it asks to fill the form (B18)", async () => {
     const jev = plannerJev({ fields: { Name: "Dana Whitfield", Email: "dana.whitfield@lumenlabs.example" } });
     const d = await planTask("Set Name to Dana Whitfield", desk(), mem(), opts(jev));
     expect(d.slots).toEqual({ v1: "Dana Whitfield" });
     expect(Object.keys((jev.requests[0] as JevRequest).questions).filter((q) => q !== "press")).toHaveLength(1);
-    const all = plannerJev({ fields: { Name: "Dana Whitfield" } });
-    await planTask("Use Dana's signature here", desk(), mem(), opts(all));
-    expect(Object.keys((all.requests[0] as JevRequest).questions).filter((q) => q !== "press").length).toBeGreaterThan(1);
+    // Naming no field no longer asks about every field: only the buttons are asked about, and nothing is written.
+    const none = plannerJev({ fields: { Name: "Dana Whitfield" } });
+    await expect(planTask("Use Dana's signature here", desk(), mem(), opts(none))).rejects.toMatchObject({ code: "nothingToDo" });
+    expect(Object.keys((none.requests[0] as JevRequest).questions)).toEqual(["press"]);
+    const all = plannerJev({ fields: { Name: "Dana Whitfield", Email: "dana.whitfield@lumenlabs.example" } });
+    const da = await planTask("Fill in the form with Dana's signature", desk(), mem(), opts(all));
+    expect(Object.keys((all.requests[0] as JevRequest).questions).filter((q) => q !== "press").length).toBe(executorWindow().filter((n) => n.editable === true && n.role !== "AXButton").length);
+    expect(Object.values(da.slots).sort()).toEqual(["Dana Whitfield", "dana.whitfield@lumenlabs.example"]);
+  });
+
+  it("offers each field only the values that fit it, so a whole address never reaches City", async () => {
+    const m = desk();
+    const M = (x: string): string => `dev.caret.mail/standard/${x}`;
+    m.apply(snap([text(M("statictext:ship to~0"), "Ship to: 455 Congress Ave, Austin, TX 78701")], { at: 600, windowId: "6160-9", title: "Mail Fixture — Earlier order", app: MAIL_APP, values: [{ kind: "address", text: "455 Congress Ave, Austin, TX 78701", nodeKey: M("statictext:ship to~0") }] }));
+    const jev = plannerJev({ fields: { "Billing City": "Austin" } });
+    // The whole address is the only value; City is not offered it, so Jev can only keep the field.
+    await expect(planTask("Billing city should be where my earlier order shipped", m, mem(), opts(plannerJev({})))).rejects.toMatchObject({ code: "nothingToDo" });
+    await expect(planTask("Billing city should be where my earlier order shipped", m, mem(), opts(jev))).rejects.toThrow(/found no option/);
+    const city = Object.entries((jev.requests[0] as JevRequest).questions).find(([id]) => id !== "press")?.[1];
+    expect(Object.values(city?.criteria ?? {}).some((d) => d?.includes("455 Congress Ave"))).toBe(false);
+    // The address fits neither City nor Email, so no question carries it, and no request declares it.
+    const two = plannerJev({});
+    await expect(planTask("Put where my earlier order shipped in the billing city and the email", m, mem(), opts(two))).rejects.toMatchObject({ code: "nothingToDo" });
+    for (const r of two.requests) {
+      expect(JSON.stringify(r.questions)).not.toContain("455 Congress Ave");
+      expect(r.snippets.some((x) => x.text.includes("455 Congress Ave"))).toBe(false);
+    }
+  });
+
+  it.each([
+    ["Fill in the form with Dana's details", true],
+    ["fill out the rest of the fields from her signature", true],
+    ["Complete this form for Priya", true],
+    ["fill it all in from the order", true],
+    ["Fill out everything from the confirmation", true],
+    ["Fill Name and Email for Dana Whitfield from her signature", false],
+    ["Set the billing city to Lisbon", false],
+    ["Fill the billing city with Lisbon", false],
+  ])("reads '%s' as asking to fill the whole form: %s", (instruction, whole) => {
+    expect(asksToFillForm(instruction)).toBe(whole);
   });
 
   it("withholds a field the asks split on or agree on weakly, and writes the rest", async () => {

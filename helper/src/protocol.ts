@@ -1087,6 +1087,7 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  * `ambiguousWindow`, `unknownTarget`, `ambiguousTarget`: a window or target is not (or not uniquely) in
  * the screen model now. `notEditable`: a write to something that is not a writable field.
  * `untracedValue`: a value that no window, memory entry or the instruction shows verbatim.
+ * `wrongKind`: a value whose kind does not fit its field, such as a whole address in City (B18, kinds.ts misfit).
  * `stepAfterHandoff`: a step after the press handed to the user. `riskMismatch`: a hand-off whose reason
  * is not the one the risk table gives its control. `unavailable`: Jev is off, the helper is in shadow
  * mode, Caret is paused, or no reader is connected. `jevFailed`: the Jev request failed. `privacy`: the
@@ -1095,7 +1096,7 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  */
 export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
-  "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
+  "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "wrongKind", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 
