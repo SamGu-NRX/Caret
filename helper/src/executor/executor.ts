@@ -611,6 +611,17 @@ export class Executor {
       this.checkInterrupt(task);
       this.progress(task, "acting", i, `insert; the value write changed nothing, so focus, select all and replace; expect ${prediction}`);
       seen = [...seen, ...(await sent({ ...verb, attribute: "insert" }))];
+      // Every means answered ok and the field holds what it held: this app takes no text written this way, as a
+      // WebKit window that is not key does (B15, B20). Nothing was written, so the field is the user's to fill,
+      // said plainly, not a failed run.
+      if (this.dropped(w.window.windowId, node.key, before, seen)) {
+        this.checkUnexpected(seen, node.key);
+        const label = (node.label ?? "").trim();
+        const field = label === "" ? "this field" : `the ${label} field`;
+        const here = w.window.windowId === task.userWindow;
+        task.handedOff = { action: here ? "writeHere" : "writeElsewhere", what: field, windowId: w.window.windowId };
+        throw StepStop.handoff(`${w.app.name} did not take the text for ${field}${here ? "" : " while its window was in the background"}, so Caret left it to you`);
+      }
     }
 
     const after = this.window(w.window.windowId);

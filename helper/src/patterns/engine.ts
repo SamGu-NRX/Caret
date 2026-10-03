@@ -261,9 +261,14 @@ export class PatternEngine {
   }
 
   onChanges(changes: readonly Change[]): void {
+    // A window's fields can arrive after the window: a web page loads, or a browser builds its accessibility
+    // tree, after the window is first read (B20, Chrome). Editable fields appearing in a window with no
+    // occurrence under way are predicted for as an opening is, once per batch of changes.
+    const grew = new Set<string>();
     for (const c of changes) {
       this.clock = Math.max(this.clock, c.at);
-      if (c.kind === "windowOpened") {
+      if (c.kind === "windowOpened" || (c.kind === "added" && c.editable && !this.routines.underWay(c.windowId) && !grew.has(c.windowId))) {
+        if (c.kind === "added") grew.add(c.windowId);
         const preds = this.timings.time("routines.open", () => this.routines.onWindowOpened(c.windowId, c.at));
         if (preds.length > 0) this.onPredictions(preds);
         if (preds.length > 0) this.syncPressWatch();

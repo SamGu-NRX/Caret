@@ -164,6 +164,11 @@ export class RoutineRecognizer {
     if (b.presses.length > PRESSES_PER_BUNDLE) b.presses.shift();
   }
 
+  /** Whether an occurrence is under way in this window: predicted when it opened, or with a transfer into it. */
+  underWay(windowId: string): boolean {
+    return this.bundles.has(windowId);
+  }
+
   /** The windows with an occurrence under way: where a press may end one, so the reader is asked to report presses there. */
   openWindows(): string[] {
     return [...this.bundles.keys()];

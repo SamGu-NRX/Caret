@@ -787,6 +787,30 @@ describe("skills in the helper", () => {
     expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "buttons" });
   });
 
+  it("predicts for a window whose fields arrive after it opened, as a web page's do, once", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    for (let i = 0; i < 3; i++) expect(byHand()).toEqual([]);
+    await helper.patterns.skills.namesSettled();
+    // The window is first read with no fields, as a browser window is before its page loads.
+    const at = sent.length;
+    day++;
+    desk.at += DAY;
+    desk.showList(calendar(day));
+    desk.advance(1000);
+    const c = compose(day);
+    desk.showGrid({ ...c, rows: 0 });
+    expect(since("patternOffer", at)).toEqual([]);
+    desk.advance(500);
+    desk.showGrid(c);
+    const offers = since("patternOffer", at).filter((o) => o.kind === "routine");
+    expect(offers).toHaveLength(1);
+    expect(offers[0]?.windowId).toBe(c.windowId);
+    // A later read of the same fields makes no second prediction.
+    desk.showGrid({ ...c, rows: 0 });
+    desk.showGrid(c);
+    expect(since("patternOffer", at).filter((o) => o.kind === "routine")).toHaveLength(1);
+  });
+
   it("asks the reader to watch presses only in a window with an occurrence under way, and stops when it closes", () => {
     byHandPressing(null);
     const c = compose(day);
