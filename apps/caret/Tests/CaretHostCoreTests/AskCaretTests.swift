@@ -209,9 +209,8 @@ final class AskCaretTests: XCTestCase {
         ask.receive(progress(card.offerKey, .stopped, step: 1, steps: 2, reason: .you))
         guard case .ended(_, let same) = ask.phase else { return XCTFail("not ended") }
         XCTAssertEqual(same.text, "You stopped it before step 2 of 2")
-        ask.receive(progress(card.offerKey, .stopped, step: 0, steps: 2, reason: .changed))
-        guard case .ended(_, let after) = ask.phase else { return XCTFail("not ended") }
-        XCTAssertEqual(after.text, "You stopped it before step 2 of 2", "only the first ending corrects the line")
+        ask.receive(progress(card.offerKey, .verified, step: 1, steps: 2))
+        guard case .running = ask.phase else { return XCTFail("a run continued from the list moves the same card") }
     }
 
     func testTheHelpersStopSaysWhatStoppedIt() throws {
@@ -232,12 +231,72 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(line.text, "Paused because you worked in Caret Fixture. Continue it from the list below.")
     }
 
-    func testTheHelperGoingAwayEndsTheRun() throws {
+    /// Losing the helper says nothing about how far its run got (review A13, finding 2): the line
+    /// claims neither "nothing was done" nor a stop.
+    func testTheHelperGoingAwayDuringARunClaimsNothing() throws {
         _ = try proposed()
         ask.tab()
         ask.linkChanged(false)
         guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
-        XCTAssertEqual(line.text, Captions.acceptUnsent, "nothing had been done")
+        XCTAssertEqual(line, AskCopy.lostTouch)
+    }
+
+    func testAStopThatCouldNotBeSentClaimsNoStop() throws {
+        _ = try proposed()
+        ask.tab()
+        connected = false
+        XCTAssertTrue(ask.escape())
+        guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(line, AskCopy.lostTouch)
+    }
+
+    func testAStopWhoseAnswerNeverCameIsNotLeftAsStopped() throws {
+        _ = try proposed()
+        ask.tab()
+        ask.escape()
+        ask.linkChanged(false)
+        guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(line, AskCopy.lostTouch)
+    }
+
+    func testAProposalGoesWithItsHelperOrItsWithdrawal() throws {
+        let card = try proposed()
+        ask.withdrawn(OfferWithdrawn(at: 1, id: "someone-elses", reason: .expired))
+        XCTAssertEqual(ask.phase, .proposed(card), "another offer's withdrawal")
+        ask.withdrawn(OfferWithdrawn(at: 1, id: card.offerKey, reason: .expired))
+        XCTAssertEqual(ask.phase, .failed("That plan expired before it ran. Ask again."))
+        XCTAssertFalse(ask.tab(), "Tab no longer sends the dead key")
+        _ = try proposed()
+        ask.linkChanged(false)
+        XCTAssertEqual(ask.phase, .failed(AskCopy.planGone))
+    }
+
+    func testTheRunsOwnTakenWithdrawalLeavesItsCard() throws {
+        let card = try proposed()
+        ask.tab()
+        ask.withdrawn(OfferWithdrawn(at: 1, id: card.offerKey, reason: .taken))
+        if case .running = ask.phase {} else { XCTFail("still running: \(ask.phase)") }
+    }
+
+    /// Paused by real input, continued from the activity list, undone there: the same card follows.
+    func testTheCardFollowsItsTaskThroughPauseResumeAndUndo() throws {
+        let card = try proposed()
+        ask.tab()
+        ask.receive(progress(card.offerKey, .paused, step: 0))
+        if case .ended = ask.phase {} else { return XCTFail("paused shows its line") }
+        ask.receive(progress(card.offerKey, .acting, step: 0))
+        guard case .running(let resumed) = ask.phase else { return XCTFail("continued: running again") }
+        XCTAssertEqual(resumed.steps.map(\.state), [.running, .pending])
+        ask.receive(progress(card.offerKey, .verified, step: 0))
+        ask.receive(progress(card.offerKey, .handoff, step: 1))
+        let undone = try JSONDecoder().decode(TaskProgress.self, from: Data(#"{"type":"taskProgress","v":1,"at":1,"taskId":"plan-1-ask-1","planId":"p","phase":"undone","step":null,"steps":2,"says":null,"detail":null,"restored":1,"notRestored":0}"#.utf8))
+        ask.receive(undone)
+        guard case .ended(let after, let line) = ask.phase else { return XCTFail("undone: ended") }
+        XCTAssertEqual(line.text, "Cleared 1 field")
+        XCTAssertEqual(after.steps.map(\.state), [.pending, .pending])
+        ask.escape()
+        ask.receive(progress(card.offerKey, .acting, step: 0))
+        XCTAssertEqual(ask.phase, .idle, "a card put away follows nothing")
     }
 
     func testTabWithNoHelperSaysNothingRan() throws {
@@ -288,6 +347,9 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(say(.notEditable, "step 2 ('Password holds x'): its target is a password field, which is left to you"), "That's a password field, which I leave to you.")
         XCTAssertEqual(say(.unknownWindow, "step 1 ('Name holds Dana'): no open window matches 'Invoices'"), "I couldn't find a window called \u{201C}Invoices\u{201D}.")
         XCTAssertEqual(say(.unknownWindow, "'Invoices' closed while Caret planned, and another window took its title"), "The window I planned for closed while I planned.")
+        // A value holding the prefix's own "'): '" cannot be split surely: no value is named (review A13, finding 8).
+        XCTAssertEqual(say(.untracedValue, "step 1 ('Name holds Anna'): 'Bob'): 'Anna'): 'Bob' is not in any window, in memory or in your instruction"),
+                       "I couldn't find that value on screen, in what I remember, or in what you asked.")
     }
 }
 

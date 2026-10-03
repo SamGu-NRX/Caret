@@ -4,6 +4,7 @@
   surface_acceptance.py alternatives <evidence_dir> [light|dark]
   surface_acceptance.py fill <evidence_dir> [light|dark]
   surface_acceptance.py realkeys <evidence_dir> [light|dark]
+  surface_acceptance.py compact <evidence_dir> [light|dark]
 
 realkeys: one real down arrow, Command-2 and Tab through the event tap, posted at the HID level by
 fixture-keys, which refuses every key unless the fixture owns both the frontmost app and the
@@ -31,6 +32,11 @@ chosen alternative to that text.
 
 fill: the toast and the next field's offer give way to each other, and in the tight form the line
 covers no neighbor. Screenshots in the given appearance (both host and fixture).
+
+compact (A13, part 3): A12's small screen, stood in for by the host's `placement-bounds` test hook
+around the claim form. The event card at Phone has no spot that covers nothing, so it is drawn as
+its compact line, which covers no field and whose placement probed nothing under it; ↓ opens the full
+card. With bounds too tight for the compact line as well, nothing is drawn and Tab passes through.
 """
 import json
 import os
@@ -626,6 +632,63 @@ def real_key(name, pid):
     time.sleep(0.15)
 
 
+def compact(out_dir, appearance):
+    pid, host_pid, gold = rig(out_dir, appearance)
+    by_label = {g["label"]: g for g in gold}
+    results = {"pid": pid, "appearance": appearance, "steps": []}
+    field = by_label["Phone"]
+    prefill(pid, field)
+    time.sleep(0.3)
+    # The form and its labels, and nothing beside or under it: no room right of the fields, 8 pt
+    # under the last one, the labels' column on the left.
+    left = min(g["frame"][0] for g in gold) - 170
+    top = min(g["frame"][1] for g in gold) - 40
+    right = max(g["frame"][0] + g["frame"][2] for g in gold) + 8
+    bottom = max(g["frame"][1] + g["frame"][3] for g in gold) + 8
+    r = host(f"placement-bounds {left} {top} {right - left} {bottom - top}")
+    check("the test bounds are set", r.get("ok"), reply=r)
+    before = watch(pid)
+    reply = inject({"kind": "popup", "pid": pid, "offerKey": "card-c", "spec": golden("eventCard")})
+    time.sleep(0.3)
+    sf = host().get("surface") or {}
+    panel = sf.get("panel") or {}
+    check("no clear spot for the card: its compact line is drawn instead", reply.get("ok") and (sf.get("ui") or {}).get("compact") is True
+          and bool(panel) and panel["frame"][3] <= 24, reply=reply, ui=sf.get("ui"), panel=panel)
+    check_clear("compact line", gold, field)
+    results["steps"].append({"step": "compact", "shot": shot(out_dir, pid, host_pid, "compact-1-line"), "placement": sf.get("panelPlacement"), "text": panel.get("text")})
+    k = key("down", pid)
+    time.sleep(0.2)
+    sf = host().get("surface") or {}
+    check("down opens the full card", k.get("consumed") and not (sf.get("ui") or {}).get("compact") and (sf.get("panel") or {}).get("frame", [0, 0, 0, 0])[3] > 24,
+          key=k, ui=sf.get("ui"))
+    # The card the user asked for: where it went and whether it covers something, recorded, not judged.
+    results["steps"].append({"step": "card", "shot": shot(out_dir, pid, host_pid, "compact-2-card"), "placement": sf.get("panelPlacement")})
+    k = key("tab", pid)
+    time.sleep(0.25)
+    acc = (host().get("surface") or {}).get("lastAccepted") or {}
+    check("tab on the opened card takes its action", k.get("consumed") and acc.get("offerKey") == "card-c" and acc.get("actionId") == "add", accepted=acc)
+    host("progress done")
+    time.sleep(5.5)
+    # Too tight for the compact line too: the bounds are the Phone field alone.
+    f = field["frame"]
+    host(f"placement-bounds {f[0]} {f[1]} {f[2]} {f[3]}")
+    reply = inject({"kind": "popup", "pid": pid, "offerKey": "card-d", "spec": golden("eventCard")})
+    time.sleep(0.3)
+    s = host()
+    sf = s.get("surface") or {}
+    check("no clear spot even for the compact line: nothing is drawn", reply.get("held") == "noClearSpot" and not sf.get("panel") and not s.get("offer"),
+          reply=reply, panel=sf.get("panel"))
+    k = key("tab", pid)
+    check("and Tab is the app's", not k.get("consumed"), key=k)
+    host("placement-bounds clear")
+    after = watch(pid)
+    check("the fallback never moved the frontmost app or the focused element", after["front"] == before["front"] and after["focused"] == before["focused"],
+          before=before, after=after)
+    check("no panel was ever the key window", not KEY_PANELS, keyPanels=KEY_PANELS)
+    results["final"] = host()
+    return results
+
+
 def realkeys(out_dir, appearance):
     if not FOREGROUND:
         raise SystemExit("deferred: realkeys needs the foreground run (CARET_SURFACE_IDLE_MIN > 0)")
@@ -658,7 +721,7 @@ def realkeys(out_dir, appearance):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("alternatives", "fill", "realkeys"):
+    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("alternatives", "fill", "realkeys", "compact"):
         raise SystemExit(__doc__)
     mode, out = sys.argv[1], sys.argv[2]
     appearance = sys.argv[3] if len(sys.argv) == 4 else "light"
@@ -671,7 +734,7 @@ if __name__ == "__main__":
             lease.__enter__()
         if dog:
             dog.__enter__()
-        results = {"alternatives": alternatives, "fill": fill, "realkeys": realkeys}[mode](out, appearance)
+        results = {"alternatives": alternatives, "fill": fill, "realkeys": realkeys, "compact": compact}[mode](out, appearance)
     except KeyboardInterrupt:
         stopped_by = f"deferred: user active (input at {dog.tripped})" if dog and dog.tripped else "interrupted"
         log(stopped_by)
@@ -699,3 +762,7 @@ if __name__ == "__main__":
         with open(os.path.join(out, "results.json"), "w") as f:
             json.dump(results, f, indent=2, sort_keys=True, default=str)
         log("summary", results["passed"], "passed,", results["failed"], "failed")
+    # The compact case fails its command on a failed check (review A13); the older modes keep
+    # their exit status for the scripts that call them.
+    if mode == "compact":
+        sys.exit(76 if stopped_by else (1 if results["failed"] else 0))

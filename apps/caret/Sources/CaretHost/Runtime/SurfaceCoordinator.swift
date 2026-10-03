@@ -359,13 +359,13 @@ final class SurfaceCoordinator {
             if !panel.isVisible { panel.enter() }
         case .atField(let field, let caret, let pid, let entering):
             let enter = entering || !panel.isVisible || placed == nil
-            if enter {
-                if let fit, fit.content == content, fit.field == field, fit.caret == caret, fit.pid == pid {
-                    placed = fit.placed
-                    countPlacement(fit.placed.choice)
-                } else {
-                    placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
-                }
+            if let fit, fit.content == content, fit.field == field, fit.caret == caret, fit.pid == pid {
+                // The machine probed this very content around this field just now: that spot, also
+                // for an offer swapped in place without an entrance (review A13, finding 5).
+                placed = fit.placed
+                countPlacement(fit.placed.choice)
+            } else if enter {
+                placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
             } else if var current = placed {
                 // Content grew or shrank about the pinned corner (a reveal, the highlight moving).
                 // Only the area it grew into is probed; if that covers something, runs off the

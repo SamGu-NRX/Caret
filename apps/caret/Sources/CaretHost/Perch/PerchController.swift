@@ -123,6 +123,8 @@ final class PerchController {
     private func listKey(_ event: NSEvent) -> Bool {
         let plain = event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
         guard plain else { return false }
+        // An input method composing text owns Return and Esc until it commits or cancels.
+        if let editor = list.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
         let editing = list.panel.firstResponder is NSTextView
         switch Int64(event.keyCode) {
         case KeyStroke.returnKeyCode, 76:

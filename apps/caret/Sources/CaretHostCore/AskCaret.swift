@@ -94,6 +94,9 @@ public final class AskCaret {
     public private(set) var linked = false
     /// Where the helper's ending for a run Esc stopped can still correct the line (`SurfaceMachine.confirmStop`).
     private var stopping: String?
+    /// The task Tab started, followed while its card is up: a paused run resumed from the activity
+    /// list, or undone there, moves the same card. Nil once the card is put away.
+    private var tracking: String?
     private var waitTimer: SurfaceTimer?
     private var requests = 0
     /// The first step of a running plan not yet done, and its step count, from its progress.
@@ -163,6 +166,7 @@ public final class AskCaret {
         }
         // The instruction is done with; the next one starts from an empty field.
         text = ""
+        tracking = card.offerKey
         nextStep = nil
         steps = card.steps.count
         if let first = card.steps.indices.first, !card.steps[first].yours { card.steps[first].state = .running }
@@ -176,7 +180,11 @@ public final class AskCaret {
     public func escape() -> Bool {
         switch phase {
         case .running(var card):
-            _ = send(.stop(OfferStop(offerId: card.offerKey, at: nowMs)))
+            // Not delivered: the helper may still be running it, so the card says only what is known.
+            guard send(.stop(OfferStop(offerId: card.offerKey, at: nowMs))) else {
+                settle(.ended(card, AskCopy.lostTouch))
+                return true
+            }
             stopping = card.offerKey
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .pending }
             settle(.ended(card, WorkLines.stoppedByYou(next: nextStep ?? (steps > 0 ? 0 : nil), of: steps)))
@@ -199,11 +207,21 @@ public final class AskCaret {
         guard !up else { return onChange() }
         switch phase {
         case .asking: settle(.failed(AskCopy.helperDown))
-        case .running(let card):
-            let didSome = card.steps.contains { $0.state == .done }
-            settle(.ended(card, didSome ? WorkLines.helperStopped : WorkLines.acceptUnsent))
+        // Its offer went with the helper: Tab could only send a key nobody holds.
+        case .proposed: settle(.failed(AskCopy.planGone))
+        // A run in flight, or one whose stop has not been answered: losing the connection says
+        // nothing about how far the helper got, so the card does not guess.
+        case .running(let card): settle(.ended(card, AskCopy.lostTouch))
+        case .ended(let card, _) where stopping != nil: settle(.ended(card, AskCopy.lostTouch))
         default: onChange()
         }
+    }
+
+    /// The helper took back the proposal on the card (it expired, Caret was paused, the screen
+    /// reader restarted): Tab must not send its key. A run's own `taken` withdrawal changes nothing.
+    public func withdrawn(_ message: OfferWithdrawn) {
+        guard case .proposed(let card) = phase, card.offerKey == message.id else { return }
+        settle(.failed(AskCopy.withdrawn(message.reason)))
     }
 
     /// The answer to a request this field sent. Any other answer, or one that comes after the
@@ -220,7 +238,8 @@ public final class AskCaret {
     }
 
     public func receive(_ progress: TaskProgress) {
-        if case .ended(var card, let line) = phase, stopping == progress.taskId, card.offerKey == progress.taskId {
+        guard let tracking, progress.taskId == tracking else { return }
+        if case .ended(var card, let line) = phase, stopping == tracking {
             // The helper's own ending for a run Esc stopped: the step it stopped before, or Done when
             // it finished first. The line says it once; nothing else the run reports changes it.
             let corrected: WorkLine
@@ -237,11 +256,16 @@ public final class AskCaret {
             if corrected != line { settle(.ended(card, corrected)) }
             return
         }
-        guard case .running(var card) = phase, progress.taskId == card.offerKey else { return }
+        var card: Card
+        switch phase {
+        case .running(let c), .ended(let c, _): card = c
+        case .idle, .asking, .proposed, .failed: return
+        }
         if progress.steps > 0 { steps = progress.steps }
         let index = progress.step.flatMap { Self.cardIndex(ofPlanStep: $0, in: card) }
         switch progress.phase {
         case .acting:
+            // Also a paused run continued from the activity list: the card runs again.
             nextStep = progress.step
             if let index { card.steps[index].state = .running }
             settle(.running(card))
@@ -266,8 +290,12 @@ public final class AskCaret {
         case .paused:
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .pending }
             settle(.ended(card, AskCopy.paused(app: card.app)))
-        case .started, .undone:
-            settle(.running(card))
+        case .undone:
+            // Undo from the activity list: what Caret wrote is back as it was.
+            for i in card.steps.indices where !card.steps[i].yours && card.steps[i].state == .done { card.steps[i].state = .pending }
+            settle(.ended(card, WorkLines.undone(OfferLifecycle.undoCount(progress))))
+        case .started:
+            if case .running = phase { settle(.running(card)) }
         }
     }
 
@@ -313,6 +341,10 @@ public final class AskCaret {
             waitTimer = nil
         }
         if case .ended = next {} else { stopping = nil }
+        switch next {
+        case .running, .ended: break
+        case .idle, .asking, .proposed, .failed: tracking = nil
+        }
         phase = next
         onChange()
     }
@@ -351,6 +383,24 @@ public enum AskCopy {
     public static let helperDown = "My helper isn't running, so I can't plan that."
     public static let noAnswer = "I didn't hear back in time, so nothing was planned."
     public static let tooLong = "That's longer than I can plan from. Try it in fewer words."
+    public static let planGone = "My helper stopped, so this plan can't run now."
+
+    /// The connection to the helper dropped while a run was going or its stop was unanswered.
+    /// Nothing says how far the helper got, so the line claims nothing about it.
+    public static let lostTouch: WorkLine = {
+        let caption = "I lost touch with my helper, so I can't say how far this got."
+        return WorkLine(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption)
+    }()
+
+    /// The helper took the proposal back before Tab.
+    public static func withdrawn(_ reason: OfferWithdrawn.Reason) -> String {
+        switch reason {
+        case .expired: return "That plan expired before it ran. Ask again."
+        case .settings: return "Caret was paused, so that plan won't run."
+        case .stale, .diverged: return "The window changed, so that plan no longer fits. Ask again."
+        case .taken, .dismissed, .idle, .reoffered: return "That plan was put away before it ran. Ask again."
+        }
+    }
     public static let yours = "You do this"
 
     /// A field write in plain words: Put “Priya Raman” in Name.
@@ -417,8 +467,10 @@ public enum AskCopy {
     static func quoted(_ failure: PlanProposal.Failure) -> String? {
         let detail = failure.detail
         switch failure.code {
-        case .untracedValue: return between(detail, opener: "'): '", marker: "' is not in any window")
-        case .notEditable: return between(detail, opener: "'): '", marker: "' is not a field")
+        // A value that itself holds the step prefix's closing "'): '" makes the split ambiguous;
+        // then no value is named rather than a wrong one.
+        case .untracedValue: return once(detail, "'): '") ? between(detail, opener: "'): '", marker: "' is not in any window") : nil
+        case .notEditable: return once(detail, "'): '") ? between(detail, opener: "'): '", marker: "' is not a field") : nil
         case .nothingToDo: return detail.hasPrefix("'") ? between(detail, opener: "'", marker: "' has no field") : nil
         case .unknownWindow:
             guard let r = detail.range(of: "): no open window matches '"), detail.hasSuffix("'") else { return nil }
@@ -426,6 +478,10 @@ public enum AskCopy {
             return value.isEmpty ? nil : value
         default: return nil
         }
+    }
+
+    private static func once(_ text: String, _ part: String) -> Bool {
+        text.components(separatedBy: part).count == 2
     }
 
     /// The text between the last `opener` before the first `marker`, and that marker.

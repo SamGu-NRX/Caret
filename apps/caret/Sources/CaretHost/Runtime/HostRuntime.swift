@@ -183,6 +183,7 @@ public final class HostRuntime {
             case .offerWithdrawn(let withdrawn):
                 surface.withdrawn(withdrawn)
                 onboarding.receive(withdrawn)
+                perch.ask.withdrawn(withdrawn)
             case .taskProgress(let progress):
                 surface.taskProgress(progress)
                 onboarding.receive(progress)
