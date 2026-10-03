@@ -1,1 +1,0 @@
-Caret skills: name/description JSON under caret/skills/<action-id>/ (not Apify SKILL.md). Pinned screenpipe@0.4.50 has its own Developer ID and AX prompt; Caret's grant does not stop it. Debug menu shows truncated last-2 via history-debug; inference last-N hard-fails.

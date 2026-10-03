@@ -1,1 +1,0 @@
-{"c":[{"name":"20260919T192245Z-7c3e6304f151c521","text":"PR #11 merged main; README/productContext/techContext keep launchd Screenpipe wording plus Debug last-2 preview.","type":"note"},{"name":"20260919T192513Z-736b08c59f95f4f1","text":"Caret.xcodeproj object IDs must be unique; a FileRef in a Sources files list makes xcodebuild unable to open the project","type":"note"}]}

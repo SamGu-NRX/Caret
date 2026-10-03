@@ -1,0 +1,1 @@
+Accessibility quirks (Oct 2): Chrome titles in AXGroup and AXWebArea stay out of keys; Chrome rejects AXManualAccessibility; web DOM changes post no AX notification; background AppKit focus only in its key window; Gemma needs <bos> (BOSRuntime).

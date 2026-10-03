@@ -16,7 +16,11 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
   `LinePlacement` and `FillLineRule` place a fill's line in tight forms and keep one line on screen.
   `InsertionGuard` is a port of the team repo's guard; `UndoGuard` is its counterpart for ⌘Z.
   `FillSelection` matches a proposal to the focused field; `WriteFallback` decides paste versus AX
-  write; `HelperProtocol` decodes helper lines and defines `fillResult`.
+  write; `HelperProtocol` decodes helper lines and defines `fillResult`. `SurfaceMachine` decides
+  alternatives, action lines and pop-ups: when one is drawn, held, retried or withdrawn, the
+  working, result and error lines after Tab, and the toast's undo. It reads the system through
+  `SurfaceWorld` as plain values, keeps time on a `SurfaceClock`, and answers with
+  `SurfaceCommand`, so `SurfaceRig` tests every transition without a screen.
 - `Sources/CaretHost`: everything that touches the system.
   - `Input/TapThread`: the only key tap, on its own thread.
   - `Accessibility/FocusObserver`: AX notifications in, KeyType snapshots out.
@@ -29,8 +33,8 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
   - `Overlay/FillOverlay`: the ghost value, the source line and the toast (`SURFACES.md` 3, 5, 6).
   - `Design/`: tokens, the figure (pebble, seed, wren; `CARET_FIGURE` or the menu's Character),
     the pop-up blocks, the line, and `Gallery`, the off-screen renders the snapshot tests compare.
-  - `Runtime/SurfaceCoordinator`: alternatives, action lines, pop-ups, and the working, result
-    and error lines after Tab.
+  - `Runtime/SurfaceCoordinator`: `SurfaceMachine`'s adapter. It answers the machine's reads
+    from NSWorkspace, Accessibility and the window server, and draws its commands.
   - `Runtime/`: wiring, shared status and the debug socket.
 - `Sources/Caret`: the app shell.
 
