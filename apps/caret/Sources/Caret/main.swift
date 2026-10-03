@@ -5,11 +5,11 @@ import CaretHost
 // app's Accessibility grant. Flags: --socket <path>, --model <path>, --allow <bundle,ids>,
 // --allow-pids <pid,pid>, --helper-socket <path>, --no-ghost, --no-fill-advance,
 // --appearance light|dark, --perch hidden|shown, --surfaces headless|shown, --test-hooks,
-// --settings <path>, --onboarding auto|show|hidden|off.
+// --settings <path>, --onboarding auto|show|hidden|off, --status-item off.
 // Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES,
 // CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off, CARET_PERCH=hidden,
 // CARET_SURFACES=headless, CARET_TEST_HOOKS=1, CARET_SETTINGS_PATH,
-// CARET_ONBOARDING.
+// CARET_ONBOARDING, CARET_STATUS_ITEM=off.
 
 var configuration = HostRuntime.Configuration()
 
@@ -47,6 +47,7 @@ if CommandLine.arguments.dropFirst().first == "--probe" {
 // `--appearance light|dark` (CARET_APPEARANCE) pins the overlays' appearance, for screenshots of
 // both themes on one Mac without changing the system setting.
 var appearanceName = ProcessInfo.processInfo.environment["CARET_APPEARANCE"]
+var showsStatusItem = ProcessInfo.processInfo.environment["CARET_STATUS_ITEM"] != "off"
 var arguments = CommandLine.arguments.dropFirst().makeIterator()
 while let argument = arguments.next() {
     switch argument {
@@ -77,6 +78,13 @@ while let argument = arguments.next() {
     case "--test-hooks":
         // The debug socket's `inject` and `progress`, which fake helper offers and their results.
         configuration.testHooks = true
+    case "--status-item":
+        // `off`: no menu bar item, for socket-only runs that must put nothing on screen.
+        switch arguments.next() {
+        case "off": showsStatusItem = false
+        case "on": showsStatusItem = true
+        default: FileHandle.standardError.write(Data("caret: --status-item takes on or off\n".utf8)); exit(2)
+        }
     case "--onboarding":
         // `off` (default: the menu's Set Up Caret opens it), `auto` (at launch until finished
         // once), `show`, or `hidden` (the flow with no window, driven over the debug socket).
@@ -96,9 +104,10 @@ while let argument = arguments.next() {
 }
 
 let launchConfiguration = configuration
+let launchStatusItem = showsStatusItem
 MainActor.assumeIsolated {
     let app = NSApplication.shared
-    let delegate = AppDelegate(configuration: launchConfiguration)
+    let delegate = AppDelegate(configuration: launchConfiguration, showsStatusItem: launchStatusItem)
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
     switch appearanceName {

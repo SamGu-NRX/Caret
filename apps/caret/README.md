@@ -20,7 +20,12 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
   alternatives, action lines and pop-ups: when one is drawn, held, retried or withdrawn, the
   working, result and error lines after Tab, and the toast's undo. It reads the system through
   `SurfaceWorld` as plain values, keeps time on a `SurfaceClock`, and answers with
-  `SurfaceCommand`, so `SurfaceRig` tests every transition without a screen.
+  `SurfaceCommand`, so `SurfaceRig` tests every transition without a screen. `FillMachine` does
+  the same for grounded fill (`FillRig`; `SharedToastSlotTests` runs both machines on one
+  arbiter, as they share its one toast slot). `CaretSettings` holds what Caret helps with, how
+  forward it is, the character and pause, and `GatePolicy` the rules they make. `OnboardingFlow`
+  is onboarding's five screens as a state machine, and `FirstLook` the `firstLook` request and
+  reply (contract fixture: `Tests/CaretHostCoreTests/Fixtures/first-look.ndjson`).
 - `Sources/CaretHost`: everything that touches the system.
   - `Input/TapThread`: the only key tap, on its own thread.
   - `Accessibility/FocusObserver`: AX notifications in, KeyType snapshots out.
@@ -35,7 +40,10 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
     the pop-up blocks, the line, and `Gallery`, the off-screen renders the snapshot tests compare.
   - `Runtime/SurfaceCoordinator`: `SurfaceMachine`'s adapter. It answers the machine's reads
     from NSWorkspace, Accessibility and the window server, and draws its commands.
-  - `Runtime/`: wiring, shared status and the debug socket.
+  - `Onboarding/`: the onboarding window (`OnboardingController`, the one Caret window that may
+    become key) and its screens (`OnboardingView`), every control drawn in SwiftUI so the
+    off-screen renders match the window.
+  - `Runtime/`: wiring, shared status, the settings file (`SettingsStore`) and the debug socket.
 - `Sources/Caret`: the app shell.
 
 ## Build
@@ -81,6 +89,13 @@ CARET_ALLOW_BUNDLES=com.apple.TextEdit .build/Caret.app/Contents/MacOS/Caret
   them or writing anything: each offer is bound to the field the helper names, keys come from the
   debug socket's `key` hook, and a text claim is refused as `headless`. For socket-level runs
   while someone is using the Mac.
+- `--settings <path>` (`CARET_SETTINGS_PATH`) names the settings file, default
+  `~/Library/Application Support/Caret/v2-host/settings.json`. Test runs pass their own.
+- `--onboarding off|auto|show|hidden` (`CARET_ONBOARDING`): `off` by default, so no test run puts
+  a window up, and the menu's Set Up Caret opens it; `auto` opens it at launch until it has been
+  finished once; `hidden` runs the flow with no window, for the debug socket.
+- `--status-item off` (`CARET_STATUS_ITEM=off`): no menu bar item, for runs that put nothing on
+  screen.
 - SIGTERM and SIGINT shut down cleanly, freeing llama/Metal before exit.
 
 ## Offers from the helper
@@ -108,6 +123,13 @@ command per connection with JSON: `state` (default), `latency-reset`, `ping`, an
   action line, a pop-up spec, or a helper line such as a `fillProposal` (`SurfaceInjection`).
   Injected offers are never reported to the helper.
 - `progress done|error` ends the work an accepted action line or pop-up started.
+- `settings` reads the settings file, the choices and the gate they make; `settings set role
+  fill|repeat|watch|words on|off`, `level quiet|balanced|eager`, `character pebble|seed|wren` and
+  `paused on|off` change one as the menu bar does.
+- `onboarding` reads the onboarding flow. With `--test-hooks`, `onboarding open|close|next|back`,
+  `role <r> on|off`, `level <l>`, `key tab|delete|return|esc|other|char:<c>`, `permissions on|off
+  on|off` (stands in for the Accessibility and Input Monitoring grants), `reply <firstLookReply>`
+  and `look-again` drive it as the window would. The socket never opens the window.
 `scripts/host-state.py` wraps it and can wait for an offer or an insertion. The state carries
 trust flags, the current offer, the last claim and insertion, tap timing and keystroke-to-paint
 latency. Field text never appears; only digests and lengths, plus the model's own output.
@@ -141,6 +163,9 @@ latency. Field text never appears; only digests and lengths, plus the model's ow
 - `CARET_RECORD_SNAPSHOTS=1 swift test --filter SnapshotTests` rewrites the reference images in
   `Tests/CaretHostTests/References`; `CARET_SNAPSHOT_OUT=<dir>` also writes every render there.
 - `--appearance light|dark` (`CARET_APPEARANCE`) pins the overlays' theme for screenshots.
+- `scripts/onboarding_socket_walk.py <Caret binary> <dir>`: onboarding walked over the debug
+  socket with `--onboarding hidden` and a fake helper that answers `firstLook`, every setting
+  read back, and a relaunch reading the settings file. Opens no window and posts no event.
 
 ## Which apps take a pid-posted paste
 

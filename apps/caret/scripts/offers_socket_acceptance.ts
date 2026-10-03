@@ -156,6 +156,8 @@ async function closeSession(s: Session): Promise<void> {
 const host: ChildProcess = spawn(CARET, [
   "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden", "--surfaces", "headless",
   "--allow-pids", PIDS.join(","),
+  // Nothing on screen, not even the menu bar item, and a settings file of the run's own.
+  "--status-item", "off", "--settings", join(SOCKETS, "a5-offers-settings.json"),
 ]);
 host.stderr?.setEncoding("utf8");
 host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));

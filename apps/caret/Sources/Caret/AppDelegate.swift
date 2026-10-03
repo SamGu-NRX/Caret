@@ -19,8 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var roleItems: [NSMenuItem] = []
     private var levelItems: [NSMenuItem] = []
 
-    init(configuration: HostRuntime.Configuration) {
+    private let showsStatusItem: Bool
+
+    init(configuration: HostRuntime.Configuration, showsStatusItem: Bool = true) {
         runtime = HostRuntime(configuration: configuration)
+        self.showsStatusItem = showsStatusItem
         super.init()
     }
 
@@ -45,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             FileHandle.standardError.write(Data("caret: \(error)\n".utf8))
             exit(1)
         }
-        installStatusItem()
+        if showsStatusItem { installStatusItem() }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

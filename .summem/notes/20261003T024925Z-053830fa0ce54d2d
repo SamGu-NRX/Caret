@@ -1,0 +1,1 @@
+SwiftUI ImageRenderer draws AppKit-backed controls (stock Button, Toggle, ProgressView) as placeholders; off-screen renders of a window need every control drawn in SwiftUI with custom styles, as Onboarding/OnboardingView does.
