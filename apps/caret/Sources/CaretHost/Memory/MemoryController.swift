@@ -44,6 +44,9 @@ final class MemoryController {
     /// Onboarding's typed name and email.
     func remember(_ items: [TypedAbout]) { book.remember(items) }
 
+    /// Onboarding's Skip after an earlier Continue.
+    func forgetTyped(labels: [String]) { book.dropTyped(labels: labels) }
+
     // MARK: - The window
 
     /// Brings the window forward, reading the list again so it shows what the helper holds now.

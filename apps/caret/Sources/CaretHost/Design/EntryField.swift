@@ -30,6 +30,8 @@ struct EntryField: View {
     var showsFocus = false
     /// Becoming true moves focus here: the field a problem is about.
     var focusNow = false
+    /// False while what it holds is being saved: later typing would be lost.
+    var enabled = true
     var onChange: (String) -> Void
     var onSubmit: () -> Void = {}
 
@@ -72,6 +74,7 @@ struct EntryField: View {
                 .labelsHidden()
                 .foregroundStyle(Color(token: Tokens.ink))
                 .focused($focused)
+                .disabled(!enabled)
                 .onSubmit(onSubmit)
                 .accessibilityLabel(title)
                 .onChange(of: focusNow) { _, now in if now { focused = true } }

@@ -406,6 +406,25 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.flow.state.about.name, "")
     }
 
+    func testSkipAfterAnEarlierContinueDropsWhatThatContinueHandedOver() {
+        let rig = atKnow()
+        rig.send(.setAbout(.name, "Dana"), .next)
+        rig.take()
+        rig.send(.back, .skip)
+        XCTAssertEqual(rig.take(), [.forgetTyped(["Name"])])
+        rig.send(.back, .setAbout(.name, "Dana"), .next)
+        XCTAssertEqual(rig.take(), [.remember([TypedAbout(label: "Name", value: "Dana")])], "kept was cleared, so it is handed over again")
+    }
+
+    func testAProblemNamesItsField() {
+        var d = AboutDraft()
+        d.name = String(repeating: "n", count: 501)
+        XCTAssertEqual(d.problemField, .name)
+        d.name = "Dana"
+        d.email = "dana@"
+        XCTAssertEqual(d.problemField, .email)
+    }
+
     func testAnIncompleteEmailHoldsContinueAndSaysWhyUntilTheNextKeystroke() {
         let rig = atKnow()
         rig.send(.setAbout(.email, "dana@example"))

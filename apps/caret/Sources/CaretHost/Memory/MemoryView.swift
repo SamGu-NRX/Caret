@@ -348,7 +348,7 @@ private struct EditorView: View {
                     FieldLabel(text: field.title).frame(width: 74, alignment: .leading)
                     EntryField(
                         title: field.title, text: field.text, autofocus: index == editor.fields.count - 1,
-                        showsFocus: index == editor.fields.count - 1,
+                        showsFocus: index == editor.fields.count - 1, enabled: !editor.saving,
                         onChange: { send(.draft(field.key, $0)) }, onSubmit: { send(.save) }
                     )
                 }

@@ -43,11 +43,16 @@ public struct AboutDraft: Equatable, Sendable {
 
     /// Why Continue cannot keep these, in words; nil when it can. Empty is fine: the step can be
     /// skipped. Lengths follow the helper's About value limit (500).
-    public var problem: String? {
+    public var problem: String? { check?.text }
+
+    /// The field the problem is about, so focus can go there.
+    public var problemField: AboutField? { check?.field }
+
+    private var check: (field: AboutField, text: String)? {
         let n = name.trimmed, e = email.trimmed
-        if n.utf16.count > 500 { return "That name is too long." }
-        if !e.isEmpty && !Self.looksLikeEmail(e) { return "That email looks incomplete." }
-        if e.utf16.count > 500 { return "That email is too long." }
+        if n.utf16.count > 500 { return (.name, "That name is too long.") }
+        if !e.isEmpty && !Self.looksLikeEmail(e) { return (.email, "That email looks incomplete.") }
+        if e.utf16.count > 500 { return (.email, "That email is too long.") }
         return nil
     }
 
@@ -222,6 +227,9 @@ public final class OnboardingFlow {
         case saveChoices(roles: Set<CaretRole>, level: CaretLevel, onboarded: Bool)
         /// Hand typed values to memory (`MemoryBook.remember`), which keeps them through the helper.
         case remember([TypedAbout])
+        /// Skip after an earlier Continue: drop the values for these labels not kept yet
+        /// (`MemoryBook.dropTyped(labels:)`).
+        case forgetTyped([String])
         case openSystemSettings(Pane)
         case askFirstLook(FirstLookRequest)
         /// Take the first look's offer: the helper runs it as the task named by its key.
@@ -303,6 +311,11 @@ public final class OnboardingFlow {
             state.about.name = ""
             state.about.email = ""
             state.about.showsProblem = false
+            // An earlier Continue may have handed values over: Skip means keep none of them.
+            if !state.about.kept.isEmpty {
+                output(.forgetTyped(Array(state.about.kept.keys).sorted()))
+                state.about.kept = [:]
+            }
             go(to: .permissions, .forward)
         case .permissions(let p): permissionsChanged(p)
         case .openSystemSettings(let pane):

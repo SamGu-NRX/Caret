@@ -52,6 +52,8 @@ final class OnboardingController {
     var sendControl: (TaskControl) -> Bool = { _ in false }
     /// The name and email typed on the `know` screen, for memory to keep.
     var onRemember: ([TypedAbout]) -> Void = { _ in }
+    /// Skip after an earlier Continue: those values are not to be kept.
+    var onForgetTyped: ([String]) -> Void = { _ in }
     /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
     var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
     /// What the window refused to do because it is hidden, for the debug state.
@@ -145,6 +147,7 @@ final class OnboardingController {
                 if onboarded { s.onboarded = true }
             }
         case .remember(let items): onRemember(items)
+        case .forgetTyped(let labels): onForgetTyped(labels)
         case .openSystemSettings(let pane):
             guard drawsWindow else { return suppressed.append("openSystemSettings.\(pane.rawValue)") }
             Self.openSettings(pane)

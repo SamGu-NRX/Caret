@@ -203,10 +203,12 @@ public final class HostRuntime {
         onboarding.sendAccept = { firstLookClient.send($0) }
         onboarding.sendStop = { firstLookClient.send($0) }
         onboarding.sendControl = { firstLookClient.send($0) }
+        // Weak across the client: its callbacks hold the memory controller.
         let memoryClient = helper
-        memory.send = { memoryClient.send($0) }
-        onboarding.onRemember = { memory.remember($0) }
-        perch.onOpenMemory = { memory.open() }
+        memory.send = { [weak memoryClient] in memoryClient?.send($0) ?? false }
+        onboarding.onRemember = { [weak memory] in memory?.remember($0) }
+        onboarding.onForgetTyped = { [weak memory] in memory?.forgetTyped(labels: $0) }
+        perch.onOpenMemory = { [weak memory] in memory?.open() }
         // The helper's gate holds the same roles, level and pause: sent after every hello and on
         // every change (B10). The client drops a change that leaves all three as they were.
         let gateClient = helper

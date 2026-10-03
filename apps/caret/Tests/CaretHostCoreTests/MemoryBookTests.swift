@@ -253,6 +253,40 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertNil(rig.state.editor)
     }
 
+    func testTypingWhileSavingIsRefusedSoNothingIsLost() throws {
+        let rig = try Rig()
+        rig.book.beginEdit(Self.about)
+        rig.book.updateDraft("value", "Marcus Lowe, Operations")
+        rig.book.saveEdit()
+        rig.book.updateDraft("value", "Marcus Lowe, Ops team")
+        XCTAssertEqual(rig.state.editor?.fields.last?.text, "Marcus Lowe, Operations")
+    }
+
+    func testAChangeNeverAnsweredListsAgainSoALateSuccessShows() throws {
+        let rig = try Rig()
+        rig.book.askToForget(Self.routine)
+        rig.book.confirmForget()
+        rig.clock.advance(by: MemoryBook.answerTimeout + 0.1)
+        XCTAssertEqual(rig.last?.op, .list, "the helper may have forgotten it: read again")
+        var reply = try HelperMemoryTests.reply(1)
+        reply.entries.removeAll { $0.id == Self.routine }
+        rig.answer(reply)
+        XCTAssertNil(rig.entry(Self.routine))
+        XCTAssertNil(rig.state.problems[Self.routine], "the list settles it")
+    }
+
+    func testAfterAReconnectNothingChangesUntilTheListArrives() throws {
+        let rig = try Rig()
+        rig.book.linkChanged(false)
+        rig.book.linkChanged(true)
+        XCTAssertFalse(rig.book.pause(Self.about), "what is shown may be out of date")
+        rig.book.beginEdit(Self.about)
+        XCTAssertNil(rig.state.editor)
+        XCTAssertTrue(MemoryPage.sections(rig.state, now: Date())[0].rows[0].busy)
+        rig.answer(try HelperMemoryTests.reply(1))
+        XCTAssertTrue(rig.book.pause(Self.about))
+    }
+
     // MARK: - Permissions
 
     func testARuleChangeIsSentAndReadBack() throws {
@@ -264,7 +298,7 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertEqual(rig.entry("permission-writeHere")?.permission?.rule, .act)
         let row = try XCTUnwrap(MemoryPage.rules(rig.state, now: Date()).first { $0.action == .writeHere })
         XCTAssertEqual(row.rule, .act)
-        XCTAssertEqual(row.ruleDetail, "Caret does it without asking.")
+        XCTAssertEqual(row.ruleDetail, "Meant to happen without asking. For now, Tab still does it.", "nothing acts without Tab yet")
     }
 
     func testSendingDeletingAndMoneyCannotGoPastAskAndNothingIsSent() throws {
@@ -356,6 +390,27 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertEqual(rig.sent.filter { $0.op == .add }.count, 1)
         rig.book.dropTyped(rig.state.typed[0].id)
         XCTAssertEqual(rig.state.typed, [])
+    }
+
+    func testANewValueSupersedesOneBeingSent() throws {
+        let rig = try Rig()
+        rig.book.remember([TypedAbout(label: "Name", value: "Dana")])
+        let first = try XCTUnwrap(rig.last)
+        rig.book.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])
+        XCTAssertEqual(rig.state.typed.map(\.value), ["Dana Whitfield"], "one value per label")
+        XCTAssertEqual(rig.last?.fields?["value"], .text("Dana Whitfield"))
+        // The first add's reply arrives: it does not remove the new value.
+        var kept = try HelperMemoryTests.reply(5)
+        kept.requestId = first.requestId
+        rig.book.receive(kept)
+        XCTAssertEqual(rig.state.typed.map(\.value), ["Dana Whitfield"])
+    }
+
+    func testDroppingByLabelRemovesOnlyThoseLabels() throws {
+        let rig = try Rig(connected: false)
+        rig.book.remember([TypedAbout(label: "Name", value: "Dana"), TypedAbout(label: "Email", value: "d@example.com")])
+        rig.book.dropTyped(labels: ["Name"])
+        XCTAssertEqual(rig.state.typed.map(\.label), ["Email"])
     }
 
     func testANewValueForAWaitingLabelReplacesIt() throws {

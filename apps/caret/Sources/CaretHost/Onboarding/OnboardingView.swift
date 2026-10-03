@@ -383,7 +383,7 @@ struct KnowScreen: View {
     /// Where focus is: the email after Continue found a problem with it, else the name until it
     /// holds something. On screen the problem moves focus there; off screen it draws the ring.
     private var focus: AboutField {
-        if state.about.showsProblem, state.about.problem != nil, !state.about.email.isEmpty { return .email }
+        if state.about.showsProblem, let field = state.about.problemField { return field }
         return state.about.name.isEmpty ? .name : .email
     }
 
@@ -421,7 +421,7 @@ struct KnowScreen: View {
             EntryField(
                 title: field.label, text: state.about[field], placeholder: placeholder,
                 autofocus: field == .name, showsFocus: focus == field,
-                focusNow: field == .email && state.about.showsProblem,
+                focusNow: state.about.showsProblem && state.about.problemField == field,
                 onChange: { send(.setAbout(field, $0)) }
             )
         }

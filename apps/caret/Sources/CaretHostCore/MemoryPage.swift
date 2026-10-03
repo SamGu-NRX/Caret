@@ -107,7 +107,7 @@ public enum MemoryPage {
         controls.append(.forget)
         return Row(
             id: e.id, kind: e.kind, says: e.says, detail: evidence(e.evidence, now: now, calendar: calendar, locale: locale),
-            status: status, controls: controls, busy: s.busy[e.id] != nil || !s.connected, problem: s.problems[e.id], typed: false
+            status: status, controls: controls, busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id], typed: false
         )
     }
 
@@ -191,8 +191,8 @@ public enum MemoryPage {
             }
             return RuleRow(
                 id: e.id, action: action, title: actionTitle(action), example: actionExample(action), rule: p.rule,
-                ruleDetail: ruleDetail(p.rule), choices: choices.count > 1 ? choices : [], uses: Array(uses),
-                usesReported: e.uses != nil, busy: s.busy[e.id] != nil || !s.connected, problem: s.problems[e.id]
+                ruleDetail: ruleDetail(action, p.rule), choices: choices.count > 1 ? choices : [], uses: Array(uses),
+                usesReported: e.uses != nil, busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id]
             )
         }
     }
@@ -230,12 +230,17 @@ public enum MemoryPage {
         }
     }
 
-    public static func ruleDetail(_ r: HelperMemory.Rule) -> String {
+    /// What the rule does today. The helper's gate reads only Write where you are and Undoable
+    /// changes, and only Hand off changes anything there: it holds the offer (helper/src/patterns/
+    /// gate.ts, `permissionHandoff`). Nothing yet acts without Tab, so Act and Act if approved say
+    /// so rather than promise it; reading and showing do happen without asking.
+    public static func ruleDetail(_ a: HelperMemory.ActionType, _ r: HelperMemory.Rule) -> String {
         switch r {
-        case .act: return "Caret does it without asking."
-        case .actIfApproved: return "Caret does it for routines you approved, and asks for the rest."
+        case .act where a == .read || a == .show: return "Caret does it without asking."
+        case .act: return "Meant to happen without asking. For now, Tab still does it."
+        case .actIfApproved: return "Meant for routines you approved. For now, Tab still does it."
         case .ask: return "Caret offers it, and Tab does it."
-        case .handoff: return "Caret gets it ready, and you do the last step."
+        case .handoff: return "Caret leaves it to you."
         }
     }
 

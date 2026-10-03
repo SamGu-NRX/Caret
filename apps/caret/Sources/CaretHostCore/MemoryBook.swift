@@ -198,6 +198,9 @@ public final class MemoryBook {
                 state.editor?.problem = message
                 state.editor?.saving = false
             }
+            // The change may still have been made: a late reply is ignored, so the list says
+            // what the helper holds.
+            requestList()
         }
         changed()
     }
@@ -232,9 +235,10 @@ public final class MemoryBook {
 
     private func entry(_ id: String) -> HelperMemory.Entry? { state.entries.first { $0.id == id } }
 
-    /// An entry that can take a request now: listed, connected, nothing in flight for it.
+    /// An entry that can take a request now: connected, listed on this connection (what is shown
+    /// after a reconnect may be out of date until then), nothing in flight for it.
     private func ready(_ id: String) -> HelperMemory.Entry? {
-        guard state.connected, state.busy[id] == nil, let e = entry(id) else { return nil }
+        guard state.connected, state.loaded, state.busy[id] == nil, let e = entry(id) else { return nil }
         return e
     }
 
@@ -307,8 +311,9 @@ public final class MemoryBook {
         changed()
     }
 
+    /// Refused while the edit is being saved: the reply closes the edit, and later typing would be lost.
     public func updateDraft(_ key: String, _ text: String) {
-        guard let i = state.editor?.fields.firstIndex(where: { $0.key == key }) else { return }
+        guard state.editor?.saving == false, let i = state.editor?.fields.firstIndex(where: { $0.key == key }) else { return }
         state.editor?.fields[i].text = text
         state.editor?.problem = nil
         changed()
@@ -340,8 +345,8 @@ public final class MemoryBook {
             state.editor = nil
             return false
         }
-        guard state.connected, state.busy[e.id] == nil else {
-            state.editor?.problem = state.connected ? nil : MemoryCheck.offline
+        guard state.connected, state.loaded, state.busy[e.id] == nil else {
+            state.editor?.problem = state.connected && state.loaded ? nil : MemoryCheck.offline
             return false
         }
         editor.saving = true
@@ -375,12 +380,14 @@ public final class MemoryBook {
 
     // MARK: - Typed values
 
-    /// Values the user typed for the helper to keep. A value for a label still waiting replaces it.
+    /// Values the user typed for the helper to keep. A value for a label not kept yet is replaced:
+    /// one value per label waits. If the old one is being sent, its reply no longer touches the new.
     public func remember(_ items: [TypedAbout]) {
         for item in items {
             let value = item.value.trimmed
             guard !value.isEmpty else { continue }
-            if let i = state.typed.firstIndex(where: { $0.label == item.label && !$0.phase.isSending }) {
+            if let i = state.typed.firstIndex(where: { $0.label == item.label }) {
+                if case .sending(let requestId) = state.typed[i].phase { pending[requestId]?.typedId = nil }
                 state.typed[i].value = value
                 state.typed[i].phase = .waiting
             } else {
@@ -394,8 +401,14 @@ public final class MemoryBook {
 
     /// Removes a typed value that has not been kept yet.
     public func dropTyped(_ id: String) {
+        for t in state.typed where t.id == id { if case .sending(let r) = t.phase { pending[r]?.typedId = nil } }
         state.typed.removeAll { $0.id == id }
         changed()
+    }
+
+    /// Removes the values for these labels that have not been kept yet (Skip in onboarding).
+    public func dropTyped(labels: [String]) {
+        for t in state.typed where labels.contains(t.label) { dropTyped(t.id) }
     }
 
     private func flushTyped() {
