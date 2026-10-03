@@ -38,6 +38,7 @@ import {
   type VerbResult,
   type RunPlan,
   type Settings,
+  type SkillAnswer,
   type TaskControl,
   type TaskCause,
   type TaskPhase,
@@ -284,8 +285,10 @@ export class Helper {
         this.publish(m, accept);
         this.onPatternMessage(m);
       },
-      // Every pattern run starts from an accepted offer: offerControl take or the host's offerAccept.
-      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
+      // Every pattern run starts from an accepted offer (offerControl take or the host's offerAccept), or
+      // from a skill the user agreed to let run on its own (B19), which is the approval its grant rests on.
+      run: (taskId, plan, slots, expect, opts) => this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true }),
+      askJev: this.ask,
       shadow: () => this.mode === "shadow",
       gate: this.gate,
       enteredByUser: (id) => {
@@ -615,6 +618,13 @@ export class Helper {
     this.patterns.withdrawFamilies(families);
   }
 
+  /** The user's answer to a keep or promote question (B19). A refused answer is published as an error. */
+  handleSkillAnswer(m: SkillAnswer): void {
+    if (this.mode !== "live") return this.error(`skill offer ${m.id}: the helper is in shadow mode`);
+    const refused = this.patterns.skills.answer(m);
+    if (refused !== null) this.error(refused);
+  }
+
   /** Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. */
   handleOffer(m: OfferControl): Promise<TaskResult | null> {
     return this.patterns.control(m);
@@ -825,8 +835,12 @@ export class Helper {
       switch (m.action) {
         case "resume":
           return await this.executor.resume(m.taskId);
-        case "undo":
-          return await this.executor.undo(m.taskId);
+        case "undo": {
+          const undone = await this.executor.undo(m.taskId);
+          // Undoing a skill's run resets its clean runs and puts it back on Tab (B19).
+          this.patterns.skills.undone(m.taskId, this.now());
+          return undone;
+        }
         case "pause":
         case "takeOver":
           // The run's own promise resolves as paused at the next step boundary.

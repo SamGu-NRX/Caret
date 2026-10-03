@@ -65,6 +65,11 @@ export interface RunOptions {
    * task binds. Without it the reader acts only in `--act-pids` processes, which exist only in tests.
    */
   grant?: boolean;
+  /**
+   * A skill started the run from its trigger without a Tab (B19), under the agreement the user gave when
+   * it was promoted. Every taskProgress of the task says so, for the host's toast.
+   */
+  unprompted?: boolean;
 }
 
 export type Outcome = "done" | "stopped" | "handoff" | "paused";
@@ -155,6 +160,8 @@ interface Task {
   sourced: { text: string; windowId: string; window: WindowState | undefined }[];
   /** Started from an accepted offer, so it may hold an act grant. */
   granted: boolean;
+  /** Started by a skill with no Tab (RunOptions.unprompted). */
+  unprompted: boolean;
   /** The act grant the reader holds for this task now, or null. One window per task. */
   grant: { pid: number; windowId: string } | null;
   /** The reader holds a calendar grant for this task now (protocol.ts CalendarGrant). */
@@ -279,6 +286,7 @@ export class Executor {
         return text === undefined ? [] : [{ text, windowId, window: this.deps.model.windows.get(windowId) }];
       }),
       granted: opts.grant === true,
+      unprompted: opts.unprompted === true,
       grant: null,
       calendarGranted: false,
       userWindow: this.userWindow(),
@@ -1042,7 +1050,7 @@ export class Executor {
     const phase = head.phase;
     const says = step === null ? null : (task.plan.steps[step]?.says ?? null);
     const steps = task.plan.steps.length;
-    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, step, steps, says, detail, ...head });
+    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, step, steps, says, detail, ...head, ...(task.unprompted ? { unprompted: true as const } : {}) });
     if (this.deps.onTask === undefined) return;
     // The first step not yet reached: past this one once it is verified or skipped, none once done.
     const from = phase === "done" ? steps : phase === "verified" || phase === "skipped" ? (step ?? task.next) + 1 : (step ?? task.next);

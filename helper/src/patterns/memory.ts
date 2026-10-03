@@ -1,12 +1,15 @@
 // Memory you can see and edit (plan section 4). Typed entries in SQLite, never prose a model wrote,
-// in five kinds: about you, people, preferences, routines and permissions. Each entry's sentence is
-// rendered by code from its fields. Recognizers, fills and the gate read memory on every use, so an
-// edit, pause or forget takes effect at the next offer.
+// in six kinds: about you, people, preferences, routines, permissions and skills (B19: routines the
+// user kept). Each entry's sentence is rendered by code from its fields. Recognizers, fills and the
+// gate read memory on every use, so an edit, pause or forget takes effect at the next offer.
 //
 // About-you, people and preference entries hold real values, so their fields are sealed with
 // AES-256-GCM under a local key file (mode 0600) beside the store's salt. This is the plan's answer
 // to its question 3 for Sam, taken provisionally: the build order otherwise persists only counts and
-// hashes. Lookups use keyed hashes, never plain values. Routines and permissions hold no screen text.
+// hashes. Lookups use keyed hashes, never plain values. Routines, skills and permissions hold no
+// values: a routine's or skill's name, trigger and hand-off hold field labels, button labels and app
+// names only (patterns/naming.ts checks a name against every value the routine was seen copying), so
+// they are stored in the clear.
 //
 // The same database holds the gate's decision log and the user's reactions to offers.
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
@@ -21,7 +24,9 @@ import {
   PeopleFields,
   PermissionFields,
   PreferenceFields,
+  PressRisk,
   RoutineFields,
+  SkillFields,
   type ActionType,
   type MemoryEntry,
   type MemoryKind,
@@ -60,6 +65,37 @@ export const RoutineStep = z.object({
 });
 export type RoutineStep = z.infer<typeof RoutineStep>;
 
+/**
+ * The press that ended a routine's occurrences and that Caret leaves to the user (B19): a button in the
+ * destination window whose label reads as outbound, destructive or money (executor/risk.ts), found by
+ * template and position like a step's field. Learned when the destination window closes after the
+ * values went in (routines.ts finishOf).
+ */
+export const RoutineFinish = z.object({
+  label: z.string().min(1),
+  why: PressRisk,
+  templateHash: z.string(),
+  pos: z.number().int().nonnegative(),
+});
+export type RoutineFinish = z.infer<typeof RoutineFinish>;
+
+/** Where the "Keep this as a skill?" offer stands for a routine: never made or expired unanswered (null), out now, declined, or kept. */
+export const KeepState = z.enum(["offered", "declined", "kept"]).nullable();
+export type KeepState = z.infer<typeof KeepState>;
+
+/** What a routine row's JSON holds beside its steps. Every key is optional so rows written before B19 still read. */
+const RoutineJson = z.object({
+  steps: z.array(RoutineStep).optional(),
+  name: z.string().nullable().optional(),
+  /** Who named it: Jev's pick of code's candidates, code's own fallback, or the user. */
+  nameBy: z.enum(["jev", "code", "you"]).nullable().optional(),
+  /** Naming was started once; it is never asked again, even across restarts. */
+  namingAsked: z.boolean().optional(),
+  keep: KeepState.optional(),
+  finish: RoutineFinish.nullable().optional(),
+});
+type RoutineJson = z.infer<typeof RoutineJson>;
+
 export interface RoutineRecord {
   id: string;
   sig: string;
@@ -69,7 +105,22 @@ export interface RoutineRecord {
   misses: number;
   paused: boolean;
   name: string | null;
+  nameBy: "jev" | "code" | "you" | null;
+  namingAsked: boolean;
+  keep: KeepState;
+  finish: RoutineFinish | null;
+  /** The user paused the skill made from this routine, which pauses its offers too. */
+  skillPaused: boolean;
 }
+
+/** A skill's stored fields: what the host sees (SkillFields), plus the promote offer's state and the action types its runs wrote under. */
+const SkillJson = SkillFields.extend({
+  /** The "on its own" offer: never made or expired unanswered (null), out now, or declined, which is never asked again. */
+  promote: z.enum(["offered", "declined"]).nullable(),
+  /** The permissions the skill's clean runs in a row wrote under (writeHere, writeElsewhere): what promoting it would let it do unasked. */
+  wrote: z.array(z.enum(["writeHere", "writeElsewhere"])),
+});
+export type SkillRecord = z.infer<typeof SkillJson> & { id: string; paused: boolean };
 
 /**
  * Plan section 3's table: where each action type starts and whether the user may change it.
@@ -263,7 +314,13 @@ export class MemoryStore {
       }
       case "routine": {
         const e = parseEdit(z.strictObject({ name: z.string().min(1).max(80).nullable() }), raw);
-        next = { ...(fields as { steps: RoutineStep[] }), name: e.name };
+        next = { ...(fields as RoutineJson), name: e.name, nameBy: e.name === null ? null : "you" };
+        break;
+      }
+      case "skill": {
+        const e = parseEdit(z.strictObject({ name: z.string().trim().min(1).max(80) }), raw);
+        if (ONE_LINE_BREAKS.test(e.name)) throw new MemoryError("invalid edit: a skill's name must be one line of text");
+        next = { ...SkillJson.parse(fields), name: e.name };
         break;
       }
       case "permission": {
@@ -288,7 +345,10 @@ export class MemoryStore {
     return this.get(id);
   }
 
-  /** Deletes an entry. A forgotten routine is not relearned for FORGET_BLOCK_MS. */
+  /**
+   * Deletes an entry. A forgotten routine is not relearned for FORGET_BLOCK_MS, and its skill goes with
+   * it. A forgotten skill leaves its routine, marked declined, so Caret does not ask to keep it again.
+   */
   forget(id: string, now: number): void {
     const r = this.row(id);
     this.routineCache = null;
@@ -297,6 +357,11 @@ export class MemoryStore {
       this.db
         .prepare("INSERT INTO forgotten (kind, match, until) VALUES (?, ?, ?) ON CONFLICT(kind, match) DO UPDATE SET until = excluded.until")
         .run(r.kind, r.match, now + FORGET_BLOCK_MS);
+      this.stmt("DELETE FROM memory WHERE kind = 'skill' AND match = ?").run(id);
+    }
+    if (r.kind === "skill") {
+      const routineId = r.match;
+      if (this.routine(routineId) !== null) this.setRoutineKeep(routineId, "declined");
     }
     if (r.kind === "about") {
       // A preference that pointed at this value would otherwise point at nothing.
@@ -377,33 +442,111 @@ export class MemoryStore {
     return this.fields(r) as AboutFields;
   }
 
-  /** Counts a completed bundle with this signature. Null when the user forgot this routine recently. */
-  recordRoutine(sig: string, steps: RoutineStep[], at: number): RoutineRecord | null {
+  /**
+   * Counts a completed bundle with this signature. Null when the user forgot this routine recently.
+   * `finish` is the press the occurrence ended with, when it was learned; undefined keeps the one known.
+   */
+  recordRoutine(sig: string, steps: RoutineStep[], at: number, finish?: RoutineFinish | null): RoutineRecord | null {
     this.routineCache = null;
     const block = this.stmt("SELECT until FROM forgotten WHERE kind = 'routine' AND match = ?").get(sig) as { until: number } | undefined;
     if (block !== undefined && block.until > at) return null;
     const hit = this.stmt("SELECT id FROM memory WHERE kind = 'routine' AND match = ?").get(sig) as { id: string } | undefined;
     if (hit !== undefined) {
-      // The latest occurrence's positions are the best guess for the next one.
-      const f = JSON.parse(this.row(hit.id).fields ?? "{}") as { name?: string | null };
-      this.stmt("UPDATE memory SET count = count + 1, last_seen = ?, fields = ? WHERE id = ?").run(at, JSON.stringify({ steps, name: f.name ?? null }), hit.id);
+      // The latest occurrence's positions are the best guess for the next one; the rest of the row stays.
+      const f = routineJson(this.row(hit.id));
+      this.stmt("UPDATE memory SET count = count + 1, last_seen = ?, fields = ? WHERE id = ?").run(at, JSON.stringify({ ...f, steps, ...(finish === undefined ? {} : { finish }) }), hit.id);
       return this.routine(hit.id);
     }
     const id = `routine-${randomUUID().slice(0, 8)}`;
     this.db
       .prepare("INSERT INTO memory (id, kind, match, fields, count, first_seen, last_seen, app) VALUES (?, 'routine', ?, ?, 1, ?, ?, ?)")
-      .run(id, sig, JSON.stringify({ steps, name: null }), at, at, steps[0]?.dstApp ?? null);
+      .run(id, sig, JSON.stringify({ steps, name: null, finish: finish ?? null }), at, at, steps[0]?.dstApp ?? null);
     return this.routine(id);
+  }
+
+  /** Changes keys of a routine's JSON other than its steps. */
+  private patchRoutine(id: string, patch: Partial<RoutineJson>): void {
+    const r = this.stmt("SELECT * FROM memory WHERE id = ? AND kind = 'routine'").get(id) as Row | undefined;
+    if (r === undefined) throw new MemoryError(`no routine ${id}`);
+    this.routineCache = null;
+    this.stmt("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify({ ...routineJson(r), ...patch }), id);
+  }
+
+  /** Records that naming started for this routine, so it is asked once only. */
+  markNamingAsked(id: string): void {
+    this.patchRoutine(id, { namingAsked: true });
+  }
+
+  /** Names a routine, unless the user already named it: a name they gave is never replaced by Caret's. */
+  setRoutineName(id: string, name: string, by: "jev" | "code"): void {
+    const r = this.routine(id);
+    if (r === null || r.nameBy === "you") return;
+    this.patchRoutine(id, { name, nameBy: by });
+  }
+
+  setRoutineKeep(id: string, keep: KeepState): void {
+    this.patchRoutine(id, { keep });
+  }
+
+  // MARK: - skills (B19)
+
+  /**
+   * Makes a routine a skill, in the learning state: on Tab, no runs counted yet. The routine is marked
+   * kept. A routine that is already a skill keeps the one it has.
+   */
+  addSkill(routineId: string, fields: Pick<SkillRecord, "name" | "trigger" | "needed" | "handsOff">, at: number): SkillRecord {
+    const routine = this.routine(routineId);
+    if (routine === null) throw new MemoryError(`no routine ${routineId}`);
+    const have = this.skillFor(routineId);
+    if (have !== null) return have;
+    const id = `skill-${randomUUID().slice(0, 8)}`;
+    const json = SkillJson.parse({ routineId, ...fields, runs: 0, cleanRuns: 0, onItsOwn: false, promote: null, wrote: [] });
+    this.batch(() => {
+      this.db
+        .prepare("INSERT INTO memory (id, kind, match, fields, count, first_seen, last_seen, app) VALUES (?, 'skill', ?, ?, 0, ?, ?, ?)")
+        .run(id, routineId, JSON.stringify(json), at, at, routine.steps[0]?.dstApp ?? null);
+      this.setRoutineKeep(routineId, "kept");
+    });
+    return this.skill(id) as SkillRecord;
+  }
+
+  skill(id: string): SkillRecord | null {
+    const r = this.stmt("SELECT * FROM memory WHERE id = ? AND kind = 'skill'").get(id) as Row | undefined;
+    return r === undefined ? null : toSkill(r);
+  }
+
+  /** The skill made from this routine, paused or not; null when it was never kept or was forgotten. */
+  skillFor(routineId: string): SkillRecord | null {
+    const r = this.stmt("SELECT * FROM memory WHERE kind = 'skill' AND match = ?").get(routineId) as Row | undefined;
+    return r === undefined ? null : toSkill(r);
+  }
+
+  /** Changes a skill's counts and state. The entry's evidence count is its runs. */
+  updateSkill(id: string, patch: Partial<Omit<SkillRecord, "id" | "paused" | "routineId">>, at: number): SkillRecord {
+    const r = this.stmt("SELECT * FROM memory WHERE id = ? AND kind = 'skill'").get(id) as Row | undefined;
+    if (r === undefined) throw new MemoryError(`no skill ${id}`);
+    const next = SkillJson.parse({ ...SkillJson.parse(JSON.parse(r.fields ?? "null")), ...patch });
+    this.routineCache = null;
+    this.stmt("UPDATE memory SET fields = ?, last_seen = ?, count = ? WHERE id = ?").run(JSON.stringify(next), at, next.runs, id);
+    return this.skill(id) as SkillRecord;
   }
 
   routine(id: string): RoutineRecord | null {
     const r = this.stmt("SELECT * FROM memory WHERE id = ? AND kind = 'routine'").get(id) as Row | undefined;
-    return r === undefined ? null : toRoutine(r);
+    return r === undefined ? null : toRoutine(r, this.skillPausedFor());
+  }
+
+  /** Routines whose skill the user paused. */
+  private skillPausedFor(): Set<string> {
+    return new Set((this.stmt("SELECT match FROM memory WHERE kind = 'skill' AND paused = 1").all() as { match: string }[]).map((x) => x.match));
   }
 
   /** Routines whose steps all write into windows of this app and kind. */
   routinesInto(bundleId: string, windowKind: string): RoutineRecord[] {
-    this.routineCache ??= this.rows("routine").map(toRoutine);
+    if (this.routineCache === null) {
+      const paused = this.skillPausedFor();
+      this.routineCache = this.rows("routine").map((r) => toRoutine(r, paused));
+    }
     return this.routineCache.filter((r) => r.steps.length > 0 && r.steps.every((s) => s.dstBundle === bundleId && s.dstWindowKind === windowKind));
   }
 
@@ -586,6 +729,18 @@ export class MemoryStore {
         const f = PermissionFields.parse(this.fields(r));
         return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}`, uses: this.uses(f.action) };
       }
+      case "skill": {
+        const { promote: _p, wrote: _w, ...f } = SkillJson.parse(this.fields(r));
+        const status: MemoryStatus = paused ? "paused" : f.onItsOwn ? "active" : "learning";
+        const how = paused
+          ? "paused"
+          : f.onItsOwn
+            ? "runs on its own, with undo"
+            : f.handsOff !== null
+              ? `asks first; you press '${f.handsOff.label}' yourself`
+              : `asks first; ${f.cleanRuns} of ${f.needed} clean runs in a row`;
+        return { kind: "skill", id: r.id, status, evidence, fields: f, says: `${f.name}: when ${f.trigger} (ran ${times(f.runs)}; ${how})` };
+      }
     }
   }
 
@@ -639,7 +794,7 @@ export function routineProven(hits: number, misses: number, sightings: number): 
 }
 
 export function offerable(r: RoutineRecord, sightings: number): boolean {
-  return !r.paused && routineProven(r.hits, r.misses, sightings);
+  return !r.paused && !r.skillPaused && routineProven(r.hits, r.misses, sightings);
 }
 
 /** Writes the last digits of `value` into the "#" slots of `template`; null when there are too few digits. */
@@ -664,18 +819,34 @@ function parseEdit<T extends z.ZodType>(schema: T, raw: Record<string, unknown>)
   return r.data;
 }
 
-function toRoutine(r: Row): RoutineRecord {
-  const f = JSON.parse(r.fields ?? "{}") as { steps?: unknown; name?: string | null };
+/** A routine row's JSON, checked: a row this code cannot read is an error, not a guess. */
+function routineJson(r: Row): RoutineJson {
+  const parsed = RoutineJson.safeParse(JSON.parse(r.fields ?? "{}"));
+  if (!parsed.success) throw new MemoryError(`routine ${r.id} has fields this helper cannot read: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  return parsed.data;
+}
+
+function toRoutine(r: Row, skillPaused: ReadonlySet<string> = new Set()): RoutineRecord {
+  const f = routineJson(r);
   return {
     id: r.id,
     sig: r.match,
-    steps: z.array(RoutineStep).parse(f.steps ?? []),
+    steps: f.steps ?? [],
     count: Number(r.count),
     hits: Number(r.hits),
     misses: Number(r.misses),
     paused: r.paused !== 0,
     name: f.name ?? null,
+    nameBy: f.nameBy ?? null,
+    namingAsked: f.namingAsked ?? false,
+    keep: f.keep ?? null,
+    finish: f.finish ?? null,
+    skillPaused: skillPaused.has(r.id),
   };
+}
+
+function toSkill(r: Row): SkillRecord {
+  return { ...SkillJson.parse(JSON.parse(r.fields ?? "null")), id: r.id, paused: r.paused !== 0 };
 }
 
 export const dontOfferMatch = (offerKind: OfferKind, bundleId: string): string => `dontOffer:${offerKind}:${bundleId}`;

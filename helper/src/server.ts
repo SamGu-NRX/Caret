@@ -148,6 +148,7 @@ export class HelperServer {
           else if (m.data.type === "offerStop") void this.helper().handleOfferStop(m.data);
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
           else if (m.data.type === "settings") this.helper().handleSettings(m.data);
+          else if (m.data.type === "skillAnswer") this.helper().handleSkillAnswer(m.data);
           // The reply names windows and quotes values, so it goes to the asker only, as memory does.
           else if (m.data.type === "firstLook") {
             const requestId = m.data.requestId;

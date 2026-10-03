@@ -42,6 +42,7 @@ import { FIXTURE_APP, focus, node, snap, text } from "./builders.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
 import { CHAT, COMPOSER_CHAT, LONG_THREAD, MAIL_THREAD, MESSAGES_CHAT, NOTES, REF, SHORT_CHAT, agentThreads, chatWindow, messagesSources, notesWindow, shortChats } from "./desks.ts";
+import { skillStream } from "./skill-stream.ts";
 
 // The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
 // change an answer these tests check (candidates.ts setGeneratorClock).
@@ -120,7 +121,11 @@ function measure(r: Recorded): WindowMeasure[] {
   return r.windows.map((w) => {
     let covered = 0;
     const used = new Set<string>();
+    // A line of one or two characters ("To") is inside most requests' wording, so finding it there reveals
+    // nothing; it counts only when the request declares it for this window (B19's compose scene).
+    const declaredHere = new Set(r.req.snippets.filter((s) => s.windowId === w.windowId).map((s) => s.text));
     for (const line of w.lines) {
+      if (line.length < 3 && !declaredHere.has(line)) continue;
       if (body.includes(line)) {
         covered += line.length;
         for (const t of texts) if (line.includes(t)) used.add(t);
@@ -206,6 +211,8 @@ const fakeJev: AskJev = async (req) => {
   if (q.target !== undefined) return { model: "jev-test", answers: { target: answer(Object.keys(q.target.criteria)[0] ?? "none") }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
   // An event card asks whether the user will attend; say yes, so the card goes on to be offered.
   if (q.attend !== undefined) return { model: "jev-test", answers: { attend: answer("yes") }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+  // A routine's name (B19): the first of code's names.
+  if (q.name !== undefined) return { model: "jev-test", answers: { name: answer(Object.keys(q.name.criteria).find((k) => k !== "none") ?? "none") }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
   const answers = Object.fromEntries(
     Object.entries(q).map(([id, question]) => {
       const label = /Label: '([^']+)'|Nearest label: '([^']+)'/.exec(String(question.instructions));
@@ -453,6 +460,31 @@ describe("the privacy line on every Jev request", () => {
     expect(fills.length).toBeGreaterThan(0);
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
     expect(fills.some((r) => r.req.snippets.some((x) => x.windowId === "memory"))).toBe(true);
+  });
+
+  it("routine names: three routines named from their labels while a chat and private notes are open (B19)", async () => {
+    const stream = skillStream({ days: 3, caretFrom: null });
+    const rec = await run("routine names", async (s) => {
+      s.helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: 1, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: false });
+      await s.replay([notesWindow(500), chatWindow(600), ...stream.messages], "routine name");
+      await s.helper.patterns.skills.namesSettled();
+    });
+    expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
+    const naming = rec.filter((r) => r.req.questions.name !== undefined);
+    expect(naming).toHaveLength(3);
+    // No value any routine copied is in any naming request.
+    const copied = stream.plants.flatMap((p) => p.opens.flatMap((o) => o.values));
+    for (const r of naming) for (const v of copied) expect(bodyOf(r.req).includes(v), v).toBe(false);
+    // The ledger, pinned: the destination's field labels as its descriptors, the source's section label as
+    // its candidate, the app names as plan text, and nothing else. Each window is charged those characters,
+    // and a window whose own line holds a taken label pays for it too: "Invoice" is inside the Invoices
+    // window's title (5150-5: 14 + 7), "Order" inside the Orders window's (5150-3: 5).
+    const pinned = naming.map((r) => ({ snippets: r.req.snippets.map((x) => `${x.windowId} ${x.kind} ${x.text}`), charged: r.req.charged }));
+    expect(pinned).toEqual([
+      { snippets: ["6160-103 descriptor Subject", "6160-103 descriptor To", "6160-103 descriptor Link", "5150-4 candidate Today", "plan candidate Mail Fixture", "plan candidate Caret Fixture"], charged: { "6160-103": 13, "5150-4": 5 } },
+      { snippets: ["7170-103 descriptor Vendor", "7170-103 descriptor Amount", "7170-103 descriptor Invoice", "5150-5 candidate Latest invoice", "plan candidate Sheet Fixture", "plan candidate Caret Fixture"], charged: { "7170-103": 19, "5150-5": 21 } },
+      { snippets: ["7270-103 descriptor Order", "7270-103 descriptor Carrier", "7270-103 descriptor Tracking number", "5150-7 candidate Ready to ship", "plan candidate Tracker Fixture", "plan candidate Caret Fixture"], charged: { "7270-103": 27, "5150-7": 13, "5150-3": 5 } },
+    ]);
   });
 
   it("the same short chats went out whole with the conversation rule off, and the check catches that", async () => {

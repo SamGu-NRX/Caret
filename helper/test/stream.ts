@@ -104,6 +104,11 @@ export class World {
     return w;
   }
 
+  /** Stops background noise from re-sending this window (B19: a window Caret writes into, whose snapshots the reader sends). */
+  untrack(id: string): void {
+    this.wins.delete(id);
+  }
+
   close(id: string): void {
     this.wins.delete(id);
     this.push({ type: "windowClosed", v: PROTOCOL_VERSION, at: this.at, windowId: id });
@@ -232,7 +237,7 @@ export class World {
 
 // MARK: - the two streams
 
-function desk(w: World): { roster: ListWin; pairs: ListWin; orders: ListWin; calendar: ListWin; invoices: ListWin } {
+export function desk(w: World): { roster: ListWin; pairs: ListWin; orders: ListWin; calendar: ListWin; invoices: ListWin } {
   const people = Array.from({ length: 10 }, (_, i) => w.person(i));
   const roster = w.list("5150-1", FIXTURE_APP, "Roster", "Attendees", people);
   const pairs = w.list("5150-2", FIXTURE_APP, "Directory", "People", people.slice(0, 8).flatMap((p) => [p, `${p.toLowerCase().replace(" ", ".")}@lumen.example`]));
@@ -244,8 +249,8 @@ function desk(w: World): { roster: ListWin; pairs: ListWin; orders: ListWin; cal
   return { roster, pairs, orders, calendar, invoices };
 }
 
-const calendarLines = (d: number): string[] => [`Design review ${d}`, `priya.raman+d${d}@northwind.example`, `https://meet.example.com/rvw-${d}`, `Room ${d}B, Building C`];
-const invoiceLines = (d: number): string[] => [`Northwind Supply ${d}`, `$${1200 + d * 37}.50`, `INV-2026-${30400 + d * 11}`];
+export const calendarLines = (d: number): string[] => [`Design review ${d}`, `priya.raman+d${d}@northwind.example`, `https://meet.example.com/rvw-${d}`, `Room ${d}B, Building C`];
+export const invoiceLines = (d: number): string[] => [`Northwind Supply ${d}`, `$${1200 + d * 37}.50`, `INV-2026-${30400 + d * 11}`];
 
 /** Fills rows `from`..`to` of a grid from a list, one round per row, columns in order, with `stride` list lines per row. */
 function fillRows(w: World, src: ListWin, dst: GridWin, from: number, to: number, stride: number, rounds: { start: number; end: number }[]): void {

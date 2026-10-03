@@ -38,6 +38,12 @@ export const OFFER_LIFETIMES = {
    * routine's offer. A sentence edited out of its node makes it `stale` first.
    */
   event: { ms: 10 * 60 * 1000, until: "the sentence leaves the field or line it was in" },
+  /**
+   * B19's keep and promote questions, shown with the run that just ended. They ask about what the user
+   * just saw, so they last as long as a next-row prediction; unanswered, the question may come again
+   * after a later run.
+   */
+  skill: { ms: 2 * 60 * 1000, until: null },
 } as const satisfies Record<string, OfferLifetime>;
 
 export type OfferProducer = keyof typeof OFFER_LIFETIMES;
