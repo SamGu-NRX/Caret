@@ -1,0 +1,1 @@
+Fill recency takes the window before the form's last focus (the latest focus made Jev answer none); caret-fixture spawned from the frontmost app held the foreground, so it now deactivates on becoming active; poll lsappinfo front in GUI runs.

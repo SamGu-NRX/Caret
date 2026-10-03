@@ -1,0 +1,1 @@
+SnippetLedger(windows) charges a taken text to every window that shows it, either way round (line inside the text, or text inside a line); refuses when any of them is over budget. Build it over model.windows.values(), never just the source window (B13).

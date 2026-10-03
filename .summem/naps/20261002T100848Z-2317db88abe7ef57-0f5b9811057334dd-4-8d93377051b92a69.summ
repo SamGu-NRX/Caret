@@ -1,0 +1,1 @@
+Reader AX lore: Chrome titles its top AXGroup/AXWebArea (keep out of keys), rejects AXManualAccessibility yet exposes web AX, posts no DOM-text notices (E1/E8); background AppKit fixtures need makeKey() for focus; caret-screen acts only in --act-pids, rechecks fail closed.

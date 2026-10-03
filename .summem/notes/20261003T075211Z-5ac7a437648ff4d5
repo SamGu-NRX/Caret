@@ -1,0 +1,1 @@
+Live replay noise: the same code gave 24, 26, 27 and 25 of 78 on 'sources in Messages' rule on (B13); pre-ask withholding is deterministic, so differences under about 3 fields are Jev answering differently. Rerun part with --variants/--rules/--fixes before reading a delta.
