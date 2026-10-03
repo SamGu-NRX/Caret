@@ -17,7 +17,7 @@ import { FIXTURE_APP, MAIL_APP, focus, jevPickingText, snap, text } from "./buil
 import { LineClient, SocketReader, loadRecording } from "./socket-reader.ts";
 
 const HOUR = 60 * 60 * 1000;
-const ALL: SettingsRole[] = ["fill", "repeat", "watch", "words"];
+const ALL: SettingsRole[] = ["fill", "repeat", "watch", "calendar", "words"];
 const settings = (o: { roles?: SettingsRole[]; level?: SettingsLevel; paused?: boolean; at?: number } = {}): Settings => ({
   type: "settings",
   v: PROTOCOL_VERSION,
@@ -30,7 +30,8 @@ const settings = (o: { roles?: SettingsRole[]; level?: SettingsLevel; paused?: b
 describe("the level table and the gate", () => {
   it("holds the assumed numbers in one table", () => {
     expect(Object.fromEntries(Object.entries(LEVELS).map(([k, v]) => [k, [v.offersPerHour, v.routineSightings]]))).toEqual({ quiet: [1, null], balanced: [4, 3], eager: [8, 2] });
-    expect(LEVELS.quiet.families).toEqual({ fill: true, pending: true, loop: false, routine: false });
+    expect(LEVELS.quiet.families).toEqual({ fill: true, pending: true, loop: false, routine: false, event: false });
+    expect(LEVELS.balanced.families.event && LEVELS.eager.families.event).toBe(true);
     expect(DEFAULT_SETTINGS).toEqual({ roles: ALL, level: "balanced", paused: false });
   });
 
@@ -79,7 +80,7 @@ describe("the level table and the gate", () => {
 
   it("reports the families a change turns off, and every allowed one on pause", () => {
     const g = new OfferGate();
-    expect(g.apply({ roles: ["fill", "watch"], level: "balanced", paused: false })).toEqual(["loop", "routine"]);
+    expect(g.apply({ roles: ["fill", "watch"], level: "balanced", paused: false })).toEqual(["loop", "routine", "event"]);
     expect(g.apply({ roles: ["fill", "watch"], level: "balanced", paused: true })).toEqual(["fill", "pending"]);
     expect(g.apply({ roles: ALL, level: "quiet", paused: false })).toEqual([]);
   });

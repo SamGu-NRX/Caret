@@ -498,10 +498,12 @@ export type OfferStop = z.infer<typeof OfferStop>;
 
 /**
  * What Caret helps with, as the host's onboarding and menu bar name it (CaretRole on v2/host). `fill` is
- * grounded fill, `repeat` loops and routines, `watch` the pending-state watch, `words` the host's own
+ * grounded fill, `repeat` loops and routines, `watch` the pending-state watch, `calendar` the event card
+ * (B16; v2/host's CaretRole does not list it yet, so a host that sends its own roles turns it off),
+ * `words` the host's own
  * ghost text, which the helper accepts and ignores.
  */
-export const SettingsRole = z.enum(["fill", "repeat", "watch", "words"]);
+export const SettingsRole = z.enum(["fill", "repeat", "watch", "calendar", "words"]);
 export type SettingsRole = z.infer<typeof SettingsRole>;
 /** How often Caret speaks up. The helper's gate reads it from offers/settings.ts LEVELS. */
 export const SettingsLevel = z.enum(["quiet", "balanced", "eager"]);

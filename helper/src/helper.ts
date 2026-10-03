@@ -55,6 +55,7 @@ import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
 import { describeField } from "./fill/descriptor.ts";
 import { OpenAppOffers } from "./offers/open-app.ts";
+import { EventCards } from "./offers/event-card.ts";
 import { DEFAULT_SETTINGS, LEVELS, OfferGate, type Family, type UserSettings } from "./offers/settings.ts";
 import { FirstLookRunner } from "./offers/first-look.ts";
 import { expired } from "./offers/lifetimes.ts";
@@ -94,6 +95,8 @@ export interface HelperOptions {
   auditProbeEveryMs?: number;
   /** The user's settings until the host sends its own; DEFAULT_SETTINGS (the host's defaults) when absent. */
   settings?: UserSettings;
+  /** The calendar event cards add to; "Caret" when absent. The calendar port writes only to a calendar it created (B16). */
+  eventCalendar?: string;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
@@ -193,6 +196,10 @@ export class Helper {
   private readonly now: () => number;
   /** "Open <app>" action lines for watched windows that finished or need the user. */
   readonly openApp: OpenAppOffers;
+  /** Event cards for sentences with a time and a person. */
+  readonly events: EventCards;
+  /** The event cards' work for the latest snapshot, for tests and evaluations to await. */
+  eventsSettled: Promise<void> = Promise.resolve();
   /** The user's settings and the hourly offer budget, which every producer asks before it offers. */
   readonly gate: OfferGate;
   /** Answers the host's firstLook. */
@@ -266,6 +273,19 @@ export class Helper {
     });
     // The open-app line runs only from the host's offerAccept.
     this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }), gate: this.gate, now: this.now });
+    this.events = new EventCards({
+      model: this.model,
+      askJev: opts.askJev,
+      publish: (m, accept) => this.publish(m, accept),
+      // An event card runs only from the host's offerAccept.
+      run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }),
+      gate: this.gate,
+      people: () => this.memory.list("people").flatMap((e) => (e.kind === "people" && e.status !== "paused" ? [{ id: e.id, label: e.fields.alias, text: e.fields.name }] : [])),
+      calendar: opts.eventCalendar ?? "Caret",
+      live: () => this.mode === "live",
+      now: this.now,
+      count: (name) => opts.store.count(name, 1),
+    });
     this.firstLookRunner = new FirstLookRunner({
       model: this.model,
       askJev: opts.askJev,
@@ -275,6 +295,7 @@ export class Helper {
       paused: () => this.gate.settings.paused,
       resolvedWatches: () => this.openApp.resolvedWindows(),
       patterns: this.patterns,
+      events: this.events,
       // A first look's offer runs only from the host's offerAccept.
       run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
       record: (msg, family, accept, underlying) => {
@@ -303,6 +324,7 @@ export class Helper {
         this.patterns.readerRestarted();
         this.pending.readerRestarted();
         this.openApp.readerRestarted();
+        this.events.readerRestarted();
         // Whatever is still offered (a fill pop-up) names windows and fields of the old session, whose
         // ids the new reader may give to other windows.
         for (const id of this.offers.keys()) this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id, reason: "stale" });
@@ -333,6 +355,7 @@ export class Helper {
         if (m.stats.truncated) store.count("reader.truncated", 1, m.at);
         const cleared = this.transfers.onChanges(changes);
         this.patterns.onChanges(changes);
+        if (this.mode === "live") this.eventsSettled = this.events.onChanges(changes);
         // Recorded after the pattern engine has seen the edits, the order tick-judged transfers arrive in.
         this.record(cleared);
         if (this.mode === "shadow") this.shadowLogger.onChanges(changes);
@@ -548,6 +571,7 @@ export class Helper {
     for (const [k, f] of [...this.firstLooks]) if (families.includes(f.family)) this.withdrawFirstLook(k, "settings");
     if (families.includes("fill")) for (const id of [...this.fillPopups.keys()]) this.withdrawFill(id, "settings");
     if (families.includes("pending")) this.openApp.withdrawAll();
+    if (families.includes("event")) this.events.withdrawAll("settings");
     this.patterns.withdrawFamilies(families);
   }
 
@@ -748,6 +772,7 @@ export class Helper {
     this.patterns.tick(now);
     for (const [k, f] of [...this.firstLooks]) if (expired("firstLook", f.at, now)) this.withdrawFirstLook(k, "expired");
     for (const [k, p] of [...this.planOffers]) if (expired("plan", p.at, now)) this.withdrawPlan(k, "expired");
+    this.events.tick(now);
     if (this.mode === "shadow") this.shadowLogger.tick(now);
     this.audit?.tick(now);
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {

@@ -33,6 +33,11 @@ export const OFFER_LIFETIMES = {
    * offer nobody took from lingering. It is checked again against the screen when taken.
    */
   plan: { ms: 5 * 60 * 1000, until: null },
+  /**
+   * An event card: the moment of writing the sentence is when it helps, so it lasts as long as a
+   * routine's offer. A sentence edited out of its node makes it `stale` first.
+   */
+  event: { ms: 10 * 60 * 1000, until: "the sentence leaves the field or line it was in" },
 } as const satisfies Record<string, OfferLifetime>;
 
 export type OfferProducer = keyof typeof OFFER_LIFETIMES;
