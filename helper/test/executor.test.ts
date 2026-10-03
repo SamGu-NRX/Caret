@@ -164,6 +164,30 @@ describe("executor", () => {
     expect(progress("t1").at(-1)?.phase).toBe("handoff");
   });
 
+  it("stops at a handoff end state after the steps before it, naming the control, and never presses it, on rerun too", async () => {
+    const p = plan([
+      write(K("textfield:name~0"), "Dana"),
+      { says: "You press Send", end: { kind: "handoff", window: W, target: { key: K("button:send~0"), describe: "the Send button" }, why: "outbound" } },
+    ]);
+    const r = await helper.executor.run("t1", p, {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 1, acted: 1 });
+    expect(r.detail).toBe("'Send' reads as outbound; Caret leaves that press to you");
+    const again = await helper.executor.run("t2", p, {});
+    expect(again).toMatchObject({ outcome: "handoff", step: 1, acted: 0, skipped: 1 });
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+    expect(app.node(K("statictext:sent!~0"))).toBeUndefined();
+    const safe = plan([{ says: "You press Archive", end: { kind: "handoff", window: W, target: { key: K("button:archive~0"), describe: "the Archive button" }, why: "unverifiable" } }], "q");
+    expect((await helper.executor.run("t3", safe, {})).detail).toBe("Caret cannot check what pressing 'Archive' changes, so it leaves that press to you");
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  it("stops as unreachable when a handoff's control is not in the window", async () => {
+    const p = plan([{ says: "You press Pay", end: { kind: "handoff", window: W, target: { role: "AXButton", label: "Pay now", describe: "the Pay button" }, why: "money" } }]);
+    const r = await helper.executor.run("t1", p, {});
+    expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+    expect(stopReason("t1")).toBe("unreachable");
+  });
+
   it("hands off a press on a control with no label, since its effect cannot be classified", async () => {
     const p = plan([{ says: "something happens", end: { kind: "exists", window: W, target: { label: "Done", describe: "done" } }, via: { kind: "press", target: { key: K("button:~0"), describe: "the unnamed button" } } }]);
     expect(await helper.executor.run("t1", p, {})).toMatchObject({ outcome: "handoff", step: 0 });

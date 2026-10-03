@@ -175,7 +175,7 @@ describe("plan schema", () => {
   it("parses the golden plan losslessly, with one step of every end-state kind and both vias", () => {
     const p = Plan.parse(golden);
     expect(p).toEqual(golden);
-    expect(new Set(p.steps.map((s) => s.end.kind))).toEqual(new Set(["valueEquals", "exists", "absent", "focused", "windowTitle", "windowFocused", "calendarEvent"]));
+    expect(new Set(p.steps.map((s) => s.end.kind))).toEqual(new Set(["valueEquals", "exists", "absent", "focused", "windowTitle", "windowFocused", "handoff", "calendarEvent"]));
     expect(new Set(p.steps.flatMap((s) => (s.via === undefined ? [] : [s.via.kind])))).toEqual(new Set(["press", "openUrl"]));
   });
 

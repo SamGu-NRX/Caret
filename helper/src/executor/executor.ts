@@ -484,6 +484,12 @@ export class Executor {
       return;
     }
     if (end.kind === "windowFocused") return this.raiseStep(task, i, w, step);
+    if (end.kind === "handoff") {
+      const node = await this.resolve(task, i, w, end.target, step.says);
+      const label = (node.label ?? "").trim();
+      const what = label === "" ? end.target.describe : `'${label}'`;
+      throw StepStop.handoff(end.why === "unverifiable" ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${end.why}; Caret leaves that press to you`);
+    }
 
     if (end.kind === "valueEquals" || end.kind === "focused") {
       const node = await this.resolve(task, i, w, end.target, step.says);
@@ -789,6 +795,9 @@ export class Executor {
     switch (end.kind) {
       case "windowTitle":
         return w.window.title === end.title;
+      case "handoff":
+        // The user's own press is never something Caret finds already done.
+        return false;
       case "windowFocused":
         // The window must be the app's focused one and the app the one the user is in: a request walk
         // marks a background app's own focused window as focused, which alone would skip the raise.

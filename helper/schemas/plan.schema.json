@@ -317,6 +317,67 @@
                     "properties": {
                       "kind": {
                         "type": "string",
+                        "const": "handoff"
+                      },
+                      "window": {
+                        "type": "object",
+                        "properties": {
+                          "bundleId": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "titleStartsWith": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "target": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "describe": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "describe"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "why": {
+                        "type": "string",
+                        "enum": [
+                          "outbound",
+                          "destructive",
+                          "money",
+                          "unverifiable"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "window",
+                      "target",
+                      "why"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
                         "const": "calendarEvent"
                       },
                       "calendar": {
@@ -691,6 +752,67 @@
           "required": [
             "kind",
             "window"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "handoff"
+            },
+            "window": {
+              "type": "object",
+              "properties": {
+                "bundleId": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "titleStartsWith": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "target": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "describe": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "describe"
+              ],
+              "additionalProperties": false
+            },
+            "why": {
+              "type": "string",
+              "enum": [
+                "outbound",
+                "destructive",
+                "money",
+                "unverifiable"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "window",
+            "target",
+            "why"
           ],
           "additionalProperties": false
         },
