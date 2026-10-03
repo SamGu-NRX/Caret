@@ -1,1 +1,0 @@
-Caret skills: JSON under caret/skills/<action-id>/. Pinned screenpipe@0.4.50 (launchd dev.caret.hackathon.screenpipe, :3031, cli-darwin Mach-O holds TCC) has its own AX prompt, unaffected by Caret's grant. Inference last-N hard-fails. xcodeproj object IDs must be unique.
