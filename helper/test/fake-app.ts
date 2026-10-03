@@ -20,10 +20,12 @@ export class FakeApp implements ReaderLink {
   readonly buttons = new Map<string, (app: FakeApp) => void>();
   /** Makes value writes report success while changing nothing, as a web view whose window is not key does (B15). */
   dropWrites = false;
+  /** The same for focus-then-value (B20). */
+  dropFocusValues = false;
   /** The same for focus-and-insert. */
   dropInserts = false;
-  /** Leaves the field out of the walk right after an insert and back in the next one, as B15's WebKit window did. */
-  vanishOnInsert = false;
+  /** Leaves the field out of the walk right after a write of this kind and back in the next one, as B15's WebKit window did. */
+  vanishAfter: "value" | "focusValue" | "insert" | null = null;
   private vanished: Node | null = null;
   /** Sets the value but answers axError, as a reader that timed out while settling does. */
   timeoutAfterWrite = false;
@@ -99,11 +101,12 @@ export class FakeApp implements ReaderLink {
     if (n.role !== verb.role) return { outcome: "changed", detail: `role is ${n.role}` };
     if (verb.kind === "write") {
       if (n.states?.includes("secure")) return { outcome: "secure", detail: null };
-      if (verb.attribute === "value" || verb.attribute === "insert") {
+      if (verb.attribute === "value" || verb.attribute === "focusValue" || verb.attribute === "insert") {
         if ((n.value ?? "") !== verb.expect) return { outcome: "changed", detail: `value is '${n.value ?? ""}'` };
-        if (verb.attribute === "insert") this.focusedKey = verb.key;
-        if (!(verb.attribute === "value" ? this.dropWrites : this.dropInserts)) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
-        if (verb.attribute === "insert" && this.vanishOnInsert) this.vanished = n;
+        if (verb.attribute !== "value") this.focusedKey = verb.key;
+        const dropped = verb.attribute === "value" ? this.dropWrites : verb.attribute === "focusValue" ? this.dropFocusValues : this.dropInserts;
+        if (!dropped) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
+        if (verb.attribute === this.vanishAfter) this.vanished = n;
         if (this.timeoutAfterWrite) return { outcome: "axError", detail: "no answer from the reader within 5000 ms" };
       } else this.focusedKey = verb.key;
     } else {

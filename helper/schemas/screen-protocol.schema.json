@@ -6992,6 +6992,7 @@
                       "enum": [
                         "value",
                         "focused",
+                        "focusValue",
                         "insert"
                       ]
                     },

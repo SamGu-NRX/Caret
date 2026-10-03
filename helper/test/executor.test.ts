@@ -81,23 +81,25 @@ describe("executor", () => {
     expect(await helper.executor.run("t3", plan([front], "p3"), {})).toMatchObject({ outcome: "done", acted: 0, skipped: 1 });
   });
 
-  it("hands the field to the user, plainly, when the write and its insert fallback both answer ok and change nothing (B20)", async () => {
+  it("hands the field to the user, plainly, when the write and both fallbacks answer ok and change nothing (B20)", async () => {
     app.dropWrites = true;
+    app.dropFocusValues = true;
     app.dropInserts = true;
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
     expect(r).toMatchObject({ outcome: "handoff", step: 0 });
     expect(r.detail).toBe(`${FIXTURE_APP.name} did not take the text for the Name field while its window was in the background, so Caret left it to you`);
     expect(progress("t1").at(-1)).toMatchObject({ phase: "handoff", step: 0, says: `${K("textfield:name~0")} holds Dana` });
-    // The value write, then the insert fallback; the second step never ran, and nothing went in the ledger.
-    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "insert"]);
+    // The value write, then focus-then-value, then insert; the second step never ran, and nothing went in the ledger.
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "focusValue", "insert"]);
     expect(helper.executor.ledger("t1")).toEqual([]);
     expect(app.node(K("textfield:name~0"))?.value ?? "").toBe("");
   });
 
   it("reads the window once more when the field is missing right after the insert, then hands it off if it is back unchanged", async () => {
     app.dropWrites = true;
+    app.dropFocusValues = true;
     app.dropInserts = true;
-    app.vanishOnInsert = true;
+    app.vanishAfter = "insert";
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
     expect(r).toMatchObject({ outcome: "handoff", step: 0 });
     expect(app.verbs.at(-2)).toMatchObject({ kind: "walk" });
@@ -105,15 +107,24 @@ describe("executor", () => {
 
   it("finishes the step when the field the walk lost comes back holding the value", async () => {
     app.dropWrites = true;
-    app.vanishOnInsert = true;
+    app.dropFocusValues = true;
+    app.vanishAfter = "insert";
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
     expect(r).toMatchObject({ outcome: "done", acted: 1 });
     expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
     expect(helper.executor.ledger("t1")).toMatchObject([{ kind: "write", before: "", after: "Dana" }]);
   });
 
+  it("reads the window once more when the field is missing right after the first value write, and finishes when it is back written", async () => {
+    app.vanishAfter = "value";
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "done", acted: 1 });
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value"]);
+  });
+
   it("ends as the user asked, not as a hand-off, when they take over while the insert fallback is on its way", async () => {
     app.dropWrites = true;
+    app.dropFocusValues = true;
     app.dropInserts = true;
     app.beforeVerb = (_, v) => {
       if (v.kind === "write" && v.attribute === "insert") helper.executor.pause("t1", true);
@@ -123,7 +134,7 @@ describe("executor", () => {
     expect(progress("t1").some((p) => p.phase === "handoff")).toBe(false);
   });
 
-  it("still stops on a mismatch when the insert fallback lands something other than the value", async () => {
+  it("still stops on a mismatch when a fallback lands something other than the value", async () => {
     app.dropWrites = true;
     app.normalize = (v) => v.toUpperCase();
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
@@ -131,13 +142,24 @@ describe("executor", () => {
     expect(stopReason("t1")).toBe("mismatch");
   });
 
-  it("falls back to focus-and-insert when a value write is answered ok and changes nothing, and undoes the same way", async () => {
+  it("falls back to focus-then-value when a value write is answered ok and changes nothing, and undoes the same way (B20)", async () => {
     app.dropWrites = true;
     const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {});
     expect(r).toMatchObject({ outcome: "done", acted: 1 });
     expect(app.node(K("textfield:email~0"))?.value).toBe("d@example.com");
-    expect(progress("t1").filter((p) => p.phase === "acting").map((p) => p.detail?.split(";")[0])).toEqual(["write value", "insert"]);
-    expect(acts().map((v) => (v.kind === "write" ? [v.attribute, v.expect] : v.kind))).toEqual([["value", "old@example.com"], ["insert", "old@example.com"]]);
+    expect(progress("t1").filter((p) => p.phase === "acting").map((p) => p.detail?.split(";")[0])).toEqual(["write value", "focusValue"]);
+    expect(acts().map((v) => (v.kind === "write" ? [v.attribute, v.expect] : v.kind))).toEqual([["value", "old@example.com"], ["focusValue", "old@example.com"]]);
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+    expect(acts().slice(2).map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "focusValue"]);
+  });
+
+  it("falls back to focus-and-insert when focus-then-value changes nothing too", async () => {
+    app.dropWrites = true;
+    app.dropFocusValues = true;
+    const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(r).toMatchObject({ outcome: "done", acted: 1 });
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "focusValue", "insert"]);
     expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
     expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
   });

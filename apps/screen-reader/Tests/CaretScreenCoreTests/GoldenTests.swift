@@ -328,6 +328,10 @@ private func goldenLines() throws -> [Data] {
         guard case .readerCommand(let ins) = try JSONDecoder().decode(Message.self, from: Data(insert.utf8)),
               case let .write(_, _, _, _, attribute, _, _, _) = ins.verb else { Issue.record("an insert write does not decode"); return }
         #expect(attribute == "insert")
+        let focusValue = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"focusValue""#)
+        guard case .readerCommand(let fv) = try JSONDecoder().decode(Message.self, from: Data(focusValue.utf8)),
+              case let .write(_, _, _, _, fvAttribute, _, _, _) = fv.verb else { Issue.record("a focusValue write does not decode"); return }
+        #expect(fvAttribute == "focusValue")
         let paste = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"paste""#)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(paste.utf8)) }
         let bare = write.replacingOccurrences(of: #","taskId":"offer-5""#, with: "")

@@ -142,6 +142,7 @@ describe("golden protocol fixture", () => {
     const { taskId: _, ...bare } = verb;
     expect(HelperToReader.safeParse({ ...write, verb: bare }).success).toBe(true);
     expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "insert" } }).success).toBe(true);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "focusValue" } }).success).toBe(true);
     expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "paste" } }).success).toBe(false);
   });
 

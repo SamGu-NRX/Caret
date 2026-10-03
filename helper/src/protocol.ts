@@ -198,11 +198,13 @@ export const ReaderCommand = z.object({
       key: z.string(),
       role: z.string(),
       /**
-       * "value" sets AXValue. "focused" sets AXFocused to true and ignores `value`. "insert" focuses the
-       * field, selects all of its text and replaces the selection with `value`, as typing over it would:
-       * the executor's fallback when an app answers a value write with success and changes nothing (B15).
+       * "value" sets AXValue. "focused" sets AXFocused to true and ignores `value`. "focusValue" sets AXFocused,
+       * rechecks the value, then sets AXValue: a WebKit window that is not key drops a bare value write and takes
+       * this one (B20, 3 of 3 in the candidate table). "insert" focuses the field, selects all of its text and
+       * replaces the selection with `value`, as typing over it would. The executor tries value, then
+       * focusValue, then insert, each only when the one before answered ok and changed nothing.
        */
-      attribute: z.enum(["value", "focused", "insert"]),
+      attribute: z.enum(["value", "focused", "focusValue", "insert"]),
       /** The value the field must hold right before the write; "" for empty. */
       expect: z.string(),
       value: z.string(),

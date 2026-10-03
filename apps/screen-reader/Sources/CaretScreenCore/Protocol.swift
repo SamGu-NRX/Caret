@@ -531,7 +531,8 @@ public struct HelperError: Codable, Equatable, Sendable {
 /// What the helper asks the reader to do. Mirrors ReaderCommand.verb in protocol.ts.
 public enum ReaderVerb: Codable, Equatable, Sendable {
     case walk(pid: Int, windowId: String)
-    /// `attribute` is "value", "focused" or "insert" (focus, select all, replace the selection); `expect` is
+    /// `attribute` is "value", "focused", "focusValue" (focus, then the value: B20's WebKit write) or "insert"
+    /// (focus, select all, replace the selection); `expect` is
     /// the value the field must hold right before the write.
     /// `taskId` names the task whose act grant covers the write; nil acts only in --act-pids processes.
     case write(pid: Int, windowId: String, key: String, role: String, attribute: String, expect: String, value: String, taskId: String?)
@@ -594,7 +595,7 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             self = .walk(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId))
         case "write":
             let attribute = try c.decode(String.self, forKey: .attribute)
-            guard ["value", "focused", "insert"].contains(attribute) else { throw ProtocolError("unknown write attribute \(attribute)") }
+            guard ["value", "focused", "focusValue", "insert"].contains(attribute) else { throw ProtocolError("unknown write attribute \(attribute)") }
             self = .write(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId),
                           key: try c.decode(String.self, forKey: .key), role: try c.decode(String.self, forKey: .role),
                           attribute: attribute, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value),

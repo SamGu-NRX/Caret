@@ -125,6 +125,15 @@ export interface UndoResult {
   notUndoable: number;
 }
 
+/**
+ * The writes tried, in order, after a value write that answered ok and changed nothing (B15, B20), each with
+ * what it does in words for the activity feed.
+ */
+const FALLBACKS = [
+  { name: "focusValue", does: "focus the field, then write the value" },
+  { name: "insert", does: "focus, select all and replace" },
+] as const;
+
 /** How many re-reads a press or URL gets to show its effect, and the pause between them. Assumed, not measured. */
 const EFFECT_POLLS = 4;
 /** Extra tries for a failed walk. One cut-short walk in 20 shipping runs stopped a run on a loaded Mac. */
@@ -603,23 +612,29 @@ export class Executor {
       }
     };
     let seen = await sent(verb);
-    // B15: a web view whose window is not key answers a value write with ok and changes nothing. Then the
-    // field is focused, its text selected and replaced, as typing would; the comparison below checks it.
-    if (attribute === "value" && this.dropped(w.window.windowId, node.key, before, seen)) {
+    // A field the walk lost right after the write (B15's WebKit window) is read once more before it is judged.
+    if (attribute === "value" && this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
+    // B15, B20: a web view whose window is not key answers a value write with ok and changes nothing. It takes
+    // the value once the field has focus (focusValue, 3 of 3 in B20's candidate table); insert (focus, select
+    // all, replace) is the last means. Each runs only when the one before changed nothing, and the comparison
+    // below checks whichever landed.
+    for (const fallback of attribute === "value" ? FALLBACKS : []) {
+      if (!this.dropped(w.window.windowId, node.key, before, seen)) break;
       // Something else at work in the window stops the run before Caret writes again.
       this.checkUnexpected(seen, node.key);
       this.checkInterrupt(task);
-      this.progress(task, "acting", i, `insert; the value write changed nothing, so focus, select all and replace; expect ${prediction}`);
-      seen = [...seen, ...(await sent({ ...verb, attribute: "insert" }))];
-      // A WebKit window that is not key can leave the field out of the walk right after the insert (B15: the
-      // field read as gone); one more read tells a field that is back unchanged from one that really went.
+      this.progress(task, "acting", i, `${fallback.name}; the write before it changed nothing, so ${fallback.does}; expect ${prediction}`);
+      seen = [...seen, ...(await sent({ ...verb, attribute: fallback.name }))];
+      // A WebKit window that is not key can leave the field out of the walk right after a write (B15: the
+      // field read as gone); one more read tells a field that is back from one that really went.
       if (this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
       // A pause, stop or take-over that came in meanwhile is the user's word on the run, not a hand-off.
       this.checkSession(task);
       this.checkInterrupt(task);
-      // Every means answered ok and the field holds what it held: this app takes no text written this way, as a
-      // WebKit window that is not key does (B15, B20). Nothing was written, so the field is the user's to fill,
-      // said plainly, not a failed run.
+    }
+    if (attribute === "value") {
+      // Every means answered ok and the field holds what it held: this app takes no text written these ways.
+      // Nothing was written, so the field is the user's to fill, said plainly, not a failed run.
       if (this.dropped(w.window.windowId, node.key, before, seen)) {
         this.checkUnexpected(seen, node.key);
         const label = (node.label ?? "").trim();
@@ -975,11 +990,12 @@ export class Executor {
       r = await this.deps.reader.run(restore);
       // The same fallback as the run's own writes, for an app that drops value writes, and with the same
       // conditions: the user has not stopped the undo, and no other field changed meanwhile.
-      if (r.outcome === "ok" && this.dropped(e.windowId, e.key, e.after, seen)) {
+      for (const fallback of FALLBACKS) {
+        if (r.outcome !== "ok" || !this.dropped(e.windowId, e.key, e.after, seen)) break;
         if (task.undoStopped) return "you stopped the undo";
         const other = seen.find((c) => c.editable && c.key !== e.key && (c.kind === "value" || c.kind === "removed"));
         if (other !== undefined) return `${other.key} changed while the field was restored, so the restore was not tried again`;
-        r = await this.deps.reader.run({ ...restore, attribute: "insert" });
+        r = await this.deps.reader.run({ ...restore, attribute: fallback.name });
       }
     } finally {
       off();

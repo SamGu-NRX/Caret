@@ -259,7 +259,7 @@ public final class AppWorker: @unchecked Sendable {
                 windows.removeValue(forKey: w)
                 pressIndex.remove(w)
                 watched.remove(info.id)
-                ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
+                closed(info.id)
                 continue
             }
             walkWindow(w, reason: .watch, isFocused: eventDriven && w == focusedWindow)
@@ -318,7 +318,7 @@ public final class AppWorker: @unchecked Sendable {
         case kAXUIElementDestroyedNotification:
             if let info = windows.removeValue(forKey: el) {
                 pressIndex.remove(el)
-                ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
+                closed(info.id)
                 if focusedWindow == el { focusedWindow = nil }
             } else {
                 request(full: true, subtree: nil)
@@ -548,7 +548,7 @@ public final class AppWorker: @unchecked Sendable {
         for (w, info) in windows where !live.contains(w) {
             windows.removeValue(forKey: w)
             pressIndex.remove(w)
-            ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
+            closed(info.id)
         }
         let focused = eventDriven ? (focusedWindow ?? currentFocusedWindow()) : nil
         let now = CFAbsoluteTimeGetCurrent()
@@ -559,6 +559,17 @@ public final class AppWorker: @unchecked Sendable {
     }
 
     // MARK: - observed presses (B20)
+
+    /**
+     * Reports a window closed, after any press being resolved on the press queue has been sent. The press is
+     * read when the button goes down; the app may answer its hit-test only once the click is over, and by then
+     * a Send has closed the window. The helper learns a routine's finish from the press only if it arrives
+     * before the window's close (B20 press-learn run 1: 4 presses reported, none learned).
+     */
+    private func closed(_ windowId: String) {
+        pressQueue.sync {}
+        ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: windowId)))
+    }
 
     /// How many ancestors above the element under a click are tried for a pressable one: a button's label or
     /// image is often the element hit. Assumed.
@@ -664,14 +675,17 @@ public final class AppWorker: @unchecked Sendable {
                 guard current == expect else { return (.changed, "value is '\(current.prefix(80))'") }
                 if nowMs() > expires { return (.axError, "the command expired before it could act") }
                 if let no = refused(windowId) { return no }
+                // Each step of insert and focusValue may block up to the element timeout, so the deadline and the
+                // grant are asked again before every one of them.
+                let stillAllowed: () -> (VerbOutcome, String?)? = {
+                    if nowMs() > expires { return (.axError, "the command expired before it could act") }
+                    return refused(windowId)
+                }
                 if attribute == "insert" {
-                    // Each of the insert's three steps may block up to the element timeout, so the deadline
-                    // and the grant are asked again before every one of them.
-                    let stillAllowed: () -> (VerbOutcome, String?)? = {
-                        if nowMs() > expires { return (.axError, "the command expired before it could act") }
-                        return refused(windowId)
-                    }
                     if let fail = insert(value, into: el, expect: expect, check: stillAllowed) { return fail }
+                    err = .success
+                } else if attribute == "focusValue" {
+                    if let fail = focusThenValue(value, into: el, expect: expect, check: stillAllowed) { return fail }
                     err = .success
                 } else {
                     err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
@@ -755,6 +769,26 @@ public final class AppWorker: @unchecked Sendable {
         if let no = check() { return no }
         let w = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, value as CFString)
         guard w == .success else { return (.axError, "insert: replace failed with \(w.rawValue)") }
+        return nil
+    }
+
+    /// Focus, then the value: a WebKit window that is not key drops a bare AXValue write and takes it once the
+    /// field has AX focus (B20 candidate table: 3 of 3, with the window not raised and the app not activated).
+    /// Focus can run the page's own handlers, so the field must still hold `expect` before the write. The
+    /// executor's walk afterwards checks what the field holds. Nil when both steps went through.
+    private func focusThenValue(_ value: String, into el: AXUIElement, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+        let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        guard f == .success else { return (.axError, "focusValue: focus failed with \(f.rawValue)") }
+        switch AX.read(el, kAXValueAttribute) {
+        case .failed(let e): return (.axError, "focusValue: cannot read the value after focus (\(e.rawValue))")
+        case .absent: if !expect.isEmpty { return (.changed, "after focus the field is empty") }
+        case .value(let v):
+            guard let now = v as? String else { return (.changed, "after focus the value is not text") }
+            if now != expect { return (.changed, "after focus the value is '\(now.prefix(80))'") }
+        }
+        if let no = check() { return no }
+        let w = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
+        guard w == .success else { return (.axError, "focusValue: AXUIElementSetAttributeValue \(w.rawValue)") }
         return nil
     }
 
