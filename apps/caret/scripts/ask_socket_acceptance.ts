@@ -252,6 +252,9 @@ for (let round = 1; round <= ROUNDS; round++) {
       const card = answered.card;
       checks.proposalCard = answered.phase === "proposed" && card !== undefined;
       checks.steps = JSON.stringify(card?.steps.map((s) => s.text)) === JSON.stringify(c.steps);
+      // A14: the title says what the plan does and where, never the window title in quotes.
+      checks.titleIsASentence = /^(Fill .+|You press .+) in Caret Fixture$/.test(card?.title ?? "") && !(card?.title ?? "").includes("'");
+      detail.title = card?.title;
       checks.handoffMarkedYours = c.press === undefined ? card?.steps.every((s) => !s.yours) === true : card?.steps.at(-1)?.yours === true && card.steps.filter((s) => s.yours).length === 1;
       const key = card?.offerKey ?? "";
       if (c.esc === true) slow.add(key);
