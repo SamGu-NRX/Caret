@@ -1,11 +1,12 @@
 // What a Jev request may carry from the screen. The host's onboarding promises: "To decide what to
 // offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might
-// fill. Never whole windows." Every request builder declares each piece of screen text it puts in a
+// fill. Never a whole document or conversation." Every request builder declares each piece of screen text it puts in a
 // request as a Snippet (a field descriptor or a candidate value, and the window it came from) and takes
 // it through a SnippetLedger, which holds each window to its budget. test/privacy.test.ts records every
 // request the producers make over the synthetic sessions and checks the request text against the
 // declarations and these bounds.
 import { nodeText, type WindowState } from "./model.ts";
+import { isConversation } from "./conversation.ts";
 
 /**
  * Distinct characters of one window's text that one request may carry. The bound comes from the
@@ -27,6 +28,14 @@ export const SNIPPET_CHARS = 120;
  */
 export const CARD_LINES = 24;
 export const CARD_LINE_CHARS = 80;
+/**
+ * Distinct characters one request may take from a conversation (conversation.ts), which also always
+ * keeps more than half of its text back, however short it is: a conversation is what people mean by
+ * private, and a short chat of 24 lines would otherwise pass as a card and go out whole. 600 is half of
+ * WINDOW_CHARS and is assumed, not measured; the live replay (scripts/live-replay.ts) measures what it
+ * costs fill when the source windows are chats.
+ */
+export const CONVERSATION_CHARS = 600;
 
 export interface Snippet {
   windowId: string;
@@ -43,11 +52,22 @@ export function cut(s: string, max = SNIPPET_CHARS): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
-const budgets = new WeakMap<WindowState, number>();
+let budgets = new WeakMap<WindowState, number>();
+let conversationCap = true;
 
 /**
- * The characters a request may take from this window: WINDOW_CHARS for a card of values and for a window
- * with more than twice that much text, else just under half its text. Overlapping texts each count in
+ * Turns the conversation rule off or back on, for the live replay's comparison of fill with and
+ * without it (scripts/live-replay.ts). The helper never calls it; the rule is on from start.
+ */
+export function setConversationCap(on: boolean): void {
+  conversationCap = on;
+  budgets = new WeakMap();
+}
+
+/**
+ * The characters a request may take from this window. A conversation gives just under half its text, and
+ * at most CONVERSATION_CHARS. Any other window gives WINDOW_CHARS when it is a card of values or has more
+ * than twice that much text, else just under half its text. Overlapping texts each count in
  * full, so outside a card the budget holds a request under half the window with room to spare. A window's text is its title and every line of its nodes'
  * labels, values and placeholders, each counted once. Reading stops once the text is twice WINDOW_CHARS,
  * where the bound is WINDOW_CHARS whatever the rest holds; cached per window state, which the model
@@ -79,7 +99,9 @@ export function windowBudget(w: WindowState): number {
   // A card's budget is not its size: a request quotes a value both as a span and inside its labelled line
   // ("Priya Raman <priya@…>" and "priya@…"), so the texts taken can add up to more than the card holds
   // while covering no more of it.
-  const budget = !whole || card ? WINDOW_CHARS : Math.min(WINDOW_CHARS, Math.floor((chars - 1) / 2));
+  const half = Math.max(0, Math.floor((chars - 1) / 2));
+  // Past 2 * WINDOW_CHARS the count stopped, so `half` is a floor there, and above CONVERSATION_CHARS.
+  const budget = conversationCap && isConversation(w) ? Math.min(CONVERSATION_CHARS, half) : !whole || card ? WINDOW_CHARS : Math.min(WINDOW_CHARS, half);
   budgets.set(w, budget);
   return budget;
 }

@@ -12,6 +12,7 @@ import type { PendingInfo, ReaderVerb, TaskCause, TaskState, VerbResult } from "
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { SnippetLedger, cut, flat } from "../privacy.ts";
+import { composers } from "../conversation.ts";
 import { FINISHED, type TaskRegistry } from "./registry.ts";
 
 /**
@@ -182,24 +183,6 @@ export function isStopLabel(label: string | undefined): boolean {
   if (first === undefined || !STOP_WORDS.has(first)) return false;
   if (second === undefined) return first !== "cancel";
   return STOP_OBJECTS.has(second);
-}
-
-/**
- * Where the user writes to an agent: an editable text field or area, not secure, in the lower 40% of
- * the window and at least a quarter of its width. The census found one in 117 of 139 T3 Code snapshots
- * and 68 of 71 Codex ones.
- */
-export function composers(w: WindowState): readonly [number, number, number, number][] {
-  const win = w.window.frame;
-  if (win === null || win[3] <= 0) return [];
-  const out: [number, number, number, number][] = [];
-  for (const n of w.nodes.values()) {
-    if (n.editable !== true || n.frame === undefined || n.states?.includes("secure")) continue;
-    if (n.role !== "AXTextArea" && n.role !== "AXTextField") continue;
-    const [, y, wd, h] = n.frame;
-    if ((y + h / 2 - win[1]) / win[3] >= 0.6 && wd >= win[2] * 0.25) out.push(n.frame);
-  }
-  return out;
 }
 
 /** Level with a composer or within 80 points above or below it, and over it horizontally within 40 points. */
