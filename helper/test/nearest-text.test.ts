@@ -1,5 +1,6 @@
-// nearestText reads only a band of rows from a per-window index sorted by top edge (B8). It must give
-// exactly what the scan of every static text before B8 gave, ties included; the old scan is kept here.
+// nearestText skips the whitespace regex for a text with nothing to collapse (B8). It must give exactly
+// what the scan before B8 gave, ties and odd whitespace included; that scan is kept here. A banded
+// index was also tried and taken out (see descriptor.ts); the fractional-edge case it once missed stays.
 import { describe, expect, it } from "vitest";
 import { nearestText, isLabelLike } from "../src/fill/descriptor.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
@@ -69,7 +70,7 @@ describe("nearestText", () => {
     expect(compared).toBe(300 * 60 * 2);
   });
 
-  it("finds a text whose gap is exactly the limit though its fractional top rounds past the band's edge", () => {
+  it("finds a text whose gap is exactly the limit on fractional coordinates", () => {
     const model = new ScreenModel();
     model.apply(snap([
       { key: "label", parent: null, role: "AXStaticText", label: "Name:", frame: [100, 0.6, 80, 1.4] },
