@@ -48,6 +48,18 @@ final class SurfaceGateTests: XCTestCase {
                                        windows: windows, ownPID: caret, displays: [display]))
     }
 
+    /// Snipaste's overlay as measured on 2026-10-03: one layer-25 window spanning both displays.
+    func testAnOverlaySpanningEveryDisplayIsIgnored() {
+        let main = CGRect(x: 0, y: 0, width: 2560, height: 1440), side = CGRect(x: -1512, y: -982, width: 1512, height: 982)
+        let overlay = SurfaceGate.Window(pid: messages, bounds: CGRect(x: -1977, y: -1207, width: 5168, height: 3188), layer: 25)
+        XCTAssertNil(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [anchor],
+                                       windows: [overlay, SurfaceGate.Window(pid: form, bounds: formWindow)], ownPID: caret, displays: [main, side]))
+        // A floating window that covers only part of a display still covers the field.
+        let panel = SurfaceGate.Window(pid: messages, bounds: CGRect(x: 600, y: 100, width: 600, height: 400), layer: 25)
+        XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [anchor],
+                                         windows: [panel, SurfaceGate.Window(pid: form, bounds: formWindow)], ownPID: caret, displays: [main, side]), .covered)
+    }
+
     func testAnAnchorOffEveryWindowIsHeld() {
         XCTAssertEqual(check(front: form, windows: [SurfaceGate.Window(pid: form, bounds: CGRect(x: 0, y: 0, width: 10, height: 10))]), .notOnScreen)
     }
