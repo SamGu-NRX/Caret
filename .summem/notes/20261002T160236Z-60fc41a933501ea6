@@ -1,1 +1,0 @@
-A --background-only (prohibited) caret-fixture reports no key window, yet stdin 'focus NAME' (makeKey + makeFirstResponder) still moves AX focus; the reader sees leave and focus walks.

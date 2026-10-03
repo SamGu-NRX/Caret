@@ -1,0 +1,1 @@
+A stopped taskProgress must carry stopReason: executor progress() refuses 'stopped' at type level and stops go through stopped(reason); TaskProgress is a zod union on phase so the exported JSON Schema states the rule (B14).

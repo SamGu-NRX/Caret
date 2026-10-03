@@ -1,1 +1,0 @@
-Pattern gate runs on the event path: no SQLite writes there (one decision-log insert stalled 11 ms at load 15-69); decisions are buffered and flushed on tick.
