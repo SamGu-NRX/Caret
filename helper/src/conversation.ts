@@ -1,8 +1,9 @@
 // Which windows are conversations. The onboarding copy promises "Never a whole document or
 // conversation", and privacy.ts holds a conversation to less than half of its text and at most
 // CONVERSATION_CHARS per request, whatever its size, where a short form may go out whole. A window is
-// a conversation when any of three signs holds: its app is a known chat or mail app, it has a message
-// composer, or it shows a message list.
+// a conversation when any of five signs holds: its app is a known chat or mail app, it is a browser
+// showing a known mail or chat site or a mail's header, it has a message composer, or it shows a message
+// list.
 import type { Frame, Node } from "./protocol.ts";
 import type { WindowState } from "./model.ts";
 
@@ -31,11 +32,65 @@ export const CONVERSATION_BUNDLES: ReadonlyMap<string, string> = new Map([
   ["com.microsoft.teams2", "Microsoft Teams"],
 ]);
 
+/**
+ * Browsers by bundle id. A browser's bundle says nothing about whether a page is mail, so its pages are
+ * read for that (webConversation, mailHeader): a Gmail tab with no reply box open and no clock times
+ * passed none of the other signs, and as a short card it could go out whole (B13 review). The ids are the
+ * browsers' published ones; none was read from this Mac.
+ */
+export const BROWSER_BUNDLES: ReadonlySet<string> = new Set([
+  "com.google.Chrome",
+  "com.google.Chrome.beta",
+  "com.google.Chrome.canary",
+  "org.chromium.Chromium",
+  "com.apple.Safari",
+  "com.apple.SafariTechnologyPreview",
+  "company.thebrowser.Browser",
+  "company.thebrowser.dia",
+  "org.mozilla.firefox",
+  "com.microsoft.edgemac",
+  "com.brave.Browser",
+  "com.vivaldi.Vivaldi",
+  "com.operasoftware.Opera",
+  "net.imput.helium",
+  "app.zen-browser.zen",
+]);
+
+/**
+ * Mail and chat sites as their pages name themselves, one part of the window or page title: "Inbox (3) -
+ * dana@example.com - Gmail", "Chat | Microsoft Teams", "(2) WhatsApp". A whole part must match, so a
+ * document titled "Q4 outlook - Google Docs" is not Outlook. Written from the sites' usual titles, not
+ * read from this Mac.
+ */
+const WEB_CONVERSATION_NAMES = new Set([
+  "gmail",
+  "outlook",
+  "yahoo mail",
+  "proton mail",
+  "fastmail",
+  "icloud mail",
+  "hey",
+  "slack",
+  "discord",
+  "whatsapp",
+  "messenger",
+  "telegram",
+  "telegram web",
+  "microsoft teams",
+  "google chat",
+  "google messages",
+  "messages for web",
+]);
+
 /** Which sign made a window a conversation, for tests and reports; null when it is not one. */
-export type ConversationSign = "bundle" | "composer" | "messageList";
+export type ConversationSign = "bundle" | "webConversation" | "mailHeader" | "composer" | "messageList";
 
 export function conversationSign(w: WindowState): ConversationSign | null {
   if (CONVERSATION_BUNDLES.has(w.app.bundleId)) return "bundle";
+  if (BROWSER_BUNDLES.has(w.app.bundleId)) {
+    if (namesWebConversation(w)) return "webConversation";
+    if (hasMailHeader(w)) return "mailHeader";
+  }
   if (hasMessageComposer(w)) return "composer";
   if (hasMessageList(w)) return "messageList";
   return null;
@@ -43,6 +98,35 @@ export function conversationSign(w: WindowState): ConversationSign | null {
 
 export function isConversation(w: WindowState): boolean {
   return conversationSign(w) !== null;
+}
+
+/** Whether the window's title or a web area's label (the page title) names a mail or chat site as one of its parts. */
+function namesWebConversation(w: WindowState): boolean {
+  const names = (title: string | undefined): boolean =>
+    title !== undefined &&
+    title
+      .split(/\s[-–—|·]\s|\s*[|·]\s*/u)
+      .some((part) => WEB_CONVERSATION_NAMES.has(part.replace(/^\(\d+\)\s*/, "").trim().toLowerCase()));
+  if (names(w.window.title)) return true;
+  for (const n of w.nodes.values()) if (n.role === "AXWebArea" && names(n.label)) return true;
+  return false;
+}
+
+const FROM = /^from:/i;
+const HEADER = /^(?:to|cc|subject|date|sent):/i;
+
+/** A mail as webmail and archives show one: a line that starts "From:", and one that starts "To:", "Cc:", "Subject:", "Date:" or "Sent:". */
+function hasMailHeader(w: WindowState): boolean {
+  let from = false;
+  let other = false;
+  for (const n of w.nodes.values()) {
+    for (const l of nodeLines(n)) {
+      if (FROM.test(l)) from = true;
+      else if (HEADER.test(l)) other = true;
+      if (from && other) return true;
+    }
+  }
+  return false;
 }
 
 const TEXT_FIELD_ROLES = new Set(["AXTextArea", "AXTextField"]);

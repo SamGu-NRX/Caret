@@ -6,8 +6,9 @@ import { ScreenModel } from "../src/model.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
-import { SnippetLedger, windowBudget } from "../src/privacy.ts";
+import { SnippetLedger, WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
 import { targetSnippets } from "../src/executor/target.ts";
+import { conversationSign } from "../src/conversation.ts";
 import type { AppRef, FillProposal } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { field, snap, text, value } from "./builders.ts";
@@ -146,5 +147,34 @@ describe("B13 review: executor plan text", () => {
     expect(targetSnippets(form, m.windows.values(), goal, t, [], [{ text: "abcd", window: chat }])).toBeNull();
     // A goal that does not quote the value asks.
     expect(targetSnippets(form, m.windows.values(), "The Notes field holds the room code", t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
+  });
+});
+
+describe("B13 review: mail read in a browser is a conversation", () => {
+  const CHROME: AppRef = { pid: 9191, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  const MAIL = ["From: Dana Whitfield", "Subject: Design review", "Please use dana@example.com for the invitation."];
+  const page = (title: string, lines: readonly string[], app: AppRef = CHROME) => {
+    const m = new ScreenModel();
+    m.apply(snap(lines.map((l, i) => text(`web/${i}`, l)), { at: 1000, windowId: "9191-1", title, app }));
+    return m.windows.get("9191-1")!;
+  };
+
+  it("F6: a Gmail tab with no reply box and no clock times keeps more than half of itself back", () => {
+    // The reviewer's case: as a short card of values it had the whole 1,200 characters.
+    const w = page("Design review - Gmail", ["Dana Whitfield", "Design review", "Please use dana@example.com for the invitation."]);
+    expect(conversationSign(w)).toBe("webConversation");
+    // 95 characters in all, so just under half of them.
+    expect(windowBudget(w)).toBe(47);
+  });
+
+  it("F6: a mail's header in a browser page is a conversation, whatever the site", () => {
+    expect(conversationSign(page("Re: design review", MAIL))).toBe("mailHeader");
+  });
+
+  it("F6: leaves a document that names a site in passing, and a mail shown by an app that is not a browser, to the other signs", () => {
+    const doc = page("Q4 outlook - Google Docs", ["Revenue outlook for Q4", "Slack adoption grew", "Notes from the planning call"]);
+    expect(conversationSign(doc)).toBeNull();
+    expect(windowBudget(doc)).toBe(WINDOW_CHARS);
+    expect(conversationSign(page("Re: design review", MAIL, NOTES))).toBeNull();
   });
 });
