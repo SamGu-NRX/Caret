@@ -98,6 +98,13 @@ export interface Collected {
   stats: GenerateStats;
   /** Windows the ledger closed: a span of theirs did not fit their budget, so what followed it was not offered. */
   cut: string[];
+  /**
+   * For fields whose label names no kind (fill.ts): the words of every line a cut conversation left out,
+   * so such a field is withheld when a line about it may have been cut; and whether some other window was
+   * cut, whose left-out lines were not read, so any such field may have lost its value.
+   */
+  cutTerms: ReadonlySet<string>;
+  cutAll: boolean;
 }
 
 export interface GenerateStats {
@@ -186,6 +193,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
       missed.add(w.window.windowId);
       closed.add(w.window.windowId);
+      if (!ranked.has(w.window.windowId)) cutAll = true;
       return;
     }
     seen.add(text);
@@ -197,7 +205,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const finish = (): Collected => {
     stats.windows = touched.size;
     stats.ms = clock() - t0;
-    return { candidates: out, stats, cut: [...missed] };
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll };
   };
   /**
    * Stops early, on the cap or the clock, partway through `reading`: what of it was offered is a partial
@@ -210,6 +218,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     return finish();
   };
 
+  const cutTerms = new Set<string>();
+  let cutAll = false;
   /** Conversations whose budget went by relevance; the line pass leaves them alone. */
   const ranked = new Set<string>();
   const relevance = o.fields !== undefined && o.fields.length > 0 && o.ledger !== undefined ? o.fields : null;
@@ -219,8 +229,19 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * them, each with the terms of its line, its section and the kinds of typed values it holds; then adds
    * them in relevance order. False when the cap or the clock ran out.
    */
+  type Span = { node: Node; text: string; kind: ValueKind | null; context: () => string | null; terms: Set<string> };
   const byRelevance = (w: WindowState, fields: readonly ReadonlySet<string>[]): boolean => {
-    const spans: { node: Node; text: string; kind: ValueKind | null; context: () => string | null; terms: Set<string> }[] = [];
+    const spans: Span[] = [];
+    const built = { done: false };
+    const finished = rankWindow(w, fields, spans, built);
+    if (finished && !missed.has(w.window.windowId)) return true;
+    // Cut, or stopped partway: what it left out. Spans the clock stopped it from even listing are unknown.
+    if (!built.done) cutAll = true;
+    for (const sp of spans) if (!seen.has(sp.text)) for (const t of sp.terms) cutTerms.add(t);
+    return finished;
+  };
+  /** byRelevance's work: lists the window's spans into `spans`, then offers them; false when the cap or the clock ran out. */
+  const rankWindow = (w: WindowState, fields: readonly ReadonlySet<string>[], spans: Span[], built: { done: boolean }): boolean => {
     const sections = new Map<string, string[]>();
     const sectionWords = (n: Node): string[] => {
       let ws = sections.get(n.key);
@@ -260,6 +281,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         spans.push({ node, text: s.text, kind: null, context, terms: termsOf(node, s.line, kinds) });
       }
     }
+    built.done = true;
     // Round robin over the fields: each field's best span, then each field's second best, and so on.
     const lists = fields.map((f) =>
       spans

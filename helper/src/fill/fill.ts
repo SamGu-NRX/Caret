@@ -12,7 +12,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type Node, type ValueKind } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { candidateKinds, collectCandidates, cutKinds, describeCandidate, type Candidate } from "./candidates.ts";
-import { fieldKinds, fieldTerms } from "./kinds.ts";
+import { fieldKinds, fieldTerms, overlap } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField } from "./descriptor.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
@@ -171,7 +171,7 @@ export async function proposeFill(
     const labelWords = [d.label, d.nearest, d.placeholder];
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field", kinds: fieldKinds(labelWords), terms: fieldTerms(labelWords), texts });
   }
-  const { candidates, cut } = collectCandidates(model, windowId, {
+  const { candidates, cut, cutTerms, cutAll } = collectCandidates(model, windowId, {
     now,
     ledger,
     ...(opts.exclude === undefined ? {} : { exclude: opts.exclude }),
@@ -188,13 +188,16 @@ export async function proposeFill(
   // fill costs their trust.
   const removed = opts.cutRule === false ? new Set<ValueKind>() : cutKinds(model, cut, candidates);
   const isCut = (kinds: ReadonlySet<ValueKind>): boolean => [...kinds].some((k) => removed.has(k));
-  // A field whose label names no kind (kinds.ts) could want a value of any kind, so any cut may have
-  // taken its value: a "When" field was asked after a cut took the dates, and filled with a note's
-  // untyped "Design review"; a "Name" field, after a cut took a chat's only line, "Name: Dana
-  // Whitfield", with another window's name (B13 reviews). Such a field is not asked while any window was
-  // cut. On real screens a large chat is cut on most fills, so this blanks most name and company fields
-  // there; no run has measured how many.
-  const fieldCut = (f: { kinds: ReadonlySet<ValueKind> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? cut.length > 0 : isCut(f.kinds));
+  // A field whose label names no kind (kinds.ts) could want a value of any kind or plain text. It is not
+  // asked when a cut took a value of any kind: a "When" field was asked after a cut took the dates, and
+  // filled with a note's untyped "Design review". Nor when a cut conversation left out a line sharing a
+  // word with the field's label: a "Name" field was asked after a cut took a chat's only line, "Name: Dana
+  // Whitfield", and filled with another window's name (B13 reviews). Withholding it on any cut instead
+  // blanked Name on the fill desk, where an unrelated team chat is cut, and lost the desk's first-look
+  // offer (~/.caret-run/evidence/screen/b13/live-final). A bare cut line ("Dana Whitfield") beside a bare
+  // decoy elsewhere is still guarded only by agreement and the cutoff, as before B13.
+  const unknownCut = (f: { terms: ReadonlySet<string> }): boolean => removed.size > 0 || cutAll || overlap(f.terms, cutTerms) > 0;
+  const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? unknownCut(f) : isCut(f.kinds));
   // With every candidate cut away there is nothing to ask about.
   const asked = candidates.length === 0 ? [] : fields.filter((f) => !fieldCut(f));
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its

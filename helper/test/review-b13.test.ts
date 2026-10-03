@@ -19,7 +19,7 @@ import { conversationSign } from "../src/conversation.ts";
 import { PROTOCOL_VERSION, type AppRef, type FillProposal, type HelperMessage, type ReaderMessage, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { field, snap, text, value } from "./builders.ts";
-import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, scheduleForm } from "./desks.ts";
+import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, chatWindow, notesWindow, scheduleForm } from "./desks.ts";
 
 const CALENDAR: AppRef = { pid: 6363, bundleId: "dev.caret.calendar", name: "Calendar" };
 const NOTES: AppRef = { pid: 6464, bundleId: "dev.caret.notes", name: "Notes" };
@@ -154,6 +154,15 @@ describe("B13 second review: the fixes' own gaps", () => {
     const p = await proposeFill(m, jev, FORM, FORM_KEY("Name"), 3000);
     expect(fieldOf(p, "Name")?.value).toBeNull();
     expect(fieldOf(p, "Name")?.withheld).toBe("sourceCut");
+  });
+
+  it("a field of no kind is still asked beside a cut chat that says nothing about it", async () => {
+    // The fill desk: a mail card, private notes, and a team chat too long for its budget, about tables.
+    const m = new ScreenModel();
+    for (const x of [notesWindow(500), chatWindow(600), ...loadRecording("offers-fill.ndjson")]) if (x.type === "snapshot") m.apply(x);
+    const values: Record<string, string[]> = { Name: ["Dana Whitfield"], Email: ["dana.whitfield@example.com"], Phone: ["+1 (512) 555-0142"] };
+    const p = await proposeFill(m, fallthrough(values), "5150-2", "dev.caret.fixture/standard/textfield:name~0", 4000);
+    expect(p.fields.map((f) => f.value)).toEqual(["Dana Whitfield", "dana.whitfield@example.com", "+1 (512) 555-0142"]);
   });
 
   it("an email cut from a chat is not made whole by a longer address that ends the same", async () => {
