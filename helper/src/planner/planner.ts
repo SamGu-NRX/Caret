@@ -117,7 +117,11 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   // every field and button: what the instruction names is taken first, the rest in document order.
   const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label }))]);
   const taken = new Set(order.filter((x) => ledger.take(w, "descriptor", [x.text])).map((x) => x.key));
-  const askedFields = fields.filter((f) => taken.has(f.node.key));
+  // When the instruction names any field, only the fields it names are asked about: the second live pass
+  // (evidence/screen/b16/planner-live) wrote an order number into two fields "Put the order number ... in
+  // Reference" never named. An instruction that names no field still has every field asked about.
+  const named = new Set(fields.filter((f) => relevance(instruction, f.name) > 0).map((f) => f.node.key));
+  const askedFields = fields.filter((f) => taken.has(f.node.key) && (named.size === 0 || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
   const values = valueOptions(instruction, model, w, memory.values(), ledger, o.now ?? Date.now());
   if ((askedFields.length === 0 || values.length === 0) && askedButtons.length === 0) {
@@ -184,6 +188,8 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   await o.beforeCheck?.();
   const ctx: PlanContext = { model, memory: memory.values(), instruction };
   const checked = validatePlan(plan, slots, ctx);
+  // The plan names its window by app and title; one that replaced the chosen window while Jev answered is another window.
+  if (checked.window.window.windowId !== w.window.windowId) throw new PlannerError("unknownWindow", `'${w.window.title}' closed while Caret planned, and another window took its title`);
   // A value copied from a window charges that window when a target question quotes it (Plan.sources).
   const sources: Record<string, string> = {};
   // Writes come first, in order, so step i fills slot v<i+1>.
@@ -196,11 +202,16 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
 const COMMON = new Set(["the", "and", "for", "from", "into", "with", "this", "that", "set", "put", "write", "fill", "copy", "use", "make", "add", "enter", "type", "change", "her", "his", "their", "our", "your", "its"]);
 const wordsOf = (s: string): string[] => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x.length >= 3 && !COMMON.has(x));
 
+/** How many of the instruction's words a name shares. */
+export function relevance(instruction: string, name: string): number {
+  const said = new Set(wordsOf(instruction));
+  return new Set(wordsOf(name).filter((x) => said.has(x))).size;
+}
+
 /** Items by how many of the instruction's words their names share, most first; ties keep document order. */
 export function byRelevance<T extends { name: string }>(instruction: string, items: readonly T[]): T[] {
-  const said = new Set(wordsOf(instruction));
   return items
-    .map((it, i) => ({ it, i, score: new Set(wordsOf(it.name).filter((x) => said.has(x))).size }))
+    .map((it, i) => ({ it, i, score: relevance(instruction, it.name) }))
     .sort((a, b) => b.score - a.score || a.i - b.i)
     .map((x) => x.it);
 }

@@ -160,13 +160,17 @@ describe("helper socket", () => {
     expect(server.sendToReader({ type: "actGrant", v: PROTOCOL_VERSION, taskId: "t1", pid: 5150, windowId: FORM, at, expires: at + 1000 })).toBe(true);
     expect(server.sendToReader({ type: "actGrant", v: PROTOCOL_VERSION, taskId: "t2", pid: 5150, windowId: FORM, at, expires: at + 1000 })).toBe(true);
     server.sendToReader({ type: "actRevoke", v: PROTOCOL_VERSION, taskId: "t2", at });
+    // An event card's task holds only a calendar grant; it is ended the same way.
+    expect(server.sendToReader({ type: "calendarGrant", v: PROTOCOL_VERSION, taskId: "e1", at, expires: at + 1000 })).toBe(true);
     expect(((await a.next()) as { type: string }).type).toBe("actGrant");
+    await a.next();
     await a.next();
     await a.next();
     const b = await connect(path);
     send(b.s, { ...hello, pid: 2 });
-    // Only t1 was still granted; its revoke goes to the old reader, which is still connected.
+    // Only t1 and e1 were still granted; their revokes go to the old reader, which is still connected.
     expect(await a.next()).toMatchObject({ type: "actRevoke", taskId: "t1" });
+    expect(await a.next()).toMatchObject({ type: "actRevoke", taskId: "e1" });
     server.sendToReader({ type: "actGrant", v: PROTOCOL_VERSION, taskId: "t3", pid: 5150, windowId: FORM, at, expires: at + 1000 });
     expect(await b.next()).toMatchObject({ type: "actGrant", taskId: "t3" });
     await new Promise((r) => setTimeout(r, 50));

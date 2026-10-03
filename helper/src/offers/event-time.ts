@@ -10,7 +10,8 @@
 //     hour is evening.
 //   - A month and day with no year: this year, or next year once it has passed. A stated year is kept, and
 //     a stated date already past makes no event.
-//   - A time zone or offset ("UTC", "PST", "-07:00") makes no event: times are read only in the Mac's zone.
+//   - A time zone or offset ("UTC", "PST", "-07:00") anywhere in the sentence makes no event: times are
+//     read only in the Mac's zone.
 //   - A time that cannot be ("3:99", "0pm", "13pm"), or that the clocks skip that day, makes no event.
 //   - The event lasts DEFAULT_MINUTES unless the span gives an end ("3:00 to 3:45", "3-4pm").
 // Times are wall-clock times in the process's time zone, written as ISO 8601 with that zone's offset on
@@ -36,7 +37,13 @@ const TIME = /\b(noon|midnight|(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)?)(
 const WEEKDAY = /\b(sun|mon|tues?|wed|thu(?:rs?)?|fri|sat)[a-z]*\b/i;
 const MONTH_DAY = /\b(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?|\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\b(?:,?\s+(\d{4})\b)?/i;
 const NUMERIC_DATE = /\b(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?\b/;
-const ZONE = /\b(?:utc|gmt|[a-z]{1,2}[sd]t)\b|[+-]\d{2}:?\d{2}\b/i;
+/**
+ * A time zone named by its usual abbreviation, a UTC or GMT offset, or a bare offset ("-07:00"). The
+ * abbreviations are matched in capitals only, so a name like "Best" is not read as one.
+ */
+export const ZONE = /\b(?:UTC|GMT|Z|[PMCE][SD]T|AK[SD]T|HST|BST|CES?T|EES?T|WES?T|IST|JST|KST|AE[SD]T|ACST|AWST|NZ[SD]T|PT|MT|CT|ET)\b|\b(?:utc|gmt)\s*[+-]\s*\d|(?:^|\s)[+-]\d{2}:?\d{2}\b/;
+/** A clock time whose minutes are not two digits ("3:5pm", "3:000pm"). */
+const BAD_CLOCK = /\d:(?:\d(?!\d)|\d{3,})/;
 const CLOCK = /(\d{1,2}):(\d{2})/g;
 
 /** 24-hour hour from an hour, its AM/PM if any, and whether the sentence says tonight. */
@@ -108,7 +115,7 @@ export function resolveEventTime(spans: readonly string[], now: Date): EventTime
   const all = spans.join(" ");
   const lower = all.toLowerCase();
   if (/\b(yesterday|last)\b/.test(lower)) return null;
-  if (ZONE.test(all)) return null;
+  if (ZONE.test(all) || BAD_CLOCK.test(all)) return null;
   for (const c of all.matchAll(CLOCK)) if (Number(c[1]) > 23 || Number(c[2]) > 59) return null;
   const tonight = /\btonight\b/.test(lower);
   const time = parseTime(all, tonight);

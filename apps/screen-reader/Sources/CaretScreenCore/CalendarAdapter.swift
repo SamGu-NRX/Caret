@@ -7,9 +7,11 @@
 //     syncs. With no local source it answers blocked: noLocalSource. It never looks at, writes to or
 //     removes from any other calendar: it looks events up only by the ids of events it added, and
 //     searches only its own calendars, so an event outside them is never even read.
-//   - An add of an event its calendar already holds (same title, start and end) returns that event, so
-//     two tasks racing to add the same event make one. The add's answer is built from what was saved,
-//     with no read back that could fail after the save and lose the id.
+//   - An add of an event its calendar already holds (same title, start and end) is refused and adds
+//     nothing, so two tasks racing to add the same event make one, and only the task that added it can
+//     undo it. The add's answer is built from what was saved, with no read back that could fail after
+//     the save and lose the id.
+//   - An id it added is trusted only while the event is still in the calendar it was added to.
 //   - calendarDispose, and disposeAll when the reader stops, delete the calendars it created.
 // A calendar it created is known only for the life of the reader; a reader that is killed leaves it behind.
 import Foundation
@@ -83,7 +85,7 @@ public final class CalendarAdapter: @unchecked Sendable {
                 let cid: String
                 if let known = owned[calendar] {
                     cid = known
-                    if let same = match(cid, title, s, e) { return .ok(record(same, calendar)) }
+                    if match(cid, title, s, e) != nil { return .refused(.changed, "an identical event is already in the calendar; nothing was added") }
                 } else {
                     guard let source = backend.localSourceID() else { return .blocked(.noLocalSource) }
                     cid = try backend.createCalendar(title: calendar, sourceID: source)
@@ -93,14 +95,10 @@ public final class CalendarAdapter: @unchecked Sendable {
                 events[id] = calendar
                 return .ok(record(BackendEvent(id: id, calendarID: cid, title: title, start: s, end: e), calendar))
             case let .calendarGet(id):
-                guard let calendar = events[id] else { return .ok(nil) }
-                guard let ev = backend.event(id: id) else {
-                    events.removeValue(forKey: id)
-                    return .ok(nil)
-                }
+                guard let (ev, calendar) = ownEvent(id) else { return .ok(nil) }
                 return .ok(record(ev, calendar))
             case let .calendarRemove(id, _):
-                guard events[id] != nil else { return .refused(.notAllowed, "the event is not one the reader added") }
+                guard ownEvent(id) != nil else { return .refused(.notAllowed, "the event is not one the reader added, in a calendar it created") }
                 try backend.removeEvent(id: id)
                 events.removeValue(forKey: id)
                 return .ok(nil)
@@ -132,6 +130,20 @@ public final class CalendarAdapter: @unchecked Sendable {
             } catch { errors.append("\(name): \(error)") }
         }
         return errors
+    }
+
+    /// An event this adapter added, read only if its id is one it added, and kept only while the event is
+    /// still in the calendar it was added to; otherwise the id is forgotten and nil returned.
+    private func ownEvent(_ id: String) -> (BackendEvent, String)? {
+        guard let calendar = events[id], let cid = owned[calendar] else {
+            events.removeValue(forKey: id)
+            return nil
+        }
+        guard let ev = backend.event(id: id), ev.calendarID == cid else {
+            events.removeValue(forKey: id)
+            return nil
+        }
+        return (ev, calendar)
     }
 
     /// The event in its own calendar `cid` with this title, start and end, if any.

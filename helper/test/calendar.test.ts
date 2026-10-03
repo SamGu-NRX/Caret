@@ -137,6 +137,25 @@ describe("the calendar through the reader", () => {
     expect(adapter.calendars.get("Caret Test")?.size).toBe(0);
   });
 
+  it("keeps an add whose answer was lost but which was saved in the undo ledger, and never another task's event", async () => {
+    const answer = adapter.answer;
+    reader.calendar = (v) => {
+      const r = answer(v);
+      // The add lands, but its answer is lost on the way back.
+      return v.kind === "calendarAdd" ? { outcome: "axError", detail: "no answer from the reader within 5000 ms" } : r;
+    };
+    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true });
+    expect(r).toMatchObject({ outcome: "stopped" });
+    expect(helper.executor.ledger("t1")).toHaveLength(1);
+    reader.calendar = answer;
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+    // A second task whose add is refused because the event is already there claims nothing.
+    await helper.executor.run("t2", plan("Lunch with Priya"), {}, undefined, { grant: true });
+    reader.calendar = (v) => (v.kind === "calendarFind" ? { outcome: "ok", detail: null } : v.kind === "calendarAdd" ? { outcome: "changed", detail: "an identical event is already in the calendar; nothing was added" } : answer(v));
+    expect(await helper.executor.run("t3", plan("Lunch with Priya"), {}, undefined, { grant: true })).toMatchObject({ outcome: "stopped" });
+    expect(helper.executor.ledger("t3")).toHaveLength(0);
+  });
+
   it("hands the step to the user as blocked tcc without Calendar access, and adds nothing", async () => {
     adapter.granted = false;
     const r = await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true });

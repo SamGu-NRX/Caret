@@ -38,7 +38,8 @@ export class HelperServer {
   sendToReader(m: HelperToReader): boolean {
     if (this.reader === null || this.reader.destroyed) return false;
     this.reader.write(JSON.stringify(m) + "\n");
-    if (m.type === "actGrant") this.granted.add(m.taskId);
+    // An act grant and a calendar grant both end with the task's one actRevoke.
+    if (m.type === "actGrant" || m.type === "calendarGrant") this.granted.add(m.taskId);
     else if (m.type === "actRevoke") this.granted.delete(m.taskId);
     return true;
   }

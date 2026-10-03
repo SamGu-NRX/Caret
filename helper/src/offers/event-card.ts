@@ -16,7 +16,7 @@ import type { Plan } from "../executor/schema.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { occursBounded } from "../planner/trace.ts";
-import { resolveEventTime, type EventTime } from "./event-time.ts";
+import { resolveEventTime, ZONE, type EventTime } from "./event-time.ts";
 import type { AcceptHandler, AcceptResult } from "./registry.ts";
 import { offerField } from "./field.ts";
 import { expired } from "./lifetimes.ts";
@@ -90,6 +90,8 @@ export function eventTitle(sentence: string, person: string): string {
 /** The event a sentence describes, from its date and time spans; null when it names no person or no time ahead. */
 export function eventCandidate(sentence: string, spans: readonly string[], people: readonly MemoryValue[], now: Date): EventCandidate | null {
   if (spans.length === 0) return null;
+  // A zone named anywhere in the sentence ("3pm UTC") would move the time; the detector's span may leave it out.
+  if (ZONE.test(sentence)) return null;
   const person = personIn(sentence, people);
   if (person === null) return null;
   const time = resolveEventTime(spans, now);
@@ -143,21 +145,32 @@ export async function askAttend(ask: AskJev, model: ScreenModel, w: WindowState,
   return { yes: a1.choice === "yes" && a2.choice === "yes", asks: [a1, a2], costUsd: r1.costUsd + r2.costUsd };
 }
 
+/** Text between two spans that joins them into one time: a range's dash or "to". */
+const CONNECTOR = /^\s*(?:-|–|to|until|till)\s*$/i;
+
 /**
- * The stretch of the sentence from the first of the node's date and time spans in it to the end of the
- * last, as one text, so words between them ("3:00 to 4:00 PM") are kept; empty when there are none.
+ * The node's date and time spans in the sentence, as one text in sentence order. Text between two spans
+ * is kept only when it is a range's connector ("3:00 to 4:00 PM"); anything else between them (a room
+ * number) is left out, so it is never read as a time. Empty when there are none.
  */
 export function spansIn(w: WindowState, key: string, sentence: string): string[] {
-  let from = Number.POSITIVE_INFINITY;
-  let to = -1;
+  const found: { at: number; text: string }[] = [];
   for (const v of w.values) {
     if (v.nodeKey !== key || (v.kind !== "date" && v.kind !== "time")) continue;
-    const i = sentence.indexOf(v.text);
-    if (i < 0) continue;
-    from = Math.min(from, i);
-    to = Math.max(to, i + v.text.length);
+    const at = sentence.indexOf(v.text);
+    if (at >= 0 && !found.some((f) => f.at === at)) found.push({ at, text: v.text });
   }
-  return to < 0 ? [] : [sentence.slice(from, to)];
+  if (found.length === 0) return [];
+  found.sort((a, b) => a.at - b.at);
+  let out = (found[0] as { text: string }).text;
+  for (let i = 1; i < found.length; i++) {
+    const prev = found[i - 1] as { at: number; text: string };
+    const cur = found[i] as { at: number; text: string };
+    const between = sentence.slice(prev.at + prev.text.length, cur.at);
+    out += CONNECTOR.test(between) ? between : " ";
+    out += cur.text;
+  }
+  return [out];
 }
 
 /** The card the down arrow opens: what, when, which calendar, and the sentence it came from. */
@@ -226,6 +239,8 @@ export class EventCards {
   private gen = 0;
   /** Sentences being asked about now. */
   private pending = 0;
+  /** A first look's scan is under way. */
+  private looking = false;
   private readonly deps: EventCardDeps;
 
   constructor(deps: EventCardDeps) {
@@ -257,8 +272,9 @@ export class EventCards {
         if (field !== null) lines.push({ w, key: c.key, text: c.after, field });
       }
     }
-    // A conversation that loads its history arrives as many new lines at once; only the latest few are judged.
-    for (const l of lines.slice(-MAX_NEW_LINES)) for (const s of sentences(l.text, true)) work.push(this.consider(l.w, l.key, s, l.field, "conversation"));
+    // A conversation that loads its history arrives as many new lines at once; only the latest few are
+    // judged, newest first, so the newest line is not the one left waiting for a free ask.
+    for (const l of lines.slice(-MAX_NEW_LINES).reverse()) for (const s of sentences(l.text, true)) work.push(this.consider(l.w, l.key, s, l.field, "conversation"));
     for (const e of [...this.entries.values()]) {
       const node = model.windows.get(e.windowId)?.nodes.get(e.key);
       if (node === undefined || !nodeText(node).includes(e.candidate.sentence) || this.started(e.candidate)) this.withdraw(e.offerKey, "stale");
@@ -366,7 +382,19 @@ export class EventCards {
    */
   async firstLook(exclude: ReadonlySet<string>): Promise<{ w: WindowState; key: string; candidate: EventCandidate }[]> {
     const deps = this.deps;
-    if (deps.askJev === null) return [];
+    // One look at a time, so looks asked for together cannot multiply the asks in flight.
+    if (deps.askJev === null || this.looking) return [];
+    this.looking = true;
+    try {
+      return await this.look(exclude);
+    } finally {
+      this.looking = false;
+    }
+  }
+
+  private async look(exclude: ReadonlySet<string>): Promise<{ w: WindowState; key: string; candidate: EventCandidate }[]> {
+    const deps = this.deps;
+    const gen = this.gen;
     const now = new Date(deps.now());
     const found: { w: WindowState; key: string; candidate: EventCandidate; source: SentenceSource }[] = [];
     const windows = [...deps.model.windows.values()]
@@ -384,6 +412,8 @@ export class EventCards {
       }
     }
     const asked = await Promise.all(found.slice(0, MAX_EVENT_LOOKS).map(async (f) => ({ f, a: await askAttend(deps.askJev as AskJev, deps.model, f.w, f.candidate.sentence, f.source) })));
+    // Answers about windows of a reader session that has since ended describe windows that are gone.
+    if (gen !== this.gen) return [];
     return asked.filter((x) => x.a?.yes === true).map((x) => x.f);
   }
 

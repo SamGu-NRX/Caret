@@ -126,7 +126,13 @@ export class CalendarBlocked extends Error {
 }
 
 /** The reader answered a calendar verb with a refusal other than blocked: the run stops as a reader refusal. */
-export class CalendarRefused extends Error {}
+export class CalendarRefused extends Error {
+  readonly outcome: VerbResult["outcome"];
+  constructor(outcome: VerbResult["outcome"], message: string) {
+    super(message);
+    this.outcome = outcome;
+  }
+}
 
 /** What the user is told for each reason, as a hand-off's detail. */
 export const BLOCKED_SAYS: Record<CalendarBlock, string> = {
@@ -147,7 +153,7 @@ export class ReaderCalendar implements CalendarPort {
   private async call(verb: ReaderVerb): Promise<CalendarEvent | null> {
     const r = await this.reader.run(verb);
     if (r.outcome === "blocked") throw new CalendarBlocked(r.blocked ?? "tcc", BLOCKED_SAYS[r.blocked ?? "tcc"]);
-    if (r.outcome !== "ok") throw new CalendarRefused(`the reader's calendar refused ${verb.kind}: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+    if (r.outcome !== "ok") throw new CalendarRefused(r.outcome, `the reader's calendar refused ${verb.kind}: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     return r.event ?? null;
   }
 

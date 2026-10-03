@@ -15,7 +15,7 @@ import { MemoryStore } from "../src/patterns/memory.ts";
 import { HelperMessage, PROTOCOL_VERSION, type AppRef, type OfferAction, type ReaderMessage, type TypedValue } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { DEFAULT_MINUTES, resolveEventTime } from "../src/offers/event-time.ts";
-import { eventTitle, MAX_PENDING_EVENT_ASKS, personIn, sentences, spansIn } from "../src/offers/event-card.ts";
+import { eventCandidate, eventTitle, MAX_PENDING_EVENT_ASKS, personIn, sentences, spansIn } from "../src/offers/event-card.ts";
 import type { WindowState } from "../src/model.ts";
 import { snap, text } from "./builders.ts";
 
@@ -87,7 +87,12 @@ describe("event times", () => {
   });
 
   it("makes no event from a time in another zone or a time that cannot be", () => {
-    for (const spans of [["tomorrow at 3pm UTC"], ["tomorrow at 3pm -07:00"], ["Friday at 9am PST"], ["Friday at 3:99"], ["today at 0pm"], ["Friday at 13pm"], ["Friday at 24:10"]]) expect(at(spans), spans[0]).toBeNull();
+    for (const spans of [["tomorrow at 3pm UTC"], ["tomorrow at 3pm -07:00"], ["Friday at 9am PST"], ["Friday at 9am CET"], ["Friday at 3:99"], ["Friday at 3:5pm"], ["Friday at 3:000pm"], ["today at 0pm"], ["Friday at 13pm"], ["Friday at 24:10"]]) expect(at(spans), spans[0]).toBeNull();
+  });
+
+  it("refuses a sentence that names a zone outside the reader's span, but not a name that looks like one", () => {
+    expect(eventCandidate("Coffee with Dana tomorrow at 3pm UTC.", ["tomorrow at 3pm"], [], new Date(NOW))).toBeNull();
+    expect(eventCandidate("Coffee at 3pm with Dana Best tomorrow.", ["3pm", "tomorrow"], [], new Date(NOW))?.time.start).toBe("2026-10-06T15:00:00-05:00");
   });
 });
 
@@ -116,6 +121,11 @@ describe("person, title and sentences", () => {
     expect(spansIn(w, "k", s)).toEqual(["tomorrow 3:00 to 4:00pm"]);
     expect(resolveEventTime(spansIn(w, "k", s), new Date(NOW))).toMatchObject({ start: "2026-10-06T15:00:00-05:00", end: "2026-10-06T16:00:00-05:00" });
     expect(spansIn(w, "none", s)).toEqual([]);
+    // Words between two spans that are not a range's connector are left out: a room number is not a time.
+    const room = { values: [{ kind: "date", text: "Friday", nodeKey: "k" }, { kind: "time", text: "3pm", nodeKey: "k" }] } as unknown as WindowState;
+    const r = "Meeting with Dana Friday in room 2 at 3pm.";
+    expect(spansIn(room, "k", r)).toEqual(["Friday 3pm"]);
+    expect(resolveEventTime(spansIn(room, "k", r), new Date(NOW))?.start).toBe("2026-10-09T15:00:00-05:00");
   });
 
   it("leaves out a last sentence still being typed", () => {

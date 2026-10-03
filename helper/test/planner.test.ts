@@ -69,6 +69,7 @@ describe("instruction spans", () => {
   it("takes quoted text literally", () => {
     expect(instructionValues('Write "The meeting moved" in Message')).toEqual(["The meeting moved"]);
     expect(instructionValues('Write "Hello!" in Message')).toEqual(["Hello!"]);
+    expect(instructionValues('Write "  indented" in Notes')).toEqual(["  indented"]);
   });
 
   it("offers no description as a value, and nothing from Dana's apostrophe", () => {
@@ -238,6 +239,16 @@ describe("planTask", () => {
     const a = await planTask("Archive the order", desk(), mem(), opts(plannerJev({ press: "Archive" })));
     expect(a.plan.steps).toHaveLength(1);
     expect(a.checked.handoff).toMatchObject({ label: "Archive", why: "unverifiable" });
+  });
+
+  it("asks only about the fields an instruction names, or every field when it names none", async () => {
+    const jev = plannerJev({ fields: { Name: "Dana Whitfield", Email: "dana.whitfield@lumenlabs.example" } });
+    const d = await planTask("Set Name to Dana Whitfield", desk(), mem(), opts(jev));
+    expect(d.slots).toEqual({ v1: "Dana Whitfield" });
+    expect(Object.keys((jev.requests[0] as JevRequest).questions).filter((q) => q !== "press")).toHaveLength(1);
+    const all = plannerJev({ fields: { Name: "Dana Whitfield" } });
+    await planTask("Use Dana's signature here", desk(), mem(), opts(all));
+    expect(Object.keys((all.requests[0] as JevRequest).questions).filter((q) => q !== "press").length).toBeGreaterThan(1);
   });
 
   it("withholds a field the asks split on or agree on weakly, and writes the rest", async () => {

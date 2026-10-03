@@ -626,7 +626,19 @@ export class Executor {
     this.checkSession(task);
     // Only a task from an accepted offer gets one; without it the reader refuses the add.
     this.issueCalendarGrant(task);
-    const ev = await cal.add(end.calendar, end.title, end.start, end.end, task.id);
+    let ev: Awaited<ReturnType<CalendarPort["add"]>>;
+    try {
+      ev = await cal.add(end.calendar, end.title, end.start, end.end, task.id);
+    } catch (e) {
+      // An add whose answer was lost (no answer in time, axError) may still have been saved: if the event is
+      // there now, it goes in the ledger so undo can remove it, and the run still stops on the error. Any
+      // other refusal (an identical event another task added) means this task added nothing.
+      if (e instanceof CalendarRefused && e.outcome === "axError") {
+        const late = await cal.find(end.calendar, end.title, end.start, end.end).catch(() => null);
+        if (late !== null) task.ledger.push({ kind: "calendar", step: i, eventId: late.id, calendar: late.calendar, title: late.title, start: late.start, end: late.end });
+      }
+      throw e;
+    }
     // In the ledger before it is checked, so undo can remove an event that fails the check.
     task.ledger.push({ kind: "calendar", step: i, eventId: ev.id, calendar: ev.calendar, title: ev.title, start: ev.start, end: ev.end });
     const found = await cal.find(end.calendar, end.title, end.start, end.end);

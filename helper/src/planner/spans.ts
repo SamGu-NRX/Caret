@@ -33,10 +33,10 @@ export function instructionValues(instruction: string): string[] {
     if (t === "" || DESCRIBES.test(t) || out.includes(t)) return;
     out.push(t);
   };
-  // Quoted text is the user's literal value: taken as written, inner punctuation and leading words kept.
+  // Quoted text is the user's literal value: taken exactly as written, spaces and punctuation kept.
   for (const m of instruction.matchAll(QUOTED)) {
-    const t = (m[1] ?? m[2] ?? m[3] ?? "").trim();
-    if (t !== "" && !out.includes(t)) out.push(t);
+    const t = m[1] ?? m[2] ?? m[3] ?? "";
+    if (t.trim() !== "" && !out.includes(t)) out.push(t);
   }
   // Quoted text is taken whole; what it holds is not split into clauses.
   const unquoted = instruction.replace(QUOTED, (s) => s.replace(/[^\s]/g, " "));

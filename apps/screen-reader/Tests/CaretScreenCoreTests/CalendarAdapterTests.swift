@@ -57,11 +57,16 @@ private let start = "2026-10-08T15:00:00-05:00", end = "2026-10-08T15:30:00-05:0
         #expect(a.perform(.calendarGet(id: added.id)) == .ok(added))
         #expect(a.perform(.calendarRemove(id: added.id, taskId: "t1")) == .ok(nil))
         #expect(a.perform(.calendarGet(id: added.id)) == .ok(nil))
-        // The same event again is the one already there, not a second copy.
-        guard case let .ok(again?) = a.perform(.calendarAdd(calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end, taskId: "t2")),
-              case let .ok(twice?) = a.perform(.calendarAdd(calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end, taskId: "t3")) else { Issue.record("re-add failed"); return }
-        #expect(again.id == twice.id && b.events.values.filter { $0.title == "Coffee with Dana" && $0.calendarID != "icloud-cal" }.count == 1)
-        _ = a.perform(.calendarRemove(id: again.id, taskId: "t2"))
+        // The same event again is refused, so a second task never takes the first one's event as its own.
+        guard case let .ok(again?) = a.perform(.calendarAdd(calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end, taskId: "t2")) else { Issue.record("re-add failed"); return }
+        #expect(a.perform(.calendarAdd(calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end, taskId: "t3")) == .refused(.changed, "an identical event is already in the calendar; nothing was added"))
+        #expect(b.events.values.filter { $0.title == "Coffee with Dana" && $0.calendarID != "icloud-cal" }.count == 1)
+        // An id it added is trusted only while the event is still in its calendar.
+        b.events[again.id]?.calendarID = "icloud-cal"
+        #expect(a.perform(.calendarGet(id: again.id)) == .ok(nil))
+        #expect(a.perform(.calendarRemove(id: again.id, taskId: "t2")) == .refused(.notAllowed, "the event is not one the reader added, in a calendar it created"))
+        #expect(b.events[again.id] != nil)
+        b.events.removeValue(forKey: again.id)
         // A second event goes into the same calendar, which was created once.
         _ = a.perform(.calendarAdd(calendar: "Caret Test", title: "Lunch", start: start, end: end, taskId: "t1"))
         #expect(b.calls.filter { $0.hasPrefix("create") } == ["create Caret Test on local-1"])
@@ -74,7 +79,7 @@ private let start = "2026-10-08T15:00:00-05:00", end = "2026-10-08T15:30:00-05:0
         // The synced calendar has the same title and an identical event; the adapter finds neither.
         #expect(a.perform(.calendarFind(calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end)) == .ok(nil))
         #expect(a.perform(.calendarGet(id: "synced-ev")) == .ok(nil))
-        #expect(a.perform(.calendarRemove(id: "synced-ev", taskId: "t1")) == .refused(.notAllowed, "the event is not one the reader added"))
+        #expect(a.perform(.calendarRemove(id: "synced-ev", taskId: "t1")) == .refused(.notAllowed, "the event is not one the reader added, in a calendar it created"))
         #expect(a.perform(.calendarDispose(calendar: "Caret Test", taskId: "t1")) == .ok(nil))
         #expect(b.events["synced-ev"] != nil && b.calendars["icloud-cal"] != nil)
         // The foreign event's id is never even looked up: the adapter knows only ids it added.
