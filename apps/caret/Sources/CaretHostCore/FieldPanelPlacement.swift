@@ -67,6 +67,20 @@ public enum FieldPanelPlacement {
         }
     }
 
+    /// The parts of `grown` outside `original`: up to four strips, above, below, left and right.
+    /// Empty when `grown` lies inside `original`.
+    public static func added(_ grown: CGRect, beyond original: CGRect) -> [CGRect] {
+        var strips: [CGRect] = []
+        if grown.minY < original.minY { strips.append(CGRect(x: grown.minX, y: grown.minY, width: grown.width, height: original.minY - grown.minY)) }
+        if grown.maxY > original.maxY { strips.append(CGRect(x: grown.minX, y: original.maxY, width: grown.width, height: grown.maxY - original.maxY)) }
+        let top = max(grown.minY, original.minY), bottom = min(grown.maxY, original.maxY)
+        if bottom > top {
+            if grown.minX < original.minX { strips.append(CGRect(x: grown.minX, y: top, width: original.minX - grown.minX, height: bottom - top)) }
+            if grown.maxX > original.maxX { strips.append(CGRect(x: original.maxX, y: top, width: grown.maxX - original.maxX, height: bottom - top)) }
+        }
+        return strips
+    }
+
     /// What the panel hangs from: the field when it holds one line (shorter than two caret lines
     /// plus padding), else the caret's own line.
     public static func anchor(field: CGRect, caret: CGRect) -> CGRect {

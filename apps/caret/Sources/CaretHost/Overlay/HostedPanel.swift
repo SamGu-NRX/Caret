@@ -264,34 +264,62 @@ enum ObstacleProbe {
     }
 
     static func obstacles(pid: pid_t, under candidates: [CGRect]) -> [CGRect] {
-        probe(pid: pid, under: candidates, until: nil) ?? []
+        Session(pid: pid, until: nil).under(candidates) ?? []
     }
 
-    /// The same, giving up at `until` (uptime nanoseconds): nil when some point was never asked,
-    /// so a slow app's half-probed spot is not taken for a clear one.
-    static func probe(pid: pid_t, under candidates: [CGRect], until deadline: UInt64?) -> [CGRect]? {
-        let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, messagingTimeout)
-        // No window list read: every point is asked, as before.
-        let windows = AXRead.elements(kAXWindowsAttribute, on: app).compactMap { AXRead.frame(of: $0) }
-        let inApp: (CGPoint) -> Bool = windows.isEmpty ? { _ in true } : { p in windows.contains { $0.contains(p) } }
-        var found: [CGRect] = []
-        for rect in candidates {
-            for point in points(in: rect) where !found.contains(where: { $0.contains(point) }) && inApp(point) {
-                if let deadline, DispatchTime.now().uptimeNanoseconds > deadline { return nil }
-                var hit: AXUIElement?
-                guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
-                      let hit, AXRead.pid(of: hit) == pid else { continue }
-                let role = AXRead.string(kAXRoleAttribute, on: hit) ?? "AXUnknown"
-                if role == "AXWindow", let window = AXRead.frame(of: hit), point.y < window.minY + titleBarHeight {
-                    let bar = CGRect(x: window.minX, y: window.minY, width: window.width, height: titleBarHeight)
-                    if !found.contains(bar) { found.append(bar) }
-                    continue
-                }
-                guard !containerRoles.contains(role), let frame = AXRead.frame(of: hit) else { continue }
-                if !found.contains(frame) { found.append(frame) }
-            }
+    /// One placement's probing: the app's window frames are read once, and every hit-test stops
+    /// at `until` (uptime nanoseconds).
+    final class Session {
+        let pid: pid_t
+        let deadline: UInt64?
+        private let app: AXUIElement
+        /// Points outside these frames are not asked. Nil when the list could not be read whole,
+        /// within the deadline: then every point is asked, as before.
+        private lazy var windows: [CGRect]? = readWindows()
+
+        init(pid: pid_t, until deadline: UInt64?) {
+            self.pid = pid
+            self.deadline = deadline
+            app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, messagingTimeout)
         }
-        return found
+
+        private var expired: Bool { deadline.map { DispatchTime.now().uptimeNanoseconds > $0 } ?? false }
+
+        private func readWindows() -> [CGRect]? {
+            var frames: [CGRect] = []
+            for window in AXRead.elements(kAXWindowsAttribute, on: app) {
+                // A window whose frame cannot be read could hold the point: skip no point then.
+                guard !expired, let frame = AXRead.frame(of: window) else { return nil }
+                frames.append(frame)
+            }
+            return frames.isEmpty ? nil : frames
+        }
+
+        /// The frames of the app's elements under `candidates`; nil when some point was never
+        /// asked, so a slow app's half-probed spot is not taken for a clear one.
+        func under(_ candidates: [CGRect]) -> [CGRect]? {
+            if expired { return nil }
+            let windows = self.windows
+            var found: [CGRect] = []
+            for rect in candidates {
+                for point in points(in: rect) where !found.contains(where: { $0.contains(point) }) {
+                    if let windows, !windows.contains(where: { $0.contains(point) }) { continue }
+                    if expired { return nil }
+                    var hit: AXUIElement?
+                    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
+                          let hit, AXRead.pid(of: hit) == pid else { continue }
+                    let role = AXRead.string(kAXRoleAttribute, on: hit) ?? "AXUnknown"
+                    if role == "AXWindow", let window = AXRead.frame(of: hit), point.y < window.minY + titleBarHeight {
+                        let bar = CGRect(x: window.minX, y: window.minY, width: window.width, height: titleBarHeight)
+                        if !found.contains(bar) { found.append(bar) }
+                        continue
+                    }
+                    guard !containerRoles.contains(role), let frame = AXRead.frame(of: hit) else { continue }
+                    if !found.contains(frame) { found.append(frame) }
+                }
+            }
+            return found
+        }
     }
 }

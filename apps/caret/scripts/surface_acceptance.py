@@ -417,8 +417,8 @@ def alternatives(out_dir, appearance):
     ins = wait_for(lambda: (lambda st: st["lastInsertion"] if st.get("lastInsertion") and st["lastInsertion"]["claimID"] > last else None)(host()), 5)
     value = ax(pid, "value", pid, frame_arg(field["frame"]))["value"]
     s = host()
-    # With text already there, the chosen alternative is added to it at the caret.
-    expected = {existing + candidates[1], candidates[1] + existing} if existing else {candidates[1]}
+    # With text already there, the chosen alternative is added after it, where the caret is.
+    expected = {existing + candidates[1]}
     check("tab takes the selected alternative into the field", k.get("consumed") and value in expected
           and (s.get("lastClaim") or {}).get("candidate") == 1 and (s.get("surface") or {}).get("lastAccepted", {}).get("candidate") == 1,
           key=k, value=value, lastClaim=s.get("lastClaim"), insertion=ins)

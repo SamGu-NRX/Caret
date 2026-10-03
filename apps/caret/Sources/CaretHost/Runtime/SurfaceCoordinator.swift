@@ -247,12 +247,15 @@ final class SurfaceCoordinator {
             drawList(draw)
             return
         }
+        // The underline sits at the decor's bottom, up to 4 pt under the caret, but never below
+        // the field: KeyType estimates a single-line field's caret flush with its bottom edge.
+        let decorHeight = max(caret.height, min(caret.height + 4, draw.field.maxY - caret.minY))
         let decorView = HStack(alignment: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 if draw.quoted { UnevenUnderline(width: width, animated: draw.entering) }
             }
-            .frame(width: width, height: caret.height + 4)
+            .frame(width: width, height: decorHeight)
             if showTag {
                 tag
                     .padding(.leading, font.pointSize * 0.3)
@@ -335,16 +338,18 @@ final class SurfaceCoordinator {
                 placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
             } else if var current = placed {
                 // Content grew or shrank about the pinned corner (a reveal, the highlight moving).
-                // If it now covers something the first choice did not, place it again.
+                // Only the area it grew into is probed; if that covers something, runs off the
+                // screen, or could not be probed in time, it is placed again: a spot is never kept
+                // over ground nobody checked (A10 review).
                 let width: CGFloat? = current.choice.spot.isNarrow ? PopupView.minWidth : nil
                 let size = panel.measure(view(width))
                 let grown = Self.frame(pinnedAt: current.choice, size: size)
                 if grown.size != current.choice.frame.size {
                     let usable = Screen.axVisibleFrame(around: field).insetBy(dx: FieldPanelPlacement.margin, dy: FieldPanelPlacement.margin)
-                    let under = ObstacleProbe.probe(pid: pid, under: [grown], until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)?
-                        .filter { !$0.insetBy(dx: -2, dy: -2).contains(field) }
-                    // A probe that ran out of time is no reason to move a panel the user is reading.
-                    if !usable.contains(grown) || under?.contains(where: { $0.intersects(grown) }) == true {
+                    let added = FieldPanelPlacement.added(grown, beyond: current.choice.frame)
+                    let under = added.isEmpty ? [] : ObstacleProbe.Session(pid: pid, until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)
+                        .under(added)?.filter { !$0.insetBy(dx: -2, dy: -2).contains(field) }
+                    if !usable.contains(grown) || under.map({ $0.contains(where: { $0.intersects(grown) }) }) ?? true {
                         placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
                     } else {
                         current.choice.frame = grown
@@ -366,10 +371,10 @@ final class SurfaceCoordinator {
         let started = DispatchTime.now().uptimeNanoseconds
         let size = panel.measure(view(nil))
         let narrow = narrows && size.width > PopupView.minWidth ? panel.measure(view(PopupView.minWidth)) : nil
-        let deadline = started + Self.probeBudget
+        let probe = ObstacleProbe.Session(pid: pid, until: started + Self.probeBudget)
         let choice = FieldPanelPlacement.choose(
             field: field, caret: caret, size: size, narrow: narrow, bounds: Screen.axVisibleFrame(around: field),
-            obstacles: { ObstacleProbe.probe(pid: pid, under: [$0], until: deadline) }
+            obstacles: { probe.under([$0]) }
         )
         status.increment("surface.placed.\(choice.spot.rawValue)")
         if choice.overlap ?? 0 > 0 { status.increment("surface.placed.covering") }

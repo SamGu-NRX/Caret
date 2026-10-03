@@ -199,10 +199,17 @@ case "set-field" where args.count == 4:
 case "caret-end" where args.count == 3:
     let pid = requirePID(args[1])
     let field = textField(pid: pid, frame: parseFrame(args[2]))
-    var range = CFRange(location: (string(field, kAXValueAttribute) ?? "").utf16.count, length: 0)
+    guard let text = string(field, kAXValueAttribute) else { fail("the field's value cannot be read", code: 4) }
+    var range = CFRange(location: text.utf16.count, length: 0)
     guard let value = AXValueCreate(.cfRange, &range) else { fail("cannot make a range") }
     let result = AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, value)
-    emit(["ok": result == .success, "axError": result.rawValue, "location": range.location])
+    // Read the selection back: the write can succeed and be undone by the field editor.
+    var after = CFRange(location: -1, length: -1)
+    if let raw = attribute(field, kAXSelectedTextRangeAttribute), CFGetTypeID(raw) == AXValueGetTypeID() {
+        AXValueGetValue(raw as! AXValue, .cfRange, &after)
+    }
+    emit(["ok": result == .success && after.location == range.location && after.length == 0, "axError": result.rawValue,
+          "location": after.location, "length": after.length, "expected": range.location])
 case "key-window" where args.count == 3:
     // Make one fixture window its app's key window by writing AXMain on it, the way a user
     // switching windows inside the app would. Reports the app's focused window before and after,

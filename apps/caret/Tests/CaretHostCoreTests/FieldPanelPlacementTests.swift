@@ -145,6 +145,17 @@ final class FieldPanelPlacementTests: XCTestCase {
         XCTAssertEqual(choice.overlap, 0)
     }
 
+    func testOnlyTheAreaAPanelGrewIntoIsProbedAgain() {
+        let card = CGRect(x: 100, y: 200, width: 240, height: 132)
+        XCTAssertEqual(FieldPanelPlacement.added(CGRect(x: 100, y: 200, width: 240, height: 168), beyond: card),
+                       [CGRect(x: 100, y: 332, width: 240, height: 36)], "a reveal grows downward from the top corner")
+        XCTAssertEqual(FieldPanelPlacement.added(CGRect(x: 100, y: 164, width: 240, height: 168), beyond: CGRect(x: 100, y: 200, width: 240, height: 132)),
+                       [CGRect(x: 100, y: 164, width: 240, height: 36)], "flipped above, it grows upward")
+        XCTAssertEqual(FieldPanelPlacement.added(CGRect(x: 100, y: 200, width: 268, height: 132), beyond: card),
+                       [CGRect(x: 340, y: 200, width: 28, height: 132)])
+        XCTAssertEqual(FieldPanelPlacement.added(CGRect(x: 100, y: 200, width: 200, height: 100), beyond: card), [], "shrinking adds nothing")
+    }
+
     func testEachSpotPinsTheCornerNearestTheField() {
         let choice = FieldPanelPlacement.Choice(frame: CGRect(x: 10, y: 20, width: 100, height: 50), spot: .left, overlap: 0, probed: 1)
         XCTAssertEqual(choice.cornerPoint, CGPoint(x: 110, y: 20))
