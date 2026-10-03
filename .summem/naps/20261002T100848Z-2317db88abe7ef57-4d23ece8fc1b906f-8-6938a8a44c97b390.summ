@@ -1,1 +1,0 @@
-Chrome titles its top AXGroup/AXWebArea (keep out of keys), rejects AXManualAccessibility yet exposes web AX; background fixtures need makeKey(); caret-screen acts only in --act-pids. Fill recency: window before the form's last focus. Use RollingText.findAll; 250 ms tick grid.
