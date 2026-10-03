@@ -15,7 +15,7 @@ import { instructionValues } from "../src/planner/spans.ts";
 import { occursBounded, traceValue, type MemoryValue } from "../src/planner/trace.ts";
 import { addressParts, misfit, textKind, type TextKind } from "../src/fill/kinds.ts";
 import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
-import { asksToFillForm, byRelevance, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
+import { asksToFillForm, byRelevance, namesShortLabel, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
@@ -190,12 +190,23 @@ describe("whether a value's kind fits a field (B18, kinds.ts)", () => {
     ["455 Congress Ave, Austin, TX 78701", "Notes", "address", true],
     ["Reach me at sam.rivera@example.com", "Phone", "text", false],
     ["Senior Product Designer", "Event title", "text", true],
+    // Review B18: dates and times are not street lines, a phone keeps its extension, and a whole address
+    // without commas is still a whole address.
+    ["8 October 2026", "Date", "text", true],
+    ["3 PM", "Start time", "text", true],
+    ["+1 (512) 555-0142 ext. 9", "Phone", "phone", true],
+    ["455 Congress Ave Austin TX 78701", "Street", "address", false],
+    ["455 Congress Ave\nAustin, TX 78701", "Street", "address", false],
   ];
   it("splits a whole address into its street line and city, verbatim", () => {
     expect(addressParts("455 Congress Ave, Austin, TX 78701")).toEqual({ street: "455 Congress Ave", city: "Austin" });
     expect(addressParts("12 Rue X, 75001 Paris")).toEqual({ street: "12 Rue X", city: null });
     expect(addressParts("455 Congress Ave")).toBeNull();
     expect(addressParts("Room 4B, Building C")).toBeNull();
+    // The city is the part before the state or postal code, never a unit (review B18).
+    expect(addressParts("455 Congress Ave, Suite B, Austin, TX 78701")).toEqual({ street: "455 Congress Ave", city: "Austin" });
+    expect(addressParts("1 Main St, Springfield")).toEqual({ street: "1 Main St", city: "Springfield" });
+    expect(addressParts("455 Congress Ave, Suite B, Austin")).toEqual({ street: "455 Congress Ave", city: null });
   });
   it.each(table)("'%s' in a field labelled %s reads as %s and fits: %s", (value, label, kind, fits) => {
     expect(textKind(value)).toBe(kind);
@@ -344,6 +355,26 @@ describe("planTask", () => {
     expect(Object.values(da.slots).sort()).toEqual(["Dana Whitfield", "dana.whitfield@lumenlabs.example"]);
   });
 
+  it("names a field with a short label only as a destination or a heading (review B18)", () => {
+    expect(namesShortLabel("Put dana@example.com in To", "To")).toBe(true);
+    expect(namesShortLabel("put it into the Cc field", "Cc")).toBe(true);
+    expect(namesShortLabel("cc: dana@example.com", "Cc")).toBe(true);
+    expect(namesShortLabel("Set Name to Dana Whitfield", "To")).toBe(false);
+    expect(namesShortLabel("Put dana@example.com in To", "Name")).toBe(false);
+  });
+
+  it("keeps every other value when a screen shows many addresses: their parts have their own budget (review B18)", async () => {
+    const m = desk();
+    const M = (x: string): string => `dev.caret.mail/standard/${x}`;
+    const cities = ["Austin", "Dallas", "Houston", "Waco", "Tyler", "Plano", "Frisco", "Allen", "Irving", "Temple", "Killeen", "Round Rock", "Midland", "Odessa", "Abilene", "Amarillo", "Lubbock", "Laredo", "Denton", "Conroe"];
+    const lines = cities.map((c, i) => `${100 + i} Elm St, ${c}, TX 787${String(i).padStart(2, "0")}`);
+    const nodes = [...lines.map((l, i) => text(M(`statictext:a${i}~0`), l)), text(M("statictext:mail~0"), "dana.whitfield@lumenlabs.example")];
+    m.apply(snap(nodes, { at: 600, windowId: "6160-8", title: "Mail Fixture — Addresses", app: MAIL_APP, values: [...lines.map((l, i) => ({ kind: "address" as const, text: l, nodeKey: M(`statictext:a${i}~0`) })), { kind: "email", text: "dana.whitfield@lumenlabs.example", nodeKey: M("statictext:mail~0") }] }));
+    const jev = plannerJev({ fields: { Email: "dana.whitfield@lumenlabs.example" } });
+    const d = await planTask("Put Dana's email in Email", m, mem(), opts(jev));
+    expect(d.slots).toEqual({ v1: "dana.whitfield@lumenlabs.example" });
+  });
+
   it("offers each field only the values that fit it, so a whole address never reaches City, but its city does", async () => {
     const m = desk();
     const M = (x: string): string => `dev.caret.mail/standard/${x}`;
@@ -376,6 +407,11 @@ describe("planTask", () => {
     ["Fill Name and Email for Dana Whitfield from her signature", false],
     ["Set the billing city to Lisbon", false],
     ["Fill the billing city with Lisbon", false],
+    // Review B18: one field of the form is not the form; "all fields" is; quoted text is a value, not a request.
+    ["Fill in the form field Name with Dana's details", false],
+    ["Fill all fields from the order", true],
+    ["Complete all the fields", true],
+    ['Write "fill in the form" in Notes', false],
   ])("reads '%s' as asking to fill the whole form: %s", (instruction, whole) => {
     expect(asksToFillForm(instruction)).toBe(whole);
   });

@@ -666,7 +666,8 @@ export const FillField = z.object({
   memory: FillMemory.nullable().default(null),
   /**
    * Why no value was proposed although one might have been: the two asks picked different candidates,
-   * they agreed below the confidence cutoff, or a window's privacy budget cut a value of the kind the
+   * they agreed below the confidence cutoff (for a value from memory, also when the asks did not both say,
+   * at WHOSE_CUTOFF or above, that the field wants the user's own details), or a window's privacy budget cut a value of the kind the
    * field takes or the asks picked ("sourceCut", fill.ts), so the candidates of that kind were a partial
    * set. Null otherwise.
    */
@@ -703,7 +704,10 @@ export const FillProposal = z.object({
     inputTokens: z.number().int().nonnegative(),
     costUsd: z.number().nonnegative(),
   }),
-  /** The confidence an agreed choice had to reach to be proposed. */
+  /**
+   * The confidence an agreed choice of a window's value had to reach to be proposed. A value from memory
+   * is held to fill.ts MEMORY_CUTOFF and its whose-details answers to WHOSE_CUTOFF instead (B18).
+   */
   cutoff: z.number(),
 });
 export type FillProposal = z.infer<typeof FillProposal>;

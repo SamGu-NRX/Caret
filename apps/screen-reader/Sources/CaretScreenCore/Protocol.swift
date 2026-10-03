@@ -483,7 +483,8 @@ public struct FillProposal: Codable, Equatable, Sendable {
     public var fields: [FillField]
     public var candidates: Int
     public var jev: JevUsage
-    /// The confidence an agreed choice had to reach to be proposed.
+    /// The confidence an agreed choice of a window's value had to reach to be proposed. A value from
+    /// memory is held to helper/src/fill/fill.ts MEMORY_CUTOFF and WHOSE_CUTOFF instead (B18).
     public var cutoff: Double
     enum CodingKeys: String, CodingKey { case id, at, pid, windowId, bundleId, triggerKey, fields, candidates, jev, cutoff }
     public init(from decoder: Decoder) throws {

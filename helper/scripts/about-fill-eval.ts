@@ -118,7 +118,7 @@ function formSnapshot(f: Form, windowId: string, at: number): { snap: Snapshot; 
 
 /** Which form field a question is about, by its label or placeholder and its section as the descriptor quotes them. */
 let current: Form | null = null;
-const fieldOf = (instructions: string): FormField => {
+const fieldOf = (instructions: string, form: Form | null = current): FormField => {
   // Up to the quote that ends the sentence, so a label with an apostrophe ("Manager's name") reads whole.
   const m = /Label: '(.*?)'\.(?: |$)|Placeholder: '(.*?)'\.(?: |$)/.exec(instructions);
   const name = m?.[1] ?? m?.[2] ?? "";
@@ -134,11 +134,14 @@ const fieldOf = (instructions: string): FormField => {
     const x = clean(raw);
     return x !== null && (x === name || (name.endsWith("…") && x.startsWith(name.slice(0, -1))));
   };
-  const hits = (current?.fields ?? []).filter((x) => same(x.label ?? x.placeholder) && sectionAsRead(x.section) === section);
-  if (hits.length !== 1) throw new Error(`question names '${name}' in section '${section}', which matches ${hits.length} fields of ${current?.id}`);
+  const hits = (form?.fields ?? []).filter((x) => same(x.label ?? x.placeholder) && sectionAsRead(x.section) === section);
+  if (hits.length !== 1) throw new Error(`question names '${name}' in section '${section}', which matches ${hits.length} fields of ${form?.id}`);
   return hits[0] as FormField;
 };
 const MEMORY = "which the user told Caret";
+/** Whose details a field wants as the oracle answers it: its `who`, or the user's when it expects the user's Name or Email (B17's forms say no `who`). */
+const whoOf = (f: FormField): "user" | "other" | "unclear" =>
+  f.who === "user" || f.who === "other" ? f.who : f.who === undefined && (f.expect === "name" || f.expect === "email") ? "user" : "unclear";
 const scripted =
   (eager: boolean): AskJev =>
   async (req: JevRequest) => {
@@ -146,7 +149,7 @@ const scripted =
     for (const [id, q] of Object.entries(req.questions)) {
       const f = fieldOf(String(q.instructions));
       if (id.endsWith("_whose")) {
-        answers[id] = { choice: eager ? "user" : f.who === "user" || f.who === "other" ? f.who : "unclear", confidence: 0.95 };
+        answers[id] = { choice: eager ? "user" : whoOf(f), confidence: 0.95 };
         continue;
       }
       const crit = Object.entries(q.criteria);
@@ -164,6 +167,8 @@ const real = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
 const whoseOf = new Map<FormField, { choice: string; confidence: number }[]>();
 const ask: AskJev = async (req) => {
   calls++;
+  // The form this request is about, taken before awaiting: a failed sibling ask lets the loop move on while this one is out.
+  const form = current;
   let r: JevResult;
   if (real === null) r = await scripted(a.jev === "eager")(req);
   else {
@@ -174,7 +179,7 @@ const ask: AskJev = async (req) => {
   for (const [id, q] of Object.entries(req.questions)) {
     const ans = r.answers[id];
     if (!id.endsWith("_whose") || ans === undefined) continue;
-    const f = fieldOf(String(q.instructions));
+    const f = fieldOf(String(q.instructions), form);
     whoseOf.set(f, [...(whoseOf.get(f) ?? []), ans]);
   }
   return r;

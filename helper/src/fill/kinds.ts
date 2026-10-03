@@ -163,20 +163,29 @@ const WHOLE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 const WHOLE_URL = /^(?:https?:\/\/|www\.)\S+$/iu;
 /** Digits with phone punctuation only, 7 to 15 digits; an ISO date ("2026-10-08") is not one. */
 const PHONE_CHARS = /^\+?[\d\s().-]+$/u;
+/** An extension after a phone number ("ext. 9", "x204"), set aside before the phone's characters are read. */
+const PHONE_EXT = /\s*(?:ext\.?|extension|x)\s*\d{1,6}$/iu;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
 const WHOLE_AMOUNT = /^[$€£¥]\s?\d[\d,]*(?:\.\d{1,2})?$/u;
 const STREET_LINE = /^\d+[A-Za-z]?\s+\p{L}[\p{L}\p{N}.'’-]*(?:\s+[\p{L}\p{N}.'’-]+)*$/u;
+/** A number then a month or a clock mark reads as a date or a time, not a street: "8 October 2026", "3 PM". */
+const NOT_STREET = /^\d+\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?(?:\s|$)|^\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?$/iu;
+/** A postal code at the end of a line, alone or after a two-letter state: "TX 78701", "78701-1234". */
+const POSTCODE_TAIL = /(?:\b\p{Lu}{2}\s+)?\b\d{5}(?:-\d{4})?$/u;
 
 export function textKind(value: string): TextKind {
   const v = value.trim().replace(/\s+/g, " ");
   if (WHOLE_EMAIL.test(v)) return "email";
   if (WHOLE_URL.test(v)) return "url";
   if (WHOLE_AMOUNT.test(v)) return "amount";
-  const digits = v.replace(/\D/g, "").length;
-  if (PHONE_CHARS.test(v) && !ISO_DATE.test(v) && digits >= 7 && digits <= 15) return "phone";
+  const number = v.replace(PHONE_EXT, "");
+  const digits = number.replace(/\D/g, "").length;
+  if (PHONE_CHARS.test(number) && !ISO_DATE.test(number) && digits >= 7 && digits <= 15) return "phone";
   const [head, ...rest] = v.split(",");
-  if (STREET_LINE.test((head ?? "").trim())) return rest.length > 0 ? "address" : "street";
-  return "text";
+  const h = (head ?? "").trim();
+  if (!STREET_LINE.test(h) || NOT_STREET.test(h)) return "text";
+  // A line with a postal code at its end is a whole address with its commas left out: "455 Congress Ave Austin TX 78701".
+  return rest.length > 0 || POSTCODE_TAIL.test(h) ? "address" : "street";
 }
 
 /** Shapes a field's label can ask for that code can check a value against. */
@@ -251,15 +260,29 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
   return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is ${said}, and the field takes ${[...fits].map((f) => FIT_SAYS[f]).join(" or ")}`;
 }
 
+/** A part of an address that names a unit or a building, not a city: "Suite B", "Apt 4", "Floor 2". */
+const UNIT = /^(?:suite|ste|apt|apartment|unit|floor|fl|room|rm|building|bldg|#)\b/iu;
+const PLAIN_WORDS = /^\p{L}[\p{L} .'’-]*$/u;
+/** A state, a postal code or both: what follows the city in an address ("TX 78701", "TX", "78701"). */
+const STATE_OR_POSTCODE = /^(?:\p{Lu}{2}(?:\s+\d{5}(?:-\d{4})?)?|\d{5}(?:-\d{4})?)$/u;
+
 /**
- * The street line and the city of a whole address, each verbatim as the address shows them
- * ("455 Congress Ave, Austin, TX 78701" gives "455 Congress Ave" and "Austin"), so a Street or City field
- * can be offered the part that fits it. Null for any text that is not a whole address; the city is null
- * when the second part is not plain words.
+ * The street line and the city of a comma-separated whole address, each verbatim as the address shows
+ * them ("455 Congress Ave, Suite B, Austin, TX 78701" gives "455 Congress Ave" and "Austin"), so a Street
+ * or City field can be offered the part that fits it. The city is the plain-words part right before a
+ * state or postal code, or the second of exactly two parts ("1 Main St, Springfield"); it is null when
+ * the address does not say which part is the city. Null for any text that is not a comma-separated whole address.
  */
 export function addressParts(value: string): { street: string; city: string | null } | null {
-  if (textKind(value) !== "address") return null;
-  const [head, second] = value.split(",").map((p) => p.trim().replace(/\s+/g, " "));
-  if (head === undefined) return null;
-  return { street: head, city: second !== undefined && /^\p{L}[\p{L} .'’-]*$/u.test(second) ? second : null };
+  if (textKind(value) !== "address" || !value.includes(",")) return null;
+  const parts = value.split(",").map((p) => p.trim().replace(/\s+/g, " "));
+  const street = parts[0] as string;
+  const isCity = (i: number): boolean => {
+    const p = parts[i] as string;
+    if (!PLAIN_WORDS.test(p) || UNIT.test(p)) return false;
+    const next = parts[i + 1];
+    return next === undefined ? parts.length === 2 : STATE_OR_POSTCODE.test(next);
+  };
+  const at = parts.findIndex((_, i) => i > 0 && isCity(i));
+  return { street, city: at > 0 ? (parts[at] as string) : null };
 }

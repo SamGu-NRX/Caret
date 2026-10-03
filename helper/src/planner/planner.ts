@@ -39,6 +39,8 @@ export const PLAN_CUTOFF = FILL_CUTOFF;
 export const MAX_PLAN_FIELDS = 20;
 export const MAX_PLAN_BUTTONS = 20;
 export const MAX_PLAN_VALUES = 40;
+/** The street lines and cities of whole addresses, offered beside the values above them. Assumed. */
+export const MAX_ADDRESS_PARTS = 10;
 const KEEP = "keep";
 const NONE = "none";
 /** A refused SnippetLedger take means the text cannot go out at all, so the question is not asked. */
@@ -138,7 +140,7 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
   const outranked = (f: Field): boolean =>
     f.section !== null && !sectionsSaid.has(f.section) && fields.some((g) => g !== f && g.section !== null && sectionsSaid.has(g.section) && same(g.label, f.label));
-  const named = new Set(fields.filter((f) => relevance(instruction, f.name) > 0 && !outranked(f)).map((f) => f.node.key));
+  const named = new Set(fields.filter((f) => (relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.label)) && !outranked(f)).map((f) => f.node.key));
   const wholeForm = asksToFillForm(instruction);
   const askedFields = fields.filter((f) => taken.has(f.node.key) && (wholeForm || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
@@ -259,12 +261,28 @@ function sentOnly(reqs: [JevRequest, JevRequest]): [JevRequest, JevRequest] {
  * written for common requests, not measured.
  */
 export function asksToFillForm(instruction: string): boolean {
-  const s = instruction.toLowerCase();
+  // Quoted text is a value to write, not a request ("Write 'fill in the form' in Notes").
+  const s = instruction.replace(QUOTED_TEXT, " ").toLowerCase();
   return (
-    /\b(?:fill|complete)(?:\s+(?:in|out|up))?\s+(?:(?:the|this|that|my|whole|entire|rest|of|remaining|other)\s+)*(?:form|fields|everything)\b/.test(s) ||
+    // "the form field Name" names one field, so "form" followed by "field" is not the whole form.
+    /\b(?:fill|complete)(?:\s+(?:in|out|up))?\s+(?:(?:the|this|that|my|whole|entire|rest|of|remaining|other|all)\s+)*(?:form(?!\s+field\b)|fields|everything)\b/.test(s) ||
     /\bfill\s+(?:it|them|everything)\s+(?:all\s+)?(?:in|out)\b/.test(s) ||
     /\bfill\s+(?:in|out)\s+(?:all|everything)\b/.test(s)
   );
+}
+
+const QUOTED_TEXT = /"[^"]*"|“[^”]*”|(?<![\p{L}])'[^']*'(?![\p{L}])/gu;
+
+/**
+ * Whether the instruction names a field whose label is a word too short for relevance ("To", "Cc", "ID"):
+ * only as a destination ("in To", "into the Cc field") or a heading ("To:"), since "to" is also a
+ * preposition in nearly every instruction.
+ */
+export function namesShortLabel(instruction: string, label: string): boolean {
+  const l = label.trim().replace(/:$/, "");
+  if (!/^\p{L}{1,2}$/u.test(l)) return false;
+  const e = l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b(?:in|into)\\s+(?:the\\s+)?${e}\\b|\\b${e}\\s*(?::|\\s+(?:field|box|line)\\b)`, "iu").test(instruction);
 }
 
 /** How many of the instruction's words a name shares. */
@@ -330,24 +348,25 @@ function actionable(w: WindowState): boolean {
 function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number): Option[] {
   const out: Option[] = [];
   const seen = new Set<string>();
-  const add = (text: string, describe: string): void => {
-    if (out.length >= MAX_PLAN_VALUES || seen.has(text)) return;
+  const add = (text: string, describe: string, max = MAX_PLAN_VALUES): void => {
+    if (out.length >= max || seen.has(text)) return;
     seen.add(text);
     out.push({ id: `v${out.length + 1}`, text, describe });
   };
   const spans = instructionValues(instruction);
   if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`);
   for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`);
-  for (const c of generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger)) {
-    add(c.text, describeCandidate(c));
-    // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
-    // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
-    // tuned on those sets). Each part is a span of the same line, so it traces to it.
+  const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
+  for (const c of cands) add(c.text, describeCandidate(c));
+  // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
+  // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
+  // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
+  // budget after the values above, so a screen of addresses cannot push out its other values.
+  for (const c of cands) {
     const parts = addressParts(c.text);
-    if (parts !== null) {
-      add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`);
-      if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`);
-    }
+    if (parts === null) continue;
+    add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
   }
   return out;
 }
