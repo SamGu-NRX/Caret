@@ -60,12 +60,10 @@ public enum HelperOffer: Equatable, Sendable {
     }
 
     /// Whether the focused element at `focusedFrame` (global, top-left points) is the field this
-    /// offer is for. An offer whose field has no frame matches nothing on screen.
-    public func isFor(focusedFrame: CGRect?) -> Bool {
-        guard let declared = field.frame, let focusedFrame else { return false }
-        return FillSelection.matches(
-            declared, Frame(x: focusedFrame.minX, y: focusedFrame.minY, width: focusedFrame.width, height: focusedFrame.height)
-        )
+    /// offer is for. An offer whose field has no frame matches nothing on screen. With a window
+    /// named on both sides, it must agree too (`FieldMatch`).
+    public func isFor(focusedFrame: CGRect?, declaredWindow: WindowIdentity? = nil, focusedWindow: WindowIdentity? = nil) -> Bool {
+        FieldMatch.matches(declaredFrame: field.frame, declaredWindow: declaredWindow, focusedFrame: focusedFrame, focusedWindow: focusedWindow)
     }
 
     /// How long the host keeps an offer the helper has not withdrawn. Assumed, not measured: the

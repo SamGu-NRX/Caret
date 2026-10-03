@@ -1,23 +1,6 @@
 import AppKit
+import CaretHostCore
 import SwiftUI
-
-/// The figure's states (`IDENTITY.md`, "States, side by side").
-public enum FigureState: String, CaseIterable, Codable, Sendable {
-    /// Enters, already looking at what it noticed.
-    case noticed
-    /// Turns toward the offer and breathes.
-    case offering
-    /// Looks away, then leaves; the menu bar glyph tints Carrot.
-    case working
-    /// Returns with one gesture of relief.
-    case done
-    /// Faces you; two small signals. Nothing happens until you answer.
-    case needsYou
-    /// Goes graphite; posture drops.
-    case error
-    /// Not drawn.
-    case absent
-}
 
 /// Which way the figure faces: toward the text it stands after (left), or toward the words of
 /// the line it heads (right).
@@ -25,14 +8,9 @@ public enum FigureFacing: Sendable {
     case left, right
 }
 
-/// The three characters. Pebble is the default; seed and wren are kept selectable until Sam picks
-/// (`OPEN-QUESTIONS.md` 1). Each one is a drawing plus a pose per state, so adding a fourth is one
-/// more case here and one more `FigureDrawing`.
-public enum FigureCharacter: String, CaseIterable, Sendable {
-    case pebble, seed, wren
-
-    public var displayName: String { rawValue.capitalized }
-
+/// Each character's drawing. The enum itself is CaretHostCore's, so the surface decisions can
+/// name the character without SwiftUI.
+extension FigureCharacter {
     var drawing: FigureDrawing {
         switch self {
         case .pebble: return Pebble()

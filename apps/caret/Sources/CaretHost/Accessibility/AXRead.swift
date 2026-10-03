@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CaretHostCore
 
 /// Small typed wrappers over `AXUIElementCopyAttributeValue`. KeyType's own helper
 /// (`AXCaretHelper`) is internal to MacContextCapture, so the host keeps the handful it needs.
@@ -102,5 +103,30 @@ enum AXRead {
     /// focused element returns an equal element while focus stays put.
     static func token(_ element: AXUIElement) -> String {
         String(CFHash(element), radix: 16)
+    }
+
+    /// The window an element is in: the window server's number and the window's title, so an
+    /// offer for one window is not shown in another laid out the same (`FieldMatch`).
+    static func windowIdentity(of element: AXUIElement) -> WindowIdentity? {
+        guard let window = self.element(kAXWindowAttribute, on: element) else { return nil }
+        let identity = WindowIdentity(number: windowNumber(of: window), title: string(kAXTitleAttribute, on: window))
+        return identity.number == nil && identity.title == nil ? nil : identity
+    }
+
+    private typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+
+    /// Accessibility exposes the window number only through the private `_AXUIElementGetWindow`,
+    /// loaded at run time as KeyType's `AXWindowIDResolver` does; nil when it is missing.
+    private static let getWindow: GetWindow? = {
+        let handle = UnsafeMutableRawPointer(bitPattern: -2) // RTLD_DEFAULT
+        guard let symbol = dlsym(handle, "_AXUIElementGetWindow") else { return nil }
+        return unsafeBitCast(symbol, to: GetWindow.self)
+    }()
+
+    private static func windowNumber(of window: AXUIElement) -> UInt32? {
+        guard let getWindow else { return nil }
+        var number = CGWindowID(0)
+        guard getWindow(window, &number) == .success, number != 0 else { return nil }
+        return number
     }
 }

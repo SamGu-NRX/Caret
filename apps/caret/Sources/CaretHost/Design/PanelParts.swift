@@ -61,22 +61,6 @@ struct Keycap: View {
     }
 }
 
-/// A keycap and what it does: "Tab Add", "⌘Z Undo".
-struct Hint: Equatable, Sendable {
-    var key: String
-    var label: String?
-
-    static func key(_ key: PopupSpec.Action.Key) -> String {
-        switch key {
-        case .tab: return "Tab"
-        case .cmd1: return "⌘1"
-        case .cmd2: return "⌘2"
-        case .cmd3: return "⌘3"
-        case .down: return "↓"
-        }
-    }
-}
-
 struct HintView: View {
     var hint: Hint
     var compact = false
@@ -159,25 +143,6 @@ struct AppGlyph: View {
 
 // MARK: - The line
 
-/// What an offer line shows: the figure, an optional app, an optional Carrot lead word, the text,
-/// and trailing key hints.
-struct LineContent: Equatable {
-    var figure: FigureState
-    var app: String?
-    var lead: String?
-    var text: String
-    /// Secondary for a source line ("from Mail, Invoice 2041"); Ink semibold for an end state.
-    var emphasis: Emphasis = .endState
-    var hints: [Hint] = []
-    /// The working line names the app in its caption, so it shows only the app's glyph, standing
-    /// where the figure stood before it left.
-    var appGlyphOnly = false
-
-    enum Emphasis: Equatable {
-        case endState, plain, secondary
-    }
-}
-
 /// The offer line, the working line and the toast (`SURFACES.md` sections 3 and 6): 28 tall,
 /// figure 11, app glyph 14, end state 13 semibold.
 struct LineView: View {
@@ -233,61 +198,5 @@ struct LineView: View {
         case .plain: return Text(content.text).font(.system(size: size)).foregroundColor(Color(token: Tokens.ink))
         case .secondary: return Text(content.text).font(.system(size: size)).foregroundColor(Color(token: Tokens.secondary))
         }
-    }
-}
-
-/// The captions per character (`IDENTITY.md`, "Captions while working and when done"). No
-/// exclamation marks, no "I think", no probabilities, no em dashes.
-enum Captions {
-    static func working(_ character: FigureCharacter, app: String) -> String {
-        switch character {
-        case .seed: return "Adding to \(app)"
-        case .pebble: return "On it, \(app)"
-        case .wren: return "Off to \(app)"
-        }
-    }
-
-    /// The lead word (set in Carrot) and the rest.
-    static func done(_ character: FigureCharacter, app: String) -> (lead: String, rest: String) {
-        switch character {
-        case .seed: return ("Added", "to \(app)")
-        case .pebble: return ("Done,", "in \(app)")
-        case .wren: return ("Back,", "added to \(app)")
-        }
-    }
-
-    static func error(_ character: FigureCharacter, app: String) -> String {
-        switch character {
-        case .seed: return "\(app) didn't accept it. Open \(app) to add it."
-        case .pebble, .wren: return "\(app) wouldn't take it. Open \(app) to add it."
-        }
-    }
-
-    static let stopped = "Stopped"
-
-    /// "1 field", "3 fields".
-    static func fields(_ count: Int) -> String { count == 1 ? "1 field" : "\(count) fields" }
-
-    /// The working line of a fill pop-up.
-    static func filling(_ count: Int) -> String { "Filling \(fields(count))" }
-
-    /// A fill run that stopped: what happened and what was left, without blame.
-    static func fillStopped(filled: Int) -> String {
-        filled == 0
-            ? "The form changed, so nothing was filled."
-            : "Filled \(fields(filled)). The form changed, so the rest was left as it is."
-    }
-
-    /// The run reached a send, submit, delete or pay step and left the press to the user.
-    static func handoff(app: String) -> String { "Your turn in \(app)" }
-
-    /// ⌘Z on the fill toast while the helper is not connected.
-    static let undoUnsent = "Caret's helper isn't running, so nothing was undone."
-
-    /// An undo that could not restore every field.
-    static func undoPartial(notRestored: Int) -> String {
-        notRestored == 1
-            ? "1 field changed after the fill, so it was left as it is."
-            : "\(notRestored) fields changed after the fill, so they were left as they are."
     }
 }

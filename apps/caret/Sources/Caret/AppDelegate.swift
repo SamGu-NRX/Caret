@@ -1,5 +1,6 @@
 import AppKit
 import CaretHost
+import CaretHostCore
 
 /// A minimal menu-bar shell: the figure as the status item (Carrot while work runs), the engine
 /// state, the activity list, the perch toggle, the character setting, and Quit.
