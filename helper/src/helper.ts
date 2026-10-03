@@ -49,6 +49,7 @@ import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { describeField } from "./fill/descriptor.ts";
 import { OpenAppOffers } from "./offers/open-app.ts";
 import { DEFAULT_SETTINGS, LEVELS, OfferGate, type Family, type UserSettings } from "./offers/settings.ts";
 import { FirstLookRunner } from "./offers/first-look.ts";
@@ -778,7 +779,8 @@ export class Helper {
   /**
    * Jev answers in a few hundred milliseconds, and the screen can move meanwhile. A proposal is
    * dropped when the helper left live mode, the window closed, or its trigger field is gone or no
-   * longer empty; a field that has since been filled, or whose source window closed, is left out.
+   * longer empty; a field that has since been filled, that now reads differently (an app can reuse a
+   * field's key for another field: B13 review), or whose source window closed, is left out.
    */
   private revalidate(p: FillProposal): FillProposal | null {
     if (this.mode !== "live") return null;
@@ -787,7 +789,7 @@ export class Helper {
     if (w === undefined || trigger === undefined || (trigger.value ?? "") !== "") return null;
     const fields = p.fields.filter((f) => {
       const n = w.nodes.get(f.key);
-      if (n === undefined || (n.value ?? "") !== "") return false;
+      if (n === undefined || (n.value ?? "") !== "" || describeField(w, n).text !== f.descriptor) return false;
       return f.source === null || this.model.windows.has(f.source.windowId);
     });
     return { ...p, fields };

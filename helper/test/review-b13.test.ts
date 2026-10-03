@@ -1,7 +1,14 @@
 // Findings from the independent review of B12's fill and privacy path (B13), each as the case the
 // reviewer traced. A Jev stand-in picks the right value when it is offered and a decoy otherwise, as
 // live Jev did in B11's replay. All text is synthetic.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { Helper } from "../src/helper.ts";
+import { Store } from "../src/store.ts";
+import { recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
+import { loadRecording } from "./socket-reader.ts";
 import { ScreenModel } from "../src/model.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
@@ -9,7 +16,7 @@ import { fieldTerms } from "../src/fill/kinds.ts";
 import { SnippetLedger, WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
 import { targetSnippets } from "../src/executor/target.ts";
 import { conversationSign } from "../src/conversation.ts";
-import type { AppRef, FillProposal } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type AppRef, type FillProposal, type HelperMessage, type ReaderMessage, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { field, snap, text, value } from "./builders.ts";
 import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, scheduleForm } from "./desks.ts";
@@ -176,5 +183,94 @@ describe("B13 review: mail read in a browser is a conversation", () => {
     expect(conversationSign(doc)).toBeNull();
     expect(windowBudget(doc)).toBe(WINDOW_CHARS);
     expect(conversationSign(page("Re: design review", MAIL, NOTES))).toBeNull();
+  });
+});
+
+describe("B13 review: a field that changes meaning while Jev answers", () => {
+  const EMAIL = "dev.caret.fixture/standard/textfield:email~0";
+  const VALUES: Record<string, string> = { Name: "Dana Whitfield", Email: "dana.whitfield@example.com" };
+
+  it("F9: drops a field whose descriptor changed while Jev answered", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caret-b13-"));
+    const store = new Store(dir);
+    let release = (): void => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let asked = 0;
+    const answer = fallthrough({ Name: [VALUES.Name as string], Email: [VALUES.Email as string] });
+    const askJev: AskJev = async (req) => {
+      asked++;
+      await gate;
+      return answer(req);
+    };
+    const published: HelperMessage[] = [];
+    const okReader = { run: async (v: ReaderVerb): Promise<VerbResult> => ({ type: "verbResult", v: PROTOCOL_VERSION, id: v.kind, at: 0, outcome: "ok", detail: null }) };
+    const helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: true, readerLink: okReader, publish: (m) => published.push(m) });
+    try {
+      const rec = loadRecording("offers-fill.ndjson");
+      // The focus's fill waits on the gate, so the replay is not awaited until Jev is let answer.
+      const replayed = (async () => {
+        for (const m of rec) {
+          await helper.handleReader(m);
+          if ("at" in m) helper.tick(m.at);
+        }
+      })();
+      for (let i = 0; i < 100 && asked < 2; i++) await new Promise((r) => setTimeout(r, 5));
+      expect(asked).toBe(2);
+      // The app reuses the Email field's key for a Work phone field while Jev answers.
+      const form = rec.find((m): m is Snapshot => m.type === "snapshot" && m.window.windowId === "5150-2") as Snapshot;
+      const relabelled: ReaderMessage = { ...form, at: 3200, nodes: form.nodes.map((n) => (n.key === EMAIL ? { ...n, label: "Work phone" } : n)) };
+      await helper.handleReader(relabelled);
+      release();
+      await replayed;
+      await new Promise((r) => setTimeout(r, 20));
+      const p = published.find((m): m is FillProposal => m.type === "fillProposal");
+      expect(p).toBeDefined();
+      expect(p?.fields.map((f) => f.key)).not.toContain(EMAIL);
+      expect(p?.fields.find((f) => f.value === VALUES.Name)).toBeDefined();
+    } finally {
+      helper.shutdown();
+      helper.memory.close();
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("F9: recheckFill refuses a proposal whose field reads differently now", () => {
+    const m = new ScreenModel();
+    const rec = loadRecording("offers-fill.ndjson");
+    for (const msg of rec) if (msg.type === "snapshot") m.apply(msg);
+    const form = rec.find((x): x is Snapshot => x.type === "snapshot" && x.window.windowId === "5150-2") as Snapshot;
+    const src = rec.find((x): x is Snapshot => x.type === "snapshot" && x.window.windowId === "6160-1") as Snapshot;
+    const emailNode = src.values.find((v) => v.kind === "email");
+    expect(emailNode).toBeDefined();
+    const p = {
+      type: "fillProposal",
+      v: PROTOCOL_VERSION,
+      id: "p1",
+      at: 3100,
+      pid: form.app.pid,
+      windowId: "5150-2",
+      bundleId: form.app.bundleId,
+      triggerKey: EMAIL,
+      fields: [
+        {
+          key: EMAIL,
+          frame: null,
+          descriptor: "Text field. Label: 'Email'.",
+          choice: "c1",
+          confidence: 0.9,
+          value: emailNode!.text,
+          source: { pid: src.app.pid, windowId: "6160-1", bundleId: src.app.bundleId, appName: src.app.name, windowTitle: src.window.title, nodeKey: emailNode!.nodeKey, kind: "email" },
+          withheld: null,
+          asks: [],
+        },
+      ],
+      candidates: 1,
+      jev: { model: "t", latencyMs: 0, inputTokens: 0, costUsd: 0 },
+      cutoff: 0.75,
+    } as unknown as GroundedProposal;
+    expect(recheckFill(m, p)).toBeNull();
+    m.apply({ ...form, at: 3200, nodes: form.nodes.map((n) => (n.key === EMAIL ? { ...n, label: "Work phone" } : n)) });
+    expect(recheckFill(m, p)).toBe(`the field ${EMAIL} now reads differently`);
   });
 });

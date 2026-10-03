@@ -8,6 +8,7 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { Desk, PEOPLE, grid, roster } from "./scene.ts";
 import { ScreenModel } from "../src/model.ts";
+import { describeField } from "../src/fill/descriptor.ts";
 import { HelperMessage, PROTOCOL_VERSION, type FillField, type FillProposal, type OfferAccept, type OfferAction, type OfferPopup } from "../src/protocol.ts";
 import { parsePopupSpec } from "../src/popup.ts";
 import { HostOfferRegistry, acceptRefusal } from "../src/offers/registry.ts";
@@ -265,8 +266,10 @@ describe("fill pop-up", () => {
   });
 
   it("rechecks every destination and source before it fills", () => {
-    const p = proposal([nameField, phoneField]) as GroundedProposal;
     const m = desk();
+    // Each field as fill describes it, which recheckFill compares with the form as it is now.
+    const form = m.windows.get(FORM)!;
+    const p = proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))) as GroundedProposal;
     expect(recheckFill(m, p)).toBeNull();
     m.apply(snap([text(MK("statictext:dana whitfield~0"), "Dana W.")], { at: 4000, windowId: SRC, title: "Order confirmation", app: MAIL_APP, root: MK("statictext:dana whitfield~0") }));
     expect(recheckFill(m, p)).toBe(`the source ${MK("statictext:dana whitfield~0")} changed`);

@@ -79,9 +79,9 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
 }
 
 /**
- * Why the fill can no longer be done as shown, or null. Every destination must still be there, editable
- * and empty, and every source must still show the value: a fill value is a span, so the source node's
- * text must contain it, or one of its typed values must be it.
+ * Why the fill can no longer be done as shown, or null. Every destination must still be there, editable,
+ * empty and described as it was when Jev was asked, and every source must still show the value: a fill
+ * value is a span, so the source node's text must contain it, or one of its typed values must be it.
  */
 export function recheckFill(model: ScreenModel, p: GroundedProposal): string | null {
   const w = model.windows.get(p.windowId);
@@ -90,6 +90,7 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal): string | n
     const node = w.nodes.get(f.key);
     if (node === undefined) return `the field ${f.key} is gone`;
     if (node.editable !== true || (node.value ?? "") !== "") return `the field ${f.key} is no longer empty`;
+    if (describeField(w, node).text !== f.descriptor) return `the field ${f.key} now reads differently`;
     const sw = model.windows.get(f.source.windowId);
     const src = sw?.nodes.get(f.source.nodeKey);
     if (sw === undefined || src === undefined) return `the source ${f.source.nodeKey} is gone`;
