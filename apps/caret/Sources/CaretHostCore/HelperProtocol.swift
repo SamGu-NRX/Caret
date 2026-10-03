@@ -19,6 +19,9 @@ public enum HelperInbound: Equatable, Sendable {
     case popup(OfferPopup)
     case offerWithdrawn(OfferWithdrawn)
     case taskProgress(TaskProgress)
+    /// The answer to this host's `firstLook` (`FirstLook.swift`), the host's own contract until
+    /// the helper's schema has it.
+    case firstLookReply(FirstLookReply)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -37,6 +40,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .popup: return OfferPopup.type
         case .offerWithdrawn: return OfferWithdrawn.type
         case .taskProgress: return TaskProgress.type
+        case .firstLookReply: return FirstLookReply.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -66,8 +70,10 @@ public enum HelperInbound: Equatable, Sendable {
             // Validated, so a malformed line is still counted as undecodable.
             _ = try JSONDecoder().decode(Message.self, from: line)
             return .notForConsumer(type: envelope.type)
-        case FillResult.type:
+        case FillResult.type, FirstLookRequest.type:
             return .notForConsumer(type: envelope.type)
+        case FirstLookReply.type:
+            return .firstLookReply(try FirstLookReply.decode(line))
         default:
             return .unknown(type: envelope.type)
         }

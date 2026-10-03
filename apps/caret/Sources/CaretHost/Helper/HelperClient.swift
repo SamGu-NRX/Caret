@@ -94,6 +94,13 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? NDJSON.line(request))
     }
 
+    /// `firstLook`; the reply comes back to this connection only. False when the helper is not
+    /// connected, which the first look reports as an error rather than waiting out its deadline.
+    @discardableResult
+    func send(_ request: FirstLookRequest) -> Bool {
+        sendLine(try? request.line())
+    }
+
     @discardableResult
     private func sendLine(_ line: Data?) -> Bool {
         guard let line else { return false }
@@ -197,6 +204,7 @@ final class HelperClient: @unchecked Sendable {
             case .alternatives, .action, .popup: s.offers &+= 1
             case .offerWithdrawn: s.withdrawals &+= 1
             case .taskProgress: s.progress &+= 1
+            case .firstLookReply: s.firstLookReplies &+= 1
             case .error(let e):
                 s.errors &+= 1
                 // The helper answers a message it cannot parse with this error; until its schema

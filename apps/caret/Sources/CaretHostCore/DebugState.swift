@@ -162,6 +162,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var offers: UInt64 = 0
         public var withdrawals: UInt64 = 0
         public var progress: UInt64 = 0
+        /// `firstLookReply` messages received.
+        public var firstLookReplies: UInt64 = 0
         /// Lines written as `offerAccept` and `offerStop`, counted again in `resultsSent`.
         public var accepts: UInt64 = 0
         public var stops: UInt64 = 0

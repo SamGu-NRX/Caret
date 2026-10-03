@@ -32,6 +32,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .popup: return "popup"
             case .offerWithdrawn: return "offerWithdrawn"
             case .taskProgress: return "taskProgress"
+            case .firstLookReply: return "firstLookReply"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
