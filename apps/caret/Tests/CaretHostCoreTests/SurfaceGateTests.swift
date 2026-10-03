@@ -62,6 +62,39 @@ final class SurfaceGateTests: XCTestCase {
                                          windows: [panel, SurfaceGate.Window(pid: form, bounds: formWindow)], ownPID: caret, displays: [main, side]), .covered)
     }
 
+    /// Measured on 2026-10-03 (A12 desktop run): Grammarly Desktop's window at layer 1 over
+    /// TextEdit's focused text area, the area grown by 64 pt on every side.
+    func testAWritingAidsWindowDrawnAroundTheFieldIsIgnored() {
+        let field = CGRect(x: 309, y: 203, width: 586, height: 382)
+        let point = CGPoint(x: field.midX, y: field.midY)
+        let windows = [
+            SurfaceGate.Window(pid: 1487, bounds: CGRect(x: 245, y: 139, width: 714, height: 510), layer: 1),
+            SurfaceGate.Window(pid: form, bounds: CGRect(x: 309, y: 103, width: 603, height: 505)),
+        ]
+        XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [point], windows: windows, ownPID: caret, field: field), nil)
+        XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [point], windows: windows, ownPID: caret), .covered,
+                       "without the field's frame the gate cannot tell, and holds")
+    }
+
+    func testOnlyAnEvenRingAroundTheFieldCounts() {
+        let field = CGRect(x: 309, y: 203, width: 586, height: 382)
+        XCTAssertTrue(SurfaceGate.ringsField(field.insetBy(dx: -64, dy: -64), field))
+        XCTAssertTrue(SurfaceGate.ringsField(field, field), "a window exactly over the field")
+        XCTAssertTrue(SurfaceGate.ringsField(field.insetBy(dx: -96, dy: -96), field))
+        XCTAssertFalse(SurfaceGate.ringsField(field.insetBy(dx: -97, dy: -97), field), "past the largest margin")
+        XCTAssertFalse(SurfaceGate.ringsField(CGRect(x: 245, y: 139, width: 714, height: 300), field), "a palette over part of the field")
+        XCTAssertFalse(SurfaceGate.ringsField(CGRect(x: 300, y: 150, width: 700, height: 500), field), "uneven margins: not drawn around it")
+        XCTAssertFalse(SurfaceGate.ringsField(field.insetBy(dx: 10, dy: 10), field), "inside the field")
+    }
+
+    func testANormalLayerWindowRingingTheFieldStillCovers() {
+        // Only elevated windows can be decorations; a document window that happens to sit evenly
+        // around the field is another app's window over it.
+        let field = CGRect(x: 600, y: 140, width: 200, height: 40)
+        let windows = [SurfaceGate.Window(pid: messages, bounds: field.insetBy(dx: -20, dy: -20)), SurfaceGate.Window(pid: form, bounds: formWindow)]
+        XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [CGPoint(x: 700, y: 160)], windows: windows, ownPID: caret, field: field), .covered)
+    }
+
     func testAnAnchorOffEveryWindowIsHeld() {
         XCTAssertEqual(check(front: form, windows: [SurfaceGate.Window(pid: form, bounds: CGRect(x: 0, y: 0, width: 10, height: 10))]), .notOnScreen)
     }

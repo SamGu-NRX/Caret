@@ -201,6 +201,42 @@ async function until<T>(what: string, ok: () => T | null | undefined | false | P
   }
 }
 
+/** On-screen windows over a point, front to back, as the host's gate reads them: owner, pid, layer,
+ * alpha and bounds only (no pixels, no titles). Through JavaScript for Automation's CoreGraphics
+ * bridge, which sends no Apple Event to any app. */
+async function windowsAt(x: number, y: number): Promise<unknown> {
+  const script = `ObjC.import("CoreGraphics"); ObjC.import("Foundation");
+var l = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0)); var o = [];
+for (var i = 0; i < l.count; i++) { var w = l.objectAtIndex(i); var b = w.objectForKey("kCGWindowBounds");
+  var X = b.objectForKey("X").doubleValue, Y = b.objectForKey("Y").doubleValue, W = b.objectForKey("Width").doubleValue, H = b.objectForKey("Height").doubleValue;
+  if (X <= ${x} && ${x} <= X + W && Y <= ${y} && ${y} <= Y + H) o.push({ owner: ObjC.unwrap(w.objectForKey("kCGWindowOwnerName")), pid: w.objectForKey("kCGWindowOwnerPID").intValue,
+    layer: w.objectForKey("kCGWindowLayer").intValue, alpha: w.objectForKey("kCGWindowAlpha").doubleValue, bounds: [X, Y, W, H] }); }
+JSON.stringify(o);`;
+  try {
+    return JSON.parse((await run("/usr/bin/osascript", ["-l", "JavaScript", "-e", script])).stdout) as unknown;
+  } catch (e) {
+    return String(e);
+  }
+}
+
+/** The pid of LaunchServices' front application, the one that receives keys. */
+async function frontPid(): Promise<number | null> {
+  const asn = (await run("/usr/bin/lsappinfo", ["front"])).stdout.trim();
+  if (asn === "") return null;
+  const m = /=\s*(\d+)/.exec((await run("/usr/bin/lsappinfo", ["info", "-only", "pid", asn])).stdout);
+  return m?.[1] === undefined ? null : Number(m[1]);
+}
+
+/** Brings the target forward when it is not (or always, with `force`), and waits up to 3 s for
+ * LaunchServices to agree. */
+async function ensureFront(t: Target, force = false): Promise<void> {
+  if (!force && (await frontPid()) === t.pid) return;
+  await t.front();
+  await until("the target to be the front app", async () => ((await frontPid()) === t.pid ? true : null), 3000).catch(async () => {
+    throw new Deferred(`deferred: foreground (front app is pid ${await frontPid()}, not ${t.pid})`);
+  });
+}
+
 /** One real key at the HID level, refused by fixture-keys unless `pid` owns the front app and the focus. */
 async function key(pid: number, name: "tab" | "escape" | "cmd-z"): Promise<void> {
   checkDeferred();
@@ -308,6 +344,8 @@ interface Target {
   reset(): Promise<void>;
   /** Puts focus in the first field, as the user would be there. */
   focus(): Promise<void>;
+  /** Brings this script's own app to the front the normal way (never an AX frontmost write). */
+  front(): Promise<void>;
   read(): Promise<Record<string, string>>;
   plan(r: number, steps: 1 | 3): { plan: Plan; slots: Record<string, string>; want: Record<string, string>; afterFirst: Record<string, string> };
   stop(): Promise<void>;
@@ -344,6 +382,19 @@ async function texteditTarget(): Promise<Target> {
     },
     // A new document's text view has the focus from launch.
     focus: async () => undefined,
+    // LaunchServices activation by bundle id, only while the one TextEdit running is this script's,
+    // so it can never bring the user's own TextEdit forward.
+    front: async () => {
+      const { stdout } = await run("/usr/bin/pgrep", ["-x", "TextEdit"]).catch(() => ({ stdout: "" }));
+      const pids = stdout.split("\n").filter((l) => l.trim() !== "").map(Number);
+      if (pids.length !== 1 || pids[0] !== pid) throw new Deferred(`deferred: foreground (TextEdit processes ${JSON.stringify(pids)}, this script's is ${pid})`);
+      await run("/usr/bin/open", ["-b", "com.apple.TextEdit"]);
+      // Activation alone left the document window behind other apps' windows when TextEdit was
+      // launched from the background (the host then held every offer as covered, A12 desktop run 1).
+      // TextEdit's own Window menu raises it.
+      const raised = await probe("menu", "Window", "Bring All to Front");
+      if (raised.ok !== true) throw new Error(`Bring All to Front: ${JSON.stringify(raised)}`);
+    },
     read: async () => {
       const r = await probe("text", TITLE);
       if (r.ok !== true) throw new Error(`probe text: ${JSON.stringify(r)}`);
@@ -446,6 +497,13 @@ async function chromeTarget(): Promise<Target> {
     first: "name",
     reset: async () => void (await js("caretReset()")),
     focus: async () => void (await js("(document.getElementById('name').focus(), true)")),
+    // DevTools on this script's own profile: Chrome raises its window and activates itself.
+    front: async () => {
+      const { targetInfos } = (await cdp.send("Target.getTargets")) as { targetInfos: { targetId: string; type: string; url: string }[] };
+      const page = targetInfos.find((x) => x.type === "page" && x.url.startsWith("file:"));
+      if (page === undefined) throw new Error("no page with the form");
+      await cdp.send("Target.activateTarget", { targetId: page.targetId });
+    },
     read: async () => {
       const s = (await js("caretState()")) as { fields: Record<string, string> };
       return { name: s.fields.name ?? "", email: s.fields.email ?? "", notes: s.fields.notes ?? "" };
@@ -532,6 +590,8 @@ try {
   };
   await until("the focused field in the screen model", () => focused(), 30_000);
   // The target must own the front app and the focus before any key; fixture-keys checks without posting.
+  await ensureFront(t, true);
+  await t.focus();
   try {
     await run(KEYS, [String(t.pid), "check"]);
   } catch (e) {
@@ -547,6 +607,7 @@ try {
     rows.push(row);
     const t0 = Date.now();
     try {
+      await ensureFront(t);
       await t.reset();
       await t.focus();
       await sleep(400);
@@ -569,7 +630,12 @@ try {
       helper.offers.record(msg, () => helper.executor.run(offerKey, plan, {}, undefined, { grant: true }));
       const injected = await hostCommand(`inject ${JSON.stringify({ kind: "helperLine", line: msg })}`);
       if (injected.ok !== true) throw new Error(`inject: ${JSON.stringify(injected)}`);
-      await until("the action line on the host", async () => ((await surface()).offerKey === offerKey ? true : null), 8000);
+      await until("the action line on the host", async () => ((await surface()).offerKey === offerKey ? true : null), 8000).catch(async (e: unknown) => {
+        // What the host saw instead: its focus, surface and counters, beside the field the offer named.
+        const fr = msg.field.frame ?? [0, 0, 0, 0];
+        writeFileSync(join(OUT, `diag-${kind}-${r}.json`), JSON.stringify({ field: msg.field, windowsAtField: await windowsAt(fr[0] + fr[2] / 2, fr[1] + fr[3] / 2), host: await hostCommand("state").catch(String) }, null, 1) + "\n");
+        throw e;
+      });
       row.shown = true;
       if (r === 0) await shot(`${kind}-offer`);
       await key(t.pid, "tab");

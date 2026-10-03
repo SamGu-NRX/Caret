@@ -91,6 +91,8 @@ public final class SurfaceMachine {
         let target: TargetIdentity
         let anchors: [CGPoint]
         let requireFocus: Bool
+        /// The field's frame, so a window drawn around it is not taken for a cover (`SurfaceGate.ringsField`).
+        let field: CGRect?
         let timer: SurfaceTimer
     }
 
@@ -292,7 +294,7 @@ public final class SurfaceMachine {
         case .at(let rect): caret = rect
         }
         let anchors = [CGPoint(x: caret.midX, y: caret.midY)]
-        if let held = gate(field.identity, anchors: anchors, requireFocus: true) { return hold(incoming, held) }
+        if let held = gate(field.identity, anchors: anchors, requireFocus: true, field: field.frame) { return hold(incoming, held) }
         let candidates = incoming.candidates
         if !candidates.isEmpty, let frame = field.frame {
             // Ghost text stays inside the field, clear of the app's own text: the widest candidate
@@ -309,7 +311,7 @@ public final class SurfaceMachine {
         }
         guard let offer = incoming.offer(for: field, createdAt: clock.now) else { return #"{"error":"nothing to show"}"# }
         if let reply = replaceInPlace(incoming, with: offer, caret: caret, field: field.frame ?? caret, readID: field.readID) {
-            startWatch(.offer(shown!.offerID), target: field.identity, anchors: anchors, requireFocus: true)
+            startWatch(.offer(shown!.offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
             return reply
         }
         let swapping = incoming.helperKey != nil && swap?.newKey == incoming.helperKey
@@ -329,7 +331,7 @@ public final class SurfaceMachine {
         // A reoffered line's replacement is drawn over it where it stands, without an exit and entry.
         draw(ui: arbiter.snapshot().ui, entering: !swapping)
         if swapping { count("surface.reoffer.swapped") }
-        startWatch(.offer(offerID), target: field.identity, anchors: anchors, requireFocus: true)
+        startWatch(.offer(offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
         count("surface.shown.\(offer.source.rawValue).\(offer.kind.name)")
         return #"{"ok":true,"offerId":\#(offerID)}"#
     }
@@ -435,7 +437,7 @@ public final class SurfaceMachine {
     /// Nil when a surface for `target` may be drawn at `anchors`; otherwise why not.
     /// `requireFocus: false` is for a line that reports on work, not on a field: the form may have
     /// moved focus on, but the app must be in front and the anchor uncovered.
-    func gate(_ target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) -> SurfaceGate.Hold? {
+    func gate(_ target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool, field: CGRect?) -> SurfaceGate.Hold? {
         let front = world.frontmostPID
         // Cheapest test first: no Accessibility read for an app that is not in front.
         guard front == target.pid else { return .appNotFront }
@@ -447,16 +449,16 @@ public final class SurfaceMachine {
         let stack = world.windowStack()
         return SurfaceGate.check(
             targetPID: target.pid, frontmostPID: front, fieldIsFocused: focused, anchors: anchors,
-            windows: stack.windows, ownPID: stack.ownPID, displays: stack.displays
+            windows: stack.windows, ownPID: stack.ownPID, displays: stack.displays, field: field
         )
     }
 
     /// Rechecks what is shown every half second, and on `recheckVisibility` (another app
     /// activated), and acts once when the gate closes.
-    func startWatch(_ watched: Watched, target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) {
+    func startWatch(_ watched: Watched, target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool, field: CGRect?) {
         stopWatch()
         let timer = clock.schedule(after: Self.recheckInterval, repeats: true) { [weak self] in self?.recheckVisibility() }
-        watch = Watch(watched: watched, target: target, anchors: anchors, requireFocus: requireFocus, timer: timer)
+        watch = Watch(watched: watched, target: target, anchors: anchors, requireFocus: requireFocus, field: field, timer: timer)
     }
 
     func stopWatch() {
@@ -466,7 +468,7 @@ public final class SurfaceMachine {
 
     /// Rechecks the watched surface now. The app calls this when another app activates.
     public func recheckVisibility() {
-        guard let watch, let hold = gate(watch.target, anchors: watch.anchors, requireFocus: watch.requireFocus) else { return }
+        guard let watch, let hold = gate(watch.target, anchors: watch.anchors, requireFocus: watch.requireFocus, field: watch.field) else { return }
         stopWatch()
         switch watch.watched {
         case .offer(let offerID):
@@ -667,7 +669,7 @@ public final class SurfaceMachine {
         guard !headless else { return unsent ? failUnsent() : publish() }
         // The working line and its result follow the same rule as the offer: the app in front and
         // the line's anchor uncovered. Focus may move; the line reports on work, not on a field.
-        startWatch(.line, target: claim.offer.target, anchors: [CGPoint(x: shown.caret.midX, y: shown.caret.midY)], requireFocus: false)
+        startWatch(.line, target: claim.offer.target, anchors: [CGPoint(x: shown.caret.midX, y: shown.caret.midY)], requireFocus: false, field: shown.field)
         if unsent { return failUnsent() }
         publish()
     }

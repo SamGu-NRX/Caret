@@ -51,13 +51,33 @@ public enum SurfaceGate {
     /// narrower one tried after review (containing every display). So any elevated window that
     /// contains a whole display is skipped. Nothing here proves it transparent: an opaque one is
     /// assumed rare, and one covering only part of a display still counts.
-    public static func topPID(at point: CGPoint, windows: [Window], ownPID: Int32, displays: [CGRect] = []) -> Int32? {
+    ///
+    /// So is an elevated window drawn around the target field itself (`ringsField`): writing aids
+    /// decorate the focused field from a window of their own. Measured on 2026-10-03: Grammarly
+    /// Desktop keeps one at layer 1, alpha 1, at TextEdit's focused text area grown by exactly 64 pt
+    /// on every side (field [309, 203, 586, 382], window [245, 139, 714, 510]), and A12's desktop
+    /// runs held every TextEdit offer as `covered` under it.
+    public static func topPID(at point: CGPoint, windows: [Window], ownPID: Int32, displays: [CGRect] = [], field: CGRect? = nil) -> Int32? {
         for window in windows {
             guard window.pid != ownPID, window.alpha > 0.01, window.bounds.contains(point) else { continue }
             if window.layer > 0, displays.contains(where: { window.bounds.contains($0) }) { continue }
+            if window.layer > 0, let field, ringsField(window.bounds, field) { continue }
             return window.pid
         }
         return nil
+    }
+
+    /// The largest even margin, in points, a window drawn around a field may have and still count
+    /// as the field's decoration. Assumed: Grammarly's measured 64, with room for a larger one.
+    public static let ringMargin: CGFloat = 96
+
+    /// True when `bounds` is `field` grown by one margin, the same on all four sides (within 1 pt)
+    /// and no larger than `ringMargin`. A palette or popover that happens to lie over the field is
+    /// not centered on it this way, so it still covers.
+    public static func ringsField(_ bounds: CGRect, _ field: CGRect) -> Bool {
+        let margins = [field.minX - bounds.minX, field.minY - bounds.minY, bounds.maxX - field.maxX, bounds.maxY - field.maxY]
+        guard let low = margins.min(), let high = margins.max() else { return false }
+        return low >= 0 && high <= ringMargin && high - low <= 1
     }
 
     /// Nil when the surface may be drawn; otherwise why it is held.
@@ -68,12 +88,13 @@ public enum SurfaceGate {
         anchors: [CGPoint],
         windows: [Window],
         ownPID: Int32,
-        displays: [CGRect] = []
+        displays: [CGRect] = [],
+        field: CGRect? = nil
     ) -> Hold? {
         guard frontmostPID == targetPID else { return .appNotFront }
         guard fieldIsFocused else { return .fieldNotFocused }
         for anchor in anchors {
-            guard let top = topPID(at: anchor, windows: windows, ownPID: ownPID, displays: displays) else { return .notOnScreen }
+            guard let top = topPID(at: anchor, windows: windows, ownPID: ownPID, displays: displays, field: field) else { return .notOnScreen }
             if top != targetPID { return .covered }
         }
         return nil

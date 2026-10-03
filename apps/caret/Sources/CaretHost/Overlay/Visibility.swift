@@ -14,14 +14,18 @@ enum Visibility {
         // Cheapest test first: no Accessibility read for an app that is not in front.
         guard front == target.pid else { return .appNotFront }
         var focused = true
+        // The focused field's frame, so a writing aid's window drawn around it is not a cover
+        // (`SurfaceGate.ringsField`). Read only for the field the surface is for.
+        var fieldFrame: CGRect?
         if requireFocus {
-            let live = FieldReader.readFocused(pid: target.pid)?.field.identity
-            focused = live?.elementID == target.elementID && live?.windowID == target.windowID
+            let live = FieldReader.readFocused(pid: target.pid)
+            focused = live?.field.identity.elementID == target.elementID && live?.field.identity.windowID == target.windowID
+            if focused, let element = live?.element { fieldFrame = AXRead.frame(of: element) }
         }
         return SurfaceGate.check(
             targetPID: target.pid, frontmostPID: front, fieldIsFocused: focused, anchors: anchors,
             windows: windows(), ownPID: ProcessInfo.processInfo.processIdentifier,
-            displays: NSScreen.screens.map { Screen.ax($0.frame) }
+            displays: NSScreen.screens.map { Screen.ax($0.frame) }, field: fieldFrame
         )
     }
 
