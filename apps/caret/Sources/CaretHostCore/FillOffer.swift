@@ -87,8 +87,13 @@ public enum FillSelection {
     public enum Skip: String, Equatable, Sendable {
         /// No proposed field sits where the focused element is.
         case noFieldAtFocus
-        /// The field matched, and the agreed answer is "none" or was withheld.
+        /// The field matched, and the agreed answer is "none".
         case answerNone
+        /// The field matched, and the helper withheld it (`FillField.withheld`): the asks disagreed,
+        /// agreed below the cutoff, or a privacy cut took a value of its kind (`sourceCut`, which
+        /// may come with no asks at all). A withheld field shows no ghost value, whatever `value`
+        /// holds, because a cut source can leave a plausible decoy (B12).
+        case withheld
         /// The focused field already holds text; a fill never writes over a value.
         case fieldNotEmpty
         /// The focused element is secure, or its frame is unknown.
@@ -118,6 +123,7 @@ public enum FillSelection {
             return .skip(.noFieldAtFocus)
         }
         guard focusedValue.isEmpty else { return .skip(.fieldNotEmpty) }
+        guard field.withheld == nil else { return .skip(.withheld) }
         guard field.choice != "none", let value = field.value, !value.isEmpty, let source = field.source else {
             return .skip(.answerNone)
         }

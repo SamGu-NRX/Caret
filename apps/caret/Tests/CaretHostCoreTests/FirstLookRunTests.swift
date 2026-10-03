@@ -67,6 +67,53 @@ final class FirstLookRunTests: XCTestCase {
         XCTAssertEqual(rig.clock.live, 0, "no timer left once it is done")
     }
 
+    // MARK: - Withdrawn before it is taken
+
+    private func withdrawn(_ key: String, _ reason: OfferWithdrawn.Reason) -> OnboardingFlow.Event {
+        .offerWithdrawn(OfferWithdrawn(at: 2, id: key, reason: reason, replacedBy: reason == .reoffered ? "\(key).r" : nil))
+    }
+
+    func testASettingsWithdrawalOfTheFoundOfferLooksAgain() throws {
+        for reason in [OfferWithdrawn.Reason.settings, .reoffered] {
+            let rig = shown(try found())
+            rig.send(withdrawn("first-look-1.0", reason))
+            guard case .asking(let id) = rig.flow.state.firstLook else { return XCTFail("\(reason): \(rig.flow.state.firstLook)") }
+            XCTAssertEqual(rig.request?.requestId, id, "\(reason): a new request goes out")
+            XCTAssertEqual(rig.flow.state.firstLookKeys, .none, "\(reason): Tab takes nothing while it looks")
+        }
+    }
+
+    func testAPausedCaretLooksAgainForNothing() throws {
+        let rig = shown(try found())
+        var paused = CaretSettings()
+        paused.paused = true
+        rig.send(.settingsChanged(paused), withdrawn("first-look-1.0", .settings))
+        XCTAssertEqual(rig.flow.state.firstLook, .nothing, "paused asks for no family")
+        XCTAssertNil(rig.request, "and sends no request")
+    }
+
+    func testAnyOtherWithdrawalLeavesNothingToTake() throws {
+        for reason in [OfferWithdrawn.Reason.taken, .dismissed, .diverged, .idle, .stale, .expired] {
+            let rig = shown(try found())
+            rig.send(withdrawn("first-look-1.0", reason))
+            XCTAssertEqual(rig.flow.state.firstLook, .nothing, "\(reason)")
+            rig.send(.key(.tab))
+            XCTAssertEqual(rig.take(), [], "\(reason): Tab never names a withdrawn key")
+        }
+    }
+
+    func testAWithdrawalOfAnotherOfferOrAfterTabChangesNothing() throws {
+        let rig = shown(try found())
+        rig.send(withdrawn("pop-1", .settings))
+        XCTAssertEqual(rig.flow.state.firstLookFound?.offerKey, "first-look-1.0")
+        XCTAssertEqual(rig.take(), [])
+        rig.send(.key(.tab))
+        rig.take()
+        rig.send(withdrawn("first-look-1.0", .taken))
+        XCTAssertEqual(rig.flow.state.firstLookRun?.phase, .working, "the run's own progress ends it")
+        XCTAssertEqual(rig.take(), [])
+    }
+
     func testCommandDigitTakesTheActionBoundToIt() throws {
         let rig = shown(try found())
         rig.send(.key(.commandDigit(3)))

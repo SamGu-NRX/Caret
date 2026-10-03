@@ -74,6 +74,42 @@ final class HelperProtocolGoldenTests: XCTestCase {
         XCTAssertEqual(try HelperInbound.decode(lines[33]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_131_000, id: "fill-2", reason: .settings)), "line 34")
     }
 
+    /// B10's settings message, from the host's own settings: golden lines 32 and 33.
+    func testTheHostsSettingsEncodeToTheGoldenLines() throws {
+        let lines = try goldenLines()
+        func object(_ data: Data) throws -> NSDictionary { try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary) }
+        let defaults = GateSettings(CaretSettings(), at: 1_790_000_130_000)
+        XCTAssertEqual(try object(NDJSON.line(defaults)), try object(lines[31]), "line 32")
+        var quiet = CaretSettings()
+        quiet.roles = [.watch]
+        quiet.level = .quiet
+        quiet.paused = true
+        quiet.character = .wren
+        quiet.onboarded = true
+        let paused = GateSettings(quiet, at: 1_790_000_131_000)
+        XCTAssertEqual(try object(NDJSON.line(paused)), try object(lines[32]), "line 33: the character and onboarding stay on the host")
+        guard case .settings(let decoded) = try JSONDecoder().decode(Message.self, from: lines[32]) else { return XCTFail("line 33") }
+        XCTAssertEqual(decoded, paused)
+        XCTAssertEqual(try HelperInbound.decode(lines[31]), .notForConsumer(type: "settings"), "the host's own message echoed is not for it")
+    }
+
+    func testOnlyTheRolesLevelAndPauseMakeASettingsChange() {
+        var s = CaretSettings()
+        let base = GateSettings(s, at: 1)
+        XCTAssertTrue(base.sameGate(as: GateSettings(s, at: 2)), "a new stamp alone")
+        s.character = .seed
+        s.onboarded = true
+        XCTAssertTrue(base.sameGate(as: GateSettings(s, at: 3)), "the character and onboarding are the host's")
+        for change in [{ (x: inout CaretSettings) in x.roles.remove(.fill) }, { $0.level = .eager }, { $0.paused = true }] {
+            var t = CaretSettings()
+            change(&t)
+            XCTAssertFalse(base.sameGate(as: GateSettings(t, at: 4)))
+        }
+        var roles = CaretSettings()
+        roles.roles = [.words, .fill]
+        XCTAssertEqual(GateSettings(roles, at: 1).roles, [.fill, .words], "roles go in CaretRole order")
+    }
+
     func testTheHostsPauseEncodesItsReason() throws {
         let data = try NDJSON.encoder().encode(InputPause.controls(for: ["run-7"])[0])
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -318,10 +354,40 @@ final class FillSelectionTests: XCTestCase {
     func testANoneAnswerShowsNoOffer() throws {
         var p = try goldenProposal()
         p.fields[1].frame = Frame(x: 150, y: 160, width: 300, height: 24)
-        XCTAssertEqual(
-            FillSelection.select(p, focusedFrame: Frame(x: 150, y: 160, width: 300, height: 24), focusedValue: "", secure: false),
-            .skip(.answerNone)
-        )
+        let focused = Frame(x: 150, y: 160, width: 300, height: 24)
+        // The golden Promo code is "none" because its asks disagreed: the withholding names the skip.
+        XCTAssertEqual(FillSelection.select(p, focusedFrame: focused, focusedValue: "", secure: false), .skip(.withheld))
+        p.fields[1].withheld = nil
+        XCTAssertEqual(FillSelection.select(p, focusedFrame: focused, focusedValue: "", secure: false), .skip(.answerNone))
+    }
+
+    /// B12: a field withheld as sourceCut comes with no asks, and may still carry the pick a
+    /// partial set produced. Neither is ghosted; nor is any other withheld field.
+    func testAWithheldFieldShowsNoGhostValue() throws {
+        let frame = #"[150,120,300,24]"#
+        func line(_ withheld: String, value: String, asks: String) -> Data {
+            Data(#"{"type":"fillProposal","v":1,"id":"fill-9","at":1790000000500,"pid":5150,"windowId":"5150-1","bundleId":"dev.caret.fixture","triggerKey":"k:email","candidates":2,"cutoff":0.75,"jev":{"model":"m","latencyMs":1,"inputTokens":1,"costUsd":0},"fields":[{"key":"k:email","frame":\#(frame),"descriptor":"Email","choice":"c1","confidence":0.9,"value":\#(value),"source":{"pid":5150,"windowId":"5150-2","bundleId":"dev.caret.fixture","appName":"Caret Fixture","windowTitle":"Reference","nodeKey":"n","kind":"email"},"withheld":\#(withheld),"asks":\#(asks)}]}"#.utf8)
+        }
+        let ask = #"{"choice":"c1","confidence":0.9,"value":"dana@example.com"}"#
+        let cases: [(String, Data)] = [
+            ("sourceCut, no asks, a value left in", line(#""sourceCut""#, value: #""dana@example.com""#, asks: "[]")),
+            ("sourceCut, no asks, no value", line(#""sourceCut""#, value: "null", asks: "[]")),
+            ("disagree", line(#""disagree""#, value: #""dana@example.com""#, asks: "[\(ask),\(ask)]")),
+            ("lowConfidence", line(#""lowConfidence""#, value: #""dana@example.com""#, asks: "[\(ask),\(ask)]")),
+        ]
+        for (name, data) in cases {
+            guard case .fillProposal(let p) = try HelperInbound.decode(data) else { return XCTFail(name) }
+            XCTAssertNotNil(p.fields[0].withheld, name)
+            XCTAssertEqual(FillSelection.select(p, focusedFrame: emailFrame, focusedValue: "", secure: false), .skip(.withheld), name)
+        }
+        guard case .fillProposal(let cut) = try HelperInbound.decode(cases[0].1) else { return XCTFail() }
+        XCTAssertEqual(cut.fields[0].withheld, .sourceCut)
+        XCTAssertEqual(cut.fields[0].asks, [], "a field that was not asked has no asks")
+        var asked = cut
+        asked.fields[0].withheld = nil
+        guard case .offer = FillSelection.select(asked, focusedFrame: emailFrame, focusedValue: "", secure: false) else {
+            return XCTFail("the same field, not withheld, is offered: the skip is the withholding's")
+        }
     }
 
     func testAFieldThatAlreadyHasTextIsNeverFilled() throws {

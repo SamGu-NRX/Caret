@@ -73,4 +73,19 @@ final class FirstLookTests: XCTestCase {
         XCTAssertNotEqual(bad[8].1, found, "the header edit must apply")
         XCTAssertNotEqual(bad[9].1, found, "the ref edit must apply")
     }
+
+    /// The helper records a found offer under `<requestId>.0` (helper/src/offers/first-look.ts),
+    /// and Tab's `offerAccept` names that key: a reply with any other key is refused loudly.
+    func testAFoundOffersKeyIsTheRequestsKeyDotZero() throws {
+        XCTAssertEqual(FirstLookReply.offerKey(requestId: "first-look-ab12-3"), "first-look-ab12-3.0")
+        let found = try String(decoding: lines()[1], as: UTF8.self)
+        XCTAssertEqual(try FirstLookReply.decode(lines()[1]).found?.offerKey, "first-look-1.0")
+        for key in ["first-look-1", "first-look-1.1", "first-look-2.0", "pop-1"] {
+            let line = found.replacingOccurrences(of: #""offerKey":"first-look-1.0""#, with: #""offerKey":"\#(key)""#)
+            XCTAssertNotEqual(line, found, key)
+            XCTAssertThrowsError(try FirstLookReply.decode(Data(line.utf8)), key) { error in
+                XCTAssertTrue(String(describing: error).contains("first-look-1.0"), "names the key it expected: \(error)")
+            }
+        }
+    }
 }

@@ -120,6 +120,11 @@ final class OnboardingController {
         flow?.send(.firstLookReply(reply))
     }
 
+    /// Every withdrawal; the flow acts only on its found offer's.
+    func receive(_ withdrawn: OfferWithdrawn) {
+        flow?.send(.offerWithdrawn(withdrawn))
+    }
+
     /// Progress of every task; the flow keeps the one it took (the first look's offer).
     func receive(_ progress: TaskProgress) {
         guard flow?.state.firstLookRun != nil else { return }

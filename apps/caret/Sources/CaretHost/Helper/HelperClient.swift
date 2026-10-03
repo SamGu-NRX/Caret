@@ -27,8 +27,14 @@ final class HelperClient: @unchecked Sendable {
     /// because the helper's task registry lives in its memory.
     private let onLink: @Sendable (Bool) -> Void
     private let stats = OSAllocatedUnfairLock(initialState: Stats())
-    /// The connected descriptor, or -1. Writers hold this lock for the whole line.
-    private let connection = OSAllocatedUnfairLock(initialState: Int32(-1))
+    /// The connected descriptor (-1 when there is none) and the settings the helper's gate should
+    /// hold. One lock for both, so a change made while the client connects is either in the line
+    /// sent after hello or sent on its own afterwards, never lost. Writers hold it for the whole line.
+    private struct Link {
+        var fd: Int32 = -1
+        var settings: GateSettings?
+    }
+    private let connection = OSAllocatedUnfairLock(initialState: Link())
     private let running = OSAllocatedUnfairLock(initialState: false)
     private let minBackoff: TimeInterval = 0.25
     private let maxBackoff: TimeInterval = 2
@@ -57,8 +63,8 @@ final class HelperClient: @unchecked Sendable {
 
     func stop() {
         running.withLock { $0 = false }
-        connection.withLock { fd in
-            if fd >= 0 { shutdown(fd, SHUT_RDWR) }
+        connection.withLock { link in
+            if link.fd >= 0 { shutdown(link.fd, SHUT_RDWR) }
         }
     }
 
@@ -108,12 +114,25 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? request.line())
     }
 
+    /// The user's settings for the helper's gate (B10). Sent now when connected and the roles,
+    /// level or pause changed, and again after every hello, so a helper that restarts hears them
+    /// before anything else the host writes. Any thread.
+    func update(_ settings: GateSettings) {
+        let sent = connection.withLock { link -> Bool? in
+            if let previous = link.settings, previous.sameGate(as: settings) { return nil }
+            link.settings = settings
+            guard link.fd >= 0, let line = try? NDJSON.line(settings) else { return false }
+            return Self.writeAll(link.fd, line)
+        }
+        if sent == true { stats.withLock { $0.settingsSent &+= 1 } }
+    }
+
     @discardableResult
     private func sendLine(_ line: Data?) -> Bool {
         guard let line else { return false }
-        let sent = connection.withLock { fd -> Bool in
-            guard fd >= 0 else { return false }
-            return Self.writeAll(fd, line)
+        let sent = connection.withLock { link -> Bool in
+            guard link.fd >= 0 else { return false }
+            return Self.writeAll(link.fd, line)
         }
         stats.withLock { s in
             if sent { s.resultsSent &+= 1 } else { s.resultsDropped &+= 1 }
@@ -130,8 +149,8 @@ final class HelperClient: @unchecked Sendable {
                 backoff = minBackoff
                 onLink(true)
                 readUntilClosed(fd)
-                connection.withLock { current in
-                    if current == fd { current = -1 }
+                connection.withLock { link in
+                    if link.fd == fd { link.fd = -1 }
                 }
                 close(fd)
                 stats.withLock { $0.connected = false }
@@ -168,10 +187,20 @@ final class HelperClient: @unchecked Sendable {
             close(fd)
             return nil
         }
-        connection.withLock { $0 = fd }
+        // Settings go right after hello, restamped now: the helper's gate applies them to its next
+        // decision, which may be the first thing it says to this connection.
+        let settingsSent = connection.withLock { link -> Bool? in
+            link.fd = fd
+            guard var settings = link.settings else { return nil }
+            settings.at = Int64((Date().timeIntervalSince1970 * 1000).rounded())
+            link.settings = settings
+            guard let line = try? NDJSON.line(settings) else { return false }
+            return Self.writeAll(fd, line)
+        }
         stats.withLock {
             $0.connected = true
             $0.connects &+= 1
+            if settingsSent == true { $0.settingsSent &+= 1 }
         }
         return fd
     }

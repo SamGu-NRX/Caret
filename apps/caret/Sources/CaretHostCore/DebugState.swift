@@ -167,6 +167,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// Lines written as `offerAccept` and `offerStop`, counted again in `resultsSent`.
         public var accepts: UInt64 = 0
         public var stops: UInt64 = 0
+        /// `settings` lines written: after each hello, and on each change of roles, level or pause.
+        public var settingsSent: UInt64 = 0
         public var errors: UInt64 = 0
         /// The helper's last error text: window ids and reasons, never screen text.
         public var lastError: String?

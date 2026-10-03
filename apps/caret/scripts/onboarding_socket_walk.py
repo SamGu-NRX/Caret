@@ -7,8 +7,10 @@ Starts the host with --onboarding hidden, --surfaces headless, --perch hidden, -
 and --no-ghost, on sockets and a settings file of its own under a temporary directory, so it
 reads and writes none of the user's state. A fake helper on the run's own socket answers
 `firstLook` with the contract's fixture lines (Tests/CaretHostCoreTests/Fixtures/
-first-look.ndjson): found, nothing, error, or silence. Until the helper speaks `firstLook`, it
-also runs the found offer when the host takes it: `offerAccept` gets `taskProgress` started,
+first-look.ndjson): found, nothing, error, or silence. A found offer is keyed `<requestId>.0`, as
+the helper records it (helper/src/offers/first-look.ts). It records every line the host sends, so
+the walk checks the `settings` line after hello and after each change (B10). It also runs the found
+offer when the host takes it: `offerAccept` gets `taskProgress` started,
 verified per field and done with `written`, and `taskControl undo` gets `undone` with its counts,
 as the executor sends them (helper/src/executor/executor.ts). The script drives every screen with the
 `onboarding` test hooks, reads back each setting with `settings`, checks after every step that
@@ -41,6 +43,16 @@ PROPOSAL = {
 }
 
 
+def wait_for(predicate, timeout):
+    """True once predicate() holds, polling every 50 ms; False at the timeout."""
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return bool(predicate())
+
+
 class FakeHelper:
     """A consumer-facing helper that speaks firstLook and runs the found offer."""
 
@@ -53,6 +65,8 @@ class FakeHelper:
         self.requests = []
         self.accepts = []
         self.controls = []
+        # Every line from the host, in order, as (monotonic time, message).
+        self.received = []
         self.conn = None
         self.lock = threading.Lock()
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -84,6 +98,7 @@ class FakeHelper:
 
     def _handle(self, message):
         kind = message.get("type")
+        self.received.append((time.monotonic(), message))
         if kind == "offerAccept":
             self.accepts.append({"at": time.monotonic(), "message": message})
             threading.Thread(target=self._run, args=(message["offerId"],), daemon=True).start()
@@ -101,7 +116,16 @@ class FakeHelper:
         if reply is None:
             return  # silence: the host's deadline decides
         reply = dict(reply, requestId=message["requestId"])
+        if reply.get("found"):
+            reply["found"] = dict(reply["found"], offerKey=message["requestId"] + ".0")
         self.send(reply)
+
+    def settings(self):
+        """The settings lines received, oldest first."""
+        return [m for _, m in self.received if m.get("type") == "settings"]
+
+    def withdraw(self, key, reason):
+        self.send({"type": "offerWithdrawn", "v": 1, "at": int(time.time() * 1000), "id": key, "reason": reason})
 
     @staticmethod
     def _progress(task, phase, step=None, **extra):
@@ -214,6 +238,13 @@ def main():
             return host.ask("onboarding"), None
 
         r = ob()
+        connected = wait_for(lambda: len(helper.settings()) >= 1, 5)
+        types = [m.get("type") for _, m in helper.received]
+        check("the host sends its settings right after hello", connected and types[:2] == ["hello", "settings"], types[:4])
+        first = helper.settings()[0] if helper.settings() else {}
+        check("the settings line is the gate's roles, level and pause",
+              first.get("roles") == ["fill", "repeat", "watch", "words"] and first.get("level") == "balanced"
+              and first.get("paused") is False and isinstance(first.get("at"), int), first)
         check("a hidden launch opens the flow at welcome, with no window", r.get("step") == "welcome" and r.get("windowShown") is False, r)
         s = settings()
         check("defaults: every role, balanced, pebble, not paused, not onboarded",
@@ -236,6 +267,10 @@ def main():
         s = settings()
         check("leaving the work screen wrote the roles and level",
               s["settings"]["roles"] == ["fill", "watch", "words"] and s["settings"]["level"] == "eager", s["settings"])
+        wait_for(lambda: len(helper.settings()) >= 2, 2)
+        latest = helper.settings()[-1]
+        check("the helper hears the new roles and level at once",
+              len(helper.settings()) == 2 and latest.get("roles") == ["fill", "watch", "words"] and latest.get("level") == "eager", helper.settings())
         check("each choice is a memory entry from onboarding",
               [(m["key"], m["value"], m["source"]) for m in s["settings"]["memory"]]
               == [("role.fill", "on", "onboarding"), ("role.repeat", "off", "onboarding"), ("role.watch", "on", "onboarding"),
@@ -276,8 +311,9 @@ def main():
         pressed = time.monotonic()
         r = ob("key tab")
         check("Tab starts the run: the working line", r.get("firstLookRun") == "working" and r.get("firstLookLine") == "Filling 4 fields", r)
-        check("Tab sent offerAccept with the offer's key",
-              [a["message"].get("offerId") for a in helper.accepts] == ["first-look-1.0"]
+        found_key = helper.requests[-1]["request"]["requestId"] + ".0"
+        check("Tab sent offerAccept with the first look's key, <requestId>.0, and the spec's action id",
+              [a["message"].get("offerId") for a in helper.accepts] == [found_key]
               and helper.accepts[0]["message"].get("actionId") == "fillAll", [a["message"] for a in helper.accepts])
         steps.append({"measure": "Tab to offerAccept at the fake helper, ms",
                       "value": round((helper.accepts[0]["at"] - pressed) * 1000, 1) if helper.accepts else None})
@@ -291,7 +327,7 @@ def main():
         r, _ = wait(lambda x: x.get("firstLookRun") == "undone", 5)
         check("⌘Z undoes it and the line reads the counts",
               r.get("firstLookLine") == "Cleared 4 fields"
-              and [c["message"] for c in helper.controls] == [{"type": "taskControl", "v": 1, "taskId": "first-look-1.0", "action": "undo"}], r)
+              and [c["message"] for c in helper.controls] == [{"type": "taskControl", "v": 1, "taskId": found_key, "action": "undo"}], r)
         check("no window after the run", host.windows() == [])
         check("the request named the families the choices enable",
               helper.requests and helper.requests[-1]["request"]["families"] == ["fill", "pending"]
@@ -318,11 +354,25 @@ def main():
         helper.mode = "found"
         ob("look-again")
         wait(lambda x: x.get("firstLook") == "found", 5)
+        # The helper withdraws a found offer as `settings` when a setting stops its family: the
+        # flow looks again with the settings as they are, so Tab never names a withdrawn key.
+        asked = len(helper.requests)
+        withdrawn_key = helper.requests[-1]["request"]["requestId"] + ".0"
+        helper.withdraw(withdrawn_key, "settings")
+        r, _ = wait(lambda x: x.get("firstLook") == "found" and len(helper.requests) == asked + 1, 5)
+        check("a settings withdrawal of the found offer looks again",
+              len(helper.requests) == asked + 1 and r.get("firstLook") == "found", {"requests": len(helper.requests), "state": r})
+        helper.withdraw(helper.requests[-1]["request"]["requestId"] + ".0", "expired")
+        r, _ = wait(lambda x: x.get("firstLook") == "nothing", 3)
+        check("any other withdrawal leaves nothing to take", r.get("firstLook") == "nothing" and len(helper.requests) == asked + 1, r)
+        r = ob("key tab")
+        check("Tab after the withdrawal sends no accept", len(helper.accepts) == 1, [a["message"] for a in helper.accepts])
         r = ob("next")
         check("Done finishes the flow", r["finished"] is True and r.get("windowShown") is False, r)
         s = settings()
         check("finishing records onboarded", s["settings"]["onboarded"] is True, s["settings"])
-        check("the host counted every reply", host.ask("state")["helper"]["firstLookReplies"] == 4, host.ask("state")["helper"])
+        check("the host counted every reply", host.ask("state")["helper"]["firstLookReplies"] == 5, host.ask("state")["helper"])
+        sent_before = len(helper.settings())
 
         for command, read in [
             ("set character wren", lambda s: s["settings"]["character"] == "wren"),
@@ -334,6 +384,11 @@ def main():
         ]:
             s = settings(command)
             check(f"settings {command} reads back", "error" not in s and read(s), s.get("settings", s))
+        wait_for(lambda: len(helper.settings()) >= sent_before + 3, 2)
+        changes = helper.settings()[sent_before:]
+        check("the helper hears role, level and pause changes, and not the character",
+              [(m["roles"], m["level"], m["paused"]) for m in changes]
+              == [(["fill", "words"], "eager", False), (["fill", "words"], "quiet", False), (["fill", "words"], "quiet", True)], changes)
         before = host.ask("state")["counters"].get("gate.refused.fillProposal", 0)
         helper.send(PROPOSAL)
         time.sleep(0.5)

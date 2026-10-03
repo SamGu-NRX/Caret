@@ -137,6 +137,8 @@ public final class OnboardingFlow {
         /// The request could not be written: the helper is not connected.
         case firstLookUnsent
         case lookAgain
+        /// The helper withdrew an offer (`offerWithdrawn`); the flow acts on its found one only.
+        case offerWithdrawn(OfferWithdrawn)
         /// The settings changed outside the flow (the menu's Pause). Roles and level stay the
         /// flow's own; the rest applies to what it asks for next.
         case settingsChanged(CaretSettings)
@@ -240,6 +242,7 @@ public final class OnboardingFlow {
         case .lookAgain:
             guard state.step == .firstLook, case .failed = state.firstLook else { return }
             askFirstLook()
+        case .offerWithdrawn(let withdrawn): firstLookWithdrawn(withdrawn)
         case .settingsChanged(let settings):
             base = settings
         }

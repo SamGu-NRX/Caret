@@ -209,16 +209,23 @@ public struct FirstLookReply: Codable, Equatable, Sendable {
         found = try FirstLookWire.nullable(c, Found.self, .found)
         scanned = try FirstLookWire.nullable(c, Scanned.self, .scanned)
         error = try FirstLookWire.nullable(c, String.self, .error)
-        if let problem = Self.problem(outcome: outcome, found: found, error: error) { throw ProtocolError("firstLookReply: \(problem)") }
+        if let problem = Self.problem(requestId: requestId, outcome: outcome, found: found, error: error) { throw ProtocolError("firstLookReply: \(problem)") }
     }
 
-    static func problem(outcome: Outcome, found: Found?, error: String?) -> String? {
+    /// The key the helper records a found offer under, so `offerAccept` and `taskProgress` name
+    /// it (helper/src/offers/first-look.ts).
+    public static func offerKey(requestId: String) -> String { "\(requestId).0" }
+
+    static func problem(requestId: String, outcome: Outcome, found: Found?, error: String?) -> String? {
         switch outcome {
         case .found:
             guard let found else { return "outcome found needs found" }
             if error != nil { return "outcome found carries no error" }
             if found.spec.header == nil { return "a found offer's spec needs a header" }
             if found.family.isEmpty || found.offerKey.isEmpty { return "a found offer needs a family and an offerKey" }
+            // A key the helper did not record would make Tab send an accept it refuses.
+            let expected = offerKey(requestId: requestId)
+            if found.offerKey != expected { return "a found offer's key is \(expected), got \(found.offerKey)" }
         case .nothing:
             if found != nil || error != nil { return "outcome nothing carries neither found nor error" }
         case .error:

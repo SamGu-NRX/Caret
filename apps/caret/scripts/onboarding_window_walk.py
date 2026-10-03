@@ -191,7 +191,7 @@ def walk(binary, out_dir, appearance, run_dir, result):
     key("tab")
     r = wait(lambda r: r.get("firstLookRun") == "done", 5)
     check("a real Tab runs the found offer to its done line", r is not None and r.get("firstLookLine") == "Filled 4 fields from Mail"
-          and [a["message"].get("offerId") for a in helper.accepts] == ["first-look-1.0"], state=ob())
+          and [a["message"].get("offerId") for a in helper.accepts] == [helper.requests[-1]["request"]["requestId"] + ".0"], state=ob())
     time.sleep(0.3)
     result["shots"]["firstLookDone"] = shot("7-first-look-done")
 

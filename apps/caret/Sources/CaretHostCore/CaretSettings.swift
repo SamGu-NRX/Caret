@@ -1,3 +1,4 @@
+import CaretScreenCore
 import Foundation
 
 extension FigureCharacter: Codable {}
@@ -271,5 +272,33 @@ public enum HostGate {
         case .alternatives, .action, .popup: return !settings.paused
         default: return true
         }
+    }
+}
+
+extension GateSettings {
+    /// What the helper's gate reads from the user's settings (B10's `settings` message): the roles,
+    /// in `CaretRole` order, the level and the pause. The character, onboarding and memory stay on
+    /// this Mac's side.
+    public init(_ settings: CaretSettings, at ms: Int64) {
+        let roles = CaretRole.allCases.filter(settings.roles.contains).map { role -> Role in
+            switch role {
+            case .fill: return .fill
+            case .repeats: return .repeat
+            case .watch: return .watch
+            case .words: return .words
+            }
+        }
+        let level: Level
+        switch settings.level {
+        case .quiet: level = .quiet
+        case .balanced: level = .balanced
+        case .eager: level = .eager
+        }
+        self.init(at: ms, roles: roles, level: level, paused: settings.paused)
+    }
+
+    /// The same roles, level and pause: a change of `at` alone is not a change to send.
+    public func sameGate(as other: GateSettings) -> Bool {
+        roles == other.roles && level == other.level && paused == other.paused
     }
 }

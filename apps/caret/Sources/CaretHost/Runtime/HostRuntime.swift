@@ -167,7 +167,9 @@ public final class HostRuntime {
                     fill.receive(message, at: at)
                     switch message {
                     case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
-                    case .offerWithdrawn(let withdrawn): surface.withdrawn(withdrawn)
+                    case .offerWithdrawn(let withdrawn):
+                        surface.withdrawn(withdrawn)
+                        onboarding.receive(withdrawn)
                     case .taskProgress(let progress):
                         surface.taskProgress(progress)
                         onboarding.receive(progress)
@@ -190,9 +192,14 @@ public final class HostRuntime {
         onboarding.sendAccept = { firstLookClient.send($0) }
         onboarding.sendStop = { firstLookClient.send($0) }
         onboarding.sendControl = { firstLookClient.send($0) }
+        // The helper's gate holds the same roles, level and pause: sent after every hello and on
+        // every change (B10). The client drops a change that leaves all three as they were.
+        let gateClient = helper
+        gateClient.update(GateSettings(SettingsStore.shared.settings, at: Self.nowMs()))
         // A setting that closes the gate takes down what it no longer allows at once, not only
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
+            gateClient.update(GateSettings(settings, at: Self.nowMs()))
             if !HostGate.allowsGhostText(settings) { coordinator.gateClosed() }
             if !settings.gate.allows(family: "fill") { fill.gateClosed() }
             if settings.paused { surface.gateClosed() }
@@ -451,6 +458,8 @@ public final class HostRuntime {
             return #"{"error":"unknown command"}"#
         }
     }
+
+    nonisolated static func nowMs() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
 
     nonisolated static func jsonString(_ text: String) -> String {
         (try? String(decoding: JSONEncoder().encode(text), as: UTF8.self)) ?? "\"\""

@@ -200,6 +200,20 @@ extension OnboardingFlow {
         }
     }
 
+    /// The helper withdrew the found offer before it was taken, so Tab could no longer run it.
+    /// `settings` (the menu's Pause, or a role or level turned off) and `reoffered` mean what the
+    /// look found has changed, so it looks again with the settings as they are now; a paused Caret
+    /// asks for no family and lands on "Nothing yet." Any other reason leaves nothing to take.
+    /// Once taken, the run's own progress says what happened, and a withdrawal changes nothing.
+    func firstLookWithdrawn(_ withdrawn: OfferWithdrawn) {
+        guard state.step == .firstLook, state.firstLookRun == nil,
+              case .found(let found) = state.firstLook, found.offerKey == withdrawn.id else { return }
+        switch withdrawn.reason {
+        case .settings, .reoffered: askFirstLook()
+        case .taken, .dismissed, .diverged, .idle, .stale, .expired: state.firstLook = .nothing
+        }
+    }
+
     /// The accept or the undo could not be written: the helper is not connected.
     func firstLookUnsent(_ what: SendFailure) {
         guard let run = state.firstLookRun else { return }
