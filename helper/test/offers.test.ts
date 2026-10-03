@@ -13,6 +13,7 @@ import { parsePopupSpec } from "../src/popup.ts";
 import { HostOfferRegistry, acceptRefusal } from "../src/offers/registry.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
 import { OpenAppOffers } from "../src/offers/open-app.ts";
+import { OfferGate } from "../src/offers/settings.ts";
 import { offerField } from "../src/offers/field.ts";
 import { fillSlots, Plan } from "../src/executor/schema.ts";
 import { FIXTURE_APP, MAIL_APP, field, focus, snap, text, value } from "./builders.ts";
@@ -295,7 +296,7 @@ describe("Open <app> for a watched window", () => {
   function setup(composeFocused: boolean) {
     const model = new ScreenModel();
     const sent: HelperMessage[] = [];
-    const offers = new OpenAppOffers({ model, publish: (m) => (sent.push(m), true), run: async () => ({ taskId: "", outcome: "done", step: null, detail: null, acted: 1, skipped: 0, jevCalls: 0 }) });
+    const offers = new OpenAppOffers({ model, gate: new OfferGate(), publish: (m) => (sent.push(m), true), run: async () => ({ taskId: "", outcome: "done", step: null, detail: null, acted: 1, skipped: 0, jevCalls: 0 }) });
     model.apply(snap([text(FK("statictext:test suite~0"), "Test suite"), text(STATUS, "Done. 48 of 48 tests passed.")], { at: 1000, windowId: JOB, title: "Test run" }));
     model.apply(snap([field(TO, "", { frame: [100, 40, 300, 24] })], { at: 1100, windowId: COMPOSE, title: "New message", app: MAIL_APP, focused: composeFocused, focusedKey: composeFocused ? TO : null }));
     return { model, sent, offers };

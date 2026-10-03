@@ -408,7 +408,7 @@ export interface PendingDeps {
   tasks: TaskRegistry;
   /** Sends a verb to the reader: here, only watchWindows. */
   reader: (verb: ReaderVerb) => Promise<VerbResult>;
-  /** False in shadow mode: no watches, no questions. */
+  /** False in shadow mode, while Caret is paused, or with the watch role off: no new watches. */
   live: () => boolean;
   warn?: (line: string) => void;
   debounceMs?: number;
@@ -566,6 +566,11 @@ export class PendingWatcher {
   readerRestarted(): void {
     for (const watch of [...this.watches.values()]) this.end(watch, "failed", "screen", "Caret's reader restarted and lost track of the window");
     this.resolved.clear();
+  }
+
+  /** The user turned the watch role off: every watch ends as a stop by the user would end it. */
+  stopAll(detail: string): void {
+    for (const watch of [...this.watches.values()]) this.end(watch, "failed", "you", detail);
   }
 
   /** pause, resume and stop from a taskControl. Throws with the reason for anything else. */

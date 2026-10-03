@@ -119,6 +119,7 @@ export class HelperServer {
           else if (m.data.type === "offerAccept") void this.helper().handleOfferAccept(m.data);
           else if (m.data.type === "offerStop") void this.helper().handleOfferStop(m.data);
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
+          else if (m.data.type === "settings") this.helper().handleSettings(m.data);
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
           else if (m.data.type === "activityRequest") s.write(JSON.stringify(this.helper().handleActivity(m.data)) + "\n");
           else if (m.data.type === "memoryRequest") {

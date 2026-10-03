@@ -17,6 +17,7 @@ describe("golden protocol fixture", () => {
       "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
       "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
       "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
+      "settings", "settings", "offerWithdrawn",
     ]);
   });
 
@@ -50,6 +51,14 @@ describe("golden protocol fixture", () => {
     expect(activity.task.says).toBe("'Upload' in Caret Fixture is waiting for you");
     const { frame: _, ...noFrame } = activity.task;
     expect(HelperMessage.safeParse({ ...activity, task: noFrame }).success).toBe(false);
+  });
+
+  it("carries B10's settings: roles, level and pause from the host, and a withdrawal they caused", () => {
+    const [full, paused, gone] = lines.slice(31, 34).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(ConsumerMessage.parse(full)).toEqual({ type: "settings", v: 1, at: 1790000130000, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: false });
+    expect(ConsumerMessage.parse(paused)).toMatchObject({ roles: ["watch"], level: "quiet", paused: true });
+    expect(ConsumerMessage.safeParse({ ...full, roles: ["watch", "watch"] }).success).toBe(false);
+    expect(HelperMessage.parse(gone)).toMatchObject({ type: "offerWithdrawn", reason: "settings" });
   });
 
   it("carries B9's re-offer: reoffered names the new key, and only reoffered may", () => {

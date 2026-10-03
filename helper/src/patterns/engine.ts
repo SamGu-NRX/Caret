@@ -34,6 +34,7 @@ import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction }
 import { describeTransfer, templateOf } from "./shape.ts";
 import { normalizeValue } from "../normalize.ts";
 import { offerField } from "../offers/field.ts";
+import type { Family, OfferGate } from "../offers/settings.ts";
 
 /** How long after Caret fills a field an edit to it is read as a preference. Assumed. */
 export const EDIT_WATCH_MS = 60_000;
@@ -53,6 +54,8 @@ export interface EngineDeps {
   /** Runs a plan through the executor; `expect` holds field values, by window and key, that must still hold at its first read. */
   run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>) => Promise<TaskResult>;
   shadow: () => boolean;
+  /** The user's settings and the hourly budget, shared with the helper's other producers. */
+  gate: OfferGate;
   /** A loopFinish or routine offer whose every value the user entered themselves, withdrawn as taken with no run to follow. */
   enteredByUser?: (offerId: string) => void;
 }
@@ -593,7 +596,8 @@ export class PatternEngine {
           permission: memory.permission(model.focusedWindowId === windowId ? "writeHere" : "writeElsewhere"),
           dontOfferHere: memory.dontOffer(kind, bundleId),
           ignoredToday: memory.ignoredOn(kind, bundleId, this.clock),
-          spokenLastHour: memory.spokenSince(this.clock - 60 * 60 * 1000),
+          settings: this.deps.gate.holds(familyOf(kind), this.clock),
+          routineSightings: this.deps.gate.rules.routineSightings,
         },
       );
       const d: Decision = outranked ? { speak: false, reasons: [...decided.reasons, "outranked"], showProbability: decided.showProbability } : decided;
@@ -601,6 +605,7 @@ export class PatternEngine {
       return d;
     });
     if (!decision.speak) return null;
+    this.deps.gate.spoke(this.clock);
 
     const id = `offer-${++this.seq}`;
     const written = cells.map((c) => {
@@ -765,6 +770,11 @@ export class PatternEngine {
     this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: o.msg.id, reason, ...(replacedBy === undefined ? {} : { replacedBy }) });
   }
 
+  /** The user's settings no longer allow these families: every open offer of theirs is withdrawn as `settings`. */
+  withdrawFamilies(families: readonly Family[]): void {
+    for (const o of this.offers.values()) if (o.state === "open" && families.includes(familyOf(o.msg.kind))) this.withdraw(o, "settings");
+  }
+
   /** Withdraws every open offer built from this memory entry: its routine, or a value a memory rule changed. */
   private withdrawDependents(id: string): void {
     for (const o of this.offers.values()) {
@@ -827,4 +837,9 @@ export class PatternEngine {
     this.deps.publish({ type: "error", v: PROTOCOL_VERSION, at: this.clock, message });
     return null;
   }
+}
+
+/** The settings family an offer kind belongs to: loop offers are the loop family's, routines their own. */
+function familyOf(kind: OfferKind): Family {
+  return kind === "routine" ? "routine" : "loop";
 }

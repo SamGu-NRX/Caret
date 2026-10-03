@@ -42,13 +42,15 @@ private func goldenLines() throws -> [Data] {
             case .offerAccept: "offerAccept"
             case .offerStop: "offerStop"
             case .offerWithdrawn: "offerWithdrawn"
+            case .settings: "settings"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
                           "readerCommand", "verbResult", "userInput", "taskProgress",
                           "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
                           "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
-                          "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn"])
+                          "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
+                          "settings", "settings", "offerWithdrawn"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -100,6 +102,23 @@ private func goldenLines() throws -> [Data] {
         #expect(p.pid == 5150 && p.fields.compactMap(\.source).allSatisfy { $0.pid == 5150 })
         let badState = Data(#"{"type":"taskControl","v":1,"taskId":"t","action":"cancel"}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
+    }
+
+    @Test func readsTheHostSettingsAndTheirWithdrawal() throws {
+        let lines = try goldenLines()
+        guard case .settings(let all) = try JSONDecoder().decode(Message.self, from: lines[31]),
+              case .settings(let quiet) = try JSONDecoder().decode(Message.self, from: lines[32]) else { Issue.record("lines 32 and 33 are not settings"); return }
+        #expect(all == GateSettings(at: 1_790_000_130_000, roles: GateSettings.Role.allCases, level: .balanced, paused: false))
+        #expect(quiet.roles == [.watch] && quiet.level == .quiet && quiet.paused)
+        guard case .offerWithdrawn(let gone) = try JSONDecoder().decode(Message.self, from: lines[33]) else { Issue.record("line 34 is not an offerWithdrawn"); return }
+        #expect(gone.reason == .settings)
+        let twice = Data(#"{"type":"settings","v":1,"at":1,"roles":["fill","fill"],"level":"eager","paused":false}"#.utf8)
+        let ghost = Data(#"{"type":"settings","v":1,"at":1,"roles":["ghost"],"level":"eager","paused":false}"#.utf8)
+        let loud = Data(#"{"type":"settings","v":1,"at":1,"roles":[],"level":"loud","paused":false}"#.utf8)
+        let noPause = Data(#"{"type":"settings","v":1,"at":1,"roles":[],"level":"quiet"}"#.utf8)
+        for bad in [twice, ghost, loud, noPause] {
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: bad) }
+        }
     }
 
     @Test func readsExpiryPauseReasonAndTaskFrames() throws {

@@ -447,7 +447,36 @@ export const OfferStop = z.object({
 });
 export type OfferStop = z.infer<typeof OfferStop>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop]);
+// MARK: - the user's settings (host to helper)
+
+/**
+ * What Caret helps with, as the host's onboarding and menu bar name it (CaretRole on v2/host). `fill` is
+ * grounded fill, `repeat` loops and routines, `watch` the pending-state watch, `words` the host's own
+ * ghost text, which the helper accepts and ignores.
+ */
+export const SettingsRole = z.enum(["fill", "repeat", "watch", "words"]);
+export type SettingsRole = z.infer<typeof SettingsRole>;
+/** How often Caret speaks up. The helper's gate reads it from offers/settings.ts LEVELS. */
+export const SettingsLevel = z.enum(["quiet", "balanced", "eager"]);
+export type SettingsLevel = z.infer<typeof SettingsLevel>;
+
+/**
+ * The user's settings, sent by the host on connect and on every change. The helper's gate applies them
+ * to its next decision: paused holds every offer and withdraws those shown (reason `settings`), a role
+ * left out disables its producers and withdraws their offers, and the level sets the hourly budget and
+ * which families may speak. Roles are listed once each.
+ */
+export const Settings = z.object({
+  type: z.literal("settings"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  roles: z.array(SettingsRole).refine((r) => new Set(r).size === r.length, "roles lists a role twice"),
+  level: SettingsLevel,
+  paused: z.boolean(),
+});
+export type Settings = z.infer<typeof Settings>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -607,7 +636,8 @@ export type PatternOffer = z.infer<typeof PatternOffer>;
  * closed or changed, the reader restarted, or its memory entry was paused or forgotten. `expired`: its
  * lifetime ended (offers/lifetimes.ts). `reoffered`: the user entered some of a loopFinish's or
  * routine's values by hand, and the rest are offered again under the key in `replacedBy`, which comes
- * with this reason and no other. `id` is a patternOffer's id, or the offerKey of an alternatives,
+ * with this reason and no other. `settings`: the user paused Caret, or turned off the role or level
+ * that allows this kind of offer. `id` is a patternOffer's id, or the offerKey of an alternatives,
  * action or popup message.
  */
 export const OfferWithdrawn = z
@@ -616,7 +646,7 @@ export const OfferWithdrawn = z
     v: z.literal(PROTOCOL_VERSION),
     at: ms,
     id: z.string(),
-    reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "expired", "reoffered"]),
+    reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "expired", "reoffered", "settings"]),
     replacedBy: z.string().min(1).optional(),
   })
   .refine((m) => (m.reason === "reoffered") === (m.replacedBy !== undefined), {

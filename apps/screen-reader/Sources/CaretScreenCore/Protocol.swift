@@ -693,7 +693,7 @@ public enum Message: Codable, Equatable, Sendable {
     case readerCommand(ReaderCommand), verbResult(VerbResult), userInput(UserInput), taskProgress(TaskProgress)
     case fillResult(FillResult), taskControl(TaskControl), activityRequest(ActivityRequest), activity(Activity), activityReply(ActivityReply)
     case alternatives(OfferAlternatives), action(OfferAction), popup(OfferPopup), offerAccept(OfferAccept), offerStop(OfferStop)
-    case offerWithdrawn(OfferWithdrawn)
+    case offerWithdrawn(OfferWithdrawn), settings(GateSettings)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -722,6 +722,7 @@ public enum Message: Codable, Equatable, Sendable {
         case OfferAccept.type: self = .offerAccept(try OfferAccept(from: decoder))
         case OfferStop.type: self = .offerStop(try OfferStop(from: decoder))
         case OfferWithdrawn.type: self = .offerWithdrawn(try OfferWithdrawn(from: decoder))
+        case GateSettings.type: self = .settings(try GateSettings(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -752,6 +753,7 @@ public enum Message: Codable, Equatable, Sendable {
         case .offerAccept(let m): try m.encode(to: encoder)
         case .offerStop(let m): try m.encode(to: encoder)
         case .offerWithdrawn(let m): try m.encode(to: encoder)
+        case .settings(let m): try m.encode(to: encoder)
         }
     }
 }

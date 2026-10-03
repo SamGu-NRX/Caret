@@ -30,6 +30,7 @@ import {
   type ReaderVerb,
   type VerbResult,
   type RunPlan,
+  type Settings,
   type TaskControl,
   type TaskCause,
   type TaskPhase,
@@ -46,6 +47,7 @@ import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
 import { OpenAppOffers } from "./offers/open-app.ts";
+import { DEFAULT_SETTINGS, LEVELS, OfferGate, type Family, type UserSettings } from "./offers/settings.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -75,6 +77,8 @@ export interface HelperOptions {
   audit?: boolean;
   /** For the audit: how often to probe the generator on the real windows (Audit.tick); absent for never. */
   auditProbeEveryMs?: number;
+  /** The user's settings until the host sends its own; DEFAULT_SETTINGS (the host's defaults) when absent. */
+  settings?: UserSettings;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Makes the random part of proposal and watch ids, so tests can expect exact messages. */
@@ -172,11 +176,14 @@ export class Helper {
   private readonly now: () => number;
   /** "Open <app>" action lines for watched windows that finished or need the user. */
   readonly openApp: OpenAppOffers;
+  /** The user's settings and the hourly offer budget, which every producer asks before it offers. */
+  readonly gate: OfferGate;
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
+    this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS);
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
@@ -198,6 +205,7 @@ export class Helper {
       ...opts.executorHooks,
     });
     this.memory = opts.memory ?? new MemoryStore(opts.store.dir);
+    this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.patterns = new PatternEngine({
       model: this.model,
       text: this.text,
@@ -210,6 +218,7 @@ export class Helper {
       },
       run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect),
       shadow: () => this.mode === "shadow",
+      gate: this.gate,
       enteredByUser: (id) => {
         if (this.tasks.get(id)?.state === "ready") this.tasks.update(id, { state: "done", cause: "you", detail: "you entered the values yourself" });
       },
@@ -219,12 +228,12 @@ export class Helper {
       askJev: opts.askJev,
       tasks: this.tasks,
       reader: (v) => this.readerVerb(v),
-      live: () => this.mode === "live",
+      live: () => this.mode === "live" && this.gate.enabled("pending"),
       onResolved: (e) => this.openApp.resolved(e),
       ...(opts.newId === undefined ? {} : { newId: opts.newId }),
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
-    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots), now: this.now });
+    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots), gate: this.gate, now: this.now });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
   }
 
@@ -347,6 +356,26 @@ export class Helper {
    */
   readerVerb(verb: ReaderVerb): Promise<VerbResult> {
     return (this.opts.readerLink ?? (this.socketLink as SocketReaderLink)).run(verb);
+  }
+
+  /**
+   * The host's settings message. It applies to the next decision of every producer; offers of families it
+   * no longer allows are withdrawn as `settings` now, and turning the watch role off ends every watch.
+   */
+  handleSettings(m: Settings): void {
+    const off = this.gate.apply(m);
+    this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
+    this.opts.store.count("settings.applied", 1);
+    this.withdrawFamilies(off);
+    if (!m.roles.includes("watch")) this.pending.stopAll("you turned off watching");
+  }
+
+  /** Withdraws every offer shown of these families, as `settings`. */
+  private withdrawFamilies(families: readonly Family[]): void {
+    if (families.length === 0) return;
+    if (families.includes("fill")) for (const id of [...this.fillPopups.keys()]) this.withdrawFill(id, "settings");
+    if (families.includes("pending")) this.openApp.withdrawAll();
+    this.patterns.withdrawFamilies(families);
   }
 
   /** Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. */
@@ -495,7 +524,7 @@ export class Helper {
         pending: null,
       });
     } else if (m.type === "offerWithdrawn" && m.reason !== "taken" && this.tasks.get(m.id)?.state === "ready") {
-      const by: TaskCause = m.reason === "dismissed" || m.reason === "diverged" || m.reason === "reoffered" ? "you" : m.reason === "expired" ? "caret" : "screen";
+      const by: TaskCause = m.reason === "dismissed" || m.reason === "diverged" || m.reason === "reoffered" || m.reason === "settings" ? "you" : m.reason === "expired" ? "caret" : "screen";
       const detail = m.reason === "reoffered" ? `you entered some values; the rest are offered as ${m.replacedBy}` : `withdrawn: ${m.reason}`;
       this.tasks.update(m.id, { state: "undone", cause: by, detail });
     }
@@ -607,6 +636,15 @@ export class Helper {
       if (explicit) this.error(`fill unavailable: ${ask === null ? "Jev is disabled" : "helper is in shadow mode"}`);
       return null;
     }
+    const now = this.now();
+    // A fill the host asked for is its own decision; one a focus triggered is an offer, which the settings may hold.
+    if (!explicit) {
+      const held = this.gate.holds("fill", now);
+      if (held.length > 0) {
+        store.count(`fill.held_${held[0]}`, 1, now);
+        return null;
+      }
+    }
     const w = this.model.windows.get(windowId);
     if (w === undefined) {
       this.error(`fill: unknown window ${windowId}`);
@@ -619,7 +657,6 @@ export class Helper {
       this.error(`fill: ${(e as Error).message}`);
       return null;
     }
-    const now = this.now();
     if (this.inflight.has(formKey)) return null;
     if (!explicit && now - (this.lastFill.get(formKey) ?? -Infinity) < FILL_REPEAT_MS) return null;
     // A pop-up already on offer covers this form, however long ago it was made.
@@ -639,6 +676,12 @@ export class Helper {
         store.count("fill.stale", 1, now);
         return null;
       }
+      // The settings may have changed while Jev answered: a pause or a role turned off then holds this offer too.
+      const heldNow = explicit ? [] : this.gate.holds("fill", this.now());
+      if (heldNow.length > 0) {
+        store.count(`fill.held_${heldNow[0]}`, 1, now);
+        return null;
+      }
       store.count("fill.request", 1, now);
       store.count("fill.fields", p.fields.length, now);
       store.count("fill.proposed_values", p.fields.filter((f) => f.value !== null).length, now);
@@ -652,11 +695,15 @@ export class Helper {
           return p;
         }
         store.count("fill.popup", 1, now);
-        if (this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p))) this.fillPopups.set(p.id, { p, form: formKey });
+        if (this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p))) {
+          this.fillPopups.set(p.id, { p, form: formKey });
+          this.gate.spoke(now);
+        }
         return p;
       }
       this.proposals.set(p.id, { at: now, windowId: p.windowId, values: new Map(p.fields.flatMap((f) => (f.value === null ? [] : [[f.key, f.value] as const]))) });
       this.publish(p);
+      if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(now);
       return p;
     } catch (e) {
       store.count("fill.error", 1, now);
@@ -752,7 +799,7 @@ export class Helper {
     return null;
   }
 
-  private withdrawFill(id: string, reason: "taken" | "stale" | "expired"): void {
+  private withdrawFill(id: string, reason: "taken" | "stale" | "expired" | "settings"): void {
     this.fillPopups.delete(id);
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id, reason });
   }

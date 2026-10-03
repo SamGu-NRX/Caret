@@ -1066,6 +1066,57 @@
             "at"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "settings"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "fill",
+                  "repeat",
+                  "watch",
+                  "words"
+                ]
+              }
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "quiet",
+                "balanced",
+                "eager"
+              ]
+            },
+            "paused": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "roles",
+            "level",
+            "paused"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -1655,7 +1706,8 @@
                 "idle",
                 "stale",
                 "expired",
-                "reoffered"
+                "reoffered",
+                "settings"
               ]
             },
             "replacedBy": {

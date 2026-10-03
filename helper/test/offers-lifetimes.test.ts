@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
+import { DEFAULT_SETTINGS } from "../src/offers/settings.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type Activity, type OfferAction, type OfferAlternatives, type PatternOffer, type ReaderMessage, type TaskProgress } from "../src/protocol.ts";
@@ -119,6 +120,8 @@ describe("offer lifetimes over the socket", () => {
       shadow: false,
       allowBackgroundFocus: false,
       newId: () => `id-${++n}`,
+      // Eager, whose routines need two silent hits, so a routine is offered on its fourth day as these tests expect.
+      settings: { ...DEFAULT_SETTINGS, level: "eager" },
       now: () => reader?.clock ?? 0,
       publish: (m) => server.publish(m),
       sendToReader: (cmd) => server.sendToReader(cmd),
