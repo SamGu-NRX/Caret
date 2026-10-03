@@ -137,6 +137,53 @@ enum Gallery {
     }
 }
 
+// MARK: - Onboarding
+
+extension Gallery {
+    /// A clock that never fires: a render is one moment of the flow.
+    final class StillClock: SurfaceClock {
+        final class Never: SurfaceTimer { func cancel() {} }
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        func schedule(after seconds: TimeInterval, repeats: Bool, _ fire: @escaping () -> Void) -> SurfaceTimer { Never() }
+    }
+
+    /// The first look's found offer: the fill preview, from a synthetic Safari form.
+    static let firstLookFound = FirstLookReply.Found(
+        kind: .fill, family: "fill", offerKey: "first-look-1.0",
+        window: .init(pid: 5151, windowId: "5151-2", appName: "Safari", title: "Payment"), spec: fillPreview
+    )
+
+    /// Every onboarding screen, and each state of the ones that change, reached by sending the
+    /// flow the events the window would.
+    static func onboarding(_ character: FigureCharacter = .pebble) -> [Item] {
+        func flow(ax: Bool = true, input: Bool = true, _ events: [OnboardingFlow.Event]) -> OnboardingFlow.State {
+            let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: input), clock: StillClock())
+            for event in events { flow.send(event) }
+            return flow.state
+        }
+        let toTryIt: [OnboardingFlow.Event] = [.next, .next, .next]
+        let toFirstLook = toTryIt + [.key(.tab), .next]
+        let found = FirstLookReply(requestId: "first-look-1", at: 0, outcome: .found, found: firstLookFound)
+        let nothing = FirstLookReply(requestId: "first-look-1", at: 0, outcome: .nothing)
+        let screens: [(String, OnboardingFlow.State)] = [
+            ("welcome", flow([])),
+            ("work", flow([.next, .setRole(.watch, false)])),
+            ("permissions-waiting", flow(ax: false, input: false, [.next, .next])),
+            ("permissions-on", flow(ax: false, input: false, [.next, .next, .permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true))])),
+            ("try-it", flow(toTryIt)),
+            ("try-it-declined", flow(toTryIt + [.key(.character("9"))])),
+            ("try-it-filled", flow(toTryIt + [.key(.tab)])),
+            ("first-look-asking", flow(toFirstLook)),
+            ("first-look-found", flow(toFirstLook + [.firstLookReply(found)])),
+            ("first-look-nothing", flow(toFirstLook + [.firstLookReply(nothing)])),
+            ("first-look-error", flow(toFirstLook + [.firstLookUnsent])),
+        ]
+        return screens.map { name, state in
+            Item(name: "onboarding-\(name)", view: AnyView(OnboardingView(state: state, character: character, animated: false)))
+        }
+    }
+}
+
 /// Alternatives open, drawn over a sample sentence the way they sit at a caret: ghost text with
 /// the uneven underline, the figure and count after it, and the list below.
 struct AlternativesScene: View {

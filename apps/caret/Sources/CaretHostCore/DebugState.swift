@@ -353,6 +353,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var firstLookError: String?
         /// The window is on screen. False on a run with `--onboarding hidden`.
         public var windowShown: Bool?
+        /// What a flow without a window did not do (`openSystemSettings.accessibility`).
+        public var suppressed: [String]?
 
         public init(step: String, stepIndex: Int, roles: [String], level: String, canContinue: Bool, finished: Bool) {
             self.step = step

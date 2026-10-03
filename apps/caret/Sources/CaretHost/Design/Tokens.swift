@@ -46,6 +46,20 @@ enum Tokens {
     static let surface = dynamic(light: 0xFFFFFF, dark: 0x2C2C2E, alpha: 0.94, darkAlpha: 0.96)
     static let keycapBorder = dynamic(light: 0x000000, dark: 0xFFFFFF, alpha: 0.12, darkAlpha: 0.16)
 
+    // Onboarding is Caret's own window, so it paints its own ground rather than the system's
+    // `#ECECEC`, on which Secondary text is 4.29:1, under the 4.5:1 that 12 pt text needs.
+    // Contrast (holistic-ux script): Secondary 4.74:1 on the light window and 5.57:1 on the dark;
+    // Secondary 5.07:1 on the light card and 4.97:1 on the dark.
+    static let window = dynamic(light: 0xF7F7F8, dark: 0x2A2A2C)
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x323234)
+    /// The primary button: white on `#B24F12` is 5.22:1; `#1D1D1F` on the dark Carrot is 7.71:1.
+    /// Plain Carrot with white text is 3.63:1, too low for a 13 pt label.
+    static let buttonFill = dynamic(light: 0xB24F12, dark: 0xF49A5B)
+    static let onButton = dynamic(light: 0xFFFFFF, dark: 0x1D1D1F)
+    /// The check inside a ticked box, on the Carrot fill: 3.63:1 light, 7.71:1 dark (a graphic
+    /// needs 3:1).
+    static let onCarrot = dynamic(light: 0xFFFFFF, dark: 0x1D1D1F)
+
     enum Font {
         /// 13/16 semibold: a title or the offer sentence.
         static let title = SwiftUI.Font.system(size: 13, weight: .semibold)

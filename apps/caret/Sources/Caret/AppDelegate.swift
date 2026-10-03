@@ -85,6 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func setUp(_ sender: NSMenuItem) {
+        runtime.openOnboarding()
+    }
+
     @objc private func togglePause(_ sender: NSMenuItem) {
         SettingsStore.shared.update(source: .menu) { $0.paused.toggle() }
     }
@@ -132,6 +136,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseItem.target = self
         menu.addItem(pauseItem)
         menu.addItem(.separator())
+        let setUpItem = NSMenuItem(title: "Set Up Caret…", action: #selector(setUp(_:)), keyEquivalent: "")
+        setUpItem.target = self
+        menu.addItem(setUpItem)
         let activityItem = NSMenuItem(title: "Activity", action: #selector(showActivity(_:)), keyEquivalent: "")
         activityItem.target = self
         menu.addItem(activityItem)

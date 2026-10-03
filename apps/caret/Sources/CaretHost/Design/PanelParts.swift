@@ -151,11 +151,14 @@ struct LineView: View {
     /// 20 pt tall with 11 pt type, for a gap too tight for the standard line (`LinePlacement`).
     var compact = false
     var animated = true
+    /// Toward the words (right), or toward what the line is about when that lies to its left,
+    /// as onboarding's try-it does with the sample source window.
+    var figureFacing: FigureFacing = .right
 
     var body: some View {
         HStack(spacing: 0) {
             if content.figure != .absent {
-                FigureView(character: character, state: content.figure, facing: .right, height: compact ? 9 : 11, animated: animated)
+                FigureView(character: character, state: content.figure, facing: figureFacing, height: compact ? 9 : 11, animated: animated)
                     .frame(width: compact ? 12 : PopupView.figureSlot)
                 Spacer().frame(width: compact ? 6 : 8)
             }

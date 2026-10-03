@@ -31,6 +31,9 @@ public final class HostRuntime {
         /// The debug socket accepts `inject` and `progress`, which fake offers and their results
         /// (`--test-hooks`, `CARET_TEST_HOOKS=1`). Off in normal use: real offers come from the helper.
         public var testHooks: Bool
+        /// When onboarding opens (`--onboarding`, `CARET_ONBOARDING`): `off` (the menu opens it),
+        /// `auto` (at launch until finished once), `show`, or `hidden` (no window; socket only).
+        public var onboarding: String
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
@@ -42,8 +45,10 @@ public final class HostRuntime {
             fillAdvances: Bool = ProcessInfo.processInfo.environment["CARET_FILL_ADVANCE"] != "off",
             perchDrawsOnScreen: Bool = ProcessInfo.processInfo.environment["CARET_PERCH"] != "hidden",
             surfacesHeadless: Bool = ProcessInfo.processInfo.environment["CARET_SURFACES"] == "headless",
-            testHooks: Bool = ProcessInfo.processInfo.environment["CARET_TEST_HOOKS"] == "1"
+            testHooks: Bool = ProcessInfo.processInfo.environment["CARET_TEST_HOOKS"] == "1",
+            onboarding: String = ProcessInfo.processInfo.environment["CARET_ONBOARDING"] ?? "off"
         ) {
+            self.onboarding = onboarding
             self.perchDrawsOnScreen = perchDrawsOnScreen
             self.surfacesHeadless = surfacesHeadless
             self.testHooks = testHooks
@@ -93,6 +98,7 @@ public final class HostRuntime {
     private let executor: InsertionExecutor
     private let tap: TapThread
     private let socket: DebugStateSocket
+    private let onboarding: OnboardingController
     private var engineTask: Task<Void, Never>?
 
     public init(configuration: Configuration = Configuration()) {
@@ -141,6 +147,8 @@ public final class HostRuntime {
                 surface.displaced(offer)
             }
         }
+        let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding) ?? .off, testHooks: configuration.testHooks)
+        self.onboarding = onboarding
         let activity = ActivityCenter()
         self.activity = activity
         let perch = PerchController(center: activity, drawsOnScreen: configuration.perchDrawsOnScreen)
@@ -161,6 +169,7 @@ public final class HostRuntime {
                     case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
                     case .offerWithdrawn(let withdrawn): surface.withdrawn(withdrawn)
                     case .taskProgress(let progress): surface.taskProgress(progress)
+                    case .firstLookReply(let reply): onboarding.receive(reply)
                     default: break
                     }
                 }
@@ -169,6 +178,8 @@ public final class HostRuntime {
             DispatchQueue.main.async { MainActor.assumeIsolated { activity.linkChanged(up) } }
         })
         fill.client = helper
+        let firstLookClient = helper
+        onboarding.sendFirstLook = { firstLookClient.send($0) }
         surface.client = helper
         // The fill line and the fill pop-up share the arbiter's one toast slot.
         surface.onToastChanged = { fill.toastChanged() }
@@ -251,7 +262,8 @@ public final class HostRuntime {
             },
             surface: { MainActor.assumeIsolated { surface.debugInfo() } },
             perch: { words in MainActor.assumeIsolated { Self.perchCommand(words, perch: perch, activity: activity, pauser: pauser) } },
-            settings: { words in MainActor.assumeIsolated { Self.settingsCommand(words) } }
+            settings: { words in MainActor.assumeIsolated { Self.settingsCommand(words) } },
+            onboarding: { words in MainActor.assumeIsolated { onboarding.command(words) } }
         )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
             Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods, hooks: hooks)
@@ -274,6 +286,9 @@ public final class HostRuntime {
 
     public func toggleActivityList() { perch.toggleList() }
 
+    /// The menu's Set Up Caret: onboarding in its window.
+    public func openOnboarding() { onboarding.open(drawing: true) }
+
     public func start() throws {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
@@ -284,6 +299,7 @@ public final class HostRuntime {
         }
         focus.start()
         helper.start()
+        onboarding.launch()
         let modelFile = configuration.modelURL.lastPathComponent
         guard configuration.ghostEnabled else {
             engine.disable()
@@ -309,6 +325,7 @@ public final class HostRuntime {
         fill.shutdown()
         surface.shutdown()
         perch.shutdown()
+        onboarding.close()
         overlay.hide()
         arbiter.invalidate()
         // A paste in progress must finish and put the user's clipboard back before exit.
@@ -350,6 +367,8 @@ public final class HostRuntime {
         let perch: @Sendable ([String]) -> String
         /// `settings` and `settings set ...` (`settingsCommand`).
         let settings: @Sendable ([String]) -> String
+        /// `onboarding ...` (`OnboardingController.command`).
+        let onboarding: @Sendable ([String]) -> String
     }
 
     /// `settings` reads the settings file, the choices and the gate they make; `settings set
@@ -451,6 +470,12 @@ public final class HostRuntime {
             return Data((reply + "\n").utf8)
         case "settings":
             let reply = DispatchQueue.main.sync { hooks.settings(words) }
+            return Data((reply + "\n").utf8)
+        case "onboarding":
+            // `onboarding reply <json>` carries JSON with spaces; keep the line whole after the verb.
+            let parts = command.split(separator: " ", maxSplits: 2).map(String.init)
+            let args = parts.count == 3 && parts[1] == "reply" ? parts : words
+            let reply = DispatchQueue.main.sync { hooks.onboarding(args) }
             return Data((reply + "\n").utf8)
         case "perch", "activity", "control", "click", "perch-avoid":
             let reply = DispatchQueue.main.sync { hooks.perch(words) }

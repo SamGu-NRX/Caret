@@ -8,7 +8,8 @@ import CaretHost
 // --settings <path>, --onboarding auto|show|hidden|off.
 // Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES,
 // CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off, CARET_PERCH=hidden,
-// CARET_SURFACES=headless, CARET_TEST_HOOKS=1, CARET_SETTINGS_PATH.
+// CARET_SURFACES=headless, CARET_TEST_HOOKS=1, CARET_SETTINGS_PATH,
+// CARET_ONBOARDING.
 
 var configuration = HostRuntime.Configuration()
 
@@ -76,6 +77,13 @@ while let argument = arguments.next() {
     case "--test-hooks":
         // The debug socket's `inject` and `progress`, which fake helper offers and their results.
         configuration.testHooks = true
+    case "--onboarding":
+        // `off` (default: the menu's Set Up Caret opens it), `auto` (at launch until finished
+        // once), `show`, or `hidden` (the flow with no window, driven over the debug socket).
+        switch arguments.next() {
+        case let mode? where ["off", "auto", "show", "hidden"].contains(mode): configuration.onboarding = mode
+        default: FileHandle.standardError.write(Data("caret: --onboarding takes off, auto, show or hidden\n".utf8)); exit(2)
+        }
     case "--settings":
         // A settings file of the run's own, so a test never reads or writes the user's choices.
         if let value = arguments.next() { SettingsStore.path = value }
