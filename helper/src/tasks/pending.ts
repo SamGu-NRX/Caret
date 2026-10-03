@@ -340,7 +340,8 @@ const windowName = (w: WindowState, title: string | null): string => (title === 
 
 /**
  * Up to `max` of the lines, each cut to SNIPPET_CHARS, that fit the window's budget in the ledger. An
- * indicator's line ("[progress bar]") names a role, not text on screen, so it costs nothing.
+ * indicator's line ("[progress bar]") names a role, not text on screen, so it costs nothing, unless some
+ * text in the window reads the same; a marker from when the user left may name an indicator now gone.
  */
 function takeLines(ledger: SnippetLedger, w: WindowState, lines: readonly string[], max: number): string[] {
   const out: string[] = [];
@@ -348,9 +349,17 @@ function takeLines(ledger: SnippetLedger, w: WindowState, lines: readonly string
     if (out.length >= max) break;
     const t = cut(flat(l));
     if (t === "" || out.includes(t)) continue;
-    if (INDICATOR_RULES.has(t) || ledger.take(w, "candidate", [t])) out.push(t);
+    if (isIndicatorLine(w, t) || ledger.take(w, "candidate", [t])) out.push(t);
   }
   return out;
+}
+
+function isIndicatorLine(w: WindowState, line: string): boolean {
+  if (!INDICATOR_RULES.has(line)) return false;
+  const reads = (x: string | undefined): boolean => x !== undefined && x.split("\n").some((y) => flat(y) === line);
+  if (reads(w.window.title)) return false;
+  for (const n of w.nodes.values()) if (reads(n.label) || reads(n.value) || reads(n.placeholder)) return false;
+  return true;
 }
 
 /**

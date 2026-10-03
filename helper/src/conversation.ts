@@ -68,18 +68,43 @@ export function composers(w: WindowState): readonly Frame[] {
 /**
  * A form is not a conversation, but B6's composer shape alone takes the lower fields of most forms:
  * the fill calibration fixture's Claim form has four fields in its lower 40%, each over half its width
- * (~/.caret-run/evidence/screen/fill-distractors-v2/cal-1/reader-record.ndjson). A message composer is
- * the one place to write in the lower part of its window, so the composer sign holds only when exactly
- * one composer-shaped field is there and the window has at most MAX_CHAT_FIELDS editable text fields in
- * all: a search box, a composer and one more. The limit is assumed; no real chat window was counted.
+ * (~/.caret-run/evidence/screen/fill-distractors-v2/cal-1/reader-record.ndjson), and a two-field form
+ * has one whenever its second field sits low. So the composer sign also needs what a composer is for:
+ * exactly one composer-shaped field, at most MAX_CHAT_FIELDS editable text fields in the window (a
+ * search box, the composer and one more), and at least MIN_MESSAGE_LINES lines of text above the
+ * composer that are not a field's label (ending in a colon, level with a field, or just above one).
+ * Both numbers are assumed; no real chat window was counted for them.
  */
 const MAX_CHAT_FIELDS = 3;
+const MIN_MESSAGE_LINES = 3;
+/** A text this far above a field, overlapping it across, is the field's label. Assumed. */
+const LABEL_GAP = 32;
 
 export function hasMessageComposer(w: WindowState): boolean {
-  if (composers(w).length !== 1) return false;
-  let fields = 0;
-  for (const n of w.nodes.values()) if (n.editable === true && TEXT_FIELD_ROLES.has(n.role) && ++fields > MAX_CHAT_FIELDS) return false;
-  return true;
+  const comps = composers(w);
+  const composer = comps[0];
+  if (composer === undefined || comps.length !== 1) return false;
+  const fields: Frame[] = [];
+  for (const n of w.nodes.values()) {
+    if (n.editable !== true || !TEXT_FIELD_ROLES.has(n.role)) continue;
+    if (fields.length >= MAX_CHAT_FIELDS) return false;
+    if (n.frame !== undefined) fields.push(n.frame);
+  }
+  const labels = (f: Frame): boolean =>
+    fields.some(
+      (x) =>
+        Math.abs(centreY(x) - centreY(f)) <= ROW_POINTS ||
+        (f[1] + f[3] <= x[1] && x[1] - (f[1] + f[3]) <= LABEL_GAP && f[0] < x[0] + x[2] && x[0] < f[0] + f[2]),
+    );
+  const seen = new Set<string>();
+  for (const n of w.nodes.values()) {
+    if (n.editable === true || n.frame === undefined || n.frame[1] + n.frame[3] > composer[1]) continue;
+    const t = rowText(n);
+    if (t === null || t.endsWith(":") || seen.has(t) || labels(n.frame)) continue;
+    seen.add(t);
+    if (seen.size >= MIN_MESSAGE_LINES) return true;
+  }
+  return false;
 }
 
 /**
@@ -90,49 +115,68 @@ export function hasMessageComposer(w: WindowState): boolean {
 const STAMP = /\b(?:(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?[ap]\.?m\.?)?|just now|\d{1,2}\s?(?:m|min|mins|minutes?|h|hr|hrs|hours?)\s+ago|yesterday at)(?![\p{L}\p{N}])/iu;
 /** A line that is only a time stamp, perhaps with a day: "3:41 PM", "Yesterday at 3:41 PM", "Tue 15:41". */
 const STAMP_ONLY_CHARS = 24;
-/** A sender as a list shows one: one to four capitalised words, or one handle, with no digits. */
-const NAME = /^(?:@?\p{Lu}[\p{L}'’.-]*(?:\s+@?\p{Lu}[\p{L}'’.-]*){0,3}|@?[\p{Ll}][\p{L}._-]{1,31})$/u;
+/**
+ * A sender as a list shows one: one to four words of letters in any script and case ("Dana Whitfield",
+ * "dana whitfield", "张伟"), or a handle that starts with @ and may hold digits ("@sam123").
+ */
+const NAME = /^(?:\p{L}[\p{L}\p{M}'’.-]*(?:\s+\p{L}[\p{L}\p{M}'’.-]*){0,3}|@[\p{L}\p{N}._-]{1,31})$/u;
 /** Separators between a sender and the rest of a line that names both: "Dana Whitfield, see you at 3:41 PM". */
-const SENDER_PREFIX = /^([^,:·|–—]{1,40})\s*[,:·|–—]\s*\S/u;
+const SENDER_PREFIX = /^([^,:·|–—]{1,40})\s*[,:·|–—]\s*(\S.*)$/u;
+/**
+ * A line that names a sender says something besides its time: a word of letters once the times and the
+ * words that join times are taken out. "Doors: 2:30 PM" and "Start time: 3:00 PM to 3:45 PM" are a
+ * labelled value, not a message; "Dana Whitfield, thanks 3:44 PM" is a message.
+ */
+const TIME_WORDS = new Set(["to", "at", "from", "until", "till", "and", "through", "today", "tomorrow", "yesterday", "noon", "midnight", "am", "pm"]);
+const saysSomething = (rest: string): boolean =>
+  (rest.replace(new RegExp(STAMP.source, "giu"), " ").match(/\p{L}{2,}/gu) ?? []).some((w) => !TIME_WORDS.has(w.toLowerCase()));
 /** Rows within this many points of each other's centre are one row. Assumed. */
 const ROW_POINTS = 12;
 /** A sender in the stamp's row is looked for this many texts either side of it in document order, so the scan stays linear. */
 const ROW_REACH = 8;
-/** A message list has at least this many stamped rows with a sender. Assumed, as are the two below. */
-const MIN_ROWS = 3;
-/** Without a sender seen twice, as in an inbox of different people, it takes this many rows. */
-const MIN_ROWS_DISTINCT_SENDERS = 5;
-/** Nodes read before the scan gives up and says no; a list shows its stamps long before this. */
-const MAX_NODES = 4000;
+/**
+ * A message list has at least MIN_ROWS stamped rows with a sender, one of whom comes up twice, as people
+ * do in a conversation; or MIN_ROWS_DISTINCT_SENDERS such rows from different people, as an inbox shows.
+ * A schedule of three people at three times passes too, which only costs a fill from it some values;
+ * labelled times ("Doors: 2:30 PM") do not, since a sender's line must say something (saysSomething).
+ * Both numbers are assumed.
+ */
+const MIN_ROWS = 2;
+const MIN_ROWS_DISTINCT_SENDERS = 3;
 
 const isName = (s: string): boolean => s.length <= 40 && NAME.test(s.trim());
 const centreY = (f: Frame): number => f[1] + f[3] / 2;
 
-/** One line per node: its label or value, first line only, whitespace collapsed. Editable fields are skipped. */
+/** A node's first line, its label or value, whitespace collapsed; null for editable fields. */
 function rowText(n: Node): string | null {
-  if (n.editable === true) return null;
+  return nodeLines(n)[0] ?? null;
+}
+
+/** Every line of a node's label or value, whitespace collapsed, empty ones dropped; none for editable fields. */
+function nodeLines(n: Node): string[] {
+  if (n.editable === true) return [];
   const raw = n.label ?? n.value;
-  if (raw === undefined) return null;
-  const t = (raw.split("\n")[0] ?? "").replace(/\s+/g, " ").trim();
-  return t === "" ? null : t;
+  if (raw === undefined) return [];
+  return raw
+    .split("\n")
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter((l) => l !== "");
 }
 
 /**
- * Repeated rows with a sender and a time: at least MIN_ROWS lines carrying a time stamp, each with a
- * sender, either named at the start of the same line or as a name-shaped text just before the stamp
- * (the previous text in document order, or one to its left in the same row). Some sender has to come
- * up twice, as people do in a conversation, unless there are MIN_ROWS_DISTINCT_SENDERS such rows. A
- * calendar day of five events at set times passes too, which only costs a fill from it some values.
- * The shapes are assumed from how Slack, Discord and webmail lists draw a message; no real window's
- * tree was read for them.
+ * Repeated rows with a sender and a time: stamped lines, each with a sender, either named at the start of
+ * the same line or as a name-shaped text just before the stamp (the previous line in document order, or
+ * a text to its left in the same row). Every line of every node is read, so a transcript drawn as one
+ * multi-line node counts its messages. A calendar day of events at set times can pass, which only costs
+ * a fill from it some values. The shapes are assumed from how Slack, Discord and webmail lists draw a
+ * message; no real window's tree was read for them.
  */
 export function hasMessageList(w: WindowState): boolean {
   const texts: { text: string; frame: Frame | undefined }[] = [];
-  let read = 0;
   for (const n of w.nodes.values()) {
-    if (++read > MAX_NODES) break;
-    const t = rowText(n);
-    if (t !== null) texts.push({ text: t, frame: n.frame });
+    const lines = nodeLines(n);
+    // A multi-line node's frame is the whole block's, so its lines have none of their own.
+    for (const text of lines) texts.push({ text, frame: lines.length === 1 ? n.frame : undefined });
   }
   const senders = new Map<string, number>();
   let rows = 0;
@@ -140,8 +184,9 @@ export function hasMessageList(w: WindowState): boolean {
     const { text, frame } = texts[i] as { text: string; frame: Frame | undefined };
     if (!STAMP.test(text)) continue;
     let sender: string | null = null;
-    const prefix = SENDER_PREFIX.exec(text)?.[1]?.trim();
-    if (prefix !== undefined && isName(prefix)) sender = prefix;
+    const m = SENDER_PREFIX.exec(text);
+    const prefix = m?.[1]?.trim();
+    if (prefix !== undefined && isName(prefix) && saysSomething(m?.[2] ?? "")) sender = prefix;
     else if (text.length <= STAMP_ONLY_CHARS) {
       const prev = texts[i - 1];
       if (prev !== undefined && isName(prev.text)) sender = prev.text;
@@ -154,8 +199,9 @@ export function hasMessageList(w: WindowState): boolean {
     }
     if (sender === null) continue;
     rows++;
-    senders.set(sender, (senders.get(sender) ?? 0) + 1);
+    const seen = (senders.get(sender) ?? 0) + 1;
+    senders.set(sender, seen);
+    if ((rows >= MIN_ROWS && seen >= 2) || rows >= MIN_ROWS_DISTINCT_SENDERS) return true;
   }
-  if (rows < MIN_ROWS) return false;
-  return rows >= MIN_ROWS_DISTINCT_SENDERS || [...senders.values()].some((k) => k >= 2);
+  return false;
 }

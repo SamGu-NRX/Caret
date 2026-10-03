@@ -52,7 +52,13 @@ export function cut(s: string, max = SNIPPET_CHARS): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
-let budgets = new WeakMap<WindowState, number>();
+interface WindowShare {
+  budget: number;
+  /** The window's distinct lines when it was read whole, for charging the lines a taken text contains; null past 2 * WINDOW_CHARS. */
+  lines: readonly string[] | null;
+}
+
+let budgets = new WeakMap<WindowState, WindowShare>();
 let conversationCap = true;
 
 /**
@@ -74,6 +80,10 @@ export function setConversationCap(on: boolean): void {
  * replaces on every snapshot.
  */
 export function windowBudget(w: WindowState): number {
+  return windowShare(w).budget;
+}
+
+function windowShare(w: WindowState): WindowShare {
   const cached = budgets.get(w);
   if (cached !== undefined) return cached;
   const seen = new Set<string>();
@@ -102,30 +112,48 @@ export function windowBudget(w: WindowState): number {
   const half = Math.max(0, Math.floor((chars - 1) / 2));
   // Past 2 * WINDOW_CHARS the count stopped, so `half` is a floor there, and above CONVERSATION_CHARS.
   const budget = conversationCap && isConversation(w) ? Math.min(CONVERSATION_CHARS, half) : !whole || card ? WINDOW_CHARS : Math.min(WINDOW_CHARS, half);
-  budgets.set(w, budget);
-  return budget;
+  const share = { budget, lines: whole ? [...seen] : null };
+  budgets.set(w, share);
+  return share;
 }
+
+/** Lines shorter than this are not charged when a taken text contains them: a letter or two is in most texts. */
+const CONTAINED_MIN = 3;
 
 /**
  * The screen text one request takes, window by window. `take` adds a group of texts (one candidate with
  * its facts, one field's descriptor) only when every new text in it fits the window's budget, so a group
- * goes out whole or not at all; texts already taken from that window cost nothing again.
+ * goes out whole or not at all; texts already taken from that window cost nothing again. A text also
+ * pays for every other line of the window it contains: accessibility trees repeat text, a group's label
+ * holding its children's, so taking "Alice, meet Bob at 3:41 PM" reveals the lines "Bob" and "3:41 PM"
+ * as well, and the window's text counts each of them.
  */
 export class SnippetLedger {
-  private readonly windows = new Map<string, { texts: Set<string>; chars: number; budget: number }>();
+  private readonly windows = new Map<string, { texts: Set<string>; covered: Set<string>; chars: number; share: WindowShare }>();
   readonly snippets: Snippet[] = [];
 
   take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
     const id = w.window.windowId;
     let e = this.windows.get(id);
-    if (e === undefined) this.windows.set(id, (e = { texts: new Set(), chars: 0, budget: windowBudget(w) }));
+    if (e === undefined) this.windows.set(id, (e = { texts: new Set(), covered: new Set(), chars: 0, share: windowShare(w) }));
     const fresh = [...new Set(texts.filter((t): t is string => t !== null && t !== undefined && t !== "" && !e.texts.has(t)))];
-    const cost = fresh.reduce((n, t) => n + t.length, 0);
-    if (e.chars + cost > e.budget) return false;
+    const covered = new Set<string>();
+    let cost = 0;
+    for (const t of fresh) {
+      if (!e.covered.has(t)) cost += t.length;
+      covered.add(t);
+      for (const l of e.share.lines ?? []) {
+        if (l.length < CONTAINED_MIN || l === t || e.covered.has(l) || covered.has(l) || !t.includes(l)) continue;
+        covered.add(l);
+        cost += l.length;
+      }
+    }
+    if (e.chars + cost > e.share.budget) return false;
     for (const t of fresh) {
       e.texts.add(t);
       this.snippets.push({ windowId: id, kind, text: t });
     }
+    for (const l of covered) e.covered.add(l);
     e.chars += cost;
     return true;
   }
