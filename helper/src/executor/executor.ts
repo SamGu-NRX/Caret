@@ -11,10 +11,10 @@
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt } from "node:crypto";
-import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppRef, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppRef, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
-import type { CalendarPort, ReaderLink, UrlOpener } from "./means.ts";
+import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
 import { classifyLabel } from "./risk.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
@@ -91,8 +91,8 @@ export interface TaskResult {
 }
 
 /** One undo ledger entry. Writes record the value they replaced; presses are recorded as not undoable. */
-/** The numbers a done or undone taskProgress carries beside its sentence. */
-type ProgressCounts = Pick<TaskProgress, "written" | "restored" | "notRestored" | "notUndoablePresses">;
+/** The numbers a done or undone taskProgress carries beside its sentence, and a calendar hand-off's reason. */
+type ProgressCounts = Pick<TaskProgress, "written" | "restored" | "notRestored" | "notUndoablePresses"> & { blocked?: CalendarBlock };
 
 export type LedgerEntry =
   | { kind: "write"; step: number; pid: number; windowId: string; key: string; role: string; before: string; after: string }
@@ -158,19 +158,22 @@ class StepStop extends Error {
   readonly reason: StopReason | null;
   /** A stop caused by the screen changing under the task, not by a mismatch after Caret acted. */
   readonly by: TaskCause;
-  private constructor(outcome: "stopped" | "handoff", reason: StopReason | null, message: string, by: TaskCause) {
+  /** On a hand-off from the calendar: what the user has to give. */
+  readonly blocked: CalendarBlock | null;
+  private constructor(outcome: "stopped" | "handoff", reason: StopReason | null, message: string, by: TaskCause, blocked: CalendarBlock | null = null) {
     super(message);
     this.outcome = outcome;
     this.reason = reason;
     this.by = by;
+    this.blocked = blocked;
   }
 
   static stop(reason: StopReason, message: string, by: TaskCause = "caret"): StepStop {
     return new StepStop("stopped", reason, message, by);
   }
 
-  static handoff(message: string): StepStop {
-    return new StepStop("handoff", null, message, "caret");
+  static handoff(message: string, blocked: CalendarBlock | null = null): StepStop {
+    return new StepStop("handoff", null, message, "caret", blocked);
   }
 }
 
@@ -444,7 +447,7 @@ export class Executor {
       const outcome = e instanceof StepStop ? e.outcome : "stopped";
       const detail = e instanceof Error ? e.message : String(e);
       task.finished = outcome;
-      if (outcome === "handoff") this.progress(task, "handoff", i, detail, e instanceof StepStop ? e.by : "caret");
+      if (outcome === "handoff") this.progress(task, "handoff", i, detail, e instanceof StepStop ? e.by : "caret", e instanceof StepStop && e.blocked !== null ? { blocked: e.blocked } : {});
       else this.stopped(task, i, detail, e instanceof StepStop ? e.by : "caret", e instanceof StepStop ? (e.reason ?? "error") : "error");
       return this.result(task, outcome, i, detail);
     } finally {
@@ -591,6 +594,17 @@ export class Executor {
   }
 
   private async calendarStep(task: Task, i: number, end: Extract<EndState, { kind: "calendarEvent" }>): Promise<void> {
+    try {
+      await this.calendarAct(task, i, end);
+    } catch (e) {
+      // No Calendar access or no local account is the user's to give: a hand-off that says which.
+      if (e instanceof CalendarBlocked) throw StepStop.handoff(e.message, e.reason);
+      if (e instanceof CalendarRefused) throw StepStop.stop("reader", e.message);
+      throw e;
+    }
+  }
+
+  private async calendarAct(task: Task, i: number, end: Extract<EndState, { kind: "calendarEvent" }>): Promise<void> {
     const cal = this.deps.calendar;
     if (cal === null) throw StepStop.stop("notConfigured", "no calendar is configured");
     if ((await cal.find(end.calendar, end.title, end.start, end.end)) !== null) {
@@ -856,6 +870,14 @@ export class Executor {
   }
 
   private async undoCalendar(e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
+    try {
+      return await this.undoCalendarEvent(e);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private async undoCalendarEvent(e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
     const cal = this.deps.calendar;
     if (cal === null) return "no calendar is configured";
     const ev = await cal.get(e.eventId);
@@ -875,11 +897,19 @@ export class Executor {
   }
 
   private progress(task: Task, phase: Exclude<TaskPhase, "stopped">, step: number | null, detail: string | null, cause: TaskCause | null = null, counts: ProgressCounts = {}): void {
-    this.publishProgress(task, { phase, ...counts }, step, detail, cause);
+    const { blocked, ...numbers } = counts;
+    if (phase === "handoff") this.publishProgress(task, blocked === undefined ? { phase } : { phase, blocked }, step, detail, cause);
+    else this.publishProgress(task, { phase, ...numbers }, step, detail, cause);
   }
 
-  /** `head` is the phase with what only that phase carries: a stop's reason, or a done or undone's counts. */
-  private publishProgress(task: Task, head: { phase: "stopped"; stopReason: StopReason } | ({ phase: Exclude<TaskPhase, "stopped"> } & ProgressCounts), step: number | null, detail: string | null, cause: TaskCause | null): void {
+  /** `head` is the phase with what only that phase carries: a stop's reason, a hand-off's calendar block, or a done or undone's counts. */
+  private publishProgress(
+    task: Task,
+    head: { phase: "stopped"; stopReason: StopReason } | { phase: "handoff"; blocked?: CalendarBlock } | ({ phase: Exclude<TaskPhase, "stopped" | "handoff"> } & Omit<ProgressCounts, "blocked">),
+    step: number | null,
+    detail: string | null,
+    cause: TaskCause | null,
+  ): void {
     const phase = head.phase;
     const says = step === null ? null : (task.plan.steps[step]?.says ?? null);
     const steps = task.plan.steps.length;

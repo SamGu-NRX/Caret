@@ -14,7 +14,9 @@ let package = Package(
         .target(name: "CaretScreenCore"),
         // Every Accessibility read: walks, observers, per-app queues, the socket client.
         .target(name: "CaretScreenAX", dependencies: ["CaretScreenCore"]),
-        .executableTarget(name: "caret-screen", dependencies: ["CaretScreenAX", "CaretScreenCore"]),
+        // EventKit behind CalendarAdapter (B16). Never asks for Calendar access.
+        .target(name: "CaretScreenCalendar", dependencies: ["CaretScreenCore"], linkerSettings: [.linkedFramework("EventKit")]),
+        .executableTarget(name: "caret-screen", dependencies: ["CaretScreenAX", "CaretScreenCore", "CaretScreenCalendar"]),
         // Synthetic AppKit windows for tests and experiments. Shows invented data only.
         // Swift 5 mode: Timer callbacks that invalidate themselves are not worth Swift 6's ceremony in a test fixture.
         .executableTarget(name: "caret-fixture", swiftSettings: [.swiftLanguageMode(.v5)]),

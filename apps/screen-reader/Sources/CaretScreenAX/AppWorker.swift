@@ -510,6 +510,9 @@ public final class AppWorker: @unchecked Sendable {
         switch verb {
         case .watchInput, .watchWindows:
             return (.ok, nil)
+        case .calendarFind, .calendarAdd, .calendarGet, .calendarRemove, .calendarDispose:
+            // ScreenReader.perform sends these to the calendar adapter; none reaches an app's worker.
+            return (.notAllowed, "a calendar verb is not for an app's window")
         case let .walk(_, windowId):
             guard let w = window(id: windowId) else { return (.noWindow, windowId) }
             if requestWalk(w).truncated { return (.axError, "the walk was cut short, so the window cannot be judged") }

@@ -45,6 +45,8 @@ private func goldenLines() throws -> [Data] {
             case .settings: "settings"
             case .actGrant: "actGrant"
             case .actRevoke: "actRevoke"
+            case .planRequest: "planRequest"
+            case .planProposal: "planProposal"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -53,7 +55,9 @@ private func goldenLines() throws -> [Data] {
                           "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
                           "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
                           "settings", "settings", "offerWithdrawn",
-                          "actGrant", "readerCommand", "verbResult", "actRevoke"])
+                          "actGrant", "readerCommand", "verbResult", "actRevoke",
+                          "planRequest", "planProposal", "planProposal",
+                          "readerCommand", "verbResult", "verbResult", "taskProgress"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -292,6 +296,64 @@ private func goldenLines() throws -> [Data] {
         #expect(noTask.verb.taskId == nil)
         let again = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(Message.readerCommand(noTask))) as! [String: Any]
         #expect((again["verb"] as? [String: Any])?["taskId"] == nil)
+    }
+
+    /// B16: the planner's request and proposals; protocol.test.ts checks the same lines and refusals.
+    @Test func readsThePlannerPair() throws {
+        let lines = try goldenLines()
+        guard case .planRequest(let req) = try JSONDecoder().decode(Message.self, from: lines[38]) else { Issue.record("line 39 is not a planRequest"); return }
+        #expect(req == PlanRequest(requestId: "ask-1", at: 1_790_000_150_000, instruction: "Put the order number in Reference and send it", windowId: "5150-1"))
+        guard case .planProposal(let p) = try JSONDecoder().decode(Message.self, from: lines[39]) else { Issue.record("line 40 is not a planProposal"); return }
+        #expect(p.outcome == .proposed && p.offerKey == "plan-1-ask-1" && p.handoff == PlanProposal.Handoff(label: "Send", why: .outbound))
+        #expect(p.spec?.blocks.count == 4 && p.window?.windowId == "5150-1")
+        guard case .planProposal(let f) = try JSONDecoder().decode(Message.self, from: lines[40]) else { Issue.record("line 41 is not a planProposal"); return }
+        #expect(f.outcome == .error && f.error?.code == .untracedValue && f.spec == nil)
+        let request = String(decoding: lines[38], as: UTF8.self)
+        let proposal = String(decoding: lines[39], as: UTF8.self)
+        let failed = String(decoding: lines[40], as: UTF8.self)
+        for bad in [
+            request.replacingOccurrences(of: #""instruction":"Put the order number in Reference and send it""#, with: #""instruction":"""#),
+            request.replacingOccurrences(of: #""windowId":"5150-1""#, with: #""windowId":"""#),
+            proposal.replacingOccurrences(of: #""error":null"#, with: #""error":{"code":"unsure","detail":"x"}"#),
+            proposal.replacingOccurrences(of: #""offerKey":"plan-1-ask-1""#, with: #""offerKey":null"#),
+            proposal.replacingOccurrences(of: #""why":"outbound""#, with: #""why":"risky""#),
+            failed.replacingOccurrences(of: #""offerKey":null"#, with: #""offerKey":"plan-2""#),
+            failed.replacingOccurrences(of: #""code":"untracedValue""#, with: #""code":"guess""#),
+            failed.replacingOccurrences(of: #""handoff":null"#, with: #""handoff":{"label":"Send","why":"outbound"}"#),
+        ] {
+            #expect(bad != request && bad != proposal && bad != failed)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
+        let long = request.replacingOccurrences(of: "Put the order number in Reference and send it", with: String(repeating: "x", count: 501))
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(long.utf8)) }
+    }
+
+    /// B16: the calendar verbs; protocol.test.ts checks the same lines.
+    @Test func readsTheCalendarVerbs() throws {
+        let lines = try goldenLines()
+        guard case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: lines[41]),
+              case let .calendarAdd(calendar, title, start, end) = c.verb else { Issue.record("line 42 is not a calendarAdd"); return }
+        #expect(calendar == "Caret Test" && title == "Coffee with Dana" && start == "2026-10-08T15:00:00-05:00" && end == "2026-10-08T15:30:00-05:00")
+        #expect(c.verb.isCalendar && c.verb.taskId == nil)
+        guard case .verbResult(let ok) = try JSONDecoder().decode(Message.self, from: lines[42]) else { Issue.record("line 43 is not a verbResult"); return }
+        #expect(ok.event == CalendarEventRecord(id: "ev-1", calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end) && ok.blocked == nil)
+        guard case .verbResult(let refused) = try JSONDecoder().decode(Message.self, from: lines[43]) else { Issue.record("line 44 is not a verbResult"); return }
+        #expect(refused.outcome == .blocked && refused.blocked == .tcc)
+        guard case .taskProgress(let p) = try JSONDecoder().decode(Message.self, from: lines[44]) else { Issue.record("line 45 is not a taskProgress"); return }
+        #expect(p.phase == .handoff && p.blocked == .tcc)
+        let add = String(decoding: lines[41], as: UTF8.self)
+        let blocked = String(decoding: lines[43], as: UTF8.self)
+        let handoff = String(decoding: lines[44], as: UTF8.self)
+        for bad in [
+            add.replacingOccurrences(of: #""calendar":"Caret Test""#, with: #""calendar":"""#),
+            add.replacingOccurrences(of: #""end":"2026-10-08T15:30:00-05:00""#, with: #""end":"2026-10-08T15:30:00""#),
+            blocked.replacingOccurrences(of: #","blocked":"tcc""#, with: ""),
+            blocked.replacingOccurrences(of: #""blocked":"tcc""#, with: #""blocked":"icloud""#),
+            handoff.replacingOccurrences(of: #""phase":"handoff""#, with: #""phase":"done""#),
+        ] {
+            #expect(bad != add && bad != blocked && bad != handoff)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
     }
 
     @Test func rejectsAWrongVersionAndAnUnknownType() {

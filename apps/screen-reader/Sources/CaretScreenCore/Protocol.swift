@@ -522,14 +522,28 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     /// Brings one window to the front and activates its app, then re-walks it. It writes nothing, but
     /// it moves the user's focus, so it is gated like write and press.
     case raise(pid: Int, windowId: String, taskId: String?)
+    /// The calendar verbs (B16) go to CalendarAdapter, only with --calendar-test. Times are ISO 8601 with offset.
+    case calendarFind(calendar: String, title: String, start: String, end: String)
+    case calendarAdd(calendar: String, title: String, start: String, end: String)
+    case calendarGet(id: String)
+    case calendarRemove(id: String)
+    case calendarDispose(calendar: String)
 
-    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows, taskId }
+    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows, taskId, calendar, title, start, end, id }
+
+    /// True for the verbs that go to the calendar adapter rather than an app's window.
+    public var isCalendar: Bool {
+        switch self {
+        case .calendarFind, .calendarAdd, .calendarGet, .calendarRemove, .calendarDispose: true
+        default: false
+        }
+    }
 
     /// The task an acting verb names, checked against the reader's act grants.
     public var taskId: String? {
         switch self {
         case let .write(_, _, _, _, _, _, _, t), let .press(_, _, _, _, _, t), let .raise(_, _, t): t
-        case .walk, .watchInput, .watchWindows: nil
+        case .walk, .watchInput, .watchWindows, .calendarFind, .calendarAdd, .calendarGet, .calendarRemove, .calendarDispose: nil
         }
     }
 
@@ -562,6 +576,23 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             self = .watchWindows(windows: try c.decode([WatchedWindow].self, forKey: .windows))
         case "raise":
             self = .raise(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId), taskId: try Self.grantTask(c))
+        case "calendarFind", "calendarAdd":
+            let calendar = try c.decode(String.self, forKey: .calendar)
+            if calendar.isEmpty { throw ProtocolError("a calendar verb names its calendar") }
+            let start = try c.decode(String.self, forKey: .start), end = try c.decode(String.self, forKey: .end)
+            guard CalendarTime.parse(start) != nil, CalendarTime.parse(end) != nil else { throw ProtocolError("start and end are ISO 8601 times with an offset") }
+            let title = try c.decode(String.self, forKey: .title)
+            self = try c.decode(String.self, forKey: .kind) == "calendarFind"
+                ? .calendarFind(calendar: calendar, title: title, start: start, end: end)
+                : .calendarAdd(calendar: calendar, title: title, start: start, end: end)
+        case "calendarGet", "calendarRemove":
+            let id = try c.decode(String.self, forKey: .id)
+            if id.isEmpty { throw ProtocolError("a calendar verb names its event") }
+            self = try c.decode(String.self, forKey: .kind) == "calendarGet" ? .calendarGet(id: id) : .calendarRemove(id: id)
+        case "calendarDispose":
+            let calendar = try c.decode(String.self, forKey: .calendar)
+            if calendar.isEmpty { throw ProtocolError("a calendar verb names its calendar") }
+            self = .calendarDispose(calendar: calendar)
         case let k:
             throw ProtocolError("unknown verb \(k)")
         }
@@ -587,6 +618,14 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
         case let .raise(pid, windowId, taskId):
             try c.encode("raise", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
             try c.encodeIfPresent(taskId, forKey: .taskId)
+        case let .calendarFind(calendar, title, start, end), let .calendarAdd(calendar, title, start, end):
+            if case .calendarFind = self { try c.encode("calendarFind", forKey: .kind) } else { try c.encode("calendarAdd", forKey: .kind) }
+            try c.encode(calendar, forKey: .calendar); try c.encode(title, forKey: .title); try c.encode(start, forKey: .start); try c.encode(end, forKey: .end)
+        case let .calendarGet(id), let .calendarRemove(id):
+            if case .calendarGet = self { try c.encode("calendarGet", forKey: .kind) } else { try c.encode("calendarRemove", forKey: .kind) }
+            try c.encode(id, forKey: .id)
+        case let .calendarDispose(calendar):
+            try c.encode("calendarDispose", forKey: .kind); try c.encode(calendar, forKey: .calendar)
         }
     }
 }
@@ -671,7 +710,40 @@ public struct ActRevoke: Codable, Equatable, Sendable {
     }
 }
 
-public enum VerbOutcome: String, Codable, Sendable { case ok, notAllowed, noWindow, noElement, changed, secure, axError }
+public enum VerbOutcome: String, Codable, Sendable { case ok, notAllowed, noWindow, noElement, changed, secure, axError, blocked }
+
+/// Why the calendar adapter refused: no Calendar access (the reader never asks for it), or no local source.
+public enum CalendarBlock: String, Codable, Sendable { case tcc, noLocalSource }
+
+/// One event in a calendar the reader created, as the calendar verbs answer it.
+public struct CalendarEventRecord: Codable, Equatable, Sendable {
+    public var id: String
+    public var calendar: String
+    public var title: String
+    public var start: String
+    public var end: String
+    public init(id: String, calendar: String, title: String, start: String, end: String) {
+        self.id = id; self.calendar = calendar; self.title = title; self.start = start; self.end = end
+    }
+}
+
+/// ISO 8601 times with an offset, as protocol.ts's z.iso.datetime({ offset: true }) takes them.
+public enum CalendarTime {
+    public static func parse(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: s)
+    }
+    /// Local wall-clock time with the offset that applies on that date.
+    public static func format(_ d: Date, zone: TimeZone = .current) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = zone
+        return f.string(from: d)
+    }
+}
 
 public struct VerbResult: Codable, Equatable, Sendable {
     public static let type = "verbResult"
@@ -679,20 +751,28 @@ public struct VerbResult: Codable, Equatable, Sendable {
     public var at: Int64
     public var outcome: VerbOutcome
     public var detail: String?
-    public init(id: String, at: Int64, outcome: VerbOutcome, detail: String?) {
-        self.id = id; self.at = at; self.outcome = outcome; self.detail = detail
+    /// A calendar verb's event: the one found, added or got; nil when there is none.
+    public var event: CalendarEventRecord?
+    /// With outcome blocked, and only there.
+    public var blocked: CalendarBlock?
+    public init(id: String, at: Int64, outcome: VerbOutcome, detail: String?, event: CalendarEventRecord? = nil, blocked: CalendarBlock? = nil) {
+        self.id = id; self.at = at; self.outcome = outcome; self.detail = detail; self.event = event; self.blocked = blocked
     }
-    enum CodingKeys: String, CodingKey { case id, at, outcome, detail }
+    enum CodingKeys: String, CodingKey { case id, at, outcome, detail, event, blocked }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); at = try c.decode(Int64.self, forKey: .at)
         outcome = try c.decode(VerbOutcome.self, forKey: .outcome); detail = try c.decodeNullable(String.self, forKey: .detail)
+        event = try c.decodeOptional(CalendarEventRecord.self, forKey: .event)
+        blocked = try c.decodeOptional(CalendarBlock.self, forKey: .blocked)
+        if (outcome == .blocked) != (blocked != nil) { throw ProtocolError("blocked comes with outcome blocked, and blocked needs it") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id); try c.encode(at, forKey: .at); try c.encode(outcome, forKey: .outcome); try c.encode(detail, forKey: .detail)
+        try c.encodeIfPresent(event, forKey: .event); try c.encodeIfPresent(blocked, forKey: .blocked)
     }
 }
 
@@ -744,7 +824,9 @@ public struct TaskProgress: Codable, Equatable, Sendable {
     public var notUndoablePresses: Int?
     /// On `stopped`, and only there: why. The activity record of the same stop says "failed".
     public var stopReason: StopReason?
-    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail, written, restored, notRestored, notUndoablePresses, stopReason }
+    /// On `handoff` only: the calendar step needs Calendar access or a local account from the user.
+    public var blocked: CalendarBlock?
+    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail, written, restored, notRestored, notUndoablePresses, stopReason, blocked }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -757,6 +839,8 @@ public struct TaskProgress: Codable, Equatable, Sendable {
         for n in [written, restored, notRestored, notUndoablePresses] where (n ?? 0) < 0 { throw ProtocolError("taskProgress counts are never negative") }
         stopReason = try c.decodeOptional(StopReason.self, forKey: .stopReason)
         if (phase == .stopped) != (stopReason != nil) { throw ProtocolError("stopReason is on stopped progress, and only there") }
+        blocked = try c.decodeOptional(CalendarBlock.self, forKey: .blocked)
+        if blocked != nil && phase != .handoff { throw ProtocolError("blocked is on a hand-off only") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
@@ -766,7 +850,7 @@ public struct TaskProgress: Codable, Equatable, Sendable {
         try c.encode(says, forKey: .says); try c.encode(detail, forKey: .detail)
         try c.encodeIfPresent(written, forKey: .written); try c.encodeIfPresent(restored, forKey: .restored)
         try c.encodeIfPresent(notRestored, forKey: .notRestored); try c.encodeIfPresent(notUndoablePresses, forKey: .notUndoablePresses)
-        try c.encodeIfPresent(stopReason, forKey: .stopReason)
+        try c.encodeIfPresent(stopReason, forKey: .stopReason); try c.encodeIfPresent(blocked, forKey: .blocked)
     }
 }
 
@@ -778,6 +862,7 @@ public enum Message: Codable, Equatable, Sendable {
     case fillResult(FillResult), taskControl(TaskControl), activityRequest(ActivityRequest), activity(Activity), activityReply(ActivityReply)
     case alternatives(OfferAlternatives), action(OfferAction), popup(OfferPopup), offerAccept(OfferAccept), offerStop(OfferStop)
     case offerWithdrawn(OfferWithdrawn), settings(GateSettings), actGrant(ActGrant), actRevoke(ActRevoke)
+    case planRequest(PlanRequest), planProposal(PlanProposal)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -809,6 +894,8 @@ public enum Message: Codable, Equatable, Sendable {
         case GateSettings.type: self = .settings(try GateSettings(from: decoder))
         case ActGrant.type: self = .actGrant(try ActGrant(from: decoder))
         case ActRevoke.type: self = .actRevoke(try ActRevoke(from: decoder))
+        case PlanRequest.type: self = .planRequest(try PlanRequest(from: decoder))
+        case PlanProposal.type: self = .planProposal(try PlanProposal(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -842,6 +929,8 @@ public enum Message: Codable, Equatable, Sendable {
         case .settings(let m): try m.encode(to: encoder)
         case .actGrant(let m): try m.encode(to: encoder)
         case .actRevoke(let m): try m.encode(to: encoder)
+        case .planRequest(let m): try m.encode(to: encoder)
+        case .planProposal(let m): try m.encode(to: encoder)
         }
     }
 }

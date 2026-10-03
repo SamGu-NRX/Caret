@@ -58,6 +58,8 @@ const helper = new Helper({
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
+  // Event cards add to the reader's EventKit adapter, which answers only when started with --calendar-test.
+  calendar: "reader",
   warn,
 });
 server = new HelperServer(args.socket, () => helper, warn);

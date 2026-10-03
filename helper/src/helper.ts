@@ -45,7 +45,7 @@ import {
 } from "./protocol.ts";
 import type { Change } from "./model.ts";
 import { Executor, type ExecutorDeps, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
-import { SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
+import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
 import { MemoryStore } from "./patterns/memory.ts";
 import { PatternEngine } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
@@ -82,7 +82,11 @@ export interface HelperOptions {
   sendToReader?: (m: HelperToReader) => boolean;
   /** Replaces the socket link to the reader, for tests that simulate the reader in process. */
   readerLink?: ReaderLink;
-  calendar?: CalendarPort | null;
+  /**
+   * Where calendar end states are written: a port, "reader" for the reader's EventKit adapter over the
+   * same link the executor acts through (ReaderCalendar), or null for none.
+   */
+  calendar?: CalendarPort | "reader" | null;
   /** Memory entries, the decision log and reactions. Defaults to a store beside `store`'s database. */
   memory?: MemoryStore;
   urls?: UrlOpener | null;
@@ -230,7 +234,7 @@ export class Helper {
     this.executor = new Executor({
       model: this.model,
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
-      calendar: opts.calendar ?? null,
+      calendar: opts.calendar === "reader" ? new ReaderCalendar(opts.readerLink ?? (this.socketLink as SocketReaderLink)) : (opts.calendar ?? null),
       urls: opts.urls ?? null,
       askJev: opts.askJev,
       publish: (m) => this.publish(m),

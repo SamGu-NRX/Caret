@@ -20,7 +20,20 @@ describe("golden protocol fixture", () => {
       "settings", "settings", "offerWithdrawn",
       "actGrant", "readerCommand", "verbResult", "actRevoke",
       "planRequest", "planProposal", "planProposal",
+      "readerCommand", "verbResult", "verbResult", "taskProgress",
     ]);
+  });
+
+  it("carries B16's calendar verbs: an add, its event, a refusal for no Calendar access, and the hand-off it becomes", () => {
+    const [add, added, blocked, handoff] = lines.slice(41, 45).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(HelperToReader.parse(add)).toMatchObject({ verb: { kind: "calendarAdd", calendar: "Caret Test" } });
+    expect(ConsumerMessage.safeParse(add).success).toBe(false);
+    expect(ReaderMessage.parse(added)).toMatchObject({ outcome: "ok", event: { id: "ev-1", title: "Coffee with Dana" } });
+    expect(ReaderMessage.parse(blocked)).toMatchObject({ outcome: "blocked", blocked: "tcc" });
+    expect(HelperMessage.parse(handoff)).toMatchObject({ phase: "handoff", blocked: "tcc" });
+    expect(ReaderMessage.safeParse({ ...blocked, blocked: undefined }).success).toBe(false);
+    expect(ReaderMessage.safeParse({ ...added, blocked: "tcc" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...handoff, phase: "done" }).success).toBe(false);
   });
 
   it("carries B16's planner pair: a request from the host, a proposal with a hand-off, and an error", () => {

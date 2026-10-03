@@ -23,6 +23,8 @@ public struct ReaderOptions: Sendable {
     /// The helper's act grants, filled by the socket client as grant lines arrive.
     public var grants = GrantTable()
     public var pasteboardPoll: TimeInterval = 0.5
+    /// The calendar adapter, only with --calendar-test; nil answers every calendar verb notAllowed.
+    public var calendar: CalendarAdapter?
     /// False leaves AXManualAccessibility alone. A read-only audit beside another reader sets nothing in
     /// any app; the other reader has already asked Chromium and Electron apps for their trees.
     public var setManualAccessibility = true
@@ -42,6 +44,8 @@ public final class ScreenReader {
     private var started = false
     private var watchedPids: Set<pid_t> = []
     private var inputMonitor: Any?
+    /// EventKit calls block, so calendar verbs run here, one at a time, off the main thread.
+    private let calendarQueue = DispatchQueue(label: "caret.screen.calendar")
 
     public init(ctx: ReaderContext, options: ReaderOptions) {
         self.ctx = ctx
@@ -116,6 +120,27 @@ public final class ScreenReader {
             return
         case let .walk(p, _), let .write(p, _, _, _, _, _, _, _), let .press(p, _, _, _, _, _), let .raise(p, _, _):
             pid = pid_t(p)
+        case .calendarFind, .calendarAdd, .calendarGet, .calendarRemove, .calendarDispose:
+            guard let calendar = opts.calendar else {
+                answer(.notAllowed, "the reader was not started with --calendar-test")
+                return
+            }
+            calendarQueue.async {
+                let at = nowMs()
+                // As with acts in a window: past the helper's deadline, it has already reported the step as failed.
+                if at > cmd.expires {
+                    emitter.send(.verbResult(VerbResult(id: cmd.id, at: at, outcome: .axError, detail: "the command expired before the calendar was reached")))
+                    return
+                }
+                let result: VerbResult
+                switch calendar.perform(cmd.verb) {
+                case let .ok(event): result = VerbResult(id: cmd.id, at: nowMs(), outcome: .ok, detail: nil, event: event)
+                case let .blocked(b): result = VerbResult(id: cmd.id, at: nowMs(), outcome: .blocked, detail: nil, blocked: b)
+                case let .refused(o, d): result = VerbResult(id: cmd.id, at: nowMs(), outcome: o, detail: d)
+                }
+                emitter.send(.verbResult(result))
+            }
+            return
         }
         guard let w = workers[pid] else {
             answer(.noWindow, "the reader does not read process \(pid)")

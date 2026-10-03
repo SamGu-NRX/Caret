@@ -162,7 +162,18 @@ export type Pasteboard = z.infer<typeof Pasteboard>;
  * only when something changed. An empty list ends every watch. It only reads, so it needs no `--act-pids`.
  * `raise` brings one window to the front and activates its app (AXRaise, then activation), re-walks it
  * and sends the snapshot; it writes nothing, but it moves focus, so it is gated like write and press.
+ * The calendar verbs (B16) reach EventKit, which needs a native process. They touch no app window, so act
+ * grants do not cover them; the reader answers them only when started with --calendar-test, and then only
+ * in calendars it created itself on a local (On My Mac) source, which `calendarDispose` deletes. It never
+ * asks for Calendar access: without it, or without a local source, the answer is `blocked`.
  */
+/** One event in a calendar, as the calendar verbs name it: times are ISO 8601 with offset. */
+const CalendarSlot = { calendar: z.string().min(1), title: z.string(), start: z.iso.datetime({ offset: true }), end: z.iso.datetime({ offset: true }) };
+export const CalendarEventShape = z.object({ id: z.string().min(1), ...CalendarSlot });
+/** Why the reader's calendar refused: no Calendar access (it never asks), or no local source to create its calendar on. */
+export const CalendarBlock = z.enum(["tcc", "noLocalSource"]);
+export type CalendarBlock = z.infer<typeof CalendarBlock>;
+
 /** The task whose act grant covers a write, press or raise. Without it only `--act-pids` processes are acted in. */
 const GrantTask = z.string().min(1).optional();
 export const ReaderCommand = z.object({
@@ -206,10 +217,26 @@ export const ReaderCommand = z.object({
     z.object({ kind: z.literal("watchInput"), pids: z.array(z.number().int()) }),
     z.object({ kind: z.literal("watchWindows"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
     z.object({ kind: z.literal("raise"), pid: z.number().int(), windowId: z.string(), taskId: GrantTask }),
+    /** The event with this title, start and end in the reader's calendar of this name, if any. */
+    z.object({ kind: z.literal("calendarFind"), ...CalendarSlot }),
+    /** Adds the event, creating the calendar on a local source first if the reader has not yet. */
+    z.object({ kind: z.literal("calendarAdd"), ...CalendarSlot }),
+    /** One event by id, if it is in a calendar the reader created. */
+    z.object({ kind: z.literal("calendarGet"), id: z.string().min(1) }),
+    /** Removes an event by id, only from a calendar the reader created. */
+    z.object({ kind: z.literal("calendarRemove"), id: z.string().min(1) }),
+    /** Deletes the calendar of this name the reader created, with its events. Nothing else is touched. */
+    z.object({ kind: z.literal("calendarDispose"), calendar: z.string().min(1) }),
   ]),
 });
 export type ReaderCommand = z.infer<typeof ReaderCommand>;
 export type ReaderVerb = ReaderCommand["verb"];
+export type CalendarVerb = Extract<ReaderVerb, { kind: "calendarFind" | "calendarAdd" | "calendarGet" | "calendarRemove" | "calendarDispose" }>;
+const CALENDAR_VERBS: ReadonlySet<string> = new Set(["calendarFind", "calendarAdd", "calendarGet", "calendarRemove", "calendarDispose"]);
+/** A verb for the reader's calendar adapter rather than an app's window. */
+export function isCalendarVerb(v: ReaderVerb): v is CalendarVerb {
+  return CALENDAR_VERBS.has(v.kind);
+}
 
 /**
  * Longest an act grant lasts after the reader receives it, whatever its `expires` says. Assumed, not
@@ -260,18 +287,28 @@ export const VerbOutcome = z.enum([
   "secure",
   /** The Accessibility call itself failed; `detail` holds its error code. */
   "axError",
+  /** A calendar verb the reader may not carry out here; `blocked` says why. */
+  "blocked",
 ]);
 export type VerbOutcome = z.infer<typeof VerbOutcome>;
 
-/** The reader's answer to one readerCommand. Any snapshot the verb produced was sent before it. */
-export const VerbResult = z.object({
-  type: z.literal("verbResult"),
-  v: z.literal(PROTOCOL_VERSION),
-  id: z.string(),
-  at: ms,
-  outcome: VerbOutcome,
-  detail: z.string().nullable(),
-});
+/**
+ * The reader's answer to one readerCommand. Any snapshot the verb produced was sent before it. A calendar
+ * verb's answer carries the event it found, added or got (absent when there is none); `blocked` comes
+ * with outcome `blocked` and no other.
+ */
+export const VerbResult = z
+  .object({
+    type: z.literal("verbResult"),
+    v: z.literal(PROTOCOL_VERSION),
+    id: z.string(),
+    at: ms,
+    outcome: VerbOutcome,
+    detail: z.string().nullable(),
+    event: CalendarEventShape.optional(),
+    blocked: CalendarBlock.optional(),
+  })
+  .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] });
 export type VerbResult = z.infer<typeof VerbResult>;
 
 /**
@@ -699,13 +736,16 @@ const TaskProgressFields = z.object({
   notUndoablePresses: z.number().int().nonnegative().optional(),
 });
 /**
- * A stopped progress says why in `stopReason`, and no other phase may carry one. Two variants on the
- * phase rather than a refinement, so the exported JSON Schema states the rule too.
+ * A stopped progress says why in `stopReason`, and no other phase may carry one. A hand-off may say
+ * `blocked` (B16): the calendar step needs something only the user can give, Calendar access or a local
+ * calendar account. Variants on the phase rather than refinements, so the exported JSON Schema states
+ * the rules too.
  */
 export const TaskProgress = z.discriminatedUnion("phase", [
-  TaskProgressFields.extend({ phase: TaskPhase.exclude(["stopped"]), stopReason: z.never().optional() }),
+  TaskProgressFields.extend({ phase: TaskPhase.exclude(["stopped", "handoff"]), stopReason: z.never().optional(), blocked: z.never().optional() }),
+  TaskProgressFields.extend({ phase: z.literal("handoff"), stopReason: z.never().optional(), blocked: CalendarBlock.optional() }),
   /** The activity record of the same stop says "failed". */
-  TaskProgressFields.extend({ phase: z.literal("stopped"), stopReason: StopReason }),
+  TaskProgressFields.extend({ phase: z.literal("stopped"), stopReason: StopReason, blocked: z.never().optional() }),
 ]);
 export type TaskProgress = z.infer<typeof TaskProgress>;
 

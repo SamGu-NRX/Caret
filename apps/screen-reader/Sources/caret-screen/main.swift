@@ -4,12 +4,19 @@
 //                [--event-pids P,P] [--event-bundles B,B] [--only-pids P,P] [--act-pids P,P]
 //                [--record FILE] [--e1-log FILE] [--no-manual-ax]
 //   caret-screen --e8 --pids P,P [--title-match REGEX] [--runs N] [--interval S] --out FILE
+//   caret-screen --calendar-probe | --calendar-audit TITLE
+//
+// --calendar-test answers the helper's calendar verbs through EventKit, in calendars the reader creates
+// on a local source and deletes when it stops (CalendarAdapter). It never asks for Calendar access.
+// --calendar-probe prints the Calendar authorization status and nothing else; --calendar-audit prints,
+// through a store of its own, every event calendar with that title and its source. Both only read.
 //
 // Default mode streams NDJSON to the helper's socket. --shadow tells the helper to log
 // opportunities and show nothing. Launch by direct exec so the process inherits Accessibility.
 import AppKit
 import ApplicationServices
 import CaretScreenAX
+import CaretScreenCalendar
 import CaretScreenCore
 import Foundation
 
@@ -63,10 +70,30 @@ let titleMatch = option("--title-match")
 let runs = Int(option("--runs") ?? "100") ?? 100
 let interval = TimeInterval(option("--interval") ?? "0.25") ?? 0.25
 let outPath = option("--out")
+let calendarTest = flag("--calendar-test")
+let calendarProbe = flag("--calendar-probe")
+let calendarAudit = option("--calendar-audit")
 if !args.isEmpty { fail("unknown arguments: \(args.joined(separator: " "))") }
 // A recording holds screen text, so it is only allowed for processes named explicitly (fixtures).
 if recordPath != nil && onlyPids.isEmpty { fail("--record writes screen text to disk; it needs --only-pids naming fixture processes") }
 if !actPids.isEmpty && !actPids.isSubset(of: onlyPids) { fail("--act-pids must be a subset of --only-pids: the executor acts without a grant only in fixture processes") }
+
+// The calendar probes only read, and need no Accessibility, so they run before that check.
+if calendarProbe {
+    print(#"{"calendar":"\#(EventKitBackend.statusName())"}"#)
+    exit(0)
+}
+if let title = calendarAudit {
+    do {
+        let found = try EventKitBackend.audit(title: title)
+        let data = try JSONSerialization.data(withJSONObject: ["title": title, "calendars": found], options: [.sortedKeys])
+        print(String(decoding: data, as: UTF8.self))
+        exit(0)
+    } catch {
+        print(#"{"error":"\#(error)"}"#)
+        exit(3)
+    }
+}
 
 guard AXIsProcessTrusted() else {
     fail("not trusted for Accessibility. Launch the binary directly from a process that has the grant.")
@@ -121,6 +148,8 @@ options.eventPids = eventPids
 options.onlyPids = onlyPids
 options.eventBundles = eventBundles
 options.actPids = actPids
+let calendarAdapter = calendarTest ? CalendarAdapter(backend: EventKitBackend()) : nil
+options.calendar = calendarAdapter
 socket.grants = options.grants
 options.setManualAccessibility = !noManualAX
 let reader = MainActor.assumeIsolated { ScreenReader(ctx: ctx, options: options) }
@@ -144,6 +173,12 @@ for sig in [SIGINT, SIGTERM] {
     let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     src.setEventHandler {
         ctx.log("stopping; sent \(socket.sent) messages, dropped \(socket.dropped), e1 lines \(recorder?.count ?? 0)")
+        // The calendars it created go with it.
+        if let cal = calendarAdapter {
+            let left = cal.ownedCalendars
+            let errors = cal.disposeAll()
+            ctx.log("calendar: deleted \(left.count - errors.count) of \(left.count) calendars it created\(errors.isEmpty ? "" : "; \(errors.joined(separator: "; "))")")
+        }
         exit(0)
     }
     src.resume()

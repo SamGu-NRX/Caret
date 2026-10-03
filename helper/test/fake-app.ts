@@ -1,7 +1,7 @@
 // An in-process stand-in for the reader and one app window, for executor tests. It answers reader
 // verbs the way caret-screen does: recheck the target, act, and send a fresh snapshot before the
 // answer. Buttons run small handlers. Everything here is synthetic.
-import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
+import { isCalendarVerb, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import type { Helper } from "../src/helper.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
 import { FIXTURE_APP, snap } from "./builders.ts";
@@ -78,6 +78,7 @@ export class FakeApp implements ReaderLink {
 
   private perform(verb: ReaderVerb): { outcome: VerbResult["outcome"]; detail: string | null } {
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return { outcome: "ok", detail: null };
+    if (isCalendarVerb(verb)) return { outcome: "notAllowed", detail: "the fake app has no calendar" };
     if (verb.kind === "walk" && this.readable.has(verb.windowId)) return { outcome: "ok", detail: null };
     if (verb.pid !== FIXTURE_APP.pid) return { outcome: "notAllowed", detail: null };
     if (verb.windowId !== WIN) return { outcome: "noWindow", detail: null };

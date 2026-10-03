@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { fileURLToPath } from "node:url";
-import { HelperToReader, PROTOCOL_VERSION, ReaderMessage, type ReaderCommand, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
+import { HelperToReader, isCalendarVerb, PROTOCOL_VERSION, ReaderMessage, type CalendarVerb, type ReaderCommand, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
 import { FakeGrants } from "./fake-grants.ts";
 
 /** A line-oriented client: every message received is kept in order, and a test can wait for one. */
@@ -98,6 +98,8 @@ export class SocketReader {
   readonly grants = new FakeGrants();
   /** Refuses write, press and raise without a live grant, as caret-screen without --act-pids does. Off by default. */
   enforceGrants = false;
+  /** Plays caret-screen's EventKit adapter for calendar verbs; null answers as a reader without --calendar-test does. */
+  calendar: ((verb: CalendarVerb) => Pick<VerbResult, "outcome" | "detail" | "event" | "blocked">) | null = null;
   /** Each app's own focused window, which it keeps while it is in the background. */
   private readonly appFocus = new Map<number, string>();
   /** The recording's clock, carried on into the snapshots verbs produce. */
@@ -202,6 +204,12 @@ export class SocketReader {
     const reply = (outcome: VerbResult["outcome"], detail: string | null = null): void =>
       this.client.send({ type: "verbResult", v: PROTOCOL_VERSION, id: cmd.id, at: this.clock, outcome, detail } satisfies VerbResult);
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return reply("ok");
+    if (isCalendarVerb(verb)) {
+      // As caret-screen answers without --calendar-test, unless a test plays its EventKit adapter.
+      const r = this.calendar?.(verb) ?? { outcome: "notAllowed" as const, detail: "the reader was not started with --calendar-test" };
+      this.client.send({ type: "verbResult", v: PROTOCOL_VERSION, id: cmd.id, at: this.clock, ...r } satisfies VerbResult);
+      return;
+    }
     const refused = this.enforceGrants ? this.grants.refusal(verb) : null;
     if (refused !== null) return reply("notAllowed", refused);
     const w = this.windows.get(verb.windowId);
