@@ -28,7 +28,39 @@ describe("golden protocol fixture", () => {
       "actGrant", "readerCommand", "verbResult", "actRevoke",
       "planRequest", "planProposal", "planProposal",
       "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
+      "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
     ]);
+  });
+
+  it("carries B19's skills: a keep offer and its answer, skill entries in a memory reply, a promote offer, and an unprompted run", () => {
+    const [keep, keepAnswer, reply, promote, promoteAnswer, started, done] = lines.slice(46, 53).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(HelperMessage.parse(keep)).toMatchObject({ kind: "keep", skillId: null, says: "Keep this as Subject and To into Mail Fixture?", detail: "Caret will offer it when you start it again." });
+    expect(HelperMessage.parse(promote)).toMatchObject({ kind: "promote", skillId: "skill-5e6f7a8b", says: "Do this one on your own from now on?", detail: "You'll see it happen and can undo it." });
+    for (const a of [keepAnswer, promoteAnswer]) {
+      expect(ConsumerMessage.parse(a)).toMatchObject({ type: "skillAnswer", answer: "accept" });
+      expect(HelperMessage.safeParse(a).success).toBe(false);
+      expect(ConsumerMessage.safeParse({ ...a, answer: "later" }).success).toBe(false);
+    }
+    expect(ConsumerMessage.safeParse(keep).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...keep, skillId: "skill-5e6f7a8b" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...promote, skillId: null }).success).toBe(false);
+    const parsed = HelperMessage.parse(reply) as { entries: { kind: string; status: string; fields: Record<string, unknown> }[] };
+    expect(parsed.entries.map((e) => [e.kind, e.status])).toEqual([["skill", "learning"], ["skill", "learning"], ["routine", "active"]]);
+    expect(parsed.entries[0]?.fields).toMatchObject({ name: "Subject and To into Mail Fixture", trigger: "a Mail Fixture window opens with Subject, To and Link empty", runs: 10, cleanRuns: 10, needed: 10, onItsOwn: false, handsOff: null });
+    expect(parsed.entries[1]?.fields).toMatchObject({ handsOff: { label: "Send", why: "outbound" } });
+    const badSkill = structuredClone(reply) as { entries: { fields: Record<string, unknown> }[] };
+    badSkill.entries[1]!.fields.handsOff = { label: "Send", why: "unverifiable" };
+    expect(HelperMessage.safeParse(badSkill).success).toBe(false);
+    // The two shapes CaretScreenCore refuses too: a hands-off skill on its own, and a status its fields contradict.
+    const onItsOwn = structuredClone(reply) as { entries: { status: string; fields: Record<string, unknown> }[] };
+    onItsOwn.entries[1]!.fields.onItsOwn = true;
+    onItsOwn.entries[1]!.status = "active";
+    expect(HelperMessage.safeParse(onItsOwn).success).toBe(false);
+    const wrongStatus = structuredClone(reply) as { entries: { status: string }[] };
+    wrongStatus.entries[0]!.status = "active";
+    expect(HelperMessage.safeParse(wrongStatus).success).toBe(false);
+    for (const p of [started, done]) expect(HelperMessage.parse(p)).toMatchObject({ unprompted: true });
+    expect(HelperMessage.safeParse({ ...done, unprompted: false }).success).toBe(false);
   });
 
   it("carries B16's calendar verbs: an add, its event, a refusal for no Calendar access, and the hand-off it becomes", () => {

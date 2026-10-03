@@ -10,13 +10,17 @@
 import { normalizeValue } from "../normalize.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { ValueKind } from "../protocol.ts";
-import type { MemoryStore, RoutineRecord, RoutineStep } from "./memory.ts";
+import { classifyLabel } from "../executor/risk.ts";
+import type { MemoryStore, RoutineFinish, RoutineRecord, RoutineStep } from "./memory.ts";
 import { locate, windowIndex, type Part, type PatternTransfer } from "./shape.ts";
 
 /** A bundle with no transfer for this long is complete. Assumed, not measured. */
 export const BUNDLE_IDLE_MS = 120_000;
 /** Distinct shapes a bundle needs to count as a routine. One shape repeated is a loop, not a routine. */
 export const MIN_ROUTINE_STEPS = 2;
+/** Values kept per routine for the naming check (naming.ts), in memory only. Bounded; no measurement behind either number. */
+const VALUES_PER_ROUTINE = 64;
+const ROUTINES_WITH_VALUES = 500;
 
 export interface RoutineCell {
   step: number;
@@ -37,6 +41,8 @@ export interface SilentPrediction {
   /** One per step; null where the step's source is not on screen now. */
   cells: (RoutineCell | null)[];
   grounded: boolean;
+  /** The routine's finish press (RoutineRecord.finish) found in this window now, or null. */
+  finish: { key: string; label: string; why: RoutineFinish["why"] } | null;
 }
 
 export interface BundleClose {
@@ -45,7 +51,8 @@ export interface BundleClose {
   sig: string | null;
   /** The routine this bundle counted for; null when it is too small or was forgotten recently. */
   recorded: RoutineRecord | null;
-  scored: { routineId: string; hit: boolean }[];
+  /** Each silent prediction scored, with the cells it predicted, which name the fields and sources. */
+  scored: { routineId: string; hit: boolean; cells: RoutineCell[] }[];
 }
 
 interface Bundle {
@@ -60,6 +67,8 @@ export type Hash = (text: string) => string;
 export class RoutineRecognizer {
   private readonly bundles = new Map<string, Bundle>();
   private readonly templateHashes = new Map<string, string>();
+  /** Values each routine (by signature) was seen copying in this session, for the naming check. Never persisted. */
+  private readonly seenValues = new Map<string, Set<string>>();
   private readonly model: ScreenModel;
   private readonly memory: MemoryStore;
   private readonly hash: Hash;
@@ -81,7 +90,7 @@ export class RoutineRecognizer {
   predict(windowId: string, at: number): SilentPrediction[] {
     const w = this.model.windows.get(windowId);
     if (w === undefined) return [];
-    const routines = this.memory.routinesInto(w.app.bundleId, w.window.kind).filter((r) => !r.paused);
+    const routines = this.memory.routinesInto(w.app.bundleId, w.window.kind).filter((r) => !r.paused && !r.skillPaused);
     if (routines.length === 0) return [];
     const templates = this.templatesOf(w);
     const out: SilentPrediction[] = [];
@@ -114,7 +123,12 @@ export class RoutineRecognizer {
         );
       }
       if (!applies) continue;
-      out.push({ routine, dstWindowId: windowId, at, cells, grounded: cells.every((c) => c !== null) });
+      const f = routine.finish?.ambiguous === true ? null : routine.finish;
+      const button = f === null ? undefined : templates.get(f.templateHash);
+      const hit = button === undefined || f === null ? null : locate(this.model, windowId, button, f.pos, "whole");
+      // The press must still read as it did, or the plan would name a control the risk table sees otherwise.
+      const finish = hit === null || f === null || (hit.node.label ?? "").trim() !== f.label ? null : { key: hit.key, label: f.label, why: f.why };
+      out.push({ routine, dstWindowId: windowId, at, cells, grounded: cells.every((c) => c !== null), finish });
     }
     return out;
   }
@@ -129,7 +143,12 @@ export class RoutineRecognizer {
     const b = this.bundles.get(windowId);
     if (b === undefined) return null;
     this.bundles.delete(windowId);
-    return this.close(b);
+    return this.close(b, true);
+  }
+
+  /** Values the routine with this signature was seen copying in this session, for the naming check. */
+  valuesOf(sig: string): string[] {
+    return [...(this.seenValues.get(sig) ?? [])];
   }
 
   tick(now: number): BundleClose[] {
@@ -155,12 +174,12 @@ export class RoutineRecognizer {
     return b;
   }
 
-  /** Scores and counts in one transaction: a bundle closes on the event path. */
-  private close(b: Bundle): BundleClose {
-    return this.memory.batch(() => this.closeNow(b));
+  /** Scores and counts in one transaction: a bundle closes on the event path. `windowClosed`: its window closed, which ends an occurrence with its last press. */
+  private close(b: Bundle, windowClosed = false): BundleClose {
+    return this.memory.batch(() => this.closeNow(b, windowClosed));
   }
 
-  private closeNow(b: Bundle): BundleClose {
+  private closeNow(b: Bundle, windowClosed: boolean): BundleClose {
     // The last transfer of each shape counts: a value copied and then replaced from another row is the replacement.
     const last = new Map<string, PatternTransfer>();
     for (const t of b.transfers) {
@@ -188,10 +207,54 @@ export class RoutineRecognizer {
           return t !== undefined && normalizeValue(t.value, c.kind) === normalizeValue(c.value, c.kind);
         });
       this.memory.scoreRoutine(p.routine.id, hit);
-      scored.push({ routineId: p.routine.id, hit });
+      scored.push({ routineId: p.routine.id, hit, cells: p.cells.filter((c): c is RoutineCell => c !== null) });
     }
-    const recorded = sig === null ? null : this.memory.recordRoutine(sig, steps, b.lastAt);
+    if (sig !== null) this.keepValues(sig, [...done.map((t) => t.value), ...b.predictions.flatMap((p) => p.cells.flatMap((c) => (c === null ? [] : [c.value])))]);
+    // Read from the destination whether it closed or went idle; a press once learned is never forgotten, so a
+    // routine that has ended in a risky press stays one that never runs on its own.
+    const finish = dst === undefined ? undefined : (this.finishOf(dst) ?? undefined);
+    const recorded = sig === null ? null : this.memory.recordRoutine(sig, steps, b.lastAt, finish);
     return { dstWindowId: b.dstWindowId, sig, recorded, scored };
+  }
+
+  private keepValues(sig: string, values: readonly string[]): void {
+    let s = this.seenValues.get(sig);
+    if (s === undefined) {
+      if (this.seenValues.size >= ROUTINES_WITH_VALUES) this.seenValues.delete(this.seenValues.keys().next().value as string);
+      this.seenValues.set(sig, (s = new Set()));
+    }
+    for (const v of values) {
+      if (s.has(v)) continue;
+      if (s.size >= VALUES_PER_ROUTINE) s.delete(s.values().next().value as string);
+      s.add(v);
+    }
+  }
+
+  /**
+   * The press an occurrence may end with, read from its destination window when its bundle closes: the
+   * window's one button whose label reads as outbound, or failing that its one button that reads as
+   * destructive or money (executor/risk.ts). Several of them with none to pick come back `ambiguous`,
+   * naming them all. Null when the window has none. The guess only ever adds a hand-off or holds a skill on
+   * Tab: Caret never presses it.
+   */
+  private finishOf(w: WindowState): RoutineFinish | null {
+    const risky: { key: string; label: string; why: RoutineFinish["why"] }[] = [];
+    for (const n of w.nodes.values()) {
+      if (n.role !== "AXButton") continue;
+      const label = (n.label ?? "").trim();
+      const why = label === "" ? "safe" : classifyLabel(label);
+      if (why !== "safe") risky.push({ key: n.key, label, why });
+    }
+    const first = risky[0];
+    if (first === undefined) return null;
+    const outbound = risky.filter((r) => r.why === "outbound");
+    const pick = outbound.length === 1 ? outbound[0] : risky.length === 1 ? first : undefined;
+    const at = pick ?? outbound[0] ?? first;
+    const slot = windowIndex(w).slots.get(at.key);
+    if (slot === undefined) return null;
+    const base = { why: at.why, templateHash: this.templateHash(slot.template), pos: slot.pos };
+    if (pick !== undefined) return { ...base, label: pick.label };
+    return { ...base, label: [...new Set(risky.map((r) => r.label))].join(" or "), ambiguous: true };
   }
 
   private step(t: PatternTransfer): RoutineStep {

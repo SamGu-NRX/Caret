@@ -895,7 +895,9 @@ public struct TaskProgress: Codable, Equatable, Sendable {
     public var stopReason: StopReason?
     /// On `handoff` only: the calendar step needs Calendar access or a local account from the user.
     public var blocked: CalendarBlock?
-    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail, written, restored, notRestored, notUndoablePresses, stopReason, blocked }
+    /// B19: true on every progress of a run a skill started from its trigger without a Tab; nil on every other run.
+    public var unprompted: Bool?
+    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail, written, restored, notRestored, notUndoablePresses, stopReason, blocked, unprompted }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -910,6 +912,8 @@ public struct TaskProgress: Codable, Equatable, Sendable {
         if (phase == .stopped) != (stopReason != nil) { throw ProtocolError("stopReason is on stopped progress, and only there") }
         blocked = try c.decodeOptional(CalendarBlock.self, forKey: .blocked)
         if blocked != nil && phase != .handoff { throw ProtocolError("blocked is on a hand-off only") }
+        unprompted = try c.decodeOptional(Bool.self, forKey: .unprompted)
+        if unprompted == false { throw ProtocolError("unprompted is true or absent") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
@@ -920,6 +924,7 @@ public struct TaskProgress: Codable, Equatable, Sendable {
         try c.encodeIfPresent(written, forKey: .written); try c.encodeIfPresent(restored, forKey: .restored)
         try c.encodeIfPresent(notRestored, forKey: .notRestored); try c.encodeIfPresent(notUndoablePresses, forKey: .notUndoablePresses)
         try c.encodeIfPresent(stopReason, forKey: .stopReason); try c.encodeIfPresent(blocked, forKey: .blocked)
+        try c.encodeIfPresent(unprompted, forKey: .unprompted)
     }
 }
 
@@ -932,6 +937,7 @@ public enum Message: Codable, Equatable, Sendable {
     case alternatives(OfferAlternatives), action(OfferAction), popup(OfferPopup), offerAccept(OfferAccept), offerStop(OfferStop)
     case offerWithdrawn(OfferWithdrawn), settings(GateSettings), actGrant(ActGrant), actRevoke(ActRevoke)
     case planRequest(PlanRequest), planProposal(PlanProposal), calendarGrant(CalendarGrant)
+    case skillOffer(SkillOffer), skillAnswer(SkillAnswer), memoryReply(MemoryReply)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -966,6 +972,9 @@ public enum Message: Codable, Equatable, Sendable {
         case PlanRequest.type: self = .planRequest(try PlanRequest(from: decoder))
         case PlanProposal.type: self = .planProposal(try PlanProposal(from: decoder))
         case CalendarGrant.type: self = .calendarGrant(try CalendarGrant(from: decoder))
+        case SkillOffer.type: self = .skillOffer(try SkillOffer(from: decoder))
+        case SkillAnswer.type: self = .skillAnswer(try SkillAnswer(from: decoder))
+        case MemoryReply.type: self = .memoryReply(try MemoryReply(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -1002,6 +1011,9 @@ public enum Message: Codable, Equatable, Sendable {
         case .planRequest(let m): try m.encode(to: encoder)
         case .planProposal(let m): try m.encode(to: encoder)
         case .calendarGrant(let m): try m.encode(to: encoder)
+        case .skillOffer(let m): try m.encode(to: encoder)
+        case .skillAnswer(let m): try m.encode(to: encoder)
+        case .memoryReply(let m): try m.encode(to: encoder)
         }
     }
 }

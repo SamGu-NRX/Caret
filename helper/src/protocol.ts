@@ -400,7 +400,8 @@ export const OfferControl = z.object({
 });
 export type OfferControl = z.infer<typeof OfferControl>;
 
-export const MemoryKind = z.enum(["about", "people", "preference", "routine", "permission"]);
+/** `skill` (B19): a routine the user chose to keep, with its name, trigger and run counts. */
+export const MemoryKind = z.enum(["about", "people", "preference", "routine", "permission", "skill"]);
 export type MemoryKind = z.infer<typeof MemoryKind>;
 
 export const MemoryOp = z.enum(["list", "edit", "pause", "resume", "forget", "add"]);
@@ -615,7 +616,21 @@ export const PlanRequest = z.object({
 });
 export type PlanRequest = z.infer<typeof PlanRequest>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest]);
+/**
+ * The user's answer to a skillOffer (B19), by the offer's `id`. The helper ends the offer with
+ * offerWithdrawn: `taken` after accept, `dismissed` after decline. An answer to an offer that is gone
+ * (expired, answered, or never made) is refused with an error and changes nothing.
+ */
+export const SkillAnswer = z.object({
+  type: z.literal("skillAnswer"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string().min(1),
+  answer: z.enum(["accept", "decline"]),
+  at: ms,
+});
+export type SkillAnswer = z.infer<typeof SkillAnswer>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -775,6 +790,12 @@ const TaskProgressFields = z.object({
   restored: z.number().int().nonnegative().optional(),
   notRestored: z.number().int().nonnegative().optional(),
   notUndoablePresses: z.number().int().nonnegative().optional(),
+  /**
+   * B19: true on every progress of a run a skill started from its trigger without a Tab, because the
+   * user agreed to let it run on its own. The host shows such a run with its progress, a toast, undo and
+   * take over. Absent on every other run.
+   */
+  unprompted: z.literal(true).optional(),
 });
 /**
  * A stopped progress says why in `stopReason`, and no other phase may carry one. A hand-off may say
@@ -829,8 +850,8 @@ export type PatternOffer = z.infer<typeof PatternOffer>;
  * lifetime ended (offers/lifetimes.ts). `reoffered`: the user entered some of a loopFinish's or
  * routine's values by hand, and the rest are offered again under the key in `replacedBy`, which comes
  * with this reason and no other. `settings`: the user paused Caret, or turned off the role or level
- * that allows this kind of offer. `id` is a patternOffer's id, or the offerKey of an alternatives,
- * action or popup message.
+ * that allows this kind of offer. `id` is a patternOffer's id, the offerKey of an alternatives,
+ * action or popup message, or a skillOffer's id (B19: `taken` after accept, `dismissed` after decline).
  */
 export const OfferWithdrawn = z
   .object({
@@ -880,6 +901,32 @@ export const RoutineFields = z.object({
 });
 export const PermissionFields = z.object({ action: ActionType, rule: PermissionRule, fixed: z.boolean() });
 
+/** The risk classes a press can have (executor/risk.ts), as a skill's hand-off names them. */
+export const PressRisk = z.enum(["outbound", "destructive", "money"]);
+export type PressRisk = z.infer<typeof PressRisk>;
+
+/**
+ * A routine the user kept (B19). Code renders every string from the routine's structure: `name` passed
+ * the naming check (patterns/naming.ts: at most six words, names the destination app or a field, holds
+ * no value seen in the routine) or the user typed it.
+ */
+export const SkillFields = z.object({
+  routineId: z.string().min(1),
+  name: z.string().min(1).max(80),
+  /** When Caret offers it, as a clause: "a Tracker window opens with Order, Carrier and Tracking empty". */
+  trigger: z.string().min(1),
+  /** Caret's runs of the skill since it was kept. */
+  runs: z.number().int().nonnegative(),
+  /** Verified clean runs in a row since the last failure, mismatch, undo or take over. */
+  cleanRuns: z.number().int().nonnegative(),
+  /** Clean runs in a row before Caret offers to run it without a Tab. */
+  needed: z.number().int().positive(),
+  /** The user agreed: a run starts from the trigger without a Tab, with progress, a toast, undo and take over. */
+  onItsOwn: z.boolean(),
+  /** A press the skill always leaves to the user, such as Send. A skill with one is never run on its own. */
+  handsOff: z.object({ label: z.string().min(1), why: PressRisk }).nullable(),
+});
+
 /** How a use of a permission ended: done; handed off to the user; stopped partway; or tried and failed. */
 export const UseOutcome = z.enum(["done", "handedOff", "stopped", "failed"]);
 export type UseOutcome = z.infer<typeof UseOutcome>;
@@ -909,8 +956,48 @@ export const MemoryEntry = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields }),
   /** `uses`: the permission's last MAX_PERMISSION_USES uses, newest first; this helper always sends it, empty when none. */
   z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields, uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
+  /**
+   * Status: `learning` while it runs on Tab, `active` once it runs on its own, `paused` when the user paused
+   * it. A skill that hands a press to the user never runs on its own. CaretScreenCore's MemoryEntry refuses
+   * the same two shapes.
+   */
+  z
+    .object({ kind: z.literal("skill"), ...entryBase, fields: SkillFields })
+    .superRefine((e, ctx) => {
+      if (e.fields.onItsOwn && e.fields.handsOff !== null) ctx.addIssue({ code: "custom", message: "a skill that hands a press to the user never runs on its own", path: ["fields", "onItsOwn"] });
+      if (e.status !== "paused" && e.status !== (e.fields.onItsOwn ? "active" : "learning")) {
+        ctx.addIssue({ code: "custom", message: `a skill ${e.fields.onItsOwn ? "on its own is active" : "on Tab is learning"}, or paused`, path: ["status"] });
+      }
+    }),
 ]);
 export type MemoryEntry = z.infer<typeof MemoryEntry>;
+
+/**
+ * A one-time question about a routine at the end of a run that succeeded (B19), shown with that run, whose
+ * task id is `taskId`. `keep`: "Keep this as <name>?", which makes the routine a skill; `skillId` is null.
+ * `promote`: after enough clean runs in a row, "Do this one on your own from now on?" for skill `skillId`.
+ * The host answers with skillAnswer naming `id`; the helper ends the offer with offerWithdrawn, `expired`
+ * when nobody answers within its lifetime (offers/lifetimes.ts). Every string is rendered by code.
+ */
+export const SkillOffer = z
+  .object({
+    type: z.literal("skillOffer"),
+    v: z.literal(PROTOCOL_VERSION),
+    id: z.string().min(1),
+    at: ms,
+    kind: z.enum(["keep", "promote"]),
+    taskId: z.string().min(1),
+    routineId: z.string().min(1),
+    skillId: z.string().min(1).nullable(),
+    name: z.string().min(1).max(80),
+    /** The question, naming the skill. */
+    says: z.string().min(1),
+    /** What answering yes means, in one sentence. */
+    detail: z.string().min(1),
+    actions: z.tuple([z.object({ id: z.literal("accept"), label: z.string().min(1) }), z.object({ id: z.literal("decline"), label: z.string().min(1) })]),
+  })
+  .refine((m) => (m.kind === "keep") === (m.skillId === null), { message: "a keep offer has no skillId yet, and a promote offer names one", path: ["skillId"] });
+export type SkillOffer = z.infer<typeof SkillOffer>;
 
 export const MemoryReply = z.object({
   type: z.literal("memoryReply"),
@@ -1143,7 +1230,7 @@ export const PlanProposal = z
 export type PlanProposal = z.infer<typeof PlanProposal>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
-  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal,
+  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

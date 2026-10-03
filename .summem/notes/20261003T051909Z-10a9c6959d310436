@@ -1,1 +1,0 @@
-The conversation cap can cause wrong fills, not just blanks: with calibration sources relabelled as Messages it cut the meeting block and Jev filled Meeting date with the order's Placed date (scripts/live-replay.ts, B11).

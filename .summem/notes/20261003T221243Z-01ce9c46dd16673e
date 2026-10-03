@@ -1,0 +1,1 @@
+Routine evals must copy new values each occurrence: with static source text the closed earlier destination's recent text is credited as the next source, the shape changes and predictions miss (B19; caret-fixture --windows forms, stdin form next).

@@ -65,6 +65,11 @@ export interface RunOptions {
    * task binds. Without it the reader acts only in `--act-pids` processes, which exist only in tests.
    */
   grant?: boolean;
+  /**
+   * A skill started the run from its trigger without a Tab (B19), under the agreement the user gave when
+   * it was promoted. Every taskProgress of the task says so, for the host's toast.
+   */
+  unprompted?: boolean;
 }
 
 export type Outcome = "done" | "stopped" | "handoff" | "paused";
@@ -155,6 +160,8 @@ interface Task {
   sourced: { text: string; windowId: string; window: WindowState | undefined }[];
   /** Started from an accepted offer, so it may hold an act grant. */
   granted: boolean;
+  /** Started by a skill with no Tab (RunOptions.unprompted). */
+  unprompted: boolean;
   /** The act grant the reader holds for this task now, or null. One window per task. */
   grant: { pid: number; windowId: string } | null;
   /** The reader holds a calendar grant for this task now (protocol.ts CalendarGrant). */
@@ -279,6 +286,7 @@ export class Executor {
         return text === undefined ? [] : [{ text, windowId, window: this.deps.model.windows.get(windowId) }];
       }),
       granted: opts.grant === true,
+      unprompted: opts.unprompted === true,
       grant: null,
       calendarGranted: false,
       userWindow: this.userWindow(),
@@ -327,7 +335,7 @@ export class Executor {
     if (takeOver && task.undoing) return this.stopUndo(task);
     const by = takeOver ? "takeOver" : reason ?? "control";
     if (task.finished === "paused") {
-      if (takeOver) this.progress(task, "paused", task.next, this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
+      if (takeOver) this.progress(task, "paused", this.stepAt(task), this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
       return;
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
@@ -344,7 +352,7 @@ export class Executor {
     if (task.finished === "paused") {
       task.finished = "stopped";
       releaseSources(task);
-      this.stopped(task, task.next, `stopped by you before step ${task.next + 1} of ${task.plan.steps.length}`, "you", "you");
+      this.stopped(task, this.stepAt(task), `stopped by you ${this.boundary(task)}`, "you", "you");
       this.reportUses(task, "stopped");
       return;
     }
@@ -370,8 +378,19 @@ export class Executor {
     if (task.interrupt !== null) throw new Interrupted();
   }
 
+  /** The step a run stands before, or null once it is past the last one. */
+  private stepAt(task: Task): number | null {
+    return task.next < task.plan.steps.length ? task.next : null;
+  }
+
+  /** Where a run stands between steps, in words: before a step, or after the last one. */
+  private boundary(task: Task): string {
+    const n = task.plan.steps.length;
+    return task.next >= n ? `after the last of ${n} steps` : `before step ${task.next + 1} of ${n}`;
+  }
+
   private pauseDetail(task: Task, it: Interrupt): string {
-    const where = `before step ${task.next + 1} of ${task.plan.steps.length}`;
+    const where = this.boundary(task);
     if (it.by === "takeOver") return `Caret handed this back to you ${where}`;
     return `paused ${where}: ${it.why}`;
   }
@@ -461,6 +480,10 @@ export class Executor {
         await this.runStep(task, i, step);
         task.next = i + 1;
       }
+      // A take over, pause or stop that came in while the last act was on its way: the act landed and stays
+      // in the ledger for undo, but the run ends as the user asked rather than as done (B19 review: a skill
+      // must not count a run the user interrupted as clean).
+      this.checkInterrupt(task);
       task.finished = "done";
       // Fields this run wrote, each once however many writes it took; presses and calendar events are not fields.
       const written = new Set(task.ledger.flatMap((e) => (e.kind === "write" ? [`${e.windowId}\u0000${e.key}`] : []))).size;
@@ -472,17 +495,18 @@ export class Executor {
       const it = task.interrupt;
       if (e instanceof Interrupted && it !== null) {
         task.interrupt = null;
+        const at = this.stepAt(task);
         if (it.kind === "stop") {
-          const detail = `stopped by you before step ${i + 1} of ${steps.length}`;
+          const detail = `stopped by you ${this.boundary(task)}`;
           task.finished = "stopped";
-          this.stopped(task, i, detail, "you", "you");
+          this.stopped(task, at, detail, "you", "you");
           this.reportUses(task, "stopped");
-          return this.result(task, "stopped", i, detail);
+          return this.result(task, "stopped", at, detail);
         }
         const detail = this.pauseDetail(task, it);
         task.finished = "paused";
-        this.progress(task, "paused", i, detail, "you");
-        return this.result(task, "paused", i, detail);
+        this.progress(task, "paused", at, detail, "you");
+        return this.result(task, "paused", at, detail);
       }
       const outcome = e instanceof StepStop ? e.outcome : "stopped";
       const detail = e instanceof Error ? e.message : String(e);
@@ -1042,7 +1066,7 @@ export class Executor {
     const phase = head.phase;
     const says = step === null ? null : (task.plan.steps[step]?.says ?? null);
     const steps = task.plan.steps.length;
-    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, step, steps, says, detail, ...head });
+    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, step, steps, says, detail, ...head, ...(task.unprompted ? { unprompted: true as const } : {}) });
     if (this.deps.onTask === undefined) return;
     // The first step not yet reached: past this one once it is verified or skipped, none once done.
     const from = phase === "done" ? steps : phase === "verified" || phase === "skipped" ? (step ?? task.next) + 1 : (step ?? task.next);

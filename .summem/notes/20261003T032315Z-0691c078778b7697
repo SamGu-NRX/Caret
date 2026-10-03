@@ -1,1 +1,0 @@
-CaretFixture.app --foreground becomes frontmost in ~100 ms on stdin 'activate legacy' (NSApp.activate(ignoringOtherApps:)); macOS 14 NSApp.activate() never did from the background; 'quit PID' hands the foreground back within ~250 ms (B9, run-activation-proof.sh).

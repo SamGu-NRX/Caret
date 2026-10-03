@@ -2,8 +2,9 @@
 // Helper as reader snapshots, with a clock the test advances. All names and addresses are invented.
 import type { Helper } from "../src/helper.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
-import { isCalendarVerb, PROTOCOL_VERSION, type AppRef, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
+import { isCalendarVerb, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
+import { FakeGrants } from "./fake-grants.ts";
 
 export const PEOPLE = [
   "Dana Whitfield",
@@ -33,6 +34,8 @@ export interface GridWindow {
   columns: string[];
   rows: number;
   values: Map<string, string>;
+  /** Buttons below the fields, by label (B19: a compose window's Send). Pressing one only records it. */
+  buttons?: string[];
 }
 
 /**
@@ -58,6 +61,7 @@ export function listKeys(l: ListWindow): string[] {
 export const listKey = (l: ListWindow, i: number): string => listKeys(l)[i] ?? "";
 export const cellKey = (g: GridWindow, row: number, col: number): string =>
   `${g.app.bundleId}/standard/textfield:${keyLabel(g.columns[col] ?? "")}~${row}`;
+export const buttonKey = (g: GridWindow, label: string): string => `${g.app.bundleId}/standard/button:${keyLabel(label)}~0`;
 
 export class Desk implements ReaderLink {
   at = 1_000_000;
@@ -65,6 +69,18 @@ export class Desk implements ReaderLink {
   readonly grids = new Map<string, GridWindow>();
   /** Verbs the executor sent, for tests that count writes. */
   readonly verbs: ReaderVerb[] = [];
+  /** Every grant and revoke the executor sent. */
+  readonly grants = new FakeGrants();
+  /** Refuses write and press without a live act grant, as caret-screen without --act-pids does. */
+  enforceGrants = false;
+  /** Rewrites the next written value once, as an app that reformats input does, so the write's check fails. */
+  rewriteNext: ((v: string) => string) | null = null;
+  /** Labels of buttons pressed. */
+  readonly pressed: string[] = [];
+  /** Called after a write lands and before its answer goes back: a control the user sends while the answer is on its way. */
+  afterWrite: ((v: ReaderVerb) => void) | null = null;
+  /** Refuses the watch a run asks for as it ends (no pids left), which makes the run's promise reject. */
+  refuseLastWatch = false;
 
   /** Must be called once the helper exists; the helper takes the desk as its reader link first. */
   attach(helper: Helper): this {
@@ -77,10 +93,17 @@ export class Desk implements ReaderLink {
     return this.helper;
   }
 
+  grant(m: ActGrant | ActRevoke | CalendarGrant): void {
+    this.grants.receive(m);
+  }
+
   /** Answers the executor's reader verbs for grid windows the way caret-screen does: recheck, act, send a fresh snapshot. */
   async run(verb: ReaderVerb): Promise<VerbResult> {
     this.verbs.push(verb);
     const answer = (outcome: VerbResult["outcome"], detail: string | null = null): VerbResult => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "desk", at: this.at, outcome, detail });
+    const refused = this.enforceGrants ? this.grants.refusal(verb) : null;
+    if (refused !== null) return answer("notAllowed", refused);
+    if (verb.kind === "watchInput" && verb.pids.length === 0 && this.refuseLastWatch) return answer("notAllowed", "the desk refused the last watch");
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return answer("ok");
     if (isCalendarVerb(verb)) return answer("notAllowed", "the desk has no calendar");
     // A list window is read-only here: its walk changes nothing, as a walk of an unchanged window sends nothing new.
@@ -92,15 +115,23 @@ export class Desk implements ReaderLink {
       this.showGrid(g);
       return answer("ok");
     }
-    if (verb.kind === "press") return answer("noElement", verb.key);
+    if (verb.kind === "press") {
+      const label = (g.buttons ?? []).find((b) => buttonKey(g, b) === verb.key);
+      if (label === undefined) return answer("noElement", verb.key);
+      this.pressed.push(label);
+      return answer("ok");
+    }
     if (verb.kind === "raise") return answer("notAllowed", "the desk does not raise windows");
     const cells = new Set(Array.from({ length: g.rows }, (_, r) => g.columns.map((_, c) => cellKey(g, r, c))).flat());
     if (!cells.has(verb.key)) return answer("noElement", verb.key);
     if (verb.attribute !== "value") return answer("ok");
     const now = g.values.get(verb.key) ?? "";
     if (now !== verb.expect) return answer("changed", `value is '${now}'`);
-    g.values.set(verb.key, verb.value);
+    const rewrite = this.rewriteNext;
+    this.rewriteNext = null;
+    g.values.set(verb.key, rewrite === null ? verb.value : rewrite(verb.value));
     this.showGrid(g);
+    this.afterWrite?.(verb);
     return answer("ok");
   }
 
@@ -131,6 +162,7 @@ export class Desk implements ReaderLink {
         nodes.push({ key, parent: null, role: "AXTextField", label: g.columns[c], editable: true, ...(v === "" ? {} : { value: v }) });
       }
     }
+    for (const b of g.buttons ?? []) nodes.push({ key: buttonKey(g, b), parent: null, role: "AXButton", label: b });
     void this.h.handleReader(snap(nodes, { at: this.at, windowId: g.windowId, title: g.title, app: g.app, focused }));
   }
 

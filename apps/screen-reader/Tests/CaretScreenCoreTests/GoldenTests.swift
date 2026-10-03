@@ -48,6 +48,9 @@ private func goldenLines() throws -> [Data] {
             case .planRequest: "planRequest"
             case .planProposal: "planProposal"
             case .calendarGrant: "calendarGrant"
+            case .skillOffer: "skillOffer"
+            case .skillAnswer: "skillAnswer"
+            case .memoryReply: "memoryReply"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -58,7 +61,8 @@ private func goldenLines() throws -> [Data] {
                           "settings", "settings", "offerWithdrawn",
                           "actGrant", "readerCommand", "verbResult", "actRevoke",
                           "planRequest", "planProposal", "planProposal",
-                          "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant"])
+                          "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
+                          "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -388,6 +392,45 @@ private func goldenLines() throws -> [Data] {
             #expect(bad != add && bad != added && bad != blocked && bad != handoff && bad != grant)
             #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
         }
+    }
+
+    /// B19: a keep offer and its answer, a memory reply with two skills and a routine, a promote offer and
+    /// its answer, and the progress of a run a skill started with no Tab; protocol.test.ts reads the same lines.
+    @Test func carriesSkills() throws {
+        let lines = try goldenLines()
+        guard case .skillOffer(let keep) = try JSONDecoder().decode(Message.self, from: lines[46]),
+              case .skillAnswer(let keepAnswer) = try JSONDecoder().decode(Message.self, from: lines[47]),
+              case .memoryReply(let reply) = try JSONDecoder().decode(Message.self, from: lines[48]),
+              case .skillOffer(let promote) = try JSONDecoder().decode(Message.self, from: lines[49]),
+              case .taskProgress(let started) = try JSONDecoder().decode(Message.self, from: lines[51]),
+              case .taskProgress(let done) = try JSONDecoder().decode(Message.self, from: lines[52]) else {
+            Issue.record("lines 47 to 53 are not the B19 messages"); return
+        }
+        #expect(keep.kind == .keep && keep.skillId == nil && keep.says == "Keep this as Subject and To into Mail Fixture?")
+        #expect(keep.actions.map(\.id) == ["accept", "decline"])
+        #expect(keepAnswer.id == keep.id && keepAnswer.answer == .accept)
+        #expect(promote.kind == .promote && promote.skillId == "skill-5e6f7a8b" && promote.says == "Do this one on your own from now on?")
+        let skills = reply.skills
+        #expect(skills.count == 2)
+        #expect(skills[0].fields.name == "Subject and To into Mail Fixture" && skills[0].fields.cleanRuns == 10 && skills[0].fields.handsOff == nil)
+        #expect(skills[1].fields.handsOff == SkillFields.HandsOff(label: "Send", why: .outbound))
+        #expect(reply.entries[2].kind == .routine && reply.entries[2].skill == nil)
+        #expect(started.unprompted == true && done.unprompted == true && done.written == 3)
+    }
+
+    @Test func refusesSkillShapesZodRefuses() throws {
+        let lines = try goldenLines()
+        func swap(_ line: Data, _ from: String, _ to: String) -> Data {
+            Data(String(decoding: line, as: UTF8.self).replacingOccurrences(of: from, with: to).utf8)
+        }
+        // A keep offer naming a skill, a promote offer naming none, actions out of order.
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[46], #""skillId":null"#, #""skillId":"skill-1""#)) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[49], #""skillId":"skill-5e6f7a8b""#, #""skillId":null"#)) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[46], #""id":"accept""#, #""id":"yes""#)) }
+        // An answer other than accept or decline; unprompted false; a hands-off skill running on its own.
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[47], #""accept""#, #""later""#)) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[52], #""unprompted":true"#, #""unprompted":false"#)) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[48], #""onItsOwn":false,"handsOff":{"#, #""onItsOwn":true,"handsOff":{"#)) }
     }
 
     @Test func rejectsAWrongVersionAndAnUnknownType() {

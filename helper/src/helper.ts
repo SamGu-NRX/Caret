@@ -38,6 +38,7 @@ import {
   type VerbResult,
   type RunPlan,
   type Settings,
+  type SkillAnswer,
   type TaskControl,
   type TaskCause,
   type TaskPhase,
@@ -107,6 +108,8 @@ export interface HelperOptions {
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
+  /** Replaces the level's offers per hour (OfferGate), for fixture evaluations that make dozens of offers in minutes. Never set in normal use. */
+  offersPerHour?: number;
   /** Makes the random part of proposal and watch ids, so tests can expect exact messages. */
   newId?: () => string;
   /** The helper's clock for message times, fill proposals and the task feed. Tests pass a fake one. */
@@ -231,7 +234,7 @@ export class Helper {
     this.opts = opts;
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
-    this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) });
+    this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) }, opts.offersPerHour ?? null);
     this.readerConnected = opts.readerLink !== undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
@@ -284,8 +287,10 @@ export class Helper {
         this.publish(m, accept);
         this.onPatternMessage(m);
       },
-      // Every pattern run starts from an accepted offer: offerControl take or the host's offerAccept.
-      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
+      // Every pattern run starts from an accepted offer (offerControl take or the host's offerAccept), or
+      // from a skill the user agreed to let run on its own (B19), which is the approval its grant rests on.
+      run: (taskId, plan, slots, expect, opts) => this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true }),
+      askJev: this.ask,
       shadow: () => this.mode === "shadow",
       gate: this.gate,
       enteredByUser: (id) => {
@@ -615,6 +620,13 @@ export class Helper {
     this.patterns.withdrawFamilies(families);
   }
 
+  /** The user's answer to a keep or promote question (B19). A refused answer is published as an error. */
+  handleSkillAnswer(m: SkillAnswer): void {
+    if (this.mode !== "live") return this.error(`skill offer ${m.id}: the helper is in shadow mode`);
+    const refused = this.patterns.skills.answer(m);
+    if (refused !== null) this.error(refused);
+  }
+
   /** Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. */
   handleOffer(m: OfferControl): Promise<TaskResult | null> {
     return this.patterns.control(m);
@@ -825,8 +837,12 @@ export class Helper {
       switch (m.action) {
         case "resume":
           return await this.executor.resume(m.taskId);
-        case "undo":
-          return await this.executor.undo(m.taskId);
+        case "undo": {
+          const undone = await this.executor.undo(m.taskId);
+          // Undoing a skill's run resets its clean runs and puts it back on Tab (B19).
+          this.patterns.skills.reversed(m.taskId, this.now());
+          return undone;
+        }
         case "pause":
         case "takeOver":
           // The run's own promise resolves as paused at the next step boundary.
