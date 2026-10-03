@@ -52,6 +52,13 @@ SCHEDULE = "Caret Fixture — Schedule follow-up"
 REFERENCE = "Caret Fixture — Reference"
 
 STARTED = []  # (name, Popen), stopped in reverse order on exit
+NAMES = {}  # pid to name, for the frontmost-app timeline
+# Windows (start, end) in which an HIDIdleTime reset is this run's own HID-level key, not a person.
+SYNTHETIC = []
+
+
+def expect_synthetic(seconds):
+    SYNTHETIC.append((time.time(), time.time() + seconds))
 BEFORE_STOP = []  # run first: the fixture hands the foreground back while it still can
 
 
@@ -63,6 +70,7 @@ def start(name, args, out_dir, env=None, cwd=None, stdin=None):
     out = open(os.path.join(out_dir, f"{name}.log"), "w")
     proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, cwd=cwd, stdin=stdin)
     STARTED.append((name, proc))
+    NAMES[proc.pid] = name
     log("started", name, proc.pid)
     return proc
 
@@ -485,6 +493,10 @@ def realtab(out_dir, ghost):
     offer = wait_for(lambda: fill_offer(pid, 0) or host()["fill"].get("lastSkip") == "held.appNotFront", 15)
     if not offer:
         return finish("failed: no fill offer before activation", lastSkip=host()["fill"].get("lastSkip"))
+    # The visibility gate in the path: with the fixture behind, the offer is held, not drawn.
+    pre = host()
+    result["beforeActivation"] = {"offerShown": bool(fill_offer(pid, 0)), "lastSkip": pre["fill"].get("lastSkip"),
+                                  "overlayLine": bool(((pre.get("fill") or {}).get("overlay") or {}).get("line"))}
     # The model loads before the foreground is taken, so the fixture is frontmost only for the
     # seconds the keys need.
     if ghost and not wait_for(lambda: host()["engine"]["state"] == "ready", 120, 0.5):
@@ -502,6 +514,7 @@ def realtab(out_dir, ghost):
     if not offer:
         return finish("failed: offer gone after activation", lastSkip=host()["fill"].get("lastSkip"))
     env = dict(os.environ, CARET_TEST_PIDS=",".join(map(str, pids)))
+    expect_synthetic(3)
     sent = subprocess.run([AX, "key-if-front", str(pid), "tab"], capture_output=True, text=True, env=env)
     if sent.returncode != 0:
         return finish("deferred: foreground", step="tab", output=sent.stdout + sent.stderr)
@@ -537,6 +550,7 @@ def keystroke_to_paint(pids, pid, gold):
     text = "Please send the meeting notes to the team before lunch"
     for ch in text:
         args = ["space"] if ch == " " else ["char", ch]
+        expect_synthetic(0.6)
         sent = subprocess.run([AX, "key-if-front", str(pid), *args], capture_output=True, text=True, env=env)
         if sent.returncode != 0:
             return "deferred: foreground"
@@ -559,16 +573,36 @@ if __name__ == "__main__":
     else:
         raise SystemExit(__doc__)
     lease = None if mode == "fill" else fixture_app.GuiLease()
+    front = lambda: (lambda o: json.loads(o.stdout) if o.returncode == 0 else {})(
+        subprocess.run([AX, "frontmost"], capture_output=True, text=True, env=dict(os.environ, CARET_TEST_PIDS="1")))
+    dog = None if mode == "fill" else fixture_app.Watchdog(lambda t: any(a - 0.2 <= t <= b for a, b in SYNTHETIC), front, NAMES)
+    stopped_by = None
     try:
         if lease:
             lease.__enter__()
+        if dog:
+            dog.__enter__()
         if mode == "fill":
             main(out)
         else:
             realtab(out, ghost=mode == "realtab-ghost")
+    except KeyboardInterrupt:
+        stopped_by = f"deferred: user active (input at {dog.tripped})" if dog and dog.tripped else "interrupted"
+        log(stopped_by)
     finally:
+        if dog:
+            dog.__exit__()
         for hand_back in BEFORE_STOP:
             hand_back()
         stop_all()
         if lease:
             lease.__exit__()
+        if dog:
+            dog.timeline.append((round(time.time() - dog.start, 2), front().get("pid"), "after hand-back"))
+            path = os.path.join(out, "realtab.json")
+            result = json.load(open(path)) if os.path.exists(path) else {}
+            result["frontTimeline"] = dog.timeline
+            if stopped_by:
+                result["status"] = stopped_by
+            with open(path, "w") as f:
+                json.dump(result, f, indent=2, sort_keys=True)
