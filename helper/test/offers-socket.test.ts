@@ -251,7 +251,7 @@ describe("offers over the socket", () => {
     await until(() => reader.verbs.some((v) => v.kind === "walk"));
     reader.setValue(FORM, F("textfield:email~0"), "typed@example.com");
     expect(await phases("id-1")).toEqual(["started", "stopped"]);
-    expect(host.received.find((m) => (m as { phase?: string }).phase === "stopped")).toMatchObject({ detail: expect.stringContaining("changed since the plan started") });
+    expect(host.received.find((m) => (m as { phase?: string }).phase === "stopped")).toMatchObject({ detail: expect.stringContaining("changed since the plan started"), stopReason: "changed" });
     expect(reader.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect([F("textfield:name~0"), F("textfield:email~0"), F("textfield:phone~0")].map((k) => reader.value(FORM, k))).toEqual(["", "typed@example.com", ""]);
   });
@@ -303,6 +303,7 @@ describe("offers over the socket", () => {
       steps: 0,
       says: null,
       detail: "no such offer, or it expired",
+      stopReason: "refused",
     });
   });
 
@@ -317,7 +318,7 @@ describe("offers over the socket", () => {
     expect(await phases("id-1")).toEqual(["started", "acting", "verified", "stopped"]);
     const records = host.received.filter((m) => (m as { type: string; task?: { id: string } }).type === "activity" && (m as { task: { id: string } }).task.id === "id-1");
     expect(records.at(-1)).toMatchObject({ task: { state: "failed", cause: "you" } });
-    expect(await host.waitFor((m) => m.type === "taskProgress" && m.phase === "stopped")).toMatchObject({ detail: "stopped by you before step 2 of 3" });
+    expect(await host.waitFor((m) => m.type === "taskProgress" && m.phase === "stopped")).toMatchObject({ detail: "stopped by you before step 2 of 3", stopReason: "you" });
     expect([F("textfield:name~0"), F("textfield:email~0"), F("textfield:phone~0")].map((k) => reader.value(FORM, k))).toEqual(["Dana Whitfield", "", ""]);
   });
 

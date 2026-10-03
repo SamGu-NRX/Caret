@@ -651,6 +651,10 @@ public struct UserInput: Codable, Equatable, Sendable {
 public struct TaskProgress: Codable, Equatable, Sendable {
     public static let type = "taskProgress"
     public enum Phase: String, Codable, Sendable { case started, skipped, acting, verified, paused, handoff, stopped, done, undone }
+    /// Why a run stopped, so the host can name it without reading `detail`; protocol.ts StopReason has a line for each.
+    public enum StopReason: String, Codable, Sendable {
+        case you, changed, sheet, windowGone, ambiguous, readerRestarted, reader, mismatch, unreachable, notConfigured, refused, error
+    }
     public var at: Int64
     public var taskId: String
     public var planId: String
@@ -665,7 +669,9 @@ public struct TaskProgress: Codable, Equatable, Sendable {
     public var restored: Int?
     public var notRestored: Int?
     public var notUndoablePresses: Int?
-    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail, written, restored, notRestored, notUndoablePresses }
+    /// On `stopped`, and only there: why. The activity record of the same stop says "failed".
+    public var stopReason: StopReason?
+    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail, written, restored, notRestored, notUndoablePresses, stopReason }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -676,6 +682,8 @@ public struct TaskProgress: Codable, Equatable, Sendable {
         written = try c.decodeOptional(Int.self, forKey: .written); restored = try c.decodeOptional(Int.self, forKey: .restored)
         notRestored = try c.decodeOptional(Int.self, forKey: .notRestored); notUndoablePresses = try c.decodeOptional(Int.self, forKey: .notUndoablePresses)
         for n in [written, restored, notRestored, notUndoablePresses] where (n ?? 0) < 0 { throw ProtocolError("taskProgress counts are never negative") }
+        stopReason = try c.decodeOptional(StopReason.self, forKey: .stopReason)
+        if (phase == .stopped) != (stopReason != nil) { throw ProtocolError("stopReason is on stopped progress, and only there") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
@@ -685,6 +693,7 @@ public struct TaskProgress: Codable, Equatable, Sendable {
         try c.encode(says, forKey: .says); try c.encode(detail, forKey: .detail)
         try c.encodeIfPresent(written, forKey: .written); try c.encodeIfPresent(restored, forKey: .restored)
         try c.encodeIfPresent(notRestored, forKey: .notRestored); try c.encodeIfPresent(notUndoablePresses, forKey: .notUndoablePresses)
+        try c.encodeIfPresent(stopReason, forKey: .stopReason)
     }
 }
 

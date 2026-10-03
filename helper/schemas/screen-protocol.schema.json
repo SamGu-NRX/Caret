@@ -1498,105 +1498,220 @@
           "additionalProperties": false
         },
         {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "taskProgress"
-            },
-            "v": {
-              "type": "number",
-              "const": 1
-            },
-            "at": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991,
-              "description": "Milliseconds since the Unix epoch"
-            },
-            "taskId": {
-              "type": "string"
-            },
-            "planId": {
-              "type": "string"
-            },
-            "phase": {
-              "type": "string",
-              "enum": [
-                "started",
-                "skipped",
-                "acting",
-                "verified",
-                "paused",
-                "handoff",
-                "stopped",
-                "done",
-                "undone"
-              ]
-            },
-            "step": {
-              "anyOf": [
-                {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "taskProgress"
+                },
+                "v": {
+                  "type": "number",
+                  "const": 1
+                },
+                "at": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Milliseconds since the Unix epoch"
+                },
+                "taskId": {
+                  "type": "string"
+                },
+                "planId": {
+                  "type": "string"
+                },
+                "step": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "steps": {
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
                 },
-                {
-                  "type": "null"
+                "says": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "written": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "restored": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "notRestored": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "notUndoablePresses": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "phase": {
+                  "type": "string",
+                  "enum": [
+                    "started",
+                    "skipped",
+                    "acting",
+                    "verified",
+                    "paused",
+                    "handoff",
+                    "done",
+                    "undone"
+                  ]
+                },
+                "stopReason": {
+                  "not": {}
                 }
-              ]
+              },
+              "required": [
+                "type",
+                "v",
+                "at",
+                "taskId",
+                "planId",
+                "step",
+                "steps",
+                "says",
+                "detail",
+                "phase"
+              ],
+              "additionalProperties": false
             },
-            "steps": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
-            },
-            "says": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "detail": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "written": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
-            },
-            "restored": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
-            },
-            "notRestored": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
-            },
-            "notUndoablePresses": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "taskProgress"
+                },
+                "v": {
+                  "type": "number",
+                  "const": 1
+                },
+                "at": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "Milliseconds since the Unix epoch"
+                },
+                "taskId": {
+                  "type": "string"
+                },
+                "planId": {
+                  "type": "string"
+                },
+                "step": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "steps": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "says": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "written": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "restored": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "notRestored": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "notUndoablePresses": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "phase": {
+                  "type": "string",
+                  "const": "stopped"
+                },
+                "stopReason": {
+                  "type": "string",
+                  "enum": [
+                    "you",
+                    "changed",
+                    "sheet",
+                    "windowGone",
+                    "ambiguous",
+                    "readerRestarted",
+                    "reader",
+                    "mismatch",
+                    "unreachable",
+                    "notConfigured",
+                    "refused",
+                    "error"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "v",
+                "at",
+                "taskId",
+                "planId",
+                "step",
+                "steps",
+                "says",
+                "detail",
+                "phase",
+                "stopReason"
+              ],
+              "additionalProperties": false
             }
-          },
-          "required": [
-            "type",
-            "v",
-            "at",
-            "taskId",
-            "planId",
-            "phase",
-            "step",
-            "steps",
-            "says",
-            "detail"
-          ],
-          "additionalProperties": false
+          ]
         },
         {
           "type": "object",

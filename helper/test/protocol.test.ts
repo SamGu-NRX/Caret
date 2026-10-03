@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AnyMessage, ConsumerMessage, HelperMessage, HelperToReader, Node, ReaderMessage } from "../src/protocol.ts";
+import { AnyMessage, ConsumerMessage, HelperMessage, HelperToReader, Node, ReaderMessage, StopReason } from "../src/protocol.ts";
 import { PLAN_SCHEMA_PATH, renderPlanJsonSchema, renderProtocolJsonSchema, SCHEMA_PATH } from "../src/export-schema.ts";
 import { Plan } from "../src/executor/schema.ts";
 
@@ -69,6 +69,18 @@ describe("golden protocol fixture", () => {
     expect(HelperMessage.safeParse({ ...line, replacedBy: "" }).success).toBe(false);
     expect(HelperMessage.safeParse({ ...line, reason: "stale" }).success).toBe(false);
     expect(HelperMessage.safeParse({ ...bare, reason: "stale" }).success).toBe(true);
+  });
+
+  it("carries B14's stop reason: a stopped progress says why, and only a stopped one may", () => {
+    const stopped = JSON.parse(lines[12] ?? "") as Record<string, unknown>;
+    const done = JSON.parse(lines[28] ?? "") as Record<string, unknown>;
+    expect(HelperMessage.parse(stopped)).toMatchObject({ type: "taskProgress", phase: "stopped", stopReason: "changed" });
+    const { stopReason: _, ...bare } = stopped;
+    expect(HelperMessage.safeParse(bare).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...stopped, stopReason: "timeout" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...done, stopReason: "you" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...stopped, phase: "handoff" }).success).toBe(false);
+    for (const r of StopReason.options) expect(HelperMessage.safeParse({ ...stopped, stopReason: r }).success, r).toBe(true);
   });
 
   it("parses every line, and each parse is lossless", () => {

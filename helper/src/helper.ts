@@ -482,7 +482,7 @@ export class Helper {
     // A second accept of an offer whose run is still going must not end that run's working line; one
     // after the run finished opened a new line on the host, which this ends.
     if (!this.executor.live(offerId)) {
-      this.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: this.now(), taskId: offerId, planId: offerId, phase: "stopped", step: null, steps: 0, says: null, detail: reason });
+      this.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: this.now(), taskId: offerId, planId: offerId, phase: "stopped", step: null, steps: 0, says: null, detail: reason, stopReason: "refused" });
     }
     return null;
   }

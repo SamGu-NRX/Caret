@@ -600,13 +600,27 @@ export const TaskPhase = z.enum([
 ]);
 export type TaskPhase = z.infer<typeof TaskPhase>;
 
-export const TaskProgress = z.object({
+/**
+ * Why a run stopped, for the host to name the stop without reading `detail`, which is a sentence for
+ * people. "you": the user stopped it. "changed": the screen changed under the run, such as a field typed
+ * into since the plan started, or one the step did not target changing while it acted. "sheet": a sheet
+ * covers the window. "windowGone": the window closed, or no window matches. "ambiguous": several
+ * windows match. "readerRestarted": a new reader session, so the run's window ids no longer apply.
+ * "reader": the reader refused a verb, could not re-read a window, or cannot watch for input.
+ * "mismatch": after Caret acted, the step's end state does not hold. "unreachable": no means to reach the
+ * target, or the target was not found. "notConfigured": the step needs a URL opener or a calendar the
+ * helper does not have. "refused": the helper refused an offer's accept (gone, expired, or already run).
+ * "error": anything else that ended the run.
+ */
+export const StopReason = z.enum(["you", "changed", "sheet", "windowGone", "ambiguous", "readerRestarted", "reader", "mismatch", "unreachable", "notConfigured", "refused", "error"]);
+export type StopReason = z.infer<typeof StopReason>;
+
+const TaskProgressFields = z.object({
   type: z.literal("taskProgress"),
   v: z.literal(PROTOCOL_VERSION),
   at: ms,
   taskId: z.string(),
   planId: z.string(),
-  phase: TaskPhase,
   /** Zero-based step index, or null for task-level phases. */
   step: z.number().int().nonnegative().nullable(),
   steps: z.number().int().nonnegative(),
@@ -620,6 +634,15 @@ export const TaskProgress = z.object({
   notRestored: z.number().int().nonnegative().optional(),
   notUndoablePresses: z.number().int().nonnegative().optional(),
 });
+/**
+ * A stopped progress says why in `stopReason`, and no other phase may carry one. Two variants on the
+ * phase rather than a refinement, so the exported JSON Schema states the rule too.
+ */
+export const TaskProgress = z.discriminatedUnion("phase", [
+  TaskProgressFields.extend({ phase: TaskPhase.exclude(["stopped"]), stopReason: z.never().optional() }),
+  /** The activity record of the same stop says "failed". */
+  TaskProgressFields.extend({ phase: z.literal("stopped"), stopReason: StopReason }),
+]);
 export type TaskProgress = z.infer<typeof TaskProgress>;
 
 /** One value an offer would write, copied verbatim by code from a live source and then changed only by memory rules. */

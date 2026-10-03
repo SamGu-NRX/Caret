@@ -9,7 +9,7 @@
 // next step boundary: before the next step starts, or before the current step acts if its reads are
 // still under way. A stop ends it there. Every write goes in an undo ledger with the value it replaced.
 import { randomInt } from "node:crypto";
-import { PROTOCOL_VERSION, type AppRef, type Frame, type Node, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
+import { PROTOCOL_VERSION, type AppRef, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { CalendarPort, ReaderLink, UrlOpener } from "./means.ts";
@@ -137,12 +137,23 @@ function releaseSources(task: Task): void {
 
 class StepStop extends Error {
   readonly outcome: "stopped" | "handoff";
+  /** Why, on a stop; a handoff has none (protocol.ts StopReason). */
+  readonly reason: StopReason | null;
   /** A stop caused by the screen changing under the task, not by a mismatch after Caret acted. */
   readonly by: TaskCause;
-  constructor(outcome: "stopped" | "handoff", message: string, by: TaskCause = "caret") {
+  private constructor(outcome: "stopped" | "handoff", reason: StopReason | null, message: string, by: TaskCause) {
     super(message);
     this.outcome = outcome;
+    this.reason = reason;
     this.by = by;
+  }
+
+  static stop(reason: StopReason, message: string, by: TaskCause = "caret"): StepStop {
+    return new StepStop("stopped", reason, message, by);
+  }
+
+  static handoff(message: string): StepStop {
+    return new StepStop("handoff", null, message, "caret");
   }
 }
 
@@ -271,7 +282,7 @@ export class Executor {
     if (task.finished === "paused") {
       task.finished = "stopped";
       releaseSources(task);
-      this.progress(task, "stopped", task.next, `stopped by you before step ${task.next + 1} of ${task.plan.steps.length}`, "you");
+      this.stopped(task, task.next, `stopped by you before step ${task.next + 1} of ${task.plan.steps.length}`, "you", "you");
       return;
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to stop`);
@@ -374,7 +385,7 @@ export class Executor {
         if (it.kind === "stop") {
           const detail = `stopped by you before step ${i + 1} of ${steps.length}`;
           task.finished = "stopped";
-          this.progress(task, "stopped", i, detail, "you");
+          this.stopped(task, i, detail, "you", "you");
           return this.result(task, "stopped", i, detail);
         }
         const detail = this.pauseDetail(task, it);
@@ -385,7 +396,8 @@ export class Executor {
       const outcome = e instanceof StepStop ? e.outcome : "stopped";
       const detail = e instanceof Error ? e.message : String(e);
       task.finished = outcome;
-      this.progress(task, outcome === "handoff" ? "handoff" : "stopped", i, detail, e instanceof StepStop ? e.by : "caret");
+      if (outcome === "handoff") this.progress(task, "handoff", i, detail, e instanceof StepStop ? e.by : "caret");
+      else this.stopped(task, i, detail, e instanceof StepStop ? e.by : "caret", e instanceof StepStop ? (e.reason ?? "error") : "error");
       return this.result(task, outcome, i, detail);
     } finally {
       if (task.finished !== null && task.finished !== "paused") releaseSources(task);
@@ -407,7 +419,7 @@ export class Executor {
     if (key === this.watching) return;
     const r = await this.deps.reader.run({ kind: "watchInput", pids: [...pids] });
     // Without the watch the run would not pause on real input, so a failure is not ignored.
-    if (r.outcome !== "ok") throw new StepStop("stopped", `the reader cannot watch for input: ${r.outcome}`);
+    if (r.outcome !== "ok") throw StepStop.stop("reader", `the reader cannot watch for input: ${r.outcome}`);
     this.watching = key;
   }
 
@@ -428,7 +440,7 @@ export class Executor {
       if (end.kind === "valueEquals" && node.editable === true) return this.writeStep(task, i, w, node, "value", end.value, step);
       if (end.kind === "focused" && step.via === undefined) return this.writeStep(task, i, w, node, "focused", "", step);
     }
-    if (step.via === undefined) throw new StepStop("stopped", `no means to reach '${step.says}': the target is not a field and the step names no press or URL`);
+    if (step.via === undefined) throw StepStop.stop("unreachable", `no means to reach '${step.says}': the target is not a field and the step names no press or URL`);
     if (step.via.kind === "press") return this.pressStep(task, i, w, step.via.target, step);
     return this.urlStep(task, i, w, step.via.url, step);
   }
@@ -436,7 +448,7 @@ export class Executor {
   // MARK: - means
 
   private async writeStep(task: Task, i: number, w: WindowState, node: Node, attribute: "value" | "focused", value: string, step: Step): Promise<void> {
-    if (node.states?.includes("secure")) throw new StepStop("handoff", `'${step.says}' targets a password field; that is left to you`);
+    if (node.states?.includes("secure")) throw StepStop.handoff(`'${step.says}' targets a password field; that is left to you`);
     const before = node.value ?? "";
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
     this.checkInterrupt(task);
@@ -465,11 +477,11 @@ export class Executor {
       }
       const recorded = seen.some((c) => c.kind === "value" && c.key === node.key && c.after === value);
       if (now === undefined || (now.value ?? "") !== value || !recorded) {
-        throw new StepStop("stopped", `mismatch: expected ${prediction}; the field now holds '${clip(now?.value ?? "(gone)")}'`);
+        throw StepStop.stop("mismatch", `mismatch: expected ${prediction}; the field now holds '${clip(now?.value ?? "(gone)")}'`);
       }
       this.expectedFor(task, w.window.windowId).set(node.key, value);
     } else if (after.focusedKey !== node.key) {
-      throw new StepStop("stopped", `mismatch: expected ${prediction}; focus is on ${after.focusedKey ?? "nothing"}`);
+      throw StepStop.stop("mismatch", `mismatch: expected ${prediction}; focus is on ${after.focusedKey ?? "nothing"}`);
     }
     this.checkUnexpected(seen, attribute === "value" ? node.key : null);
     await this.verified(task, i, step);
@@ -478,9 +490,9 @@ export class Executor {
   private async pressStep(task: Task, i: number, w: WindowState, target: Target, step: Step): Promise<void> {
     const node = await this.resolve(task, i, w, target, step.says);
     const label = (node.label ?? "").trim();
-    if (label === "") throw new StepStop("handoff", `the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
+    if (label === "") throw StepStop.handoff(`the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
     const risk = classifyLabel(label);
-    if (risk !== "safe") throw new StepStop("handoff", `'${label}' reads as ${risk}; Caret leaves that press to you`);
+    if (risk !== "safe") throw StepStop.handoff(`'${label}' reads as ${risk}; Caret leaves that press to you`);
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
@@ -503,7 +515,7 @@ export class Executor {
   }
 
   private async urlStep(task: Task, i: number, w: WindowState, url: string, step: Step): Promise<void> {
-    if (this.deps.urls === null) throw new StepStop("stopped", "no URL opener is configured");
+    if (this.deps.urls === null) throw StepStop.stop("notConfigured", "no URL opener is configured");
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `open ${url}; expect: ${step.says}`);
     await this.deps.urls.open(url);
@@ -513,7 +525,7 @@ export class Executor {
 
   private async calendarStep(task: Task, i: number, end: Extract<EndState, { kind: "calendarEvent" }>): Promise<void> {
     const cal = this.deps.calendar;
-    if (cal === null) throw new StepStop("stopped", "no calendar is configured");
+    if (cal === null) throw StepStop.stop("notConfigured", "no calendar is configured");
     if ((await cal.find(end.calendar, end.title, end.start, end.end)) !== null) {
       task.skipped++;
       this.progress(task, "skipped", i, "already true");
@@ -524,7 +536,7 @@ export class Executor {
     this.checkSession(task);
     const ev = await cal.add(end.calendar, end.title, end.start, end.end);
     const found = await cal.find(end.calendar, end.title, end.start, end.end);
-    if (found === null || found.id !== ev.id) throw new StepStop("stopped", "mismatch: the added event is not found by the same query");
+    if (found === null || found.id !== ev.id) throw StepStop.stop("mismatch", "mismatch: the added event is not found by the same query");
     task.ledger.push({ kind: "calendar", step: i, eventId: ev.id, calendar: ev.calendar, title: ev.title, start: ev.start, end: ev.end });
     task.acted++;
     this.progress(task, "verified", i, null);
@@ -543,7 +555,7 @@ export class Executor {
     });
     try {
       const r = await this.deps.reader.run(verb);
-      if (r.outcome !== "ok") throw new StepStop("stopped", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+      if (r.outcome !== "ok") throw StepStop.stop("reader", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     } finally {
       off();
     }
@@ -555,7 +567,7 @@ export class Executor {
     for (let n = 0; ; n++) {
       const w = this.window(windowId);
       if (step.end.kind !== "calendarEvent" && (await this.holds(task, i, w, step.end))) return;
-      if (n >= EFFECT_POLLS) throw new StepStop("stopped", `mismatch: after acting, '${step.says}' does not hold`);
+      if (n >= EFFECT_POLLS) throw StepStop.stop("mismatch", `mismatch: after acting, '${step.says}' does not hold`);
       await this.sleep(EFFECT_POLL_MS);
       seen.push(...(await this.walk(w)));
     }
@@ -566,7 +578,7 @@ export class Executor {
     for (const c of seen) {
       if (!c.editable || c.key === allowedKey) continue;
       if (c.kind === "value" || c.kind === "removed") {
-        throw new StepStop("stopped", `mismatch: ${c.key} ${c.kind === "removed" ? "disappeared" : "changed"} although the step did not touch it`);
+        throw StepStop.stop("changed", `mismatch: ${c.key} ${c.kind === "removed" ? "disappeared" : "changed"} although the step did not touch it`);
       }
     }
   }
@@ -588,7 +600,7 @@ export class Executor {
     this.checkInterrupt(task);
     const fresh = this.window(id);
     for (const n of fresh.nodes.values()) {
-      if (n.role === "AXSheet") throw new StepStop("stopped", `a sheet covers '${fresh.window.title}'`, "screen");
+      if (n.role === "AXSheet") throw StepStop.stop("sheet", `a sheet covers '${fresh.window.title}'`, "screen");
     }
     const exp = task.expected.get(id);
     if (exp === undefined) {
@@ -597,7 +609,7 @@ export class Executor {
       for (const [key, text] of editableValues(fresh)) {
         const want = exp.get(key);
         if (want === undefined) exp.set(key, text);
-        else if (want !== text) throw new StepStop("stopped", `${key} changed since the plan started: '${clip(want)}' is now '${clip(text)}'`, "screen");
+        else if (want !== text) throw StepStop.stop("changed", `${key} changed since the plan started: '${clip(want)}' is now '${clip(text)}'`, "screen");
       }
     }
     return fresh;
@@ -615,7 +627,7 @@ export class Executor {
       for (let n = 0; n < WALK_RETRIES && r.outcome === "axError"; n++) {
         r = await this.deps.reader.run({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
       }
-      if (r.outcome !== "ok") throw new StepStop("stopped", `cannot re-read '${w.window.title}': ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+      if (r.outcome !== "ok") throw StepStop.stop("reader", `cannot re-read '${w.window.title}': ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     } finally {
       off();
     }
@@ -623,7 +635,7 @@ export class Executor {
   }
 
   private checkSession(task: Task): void {
-    if (task.session !== this.session) throw new StepStop("stopped", "the reader restarted since this task began, so its window ids no longer apply", "screen");
+    if (task.session !== this.session) throw StepStop.stop("readerRestarted", "the reader restarted since this task began, so its window ids no longer apply", "screen");
   }
 
   private bind(task: Task, sel: WindowSel): string {
@@ -631,7 +643,7 @@ export class Executor {
     const k = JSON.stringify(sel);
     const bound = task.windows.get(k);
     if (bound !== undefined) {
-      if (!this.deps.model.windows.has(bound)) throw new StepStop("stopped", `the window '${sel.title ?? sel.titleStartsWith}' closed`, "screen");
+      if (!this.deps.model.windows.has(bound)) throw StepStop.stop("windowGone", `the window '${sel.title ?? sel.titleStartsWith}' closed`, "screen");
       return bound;
     }
     const hits = [...this.deps.model.windows.values()].filter(
@@ -640,8 +652,8 @@ export class Executor {
         (sel.title === undefined || w.window.title === sel.title) &&
         (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)),
     );
-    if (hits.length === 0) throw new StepStop("stopped", `no window matches ${k}`, "screen");
-    if (hits.length > 1) throw new StepStop("stopped", `${hits.length} windows match ${k}; the plan must name one`);
+    if (hits.length === 0) throw StepStop.stop("windowGone", `no window matches ${k}`, "screen");
+    if (hits.length > 1) throw StepStop.stop("ambiguous", `${hits.length} windows match ${k}; the plan must name one`);
     const id = (hits[0] as WindowState).window.windowId;
     task.windows.set(k, id);
     return id;
@@ -649,7 +661,7 @@ export class Executor {
 
   private window(id: string): WindowState {
     const w = this.deps.model.windows.get(id);
-    if (w === undefined) throw new StepStop("stopped", `window ${id} is gone`, "screen");
+    if (w === undefined) throw StepStop.stop("windowGone", `window ${id} is gone`, "screen");
     return w;
   }
 
@@ -675,7 +687,7 @@ export class Executor {
       task.jevCalls += 2;
       this.targetChoices.push({ taskId: task.id, step: i, chose: r.ok ? r.node.key : null, jev: r.jev });
     }
-    if (!r.ok) throw new StepStop("stopped", `target for '${goal}' not found: ${r.reason}`);
+    if (!r.ok) throw StepStop.stop("unreachable", `target for '${goal}' not found: ${r.reason}`);
     task.resolved.set(cacheKey, r);
     return r.node;
   }
@@ -736,10 +748,21 @@ export class Executor {
 
   // MARK: - reporting
 
-  private progress(task: Task, phase: TaskPhase, step: number | null, detail: string | null, cause: TaskCause | null = null, counts: ProgressCounts = {}): void {
+  /** A stop, which always says why (protocol.ts StopReason); progress() takes every other phase. */
+  private stopped(task: Task, step: number | null, detail: string, cause: TaskCause, reason: StopReason): void {
+    this.publishProgress(task, { phase: "stopped", stopReason: reason }, step, detail, cause);
+  }
+
+  private progress(task: Task, phase: Exclude<TaskPhase, "stopped">, step: number | null, detail: string | null, cause: TaskCause | null = null, counts: ProgressCounts = {}): void {
+    this.publishProgress(task, { phase, ...counts }, step, detail, cause);
+  }
+
+  /** `head` is the phase with what only that phase carries: a stop's reason, or a done or undone's counts. */
+  private publishProgress(task: Task, head: { phase: "stopped"; stopReason: StopReason } | ({ phase: Exclude<TaskPhase, "stopped"> } & ProgressCounts), step: number | null, detail: string | null, cause: TaskCause | null): void {
+    const phase = head.phase;
     const says = step === null ? null : (task.plan.steps[step]?.says ?? null);
     const steps = task.plan.steps.length;
-    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, phase, step, steps, says, detail, ...counts });
+    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, step, steps, says, detail, ...head });
     if (this.deps.onTask === undefined) return;
     // The first step not yet reached: past this one once it is verified or skipped, none once done.
     const from = phase === "done" ? steps : phase === "verified" || phase === "skipped" ? (step ?? task.next) + 1 : (step ?? task.next);

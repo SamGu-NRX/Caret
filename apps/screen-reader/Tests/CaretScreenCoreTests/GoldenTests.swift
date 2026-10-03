@@ -162,6 +162,7 @@ private func goldenLines() throws -> [Data] {
               case .taskProgress(let undone) = try JSONDecoder().decode(Message.self, from: lines[29]) else { Issue.record("lines 29 and 30 are not taskProgress"); return }
         #expect(done.phase == .done && done.written == 3 && done.restored == nil)
         #expect(undone.phase == .undone && undone.restored == 2 && undone.notRestored == 1 && undone.notUndoablePresses == 0)
+        #expect(done.stopReason == nil && undone.stopReason == nil)
         let text = String(decoding: lines[21], as: UTF8.self)
         for bad in [#""sourceApps":[]"#, #""sourceApps":["Mail Fixture","Mail Fixture"]"#] {
             let line = text.replacingOccurrences(of: #""sourceApps":["Mail Fixture"]"#, with: bad)
@@ -169,6 +170,25 @@ private func goldenLines() throws -> [Data] {
         }
         let noWindow = String(decoding: lines[19], as: UTF8.self).replacingOccurrences(of: #","window":{"number":4421,"title":"Seating"}"#, with: "")
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(noWindow.utf8)) }
+    }
+
+    /// B14: a stopped taskProgress says why in stopReason, and no other phase may carry one; protocol.test.ts checks the same.
+    @Test func readsTheStopReason() throws {
+        let lines = try goldenLines()
+        guard case .taskProgress(let stopped) = try JSONDecoder().decode(Message.self, from: lines[12]) else { Issue.record("line 13 is not taskProgress"); return }
+        #expect(stopped.phase == .stopped && stopped.stopReason == .changed)
+        let text = String(decoding: lines[12], as: UTF8.self)
+        let done = String(decoding: lines[28], as: UTF8.self)
+        for bad in [
+            text.replacingOccurrences(of: #","stopReason":"changed""#, with: ""),
+            text.replacingOccurrences(of: #""stopReason":"changed""#, with: #""stopReason":"timeout""#),
+            text.replacingOccurrences(of: #""stopReason":"changed""#, with: #""stopReason":null"#),
+            text.replacingOccurrences(of: #""phase":"stopped""#, with: #""phase":"handoff""#),
+            done.replacingOccurrences(of: #","written":3"#, with: #","written":3,"stopReason":"you""#),
+        ] {
+            #expect(bad != text && bad != done)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
     }
 
     @Test func readsTheOfferMessagesAndRaise() throws {

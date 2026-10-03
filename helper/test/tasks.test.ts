@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { PROTOCOL_VERSION, type Activity, type HelperMessage, type TaskRecord } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, TaskProgress, type Activity, type HelperMessage, type TaskRecord } from "../src/protocol.ts";
 import { PlanError, type Plan, type Step } from "../src/executor/schema.ts";
 import { TaskRegistry, TransitionError } from "../src/tasks/registry.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN } from "./fake-app.ts";
@@ -47,6 +47,8 @@ describe("task controls on a six-step run", () => {
     app.show();
   });
   afterEach(() => {
+    // Every progress any test published is valid: a stop always says why, and nothing else does.
+    for (const m of published) if (m.type === "taskProgress") TaskProgress.parse(m);
     helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
@@ -107,6 +109,7 @@ describe("task controls on a six-step run", () => {
     };
     const r = await helper.executor.run("t", SIX, {});
     expect(r).toMatchObject({ outcome: "stopped", step: 1, detail: "stopped by you before step 2 of 6" });
+    expect(published.filter((m) => m.type === "taskProgress").at(-1)).toMatchObject({ phase: "stopped", stopReason: "you" });
     expect(records().at(-1)).toMatchObject({ state: "failed", cause: "you", detail: "stopped by you before step 2 of 6" });
     await expect(helper.executor.resume("t")).rejects.toThrow(PlanError);
 
@@ -119,6 +122,7 @@ describe("task controls on a six-step run", () => {
     expect(paused).toMatchObject({ outcome: "paused", step: 2 });
     helper.executor.stop("u");
     expect(records("u").at(-1)).toMatchObject({ state: "failed", cause: "you", step: 2, detail: "stopped by you before step 3 of 6" });
+    expect(published.filter((m) => m.type === "taskProgress").at(-1)).toMatchObject({ taskId: "u", phase: "stopped", stopReason: "you" });
     expect(() => helper.executor.pause("u", false)).toThrow(PlanError);
   });
 

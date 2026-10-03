@@ -10,7 +10,7 @@
 {"type":"readerCommand","v":1,"id":"cmd-1","expires":1790000005700,"verb":{"kind":"write","pid":5150,"windowId":"5150-1","key":"dev.caret.fixture/standard/group:contact details/textfield:email~0","role":"AXTextField","attribute":"value","expect":"","value":"dana.whitfield@example.com"}}
 {"type":"verbResult","v":1,"id":"cmd-1","at":1790000000700,"outcome":"changed","detail":"value is 'typed@example.com'"}
 {"type":"userInput","v":1,"at":1790000000800,"pid":5150,"kind":"mouse","point":[212.5,140]}
-{"type":"taskProgress","v":1,"at":1790000000900,"taskId":"task-1","planId":"claim-follow-up","phase":"stopped","step":1,"steps":8,"says":"The shipping city is Austin","detail":"dev.caret.fixture/standard/textfield:email~0 changed since the plan started: '' is now 'typed@example.com'"}
+{"type":"taskProgress","v":1,"at":1790000000900,"taskId":"task-1","planId":"claim-follow-up","phase":"stopped","step":1,"steps":8,"says":"The shipping city is Austin","detail":"dev.caret.fixture/standard/textfield:email~0 changed since the plan started: '' is now 'typed@example.com'","stopReason":"changed"}
 {"type":"readerCommand","v":1,"id":"cmd-2","expires":1790000006000,"verb":{"kind":"watchWindows","windows":[{"pid":5150,"windowId":"5150-4"}]}}
 {"type":"fillResult","v":1,"at":1790000000750,"proposalId":"fill-1","windowId":"5150-1","fieldKey":"dev.caret.fixture/standard/group:contact details/textfield:email~0","outcome":"inserted","reason":null,"method":"pastePid","valueLength":25}
 {"type":"taskControl","v":1,"taskId":"task-1","action":"takeOver"}

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { PROTOCOL_VERSION, type HelperMessage, type TaskProgress } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
 import { classifyLabel } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
@@ -28,6 +28,8 @@ describe("executor", () => {
 
   const progress = (taskId: string): TaskProgress[] => published.filter((m): m is TaskProgress => m.type === "taskProgress" && m.taskId === taskId);
   const acts = () => app.verbs.filter((v) => v.kind === "write" || v.kind === "press");
+  /** Why the task's last progress says it stopped (protocol.ts StopReason). */
+  const stopReason = (taskId: string): StopReason | undefined => progress(taskId).at(-1)?.stopReason;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "caret-exec-"));
@@ -50,6 +52,8 @@ describe("executor", () => {
     app.show();
   });
   afterEach(() => {
+    // Every progress any test published is valid: a stop always says why, and nothing else does.
+    for (const m of published) if (m.type === "taskProgress") TaskProgress.parse(m);
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -66,6 +70,7 @@ describe("executor", () => {
     // The fake app refuses to raise, as a reader without --act-pids for it would.
     const r = await helper.executor.run("t1", plan([front]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 0, detail: "the reader refused: notAllowed (the fake app does not raise its window)" });
+    expect(stopReason("t1")).toBe("reader");
     expect(app.verbs.filter((v) => v.kind === "raise")).toEqual([{ kind: "raise", pid: FIXTURE_APP.pid, windowId: WIN }]);
     expect(helper.executor.ledger("t1")).toEqual([]);
 
@@ -81,6 +86,7 @@ describe("executor", () => {
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 0 });
     expect(r.detail).toMatch(/^mismatch/);
+    expect(stopReason(r.taskId)).toBe("mismatch");
     expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", step: 0, says: `${K("textfield:name~0")} holds Dana` });
     expect(acts()).toHaveLength(1); // the second step never ran
   });
@@ -95,6 +101,7 @@ describe("executor", () => {
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 0 });
     expect(r.detail).toMatch(/billing.*changed although the step did not touch it/);
+    expect(stopReason(r.taskId)).toBe("changed");
   });
 
   it("reruns a finished plan as a no-op: every step already holds and nothing is written or pressed", async () => {
@@ -162,6 +169,7 @@ describe("executor", () => {
     const r = await helper.executor.run("t1", p, {});
     expect(r).toMatchObject({ outcome: "stopped", step: 1 });
     expect(r.detail).toMatch(/email.*changed since the plan started/);
+    expect(stopReason(r.taskId)).toBe("changed");
     expect(app.node(K("textfield:email~0"))?.value).toBe("typed@example.com");
   });
 
@@ -172,6 +180,7 @@ describe("executor", () => {
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 1 });
     expect(r.detail).toMatch(/not found/);
+    expect(stopReason(r.taskId)).toBe("unreachable");
   });
 
   it("stops and names the step when a sheet covers the window", async () => {
@@ -181,6 +190,7 @@ describe("executor", () => {
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 1 });
     expect(r.detail).toMatch(/a sheet covers/);
+    expect(stopReason(r.taskId)).toBe("sheet");
   });
 
   it("pauses at the next step boundary on real input in the target window, and continues on resume", async () => {
@@ -213,6 +223,7 @@ describe("executor", () => {
     const r = await helper.executor.run("t2", plan([write(K("textfield:email~0"), "x@example.com")]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 0 });
     expect(r.detail).toMatch(/cannot re-read/);
+    expect(stopReason(r.taskId)).toBe("reader");
   });
 
   it("keeps a step's end target and its press target apart", async () => {
@@ -334,6 +345,7 @@ describe("executor", () => {
         const r = await helper.executor.run("t1", sourced, { city: "Austin, TX 78704" });
         expect(r).toMatchObject({ outcome: "stopped", step: 0 });
         expect(r.detail).toMatch(/more of a window than one question may/);
+        expect(stopReason(r.taskId)).toBe("unreachable");
         expect(calls).toBe(0);
         expect(acts()).toHaveLength(0);
       });
@@ -344,6 +356,7 @@ describe("executor", () => {
       const r = await helper.executor.run("t1", plan([shippingCity]), {});
       expect(r).toMatchObject({ outcome: "stopped", step: 0 });
       expect(r.detail).toMatch(/did not agree/);
+      expect(stopReason(r.taskId)).toBe("unreachable");
       expect(acts()).toHaveLength(0);
     });
   });
@@ -376,6 +389,7 @@ describe("executor", () => {
     const r = await helper.executor.run("t1", plan([{ says: "x", end: { kind: "exists", window: { title: "Nope" }, target: { label: "A", describe: "a" } } }]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 0 });
     expect(r.detail).toMatch(/no window matches/);
+    expect(stopReason(r.taskId)).toBe("windowGone");
     void WIN;
   });
 });
