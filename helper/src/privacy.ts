@@ -111,10 +111,15 @@ function windowShare(w: WindowState): WindowShare {
   // while covering no more of it.
   const half = Math.max(0, Math.floor((chars - 1) / 2));
   // Past 2 * WINDOW_CHARS the count stopped, so `half` is a floor there, and above CONVERSATION_CHARS.
-  const budget = conversationCap && isConversation(w) ? Math.min(CONVERSATION_CHARS, half) : !whole || card ? WINDOW_CHARS : Math.min(WINDOW_CHARS, half);
+  const budget = heldAsConversation(w) ? Math.min(CONVERSATION_CHARS, half) : !whole || card ? WINDOW_CHARS : Math.min(WINDOW_CHARS, half);
   const share = { budget, lines: whole ? [...seen] : null };
   budgets.set(w, share);
   return share;
+}
+
+/** Whether the conversation rule holds this window: it is a conversation, and the rule is on. */
+export function heldAsConversation(w: WindowState): boolean {
+  return conversationCap && isConversation(w);
 }
 
 /** Lines shorter than this are not charged when a taken text contains them: a letter or two is in most texts. */

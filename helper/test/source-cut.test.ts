@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
 import { proposeFill, NOT_ASKED } from "../src/fill/fill.ts";
-import { fieldKinds } from "../src/fill/kinds.ts";
+import { fieldKinds, fieldTerms } from "../src/fill/kinds.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { SnippetLedger, windowBudget } from "../src/privacy.ts";
 import type { AppRef, Node, TypedValue } from "../src/protocol.ts";
@@ -102,6 +102,23 @@ function model(labels: readonly string[] = SCHEDULE): ScreenModel {
   return m;
 }
 
+const CHAT = "8181-2";
+const MEETING = "Thursday, October 8, 2026";
+/**
+ * A Messages thread with more dates than its budget holds, every one a date to the same degree: the
+ * meeting date comes last, after twelve shipping updates, so neither screen order nor label words keep it.
+ */
+function datedChat(labels: readonly string[]): ScreenModel {
+  const lines = Array.from({ length: 12 }, (_, i) => `Order ${4400 + i} shipped September ${i + 10}, 2026`);
+  lines.push(`Design review is ${MEETING}`);
+  const nodes = lines.map((l, i) => text(`${R}/statictext:m${i}~0`, l));
+  const values = lines.map((l, i) => value("date", l.slice(l.search(/(?:September|Thursday)/)), `${R}/statictext:m${i}~0`));
+  const m = new ScreenModel();
+  m.apply(snap(nodes, { at: 1000, windowId: CHAT, title: "Dana", app: MESSAGES, focused: true, values }));
+  m.apply(scheduleForm(2000, labels));
+  return m;
+}
+
 describe("a cut conversation never leaves a decoy", () => {
   it("the B11 case: the Reference window as Messages gives no wrong value on the Schedule follow-up form", async () => {
     const m = model();
@@ -119,12 +136,14 @@ describe("a cut conversation never leaves a decoy", () => {
   it("does not ask a field whose kind lost a value to the cut, and marks it sourceCut", async () => {
     // A form asking only for a date, labelled with words no line of the window shares, so no ordering
     // can tell the meeting date from the order date: only the cut rule stands between them.
-    const m = model(["Date", "Notes"]);
+    const m = datedChat(["Date", "Notes"]);
     const asked: JevRequest[] = [];
     const ledger = new SnippetLedger();
-    const { cut } = collectCandidates(m, FORM, { now: 3000, ledger });
-    // Under the window's budget, one of the two dates is left out.
-    expect(cut).toEqual([REF]);
+    const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Date"]), fieldTerms(["Notes"])] });
+    // Under the window's budget, the meeting date is left out and shipping dates are kept.
+    expect(cut).toEqual([CHAT]);
+    expect(candidates.some((c) => c.text.startsWith("September"))).toBe(true);
+    expect(candidates.some((c) => c.text.includes(MEETING))).toBe(false);
     expect(cutKinds(m, cut, ledger).has("date")).toBe(true);
     const p = await proposeFill(m, decoyPicksAnyDate(asked), FORM, FORM_KEY("Date"), 3000);
     const date = p.fields.find((f) => f.key === FORM_KEY("Date"))!;
@@ -134,7 +153,7 @@ describe("a cut conversation never leaves a decoy", () => {
   });
 
   it("withholds a pick of a cut kind for a field whose label names no kind", async () => {
-    const m = model(["When", "Notes"]);
+    const m = datedChat(["When", "Notes"]);
     expect(fieldKinds(["When"]).size).toBe(0);
     const p = await proposeFill(m, decoyPicksAnyDate(), FORM, FORM_KEY("When"), 3000);
     const when = p.fields.find((f) => f.key === FORM_KEY("When"))!;
@@ -144,7 +163,7 @@ describe("a cut conversation never leaves a decoy", () => {
   });
 
   it("asks nothing when the cut withholds every field", async () => {
-    const m = model(["Date"]);
+    const m = datedChat(["Date"]);
     let calls = 0;
     const p = await proposeFill(m, async (r) => (calls++, decoyPicksAnyDate()(r)), FORM, FORM_KEY("Date"), 3000);
     expect(calls).toBe(0);
@@ -163,13 +182,15 @@ describe("a cut conversation never leaves a decoy", () => {
   });
 });
 
-/** A Jev that answers every question with the first date it sees offered, the gold one or not. */
+/** A Jev that answers every question with a date, the meeting's when it is offered and a shipping date when not. */
 function decoyPicksAnyDate(asked: JevRequest[] = []): AskJev {
   return async (req) => {
     asked.push(req);
     const answers: Record<string, { choice: string; confidence: number }> = {};
     for (const [id, q] of Object.entries(req.questions)) {
-      const hit = Object.entries(q.criteria).find(([, d]) => d !== null && /^"(?:Thursday, October 8|September 28), 2026"/.test(d));
+      // The meeting date when offered, else the same shipping date in both asks whatever their order.
+      const dates = Object.entries(q.criteria).filter(([, d]) => d !== null && /^"(?:Thursday, October 8|September \d+), 2026"/.test(d));
+      const hit = dates.find(([, d]) => d?.startsWith(`"${MEETING}"`)) ?? dates.sort(([, a], [, b]) => String(a).localeCompare(String(b)))[0];
       answers[id] = { choice: hit?.[0] ?? "none", confidence: 0.95 };
     }
     return { model: "jev-test", answers, inputTokens: 1000, latencyMs: 5, costUsd: 0.000042 };
@@ -213,5 +234,65 @@ describe("field kinds", () => {
     ["Company", []],
   ])("%s takes %j", (label, kinds) => {
     expect([...fieldKinds([label])].sort()).toEqual([...kinds].sort());
+  });
+});
+
+describe("a conversation's budget goes to the lines nearest each field first", () => {
+  const terms = SCHEDULE.map((l) => fieldTerms([l]));
+
+  it("takes the meeting block for the Schedule follow-up form, under the same budget", () => {
+    const m = model();
+    const budget = windowBudget(m.windows.get(REF)!);
+    const ranked = new SnippetLedger();
+    const byRelevance = collectCandidates(m, FORM, { now: 3000, ledger: ranked, fields: terms }).candidates.map((c) => c.text);
+    const plain = new SnippetLedger();
+    const inOrder = collectCandidates(m, FORM, { now: 3000, ledger: plain }).candidates.map((c) => c.text);
+    for (const want of ["Thursday, October 8, 2026", "3:00 PM", "https://meet.example.com/xqp-rtz-kfa", "dana.whitfield@lumenlabs.example"]) {
+      expect(byRelevance, want).toContain(want);
+    }
+    // In screen order the order block came first and the meeting date did not fit.
+    expect(inOrder).toContain("September 28, 2026");
+    expect(inOrder).not.toContain("Thursday, October 8, 2026");
+    expect(ranked.chars(REF)).toBeLessThanOrEqual(budget);
+    expect(plain.chars(REF)).toBeLessThanOrEqual(budget);
+  });
+
+  it("fills more of the form than screen order did, and nothing wrong", async () => {
+    const fill = async (relevance: boolean) => {
+      const p = await proposeFill(model(), decoyProneJev(), FORM, FORM_KEY("Meeting date"), 3000, { relevance });
+      return new Map(p.fields.map((f) => [SCHEDULE.find((l) => f.descriptor.includes(`'${l}'`)), f.value]));
+    };
+    const ranked = await fill(true);
+    const inOrder = await fill(false);
+    for (const [l, v] of [...ranked, ...inOrder]) expect(v === null || v === GOLD[l as string], `${l}: ${v}`).toBe(true);
+    const filled = (m: Map<unknown, string | null>) => [...m.values()].filter((v) => v !== null).length;
+    expect(filled(ranked)).toBeGreaterThan(filled(inOrder));
+    expect(ranked.get("Start time")).toBe("3:00 PM");
+    expect(ranked.get("Attendee email")).toBe("dana.whitfield@lumenlabs.example");
+  });
+
+  it("goes round the fields: each field's best line before any field's second", () => {
+    const m = new ScreenModel();
+    const filler = ["See you at the venue tomorrow", "Bring the projector and the long cable", "Sounds good, thanks again"];
+    const lines = ["Lunch is at noon", "Invoice total: $120.00", "Parking total: $15.00", "Gate code: 4417", ...filler];
+    m.apply(
+      snap(
+        lines.map((l, i) => text(`c${i}`, l)),
+        { at: 1000, windowId: CHAT, app: MESSAGES, title: "Kofi", values: [value("amount", "$120.00", "c1"), value("amount", "$15.00", "c2")] },
+      ),
+    );
+    m.apply(scheduleForm(2000, ["Parking total", "Gate code"]));
+    const cands = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(), fields: [fieldTerms(["Parking total"]), fieldTerms(["Gate code"])] }).candidates;
+    // Parking's best ($15.00, three shared terms), then the gate code, then parking's second best.
+    expect(cands.map((c) => c.text).slice(0, 3)).toEqual(["$15.00", "4417", "$120.00"]);
+  });
+
+  it("leaves windows that are not conversations in screen order", () => {
+    const m = new ScreenModel();
+    m.apply({ ...reference(1000), app: { pid: 6161, bundleId: "dev.caret.notes", name: "Notes" } });
+    m.apply(scheduleForm(2000, SCHEDULE));
+    const a = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(), fields: terms }).candidates;
+    const b = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger() }).candidates;
+    expect(a).toEqual(b);
   });
 });

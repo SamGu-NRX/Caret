@@ -2,10 +2,11 @@
 // the form's own: typed values first, then single lines of visible text, splitting "Label: value"
 // lines so the value is the span and the label is its context. Jev later picks among these by id,
 // and code copies the chosen span verbatim.
-import type { FillSource, Node, ValueKind } from "../protocol.ts";
+import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
-import type { SnippetLedger } from "../privacy.ts";
+import { heldAsConversation, type SnippetLedger } from "../privacy.ts";
+import { kindTerm, overlap, words } from "./kinds.ts";
 
 export interface Candidate {
   id: string;
@@ -69,6 +70,14 @@ export interface GenerateOptions {
   ledger?: SnippetLedger;
   /** Windows that give no candidates: the first look leaves out windows the reader could not walk just now. */
   exclude?: ReadonlySet<string>;
+  /**
+   * The form's fields as terms (kinds.ts fieldTerms), nearest the trigger first. With a ledger, a
+   * conversation's budget goes first to the spans whose line and section share the most terms with each
+   * field in turn, and only then to the rest in screen order: the cap holds a chat to a few hundred
+   * characters, and in screen order those went to whatever came first (B11's replay filled 18 of 78
+   * answerable fields with the sources as Messages windows).
+   */
+  fields?: readonly ReadonlySet<string>[];
 }
 
 /** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
@@ -175,9 +184,90 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     return { candidates: out, stats, cut: [...closed] };
   };
 
+  /** Conversations whose budget went by relevance; the line pass leaves them alone. */
+  const ranked = new Set<string>();
+  const relevance = o.fields !== undefined && o.fields.length > 0 && o.ledger !== undefined ? o.fields : null;
+
+  /**
+   * Every span of a conversation, typed values first and then lines as the two passes below would take
+   * them, each with the terms of its line, its section and the kinds of typed values it holds; then adds
+   * them in relevance order. False when the cap or the clock ran out.
+   */
+  const byRelevance = (w: WindowState, fields: readonly ReadonlySet<string>[]): boolean => {
+    const spans: { node: Node; text: string; kind: ValueKind | null; context: () => string | null; terms: Set<string> }[] = [];
+    const sections = new Map<string, string[]>();
+    const sectionWords = (n: Node): string[] => {
+      let ws = sections.get(n.key);
+      if (ws === undefined) sections.set(n.key, (ws = words(sectionAround(w, n))));
+      return ws;
+    };
+    const valuesOf = new Map<string, TypedValue[]>();
+    for (const v of w.values) {
+      const list = valuesOf.get(v.nodeKey);
+      if (list === undefined) valuesOf.set(v.nodeKey, [v]);
+      else list.push(v);
+    }
+    const termsOf = (n: Node, line: string, kinds: Iterable<ValueKind>): Set<string> => {
+      const t = new Set([...words(line), ...sectionWords(n)]);
+      for (const k of kinds) t.add(kindTerm(k));
+      return t;
+    };
+    for (const v of w.values) {
+      if (outOfTime()) return false;
+      stats.values++;
+      const node = w.nodes.get(v.nodeKey);
+      if (node === undefined) continue;
+      spans.push({ node, text: v.text, kind: v.kind, context: () => contextFor(w, node, v.text), terms: termsOf(node, lineHolding(nodeText(node), v.text), [v.kind]) });
+    }
+    for (const node of w.nodes.values()) {
+      if (outOfTime()) return false;
+      stats.nodes++;
+      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
+      if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
+      const lines = timed("split", () => nodeText(node).split(/\r?\n/));
+      for (const raw of lines) {
+        if (outOfTime()) return false;
+        const s = spanOfLine(raw);
+        if (s === null) continue;
+        const kinds = (valuesOf.get(node.key) ?? []).filter((v) => s.line.includes(v.text)).map((v) => v.kind);
+        const context = s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField);
+        spans.push({ node, text: s.text, kind: null, context, terms: termsOf(node, s.line, kinds) });
+      }
+    }
+    // Round robin over the fields: each field's best span, then each field's second best, and so on.
+    const lists = fields.map((f) =>
+      spans
+        .map((sp, i) => [overlap(f, sp.terms), i] as const)
+        .filter(([n]) => n > 0)
+        .sort((a, b) => b[0] - a[0] || a[1] - b[1])
+        .map(([, i]) => i),
+    );
+    const order: number[] = [];
+    const used = new Set<number>();
+    for (let r = 0; lists.some((l) => r < l.length); r++) {
+      for (const l of lists) {
+        const i = l[r];
+        if (i !== undefined && !used.has(i)) (used.add(i), order.push(i));
+      }
+    }
+    for (let i = 0; i < spans.length; i++) if (!used.has(i)) order.push(i);
+    for (const i of order) {
+      if (full() || outOfTime()) return false;
+      if (closed.has(w.window.windowId)) break;
+      const sp = spans[i] as (typeof spans)[number];
+      add(w, sp.node, sp.text, sp.kind, sp.context);
+    }
+    return true;
+  };
+
   for (const w of windows) {
     if (full()) return finish();
     touched.add(w.window.windowId);
+    if (relevance !== null && heldAsConversation(w)) {
+      ranked.add(w.window.windowId);
+      if (!byRelevance(w, relevance)) return finish();
+      continue;
+    }
     for (const v of w.values) {
       if (full() || outOfTime()) return finish();
       stats.values++;
@@ -189,7 +279,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   for (const w of windows) {
     if (full()) break;
     touched.add(w.window.windowId);
-    if (closed.has(w.window.windowId)) continue;
+    if (closed.has(w.window.windowId) || ranked.has(w.window.windowId)) continue;
     for (const node of w.nodes.values()) {
       if (full() || outOfTime()) return finish();
       stats.nodes++;
@@ -199,22 +289,45 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       for (const raw of lines) {
         // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
         if (full() || outOfTime()) return finish();
-        const line = raw.replace(/\s+/g, " ").trim();
-        if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line)) continue;
-        if (line.endsWith(":")) continue; // a label, not a value
-        const m = LABELLED.exec(line);
-        if (m !== null && m[1] !== undefined && m[2] !== undefined) {
-          const label = m[1].trim();
-          add(w, node, m[2].trim(), null, () => label);
-          continue;
-        }
-        add(w, node, line, null, () =>
-          lines.length === 1 ? (isSourceField ? (node.label ?? nearestText(w, node, true)) : nearestText(w, node, true)) : null,
-        );
+        const s = spanOfLine(raw);
+        if (s === null) continue;
+        add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField));
       }
     }
   }
   return finish();
+}
+
+const constant =
+  <T>(x: T): (() => T) =>
+  () =>
+    x;
+
+/**
+ * The span a screen line offers: a "Label: value" line offers its value, with the label as context; a
+ * line too short or too long to be a value, with no letter or digit, or ending in a colon offers none.
+ */
+function spanOfLine(raw: string): { line: string; text: string; label: string | null } | null {
+  const line = raw.replace(/\s+/g, " ").trim();
+  if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line)) return null;
+  if (line.endsWith(":")) return null; // a label, not a value
+  const m = LABELLED.exec(line);
+  if (m !== null && m[1] !== undefined && m[2] !== undefined) return { line, text: m[2].trim(), label: m[1].trim() };
+  return { line, text: line, label: null };
+}
+
+/** The context of an unlabelled line: for a one-line node, its field label or the nearest label text. */
+function lineContext(w: WindowState, node: Node, lines: number, isSourceField: boolean): string | null {
+  if (lines !== 1) return null;
+  return isSourceField ? (node.label ?? nearestText(w, node, true)) : nearestText(w, node, true);
+}
+
+/** The line of a node's text that holds a span, found by search rather than by splitting the whole text. */
+function lineHolding(text: string, span: string): string {
+  const at = text.indexOf(span);
+  if (at < 0) return span;
+  const nl = text.indexOf("\n", at);
+  return text.slice(text.lastIndexOf("\n", at) + 1, nl < 0 ? text.length : nl);
 }
 
 /** The candidates for a fill; see collectCandidates. With a ledger, each window gives only what fits its budget. */

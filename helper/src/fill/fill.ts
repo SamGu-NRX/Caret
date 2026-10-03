@@ -12,7 +12,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type Node, type ValueKind } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { candidateKinds, collectCandidates, cutKinds, describeCandidate, type Candidate } from "./candidates.ts";
-import { fieldKinds } from "./kinds.ts";
+import { fieldKinds, fieldTerms } from "./kinds.ts";
 import { SnippetLedger, type Snippet } from "../privacy.ts";
 import { describeField } from "./descriptor.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
@@ -135,6 +135,8 @@ export interface FillOptions {
    * (scripts/live-replay.ts). The helper never sets it.
    */
   cutRule?: boolean;
+  /** False spends a conversation's budget in screen order, as before B12, for the same replay. The helper never sets it. */
+  relevance?: boolean;
 }
 
 export async function proposeFill(
@@ -153,17 +155,22 @@ export async function proposeFill(
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const ledger = new SnippetLedger();
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
-  const fields: { id: string; node: Node; descriptor: string; name: string; kinds: Set<ValueKind> }[] = [];
+  const fields: { id: string; node: Node; descriptor: string; name: string; kinds: Set<ValueKind>; terms: Set<string> }[] = [];
   for (const n of formFields(w, triggerKey)) {
     const d = describeField(w, n);
     if (!ledger.take(w, "descriptor", [d.label, d.nearest, d.placeholder, d.section])) {
       if (n.key === triggerKey) throw new FillError(`the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
       continue;
     }
-    const kinds = fieldKinds([d.label, d.nearest, d.placeholder]);
-    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field", kinds });
+    const labelWords = [d.label, d.nearest, d.placeholder];
+    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field", kinds: fieldKinds(labelWords), terms: fieldTerms(labelWords) });
   }
-  const { candidates, cut } = collectCandidates(model, windowId, { now, ledger, ...(opts.exclude === undefined ? {} : { exclude: opts.exclude }) });
+  const { candidates, cut } = collectCandidates(model, windowId, {
+    now,
+    ledger,
+    ...(opts.exclude === undefined ? {} : { exclude: opts.exclude }),
+    ...(opts.relevance === false ? {} : { fields: fields.map((f) => f.terms) }),
+  });
   if (candidates.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
 
   // A window's budget can cut the value a field wants and keep another of the same kind: with the
