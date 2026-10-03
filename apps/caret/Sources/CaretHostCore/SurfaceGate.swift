@@ -30,12 +30,16 @@ public enum SurfaceGate {
         public var bounds: CGRect
         public var layer: Int
         public var alpha: Double
+        /// The owner runs as a background agent (no Dock icon: LSUIElement or background-only),
+        /// as writing aids do. A regular app's palette over a field is never taken for a decoration.
+        public var agent: Bool
 
-        public init(pid: Int32, bounds: CGRect, layer: Int = 0, alpha: Double = 1) {
+        public init(pid: Int32, bounds: CGRect, layer: Int = 0, alpha: Double = 1, agent: Bool = false) {
             self.pid = pid
             self.bounds = bounds
             self.layer = layer
             self.alpha = alpha
+            self.agent = agent
         }
     }
 
@@ -52,16 +56,18 @@ public enum SurfaceGate {
     /// contains a whole display is skipped. Nothing here proves it transparent: an opaque one is
     /// assumed rare, and one covering only part of a display still counts.
     ///
-    /// So is an elevated window drawn around the target field itself (`ringsField`): writing aids
-    /// decorate the focused field from a window of their own. Measured on 2026-10-03: Grammarly
-    /// Desktop keeps one at layer 1, alpha 1, at TextEdit's focused text area grown by exactly 64 pt
-    /// on every side (field [309, 203, 586, 382], window [245, 139, 714, 510]), and A12's desktop
-    /// runs held every TextEdit offer as `covered` under it.
+    /// So is an elevated window that a background agent draws around the app's focused field
+    /// (`ringsField`): writing aids decorate the focused field from a window of their own. Measured
+    /// on 2026-10-03: Grammarly Desktop (ApplicationType UIElement) keeps one at layer 1, alpha 1, at
+    /// TextEdit's focused text area grown by exactly 64 pt on every side (field [309, 203, 586,
+    /// 382], window [245, 139, 714, 510]), and A12's desktop runs held every TextEdit offer as
+    /// `covered` under it. Geometry alone cannot prove such a window transparent, so a regular
+    /// app's window, or one at the normal layer, always counts.
     public static func topPID(at point: CGPoint, windows: [Window], ownPID: Int32, displays: [CGRect] = [], field: CGRect? = nil) -> Int32? {
         for window in windows {
             guard window.pid != ownPID, window.alpha > 0.01, window.bounds.contains(point) else { continue }
             if window.layer > 0, displays.contains(where: { window.bounds.contains($0) }) { continue }
-            if window.layer > 0, let field, ringsField(window.bounds, field) { continue }
+            if window.layer > 0, window.agent, let field, ringsField(window.bounds, field) { continue }
             return window.pid
         }
         return nil

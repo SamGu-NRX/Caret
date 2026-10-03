@@ -464,6 +464,7 @@ private final class World: SurfaceWorld {
     func focusedField(pid: Int32) -> FocusedField? { MainActor.assumeIsolated { owner?.readField(pid: pid) } }
     func caret(of field: FocusedField) -> CaretRead { MainActor.assumeIsolated { owner?.caret(of: field) ?? .noSnapshot } }
     func focusedIdentity(pid: Int32) -> TargetIdentity? { FieldReader.readFocused(pid: pid)?.field.identity }
+    func focusedFrame(pid: Int32) -> CGRect? { AXRead.focusedElement(pid: pid).flatMap(AXRead.frame(of:)) }
 
     func windowStack() -> WindowStack {
         MainActor.assumeIsolated {

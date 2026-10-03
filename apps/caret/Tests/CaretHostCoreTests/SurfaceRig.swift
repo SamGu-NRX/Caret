@@ -74,6 +74,7 @@ final class FakeScreen: SurfaceWorld {
     }
 
     func focusedIdentity(pid: Int32) -> TargetIdentity? { focused[pid]?.identity }
+    func focusedFrame(pid: Int32) -> CGRect? { focused[pid]?.frame }
     func windowStack() -> WindowStack { WindowStack(windows: windows, ownPID: Fx.caret) }
     /// 7 pt a character.
     func textWidth(_ text: String, readID: UInt64) -> CGFloat { CGFloat(text.count) * 7 }

@@ -63,6 +63,26 @@ final class SurfaceStopTests: XCTestCase {
         XCTAssertEqual(Captions.stopped(.you, app: "Safari", next: 2, steps: 3, fillFilled: 2), "Stopped before step 3 of 3", "a stop you asked for names the step, fill or not")
     }
 
+    // MARK: - A writing aid's ring around the field
+
+    /// The A12 desktop case on the fake screen: a background agent's layer-1 window rings the
+    /// focused field by 64 pt. The offer shows and its line stays up; the same window from a
+    /// regular app holds it as covered.
+    func testAnAgentsRingAroundTheFieldDoesNotHideTheOffer() {
+        let ring = Fx.Element.email.frame.insetBy(dx: -64, dy: -64)
+        play(Transition("a writing aid's ring", [
+            .screen { $0.front(); $0.windows.insert(SurfaceGate.Window(pid: 777, bounds: ring, layer: 1, agent: true), at: 0) },
+            .offer(Fx.action()),
+            .expect(.shown("offer-5")),
+            .wait(2), .expect(.shown("offer-5")),
+        ]))
+        play(Transition("the same window from a regular app", [
+            .screen { $0.front(); $0.windows.insert(SurfaceGate.Window(pid: 777, bounds: ring, layer: 1), at: 0) },
+            .offer(Fx.action()),
+            .expect(.shown(nil)), .expect(.held(.covered)),
+        ]))
+    }
+
     // MARK: - Esc
 
     func testEscMidRunStopsAndNamesTheStep() {
@@ -92,6 +112,17 @@ final class SurfaceStopTests: XCTestCase {
             .wait(3), .press(Fx.esc()),
             .taskLine(Fx.progress("offer-5", .done, written: 1, steps: 3)),
             .expect(.line("Done, in Sheet Fixture")), .expect(.toast(nil)),
+        ]))
+        play(Transition("Esc, then the helper reports the step had already failed", midRun + [
+            .wait(3), .press(Fx.esc()),
+            .taskLine(Fx.progress("offer-5", .stopped, reason: .mismatch, step: 1, steps: 3)),
+            .expect(.line("Stopped because Sheet Fixture didn't take the change.")),
+        ]))
+        play(Transition("a key took the stopped line down: a late ending does not bring it back", midRun + [
+            .wait(3), .press(Fx.esc()),
+            .press(Fx.esc()), .expect(.line(nil)),
+            .taskLine(Fx.progress("offer-5", .stopped, reason: .you, step: 2, steps: 3)),
+            .expect(.line(nil)), .expect(.panelUp(false)),
         ]))
         play(Transition("another task's ending leaves the stopped line", midRun + [
             .wait(3), .press(Fx.esc()),

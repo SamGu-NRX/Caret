@@ -211,6 +211,8 @@ extension OnboardingFlow {
         case .stopped where run.phase == .stoppedByYou:
             if progress.steps > 0 { state.firstLookRun?.steps = progress.steps }
             if let step = progress.step { state.firstLookRun?.nextStep = step }
+            // A failure that ended the run before the stop reached it is the line's true reason.
+            if let reason = progress.stopReason, reason != .you { state.firstLookRun?.phase = .stopped(reason) }
         case .done where run.phase == .stoppedByYou:
             state.firstLookRun?.phase = .done(written: progress.written)
         case .undone where run.phase == .undoing:

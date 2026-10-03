@@ -83,6 +83,9 @@ public protocol SurfaceWorld: AnyObject {
     func caret(of field: FocusedField) -> CaretRead
     /// Only which element and window hold the app's focus, for rechecks.
     func focusedIdentity(pid: Int32) -> TargetIdentity?
+    /// The frame of the app's focused element now (global top-left points), read at each check:
+    /// a writing aid's decoration follows the focused field (`SurfaceGate.ringsField`).
+    func focusedFrame(pid: Int32) -> CGRect?
     func windowStack() -> WindowStack
     /// The width of `text` in the font of the field read as `readID`.
     func textWidth(_ text: String, readID: UInt64) -> CGFloat

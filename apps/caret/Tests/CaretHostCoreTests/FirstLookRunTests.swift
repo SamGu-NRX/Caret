@@ -210,6 +210,12 @@ final class FirstLookRunTests: XCTestCase {
         finished.clock.advance(by: 3)
         finished.send(.key(.escape), .taskProgress(progress(.done, written: 4)))
         XCTAssertEqual(line(finished), "Filled 4 fields from Mail", "the run finished before the stop reached it")
+
+        let failed = shown(try found())
+        failed.send(.key(.tab), .taskProgress(progress(.verified, step: 0, steps: 3)))
+        failed.clock.advance(by: 3)
+        failed.send(.key(.escape), .taskProgress(progress(.stopped, reason: .mismatch, step: 1, steps: 3)))
+        XCTAssertEqual(line(failed), "Filled 1 field, then stopped because Safari didn't take the change.", "the helper's failure is the true reason")
     }
 
     func testEscStopsOnlyAfterThreeSecondsOtherwiseGoesBack() throws {

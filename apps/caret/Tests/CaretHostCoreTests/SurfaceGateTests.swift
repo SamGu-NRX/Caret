@@ -68,12 +68,19 @@ final class SurfaceGateTests: XCTestCase {
         let field = CGRect(x: 309, y: 203, width: 586, height: 382)
         let point = CGPoint(x: field.midX, y: field.midY)
         let windows = [
-            SurfaceGate.Window(pid: 1487, bounds: CGRect(x: 245, y: 139, width: 714, height: 510), layer: 1),
+            SurfaceGate.Window(pid: 1487, bounds: CGRect(x: 245, y: 139, width: 714, height: 510), layer: 1, agent: true),
             SurfaceGate.Window(pid: form, bounds: CGRect(x: 309, y: 103, width: 603, height: 505)),
         ]
         XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [point], windows: windows, ownPID: caret, field: field), nil)
         XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [point], windows: windows, ownPID: caret), .covered,
                        "without the field's frame the gate cannot tell, and holds")
+        var regular = windows
+        regular[0].agent = false
+        XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [point], windows: regular, ownPID: caret, field: field), .covered,
+                       "a regular app's window ringing the field may be an opaque palette: it covers")
+        let moved = field.offsetBy(dx: 2, dy: 0)
+        XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [point], windows: windows, ownPID: caret, field: moved), .covered,
+                       "a ring measured against a frame the field no longer has does not match, so the gate reads the frame live")
     }
 
     func testOnlyAnEvenRingAroundTheFieldCounts() {
@@ -91,7 +98,7 @@ final class SurfaceGateTests: XCTestCase {
         // Only elevated windows can be decorations; a document window that happens to sit evenly
         // around the field is another app's window over it.
         let field = CGRect(x: 600, y: 140, width: 200, height: 40)
-        let windows = [SurfaceGate.Window(pid: messages, bounds: field.insetBy(dx: -20, dy: -20)), SurfaceGate.Window(pid: form, bounds: formWindow)]
+        let windows = [SurfaceGate.Window(pid: messages, bounds: field.insetBy(dx: -20, dy: -20), agent: true), SurfaceGate.Window(pid: form, bounds: formWindow)]
         XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [CGPoint(x: 700, y: 160)], windows: windows, ownPID: caret, field: field), .covered)
     }
 

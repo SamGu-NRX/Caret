@@ -33,7 +33,9 @@
 // --idle-min at the start; the run stops, closes its windows and reports `deferred: user active` as soon
 // as an input that is not one of this script's own keys arrives. A QUIET-UNTIL in the future refuses.
 // Keys are only ever posted through fixture-keys, which checks the frontmost app and the focused
-// element's pid immediately before each key.
+// element's pid immediately before each key. This script's keys are told from a person's by time
+// alone (HID idle against the windows when it posted): a person's input inside one of those windows,
+// or while fixture-keys runs, is missed. Tagging events would need an event tap of its own.
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -611,7 +613,7 @@ try {
       await t.reset();
       await t.focus();
       await sleep(400);
-      const before = await t.read();
+      const valuesBefore = await t.read();
       const f = await until("the focused field", () => focused(), 10_000);
       const { plan, want, afterFirst } = t.plan(r, kind === "tab" ? 1 : 3);
       const offerKey = offerKeyFor(kind, r);
@@ -642,6 +644,27 @@ try {
       await until("offerAccept at the helper", () => fromHost.find((x) => "actionId" in x.m && x.m.offerId === offerKey), 5000);
       row.accepted = true;
       const ended = (phases: string[]) => progress.find((p) => p.taskId === offerKey && phases.includes(p.phase));
+      /** The run's grant is gone: the last grant message for the task that reached the reader is a
+       * revoke, and a write under the task's id is refused and changes nothing. Checked right after
+       * the run ends, before ⌘Z, whose own grant and revoke could otherwise hide a missing one. */
+      const checkRevoked = async (): Promise<void> => {
+        row.revoked = await until("actRevoke for the task", () => {
+          const sent = toReader.filter((x) => x.taskId === offerKey && x.sent);
+          return sent.length > 0 && sent.at(-1)?.type === "actRevoke";
+        }, 5000).then(() => true, () => false);
+        const w = windowOf();
+        const n = w?.nodes.get(f.n.key);
+        if (w === undefined || n === undefined) {
+          row.secondAct = "field gone";
+          return;
+        }
+        const now = await t.read();
+        const res: VerbResult = await helper.readerVerb({ kind: "write", pid: t.pid, windowId: w.window.windowId, key: n.key, role: n.role, attribute: "value", expect: n.value ?? "", value: "SHOULD NOT APPEAR", taskId: offerKey });
+        row.secondAct = res.outcome;
+        row.secondActDetail = res.detail;
+        await sleep(200);
+        row.secondActChanged = JSON.stringify(await t.read()) !== JSON.stringify(now);
+      };
       if (kind === "esc") {
         // One snapshot per poll, and it must be this task's working line.
         await until("the working line to offer Esc", async () => {
@@ -664,6 +687,7 @@ try {
         row.readBack = await t.read();
         row.valueOk = JSON.stringify(row.readBack) === JSON.stringify(afterFirst);
         row.stopOk = end.phase === "stopped" && end.stopReason === "you" && end.step === 1 && row.stoppedLine === "Stopped before step 2 of 3";
+        await checkRevoked();
       } else {
         const end = await until("the run to end", () => ended(["stopped", "done", "handoff", "paused"]), 15_000);
         row.outcome = end.phase === "stopped" ? `stopped:${end.stopReason}` : end.phase;
@@ -676,37 +700,26 @@ try {
           return x.toast?.grantID !== undefined && x.lastAccepted?.offerKey === offerKey ? x : null;
         }, 4000).catch(() => null);
         row.toast = s?.toast?.caption ?? null;
+        await checkRevoked();
         if (row.toast !== null) {
           // ⌘Z first: the toast lives 5 s. The screenshot of the first run's toast is quick, and
           // the toast is checked again before the key.
           if (r === 0) await shot("tab-toast");
           const still = await surface();
           if (still.toast?.grantID === undefined) throw new Error("the toast ended before ⌘Z");
+          const before = toReader.length;
           await key(t.pid, "cmd-z");
           await until("the undo at the helper", () => fromHost.find((x) => "action" in x.m && x.m.taskId === offerKey && x.m.action === "undo"), 5000);
           const undone = await until("the undone progress", () => progress.find((p) => p.taskId === offerKey && p.phase === "undone"), 15_000);
           await sleep(300);
           row.afterUndo = await t.read();
           if (r === 0) await shot("tab-undone");
-          row.undoOk = JSON.stringify(row.afterUndo) === JSON.stringify(before) && (undone.restored ?? 0) >= 1 && undone.notRestored === 0;
+          // Undo acts under a grant of its own, revoked when it ends.
+          const undoGrants = toReader.slice(before).filter((x) => x.taskId === offerKey && x.sent).map((x) => x.type);
+          row.undoOk = JSON.stringify(row.afterUndo) === JSON.stringify(valuesBefore) && (undone.restored ?? 0) >= 1 && undone.notRestored === 0
+            && undoGrants[0] === "actGrant" && undoGrants.at(-1) === "actRevoke";
         }
       }
-      // The grant is gone: the last grant message for the task that reached the reader is a revoke,
-      // and a write under the task's id is refused and changes nothing.
-      row.revoked = await until("actRevoke for the task", () => {
-        const sent = toReader.filter((x) => x.taskId === offerKey && x.sent);
-        return sent.length > 0 && sent.at(-1)?.type === "actRevoke";
-      }, 5000).then(() => true, () => false);
-      const w = windowOf();
-      const n = w?.nodes.get(f.n.key);
-      if (w !== undefined && n !== undefined) {
-        const now = await t.read();
-        const res: VerbResult = await helper.readerVerb({ kind: "write", pid: t.pid, windowId: w.window.windowId, key: n.key, role: n.role, attribute: "value", expect: n.value ?? "", value: "SHOULD NOT APPEAR", taskId: offerKey });
-        row.secondAct = res.outcome;
-        row.secondActDetail = res.detail;
-        await sleep(200);
-        row.secondActChanged = JSON.stringify(await t.read()) !== JSON.stringify(now);
-      } else row.secondAct = "field gone";
     } catch (e) {
       if (e instanceof Deferred) throw e;
       row.problem = e instanceof Error ? e.message : String(e);

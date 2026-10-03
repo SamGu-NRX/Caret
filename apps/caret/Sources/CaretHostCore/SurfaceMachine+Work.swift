@@ -217,15 +217,23 @@ extension SurfaceMachine {
     }
 
     /// The helper's ending for work Esc stopped, while its line still shows. A stop names the step
-    /// the helper stopped before; a run that finished before the stop reached it says Done. The
-    /// line keeps its place and its timer; anything else the run reports changes nothing.
+    /// the helper stopped before, or the failure that ended the run first; a run that finished
+    /// before the stop reached it says Done. The line keeps its place and its timer; anything else
+    /// the run reports changes nothing. A line a key already took down stays down.
     func confirmStop(_ stopped: Work, _ progress: TaskProgress) {
-        guard resultStatusID != nil, !lineSuppressed || headless else { return }
+        guard let statusID = resultStatusID, resultTimer != nil, arbiter.snapshot().statusLine?.id == statusID,
+              !lineSuppressed || headless else {
+            stoppedWork = nil
+            return
+        }
         let line: WorkLine
         switch progress.phase {
         case .stopped:
             let steps = progress.steps > 0 ? progress.steps : (stopped.steps ?? 0)
-            line = WorkLines.stoppedByYou(next: progress.step ?? stopped.nextStep, of: steps)
+            line = WorkLines.stopped(
+                app: stopped.app, reason: progress.stopReason ?? .error, next: progress.step ?? stopped.nextStep, steps: steps,
+                fillFilled: stopped.fill.map { _ in stopped.verified }
+            )
         case .done:
             line = WorkLines.done(app: stopped.app, character: world.character)
         default:

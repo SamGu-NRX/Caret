@@ -14,14 +14,13 @@ enum Visibility {
         // Cheapest test first: no Accessibility read for an app that is not in front.
         guard front == target.pid else { return .appNotFront }
         var focused = true
-        // The focused field's frame, so a writing aid's window drawn around it is not a cover
-        // (`SurfaceGate.ringsField`). Read only for the field the surface is for.
-        var fieldFrame: CGRect?
         if requireFocus {
-            let live = FieldReader.readFocused(pid: target.pid)
-            focused = live?.field.identity.elementID == target.elementID && live?.field.identity.windowID == target.windowID
-            if focused, let element = live?.element { fieldFrame = AXRead.frame(of: element) }
+            let live = FieldReader.readFocused(pid: target.pid)?.field.identity
+            focused = live?.elementID == target.elementID && live?.windowID == target.windowID
         }
+        // The app's focused element as it is now, which a writing aid's decoration rings
+        // (`SurfaceGate.ringsField`); read for a toast too, whose field may no longer be focused.
+        let fieldFrame = AXRead.focusedElement(pid: target.pid).flatMap(AXRead.frame(of:))
         return SurfaceGate.check(
             targetPID: target.pid, frontmostPID: front, fieldIsFocused: focused, anchors: anchors,
             windows: windows(), ownPID: ProcessInfo.processInfo.processIdentifier,
@@ -31,6 +30,13 @@ enum Visibility {
 
     /// On-screen windows, front to back. Window-server only, so any thread may call it (the input
     /// pause reads it off the tap thread).
+    /// The process runs without a Dock icon (LSUIElement or background-only), as writing aids'
+    /// helpers do. NSRunningApplication's properties are safe to read off the main thread.
+    nonisolated static func isAgent(_ pid: Int32) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
+        return app.activationPolicy != .regular
+    }
+
     nonisolated static func windows() -> [SurfaceGate.Window] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return []
@@ -39,10 +45,12 @@ enum Visibility {
             guard let pid = info[kCGWindowOwnerPID as String] as? Int32,
                   let raw = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: raw as CFDictionary) else { return nil }
+            let layer = info[kCGWindowLayer as String] as? Int ?? 0
             return SurfaceGate.Window(
-                pid: pid, bounds: bounds,
-                layer: info[kCGWindowLayer as String] as? Int ?? 0,
-                alpha: info[kCGWindowAlpha as String] as? Double ?? 1
+                pid: pid, bounds: bounds, layer: layer,
+                alpha: info[kCGWindowAlpha as String] as? Double ?? 1,
+                // Asked only of elevated windows, the few a decoration can be.
+                agent: layer > 0 && isAgent(pid)
             )
         }
     }
