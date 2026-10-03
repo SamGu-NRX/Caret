@@ -20,9 +20,9 @@ has not granted Calendar access answers `blocked: tcc` without asking, so the ho
 naming what is missing.
 
 ask: the menu's Ask Caret (`ask open`) puts the activity list up with its field key, while the
-fixture stays the active app. Text goes into the field and Return, Tab and Esc are pressed with
-cua-driver's background delivery to the host's pid (no window raised, nothing posted to the HID
-stream); the card lists the write and the Send left to the user; Tab runs it; the field is read back
+fixture stays the active app. Text goes into the field and Return, Tab and Esc are pressed as key events
+posted to the host's pid alone (pid-keys.swift, CGEventPostToPid; no window raised, nothing posted
+to the HID stream or the session tap; cua-driver's background route refuses Caret's panels); the card lists the write and the Send left to the user; Tab runs it; the field is read back
 and Send is never pressed. If a background key does not land, the step falls back to the debug
 socket's `ask` hook and says so.
 
@@ -94,8 +94,13 @@ def fixture_dump(fx, out_dir):
     return json.loads(lines[-1]) if lines else {}
 
 
-def cua(tool, args):
-    out = subprocess.run(["cua-driver", tool, json.dumps(args)], capture_output=True, text=True)
+PIDKEYS = os.path.join(ROOT, "apps", "caret", ".build", "pid-keys")
+
+
+def pid_keys(pid, *keys):
+    """Keys posted to the host's pid only (CGEventPostToPid), its executable rechecked before each.
+    cua-driver's background route refuses here: Caret's panels are not in the host's AXWindows."""
+    out = subprocess.run([PIDKEYS, str(pid), "Caret", *keys], capture_output=True, text=True)
     try:
         return json.loads(out.stdout or "{}")
     except ValueError:
@@ -178,7 +183,12 @@ def event(out_dir, appearance, calendar):
         sa.check("the reader's test calendar refuses without asking: blocked tcc, a hand-off", (end or {}).get("phase") == "handoff" and (end or {}).get("blocked") == "tcc", end=end)
         sa.check("the line names what is missing", line == "Nothing was added: Caret needs Calendar access in Privacy & Security.", line=line)
     mine = [g["type"] for g in st.get("grants", []) if g.get("taskId") == key_]
-    sa.check("the calendar grant is revoked after the run", bool(mine) and mine[-1] == "actRevoke", grants=mine)
+    if calendar == "fake":
+        sa.check("the calendar grant is revoked after the run", mine[:1] == ["calendarGrant"] and mine[-1:] == ["actRevoke"], grants=mine)
+    else:
+        # Blocked at the first calendar read, before any write: no grant may be left open (none is
+        # issued when the reader refuses before the helper writes).
+        sa.check("no calendar grant is left open", not mine or mine[-1] == "actRevoke", grants=mine, issued=bool(mine))
     results["steps"].append({"step": "after", "shot": shot(out_dir, pid, h.pid, "event-3-after"), "line": line})
     after = sa.watch(pid)
     sa.check("the event card never moved the frontmost app or the focused element", after["front"] == before["front"] and after["focused"] == before["focused"],
@@ -209,12 +219,12 @@ def ask(out_dir, appearance):
         return sa.host("ask")
 
     # Typing: cua-driver's background route into the host's focused element, else the socket hook.
-    r = cua("type_text", {"pid": h.pid, "text": INSTRUCTION})
-    typed = sa.wait_for(lambda: ask_state().get("text") == INSTRUCTION, 3, 0.1)
-    results["delivery"]["type"] = "cua type_text" if typed else "socket hook (cua did not land)"
+    r = pid_keys(h.pid, "text:" + INSTRUCTION)
+    typed = sa.wait_for(lambda: ask_state().get("text") == INSTRUCTION, 5, 0.1)
+    results["delivery"]["type"] = "pid-keys text" if typed else "socket hook (real keys did not land)"
     # The real field path is what this run is for: a fallback keeps the later checks running, but
     # the run fails (review A13, finding 9).
-    sa.check("real typing reached the ask field (cua type_text to the host's pid)", bool(typed), reply=r)
+    sa.check("real typing reached the ask field (key events posted to the host's pid)", bool(typed), reply=r, text=ask_state().get("text"))
     if not typed:
         results["delivery"]["typeReply"] = r
         sa.host("ask type " + INSTRUCTION)
@@ -222,10 +232,10 @@ def ask(out_dir, appearance):
     results["steps"].append({"step": "text", "shot": own_window_shot(out_dir, "ask-2-text", lw)})
 
     def press(name, done):
-        r = cua("press_key", {"pid": h.pid, "key": name})
+        r = pid_keys(h.pid, name)
         landed = sa.wait_for(done, 3, 0.1)
-        results["delivery"][name] = "cua press_key" if landed else "socket hook (cua did not land)"
-        sa.check(f"a real {name} reached the list's key handling (cua press_key to the host's pid)", bool(landed), reply=r)
+        results["delivery"][name] = "pid-keys" if landed else "socket hook (real key did not land)"
+        sa.check(f"a real {name} reached the list's key handling (posted to the host's pid)", bool(landed), reply=r)
         if not landed:
             results["delivery"][name + "Reply"] = r
             sa.host({"return": "ask submit", "tab": "ask key tab", "escape": "ask key esc"}[name])

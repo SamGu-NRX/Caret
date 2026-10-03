@@ -343,6 +343,8 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(say(.untracedValue, "something else"), "I couldn't find that value on screen, in what I remember, or in what you asked.")
         XCTAssertEqual(say(.nothingToDo, "'Caret Fixture — Executor' has no field Caret could fill from what is on screen, in memory or in your instruction, and no button"),
                        "I couldn't find anything to fill or press in \u{201C}Caret Fixture — Executor\u{201D}.")
+        XCTAssertEqual(say(.nothingToDo, "Jev found nothing in your instruction to write or press here"), "I couldn't find anything to fill or press for that.",
+                       "planner.ts's second nothingToDo detail names no window")
         XCTAssertEqual(say(.notEditable, "step 2 ('Total holds 4'): 'Total' is not a field Caret can write"), "I can't write in \u{201C}Total\u{201D}.")
         XCTAssertEqual(say(.notEditable, "step 2 ('Password holds x'): its target is a password field, which is left to you"), "That's a password field, which I leave to you.")
         XCTAssertEqual(say(.unknownWindow, "step 1 ('Name holds Dana'): no open window matches 'Invoices'"), "I couldn't find a window called \u{201C}Invoices\u{201D}.")

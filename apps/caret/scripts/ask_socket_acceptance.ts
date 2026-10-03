@@ -80,7 +80,9 @@ const CASES: Case[] = [
     id: "esc", instruction: "Set the shipping city to Austin and the shipping street to 1200 Barton Springs Rd", writes: { shippingCity: "Austin", shippingStreet: "1200 Barton Springs Rd" }, esc: true,
     steps: [`Put ${q("Austin")} in Shipping City`, `Put ${q("1200 Barton Springs Rd")} in Shipping Street`], line: "You stopped it before step 2 of 2",
   },
-  { id: "unsure", instruction: "Fill in the usual", writes: {}, unsure: true, line: "I wasn't sure enough which field or window you meant. Try naming it." },
+  // Every field answered "keep" and no press: the helper refuses as nothingToDo (planner.ts, "Jev
+  // found nothing in your instruction to write or press here"), which the host says in a sentence.
+  { id: "nothing", instruction: "Fill in the usual", writes: {}, unsure: true, line: "I couldn't find anything to fill or press for that." },
 ];
 
 const fakeJev: AskJev = async (req: JevRequest) => {
