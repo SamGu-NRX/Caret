@@ -14,7 +14,8 @@ import { FirstLookReply, PROTOCOL_VERSION, type FillProposal, type FirstLook, ty
 import type { PopupBlock, PopupRef, PopupSpecT } from "../popup.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { FILLABLE_ROLES, FillError, proposeFill } from "../fill/fill.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, MAX_FILL_ROWS, recheckFill, type GroundedProposal } from "./fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, MAX_FILL_ROWS, recheckFill, type AboutNow, type GroundedProposal } from "./fill-popup.ts";
+import type { AboutValue } from "../fill/about.ts";
 import { allWatchLines, buildLookRequest, readPendingAnswer, stateFor, windowMarkers } from "../tasks/pending.ts";
 import { statusNode } from "./open-app.ts";
 import { offerField } from "./field.ts";
@@ -68,6 +69,10 @@ export interface FirstLookDeps {
   record: (msg: OfferPopup, family: Family, accept: AcceptHandler, underlying: string | null) => void;
   /** Ends the found offer: publishes offerWithdrawn for its key. */
   withdraw: (offerKey: string, reason: "taken" | "stale") => void;
+  /** Values the user told Caret that a form's fields may take (fill/about.ts). */
+  about: () => AboutValue[];
+  /** What an About entry holds now, for the recheck before a fill from memory (fill-popup.ts). */
+  aboutNow: AboutNow;
   now: () => number;
 }
 
@@ -261,7 +266,7 @@ export class FirstLookRunner {
     const results = await Promise.allSettled(
       forms.map(({ w, empty }, i) => {
         const trigger = w.focusedKey !== null && empty.includes(w.focusedKey) ? w.focusedKey : (empty[0] as string);
-        return proposeFill(model, ask, w.window.windowId, trigger, now, { newId: () => `${requestId}.form${i}`, exclude });
+        return proposeFill(model, ask, w.window.windowId, trigger, now, { newId: () => `${requestId}.form${i}`, exclude, about: this.deps.about() });
       }),
     );
     const out: Candidate[] = [];
@@ -273,13 +278,13 @@ export class FirstLookRunner {
         continue;
       }
       asked++;
-      const p = stillGrounded(model, r.value);
+      const p = stillGrounded(model, r.value, this.deps.aboutNow);
       if (p === null) continue;
       const w = model.windows.get(p.windowId);
       if (w === undefined) continue;
       const popup = buildFillPopup(model, p);
       out.push({
-        sourceApps: popup.sourceApps ?? [],
+        ...(popup.sourceApps === undefined ? {} : { sourceApps: popup.sourceApps }),
         family: "fill",
         kind: "fill",
         rank: RANK.fill,
@@ -295,7 +300,7 @@ export class FirstLookRunner {
   }
 
   private async acceptFill(offerKey: string, p: GroundedProposal): Promise<AcceptResult> {
-    const stale = recheckFill(this.deps.model, p);
+    const stale = recheckFill(this.deps.model, p, this.deps.aboutNow);
     this.deps.withdraw(offerKey, stale === null ? "taken" : "stale");
     if (stale !== null) return { refused: `${stale}; nothing was written` };
     const { plan, slots } = fillPlan(this.deps.model, p);
@@ -445,7 +450,7 @@ function emptyFields(w: WindowState): string[] {
 }
 
 /** The proposal with only fields still empty whose source is still open, when that leaves a pop-up's worth; else null. */
-function stillGrounded(model: ScreenModel, p: FillProposal): GroundedProposal | null {
+function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow): GroundedProposal | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined) return null;
   const fields = p.fields.filter((f) => {
@@ -453,7 +458,7 @@ function stillGrounded(model: ScreenModel, p: FillProposal): GroundedProposal | 
     return n !== undefined && (n.value ?? "") === "" && (f.source === null || model.windows.has(f.source.windowId));
   });
   const q = { ...p, fields };
-  return fillPopupEligible(q) && recheckFill(model, q) === null ? q : null;
+  return fillPopupEligible(q) && recheckFill(model, q, aboutNow) === null ? q : null;
 }
 
 function sourceText(app: string, title: string): string {

@@ -44,7 +44,7 @@ public struct PlanProposal: Codable, Equatable, Sendable {
     /// protocol.ts PlanErrorCode has a sentence for each.
     public enum ErrorCode: String, Codable, Sendable {
         case schema, noWindow, unsure, nothingToDo, unsupportedStep, multipleWindows, unknownWindow, ambiguousWindow
-        case unknownTarget, ambiguousTarget, notEditable, untracedValue, stepAfterHandoff, riskMismatch, unavailable, jevFailed, privacy, `internal`
+        case unknownTarget, ambiguousTarget, notEditable, untracedValue, wrongKind, stepAfterHandoff, riskMismatch, unavailable, jevFailed, privacy, `internal`
     }
     public struct Window: Codable, Equatable, Sendable {
         public var pid: Int

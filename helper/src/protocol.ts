@@ -403,15 +403,23 @@ export type OfferControl = z.infer<typeof OfferControl>;
 export const MemoryKind = z.enum(["about", "people", "preference", "routine", "permission"]);
 export type MemoryKind = z.infer<typeof MemoryKind>;
 
+export const MemoryOp = z.enum(["list", "edit", "pause", "resume", "forget", "add"]);
+export type MemoryOp = z.infer<typeof MemoryOp>;
+
 /**
- * List, edit, pause, resume or forget memory entries. `kind` narrows a list; `id` names the entry
- * for every other op; `fields` holds an edit's new values, checked against the entry's kind.
+ * List, edit, pause, resume, forget or add memory entries. `kind` narrows a list; `id` names the entry
+ * for edit, pause, resume and forget; `fields` holds an edit's new values, checked against the entry's
+ * kind. `add` keeps a value the user typed into Caret (the host's onboarding asks for a name and an
+ * email): `kind` "about", `fields` {label, value, source: "typed"}, and no `id`. A second add with the
+ * same label replaces that entry's value. The host's contract for it is
+ * apps/caret/Tests/CaretHostCoreTests/Fixtures/memory.ndjson on v2/host, copied byte for byte into
+ * fixtures/golden/memory.ndjson.
  */
 export const MemoryRequest = z.object({
   type: z.literal("memoryRequest"),
   v: z.literal(PROTOCOL_VERSION),
   requestId: z.string(),
-  op: z.enum(["list", "edit", "pause", "resume", "forget"]),
+  op: MemoryOp,
   id: z.string().optional(),
   kind: MemoryKind.optional(),
   fields: z.record(z.string(), z.unknown()).optional(),
@@ -630,6 +638,13 @@ export const FillAsk = z.object({
 });
 export type FillAsk = z.infer<typeof FillAsk>;
 
+/**
+ * A value that came from memory rather than a window: an About entry the user typed into Caret (B17,
+ * fill/about.ts). `says` is the source line after "from": "what you told Caret".
+ */
+export const FillMemory = z.object({ id: z.string().min(1), label: z.string(), says: z.string() });
+export type FillMemory = z.infer<typeof FillMemory>;
+
 export const FillField = z.object({
   key: z.string(),
   /** Where the field is on screen, so a consumer can draw the proposed value in place. */
@@ -641,19 +656,31 @@ export const FillField = z.object({
   confidence: z.number(),
   /** The chosen candidate's text, copied verbatim by code. Null when the choice is "none". */
   value: z.string().nullable(),
+  /** The window the value was copied from. Null when there is no value, or when it came from memory. */
   source: FillSource.nullable(),
   /**
+   * The memory entry the value came from, when it came from one; null otherwise. A value has exactly one
+   * of `source` and `memory`. A line from a helper before B17 has no key, which reads as null. A host that reads only `source` finds none here and offers nothing, which
+   * is safe; offering it needs the host to name "what you told Caret" and to skip its source-window check.
+   */
+  memory: FillMemory.nullable().default(null),
+  /**
    * Why no value was proposed although one might have been: the two asks picked different candidates,
-   * they agreed below the confidence cutoff, or a window's privacy budget cut a value of the kind the
+   * they agreed below the confidence cutoff (for a value from memory, also when the asks did not both say,
+   * at WHOSE_CUTOFF or above, that the field wants the user's own details), or a window's privacy budget cut a value of the kind the
    * field takes or the asks picked ("sourceCut", fill.ts), so the candidates of that kind were a partial
    * set. Null otherwise.
    */
   withheld: z.enum(["disagree", "lowConfidence", "sourceCut"]).nullable(),
   /**
    * The first ask, and the second with candidates shuffled and the field reworded. Empty when the field
-   * was not asked: withheld as "sourceCut" before any ask.
+   * was not asked: withheld as "sourceCut" before any ask, or, with `withheld` null, nothing could be
+   * offered for it (no window gave a candidate, and nothing the user told Caret fits it).
    */
   asks: z.union([z.tuple([FillAsk, FillAsk]), z.tuple([])]),
+}).refine((f) => (f.value === null ? f.source === null && f.memory === null : (f.source === null) !== (f.memory === null)), {
+  message: "a value comes with exactly one of source and memory, and no value with neither",
+  path: ["memory"],
 });
 export type FillField = z.infer<typeof FillField>;
 
@@ -677,7 +704,10 @@ export const FillProposal = z.object({
     inputTokens: z.number().int().nonnegative(),
     costUsd: z.number().nonnegative(),
   }),
-  /** The confidence an agreed choice had to reach to be proposed. */
+  /**
+   * The confidence an agreed choice of a window's value had to reach to be proposed. A value from memory
+   * is held to fill.ts MEMORY_CUTOFF and its whose-details answers to WHOSE_CUTOFF instead (B18).
+   */
   cutoff: z.number(),
 });
 export type FillProposal = z.infer<typeof FillProposal>;
@@ -850,6 +880,21 @@ export const RoutineFields = z.object({
 });
 export const PermissionFields = z.object({ action: ActionType, rule: PermissionRule, fixed: z.boolean() });
 
+/** How a use of a permission ended: done; handed off to the user; stopped partway; or tried and failed. */
+export const UseOutcome = z.enum(["done", "handedOff", "stopped", "failed"]);
+export type UseOutcome = z.infer<typeof UseOutcome>;
+/** Uses each permission keeps, newest first; older ones are deleted. The host shows them all (A11). */
+export const MAX_PERMISSION_USES = 5;
+
+/**
+ * One use of a permission: what Caret did under it (`says`, outcome included, as the host shows it),
+ * where (`app`), when (`at`) and how it ended (`outcome`). The host's contract (fixtures/golden/
+ * memory.ndjson) has the first three; `outcome` is always set by this helper and optional only so the
+ * contract's lines, which predate it, still parse.
+ */
+export const PermissionUse = z.object({ at: ms, says: z.string().min(1), app: z.string().nullable(), outcome: UseOutcome.optional() });
+export type PermissionUse = z.infer<typeof PermissionUse>;
+
 const entryBase = {
   id: z.string(),
   status: MemoryStatus,
@@ -862,7 +907,8 @@ export const MemoryEntry = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("people"), ...entryBase, fields: PeopleFields }),
   z.object({ kind: z.literal("preference"), ...entryBase, fields: PreferenceFields }),
   z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields }),
-  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields }),
+  /** `uses`: the permission's last MAX_PERMISSION_USES uses, newest first; this helper always sends it, empty when none. */
+  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields, uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
 ]);
 export type MemoryEntry = z.infer<typeof MemoryEntry>;
 
@@ -874,6 +920,11 @@ export const MemoryReply = z.object({
   error: z.string().nullable(),
   /** For list, the entries; for every other op, the entry after the change, or none after forget. */
   entries: z.array(MemoryEntry),
+  /**
+   * On a list reply only: the ops this helper accepts. The host shows onboarding's typed step only when
+   * this names `add`, since nothing else keeps what is typed there.
+   */
+  ops: z.array(MemoryOp).optional(),
 });
 export type MemoryReply = z.infer<typeof MemoryReply>;
 
@@ -1040,6 +1091,7 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  * `ambiguousWindow`, `unknownTarget`, `ambiguousTarget`: a window or target is not (or not uniquely) in
  * the screen model now. `notEditable`: a write to something that is not a writable field.
  * `untracedValue`: a value that no window, memory entry or the instruction shows verbatim.
+ * `wrongKind`: a value whose kind does not fit its field, such as a whole address in City (B18, kinds.ts misfit).
  * `stepAfterHandoff`: a step after the press handed to the user. `riskMismatch`: a hand-off whose reason
  * is not the one the risk table gives its control. `unavailable`: Jev is off, the helper is in shadow
  * mode, Caret is paused, or no reader is connected. `jevFailed`: the Jev request failed. `privacy`: the
@@ -1048,7 +1100,7 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  */
 export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
-  "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
+  "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "wrongKind", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 

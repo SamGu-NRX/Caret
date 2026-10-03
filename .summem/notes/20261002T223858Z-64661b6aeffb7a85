@@ -1,1 +1,0 @@
-caret-screen's request walk (AppWorker walkWindow .request) reports focused:true for a background app's own focused window, so the helper's model.focusedWindowId alone does not mean the user is there; check model.frontmostPid (from appSwitch and frontmost focus events) too.

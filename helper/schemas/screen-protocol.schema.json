@@ -889,7 +889,8 @@
                 "edit",
                 "pause",
                 "resume",
-                "forget"
+                "forget",
+                "add"
               ]
             },
             "id": {
@@ -1405,6 +1406,35 @@
                       }
                     ]
                   },
+                  "memory": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "says": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "says"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "withheld": {
                     "anyOf": [
                       {
@@ -1493,6 +1523,7 @@
                   "confidence",
                   "value",
                   "source",
+                  "memory",
                   "withheld",
                   "asks"
                 ],
@@ -2618,6 +2649,46 @@
                           "fixed"
                         ],
                         "additionalProperties": false
+                      },
+                      "uses": {
+                        "maxItems": 5,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "at": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Milliseconds since the Unix epoch"
+                            },
+                            "says": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "app": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "outcome": {
+                              "type": "string",
+                              "enum": [
+                                "done",
+                                "handedOff",
+                                "stopped",
+                                "failed"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "at",
+                            "says",
+                            "app"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -2630,6 +2701,20 @@
                     ],
                     "additionalProperties": false
                   }
+                ]
+              }
+            },
+            "ops": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "list",
+                  "edit",
+                  "pause",
+                  "resume",
+                  "forget",
+                  "add"
                 ]
               }
             }
@@ -5950,6 +6035,7 @@
                         "ambiguousTarget",
                         "notEditable",
                         "untracedValue",
+                        "wrongKind",
                         "stepAfterHandoff",
                         "riskMismatch",
                         "unavailable",

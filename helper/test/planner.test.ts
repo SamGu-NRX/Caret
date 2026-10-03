@@ -13,8 +13,9 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import { instructionValues } from "../src/planner/spans.ts";
 import { occursBounded, traceValue, type MemoryValue } from "../src/planner/trace.ts";
+import { addressParts, misfit, textKind, type TextKind } from "../src/fill/kinds.ts";
 import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
-import { byRelevance, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
+import { asksToFillForm, byRelevance, namesShortLabel, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
@@ -70,6 +71,13 @@ describe("instruction spans", () => {
     expect(instructionValues('Write "The meeting moved" in Message')).toEqual(["The meeting moved"]);
     expect(instructionValues('Write "Hello!" in Message')).toEqual(["Hello!"]);
     expect(instructionValues('Write "  indented" in Notes')).toEqual(["  indented"]);
+  });
+
+  it("reads the object of 'X is Y', unless it describes a value (B17)", () => {
+    expect(instructionValues("Company is Lumen Labs")).toEqual(["Lumen Labs"]);
+    expect(instructionValues("Title is Design review, and the room is 4B")).toEqual(["Design review", "4B"]);
+    expect(instructionValues("Shipping city is my home town")).toEqual([]);
+    expect(instructionValues("Name is Sam Rivera and Company is Lumen Labs")).toEqual(["Sam Rivera", "Lumen Labs"]);
   });
 
   it("offers no description as a value, and nothing from Dana's apostrophe", () => {
@@ -138,6 +146,10 @@ describe("the plan check", () => {
     expect(code(() => validatePlan(plan([write(K("textfield:pin~0"), "Dana Whitfield")]), {}, ctx("", noMemory, secure)))).toBe("notEditable");
     expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "Dana W.")]), {}, ctx()))).toBe("untracedValue");
     expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "")]), {}, ctx()))).toBe("untracedValue");
+    // A value whose kind does not fit its field (B18): an email in Name, a whole address in City; a city in City passes.
+    expect(code(() => validatePlan(plan([write(K("textfield:name~0"), "dana.whitfield@lumenlabs.example")]), {}, ctx()))).toBe("wrongKind");
+    expect(code(() => validatePlan(plan([write(K("group:billing/textfield:city~0"), "455 Congress Ave, Austin, TX 78701")]), {}, ctx("ship to 455 Congress Ave, Austin, TX 78701")))).toBe("wrongKind");
+    expect(code(() => validatePlan(plan([write(K("group:billing/textfield:city~0"), "Austin")]), {}, ctx("ship to 455 Congress Ave, Austin, TX 78701")))).toBe("passed");
     expect(code(() => validatePlan(plan([handoff(K("button:archive~0"), "unverifiable"), ok]), {}, ctx()))).toBe("stepAfterHandoff");
     expect(code(() => validatePlan(plan([handoff(K("button:send~0"), "unverifiable")]), {}, ctx()))).toBe("riskMismatch");
     expect(code(() => validatePlan(plan([handoff(K("button:archive~0"), "money")]), {}, ctx()))).toBe("riskMismatch");
@@ -146,6 +158,68 @@ describe("the plan check", () => {
 
   it("reads hand-off reasons from the risk table", () => {
     expect([handoffWhy("Send"), handoffWhy("Delete draft"), handoffWhy("Pay invoice"), handoffWhy("Archive"), handoffWhy("")]).toEqual(["outbound", "destructive", "money", "unverifiable", "unverifiable"]);
+  });
+});
+
+describe("whether a value's kind fits a field (B18, kinds.ts)", () => {
+  const table: [string, string, TextKind, boolean][] = [
+    ["455 Congress Ave, Austin, TX 78701", "City", "address", false],
+    ["Austin, TX 78701", "City", "text", false],
+    ["Austin", "City", "text", true],
+    ["Porto", "Town", "text", true],
+    ["455 Congress Ave", "Street", "street", true],
+    ["455 Congress Ave, Austin, TX 78701", "Street", "address", false],
+    ["455 Congress Ave, Austin, TX 78701", "Shipping address", "address", true],
+    ["455 Congress Ave, Austin, TX 78701", "Address line 1", "address", false],
+    ["sam.rivera@example.com", "Phone", "email", false],
+    ["+1 (512) 555-0142", "Phone", "phone", true],
+    ["+1 (512) 555-0142", "Email or phone", "phone", true],
+    ["sam.rivera@example.com", "Email address", "email", true],
+    ["Sam Rivera", "Email", "text", false],
+    ["https://lumenlabs.example/dana", "Website", "url", true],
+    ["Dana Whitfield", "Website", "text", false],
+    ["dana@lumenlabs.example", "Name", "email", false],
+    ["+1 (512) 555-0142", "Full name", "phone", false],
+    ["Dana Whitfield", "Name", "text", true],
+    ["$1,315.50", "Total", "amount", true],
+    ["sam.rivera@example.com", "Amount", "email", false],
+    ["2026-10-08", "Date", "text", true],
+    ["10-08-2026", "Due date", "phone", true],
+    ["https://meet.example.com/xqp-rtz-kfa", "Reference", "url", true],
+    ["ORD-2026-48213", "Reference", "text", true],
+    ["455 Congress Ave, Austin, TX 78701", "Notes", "address", true],
+    ["Reach me at sam.rivera@example.com", "Phone", "text", false],
+    ["Senior Product Designer", "Event title", "text", true],
+    // Review B18: dates and times are not street lines, a phone keeps its extension, and a whole address
+    // without commas is still a whole address.
+    ["8 October 2026", "Date", "text", true],
+    ["3 PM", "Start time", "text", true],
+    ["+1 (512) 555-0142 ext. 9", "Phone", "phone", true],
+    ["455 Congress Ave Austin TX 78701", "Street", "address", false],
+    ["455 Congress Ave\nAustin, TX 78701", "Street", "address", false],
+    // Fix check B18: a street named after a month is still a street.
+    ["12 October St, Austin, TX 78701", "Street", "address", false],
+    ["12 Janeway Dr, Austin, TX 78701", "Street", "address", false],
+    ["8 Oct", "Date", "text", true],
+  ];
+  it("splits a whole address into its street line and city, verbatim", () => {
+    expect(addressParts("455 Congress Ave, Austin, TX 78701")).toEqual({ street: "455 Congress Ave", city: "Austin" });
+    expect(addressParts("12 Rue X, 75001 Paris")).toEqual({ street: "12 Rue X", city: null });
+    expect(addressParts("455 Congress Ave")).toBeNull();
+    expect(addressParts("Room 4B, Building C")).toBeNull();
+    // The city is the part before the state or postal code, never a unit (review B18).
+    expect(addressParts("455 Congress Ave, Suite B, Austin, TX 78701")).toEqual({ street: "455 Congress Ave", city: "Austin" });
+    expect(addressParts("1 Main St, Springfield")).toEqual({ street: "1 Main St", city: "Springfield" });
+    expect(addressParts("455 Congress Ave, Suite B, Austin")).toEqual({ street: "455 Congress Ave", city: null });
+  });
+  it.each(table)("'%s' in a field labelled %s reads as %s and fits: %s", (value, label, kind, fits) => {
+    expect(textKind(value)).toBe(kind);
+    expect(misfit(value, [label]) === null).toBe(fits);
+  });
+
+  it("says what the value is and what the field takes", () => {
+    expect(misfit("455 Congress Ave, Austin, TX 78701", ["City"])).toBe("'455 Congress Ave, Austin, TX 78701' is a whole address, and the field takes a city");
+    expect(misfit("sam.rivera@example.com", ["Phone"])).toBe("'sam.rivera@example.com' is an email address, and the field takes a phone number");
   });
 });
 
@@ -241,14 +315,112 @@ describe("planTask", () => {
     expect(a.checked.handoff).toMatchObject({ label: "Archive", why: "unverifiable" });
   });
 
-  it("asks only about the fields an instruction names, or every field when it names none", async () => {
+  it("asks about a sectioned field only when its own section is named, once the instruction names a section (B17)", async () => {
+    const sectionsAsked = (r: JevRequest): string[] =>
+      Object.entries(r.questions)
+        .filter(([q]) => q !== "press")
+        .map(([, q]) => `${/Section: '([^']+)'/.exec(String(q.instructions))?.[1] ?? ""} ${/Label: '([^']+)'/.exec(String(q.instructions))?.[1] ?? ""}`.trim());
+    const jev = plannerJev({ fields: { "Billing City": "Lisbon" } });
+    const d = await planTask("Set the billing city to Lisbon", desk(), mem(), opts(jev));
+    expect(sectionsAsked(jev.requests[0] as JevRequest)).toEqual(["Billing City"]);
+    expect(d.slots).toEqual({ v1: "Lisbon" });
+    // A label only another section has is still named by its own words (review B17 #11).
+    const contact = desk([...executorWindow(), { key: K("group:contact~0"), parent: null, role: "AXGroup", label: "Contact details" }, { key: K("group:contact/textfield:phone~0"), parent: K("group:contact~0"), role: "AXTextField", label: "Phone", editable: true }]);
+    const two = plannerJev({ fields: { "Billing City": "Lisbon", "Contact details Phone": "555-0100" } });
+    await planTask("Set the billing city to Lisbon and the phone to 555-0100", contact, mem(), opts(two));
+    expect(sectionsAsked(two.requests[0] as JevRequest).sort()).toEqual(["Billing City", "Contact details Phone"]);
+    // Labels match whatever their case.
+    const cased = desk(executorWindow().map((n) => (n.key === K("group:shipping/textfield:city~0") ? { ...n, label: "city" } : n)));
+    const lower = plannerJev({ fields: { "Billing City": "Lisbon" } });
+    await planTask("Set the billing city to Lisbon", cased, mem(), opts(lower));
+    expect(sectionsAsked(lower.requests[0] as JevRequest)).toEqual(["Billing City"]);
+    // A value copied from memory names its entry on the step, for the executor's check at the write.
+    const fromMemory = plannerJev({ fields: { Email: "sam@work.example" } });
+    const dm = await planTask("Put my work email in Email", desk(), mem([{ id: "about-w", label: "Work email", text: "sam@work.example" }]), opts(fromMemory));
+    expect(dm.plan.steps.map((s) => s.memory)).toEqual(["about-w"]);
+    // With no section named, a city is a city in either.
+    const both = plannerJev({ fields: { "Shipping City": "Lisbon" } });
+    await planTask("Set the city to Lisbon", desk(), mem(), opts(both));
+    expect(sectionsAsked(both.requests[0] as JevRequest).sort()).toEqual(["Billing City", "Shipping City"]);
+  });
+
+  it("asks only about the fields an instruction names, or every field when it asks to fill the form (B18)", async () => {
     const jev = plannerJev({ fields: { Name: "Dana Whitfield", Email: "dana.whitfield@lumenlabs.example" } });
     const d = await planTask("Set Name to Dana Whitfield", desk(), mem(), opts(jev));
     expect(d.slots).toEqual({ v1: "Dana Whitfield" });
     expect(Object.keys((jev.requests[0] as JevRequest).questions).filter((q) => q !== "press")).toHaveLength(1);
-    const all = plannerJev({ fields: { Name: "Dana Whitfield" } });
-    await planTask("Use Dana's signature here", desk(), mem(), opts(all));
-    expect(Object.keys((all.requests[0] as JevRequest).questions).filter((q) => q !== "press").length).toBeGreaterThan(1);
+    // Naming no field no longer asks about every field: only the buttons are asked about, and nothing is written.
+    const none = plannerJev({ fields: { Name: "Dana Whitfield" } });
+    await expect(planTask("Use Dana's signature here", desk(), mem(), opts(none))).rejects.toMatchObject({ code: "nothingToDo" });
+    expect(Object.keys((none.requests[0] as JevRequest).questions)).toEqual(["press"]);
+    const all = plannerJev({ fields: { Name: "Dana Whitfield", Email: "dana.whitfield@lumenlabs.example" } });
+    const da = await planTask("Fill in the form with Dana's signature", desk(), mem(), opts(all));
+    expect(Object.keys((all.requests[0] as JevRequest).questions).filter((q) => q !== "press").length).toBe(executorWindow().filter((n) => n.editable === true && n.role !== "AXButton").length);
+    expect(Object.values(da.slots).sort()).toEqual(["Dana Whitfield", "dana.whitfield@lumenlabs.example"]);
+  });
+
+  it("names a field with a short label only as a destination or a heading (review B18)", () => {
+    expect(namesShortLabel("Put dana@example.com in To", "To")).toBe(true);
+    expect(namesShortLabel("put it into the Cc field", "Cc")).toBe(true);
+    expect(namesShortLabel("cc: dana@example.com", "Cc")).toBe(true);
+    expect(namesShortLabel("Set Name to Dana Whitfield", "To")).toBe(false);
+    expect(namesShortLabel("Put dana@example.com in To", "Name")).toBe(false);
+    expect(namesShortLabel("Set ID to AB123", "ID")).toBe(true);
+    expect(namesShortLabel('Write "To: Dana" in Notes', "To")).toBe(false);
+    expect(namesShortLabel("Put the order number in Reference", "To")).toBe(false);
+  });
+
+  it("keeps every other value when a screen shows many addresses: their parts have their own budget (review B18)", async () => {
+    const m = desk();
+    const M = (x: string): string => `dev.caret.mail/standard/${x}`;
+    const cities = ["Austin", "Dallas", "Houston", "Waco", "Tyler", "Plano", "Frisco", "Allen", "Irving", "Temple", "Killeen", "Round Rock", "Midland", "Odessa", "Abilene", "Amarillo", "Lubbock", "Laredo", "Denton", "Conroe"];
+    const lines = cities.map((c, i) => `${100 + i} Elm St, ${c}, TX 787${String(i).padStart(2, "0")}`);
+    const nodes = [...lines.map((l, i) => text(M(`statictext:a${i}~0`), l)), text(M("statictext:mail~0"), "dana.whitfield@lumenlabs.example")];
+    m.apply(snap(nodes, { at: 600, windowId: "6160-8", title: "Mail Fixture — Addresses", app: MAIL_APP, values: [...lines.map((l, i) => ({ kind: "address" as const, text: l, nodeKey: M(`statictext:a${i}~0`) })), { kind: "email", text: "dana.whitfield@lumenlabs.example", nodeKey: M("statictext:mail~0") }] }));
+    const jev = plannerJev({ fields: { Email: "dana.whitfield@lumenlabs.example" } });
+    const d = await planTask("Put Dana's email in Email", m, mem(), opts(jev));
+    expect(d.slots).toEqual({ v1: "dana.whitfield@lumenlabs.example" });
+  });
+
+  it("offers each field only the values that fit it, so a whole address never reaches City, but its city does", async () => {
+    const m = desk();
+    const M = (x: string): string => `dev.caret.mail/standard/${x}`;
+    m.apply(snap([text(M("statictext:ship to~0"), "Ship to: 455 Congress Ave, Austin, TX 78701")], { at: 600, windowId: "6160-9", title: "Mail Fixture — Earlier order", app: MAIL_APP, values: [{ kind: "address", text: "455 Congress Ave, Austin, TX 78701", nodeKey: M("statictext:ship to~0") }] }));
+    const jev = plannerJev({ fields: { "Billing City": "Austin" } });
+    // City is offered the address's city, described by the whole address, but never the whole address as a value.
+    const d = await planTask("Billing city should be where my earlier order shipped", m, mem(), opts(jev));
+    expect(d.slots).toEqual({ v1: "Austin" });
+    expect(d.checked.writes[0]?.trace).toMatchObject({ from: "window", windowId: "6160-9" });
+    const city = Object.entries((jev.requests[0] as JevRequest).questions).find(([id]) => id !== "press")?.[1];
+    const offered = Object.values(city?.criteria ?? {}).filter((x): x is string => typeof x === "string");
+    expect(offered.some((x) => x.startsWith('"455 Congress Ave, Austin, TX 78701"'))).toBe(false);
+    expect(offered.some((x) => x.startsWith('"Austin" (the city of "455 Congress Ave, Austin, TX 78701"'))).toBe(true);
+    expect(offered.some((x) => x.startsWith('"455 Congress Ave" '))).toBe(false);
+    // Email takes neither the address nor its parts, so a question about Email alone carries none of them, and its requests declare none.
+    const email = plannerJev({});
+    await expect(planTask("Put where my earlier order shipped in the email", m, mem(), opts(email))).rejects.toMatchObject({ code: "nothingToDo" });
+    for (const r of email.requests) {
+      expect(JSON.stringify(r.questions)).not.toContain("455 Congress Ave");
+      expect(r.snippets.some((x) => x.text.includes("455 Congress Ave"))).toBe(false);
+    }
+  });
+
+  it.each([
+    ["Fill in the form with Dana's details", true],
+    ["fill out the rest of the fields from her signature", true],
+    ["Complete this form for Priya", true],
+    ["fill it all in from the order", true],
+    ["Fill out everything from the confirmation", true],
+    ["Fill Name and Email for Dana Whitfield from her signature", false],
+    ["Set the billing city to Lisbon", false],
+    ["Fill the billing city with Lisbon", false],
+    // Review B18: one field of the form is not the form; "all fields" is; quoted text is a value, not a request.
+    ["Fill in the form field Name with Dana's details", false],
+    ["Fill all fields from the order", true],
+    ["Complete all the fields", true],
+    ['Write "fill in the form" in Notes', false],
+  ])("reads '%s' as asking to fill the whole form: %s", (instruction, whole) => {
+    expect(asksToFillForm(instruction)).toBe(whole);
   });
 
   it("withholds a field the asks split on or agree on weakly, and writes the rest", async () => {

@@ -109,6 +109,7 @@ private func goldenLines() throws -> [Data] {
         #expect(r.tasks.first?.step == 2 && r.tasks.first?.remaining.count == 2 && r.tasks.first?.pending == nil)
         guard case .fillProposal(let p) = try JSONDecoder().decode(Message.self, from: lines[7]) else { Issue.record("line 8 is not a fillProposal"); return }
         #expect(p.pid == 5150 && p.fields.compactMap(\.source).allSatisfy { $0.pid == 5150 })
+        #expect(p.fields.last?.memory == FillMemory(id: "about-9f8e7d6c", label: "Name", says: "what you told Caret") && p.fields.last?.source == nil)
         let badState = Data(#"{"type":"taskControl","v":1,"taskId":"t","action":"cancel"}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
     }
@@ -119,6 +120,19 @@ private func goldenLines() throws -> [Data] {
         #expect(f.withheld == .sourceCut && f.asks.isEmpty && f.value == nil)
         let oneAsk = Data(#"{"key":"k","frame":null,"descriptor":"d","choice":"none","confidence":0,"value":null,"source":null,"withheld":null,"asks":[{"choice":"none","confidence":0.9,"value":null}]}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(FillField.self, from: oneAsk) }
+    }
+
+    @Test func readsAValueFromMemoryAndRefusesOneWithTwoOrNoSources() throws {
+        let memory = #"{"id":"about-1","label":"Email","says":"what you told Caret"}"#
+        let source = #"{"pid":1,"windowId":"1-1","bundleId":"b","appName":"A","windowTitle":"T","nodeKey":"n","kind":"email"}"#
+        func field(value: String, source: String, memory: String) -> Data {
+            Data(#"{"key":"k","frame":null,"descriptor":"d","choice":"m1","confidence":0.9,"value":\#(value),"source":\#(source),"memory":\#(memory),"withheld":null,"asks":[]}"#.utf8)
+        }
+        let f = try JSONDecoder().decode(FillField.self, from: field(value: #""a@b.example""#, source: "null", memory: memory))
+        #expect(f.memory?.says == "what you told Caret" && f.source == nil)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(FillField.self, from: field(value: #""a@b.example""#, source: source, memory: memory)) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(FillField.self, from: field(value: #""a@b.example""#, source: "null", memory: "null")) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(FillField.self, from: field(value: "null", source: "null", memory: memory)) }
     }
 
     @Test func readsTheHostSettingsAndTheirWithdrawal() throws {

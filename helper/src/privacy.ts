@@ -38,6 +38,9 @@ export const CARD_LINE_CHARS = 80;
  */
 export const CONVERSATION_CHARS = 600;
 
+/** The window id under which a request declares values the user told Caret (SnippetLedger.memory). */
+export const MEMORY_SNIPPETS = "memory";
+
 export interface Snippet {
   windowId: string;
   /** A field descriptor (a label, placeholder, section or window title that says what something is) or a candidate value with its facts. */
@@ -422,6 +425,10 @@ export class SnippetLedger {
       const e = this.entries.get(wid) as Entry;
       for (const l of a.covered) e.covered.add(l);
       e.chars += a.cost;
+      // Text no window gave (a plan's or an instruction's, or what the user told Caret) declares each line it
+      // reveals under the window that shows it, so the request names every window whose text it carries:
+      // an instruction that quotes a line of private notes names the notes (B17 privacy test, planner desk).
+      if (own === null) for (const l of a.covered) this.snippets.push({ windowId: wid, kind: "candidate", text: l });
     }
   }
 
@@ -448,6 +455,19 @@ export class SnippetLedger {
     const p = this.price(null, texts);
     if (p === null) return false;
     this.commit(p, "plan", "candidate", null);
+    return true;
+  }
+
+  /**
+   * Declares a value the user told Caret (a typed About entry, fill/about.ts) under window id "memory".
+   * No window shows it, so none is charged for it, except a window whose lines it holds or that shows it
+   * inside a line, as for `plan`: sending the value reveals that much of that window. False, declaring
+   * nothing, when such a window would go over its budget.
+   */
+  memory(texts: readonly string[]): boolean {
+    const p = this.price(null, texts);
+    if (p === null) return false;
+    this.commit(p, MEMORY_SNIPPETS, "candidate", null);
     return true;
   }
 

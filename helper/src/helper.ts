@@ -4,12 +4,12 @@
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
 import { ScreenModel } from "./model.ts";
-import { forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
+import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
-import type { AskJev } from "./fill/jev.ts";
+import type { AskJev, JevRequest } from "./fill/jev.ts";
 import { FillError, formFields, proposeFill } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
@@ -52,7 +52,9 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { aboutValues, type AboutValue } from "./fill/about.ts";
+import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
 import { OpenAppOffers } from "./offers/open-app.ts";
 import { EventCards } from "./offers/event-card.ts";
@@ -165,7 +167,13 @@ export class Helper {
   private readonly lastFill = new Map<string, number>();
   private readonly inflight = new Set<string>();
   /** Recent proposals, by id: the window and each proposed field's value, so fillResult can be checked and matched. */
-  private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string> }>();
+  private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null }>();
+  /** Every Jev request goes through this, which records it as a use of "Read and prepare" (B17). Null when Jev is off. */
+  private readonly ask: AskJev | null;
+  /** What the last "Read and prepare" use's request declared, so the two asks of one question, which declare the same text, count once. */
+  private lastRead: { declared: string; at: number } | null = null;
+  /** Offers already recorded as a use of "Show in Caret's UI", by key; bounded. */
+  private readonly shown = new Set<string>();
   /** Host-reported inserts, by window and field. */
   private readonly caretFills = new Map<string, CaretFill>();
   private lastPrune = 0;
@@ -226,6 +234,22 @@ export class Helper {
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) });
     this.readerConnected = opts.readerLink !== undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
+    const jev = opts.askJev;
+    // Recorded once the request has gone and been answered, or as failed: a client that throws before
+    // sending (no key) must not leave a use that says text was sent.
+    this.ask =
+      jev === null
+        ? null
+        : async (req) => {
+            try {
+              const r = await jev(req);
+              this.recordRead(req, "done");
+              return r;
+            } catch (e) {
+              this.recordRead(req, "failed");
+              throw e;
+            }
+          };
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
@@ -236,9 +260,12 @@ export class Helper {
       reader: opts.readerLink ?? (this.socketLink as SocketReaderLink),
       calendar: opts.calendar === "reader" ? new ReaderCalendar(opts.readerLink ?? (this.socketLink as SocketReaderLink)) : (opts.calendar ?? null),
       urls: opts.urls ?? null,
-      askJev: opts.askJev,
+      askJev: this.ask,
       publish: (m) => this.publish(m),
       onTask: (e) => this.onTaskEvent(e),
+      onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
+      // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
+      memoryHolds: (id, value) => this.memory.text(id) === value,
       onChanges: (l) => {
         this.changeListeners.add(l);
         return () => this.changeListeners.delete(l);
@@ -267,7 +294,7 @@ export class Helper {
     });
     this.pending = new PendingWatcher({
       model: this.model,
-      askJev: opts.askJev,
+      askJev: this.ask,
       tasks: this.tasks,
       reader: (v) => this.readerVerb(v),
       live: () => this.mode === "live" && this.gate.enabled("pending"),
@@ -279,7 +306,7 @@ export class Helper {
     this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }), gate: this.gate, now: this.now });
     this.events = new EventCards({
       model: this.model,
-      askJev: opts.askJev,
+      askJev: this.ask,
       publish: (m, accept) => this.publish(m, accept),
       // An event card runs only from the host's offerAccept.
       run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }),
@@ -292,7 +319,7 @@ export class Helper {
     });
     this.firstLookRunner = new FirstLookRunner({
       model: this.model,
-      askJev: opts.askJev,
+      askJev: this.ask,
       walk: (pid, windowId) => this.readerVerb({ kind: "walk", pid, windowId }),
       readerConnected: () => this.readerConnected,
       live: () => this.mode === "live",
@@ -307,6 +334,8 @@ export class Helper {
         this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
       },
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
+      about: () => this.aboutValues(),
+      aboutNow: this.aboutNow,
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
@@ -474,13 +503,15 @@ export class Helper {
     this.opts.store.count("firstLook.request", 1);
     const r = await this.firstLookRunner.run(m);
     this.opts.store.count(`firstLook.${r.outcome}`, 1);
+    // Shown from this reply, not published, so recorded here as a use of "Show in Caret's UI".
+    if (r.found !== null) this.recordShownOffer(r.found.offerKey, r.found.window.windowId, specSays(r.found.spec));
     return r;
   }
 
   /** Memory the planner may copy from: About values and people's names, not paused. */
   private plannerMemory(): MemoryValue[] {
     const out: MemoryValue[] = [];
-    for (const e of this.memory.list()) {
+    for (const e of [...this.memory.list("about"), ...this.memory.list("people")]) {
       if (e.status === "paused") continue;
       if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value });
       else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name });
@@ -500,7 +531,7 @@ export class Helper {
       store.count(`plan.error_${code}`, 1);
       return planError(m.requestId, code, detail, this.now());
     };
-    const ask = this.opts.askJev;
+    const ask = this.ask;
     if (ask === null) return fail("unavailable", "Jev is off");
     if (this.mode !== "live") return fail("unavailable", "the helper is in shadow mode");
     if (this.gate.settings.paused) return fail("unavailable", "Caret is paused");
@@ -533,6 +564,7 @@ export class Helper {
     const checked = HelperMessage.safeParse(msg);
     if (!checked.success) return fail("schema", `the proposal's pop-up failed the protocol check: ${checked.error.issues[0]?.message ?? "invalid"}`);
     this.offers.record(msg, () => this.acceptPlan(offerKey));
+    this.recordShownOffer(offerKey, w.window.windowId, specSays(spec));
     const expect = { [w.window.windowId]: Object.fromEntries(draft.checked.writes.map((wr) => [wr.node.key, wr.node.value ?? ""])) };
     this.planOffers.set(offerKey, { at: this.now(), draft, instruction: m.instruction, expect });
     store.count("plan.proposed", 1);
@@ -562,7 +594,7 @@ export class Helper {
     return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true });
   }
 
-  private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings"): void {
+  private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
     if (!this.planOffers.delete(offerKey)) return;
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
@@ -629,8 +661,39 @@ export class Helper {
 
   /** Answers a memory request; the server sends the reply to the asking consumer only, since entries hold personal values. */
   handleMemory(m: MemoryRequest): MemoryReply {
-    return this.patterns.memoryRequest(m);
+    const reply = this.patterns.memoryRequest(m);
+    // An offer showing a value the user just edited, paused, forgot or typed again no longer holds: every
+    // recorded offer that refers to the entry ({memory: id}, a fill pop-up's or a first look's) is withdrawn.
+    // A per-field fillProposal cannot be withdrawn; its write is checked against memory again (recheckFill,
+    // Step.memory). The engine withdraws its own loop and routine offers (withdrawDependents).
+    if (reply.error === null && (m.op === "edit" || m.op === "pause" || m.op === "forget" || m.op === "add")) {
+      const ids = m.op === "add" ? reply.entries.map((e) => e.id) : m.id === undefined ? [] : [m.id];
+      for (const id of ids) this.withdrawMemoryOffers(id);
+    }
+    return reply;
   }
+
+  private withdrawMemoryOffers(memoryId: string): void {
+    for (const key of this.offers.keys()) {
+      const r = this.offers.get(key);
+      if (r === undefined || !refersToMemory(r.message, memoryId)) continue;
+      if (this.fillPopups.has(key)) this.withdrawFill(key, "stale");
+      else if (this.firstLooks.has(key)) this.withdrawFirstLook(key, "stale");
+      else if (this.planOffers.has(key)) this.withdrawPlan(key, "stale");
+      else this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: key, reason: "stale" });
+    }
+  }
+
+  /** The values the user told Caret that fills may offer: active typed About entries (fill/about.ts). */
+  private aboutValues(): AboutValue[] {
+    return aboutValues(this.memory.active("about"));
+  }
+
+  /** An About entry as aboutValues gives it now, or null when it is gone, paused, not typed or fits no field. */
+  private readonly aboutNow = (id: string): AboutValue | null => {
+    const a = this.memory.about(id);
+    return a === null ? null : (aboutValues([{ id, fields: a }])[0] ?? null);
+  };
 
   /** Answers an activity request; the server sends the reply to the asking consumer only. */
   handleActivity(m: ActivityRequest): ActivityReply {
@@ -651,6 +714,11 @@ export class Helper {
     const value = p.values.get(m.fieldKey);
     if (value === undefined) return this.error(`fillResult: proposal ${m.proposalId} proposed no value for ${m.fieldKey}`);
     store.count(`fill.result_${m.outcome}`, 1, m.at);
+    // The host writes into the field the user is in: a use of "Write where you are". An undo is the user's, not a use.
+    if (m.outcome === "inserted" || m.outcome === "rejected" || m.outcome === "failed") {
+      const where = `${p.labels.get(m.fieldKey) ?? "a field"}${p.app === null ? "" : ` in ${p.app}`}`;
+      this.memory.recordUse("writeHere", m.outcome === "inserted" ? { at: m.at, says: `Filled ${where}`, app: p.app, outcome: "done" } : { at: m.at, says: `Could not fill ${where}`, app: p.app, outcome: "failed" });
+    }
     const id = fieldId(m.windowId, m.fieldKey);
     if (m.outcome === "inserted") {
       const fill: CaretFill = { proposalId: m.proposalId, at: m.at, value, undoneAt: null, transfers: [] };
@@ -840,7 +908,7 @@ export class Helper {
   }
 
   private async fill(windowId: string, key: string, explicit: boolean): Promise<FillProposal | null> {
-    const ask = this.opts.askJev;
+    const ask = this.ask;
     const store = this.opts.store;
     if (ask === null || this.mode === "shadow") {
       if (explicit) this.error(`fill unavailable: ${ask === null ? "Jev is disabled" : "helper is in shadow mode"}`);
@@ -877,6 +945,7 @@ export class Helper {
     this.pendingFills.add(focuses);
     try {
       const asked = await proposeFill(this.model, ask, windowId, key, now, {
+        about: this.aboutValues(),
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
       });
@@ -912,7 +981,15 @@ export class Helper {
         }
         return p;
       }
-      this.proposals.set(p.id, { at: now, windowId: p.windowId, values: new Map(p.fields.flatMap((f) => (f.value === null ? [] : [[f.key, f.value] as const]))) });
+      const valued = p.fields.filter((f) => f.value !== null);
+      this.proposals.set(p.id, {
+        at: now,
+        windowId: p.windowId,
+        values: new Map(valued.map((f) => [f.key, f.value as string])),
+        // For the use a fillResult records: the field's name and the form's app, as they were when proposed.
+        labels: new Map(valued.map((f) => [f.key, fieldLabel(this.model, p.windowId, f.key)])),
+        app: this.model.windows.get(p.windowId)?.app.name ?? null,
+      });
       this.publish(p);
       if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(this.now());
       return p;
@@ -940,6 +1017,10 @@ export class Helper {
     const fields = p.fields.filter((f) => {
       const n = w.nodes.get(f.key);
       if (n === undefined || (n.value ?? "") !== "" || describeField(w, n).text !== f.descriptor) return false;
+      if (f.memory !== null) {
+        const now = this.aboutNow(f.memory.id);
+        return now !== null && now.value === f.value && now.label === f.memory.label;
+      }
       return f.source === null || this.model.windows.has(f.source.windowId);
     });
     return { ...p, fields };
@@ -950,7 +1031,7 @@ export class Helper {
    * executor run under the proposal id. The pop-up is withdrawn either way.
    */
   private async acceptFill(p: GroundedProposal): Promise<AcceptResult> {
-    const stale = recheckFill(this.model, p);
+    const stale = recheckFill(this.model, p, this.aboutNow);
     if (stale !== null) {
       this.withdrawFill(p.id, "stale");
       return { refused: `${stale}; nothing was written` };
@@ -968,9 +1049,9 @@ export class Helper {
    */
   private checkFills(windowId: string): void {
     for (const [id, { p, form }] of this.fillPopups) {
-      if (p.windowId !== windowId && !p.fields.some((f) => f.source.windowId === windowId)) continue;
+      if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.model, p) !== null;
+      let changed = recheckFill(this.model, p, this.aboutNow) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -1000,7 +1081,7 @@ export class Helper {
    */
   private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[]): string | null {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return "focus left the form";
-    const stale = recheckFill(this.model, p);
+    const stale = recheckFill(this.model, p, this.aboutNow);
     if (stale !== null) return stale;
     const w = this.model.windows.get(p.windowId);
     try {
@@ -1037,6 +1118,7 @@ export class Helper {
       this.offers.record(m as HostOffer, accept ?? null);
     } else if (m.type === "offerWithdrawn") this.offers.remove(m.id);
     this.opts.publish(m);
+    this.recordShown(m);
     // A first look's key that reports this offer ends with it.
     if (m.type === "offerWithdrawn") {
       for (const [k, f] of [...this.firstLooks]) if (f.underlying === m.id) this.withdrawFirstLook(k, m.reason === "reoffered" ? "stale" : m.reason);
@@ -1044,10 +1126,103 @@ export class Helper {
     return true;
   }
 
+  /**
+   * Records a Jev request as a use of "Read and prepare": the apps whose text it carries (privacy.ts
+   * snippets), and what the user told Caret. The second ask of a question declares the same text and is
+   * not counted again; the comparison is kept in memory only.
+   */
+  private recordRead(req: JevRequest, outcome: "done" | "failed"): void {
+    const apps = [...new Set(req.snippets.flatMap((x) => (x.windowId === MEMORY_SNIPPETS || x.windowId === "plan" ? [] : [this.model.windows.get(x.windowId)?.app.name ?? "a closed window"])))];
+    const told = req.snippets.some((x) => x.windowId === MEMORY_SNIPPETS);
+    const planned = req.snippets.some((x) => x.windowId === "plan");
+    const parts = [...(apps.length === 0 ? [] : [`snippets from ${andList(apps)}`]), ...(told ? ["what you told Caret"] : []), ...(planned ? ["your instruction"] : [])];
+    const what = parts.length === 0 ? "a question with no screen text" : andList(parts);
+    const says = outcome === "done" ? (parts.length === 0 ? `Asked Jev ${what}` : `Sent ${what} to Jev`) : `Tried to send ${what} to Jev; the request failed`;
+    const at = this.now();
+    const declared = `${outcome}\u0002${req.snippets.map((x) => `${x.windowId}\u0000${x.text}`).sort().join("\u0001")}`;
+    if (this.lastRead !== null && this.lastRead.declared === declared && at - this.lastRead.at < READ_REPEAT_MS) return;
+    this.lastRead = { declared, at };
+    this.memory.recordUse("read", { at, says, app: apps[0] ?? null, outcome });
+  }
+
+  /** Records a published offer the user can see as a use of "Show in Caret's UI", once per offer. */
+  private recordShown(m: HelperMessage): void {
+    let key: string;
+    let windowId: string;
+    let what: string;
+    switch (m.type) {
+      case "popup":
+        key = m.offerKey;
+        windowId = m.field.windowId;
+        what = specSays(m.spec);
+        break;
+      case "action":
+        key = m.offerKey;
+        windowId = m.field.windowId;
+        what = `"${clipUse(m.endState.text)}"`;
+        break;
+      case "alternatives":
+        key = m.offerKey;
+        windowId = m.field.windowId;
+        what = `${m.candidates.length} values for a field`;
+        break;
+      case "fillProposal": {
+        const n = m.fields.filter((f) => f.value !== null).length;
+        if (n === 0) return;
+        key = m.id;
+        windowId = m.windowId;
+        what = n === 1 ? "a value for a field" : `values for ${n} fields`;
+        break;
+      }
+      default:
+        return;
+    }
+    this.recordShownOffer(key, windowId, what);
+  }
+
+  /** One "Show in Caret's UI" use for the offer with this key, the first time it is shown. */
+  private recordShownOffer(key: string, windowId: string, what: string): void {
+    if (this.shown.has(key)) return;
+    if (this.shown.size >= SHOWN_KEYS) this.shown.clear();
+    this.shown.add(key);
+    const app = this.model.windows.get(windowId)?.app.name ?? null;
+    this.memory.recordUse("show", { at: this.now(), says: `Offered ${what}${app === null ? "" : ` in ${app}`}`, app, outcome: "done" });
+  }
+
   private error(message: string): void {
     this.opts.warn?.(message);
     this.publish({ type: "error", v: PROTOCOL_VERSION, at: this.now(), message });
   }
+}
+
+/** A Jev request that declares the same text as the last recorded one within this long is the same use: a question's second ask. Assumed. */
+const READ_REPEAT_MS = 5000;
+/** Offer keys kept to count each shown offer once; past this the set starts over. Assumed. */
+const SHOWN_KEYS = 500;
+
+/** "A", "A and B", "A, B and C". */
+function andList(xs: readonly string[]): string {
+  return xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+}
+
+/** Whether a value anywhere in an offer message is a {memory: id} ref to this entry (popup.ts PopupRef). */
+function refersToMemory(v: unknown, id: string): boolean {
+  if (Array.isArray(v)) return v.some((x) => refersToMemory(x, id));
+  if (v === null || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  if (o.memory === id && Object.keys(o).length === 1) return true;
+  return Object.values(o).some((x) => refersToMemory(x, id));
+}
+
+/** A pop-up as a use quotes it: its header's title, or "a pop-up". */
+function specSays(spec: PopupSpecT): string {
+  const head = spec.blocks.find((b) => b.type === "header");
+  return head?.type === "header" ? `"${clipUse(head.title.text)}"` : "a pop-up";
+}
+
+/** A use's quote of an offer, cut to 60 characters. */
+function clipUse(s: string): string {
+  return s.length <= 60 ? s : `${s.slice(0, 59)}…`;
 }
 
 /** Whether a field is the pop-up's trigger or one of the fields it fills. */

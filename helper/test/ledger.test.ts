@@ -79,7 +79,11 @@ describe("the ledger charges every window a text reveals", () => {
     const ledger = new SnippetLedger(m.windows.values());
     expect(ledger.plan(["The Notes field holds see you at the review on Thursday"])).toBe(true);
     expect(ledger.chars(chat.window.windowId)).toBe(33);
-    expect(ledger.snippets).toEqual([{ windowId: "plan", kind: "candidate", text: "The Notes field holds see you at the review on Thursday" }]);
+    // The plan text, and the chat's line it holds declared under the chat, so the request names the chat (B17).
+    expect(ledger.snippets).toEqual([
+      { windowId: "plan", kind: "candidate", text: "The Notes field holds see you at the review on Thursday" },
+      { windowId: chat.window.windowId, kind: "candidate", text: "see you at the review on Thursday" },
+    ]);
     const tight = new SnippetLedger(m.windows.values());
     expect(tight.take(chat, "candidate", ["bring the printed deck please"])).toBe(true);
     expect(tight.plan(["The Notes field holds see you at the review on Thursday"])).toBe(false);

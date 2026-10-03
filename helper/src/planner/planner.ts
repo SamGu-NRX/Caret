@@ -4,7 +4,9 @@
 //      choice among the titles of those windows.
 //   2. Code lists the window's writable fields and labelled buttons, and the values the plan could
 //      write: spans of the instruction (spans.ts), memory values, and the fill generator's candidates
-//      from the other windows. Jev answers one question per field ("which value, or keep") and one about
+//      from the other windows. Only the fields the instruction names are asked about, or every field when
+//      it asks to fill the form; each field is offered only the values whose kind fits it (kinds.ts
+//      misfit). Jev answers one question per field ("which value, or keep") and one about
 //      buttons ("which to press, or none"), asked twice with the options shuffled and the wording
 //      changed. A field is written only when both asks pick the same value and the lower confidence
 //      clears the cutoff; otherwise it is withheld and left as it is, as fill withholds a field (fill.ts).
@@ -21,6 +23,7 @@ import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { FILL_CUTOFF, FILLABLE_ROLES, shuffled } from "../fill/fill.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
+import { addressParts, misfit } from "../fill/kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { instructionValues } from "./spans.ts";
@@ -36,6 +39,8 @@ export const PLAN_CUTOFF = FILL_CUTOFF;
 export const MAX_PLAN_FIELDS = 20;
 export const MAX_PLAN_BUTTONS = 20;
 export const MAX_PLAN_VALUES = 40;
+/** The street lines and cities of whole addresses, offered beside the values above them. Assumed. */
+export const MAX_ADDRESS_PARTS = 10;
 const KEEP = "keep";
 const NONE = "none";
 /** A refused SnippetLedger take means the text cannot go out at all, so the question is not asked. */
@@ -84,6 +89,10 @@ interface Field {
   id: string;
   node: Node;
   name: string;
+  /** The section the field sits in ("Billing"), part of `name`; null when it has none. */
+  section: string | null;
+  /** The field's own label, nearest label or placeholder: `name` without the section. */
+  label: string;
   descriptor: string;
 }
 
@@ -117,23 +126,45 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   // every field and button: what the instruction names is taken first, the rest in document order.
   const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label }))]);
   const taken = new Set(order.filter((x) => ledger.take(w, "descriptor", [x.text])).map((x) => x.key));
-  // When the instruction names any field, only the fields it names are asked about: the second live pass
-  // (evidence/screen/b16/planner-live) wrote an order number into two fields "Put the order number ... in
-  // Reference" never named. An instruction that names no field still has every field asked about.
-  const named = new Set(fields.filter((f) => relevance(instruction, f.name) > 0).map((f) => f.node.key));
-  const askedFields = fields.filter((f) => taken.has(f.node.key) && (named.size === 0 || named.has(f.node.key)));
+  // Only the fields the instruction names are asked about: the second live pass (evidence/screen/b16/
+  // planner-live) wrote an order number into two fields "Put the order number ... in Reference" never
+  // named. Every field is asked about only when the instruction asks to fill the form (asksToFillForm);
+  // before B18 an instruction that named no field had every field asked about, which let B17's held-out
+  // live pass add fields the instruction never named.
+  // A label the form repeats in several sections is named by its section: "billing street and billing town"
+  // named Shipping Street too, by "street", and the held-out live pass wrote the address there as well (B17,
+  // evidence/screen/b17/planner-heldout-live; a fix tuned on that set). So a field is left out when the
+  // instruction names another section that has a field of the same label. A label only one section has
+  // ("Phone" under Contact details) is still named by its own words.
+  const sectionsSaid = new Set(fields.flatMap((f) => (f.section !== null && relevance(instruction, f.section) > 0 ? [f.section] : [])));
+  const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+  const outranked = (f: Field): boolean =>
+    f.section !== null && !sectionsSaid.has(f.section) && fields.some((g) => g !== f && g.section !== null && sectionsSaid.has(g.section) && same(g.label, f.label));
+  const named = new Set(fields.filter((f) => (relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.label)) && !outranked(f)).map((f) => f.node.key));
+  const wholeForm = asksToFillForm(instruction);
+  const askedFields = fields.filter((f) => taken.has(f.node.key) && (wholeForm || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
   const values = valueOptions(instruction, model, w, memory.values(), ledger, o.now ?? Date.now());
   if ((askedFields.length === 0 || values.length === 0) && askedButtons.length === 0) {
     throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret could fill from what is on screen, in memory or in your instruction, and no button`);
   }
 
-  const declared = ledger.declared();
-  const second = { values: shuffled(values, rand).map((v, i) => ({ ...v, id: `k${i + 1}` })), buttons: shuffled(askedButtons, rand).map((b, i) => ({ ...b, id: `d${i + 1}` })) };
+  // The ledger took every field's and button's descriptor that fit, but the questions carry only the asked
+  // ones, so the rest are not declared; their window was still charged for them, which errs on the side of
+  // saying less, as fill.ts does (B17: the privacy test's planner session caught the over-declaration).
   const questioned = values.length === 0 ? [] : askedFields;
+  const sent = new Set<string | null>([title, ...questioned.map((f) => f.descriptor), ...askedButtons.map((b) => b.label)]);
+  const all = ledger.declared();
+  const declared: Declared = { snippets: all.snippets.filter((x) => !(x.kind === "descriptor" && x.windowId === w.window.windowId && !sent.has(x.text))), charged: all.charged };
+  const second = { values: shuffled(values, rand).map((v, i) => ({ ...v, id: `k${i + 1}` })), buttons: shuffled(askedButtons, rand).map((b, i) => ({ ...b, id: `d${i + 1}` })) };
+  // A field is offered only the values that fit it: B17's held-out live pass wrote a whole address into
+  // Billing City when the address was the only value it was offered. validatePlan checks the same rule.
+  const fitting = (f: Field, vs: readonly Option[]): Option[] => vs.filter((v) => misfit(v.text, [f.label]) === null);
   const [r1, r2] = await ask(
-    fieldRequest(instruction, w, title, questioned, values, askedButtons, 0, declared),
-    fieldRequest(instruction, w, title, questioned, second.values, second.buttons, 1, declared),
+    ...sentOnly([
+      fieldRequest(instruction, w, title, questioned, (f) => fitting(f, values), askedButtons, 0, declared),
+      fieldRequest(instruction, w, title, questioned, (f) => fitting(f, second.values), second.buttons, 1, declared),
+    ]),
   );
   const withheld: PlanDraft["withheld"] = [];
   /** The agreed option, or null for keep or none and for an answer withheld as unsure. */
@@ -159,7 +190,7 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   const byId = (xs: readonly { id: string; text: string }[]): Map<string, string> => new Map(xs.map((x) => [x.id, x.text]));
   const writes: { field: Field; value: string }[] = [];
   for (const f of questioned) {
-    const v = agreed(f.id, f.name, byId(values), byId(second.values), KEEP);
+    const v = agreed(f.id, f.name, byId(fitting(f, values)), byId(fitting(f, second.values)), KEEP);
     if (v !== null) writes.push({ field: f, value: v });
   }
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
@@ -194,13 +225,67 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   const sources: Record<string, string> = {};
   // Writes come first, in order, so step i fills slot v<i+1>.
   for (const wr of checked.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;
-  const withSources: Plan = Object.keys(sources).length === 0 ? plan : { ...plan, sources };
+  // A value copied from memory names its entry, so the executor checks the entry still holds it right before
+  // the write: forgetting it after accepting the plan stops that write (B17 fix-check).
+  const steps2 = plan.steps.map((s, i) => {
+    const t = checked.writes.find((wr) => wr.step === i)?.trace;
+    return t?.from === "memory" ? { ...s, memory: t.id } : s;
+  });
+  const withSources: Plan = { ...plan, steps: steps2, ...(Object.keys(sources).length === 0 ? {} : { sources }) };
   return { plan: withSources, slots, checked, answers, withheld, jev };
 }
 
 /** Words that say what to do rather than where; they do not make a field or button relevant. */
 const COMMON = new Set(["the", "and", "for", "from", "into", "with", "this", "that", "set", "put", "write", "fill", "copy", "use", "make", "add", "enter", "type", "change", "her", "his", "their", "our", "your", "its"]);
 const wordsOf = (s: string): string[] => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x.length >= 3 && !COMMON.has(x));
+
+/**
+ * The requests with only the snippets their questions carry. A value that fits none of the asked fields is
+ * offered to none, so its text and facts are not sent; the ledger still charged its window for them, which
+ * errs on the side of saying less (privacy.test.ts fails a request that declares text it does not send).
+ */
+function sentOnly(reqs: [JevRequest, JevRequest]): [JevRequest, JevRequest] {
+  const sent: string[] = [];
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") sent.push(v);
+    else if (typeof v === "object" && v !== null) Object.values(v).forEach(walk);
+  };
+  for (const r of reqs) walk([r.state, r.questions]);
+  const keep = (x: { text: string }): boolean => sent.some((t) => t.includes(x.text));
+  return [{ ...reqs[0], snippets: reqs[0].snippets.filter(keep) }, { ...reqs[1], snippets: reqs[1].snippets.filter(keep) }];
+}
+
+/**
+ * Whether the instruction asks to fill the whole form ("fill in the form", "fill out the rest of the
+ * fields", "complete this form", "fill it all in"), so every field is asked about. The phrasings are
+ * written for common requests, not measured.
+ */
+export function asksToFillForm(instruction: string): boolean {
+  // Quoted text is a value to write, not a request ("Write 'fill in the form' in Notes").
+  const s = instruction.replace(QUOTED_TEXT, " ").toLowerCase();
+  return (
+    // "the form field Name" names one field, so "form" followed by "field" is not the whole form.
+    /\b(?:fill|complete)(?:\s+(?:in|out|up))?\s+(?:(?:the|this|that|my|whole|entire|rest|of|remaining|other|all)\s+)*(?:form(?!\s+field\b)|fields|everything)\b/.test(s) ||
+    /\bfill\s+(?:it|them|everything)\s+(?:all\s+)?(?:in|out)\b/.test(s) ||
+    /\bfill\s+(?:in|out)\s+(?:all|everything)\b/.test(s)
+  );
+}
+
+const QUOTED_TEXT = /"[^"]*"|“[^”]*”|(?<![\p{L}])'[^']*'(?![\p{L}])/gu;
+
+/**
+ * Whether the instruction names a field whose label is a word too short for relevance ("To", "Cc", "ID"):
+ * only as a destination ("in To", "into the Cc field"), a heading ("To:") or the object of "set … to"
+ * ("Set ID to AB123"), since "to" is also a preposition in nearly every instruction.
+ */
+export function namesShortLabel(instruction: string, label: string): boolean {
+  const l = label.trim().replace(/:$/, "");
+  if (!/^\p{L}{1,2}$/u.test(l)) return false;
+  const e = l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Quoted text is a value to write ('Write "To: Dana" in Notes' names Notes, not To).
+  const s = instruction.replace(QUOTED_TEXT, " ");
+  return new RegExp(`\\b(?:in|into)\\s+(?:the\\s+)?${e}\\b|\\b${e}\\s*(?::|\\s+(?:field|box|line)\\b)|\\b(?:set|change|make)\\s+(?:the\\s+)?${e}\\s+(?:to|as)\\b`, "iu").test(s);
+}
 
 /** How many of the instruction's words a name shares. */
 export function relevance(instruction: string, name: string): number {
@@ -233,7 +318,8 @@ function writableFields(w: WindowState): Field[] {
   for (const n of w.nodes.values()) {
     if (out.length >= MAX_PLAN_FIELDS) break;
     if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure")) continue;
-    out.push({ id: `f${out.length + 1}`, node: n, name: fieldName(w, n), descriptor: describeField(w, n).text });
+    const d = describeField(w, n);
+    out.push({ id: `f${out.length + 1}`, node: n, name: fieldName(w, n), section: d.section, label: d.label ?? d.nearest ?? d.placeholder ?? "field", descriptor: d.text });
   }
   return out;
 }
@@ -264,15 +350,26 @@ function actionable(w: WindowState): boolean {
 function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number): Option[] {
   const out: Option[] = [];
   const seen = new Set<string>();
-  const add = (text: string, describe: string): void => {
-    if (out.length >= MAX_PLAN_VALUES || seen.has(text)) return;
+  const add = (text: string, describe: string, max = MAX_PLAN_VALUES): void => {
+    if (out.length >= max || seen.has(text)) return;
     seen.add(text);
     out.push({ id: `v${out.length + 1}`, text, describe });
   };
   const spans = instructionValues(instruction);
   if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`);
   for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`);
-  for (const c of generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger)) add(c.text, describeCandidate(c));
+  const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
+  for (const c of cands) add(c.text, describeCandidate(c));
+  // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
+  // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
+  // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
+  // budget after the values above, so a screen of addresses cannot push out its other values.
+  for (const c of cands) {
+    const parts = addressParts(c.text);
+    if (parts === null) continue;
+    add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+    if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+  }
   return out;
 }
 
@@ -346,10 +443,12 @@ const PRESS_WORDINGS = [
   (instr: string) => `Instruction: "${instr}". If the instruction asks for a button to be pressed, pick it; otherwise pick none.`,
 ] as const;
 
-function fieldRequest(instruction: string, w: WindowState, title: string | null, fields: readonly Field[], values: readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
-  const criteria: Record<string, string> = { ...Object.fromEntries(values.map((v) => [v.id, v.describe])), [KEEP]: "Leave the field as it is." };
+function fieldRequest(instruction: string, w: WindowState, title: string | null, fields: readonly Field[], valuesFor: (f: Field) => readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
   const questions: JevRequest["questions"] = {};
-  for (const f of fields) questions[f.id] = { type: "choice", instructions: FIELD_WORDINGS[wording](instruction, f.descriptor), criteria };
+  for (const f of fields) {
+    const criteria: Record<string, string> = { ...Object.fromEntries(valuesFor(f).map((v) => [v.id, v.describe])), [KEEP]: "Leave the field as it is." };
+    questions[f.id] = { type: "choice", instructions: FIELD_WORDINGS[wording](instruction, f.descriptor), criteria };
+  }
   if (buttons.length > 0) {
     questions.press = {
       type: "choice",

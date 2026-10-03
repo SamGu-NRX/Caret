@@ -14,6 +14,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import * as z from "zod";
+import { fieldKinds } from "../fill/kinds.ts";
 import { LEVELS } from "../offers/settings.ts";
 import {
   AboutFields,
@@ -27,6 +28,9 @@ import {
   type MemoryStatus,
   type OfferKind,
   type PermissionRule,
+  type PermissionUse,
+  MAX_PERMISSION_USES,
+  UseOutcome,
 } from "../protocol.ts";
 
 /** A routine forgotten by the user is not relearned for this long (plan section 4, assumed). */
@@ -133,6 +137,15 @@ CREATE TABLE IF NOT EXISTS reactions (
   action TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS reactions_day ON reactions (day, offer_kind, bundle_id);
+-- A permission's last uses (B17): AES-256-GCM of the JSON {says, app, outcome}, since a use names a
+-- field and an app. At most MAX_PERMISSION_USES rows per action.
+CREATE TABLE IF NOT EXISTS uses (
+  id INTEGER PRIMARY KEY,
+  action TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  sealed BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS uses_action ON uses (action, at);
 `;
 
 const SEALED: ReadonlySet<MemoryKind> = new Set(["about", "people", "preference"]);
@@ -170,6 +183,8 @@ export class MemoryStore {
    * 11 ms once on a loaded disk (patterns-eval, 2026-10-02), so decisions are written on the tick.
    */
   private pendingDecisions: DecisionRow[] = [];
+  /** Permission uses not yet written, for the same reason: an offer shown on the event path is a use. */
+  private pendingUses: { action: ActionType; use: Required<PermissionUse> }[] = [];
   /** Every routine with its steps, read once per change: window openings consult it on the event path. */
   private routineCache: RoutineRecord[] | null = null;
   /**
@@ -224,9 +239,17 @@ export class MemoryStore {
     const fields = this.fields(r);
     let next: unknown;
     switch (r.kind) {
-      case "about":
-        next = { ...(fields as AboutFields), ...parseEdit(z.strictObject({ label: AboutFields.shape.label.optional(), value: AboutFields.shape.value.optional() }), raw) };
+      case "about": {
+        const a = { ...(fields as AboutFields), ...parseEdit(z.strictObject({ label: AboutFields.shape.label.optional(), value: AboutFields.shape.value.optional() }), raw) };
+        // A typed entry stays one the user could have typed: trimmed, one line, an address under an email label.
+        if (a.source === "typed") {
+          a.label = a.label.trim();
+          a.value = a.value.trim();
+          checkTyped("edit", a.label, a.value);
+        }
+        next = a;
         break;
+      }
       case "people":
         next = { ...(fields as PeopleFields), ...parseEdit(z.strictObject({ alias: PeopleFields.shape.alias.optional(), name: PeopleFields.shape.name.optional() }), raw) };
         break;
@@ -283,6 +306,40 @@ export class MemoryStore {
       }
     }
     this.stmt("DELETE FROM memory WHERE id = ?").run(id);
+  }
+
+  /**
+   * Keeps an About entry the user typed into Caret (memoryRequest op `add`). `match` is the keyed hash
+   * of its label (typedAboutMatch), so typing a Name again replaces the Name entry rather than adding a
+   * second one. Refuses anything but {label, value, source: "typed"}, saying what was wrong.
+   */
+  addTyped(raw: Record<string, unknown>, match: (label: string) => string, at: number): MemoryEntry {
+    const r = TypedAbout.safeParse(raw);
+    if (!r.success) throw new MemoryError(`invalid add: ${r.error.issues.map((i) => `${i.path.join(".") || "fields"}: ${i.message}`).join("; ")}`);
+    const label = r.data.label.trim();
+    const value = r.data.value.trim();
+    checkTyped("add", label, value);
+    this.routineCache = null;
+    return this.get(this.upsert("about", match(label), { label, value, source: "typed" }, at, null));
+  }
+
+  /** The text an active About or people entry gives a plan or fill: its value or the person's name; null when gone, paused or another kind. */
+  text(id: string): string | null {
+    const r = this.stmt("SELECT * FROM memory WHERE id = ?").get(id) as Row | undefined;
+    if (r === undefined || r.paused !== 0) return null;
+    if (r.kind === "about") return AboutFields.parse(this.fields(r)).value;
+    if (r.kind === "people") return PeopleFields.parse(this.fields(r)).name;
+    return null;
+  }
+
+  /** The entry of this kind with this match key, or null. */
+  owner(kind: MemoryKind, match: string): string | null {
+    return (this.stmt("SELECT id FROM memory WHERE kind = ? AND match = ?").get(kind, match) as { id: string } | undefined)?.id ?? null;
+  }
+
+  /** Moves an entry to another match key: a typed About entry whose label the user edited. */
+  rekey(id: string, match: string): void {
+    this.stmt("UPDATE memory SET match = ? WHERE id = ?").run(match, id);
   }
 
   // MARK: - for recognizers, fills and the gate
@@ -378,8 +435,39 @@ export class MemoryStore {
     }
   }
 
-  /** Writes buffered decisions in one transaction. Called on the helper's tick and at close. */
+  /**
+   * Records one use of a permission (B17): what Caret did under it, where, when and how it ended. Buffered
+   * like decisions and written on the tick; each action keeps its last MAX_PERMISSION_USES.
+   */
+  recordUse(action: ActionType, use: Required<PermissionUse>): void {
+    this.pendingUses.push({ action, use });
+  }
+
+  /** Writes buffered uses, then trims each action they touched to its last MAX_PERMISSION_USES. */
+  private flushUses(): void {
+    if (this.pendingUses.length === 0) return;
+    const insert = this.stmt("INSERT INTO uses (action, at, sealed) VALUES (?, ?, ?)");
+    const trim = this.stmt("DELETE FROM uses WHERE action = ? AND id NOT IN (SELECT id FROM uses WHERE action = ? ORDER BY at DESC, id DESC LIMIT ?)");
+    this.batch(() => {
+      for (const { action, use } of this.pendingUses) insert.run(action, use.at, seal(this.key, JSON.stringify({ says: use.says, app: use.app, outcome: use.outcome })));
+      for (const action of new Set(this.pendingUses.map((u) => u.action))) trim.run(action, action, MAX_PERMISSION_USES);
+    });
+    this.pendingUses = [];
+  }
+
+  /** A permission's last uses, newest first. */
+  uses(action: ActionType): Required<PermissionUse>[] {
+    this.flushUses();
+    const rows = this.stmt("SELECT at, sealed FROM uses WHERE action = ? ORDER BY at DESC, id DESC LIMIT ?").all(action, MAX_PERMISSION_USES) as { at: number; sealed: Uint8Array }[];
+    return rows.map((r) => {
+      const f = UseFields.parse(JSON.parse(open(this.key, Buffer.from(r.sealed))));
+      return { at: Number(r.at), ...f };
+    });
+  }
+
+  /** Writes buffered decisions and permission uses, each in one transaction. Called on the helper's tick and at close. */
   flushDecisions(): void {
+    this.flushUses();
     if (this.pendingDecisions.length === 0) return;
     const stmt = this.stmt("INSERT INTO decisions (at, offer_kind, pattern, bundle_id, speak, reasons, p_show) VALUES (?, ?, ?, ?, ?, ?, ?)");
     this.db.exec("BEGIN");
@@ -496,7 +584,7 @@ export class MemoryStore {
       }
       case "permission": {
         const f = PermissionFields.parse(this.fields(r));
-        return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}` };
+        return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}`, uses: this.uses(f.action) };
       }
     }
   }
@@ -516,6 +604,33 @@ export class MemoryStore {
 }
 
 const ABOUT_SOURCE: Record<AboutFields["source"], string> = { contacts: "from your Contacts card", typed: "you typed this", edit: "from your edit" };
+
+/** A use's sealed fields, checked when read back. */
+const UseFields = z.object({ says: z.string().min(1), app: z.string().nullable(), outcome: UseOutcome });
+
+/** What an `add` may carry: an About entry the user typed, nothing else. */
+const TypedAbout = z.strictObject({ label: AboutFields.shape.label, value: AboutFields.shape.value, source: z.literal("typed") });
+
+/** One address, as a typed Email entry must hold: no spaces, one @, a dot in the domain. */
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+
+/**
+ * Checks a typed label and value after trimming. A typed value is one line, since fills copy it into
+ * one field; a label that names an email holds one address, so a typo is caught where the user typed
+ * it rather than written into a form later.
+ */
+function checkTyped(op: "add" | "edit", label: string, value: string): void {
+  if (label === "") throw new MemoryError(`invalid ${op}: the label is blank`);
+  if (value === "") throw new MemoryError(`invalid ${op}: ${label} is blank`);
+  if (ONE_LINE_BREAKS.test(label) || ONE_LINE_BREAKS.test(value)) throw new MemoryError(`invalid ${op}: ${label} must be one line of text`);
+  if (fieldKinds([label]).has("email") && !EMAIL.test(value)) throw new MemoryError(`invalid ${op}: ${label} must be one email address, like name@example.com`);
+}
+
+/** Control characters, and the Unicode line and paragraph separators. */
+const ONE_LINE_BREAKS = /[\p{Cc}\u2028\u2029]/u;
+
+/** The text a typed About entry's match key hashes: its label, so one label holds one typed value. */
+export const typedAboutKey = (label: string): string => `about-typed\u0000${label.trim().toLowerCase()}`;
 
 /** A routine's silent predictions have matched often enough for it to be offered: `sightings` hits at ROUTINE_MIN_PRECISION or better. */
 export function routineProven(hits: number, misses: number, sightings: number): boolean {

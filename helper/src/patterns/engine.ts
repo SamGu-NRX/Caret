@@ -6,6 +6,7 @@
 import { performance } from "node:perf_hooks";
 import { nodeText, type Change, type ScreenModel } from "../model.ts";
 import {
+  MemoryOp,
   PROTOCOL_VERSION,
   type HelperMessage,
   type MemoryReply,
@@ -28,7 +29,7 @@ import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import { decide, type Decision } from "./gate.ts";
 import { LoopRecognizer, type LoopCell, type LoopEvent } from "./loops.ts";
-import { MemoryError, dontOfferMatch, routineProven, type MemoryStore } from "./memory.ts";
+import { MemoryError, dontOfferMatch, routineProven, typedAboutKey, type MemoryStore } from "./memory.ts";
 import { applyMemory, captureEdit } from "./preferences.ts";
 import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
 import { describeTransfer, templateOf } from "./shape.ts";
@@ -510,13 +511,28 @@ export class PatternEngine {
     const memory = this.deps.memory;
     const reply = (entries: MemoryReply["entries"], error: string | null = null): MemoryReply => ({ type: "memoryReply", v: PROTOCOL_VERSION, requestId: m.requestId, error, entries });
     try {
-      if (m.op === "list") return reply(memory.list(m.kind));
-      if (m.id === undefined) throw new MemoryError(`${m.op} needs the entry's id`);
+      if (m.op === "list") return { ...reply(memory.list(m.kind)), ops: MemoryOp.options };
       const now = Math.max(this.clock, Date.now());
+      const typedMatch = (label: string): string => this.deps.hash(typedAboutKey(label));
+      if (m.op === "add") {
+        if (m.id !== undefined) throw new MemoryError("add makes a new entry, so it takes no id; use edit to change one");
+        if (m.kind !== "about") throw new MemoryError(`add keeps About entries you typed, not ${m.kind === undefined ? "an entry without a kind" : `${m.kind} entries`}`);
+        if (m.fields === undefined) throw new MemoryError("add needs fields: label, value and source typed");
+        return reply([memory.addTyped(m.fields, typedMatch, now)]);
+      }
+      if (m.id === undefined) throw new MemoryError(`${m.op} needs the entry's id`);
       switch (m.op) {
         case "edit": {
           if (m.fields === undefined) throw new MemoryError("edit needs fields");
+          // One typed entry per label: renaming one onto another's label would leave two answering to it.
+          const cur = memory.get(m.id);
+          if (cur.kind === "about" && cur.fields.source === "typed" && typeof m.fields.label === "string") {
+            const owner = memory.owner("about", typedMatch(m.fields.label));
+            if (owner !== null && owner !== m.id) throw new MemoryError(`you already told Caret your ${m.fields.label.trim()}; change or forget that entry instead`);
+          }
           const e = memory.edit(m.id, m.fields, now);
+          // A typed entry is found by its label, so a renamed one answers to its new label.
+          if (e.kind === "about" && e.fields.source === "typed") memory.rekey(e.id, typedMatch(e.fields.label));
           this.withdrawDependents(m.id);
           return reply([e]);
         }

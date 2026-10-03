@@ -4,6 +4,7 @@
 //   - it writes fields and hands off presses, in one window, since an act grant covers one window;
 //   - every window and target exists in the screen model, and every written target is an editable field;
 //   - every value traces verbatim to a window, a memory entry or the instruction (trace.ts);
+//   - every value's kind fits its field: no whole address in City, no email in Phone (kinds.ts misfit);
 //   - a hand-off comes last, and its reason is the one the risk table gives its control's label, so a
 //     Send press can never be passed off as merely unverifiable.
 // Each failure is a PlannerError with a code the host can act on and a sentence that says what failed.
@@ -13,6 +14,8 @@ import { resolveLocally } from "../executor/target.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanErrorCode } from "../protocol.ts";
 import { traceValue, type MemoryValue, type Trace } from "./trace.ts";
+import { describeField } from "../fill/descriptor.ts";
+import { misfit } from "../fill/kinds.ts";
 
 export class PlannerError extends Error {
   readonly code: PlanErrorCode;
@@ -88,6 +91,10 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
       if (node.states?.includes("secure")) throw new PlannerError("notEditable", `${at}: its target is a password field, which is left to you`);
       const trace = traceValue(end.value, ctx.model, ctx.memory, ctx.instruction);
       if (trace === null) throw new PlannerError("untracedValue", `${at}: '${clip(end.value)}' is not in any window, in memory or in your instruction`);
+      // The field's own label, nearest label or placeholder, as the planner names it (planner.ts Field.label).
+      const d = describeField(w, node);
+      const bad = misfit(end.value, [d.label ?? d.nearest ?? d.placeholder]);
+      if (bad !== null) throw new PlannerError("wrongKind", `${at}: ${bad}`);
       writes.push({ step: i, node, value: end.value, trace });
       continue;
     }

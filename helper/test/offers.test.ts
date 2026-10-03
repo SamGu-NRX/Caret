@@ -169,6 +169,7 @@ function grounded(key: string, v: string, src: { windowId: string; nodeKey: stri
     confidence: 0.9,
     value: v,
     source: { pid: 1, bundleId: "b", kind: null, ...src },
+    memory: null,
     withheld: null,
     asks: [{ choice: "c1", confidence: 0.9, value: v }, { choice: "c1", confidence: 0.9, value: v }],
   };
@@ -270,12 +271,12 @@ describe("fill pop-up", () => {
     // Each field as fill describes it, which recheckFill compares with the form as it is now.
     const form = m.windows.get(FORM)!;
     const p = proposal([nameField, phoneField].map((f) => ({ ...f, descriptor: describeField(form, form.nodes.get(f.key)!).text }))) as GroundedProposal;
-    expect(recheckFill(m, p)).toBeNull();
+    expect(recheckFill(m, p, () => null)).toBeNull();
     m.apply(snap([text(MK("statictext:dana whitfield~0"), "Dana W.")], { at: 4000, windowId: SRC, title: "Order confirmation", app: MAIL_APP, root: MK("statictext:dana whitfield~0") }));
-    expect(recheckFill(m, p)).toBe(`the source ${MK("statictext:dana whitfield~0")} changed`);
+    expect(recheckFill(m, p, () => null)).toBe(`the source ${MK("statictext:dana whitfield~0")} changed`);
     const filled = desk();
     filled.apply(snap([field(FK("textfield:phone~0"), "555")], { at: 4000, windowId: FORM, title: "Checkout {{x}}", root: FK("textfield:phone~0") }));
-    expect(recheckFill(filled, p)).toBe(`the field ${FK("textfield:phone~0")} is no longer empty`);
+    expect(recheckFill(filled, p, () => null)).toBe(`the field ${FK("textfield:phone~0")} is no longer empty`);
   });
 
   it("writes each field by its exact key, with every screen string a slot", () => {

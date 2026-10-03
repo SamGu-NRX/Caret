@@ -82,6 +82,12 @@ export const Step = z.object({
   says: z.string(),
   end: EndState,
   via: Via.optional(),
+  /**
+   * The memory entry the step's value came from (B17: a typed About entry). Right before writing, the
+   * executor asks that the entry still holds the value, and stops the run if it does not: the user forgot,
+   * paused or changed it after accepting the offer.
+   */
+  memory: z.string().min(1).optional(),
 });
 export type Step = z.infer<typeof Step>;
 
