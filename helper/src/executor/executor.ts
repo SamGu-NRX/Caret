@@ -131,6 +131,8 @@ interface Task {
   session: number;
   /** True while undo is restoring this task's writes. */
   undoing: boolean;
+  /** The user stopped or took over an undo under way: the restores not yet made are left as they are. */
+  undoStopped: boolean;
   /**
    * Slot values the plan copied from windows, by the window's id (Plan.sources), each with its window as
    * the task found it: a target question charges that window for the value even after it has closed.
@@ -239,6 +241,7 @@ export class Executor {
       resolved: new Map(),
       session: this.session,
       undoing: false,
+      undoStopped: false,
       sourced: Object.entries(parsed.data.sources ?? {}).flatMap(([slot, windowId]) => {
         const text = slots[slot];
         return text === undefined ? [] : [{ text, windowId, window: this.deps.model.windows.get(windowId) }];
@@ -285,6 +288,7 @@ export class Executor {
    */
   pause(taskId: string, takeOver: boolean, reason?: "input"): void {
     const task = this.need(taskId);
+    if (takeOver && task.undoing) return this.stopUndo(task);
     const by = takeOver ? "takeOver" : reason ?? "control";
     if (task.finished === "paused") {
       if (takeOver) this.progress(task, "paused", task.next, this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
@@ -300,6 +304,7 @@ export class Executor {
   /** Ends a running task at its next step boundary, or a paused one now. What it wrote stays; undo restores it. */
   stop(taskId: string): void {
     const task = this.need(taskId);
+    if (task.undoing) return this.stopUndo(task);
     if (task.finished === "paused") {
       task.finished = "stopped";
       releaseSources(task);
@@ -308,6 +313,12 @@ export class Executor {
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to stop`);
     task.interrupt = { kind: "stop", by: "control", why: "you stopped it" };
+    this.revokeGrant(task);
+  }
+
+  /** Ends an undo under way: its grant now, so a restore already sent is refused, and the rest are not tried. */
+  private stopUndo(task: Task): void {
+    task.undoStopped = true;
     this.revokeGrant(task);
   }
 
@@ -343,6 +354,7 @@ export class Executor {
     if (task.finished === "paused") task.finished = "stopped";
     releaseSources(task);
     task.undoing = true;
+    task.undoStopped = false;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
     // Undo is the user's own request about this task, so a task that held a grant gets one again, for
@@ -356,7 +368,14 @@ export class Executor {
           remaining.push(e);
           continue;
         }
-        const reason = task.session !== this.session ? "the reader restarted during undo" : e.kind === "write" ? await this.undoWrite(task, e) : await this.undoCalendar(e);
+        const reason =
+          task.session !== this.session
+            ? "the reader restarted during undo"
+            : task.undoStopped
+              ? "you stopped the undo"
+              : e.kind === "write"
+                ? await this.undoWrite(task, e)
+                : await this.undoCalendar(e);
         if (reason === null) out.restored++;
         else {
           out.notRestored.push({ step: e.step, reason });
@@ -584,9 +603,10 @@ export class Executor {
     });
     try {
       const r = await this.deps.reader.run(verb);
-      // A stop or take-over revoked the grant while the verb was on its way; the reader refused for that
-      // reason, so the run ends as the user asked, not as a reader failure.
-      if (r.outcome === "notAllowed" && task.interrupt !== null) throw new Interrupted();
+      // A pause, stop or take-over came in while the verb was on its way (a stop or take-over also revoked
+      // the grant, so the reader refused). The reader acted on none of these outcomes, so the run ends as the
+      // user asked, not as a reader failure. An axError may follow an act that landed, so it keeps its path.
+      if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) throw new Interrupted();
       if (r.outcome !== "ok") throw StepStop.stop("reader", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     } finally {
       off();

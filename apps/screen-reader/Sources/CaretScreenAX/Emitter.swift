@@ -195,7 +195,7 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
                 switch try JSONDecoder().decode(Message.self, from: Data(line)) {
                 case .readerCommand(let c): onCommand?(c)
                 case .actGrant(let g):
-                    grants?.issue(g, receivedAt: nowMs())
+                    grants?.issue(g, uptimeMs: uptimeMs())
                     log("act grant: task \(g.taskId), process \(g.pid), window \(g.windowId), for \(g.expires - g.at) ms")
                 case .actRevoke(let r):
                     grants?.revoke(taskId: r.taskId)

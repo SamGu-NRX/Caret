@@ -113,3 +113,5 @@ public enum AX {
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
 public func nowMs() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
+/// Milliseconds on a clock that setting the date cannot move, for deadlines such as an act grant's.
+public func uptimeMs() -> Int64 { Int64((ProcessInfo.processInfo.systemUptime * 1000).rounded()) }

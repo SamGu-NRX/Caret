@@ -579,6 +579,9 @@ public final class AppWorker: @unchecked Sendable {
             // forward: macOS 14 may decline a request from a process that is not active itself, and
             // the snapshot that follows is what shows whether it did.
             guard let running = NSRunningApplication(processIdentifier: pid) else { return (.noWindow, "process \(pid) has exited") }
+            // AXRaise can take up to the element timeout; a grant that ended meanwhile stops the activation.
+            if nowMs() > expires { return (.axError, "the command expired before it could activate the app") }
+            if let no = refused(windowId) { return no }
             guard running.activate(options: []) else { return (.axError, "the system refused to activate process \(pid)") }
             Thread.sleep(forTimeInterval: Self.settle)
             requestWalk(w)
@@ -687,7 +690,7 @@ public struct ActGate: Sendable {
 
     func refusal(taskId: String?, pid: Int, windowId: String) -> String? {
         if actPid { return nil }
-        guard let why = grants.refusal(taskId: taskId, pid: pid, windowId: windowId, now: nowMs()) else { return nil }
+        guard let why = grants.refusal(taskId: taskId, pid: pid, windowId: windowId, now: nowMs(), uptimeMs: uptimeMs()) else { return nil }
         return "\(why), and the reader was not started with --act-pids \(pid)"
     }
 }

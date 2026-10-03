@@ -21,7 +21,7 @@ export class FakeGrants {
     if (t === undefined) return "the command names no task, so no act grant covers it";
     const e = this.live.get(t);
     if (e === undefined) return `no act grant for task ${t}`;
-    if (this.now() >= e.until) return `the act grant for task ${t} expired ${this.now() - e.until} ms ago`;
+    if (this.now() >= e.until) return `the act grant for task ${t} has expired`;
     if (e.g.pid !== verb.pid) return `the act grant for task ${t} covers process ${e.g.pid}, not ${verb.pid}`;
     if (e.g.windowId !== verb.windowId) return `the act grant for task ${t} covers window ${e.g.windowId}, not ${verb.windowId}`;
     return null;

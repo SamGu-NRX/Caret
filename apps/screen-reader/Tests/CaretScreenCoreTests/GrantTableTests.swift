@@ -1,67 +1,88 @@
+import Foundation
 import Testing
 @testable import CaretScreenCore
 
-/// The reader's act grants on their own, with the clock passed in.
+/// The reader's act grants on their own, with both clocks passed in.
 @Suite struct GrantTableTests {
     let t0: Int64 = 1_790_000_000_000
+    /// Uptime at the grant's arrival; unrelated to the wall clock on purpose.
+    let u0: Int64 = 5_000
     func grant(_ task: String = "task-1", pid: Int = 500, window: String = "500-1", for ms: Int64 = 30_000) -> ActGrant {
         ActGrant(taskId: task, pid: pid, windowId: window, at: t0, expires: t0 + ms)
+    }
+    func check(_ g: GrantTable, _ task: String? = "task-1", pid: Int = 500, window: String = "500-1", now: Int64, up: Int64) -> String? {
+        g.refusal(taskId: task, pid: pid, windowId: window, now: now, uptimeMs: up)
     }
 
     @Test func allowsOnlyTheGrantedTaskProcessAndWindow() {
         let g = GrantTable()
-        g.issue(grant(), receivedAt: t0)
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-1", now: t0 + 1) == nil)
-        #expect(g.refusal(taskId: "task-1", pid: 501, windowId: "500-1", now: t0 + 1) == "the act grant for task task-1 covers process 500, not 501")
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-2", now: t0 + 1) == "the act grant for task task-1 covers window 500-1, not 500-2")
-        #expect(g.refusal(taskId: "task-2", pid: 500, windowId: "500-1", now: t0 + 1) == "no act grant for task task-2")
-        #expect(g.refusal(taskId: nil, pid: 500, windowId: "500-1", now: t0 + 1) == "the command names no task, so no act grant covers it")
+        g.issue(grant(), uptimeMs: u0)
+        #expect(check(g, now: t0 + 1, up: u0 + 1) == nil)
+        #expect(check(g, pid: 501, now: t0 + 1, up: u0 + 1) == "the act grant for task task-1 covers process 500, not 501")
+        #expect(check(g, window: "500-2", now: t0 + 1, up: u0 + 1) == "the act grant for task task-1 covers window 500-1, not 500-2")
+        #expect(check(g, "task-2", now: t0 + 1, up: u0 + 1) == "no act grant for task task-2")
+        #expect(check(g, nil, now: t0 + 1, up: u0 + 1) == "the command names no task, so no act grant covers it")
     }
 
-    @Test func endsAtItsExpiry() {
+    @Test func endsAtItsWallClockExpiry() {
         let g = GrantTable()
-        g.issue(grant(for: 1_000), receivedAt: t0)
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-1", now: t0 + 999) == nil)
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-1", now: t0 + 1_000) == "the act grant for task task-1 expired 0 ms ago")
+        g.issue(grant(for: 1_000), uptimeMs: u0)
+        #expect(check(g, now: t0 + 999, up: u0 + 1) == nil)
+        #expect(check(g, now: t0 + 1_000, up: u0 + 1) == "the act grant for task task-1 has expired")
     }
 
-    @Test func endsNoLaterThanTheCapAfterItArrives() {
+    @Test func endsItsLengthAfterArrivalOnTheMonotonicClockWhateverTheWallClockSays() {
         let g = GrantTable()
-        // A grant that arrives late ends at its own expiry, which is sooner than arrival plus the cap.
-        g.issue(grant(for: GrantTable.maxMs), receivedAt: t0 + 50_000)
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-1", now: t0 + GrantTable.maxMs - 1) == nil)
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-1", now: t0 + GrantTable.maxMs) != nil)
-        // One whose expiry is further off than the cap allows from its arrival (it arrived before `at`,
-        // clock skew) ends at arrival plus the cap.
-        g.issue(grant(for: GrantTable.maxMs), receivedAt: t0 - 10_000)
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-1", now: t0 + GrantTable.maxMs - 10_000) != nil)
+        g.issue(grant(for: GrantTable.maxMs), uptimeMs: u0)
+        // The wall clock was set back an hour: the grant still ends 120 s after it arrived.
+        let back = t0 - 3_600_000
+        #expect(check(g, now: back, up: u0 + GrantTable.maxMs - 1) == nil)
+        #expect(check(g, now: back, up: u0 + GrantTable.maxMs) == "the act grant for task task-1 has expired")
+    }
+
+    @Test func staysEndedWhenAClockGoesBack() {
+        let g = GrantTable()
+        g.issue(grant(for: 1_000), uptimeMs: u0)
+        #expect(check(g, now: t0 + 1_000, up: u0 + 1) != nil)
+        #expect(check(g, now: t0 + 1, up: u0 + 1) == "the act grant for task task-1 has expired")
     }
 
     @Test func revokeAndClearEndGrants() {
         let g = GrantTable()
-        g.issue(grant("a"), receivedAt: t0)
-        g.issue(grant("b", window: "500-2"), receivedAt: t0)
+        g.issue(grant("a"), uptimeMs: u0)
+        g.issue(grant("b", window: "500-2"), uptimeMs: u0)
         g.revoke(taskId: "a")
-        #expect(g.refusal(taskId: "a", pid: 500, windowId: "500-1", now: t0 + 1) == "no act grant for task a")
-        #expect(g.refusal(taskId: "b", pid: 500, windowId: "500-2", now: t0 + 1) == nil)
+        #expect(check(g, "a", now: t0 + 1, up: u0 + 1) == "no act grant for task a")
+        #expect(check(g, "b", window: "500-2", now: t0 + 1, up: u0 + 1) == nil)
         g.clear()
         #expect(g.count == 0)
-        #expect(g.refusal(taskId: "b", pid: 500, windowId: "500-2", now: t0 + 1) == "no act grant for task b")
+        #expect(check(g, "b", window: "500-2", now: t0 + 1, up: u0 + 1) == "no act grant for task b")
     }
 
     @Test func aLaterGrantForTheSameTaskReplacesTheEarlier() {
         let g = GrantTable()
-        g.issue(grant(window: "500-1"), receivedAt: t0)
-        g.issue(grant(window: "500-3"), receivedAt: t0)
+        g.issue(grant(window: "500-1"), uptimeMs: u0)
+        g.issue(grant(window: "500-3"), uptimeMs: u0)
         #expect(g.count == 1)
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-1", now: t0 + 1) != nil)
-        #expect(g.refusal(taskId: "task-1", pid: 500, windowId: "500-3", now: t0 + 1) == nil)
+        #expect(check(g, window: "500-1", now: t0 + 1, up: u0 + 1) != nil)
+        #expect(check(g, window: "500-3", now: t0 + 1, up: u0 + 1) == nil)
     }
 
     @Test func dropsGrantsLongEndedWhenAnotherArrives() {
         let g = GrantTable()
-        g.issue(grant("old", for: 1_000), receivedAt: t0)
-        g.issue(grant("new"), receivedAt: t0 + 1_000 + GrantTable.maxMs)
+        g.issue(grant("old", for: 1_000), uptimeMs: u0)
+        g.issue(grant("new"), uptimeMs: u0 + 1_000 + GrantTable.maxMs)
         #expect(g.count == 1)
+    }
+
+    @Test func refusesGrantsTheHelperCouldNotHaveSent() {
+        let base = #"{"type":"actGrant","v":1,"taskId":"t","pid":1,"windowId":"1-1","at":AT,"expires":EX}"#
+        let line = { (at: String, ex: String) in Data(base.replacingOccurrences(of: "AT", with: at).replacingOccurrences(of: "EX", with: ex).utf8) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: line("-9223372036854775808", "0")) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: line("-5", "10")) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: line("0", "120001")) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(#"{"type":"actRevoke","v":1,"taskId":"t","at":-1}"#.utf8)) }
+        guard case .actGrant(let ok) = try? JSONDecoder().decode(Message.self, from: line("0", "120000")) else { Issue.record("a grant of exactly maxMs is refused"); return }
+        #expect(ok.expires == GrantTable.maxMs)
     }
 }

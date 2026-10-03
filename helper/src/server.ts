@@ -5,7 +5,7 @@
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type HelperMessage, type HelperToReader } from "./protocol.ts";
+import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type ActRevoke, type HelperMessage, type HelperToReader } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
@@ -15,6 +15,12 @@ export class HelperServer {
   private readonly consumers = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
+  /**
+   * Tasks holding a grant on the current reader connection. When another reader says hello, the old
+   * connection stays open, so its grants are revoked there: a command still queued in the old reader
+   * must not act after the helper has moved on to a new session.
+   */
+  private granted = new Set<string>();
   private readonly sockets = new Set<Socket>();
   private server: Server | null = null;
   private readonly helper: () => Helper;
@@ -31,7 +37,17 @@ export class HelperServer {
   sendToReader(m: HelperToReader): boolean {
     if (this.reader === null || this.reader.destroyed) return false;
     this.reader.write(JSON.stringify(m) + "\n");
+    if (m.type === "actGrant") this.granted.add(m.taskId);
+    else if (m.type === "actRevoke") this.granted.delete(m.taskId);
     return true;
+  }
+
+  /** Ends every grant the outgoing reader holds, on its own connection, before a new reader takes over. */
+  private revokeOnOldReader(old: Socket | null): void {
+    if (old !== null && !old.destroyed) {
+      for (const taskId of this.granted) old.write(JSON.stringify({ type: "actRevoke", v: PROTOCOL_VERSION, taskId, at: Date.now() } satisfies ActRevoke) + "\n");
+    }
+    this.granted = new Set();
   }
 
   publish(m: HelperMessage): void {
@@ -95,6 +111,7 @@ export class HelperServer {
           role = hello.data.role;
           if (role === "consumer") this.consumers.add(s);
           else {
+            this.revokeOnOldReader(this.reader);
             this.reader = s;
             void this.helper().handleReader(hello.data);
           }
@@ -151,6 +168,8 @@ export class HelperServer {
       this.consumers.delete(s);
       if (this.reader === s) {
         this.reader = null;
+        // The reader drops its grants when its connection closes.
+        this.granted = new Set();
         this.helper().readerClosed();
       }
       this.sockets.delete(s);

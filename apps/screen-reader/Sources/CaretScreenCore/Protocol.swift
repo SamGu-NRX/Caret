@@ -637,6 +637,8 @@ public struct ActGrant: Codable, Equatable, Sendable {
         windowId = try c.decode(String.self, forKey: .windowId)
         at = try c.decode(Int64.self, forKey: .at); expires = try c.decode(Int64.self, forKey: .expires)
         if taskId.isEmpty || windowId.isEmpty { throw ProtocolError("an act grant names a task and a window") }
+        // zod's ms is a nonnegative integer; checked first, so the subtraction below cannot overflow.
+        guard at >= 0, expires >= 0 else { throw ProtocolError("at and expires are milliseconds since the epoch, never negative") }
         guard expires > at, expires - at <= GrantTable.maxMs else { throw ProtocolError("expires must be after at and at most \(GrantTable.maxMs) ms after it") }
     }
     public func encode(to encoder: Encoder) throws {
@@ -659,6 +661,7 @@ public struct ActRevoke: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         taskId = try c.decode(String.self, forKey: .taskId); at = try c.decode(Int64.self, forKey: .at)
         if taskId.isEmpty { throw ProtocolError("an act revoke names a task") }
+        guard at >= 0 else { throw ProtocolError("at is milliseconds since the epoch, never negative") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)

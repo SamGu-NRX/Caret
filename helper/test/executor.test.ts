@@ -473,7 +473,7 @@ describe("executor", () => {
       };
       const r = await helper.executor.run("t1", two(), {}, undefined, { grant: true });
       expect(r).toMatchObject({ outcome: "stopped", step: 1 });
-      expect(r.detail).toMatch(/the act grant for task t1 expired/);
+      expect(r.detail).toMatch(/the act grant for task t1 has expired/);
       expect(stopReason("t1")).toBe("reader");
       expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
       expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
@@ -539,6 +539,35 @@ describe("executor", () => {
       expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
       expect(kinds()).toEqual(["actGrant", "actRevoke", "actGrant", "actRevoke"]);
       expect(app.grants.log[2]).toMatchObject({ taskId: "t1", windowId: WIN });
+    });
+
+    it("a pause that comes in while the reader refuses an act for another reason ends as a pause, not a failure", async () => {
+      app.beforeVerb = (a, v) => {
+        if (v.kind !== "write" || v.key !== K("textfield:email~0")) return;
+        a.beforeVerb = null;
+        // The user types in Email and the host pauses the run: the reader refuses the write as changed.
+        a.setValue(K("textfield:email~0"), "typed@example.com");
+        helper.executor.pause("t1", false);
+      };
+      const r = await helper.executor.run("t1", two(), {}, undefined, { grant: true });
+      expect(r).toMatchObject({ outcome: "paused", step: 1 });
+      expect(app.node(K("textfield:email~0"))?.value).toBe("typed@example.com");
+      expect(kinds()).toEqual(["actGrant", "actRevoke"]);
+    });
+
+    it("a stop during undo revokes its grant: the restore on its way is refused and the rest are not tried", async () => {
+      await helper.executor.run("t1", two(), {}, undefined, { grant: true });
+      app.beforeVerb = (a, v) => {
+        if (v.kind !== "write") return;
+        a.beforeVerb = null;
+        helper.executor.stop("t1");
+      };
+      const u = await helper.executor.undo("t1");
+      expect(u.restored).toBe(0);
+      expect(u.notRestored.map((x) => x.reason)).toEqual([expect.stringMatching(/^notAllowed: the act grant for task t1|^notAllowed: no act grant for task t1/), "you stopped the undo"]);
+      expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+      expect(app.node(K("textfield:email~0"))?.value).toBe("d@example.com");
+      expect(kinds()).toEqual(["actGrant", "actRevoke", "actGrant", "actRevoke"]);
     });
 
     it("undo of an ungranted run is refused by the reader and restores nothing", async () => {

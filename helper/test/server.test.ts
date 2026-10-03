@@ -150,6 +150,30 @@ describe("helper socket", () => {
     c.s.destroy();
   });
 
+  it("revokes the outgoing reader's grants on its own connection when another reader says hello", async () => {
+    const hello = { type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 1, version: "t" };
+    const a = await connect(path);
+    send(a.s, hello);
+    await new Promise((r) => setTimeout(r, 50));
+    const at = Date.now();
+    expect(server.sendToReader({ type: "actGrant", v: PROTOCOL_VERSION, taskId: "t1", pid: 5150, windowId: FORM, at, expires: at + 1000 })).toBe(true);
+    expect(server.sendToReader({ type: "actGrant", v: PROTOCOL_VERSION, taskId: "t2", pid: 5150, windowId: FORM, at, expires: at + 1000 })).toBe(true);
+    server.sendToReader({ type: "actRevoke", v: PROTOCOL_VERSION, taskId: "t2", at });
+    expect(((await a.next()) as { type: string }).type).toBe("actGrant");
+    await a.next();
+    await a.next();
+    const b = await connect(path);
+    send(b.s, { ...hello, pid: 2 });
+    // Only t1 was still granted; its revoke goes to the old reader, which is still connected.
+    expect(await a.next()).toMatchObject({ type: "actRevoke", taskId: "t1" });
+    server.sendToReader({ type: "actGrant", v: PROTOCOL_VERSION, taskId: "t3", pid: 5150, windowId: FORM, at, expires: at + 1000 });
+    expect(await b.next()).toMatchObject({ type: "actGrant", taskId: "t3" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(a.lines).toEqual([]);
+    a.s.destroy();
+    b.s.destroy();
+  });
+
   it("refuses to start a second helper on a live socket", async () => {
     const second = new HelperServer(path, () => {
       throw new Error("unused");
