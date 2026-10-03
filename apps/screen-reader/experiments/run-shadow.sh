@@ -9,6 +9,9 @@ OUT=$1
 DUR=${2:-600}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../.build/debug"
+# The bundled fixture (scripts/bundle-fixture.sh): macOS will not activate the bare executable.
+FIXTURE="$BIN/CaretFixture.app/Contents/MacOS/caret-fixture"
+[[ -x "$FIXTURE" ]] || { echo "no $FIXTURE; run ../scripts/bundle-fixture.sh $BIN"; exit 1; }
 HELPER="$HERE/../../../helper"
 DATA="$OUT/shadow-data"
 mkdir -p "$OUT"
@@ -21,7 +24,7 @@ trap 'stop "${READER:-}" "${HELPERPID:-}" "${FIX:-}"' EXIT
 HELPERPID=$!
 sleep 1.5
 HPID=$(pgrep -f "node src/main.ts --shadow --data-dir $DATA" | head -1)
-"$BIN/caret-fixture" --foreground --windows reference,distractors,claim,schedule --activity "$OUT/activity.ndjson" --duration $(( DUR + 20 )) > "$OUT/fixture.log" 2>&1 &
+"$FIXTURE" --foreground --windows reference,distractors,claim,schedule --activity "$OUT/activity.ndjson" --duration $(( DUR + 20 )) > "$OUT/fixture.log" 2>&1 &
 FIX=$!
 sleep 1
 "$BIN/caret-screen" --shadow --event-pids "$FIX" > "$OUT/reader.log" 2>&1 &

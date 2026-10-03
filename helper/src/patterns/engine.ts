@@ -33,6 +33,7 @@ import { applyMemory, captureEdit } from "./preferences.ts";
 import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
 import { describeTransfer, templateOf } from "./shape.ts";
 import { normalizeValue } from "../normalize.ts";
+import { offerField } from "../offers/field.ts";
 
 /** How long after Caret fills a field an edit to it is read as a preference. Assumed. */
 export const EDIT_WATCH_MS = 60_000;
@@ -601,7 +602,7 @@ export class PatternEngine {
         v: PROTOCOL_VERSION,
         offerKey: `${o.msg.id}.${i}`,
         at: this.clock,
-        field: { pid: w.app.pid, windowId: c.dstWindowId, key: c.dstKey, frame: w.nodes.get(c.dstKey)?.frame ?? null },
+        field: offerField(w, c.dstKey),
         ...this.altValues(candidates),
       };
       o.alts.push({ cell: i, msg, candidates: candidates.map(({ norm: _, ...rest }) => rest) });
@@ -633,7 +634,7 @@ export class PatternEngine {
       v: PROTOCOL_VERSION,
       offerKey: o.msg.id,
       at: this.clock,
-      field: { pid: w.app.pid, windowId: first.dstWindowId, key: first.dstKey, frame: w.nodes.get(first.dstKey)?.frame ?? null },
+      field: offerField(w, first.dstKey),
       app: w.app.name,
       endState: { text: o.msg.says, ref: { rule: kind, derived: o.cells.map((c) => this.cellValue(c.srcWindowId, c.srcKey, c.value, c.written, c.memory).ref) } },
       actions: [kind === "loopFinish" ? { id: "finish", label: "Finish", key: "tab" } : { id: "run", label: "Fill", key: "tab" }],

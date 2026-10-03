@@ -12,6 +12,9 @@ WINDOWS=$2
 ROUNDS=${3:-3}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../.build/debug"
+# The bundled fixture (scripts/bundle-fixture.sh): macOS will not activate the bare executable.
+FIXTURE="$BIN/CaretFixture.app/Contents/MacOS/caret-fixture"
+[[ -x "$FIXTURE" ]] || { echo "no $FIXTURE; run ../scripts/bundle-fixture.sh $BIN"; exit 1; }
 HELPER="$HERE/../../../helper"
 : "${CARET_ENV_FILE:?set CARET_ENV_FILE to the .env holding TYPESAFE_API_KEY}"
 stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
@@ -30,7 +33,7 @@ fi
 (cd "$HELPER" && exec node src/main.ts --data-dir "$OUT/helper-data" --allow-background-focus --status-every 60 ${CUTOFF_ARGS[@]+"${CUTOFF_ARGS[@]}"} > "$OUT/helper.log" 2>&1) &
 HELPERPID=$!
 sleep 1.5
-"$BIN/caret-fixture" --foreground --windows "$WINDOWS" --gold "$OUT/gold.json" --focus-forms ${VISIT_ARGS[@]+"${VISIT_ARGS[@]}"} --duration 300 > "$OUT/fixture.log" 2>&1 &
+"$FIXTURE" --foreground --windows "$WINDOWS" --gold "$OUT/gold.json" --focus-forms ${VISIT_ARGS[@]+"${VISIT_ARGS[@]}"} --duration 300 > "$OUT/fixture.log" 2>&1 &
 FIX=$!
 # The fixture prints its pid line once its windows exist; a reader started earlier can find no windows to walk.
 for _ in $(seq 1 40); do grep -q 'caret-fixture pid' "$OUT/fixture.log" 2>/dev/null && break; sleep 0.25; done

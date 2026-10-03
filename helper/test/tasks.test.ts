@@ -237,6 +237,19 @@ describe("task controls on a six-step run", () => {
     });
   });
 
+  it("counts the fields a run wrote on done, and what undo restored on undone", async () => {
+    await helper.executor.run("t", SIX, {});
+    const progress = published.filter((m) => m.type === "taskProgress" && m.taskId === "t");
+    expect(progress.at(-1)).toMatchObject({ phase: "done", written: 6 });
+    expect(progress.filter((m) => m.type === "taskProgress" && m.phase !== "done").every((m) => !("written" in m))).toBe(true);
+    // The user changes one field after the run, so undo leaves that one as it is.
+    const changed = app.node(key(FIELDS[0]!))!;
+    changed.value = "edited by hand";
+    app.show();
+    await helper.executor.undo("t");
+    expect(published.filter((m) => m.type === "taskProgress" && m.taskId === "t").at(-1)).toMatchObject({ phase: "undone", restored: 5, notRestored: 1, notUndoablePresses: 0 });
+  });
+
   it("puts the task window's frame on its records", async () => {
     await helper.executor.run("t", SIX, {});
     const frame = helper.model.windows.get(WIN)?.window.frame;

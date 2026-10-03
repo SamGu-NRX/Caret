@@ -24,6 +24,7 @@ import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { loadJevKey, makeJevClient } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type Activity, type HelperMessage, type TaskState } from "../src/protocol.ts";
+import { fixtureExecutable } from "./fixture-path.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -112,7 +113,7 @@ const tick = setInterval(() => helper.tick(), 250);
 
 // MARK: - fixture and reader: the only processes this script may signal
 
-const fixture: ChildProcessWithoutNullStreams = spawn(join(a.bin, "caret-fixture"), [
+const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(a.bin), [
   "--windows", "jobs,reference,distractors,claim,schedule,roster,executor", "--duration", "1500", "--background-only",
 ]);
 let reader: ChildProcessWithoutNullStreams | null = null;

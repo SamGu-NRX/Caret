@@ -80,6 +80,9 @@ export interface TaskResult {
 }
 
 /** One undo ledger entry. Writes record the value they replaced; presses are recorded as not undoable. */
+/** The numbers a done or undone taskProgress carries beside its sentence. */
+type ProgressCounts = Pick<TaskProgress, "written" | "restored" | "notRestored" | "notUndoablePresses">;
+
 export type LedgerEntry =
   | { kind: "write"; step: number; pid: number; windowId: string; key: string; role: string; before: string; after: string }
   | { kind: "calendar"; step: number; eventId: string; calendar: string; title: string; start: string; end: string }
@@ -309,7 +312,7 @@ export class Executor {
       task.undoing = false;
     }
     const detail = `restored ${out.restored}; not restored ${out.notRestored.length}; presses not undoable ${out.notUndoable}`;
-    this.progress(task, "undone", null, detail);
+    this.progress(task, "undone", null, detail, null, { restored: out.restored, notRestored: out.notRestored.length, notUndoablePresses: out.notUndoable });
     return out;
   }
 
@@ -340,7 +343,9 @@ export class Executor {
         task.next = i + 1;
       }
       task.finished = "done";
-      this.progress(task, "done", null, `${task.acted} acted, ${task.skipped} already true`);
+      // Fields this run wrote, each once however many writes it took; presses and calendar events are not fields.
+      const written = new Set(task.ledger.flatMap((e) => (e.kind === "write" ? [`${e.windowId}\u0000${e.key}`] : []))).size;
+      this.progress(task, "done", null, `${task.acted} acted, ${task.skipped} already true`, null, { written });
       return this.result(task, "done", null, null);
     } catch (e) {
       const i = task.next;
@@ -708,10 +713,10 @@ export class Executor {
 
   // MARK: - reporting
 
-  private progress(task: Task, phase: TaskPhase, step: number | null, detail: string | null, cause: TaskCause | null = null): void {
+  private progress(task: Task, phase: TaskPhase, step: number | null, detail: string | null, cause: TaskCause | null = null, counts: ProgressCounts = {}): void {
     const says = step === null ? null : (task.plan.steps[step]?.says ?? null);
     const steps = task.plan.steps.length;
-    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, phase, step, steps, says, detail });
+    this.deps.publish({ type: "taskProgress", v: PROTOCOL_VERSION, at: Date.now(), taskId: task.id, planId: task.plan.id, phase, step, steps, says, detail, ...counts });
     if (this.deps.onTask === undefined) return;
     // The first step not yet reached: past this one once it is verified or skipped, none once done.
     const from = phase === "done" ? steps : phase === "verified" || phase === "skipped" ? (step ?? task.next) + 1 : (step ?? task.next);

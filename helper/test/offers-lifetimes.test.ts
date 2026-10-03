@@ -409,7 +409,7 @@ describe("offer lifetimes over the socket", () => {
         v: 1,
         offerKey: "offer-1.0",
         at: 0,
-        field: { pid: 6160, windowId: SEATING, key: guest(2), frame: [100, 100, 200, 24] },
+        field: { pid: 6160, windowId: SEATING, key: guest(2), frame: [100, 100, 200, 24], window: { number: null, title: "Seating" } },
         candidates: [{ text: "Marcus Lowe", ref: { node: `${ROSTER}/${attendee("Marcus Lowe")}`, quote: "Marcus Lowe" } }],
         quoted: true,
       });

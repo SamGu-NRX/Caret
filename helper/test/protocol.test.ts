@@ -16,8 +16,25 @@ describe("golden protocol fixture", () => {
       "readerCommand", "verbResult", "userInput", "taskProgress",
       "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
       "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
-      "offerWithdrawn", "taskControl",
+      "offerWithdrawn", "taskControl", "taskProgress", "taskProgress",
     ]);
+  });
+
+  it("carries the host's window identity, a fill's source apps, and done and undo counts", () => {
+    const [alternatives, action, popup] = lines.slice(19, 22).map((l) => HelperMessage.parse(JSON.parse(l)) as { field: { window: unknown }; sourceApps?: string[] });
+    expect(alternatives?.field.window).toEqual({ number: 4421, title: "Seating" });
+    expect(action?.field.window).toEqual({ number: 4421, title: "Seating" });
+    expect(popup?.field.window).toEqual({ number: null, title: "Checkout" });
+    expect(popup?.sourceApps).toEqual(["Mail Fixture"]);
+    expect(ReaderMessage.parse(JSON.parse(lines[1] ?? ""))).toMatchObject({ window: { number: 4417 } });
+    const [done, undone] = lines.slice(28).map((l) => HelperMessage.parse(JSON.parse(l)));
+    expect(done).toMatchObject({ phase: "done", written: 3 });
+    expect(undone).toMatchObject({ phase: "undone", restored: 2, notRestored: 1, notUndoablePresses: 0 });
+    const p = JSON.parse(lines[21] ?? "") as Record<string, unknown>;
+    for (const bad of [[], ["Mail Fixture", "Mail Fixture"], [""]]) expect(HelperMessage.safeParse({ ...p, sourceApps: bad }).success).toBe(false);
+    const field = (p.field ?? {}) as Record<string, unknown>;
+    expect(HelperMessage.safeParse({ ...p, field: { ...field, window: undefined } }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...p, field: { ...field, window: { number: 0, title: "x" } } }).success).toBe(false);
   });
 
   it("carries B8's additions: an expired withdrawal, a pause for input, and task frames", () => {

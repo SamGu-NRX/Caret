@@ -60,16 +60,20 @@ public struct WindowRef: Codable, Equatable, Sendable {
     public var kind: String
     public var title: String
     public var frame: Frame?
-    public init(windowId: String, kind: String, title: String, frame: Frame?) {
-        self.windowId = windowId; self.kind = kind; self.title = title; self.frame = frame
+    /// The window server's number (CGWindowID); absent when the app gave none.
+    public var number: Int?
+    public init(windowId: String, kind: String, title: String, frame: Frame?, number: Int? = nil) {
+        self.windowId = windowId; self.kind = kind; self.title = title; self.frame = frame; self.number = number
     }
-    enum CodingKeys: String, CodingKey { case windowId, kind, title, frame }
+    enum CodingKeys: String, CodingKey { case windowId, kind, title, frame, number }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         windowId = try c.decode(String.self, forKey: .windowId)
         kind = try c.decode(String.self, forKey: .kind)
         title = try c.decode(String.self, forKey: .title)
         frame = try c.decodeNullable(Frame.self, forKey: .frame)
+        number = try c.decodeOptional(Int.self, forKey: .number)
+        if let n = number, n <= 0 { throw ProtocolError("window number must be positive") }
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -77,6 +81,7 @@ public struct WindowRef: Codable, Equatable, Sendable {
         try c.encode(kind, forKey: .kind)
         try c.encode(title, forKey: .title)
         try c.encode(frame, forKey: .frame)
+        try c.encodeIfPresent(number, forKey: .number)
     }
 }
 
@@ -652,7 +657,13 @@ public struct TaskProgress: Codable, Equatable, Sendable {
     public var steps: Int
     public var says: String?
     public var detail: String?
-    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail }
+    /// On `done` only: the fields the run wrote, each counted once.
+    public var written: Int?
+    /// On `undone` only: what was restored, what was left as it was, and presses, which no undo reverses.
+    public var restored: Int?
+    public var notRestored: Int?
+    public var notUndoablePresses: Int?
+    enum CodingKeys: String, CodingKey { case at, taskId, planId, phase, step, steps, says, detail, written, restored, notRestored, notUndoablePresses }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -660,6 +671,9 @@ public struct TaskProgress: Codable, Equatable, Sendable {
         planId = try c.decode(String.self, forKey: .planId); phase = try c.decode(Phase.self, forKey: .phase)
         step = try c.decodeNullable(Int.self, forKey: .step); steps = try c.decode(Int.self, forKey: .steps)
         says = try c.decodeNullable(String.self, forKey: .says); detail = try c.decodeNullable(String.self, forKey: .detail)
+        written = try c.decodeOptional(Int.self, forKey: .written); restored = try c.decodeOptional(Int.self, forKey: .restored)
+        notRestored = try c.decodeOptional(Int.self, forKey: .notRestored); notUndoablePresses = try c.decodeOptional(Int.self, forKey: .notUndoablePresses)
+        for n in [written, restored, notRestored, notUndoablePresses] where (n ?? 0) < 0 { throw ProtocolError("taskProgress counts are never negative") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
@@ -667,6 +681,8 @@ public struct TaskProgress: Codable, Equatable, Sendable {
         try c.encode(at, forKey: .at); try c.encode(taskId, forKey: .taskId); try c.encode(planId, forKey: .planId)
         try c.encode(phase, forKey: .phase); try c.encode(step, forKey: .step); try c.encode(steps, forKey: .steps)
         try c.encode(says, forKey: .says); try c.encode(detail, forKey: .detail)
+        try c.encodeIfPresent(written, forKey: .written); try c.encodeIfPresent(restored, forKey: .restored)
+        try c.encodeIfPresent(notRestored, forKey: .notRestored); try c.encodeIfPresent(notUndoablePresses, forKey: .notUndoablePresses)
     }
 }
 

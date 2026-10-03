@@ -13,19 +13,39 @@ public struct OfferField: Codable, Equatable, Sendable {
     /// The reader's element key.
     public var key: String
     public var frame: Frame?
-    public init(pid: Int, windowId: String, key: String, frame: Frame?) {
-        self.pid = pid; self.windowId = windowId; self.key = key; self.frame = frame
+    /// The field's window as the host can check it: two identical windows differ in their number.
+    public var window: OfferWindow
+    public init(pid: Int, windowId: String, key: String, frame: Frame?, window: OfferWindow) {
+        self.pid = pid; self.windowId = windowId; self.key = key; self.frame = frame; self.window = window
     }
-    enum CodingKeys: String, CodingKey { case pid, windowId, key, frame }
+    enum CodingKeys: String, CodingKey { case pid, windowId, key, frame, window }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         pid = try c.decode(Int.self, forKey: .pid); windowId = try c.decode(String.self, forKey: .windowId)
         key = try c.decode(String.self, forKey: .key); frame = try c.decodeNullable(Frame.self, forKey: .frame)
+        window = try c.decode(OfferWindow.self, forKey: .window)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
-        try c.encode(key, forKey: .key); try c.encode(frame, forKey: .frame)
+        try c.encode(key, forKey: .key); try c.encode(frame, forKey: .frame); try c.encode(window, forKey: .window)
+    }
+}
+
+/// A window's number from the window server (CGWindowID; nil when the reader could not read one) and its title.
+public struct OfferWindow: Codable, Equatable, Sendable {
+    public var number: Int?
+    public var title: String
+    public init(number: Int?, title: String) { self.number = number; self.title = title }
+    enum CodingKeys: String, CodingKey { case number, title }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        number = try c.decodeNullable(Int.self, forKey: .number); title = try c.decode(String.self, forKey: .title)
+        if let n = number, n <= 0 { throw ProtocolError("window number must be positive") }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(number, forKey: .number); try c.encode(title, forKey: .title)
     }
 }
 
@@ -108,21 +128,27 @@ public struct OfferPopup: Codable, Equatable, Sendable {
     public var at: Int64
     public var field: OfferField
     public var spec: PopupSpec
-    public init(offerKey: String, at: Int64, field: OfferField, spec: PopupSpec) {
-        self.offerKey = offerKey; self.at = at; self.field = field; self.spec = spec
+    /// A grounded fill's source apps, each once, in field order; absent for other pop-ups.
+    public var sourceApps: [String]?
+    public init(offerKey: String, at: Int64, field: OfferField, spec: PopupSpec, sourceApps: [String]? = nil) {
+        self.offerKey = offerKey; self.at = at; self.field = field; self.spec = spec; self.sourceApps = sourceApps
     }
-    enum CodingKeys: String, CodingKey { case offerKey, at, field, spec }
+    enum CodingKeys: String, CodingKey { case offerKey, at, field, spec, sourceApps }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         offerKey = try c.decode(String.self, forKey: .offerKey); at = try c.decode(Int64.self, forKey: .at)
         field = try c.decode(OfferField.self, forKey: .field); spec = try c.decode(PopupSpec.self, forKey: .spec)
+        sourceApps = try c.decodeOptional([String].self, forKey: .sourceApps)
+        if let apps = sourceApps, apps.isEmpty || apps.contains(where: \.isEmpty) || Set(apps).count != apps.count {
+            throw ProtocolError("sourceApps holds one or more distinct, non-empty app names")
+        }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(offerKey, forKey: .offerKey); try c.encode(at, forKey: .at)
-        try c.encode(field, forKey: .field); try c.encode(spec, forKey: .spec)
+        try c.encode(field, forKey: .field); try c.encode(spec, forKey: .spec); try c.encodeIfPresent(sourceApps, forKey: .sourceApps)
     }
 }
 

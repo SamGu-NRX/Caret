@@ -144,6 +144,11 @@
                       "type": "null"
                     }
                   ]
+                },
+                "number": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "required": [
@@ -1443,6 +1448,26 @@
                 "string",
                 "null"
               ]
+            },
+            "written": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "restored": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "notRestored": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "notUndoablePresses": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
             }
           },
           "required": [
@@ -3228,13 +3253,39 @@
                       "type": "null"
                     }
                   ]
+                },
+                "window": {
+                  "type": "object",
+                  "properties": {
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "number",
+                    "title"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "pid",
                 "windowId",
                 "key",
-                "frame"
+                "frame",
+                "window"
               ],
               "additionalProperties": false
             },
@@ -3334,13 +3385,39 @@
                       "type": "null"
                     }
                   ]
+                },
+                "window": {
+                  "type": "object",
+                  "properties": {
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "number",
+                    "title"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "pid",
                 "windowId",
                 "key",
-                "frame"
+                "frame",
+                "window"
               ],
               "additionalProperties": false
             },
@@ -3862,13 +3939,39 @@
                       "type": "null"
                     }
                   ]
+                },
+                "window": {
+                  "type": "object",
+                  "properties": {
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "number",
+                    "title"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "pid",
                 "windowId",
                 "key",
-                "frame"
+                "frame",
+                "window"
               ],
               "additionalProperties": false
             },
@@ -4289,6 +4392,14 @@
                 "blocks"
               ],
               "additionalProperties": false
+            },
+            "sourceApps": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           },
           "required": [

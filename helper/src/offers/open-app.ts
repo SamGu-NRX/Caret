@@ -8,6 +8,7 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { AcceptHandler, AcceptResult } from "./registry.ts";
+import { offerField } from "./field.ts";
 
 interface Entry {
   offerKey: string;
@@ -73,17 +74,13 @@ export class OpenAppOffers {
    * window, in the frontmost app, binds a held offer to that field.
    */
   onFocus(m: Focus): void {
-    if (m.frontmost && m.editable && m.key !== null) {
-      this.lastField = { pid: m.app.pid, windowId: m.windowId, key: m.key, frame: this.deps.model.windows.get(m.windowId)?.nodes.get(m.key)?.frame ?? null };
-    }
+    const focused = this.deps.model.windows.get(m.windowId);
+    if (m.frontmost && m.editable && m.key !== null && focused !== undefined) this.lastField = offerField(focused, m.key);
     for (const e of [...this.entries.values()]) {
       if (m.windowId === e.windowId) {
         if (m.frontmost) this.drop(e.offerKey, "taken");
       }
-      else if (e.boundTo === null && m.frontmost && m.editable && m.key !== null) {
-        const frame = this.deps.model.windows.get(m.windowId)?.nodes.get(m.key)?.frame ?? null;
-        this.show(e, { pid: m.app.pid, windowId: m.windowId, key: m.key, frame });
-      }
+      else if (e.boundTo === null && m.frontmost && m.editable && m.key !== null && focused !== undefined) this.show(e, offerField(focused, m.key));
     }
   }
 
@@ -119,8 +116,8 @@ export class OpenAppOffers {
   private currentLastField(closing: string, watched: string): OfferField | null {
     const f = this.lastField;
     if (f === null || f.windowId === closing || f.windowId === watched || this.deps.model.frontmostPid !== f.pid) return null;
-    const n = this.deps.model.windows.get(f.windowId)?.nodes.get(f.key);
-    return n?.editable === true ? { ...f, frame: n.frame ?? null } : null;
+    const w = this.deps.model.windows.get(f.windowId);
+    return w?.nodes.get(f.key)?.editable === true ? offerField(w, f.key) : null;
   }
 
   readerRestarted(): void {
@@ -134,9 +131,8 @@ export class OpenAppOffers {
     if (id === null || id === watched) return null;
     const w = this.deps.model.windows.get(id);
     const key = w?.focusedKey ?? null;
-    const n = key === null ? undefined : w?.nodes.get(key);
-    if (w === undefined || key === null || n?.editable !== true) return null;
-    return { pid: w.app.pid, windowId: id, key, frame: n.frame ?? null };
+    if (w === undefined || key === null || w.nodes.get(key)?.editable !== true) return null;
+    return offerField(w, key);
   }
 
   /** Publishes the offer bound to `field`, after checking that the status line is still on screen. */

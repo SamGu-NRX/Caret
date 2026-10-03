@@ -17,6 +17,7 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type PatternOffer, type TaskProgress } from "../src/protocol.ts";
+import { fixtureExecutable } from "./fixture-path.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -73,7 +74,7 @@ const tick = setInterval(() => helper.tick(), 250);
 
 // MARK: - fixture and reader, the only processes this script may signal
 
-const fixture: ChildProcessWithoutNullStreams = spawn(join(a.bin, "caret-fixture"), ["--windows", "roster,seating", "--duration", "600", "--background-only"]);
+const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(a.bin), ["--windows", "roster,seating", "--duration", "600", "--background-only"]);
 let reader: ChildProcessWithoutNullStreams | null = null;
 process.on("exit", () => {
   reader?.kill("SIGTERM");

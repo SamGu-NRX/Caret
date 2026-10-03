@@ -20,6 +20,7 @@ import { FakeCalendar } from "../src/executor/means.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import type { TaskResult, UndoResult } from "../src/executor/executor.ts";
 import type { HelperMessage, TaskProgress } from "../src/protocol.ts";
+import { fixtureExecutable } from "./fixture-path.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -81,7 +82,7 @@ const tick = setInterval(() => helper.tick(), 250);
 
 // MARK: - fixture and reader
 
-const fixture: ChildProcessWithoutNullStreams = spawn(join(a.bin, "caret-fixture"), ["--windows", "executor", "--duration", "1800"]);
+const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(a.bin), ["--windows", "executor", "--duration", "1800"]);
 let reader: ChildProcessWithoutNullStreams | null = null;
 // Only the two processes this script started are ever signalled, whatever way the script ends.
 process.on("exit", () => {

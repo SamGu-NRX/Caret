@@ -13,16 +13,28 @@ import { parsePopupSpec } from "../src/popup.ts";
 import { HostOfferRegistry, acceptRefusal } from "../src/offers/registry.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
 import { OpenAppOffers } from "../src/offers/open-app.ts";
+import { offerField } from "../src/offers/field.ts";
 import { fillSlots, Plan } from "../src/executor/schema.ts";
 import { FIXTURE_APP, MAIL_APP, field, focus, snap, text, value } from "./builders.ts";
 
 const accept = (offerId: string, actionId: string, overrides: Record<string, number> = {}): OfferAccept => ({ type: "offerAccept", v: PROTOCOL_VERSION, offerId, actionId, overrides, at: 1 });
-const FIELD = { pid: 5150, windowId: "5150-2", key: "k", frame: null };
+const FIELD = { pid: 5150, windowId: "5150-2", key: "k", frame: null, window: { number: null, title: "Checkout" } };
 const ref = { node: "5150-1/a" };
 
 function popup(blocks: OfferPopup["spec"]["blocks"]): OfferPopup {
   return { type: "popup", v: PROTOCOL_VERSION, offerKey: "p1", at: 1, field: FIELD, spec: { v: 1, id: "p1", figure: "offering", blocks } };
 }
+
+describe("offerField", () => {
+  it("carries the window's number from the reader, or null, and its title", () => {
+    const m = new ScreenModel();
+    const s = snap([{ key: "k", parent: null, role: "AXTextField", editable: true, frame: [1, 2, 3, 4] }], { at: 1, windowId: "1-1", title: "Seating" });
+    m.apply({ ...s, window: { ...s.window, number: 4421 } });
+    m.apply(snap([{ key: "k", parent: null, role: "AXTextField", editable: true }], { at: 2, windowId: "1-2", title: "Seating" }));
+    expect(offerField(m.windows.get("1-1")!, "k")).toEqual({ pid: 5150, windowId: "1-1", key: "k", frame: [1, 2, 3, 4], window: { number: 4421, title: "Seating" } });
+    expect(offerField(m.windows.get("1-2")!, "k").window).toEqual({ number: null, title: "Seating" });
+  });
+});
 
 describe("host-offer registry", () => {
   it("keeps a record however old until it is removed: only a withdrawal ends an offer", () => {
@@ -196,7 +208,7 @@ describe("fill pop-up", () => {
       v: PROTOCOL_VERSION,
       offerKey: "prop-1",
       at: 3000,
-      field: { pid: 5150, windowId: FORM, key: FK("textfield:name~0"), frame: [100, 40, 200, 24] },
+      field: { pid: 5150, windowId: FORM, key: FK("textfield:name~0"), frame: [100, 40, 200, 24], window: { number: null, title: "Checkout {{x}}" } },
       spec: {
         v: 1,
         id: "prop-1",
@@ -222,6 +234,7 @@ describe("fill pop-up", () => {
           { type: "actions", items: [{ id: "fillAll", label: "Fill all", key: "tab" }] },
         ],
       },
+      sourceApps: ["Mail Fixture"],
     });
     expect(parsePopupSpec(msg.spec)).toEqual(msg.spec);
     expect(HelperMessage.safeParse(msg).success).toBe(true);
@@ -297,7 +310,7 @@ describe("Open <app> for a watched window", () => {
         v: PROTOCOL_VERSION,
         offerKey: "open-watch-1.1",
         at: expect.any(Number),
-        field: { pid: MAIL_APP.pid, windowId: COMPOSE, key: TO, frame: [100, 40, 300, 24] },
+        field: { pid: MAIL_APP.pid, windowId: COMPOSE, key: TO, frame: [100, 40, 300, 24], window: { number: null, title: "New message" } },
         app: "Caret Fixture",
         endState: { text: "Done. 48 of 48 tests passed.", ref: { node: `${JOB}/${STATUS}`, quote: "Done. 48 of 48 tests passed." } },
         actions: [{ id: "open", label: "Open Caret Fixture", key: "tab" }],

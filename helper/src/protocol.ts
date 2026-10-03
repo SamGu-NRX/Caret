@@ -28,6 +28,8 @@ export const WindowRef = z.object({
   kind: z.string(),
   title: z.string(),
   frame: Frame.nullable(),
+  /** The window server's number (CGWindowID), read once per window; absent when the app gave none. */
+  number: z.number().int().positive().optional(),
 });
 export type WindowRef = z.infer<typeof WindowRef>;
 
@@ -362,6 +364,11 @@ export const OfferField = z.object({
   /** The reader's element key. */
   key: z.string(),
   frame: Frame.nullable(),
+  /**
+   * The field's window as the host can check it, so two identical windows are not confused by frame:
+   * the window server's number (null when the reader could not read one) and the title when offered.
+   */
+  window: z.object({ number: z.number().int().positive().nullable(), title: z.string() }),
 });
 export type OfferField = z.infer<typeof OfferField>;
 
@@ -409,6 +416,8 @@ export const OfferPopup = z.object({
   at: ms,
   field: OfferField,
   spec: PopupSpec,
+  /** A grounded fill's source apps, each once, in the order of the fields they fill; absent for other pop-ups. */
+  sourceApps: z.array(z.string().min(1)).min(1).refine((a) => new Set(a).size === a.length, "sourceApps repeats an app").optional(),
 });
 export type OfferPopup = z.infer<typeof OfferPopup>;
 
@@ -551,6 +560,12 @@ export const TaskProgress = z.object({
   /** The step's end state as a sentence, for the steps block and the activity view. */
   says: z.string().nullable(),
   detail: z.string().nullable(),
+  /** On `done` only: the fields the run wrote, each counted once. */
+  written: z.number().int().nonnegative().optional(),
+  /** On `undone` only: the writes and events restored, those left as they were, and presses, which no undo reverses. `detail` says the same in words. */
+  restored: z.number().int().nonnegative().optional(),
+  notRestored: z.number().int().nonnegative().optional(),
+  notUndoablePresses: z.number().int().nonnegative().optional(),
 });
 export type TaskProgress = z.infer<typeof TaskProgress>;
 

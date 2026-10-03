@@ -23,6 +23,7 @@ import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type Activity, type TaskProgress, type TaskRecord } from "../src/protocol.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
+import { fixtureExecutable } from "./fixture-path.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -123,7 +124,7 @@ const phases = (id: string): string[] => seen.flatMap((x) => (x.m.type === "task
 
 // MARK: - fixture and reader: the only processes this script may signal
 
-const fixture: ChildProcessWithoutNullStreams = spawn(join(a.bin, "caret-fixture"), ["--windows", "executor", "--duration", "900", "--background-only"]);
+const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(a.bin), ["--windows", "executor", "--duration", "900", "--background-only"]);
 let reader: ChildProcessWithoutNullStreams | null = null;
 process.on("exit", () => {
   reader?.kill("SIGTERM");
