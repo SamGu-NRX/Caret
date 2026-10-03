@@ -6,7 +6,7 @@ import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, type SnippetLedger } from "../privacy.ts";
-import { isKindTerm, kindTerm, overlap, words } from "./kinds.ts";
+import { isKindTerm, kindTerm, overlap, valueKinds, words } from "./kinds.ts";
 
 export interface Candidate {
   id: string;
@@ -187,10 +187,22 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     out.push(c);
   };
   const touched = new Set<string>();
+  /** The window the generator is reading, if it stops there. */
+  let reading: string | null = null;
   const finish = (): Collected => {
     stats.windows = touched.size;
     stats.ms = clock() - t0;
     return { candidates: out, stats, cut: [...missed] };
+  };
+  /**
+   * Stops early, on the cap or the clock, partway through `reading`: what of it was offered is a partial
+   * set like a privacy cut's, so it is reported cut and fill withholds the kinds it lost (B13 review: a
+   * chat's 79 times filled the cap before its meeting date, and an older window's date was asked alone).
+   * Windows not reached at all are left out whole; their values are the least recent on screen.
+   */
+  const stop = (): Collected => {
+    if (reading !== null) missed.add(reading);
+    return finish();
   };
 
   /** Conversations whose budget went by relevance; the line pass leaves them alone. */
@@ -313,13 +325,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   for (const w of windows) {
     if (full()) return finish();
     touched.add(w.window.windowId);
+    reading = w.window.windowId;
     if (relevance !== null && heldAsConversation(w)) {
       ranked.add(w.window.windowId);
-      if (!byRelevance(w, relevance)) return finish();
+      if (!byRelevance(w, relevance)) return stop();
       continue;
     }
     for (const v of w.values) {
-      if (full() || outOfTime()) return finish();
+      if (full() || outOfTime()) return stop();
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined) continue;
@@ -330,15 +343,16 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     if (full()) break;
     touched.add(w.window.windowId);
     if (closed.has(w.window.windowId) || ranked.has(w.window.windowId)) continue;
+    reading = w.window.windowId;
     for (const node of w.nodes.values()) {
-      if (full() || outOfTime()) return finish();
+      if (full() || outOfTime()) return stop();
       stats.nodes++;
       const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
         // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
-        if (full() || outOfTime()) return finish();
+        if (full() || outOfTime()) return stop();
         const s = spanOfLine(raw);
         if (s === null) continue;
         add(w, node, s.text, null, s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField));
@@ -386,28 +400,30 @@ export function generateCandidates(model: ScreenModel, targetWindowId: string, m
 }
 
 /**
- * The kinds of value the privacy budget kept out of a request: each typed value (the reader's, with its
- * kind) of a window the ledger cut that no candidate text taken into the request contains. A value
- * offered from another window, or inside a longer line that was taken, is not kept out.
+ * The kinds of value the request kept out: each typed value (the reader's, with its kinds, valueKinds) of
+ * a window the generator cut that no offered candidate's span contains. A value offered from another
+ * window, or inside a longer line that was offered, is not kept out. Only spans count: a value that went
+ * out as another candidate's fact (a window title, a label, a section) cannot be chosen, so it does not
+ * make its kind whole (B13 review: a chat titled with the meeting date cleared the date's cut).
  */
-export function cutKinds(model: ScreenModel, cut: readonly string[], ledger: SnippetLedger): Set<ValueKind> {
+export function cutKinds(model: ScreenModel, cut: readonly string[], offered: readonly { text: string }[]): Set<ValueKind> {
   const out = new Set<ValueKind>();
   if (cut.length === 0) return out;
-  // One string, so each value is one search; NUL appears in no screen text, so a match never spans two texts.
-  const taken = ledger.snippets.filter((s) => s.kind === "candidate").map((s) => s.text).join("\u0000");
+  // One string, so each value is one search; NUL appears in no screen text, so a match never spans two spans.
+  const taken = offered.map((c) => c.text).join("\u0000");
   for (const id of cut) {
     const w = model.windows.get(id);
     if (w === undefined) continue;
-    for (const v of w.values) if (!out.has(v.kind) && w.nodes.has(v.nodeKey) && !taken.includes(v.text)) out.add(v.kind);
+    for (const v of w.values) if (w.nodes.has(v.nodeKey) && !taken.includes(v.text)) for (const k of valueKinds(v)) out.add(k);
   }
   return out;
 }
 
 /** The kinds of the reader's typed values a candidate's text holds, its own kind included. */
 export function candidateKinds(model: ScreenModel, c: Candidate): Set<ValueKind> {
-  const out = new Set<ValueKind>(c.kind === null ? [] : [c.kind]);
+  const out = new Set<ValueKind>(c.kind === null ? [] : valueKinds({ kind: c.kind, text: c.text }));
   for (const v of model.windows.get(c.source.windowId)?.values ?? []) {
-    if (c.text.includes(v.text) || (v.nodeKey === c.source.nodeKey && v.text.includes(c.text))) out.add(v.kind);
+    if (c.text.includes(v.text) || (v.nodeKey === c.source.nodeKey && v.text.includes(c.text))) for (const k of valueKinds(v)) out.add(k);
   }
   return out;
 }

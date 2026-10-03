@@ -95,7 +95,7 @@ describe("a cut conversation never leaves a decoy", () => {
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Date"]), fieldTerms(["Notes"])] });
     expect(cut).toEqual([CHAT]);
     expect(candidates.some((c) => /September|October/.test(c.text))).toBe(false);
-    expect(cutKinds(m, cut, ledger).has("date")).toBe(true);
+    expect(cutKinds(m, cut, candidates).has("date")).toBe(true);
     const p = await proposeFill(m, decoyPicksAnyDate(asked), FORM, FORM_KEY("Date"), 3000);
     const date = p.fields.find((f) => f.key === FORM_KEY("Date"))!;
     expect(date).toMatchObject({ value: null, withheld: "sourceCut", asks: [], choice: "none" });
@@ -103,7 +103,7 @@ describe("a cut conversation never leaves a decoy", () => {
     for (const r of asked) expect(Object.values(r.questions).some((q) => String(q.instructions).includes("'Date'"))).toBe(false);
   });
 
-  it("withholds a pick of a cut kind for a field whose label names no kind", async () => {
+  it("does not ask a field whose label names no kind after a cut; asked anyway, its pick of a cut kind is withheld", async () => {
     // The chat's dates are cut; a calendar window that is not a conversation still offers one, which
     // may not be the date the field wants.
     const m = datedChat(["When", "Notes"]);
@@ -113,7 +113,13 @@ describe("a cut conversation never leaves a decoy", () => {
     const when = p.fields.find((f) => f.key === FORM_KEY("When"))!;
     expect(when.value).toBeNull();
     expect(when.withheld).toBe("sourceCut");
-    expect(when.asks).toHaveLength(2);
+    expect(when.asks).toEqual([]);
+    // Without the rule (B12) it is asked, and the check on the chosen value still holds the date back.
+    const b12 = await proposeFill(m, decoyPicksAnyDate(), FORM, FORM_KEY("When"), 3000, { unknownKindRule: false });
+    const asked = b12.fields.find((f) => f.key === FORM_KEY("When"))!;
+    expect(asked.asks).toHaveLength(2);
+    expect(asked.value).toBeNull();
+    expect(asked.withheld).toBe("sourceCut");
   });
 
   it("withholds every field, asking nothing, when the cut took every candidate", async () => {
@@ -168,11 +174,11 @@ describe("cut kinds", () => {
     const m = model();
     const ledger = new SnippetLedger(m.windows.values());
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger });
-    const kinds = cutKinds(m, cut, ledger);
+    const kinds = cutKinds(m, cut, candidates);
     const offered = new Set(candidates.map((c) => c.text));
     const w = m.windows.get(REF)!;
     for (const v of w.values) if (!offered.has(v.text) && ![...offered].some((t) => t.includes(v.text))) expect(kinds.has(v.kind), v.text).toBe(true);
-    expect(cutKinds(m, [], ledger).size).toBe(0);
+    expect(cutKinds(m, [], candidates).size).toBe(0);
   });
 
   it("does not count a value taken inside a longer line", () => {
@@ -181,7 +187,7 @@ describe("cut kinds", () => {
     m.apply(snap([text("a", "3:00 PM to 3:45 PM"), ...filler], { at: 1, windowId: REF, app: MESSAGES, values: [value("time", "3:45 PM", "a")] }));
     const ledger = new SnippetLedger(m.windows.values());
     expect(ledger.take(m.windows.get(REF)!, "candidate", ["3:00 PM to 3:45 PM"])).toBe(true);
-    expect(cutKinds(m, [REF], ledger).size).toBe(0);
+    expect(cutKinds(m, [REF], [{ text: "3:00 PM to 3:45 PM" }]).size).toBe(0);
   });
 });
 
@@ -241,7 +247,7 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: terms });
     expect(cut).toEqual([REF]);
     expect(ledger.chars(REF)).toBeLessThanOrEqual(windowBudget(m.windows.get(REF)!));
-    const removed = cutKinds(m, cut, ledger);
+    const removed = cutKinds(m, cut, candidates);
     const values = m.windows.get(REF)!.values;
     for (const k of ["date", "time", "url", "email"] as const) {
       const of = values.filter((v) => v.kind === k).map((v) => candidates.find((c) => c.text === v.text));

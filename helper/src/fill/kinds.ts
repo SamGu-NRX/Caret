@@ -22,6 +22,19 @@ const KIND_WORDS: readonly (readonly [ValueKind, RegExp])[] = [
   ["id", /\b(?:id|number|ref|reference|tracking|invoice|ticket|confirmation|code)\b/],
 ];
 
+/** A clock time inside a value: "3:00 PM", "15:00", "3 PM". */
+const CLOCK = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b(?:1[0-2]|0?[1-9])\s?[ap]\.?m\b\.?/iu;
+
+/**
+ * The kinds a typed value holds: its own, and a time when it is a date that carries a clock time. The
+ * reader types "October 8, 2026 at 3:00 PM" as one date (TypedValues.swift), so a cut that keeps it out
+ * keeps a time out too, and a Start time field must not be asked with only the times that survived (B13
+ * review).
+ */
+export function valueKinds(v: { kind: ValueKind; text: string }): ValueKind[] {
+  return v.kind === "date" && CLOCK.test(v.text) ? ["date", "time"] : [v.kind];
+}
+
 /**
  * The kinds of value a field with these label words takes. An email or web address is not a postal
  * address, and a phone number is not an ID.

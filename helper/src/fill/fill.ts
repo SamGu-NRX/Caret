@@ -138,6 +138,8 @@ export interface FillOptions {
   cutRule?: boolean;
   /** False spends a conversation's budget in screen order, as before B12, for the same replay. The helper never sets it. */
   relevance?: boolean;
+  /** False asks a field whose label names no kind despite a cut, as B12 did, for the same replay. The helper never sets it. */
+  unknownKindRule?: boolean;
 }
 
 export async function proposeFill(
@@ -181,10 +183,14 @@ export async function proposeFill(
   // whose kind lost a value to a cut is not asked, since its candidates of that kind are a partial set,
   // and an asked field's pick of such a kind is not proposed. A blank costs the user a paste; a wrong
   // fill costs their trust.
-  const removed = opts.cutRule === false ? new Set<ValueKind>() : cutKinds(model, cut, ledger);
+  const removed = opts.cutRule === false ? new Set<ValueKind>() : cutKinds(model, cut, candidates);
   const isCut = (kinds: ReadonlySet<ValueKind>): boolean => [...kinds].some((k) => removed.has(k));
+  // A field whose label names no kind (kinds.ts) could want a value of any kind, so any cut may have
+  // taken its value: a "When" field was asked after a cut took the dates, and filled with a note's
+  // untyped "Design review" (B13 review). Such a field is not asked while anything was cut.
+  const fieldCut = (f: { kinds: ReadonlySet<ValueKind> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? removed.size > 0 : isCut(f.kinds));
   // With every candidate cut away there is nothing to ask about.
-  const asked = candidates.length === 0 ? [] : fields.filter((f) => !isCut(f.kinds));
+  const asked = candidates.length === 0 ? [] : fields.filter((f) => !fieldCut(f));
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
   const sent = new Set(asked.flatMap((f) => f.texts));
