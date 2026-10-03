@@ -409,7 +409,8 @@ public struct FillAsk: Codable, Equatable, Sendable {
 }
 
 /// Why no value was proposed: the asks disagreed, agreed below the cutoff, or a window's privacy budget
-/// cut a value of the field's kind, so the field was not asked or its pick not proposed.
+/// cut a value of the field's kind, so the field was not asked or its pick not proposed. A value from
+/// memory is also `lowConfidence` when the asks did not both say the field wants the user's own details (B18).
 public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut }
 
 /// A value that came from memory rather than a window: an About entry the user typed into Caret (B17).

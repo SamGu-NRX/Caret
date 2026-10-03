@@ -275,14 +275,16 @@ const QUOTED_TEXT = /"[^"]*"|“[^”]*”|(?<![\p{L}])'[^']*'(?![\p{L}])/gu;
 
 /**
  * Whether the instruction names a field whose label is a word too short for relevance ("To", "Cc", "ID"):
- * only as a destination ("in To", "into the Cc field") or a heading ("To:"), since "to" is also a
- * preposition in nearly every instruction.
+ * only as a destination ("in To", "into the Cc field"), a heading ("To:") or the object of "set … to"
+ * ("Set ID to AB123"), since "to" is also a preposition in nearly every instruction.
  */
 export function namesShortLabel(instruction: string, label: string): boolean {
   const l = label.trim().replace(/:$/, "");
   if (!/^\p{L}{1,2}$/u.test(l)) return false;
   const e = l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`\\b(?:in|into)\\s+(?:the\\s+)?${e}\\b|\\b${e}\\s*(?::|\\s+(?:field|box|line)\\b)`, "iu").test(instruction);
+  // Quoted text is a value to write ('Write "To: Dana" in Notes' names Notes, not To).
+  const s = instruction.replace(QUOTED_TEXT, " ");
+  return new RegExp(`\\b(?:in|into)\\s+(?:the\\s+)?${e}\\b|\\b${e}\\s*(?::|\\s+(?:field|box|line)\\b)|\\b(?:set|change|make)\\s+(?:the\\s+)?${e}\\s+(?:to|as)\\b`, "iu").test(s);
 }
 
 /** How many of the instruction's words a name shares. */

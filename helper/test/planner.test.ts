@@ -197,6 +197,10 @@ describe("whether a value's kind fits a field (B18, kinds.ts)", () => {
     ["+1 (512) 555-0142 ext. 9", "Phone", "phone", true],
     ["455 Congress Ave Austin TX 78701", "Street", "address", false],
     ["455 Congress Ave\nAustin, TX 78701", "Street", "address", false],
+    // Fix check B18: a street named after a month is still a street.
+    ["12 October St, Austin, TX 78701", "Street", "address", false],
+    ["12 Janeway Dr, Austin, TX 78701", "Street", "address", false],
+    ["8 Oct", "Date", "text", true],
   ];
   it("splits a whole address into its street line and city, verbatim", () => {
     expect(addressParts("455 Congress Ave, Austin, TX 78701")).toEqual({ street: "455 Congress Ave", city: "Austin" });
@@ -361,6 +365,9 @@ describe("planTask", () => {
     expect(namesShortLabel("cc: dana@example.com", "Cc")).toBe(true);
     expect(namesShortLabel("Set Name to Dana Whitfield", "To")).toBe(false);
     expect(namesShortLabel("Put dana@example.com in To", "Name")).toBe(false);
+    expect(namesShortLabel("Set ID to AB123", "ID")).toBe(true);
+    expect(namesShortLabel('Write "To: Dana" in Notes', "To")).toBe(false);
+    expect(namesShortLabel("Put the order number in Reference", "To")).toBe(false);
   });
 
   it("keeps every other value when a screen shows many addresses: their parts have their own budget (review B18)", async () => {

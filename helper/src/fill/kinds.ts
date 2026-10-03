@@ -168,8 +168,11 @@ const PHONE_EXT = /\s*(?:ext\.?|extension|x)\s*\d{1,6}$/iu;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
 const WHOLE_AMOUNT = /^[$€£¥]\s?\d[\d,]*(?:\.\d{1,2})?$/u;
 const STREET_LINE = /^\d+[A-Za-z]?\s+\p{L}[\p{L}\p{N}.'’-]*(?:\s+[\p{L}\p{N}.'’-]+)*$/u;
-/** A number then a month or a clock mark reads as a date or a time, not a street: "8 October 2026", "3 PM". */
-const NOT_STREET = /^\d+\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?(?:\s|$)|^\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?$/iu;
+/**
+ * A whole date or time that starts with a number is not a street: "8 October 2026", "8 Oct", "3 PM".
+ * Only the whole shape counts, so "12 October St" and "12 Janeway Dr" are still street lines.
+ */
+const NOT_STREET = /^\d{1,2}\s+(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.?(?:\s+\d{4})?$|^\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?$/iu;
 /** A postal code at the end of a line, alone or after a two-letter state: "TX 78701", "78701-1234". */
 const POSTCODE_TAIL = /(?:\b\p{Lu}{2}\s+)?\b\d{5}(?:-\d{4})?$/u;
 
