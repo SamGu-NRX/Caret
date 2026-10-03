@@ -104,6 +104,14 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
     }
 
+    @Test func readsAFieldWithheldBecauseACutTookItsKind() throws {
+        let unasked = Data(#"{"key":"k","frame":null,"descriptor":"Text field. Label: 'Date'.","choice":"none","confidence":0,"value":null,"source":null,"withheld":"sourceCut","asks":[]}"#.utf8)
+        let f = try JSONDecoder().decode(FillField.self, from: unasked)
+        #expect(f.withheld == .sourceCut && f.asks.isEmpty && f.value == nil)
+        let oneAsk = Data(#"{"key":"k","frame":null,"descriptor":"d","choice":"none","confidence":0,"value":null,"source":null,"withheld":null,"asks":[{"choice":"none","confidence":0.9,"value":null}]}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(FillField.self, from: oneAsk) }
+    }
+
     @Test func readsTheHostSettingsAndTheirWithdrawal() throws {
         let lines = try goldenLines()
         guard case .settings(let all) = try JSONDecoder().decode(Message.self, from: lines[31]),
