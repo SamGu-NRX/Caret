@@ -50,13 +50,23 @@ export type SettingsHold = "caretPaused" | "roleOff" | "levelOff" | "hourlyBudge
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/** Where the gate keeps the times of shown offers across helper restarts: the Store's offer_budget table. */
+export interface BudgetLog {
+  /** Every time kept, oldest first. */
+  load(): number[];
+  record(at: number): void;
+}
+
 export class OfferGate {
   private current: UserSettings;
-  /** When each offer counted against the budget was shown, oldest first. In memory only: a restart forgets them. */
+  /** When each offer counted against the budget was shown, oldest first; loaded from the log, so a restart keeps them. */
   private readonly spokenAt: number[] = [];
+  private readonly log: BudgetLog | null;
 
-  constructor(initial: UserSettings = DEFAULT_SETTINGS) {
+  constructor(initial: UserSettings = DEFAULT_SETTINGS, log: BudgetLog | null = null) {
     this.current = { roles: [...initial.roles], level: initial.level, paused: initial.paused };
+    this.log = log;
+    if (log !== null) this.spokenAt.push(...log.load().toSorted((a, b) => a - b));
   }
 
   get settings(): UserSettings {
@@ -92,6 +102,7 @@ export class OfferGate {
   /** An offer was shown at `at`; it counts against the budget for an hour. */
   spoke(at: number): void {
     this.spokenAt.push(at);
+    this.log?.record(at);
   }
 
   spokenLastHour(now: number): number {

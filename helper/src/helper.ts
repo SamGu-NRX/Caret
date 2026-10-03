@@ -194,7 +194,7 @@ export class Helper {
     this.opts = opts;
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
-    this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS);
+    this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) });
     this.readerConnected = opts.readerLink !== undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     this.mode = opts.shadow ? "shadow" : "live";

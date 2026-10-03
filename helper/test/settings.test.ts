@@ -5,6 +5,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
@@ -43,6 +44,37 @@ describe("the level table and the gate", () => {
     expect(g.holds("pending", 20)).toEqual(["hourlyBudget"]);
     expect(g.holds("pending", 10 + HOUR)).toEqual([]);
     expect(g.spokenLastHour(10 + HOUR)).toBe(0);
+  });
+
+  it("keeps the hour's offers across a restart, as times only, so a new helper holds the same budget", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caret-budget-"));
+    try {
+      const log = (st: Store) => ({ load: () => st.offerTimes(), record: (at: number) => st.recordOffer(at) });
+      const first = new Store(dir);
+      const g = new OfferGate(DEFAULT_SETTINGS, log(first));
+      for (const at of [1000, 2000, 3000, 4000]) g.spoke(at);
+      expect(g.holds("fill", 5000)).toEqual(["hourlyBudget"]);
+      first.close();
+
+      // A restarted helper reads the same store: Balanced's four offers still hold the fifth.
+      const second = new Store(dir);
+      const helper = new Helper({ store: second, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => undefined });
+      expect(helper.gate.holds("fill", 5000)).toEqual(["hourlyBudget"]);
+      expect(helper.gate.holds("fill", 1000 + HOUR)).toEqual([]);
+      helper.shutdown();
+      helper.memory.close();
+
+      // The table holds a time per offer and nothing else, and drops times over an hour older than the newest.
+      const g2 = new OfferGate(DEFAULT_SETTINGS, log(second));
+      g2.spoke(3500 + HOUR);
+      expect(second.offerTimes()).toEqual([4000, 3500 + HOUR]);
+      second.close();
+      const db = new DatabaseSync(join(dir, "screen.sqlite"), { readOnly: true });
+      expect((db.prepare("PRAGMA table_info(offer_budget)").all() as { name: string }[]).map((c) => c.name)).toEqual(["id", "at"]);
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("reports the families a change turns off, and every allowed one on pause", () => {
