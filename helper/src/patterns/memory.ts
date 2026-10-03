@@ -14,6 +14,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import * as z from "zod";
+import { fieldKinds } from "../fill/kinds.ts";
 import { LEVELS } from "../offers/settings.ts";
 import {
   AboutFields,
@@ -224,9 +225,17 @@ export class MemoryStore {
     const fields = this.fields(r);
     let next: unknown;
     switch (r.kind) {
-      case "about":
-        next = { ...(fields as AboutFields), ...parseEdit(z.strictObject({ label: AboutFields.shape.label.optional(), value: AboutFields.shape.value.optional() }), raw) };
+      case "about": {
+        const a = { ...(fields as AboutFields), ...parseEdit(z.strictObject({ label: AboutFields.shape.label.optional(), value: AboutFields.shape.value.optional() }), raw) };
+        // A typed entry stays one the user could have typed: trimmed, one line, an address under an email label.
+        if (a.source === "typed") {
+          a.label = a.label.trim();
+          a.value = a.value.trim();
+          checkTyped("edit", a.label, a.value);
+        }
+        next = a;
         break;
+      }
       case "people":
         next = { ...(fields as PeopleFields), ...parseEdit(z.strictObject({ alias: PeopleFields.shape.alias.optional(), name: PeopleFields.shape.name.optional() }), raw) };
         break;
@@ -283,6 +292,26 @@ export class MemoryStore {
       }
     }
     this.stmt("DELETE FROM memory WHERE id = ?").run(id);
+  }
+
+  /**
+   * Keeps an About entry the user typed into Caret (memoryRequest op `add`). `match` is the keyed hash
+   * of its label (typedAboutMatch), so typing a Name again replaces the Name entry rather than adding a
+   * second one. Refuses anything but {label, value, source: "typed"}, saying what was wrong.
+   */
+  addTyped(raw: Record<string, unknown>, match: (label: string) => string, at: number): MemoryEntry {
+    const r = TypedAbout.safeParse(raw);
+    if (!r.success) throw new MemoryError(`invalid add: ${r.error.issues.map((i) => `${i.path.join(".") || "fields"}: ${i.message}`).join("; ")}`);
+    const label = r.data.label.trim();
+    const value = r.data.value.trim();
+    checkTyped("add", label, value);
+    this.routineCache = null;
+    return this.get(this.upsert("about", match(label), { label, value, source: "typed" }, at, null));
+  }
+
+  /** Moves an entry to another match key: a typed About entry whose label the user edited. */
+  rekey(id: string, match: string): void {
+    this.stmt("UPDATE memory SET match = ? WHERE id = ?").run(match, id);
   }
 
   // MARK: - for recognizers, fills and the gate
@@ -516,6 +545,30 @@ export class MemoryStore {
 }
 
 const ABOUT_SOURCE: Record<AboutFields["source"], string> = { contacts: "from your Contacts card", typed: "you typed this", edit: "from your edit" };
+
+/** What an `add` may carry: an About entry the user typed, nothing else. */
+const TypedAbout = z.strictObject({ label: AboutFields.shape.label, value: AboutFields.shape.value, source: z.literal("typed") });
+
+/** One address, as a typed Email entry must hold: no spaces, one @, a dot in the domain. */
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+
+/**
+ * Checks a typed label and value after trimming. A typed value is one line, since fills copy it into
+ * one field; a label that names an email holds one address, so a typo is caught where the user typed
+ * it rather than written into a form later.
+ */
+function checkTyped(op: "add" | "edit", label: string, value: string): void {
+  if (label === "") throw new MemoryError(`invalid ${op}: the label is blank`);
+  if (value === "") throw new MemoryError(`invalid ${op}: ${label} is blank`);
+  if (ONE_LINE_BREAKS.test(label) || ONE_LINE_BREAKS.test(value)) throw new MemoryError(`invalid ${op}: ${label} must be one line of text`);
+  if (fieldKinds([label]).has("email") && !EMAIL.test(value)) throw new MemoryError(`invalid ${op}: ${label} must be one email address, like name@example.com`);
+}
+
+/** Control characters, and the Unicode line and paragraph separators. */
+const ONE_LINE_BREAKS = /[\p{Cc}\u2028\u2029]/u;
+
+/** The text a typed About entry's match key hashes: its label, so one label holds one typed value. */
+export const typedAboutKey = (label: string): string => `about-typed\u0000${label.trim().toLowerCase()}`;
 
 /** A routine's silent predictions have matched often enough for it to be offered: `sightings` hits at ROUTINE_MIN_PRECISION or better. */
 export function routineProven(hits: number, misses: number, sightings: number): boolean {

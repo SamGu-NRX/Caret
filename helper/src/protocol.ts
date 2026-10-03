@@ -403,15 +403,23 @@ export type OfferControl = z.infer<typeof OfferControl>;
 export const MemoryKind = z.enum(["about", "people", "preference", "routine", "permission"]);
 export type MemoryKind = z.infer<typeof MemoryKind>;
 
+export const MemoryOp = z.enum(["list", "edit", "pause", "resume", "forget", "add"]);
+export type MemoryOp = z.infer<typeof MemoryOp>;
+
 /**
- * List, edit, pause, resume or forget memory entries. `kind` narrows a list; `id` names the entry
- * for every other op; `fields` holds an edit's new values, checked against the entry's kind.
+ * List, edit, pause, resume, forget or add memory entries. `kind` narrows a list; `id` names the entry
+ * for edit, pause, resume and forget; `fields` holds an edit's new values, checked against the entry's
+ * kind. `add` keeps a value the user typed into Caret (the host's onboarding asks for a name and an
+ * email): `kind` "about", `fields` {label, value, source: "typed"}, and no `id`. A second add with the
+ * same label replaces that entry's value. The host's contract for it is
+ * apps/caret/Tests/CaretHostCoreTests/Fixtures/memory.ndjson on v2/host, copied byte for byte into
+ * fixtures/golden/memory.ndjson.
  */
 export const MemoryRequest = z.object({
   type: z.literal("memoryRequest"),
   v: z.literal(PROTOCOL_VERSION),
   requestId: z.string(),
-  op: z.enum(["list", "edit", "pause", "resume", "forget"]),
+  op: MemoryOp,
   id: z.string().optional(),
   kind: MemoryKind.optional(),
   fields: z.record(z.string(), z.unknown()).optional(),
@@ -874,6 +882,11 @@ export const MemoryReply = z.object({
   error: z.string().nullable(),
   /** For list, the entries; for every other op, the entry after the change, or none after forget. */
   entries: z.array(MemoryEntry),
+  /**
+   * On a list reply only: the ops this helper accepts. The host shows onboarding's typed step only when
+   * this names `add`, since nothing else keeps what is typed there.
+   */
+  ops: z.array(MemoryOp).optional(),
 });
 export type MemoryReply = z.infer<typeof MemoryReply>;
 

@@ -889,7 +889,8 @@
                 "edit",
                 "pause",
                 "resume",
-                "forget"
+                "forget",
+                "add"
               ]
             },
             "id": {
@@ -2630,6 +2631,20 @@
                     ],
                     "additionalProperties": false
                   }
+                ]
+              }
+            },
+            "ops": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "list",
+                  "edit",
+                  "pause",
+                  "resume",
+                  "forget",
+                  "add"
                 ]
               }
             }
