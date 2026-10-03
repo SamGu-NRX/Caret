@@ -18,6 +18,12 @@
 //   the seating window takes stdin lines reset | dump. Only one of executor and seating may be open.
 //   --windows jobs adds a test run that counts up under a progress bar, an upload with a spinner,
 //   and a notes window; stdin `jobs reset | finish N | ask N | dump` drives them.
+//   --windows forms adds B19's order queue, whose one record `form next` replaces with a new invented one
+//   (answering with it), and B19's routine destinations, each a new window per `form open`: intake
+//   (Customer, Email, Order number; no buttons) and reply (To, Order number; Save draft and Send, where
+//   Send closes the window as a mail app does). stdin `form open|close|dump NAME`,
+//   `form set NAME FIELD VALUE`, `form press NAME LABEL`, `form mangle NAME on|off` (values written through
+//   Accessibility come out upper-cased, as an app that reformats input does, for a forced mismatch).
 //   stdin `focus NAME` makes one of the fixture's own windows key without activating the app, which
 //   moves AX focus inside the fixture only (it works in the background-only default too: AppKit
 //   reports no key window, yet the reader sees the focus move).
@@ -429,6 +435,148 @@ final class ExecutorWindow {
 }
 var executorWindow: ExecutorWindow?
 
+/// B19's routine destinations. Each `form open` makes a new window, numbered in its title, so every
+/// occurrence of a routine opens a window the reader has not seen; `dump` is the evaluation's check, and
+/// `sent` counts presses of Send, which only a person makes.
+final class SkillForms {
+    struct Spec {
+        let title: String
+        let fields: [(name: String, label: String)]
+        let buttons: [String]
+    }
+    static let specs: [String: Spec] = [
+        "intake": Spec(title: "Caret Fixture — Intake", fields: [("customer", "Customer"), ("email", "Email"), ("order", "Order number")], buttons: []),
+        "reply": Spec(title: "Caret Fixture — Reply", fields: [("to", "To"), ("order", "Order number")], buttons: ["Save draft", "Send"]),
+    ]
+    var open: [String: (w: NSWindow, fields: [String: NSTextField])] = [:]
+    var opened: [String: Int] = [:]
+    var sent = 0
+    var mangled: Set<String> = []
+    /// The source: one order at a time, so each occurrence copies values no earlier window showed.
+    let queue = makeWindow("Caret Fixture — Order queue", NSRect(x: 60, y: 520, width: 360, height: 140))
+    let lines = [NSTextField(labelWithString: ""), NSTextField(labelWithString: ""), NSTextField(labelWithString: "")]
+    var record = 0
+
+    init() {
+        let box = NSBox(frame: NSRect(x: 12, y: 12, width: 336, height: 116))
+        box.title = "Next order"
+        box.setAccessibilityLabel("Next order")
+        for (i, l) in lines.enumerated() {
+            l.frame = NSRect(x: 8, y: 62 - Double(i) * 26, width: 310, height: 20)
+            box.contentView!.addSubview(l)
+        }
+        queue.contentView!.addSubview(box)
+        _ = next()
+        queue.orderBack(nil)
+    }
+
+    /// The next invented order: 64 distinct people before a name repeats, each with an address and order number of their own.
+    func next() -> [String: Any] {
+        let first = ["Dana", "Priya", "Marcus", "Ines", "Tomas", "Keiko", "Rafael", "Amara"]
+        let last = ["Whitfield", "Raman", "Lowe", "Okafor", "Brandt", "Sato", "Duarte", "Nwosu"]
+        let n = record
+        record += 1
+        let name = "\(first[n % 8]) \(last[(n / 8 + n) % 8])"
+        let email = "\(name.lowercased().replacingOccurrences(of: " ", with: "."))+\(n)@lumenlabs.example"
+        let order = "ORD-2026-\(51000 + n * 7)"
+        for (l, v) in zip(lines, [name, email, "Order number: \(order)"]) {
+            l.stringValue = v
+            NSAccessibility.post(element: l, notification: .valueChanged)
+        }
+        return ["ok": true, "name": name, "email": email, "order": order]
+    }
+
+    /// A field that can rewrite what is written into it, as an app that reformats input does, so the writer's
+    /// check sees a different value. An Accessibility value write lands in the cell, not in the control's
+    /// setAccessibilityValue (B19 fixture run 2), so the cell rewrites it.
+    final class Field: NSTextField {
+        final class Cell: NSTextFieldCell {
+            var mangle: () -> Bool = { false }
+            override var objectValue: Any? {
+                get { super.objectValue }
+                set { super.objectValue = mangle() ? (newValue as? String)?.uppercased() ?? newValue : newValue }
+            }
+            override var stringValue: String {
+                get { super.stringValue }
+                set { super.stringValue = mangle() ? newValue.uppercased() : newValue }
+            }
+        }
+        override class var cellClass: AnyClass? { get { Cell.self } set {} }
+        // Read back what the field holds, not the value the write carried, which AppKit otherwise answers with.
+        override func accessibilityValue() -> String? { mangle() ? stringValue : super.accessibilityValue() }
+        var mangle: () -> Bool {
+            get { (cell as? Cell)?.mangle ?? { false } }
+            set { (cell as? Cell)?.mangle = newValue }
+        }
+    }
+
+    func command(_ parts: [String]) -> [String: Any] {
+        if parts == ["next"] { return next() }
+        guard parts.count >= 2, let spec = Self.specs[parts[1]] else { return ["ok": false, "error": "form open|close|dump|set|press NAME, NAME one of \(Self.specs.keys.sorted())"] }
+        let name = parts[1]
+        switch parts[0] {
+        case "open":
+            if let o = open[name] { o.w.close() }
+            let n = (opened[name] ?? 0) + 1
+            opened[name] = n
+            let height = Double(80 + spec.fields.count * 34)
+            let w = makeWindow("\(spec.title) \(n)", NSRect(x: 620, y: 120, width: 420, height: height))
+            let v = w.contentView!
+            var fields: [String: NSTextField] = [:]
+            var y = height - 40
+            for f in spec.fields {
+                v.addSubview(label("\(f.label):", NSRect(x: 16, y: y + 2, width: 110, height: 20)))
+                let tf = Field(frame: NSRect(x: 130, y: y, width: 270, height: 24))
+                tf.mangle = { [unowned self] in self.mangled.contains(name) }
+                tf.setAccessibilityLabel(f.label)
+                v.addSubview(tf)
+                fields[f.name] = tf
+                y -= 34
+            }
+            for (i, b) in spec.buttons.enumerated() {
+                let button = NSButton(title: b, target: self, action: #selector(pressed(_:)))
+                button.frame = NSRect(x: 16 + Double(i) * 130, y: 12, width: 120, height: 30)
+                v.addSubview(button)
+            }
+            w.orderBack(nil)
+            open[name] = (w, fields)
+            return ["ok": true, "title": w.title]
+        case "close":
+            open.removeValue(forKey: name)?.w.close()
+            return ["ok": true]
+        case "mangle" where parts.count == 3:
+            if parts[2] == "on" { mangled.insert(name) } else { mangled.remove(name) }
+            return ["ok": true]
+        case "set" where parts.count >= 3:
+            guard let tf = open[name]?.fields[parts[2]] else { return ["ok": false, "error": "no open \(name) field \(parts[2])"] }
+            tf.stringValue = parts.dropFirst(3).joined(separator: " ")
+            NSAccessibility.post(element: tf, notification: .valueChanged)
+            return ["ok": true]
+        case "press" where parts.count >= 3:
+            guard let o = open[name] else { return ["ok": false, "error": "no open \(name)"] }
+            let title = parts.dropFirst(2).joined(separator: " ")
+            guard let b = o.w.contentView?.subviews.compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) else { return ["ok": false, "error": "no button \(title)"] }
+            pressed(b)
+            return ["ok": true]
+        case "dump":
+            guard let o = open[name] else { return ["ok": true, "open": false, "sent": sent] }
+            var values: [String: Any] = [:]
+            for (k, tf) in o.fields { values[k] = tf.stringValue }
+            return ["ok": true, "open": true, "title": o.w.title, "fields": values, "sent": sent]
+        default:
+            return ["ok": false, "error": "unknown form command \(parts[0])"]
+        }
+    }
+
+    @objc func pressed(_ b: NSButton) {
+        guard b.title == "Send", let (name, o) = open.first(where: { $0.value.w === b.window }) else { return }
+        sent += 1
+        open.removeValue(forKey: name)
+        o.w.close()
+    }
+}
+var skillForms: SkillForms?
+
 /// Names for the loop fixture, in list order. Invented, like everything here.
 let rosterNames = ["Dana Whitfield", "Priya Raman", "Marcus Lowe", "Ines Okafor", "Tomas Brandt", "Keiko Sato", "Rafael Duarte", "Amara Nwosu"]
 
@@ -601,6 +749,7 @@ for name in windowList {
     case "roster": windows[name] = buildRoster()
     case "seating": seatingWindow = SeatingWindow()
     case "jobs": jobWindows = JobWindows()
+    case "forms": skillForms = SkillForms()
     default: die("unknown window \(name)")
     }
 }
@@ -883,6 +1032,9 @@ let stdinCommand: ((String) -> [String: Any])? = { line in
     case "jobs":
         guard let j = jobWindows else { return ["ok": false, "error": "no job windows; pass --windows jobs"] }
         return j.command(Array(parts.dropFirst()))
+    case "form":
+        guard let f = skillForms else { return ["ok": false, "error": "no forms; pass --windows forms"] }
+        return f.command(Array(parts.dropFirst()))
     default:
         return windowCommand?(line) ?? ["ok": false, "error": "unknown command \(line)"]
     }

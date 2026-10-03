@@ -64,10 +64,13 @@ export class OfferGate {
   /** When each offer counted against the budget was shown, oldest first; loaded from the log, so a restart keeps them. */
   private readonly spokenAt: number[] = [];
   private readonly log: BudgetLog | null;
+  /** Replaces the level's offers per hour, for fixture evaluations that make dozens of offers in minutes. Never set in normal use. */
+  private readonly perHourOverride: number | null;
 
-  constructor(initial: UserSettings = DEFAULT_SETTINGS, log: BudgetLog | null = null) {
+  constructor(initial: UserSettings = DEFAULT_SETTINGS, log: BudgetLog | null = null, perHourOverride: number | null = null) {
     this.current = { roles: [...initial.roles], level: initial.level, paused: initial.paused };
     this.log = log;
+    this.perHourOverride = perHourOverride;
     if (log !== null) this.spokenAt.push(...log.load().toSorted((a, b) => a - b));
   }
 
@@ -97,7 +100,7 @@ export class OfferGate {
   /** Every settings rule that holds an offer of this family at `now`, in the order checked; empty when it may speak. */
   holds(family: Family, now: number): SettingsHold[] {
     const out = this.offHolds(family);
-    if (this.spokenLastHour(now) >= this.rules.offersPerHour) out.push("hourlyBudget");
+    if (this.spokenLastHour(now) >= (this.perHourOverride ?? this.rules.offersPerHour)) out.push("hourlyBudget");
     return out;
   }
 
