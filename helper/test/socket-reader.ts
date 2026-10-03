@@ -203,7 +203,7 @@ export class SocketReader {
     if (delay !== undefined) await new Promise((r) => setTimeout(r, delay));
     const reply = (outcome: VerbResult["outcome"], detail: string | null = null): void =>
       this.client.send({ type: "verbResult", v: PROTOCOL_VERSION, id: cmd.id, at: this.clock, outcome, detail } satisfies VerbResult);
-    if (verb.kind === "watchInput" || verb.kind === "watchWindows") return reply("ok");
+    if (verb.kind === "watchInput" || verb.kind === "watchWindows" || verb.kind === "watchPresses") return reply("ok");
     if (isCalendarVerb(verb)) {
       // As caret-screen answers: nothing without --calendar-test (no adapter here), and a write only under its task's calendar grant.
       const refused = this.calendar !== null && "taskId" in verb ? this.grants.calendarRefusal(verb.taskId) : null;

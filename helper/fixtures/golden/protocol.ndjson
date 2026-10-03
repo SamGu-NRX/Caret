@@ -51,3 +51,5 @@
 {"type":"skillAnswer","v":1,"id":"skill-offer-2","answer":"accept","at":1790000401000}
 {"type":"taskProgress","v":1,"at":1790000500000,"taskId":"offer-15","planId":"offer-15","step":null,"steps":3,"says":null,"detail":null,"phase":"started","unprompted":true}
 {"type":"taskProgress","v":1,"at":1790000501000,"taskId":"offer-15","planId":"offer-15","step":null,"steps":3,"says":null,"detail":"3 acted, 0 already true","phase":"done","written":3,"unprompted":true}
+{"type":"readerCommand","v":1,"id":"cmd-5","expires":1790000600000,"verb":{"kind":"watchPresses","windows":[{"pid":5150,"windowId":"5150-7"}]}}
+{"type":"userPress","v":1,"at":1790000601200,"pid":5150,"windowId":"5150-7","key":"dev.caret.fixture/standard/button:send~0","role":"AXButton","label":"Send"}

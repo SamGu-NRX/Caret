@@ -51,6 +51,7 @@ private func goldenLines() throws -> [Data] {
             case .skillOffer: "skillOffer"
             case .skillAnswer: "skillAnswer"
             case .memoryReply: "memoryReply"
+            case .userPress: "userPress"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -62,7 +63,22 @@ private func goldenLines() throws -> [Data] {
                           "actGrant", "readerCommand", "verbResult", "actRevoke",
                           "planRequest", "planProposal", "planProposal",
                           "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
-                          "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress"])
+                          "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
+                          "readerCommand", "userPress"])
+    }
+
+    @Test func readsThePressWatch() throws {
+        let lines = try goldenLines()
+        guard case .readerCommand(let cmd) = try JSONDecoder().decode(Message.self, from: lines[53]),
+              case .userPress(let press) = try JSONDecoder().decode(Message.self, from: lines[54]) else { Issue.record("lines 54 and 55 are not the press watch"); return }
+        #expect(cmd.verb == .watchPresses(windows: [WatchedWindow(pid: 5150, windowId: "5150-7")]))
+        #expect(cmd.verb.taskId == nil)
+        #expect(press == UserPress(at: 1_790_000_601_200, pid: 5150, windowId: "5150-7", key: "dev.caret.fixture/standard/button:send~0", role: "AXButton", label: "Send"))
+        let noKey = Data(#"{"type":"userPress","v":1,"at":1,"pid":1,"windowId":"1-1","key":null,"role":"AXButton","label":"Send"}"#.utf8)
+        guard case .userPress(let unkeyed) = try JSONDecoder().decode(Message.self, from: noKey) else { Issue.record("a press with a null key does not decode"); return }
+        #expect(unkeyed.key == nil)
+        let missing = Data(#"{"type":"userPress","v":1,"at":1,"pid":1,"windowId":"1-1","role":"AXButton","label":"Send"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: missing) }
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {

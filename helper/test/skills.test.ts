@@ -721,6 +721,80 @@ describe("skills in the helper", () => {
     expect(skills()[0]!.fields).toMatchObject({ handsOff: { label: "Send or Send later", why: "outbound" }, onItsOwn: false });
   });
 
+  // MARK: - B20: the press an occurrence ends with, learned from the user's own click
+
+  /** The reader saw the user press `label` in the window (protocol.ts UserPress); `keyed` false stands for a walk that did not keep the button. */
+  const press = (g: GridWindow, label: string, keyed = true): void =>
+    void helper.handleReader({ type: "userPress", v: PROTOCOL_VERSION, at: desk.at, pid: g.app.pid, windowId: g.windowId, key: keyed ? buttonKey(g, label) : null, role: "AXButton", label });
+  /** One occurrence by hand that ends with the user pressing `label`, which closes the window as Send does. */
+  const byHandPressing = (label: string | null, keyed = true): void => {
+    const c = open();
+    for (let i = 0; i < 3; i++) desk.fill(c, 0, i, calendar(day).lines[i]!);
+    if (label !== null) press(c, label, keyed);
+    desk.close(c.windowId);
+  };
+  const pressWatches = (): string[][] =>
+    desk.verbs.flatMap((v) => (v.kind === "watchPresses" ? [v.windows.map((w) => w.windowId)] : []));
+
+  it("learns the Send the user clicked where the buttons alone cannot tell, and hands it off on the next run", async () => {
+    buttons = ["Send", "Send later"];
+    setRule("writeElsewhere", "actIfApproved");
+    for (let i = 0; i < 3; i++) byHandPressing("Send");
+    await helper.patterns.skills.namesSettled();
+    // The press, not the buttons: one finish, named exactly, learned from the click.
+    expect(helper.memory.list("routine")[0]).toMatchObject({ kind: "routine" });
+    const routine = helper.memory.routine(routines()[0]!.id);
+    expect(routine?.finish).toMatchObject({ label: "Send", why: "outbound", by: "click" });
+    expect(routine?.finish?.ambiguous).toBeUndefined();
+    const r = await caretRun();
+    expect(r.result).toMatchObject({ outcome: "handoff", step: 3 });
+    expect(r.progress.at(-1)).toMatchObject({ phase: "handoff", says: "You press 'Send'" });
+    expect(values(r.window)).toEqual(calendar(day).lines);
+    finish(r);
+    answer(r.skillOffers.find((o) => o.kind === "keep")!, "accept");
+    expect(skills()[0]!.fields.handsOff).toEqual({ label: "Send", why: "outbound" });
+    // Later occurrences close with no click seen; the guess from the buttons never replaces what the user did.
+    for (let i = 1; i <= PROMOTE_AFTER + 1; i++) {
+      const again = await caretRun();
+      finish(again);
+      expect(again.result, `run ${i}`).toMatchObject({ outcome: "handoff", step: 3 });
+      expect(again.skillOffers).toEqual([]);
+    }
+    expect(helper.memory.routine(routine!.id)?.finish).toMatchObject({ label: "Send", by: "click" });
+    expect(skills()[0]!.fields).toMatchObject({ handsOff: { label: "Send", why: "outbound" }, onItsOwn: false });
+    // Read only: the reader was never asked to press.
+    expect(desk.pressed).toEqual([]);
+    expect(desk.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  it("places a click the walk did not key by its label, and learns Send later when that is what the user clicked", async () => {
+    buttons = ["Send", "Send later"];
+    for (let i = 0; i < 3; i++) byHandPressing("Send later", false);
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send later", why: "outbound", by: "click" });
+    const r = await caretRun();
+    finish(r);
+    expect(r.result).toMatchObject({ outcome: "handoff", step: 3 });
+    expect(r.progress.at(-1)).toMatchObject({ says: "You press 'Send later'" });
+  });
+
+  it("guesses from the buttons only when no click was seen, and learns no finish from a click that is not a send", async () => {
+    buttons = ["Save draft", "Send"];
+    // The user saves drafts: the window's one Send is not what these occurrences end with.
+    for (let i = 0; i < 3; i++) byHandPressing("Save draft");
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toBeNull();
+    // With no click seen, the window's one Send is the guess, as in B19.
+    byHandPressing(null);
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "buttons" });
+  });
+
+  it("asks the reader to watch presses only in a window with an occurrence under way, and stops when it closes", () => {
+    byHandPressing(null);
+    const c = compose(day);
+    const watches = pressWatches();
+    expect(watches.at(-2)).toEqual([c.windowId]);
+    expect(watches.at(-1)).toEqual([]);
+  });
+
   it("names nothing and offers nothing for a routine whose predictions miss", async () => {
     // Two lines copied each day, swapped from the day before, so each prediction (yesterday's positions) misses.
     for (let i = 0; i < 5; i++) {

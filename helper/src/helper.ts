@@ -296,6 +296,14 @@ export class Helper {
       enteredByUser: (id) => {
         if (this.tasks.get(id)?.state === "ready") this.tasks.update(id, { state: "done", cause: "you", detail: "you entered the values yourself" });
       },
+      // Read only: without it a routine still learns its finish from the window's buttons, so a failure is a warning.
+      watchPresses: (windows) =>
+        void this.readerVerb({ kind: "watchPresses", windows }).then(
+          (r) => {
+            if (r.outcome !== "ok" || r.detail !== null) this.opts.warn?.(`patterns: watchPresses answered ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+          },
+          (e: unknown) => this.opts.warn?.(`patterns: watchPresses failed: ${String(e)}`),
+        ),
     });
     this.pending = new PendingWatcher({
       model: this.model,
@@ -455,6 +463,9 @@ export class Helper {
         return null;
       case "userInput":
         this.executor.onUserInput(m);
+        return null;
+      case "userPress":
+        this.patterns.onUserPress(m);
         return null;
     }
   }

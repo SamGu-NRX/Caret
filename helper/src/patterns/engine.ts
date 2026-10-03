@@ -18,6 +18,7 @@ import {
   type OfferKind,
   type OfferWithdrawn,
   type PatternOffer,
+  type UserPress,
   type ValueKind,
 } from "../protocol.ts";
 import type { PopupRef, PopupValue } from "../popup.ts";
@@ -66,6 +67,11 @@ export interface EngineDeps {
   gate: OfferGate;
   /** A loopFinish or routine offer whose every value the user entered themselves, withdrawn as taken with no run to follow. */
   enteredByUser?: (offerId: string) => void;
+  /**
+   * Asks the reader to report the user's presses in these windows, replacing the last list (protocol.ts
+   * watchPresses): the windows with a routine occurrence under way, where a press may end it (B20).
+   */
+  watchPresses?: (windows: { pid: number; windowId: string }[]) => void;
 }
 
 type Cell = LoopCell | RoutineCell;
@@ -186,6 +192,8 @@ export class PatternEngine {
   private seq = 0;
   /** The latest event time seen; decisions are stamped with it so replays with a fake clock log consistent times. */
   private clock = 0;
+  /** The press watch last sent to the reader, as sorted window ids; "" for none. */
+  private pressWatch = "";
 
   constructor(deps: EngineDeps) {
     this.deps = deps;
@@ -230,6 +238,26 @@ export class PatternEngine {
       this.timings.time("routines.transfer", () => this.routines.onTransfer(p));
       for (const ev of events) this.onLoop(ev);
     }
+    this.syncPressWatch();
+  }
+
+  /** The user pressed something in a window under the press watch: a routine occurrence there may end with it. */
+  onUserPress(m: UserPress): void {
+    this.clock = Math.max(this.clock, m.at);
+    this.routines.onPress(m.windowId, { at: m.at, key: m.key, role: m.role, label: m.label });
+  }
+
+  /** Sends the reader the windows with an occurrence under way when that set changed. */
+  private syncPressWatch(): void {
+    const ids = this.routines.openWindows().sort();
+    const key = ids.join(",");
+    if (key === this.pressWatch || this.deps.watchPresses === undefined) return;
+    this.pressWatch = key;
+    const windows = ids.flatMap((id) => {
+      const w = this.deps.model.windows.get(id);
+      return w === undefined ? [] : [{ pid: w.app.pid, windowId: id }];
+    });
+    this.deps.watchPresses(windows);
   }
 
   onChanges(changes: readonly Change[]): void {
@@ -238,6 +266,7 @@ export class PatternEngine {
       if (c.kind === "windowOpened") {
         const preds = this.timings.time("routines.open", () => this.routines.onWindowOpened(c.windowId, c.at));
         if (preds.length > 0) this.onPredictions(preds);
+        if (preds.length > 0) this.syncPressWatch();
       } else if (c.kind === "value" && c.key !== null) {
         const w = this.watches.get(`${c.windowId}\u0000${c.key}`);
         if (w !== undefined) w.pending = c.after === w.written ? null : { value: c.after ?? "", at: c.at };
@@ -388,6 +417,7 @@ export class PatternEngine {
   onWindowClosed(windowId: string): void {
     const closed = this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId));
     if (closed !== null) this.skills.onBundleClosed(closed, this.clock);
+    this.syncPressWatch();
     this.loops.sourceClosed(windowId);
     for (const [id, w] of this.watches) {
       if (w.windowId !== windowId) continue;
@@ -440,6 +470,7 @@ export class PatternEngine {
     const ended = this.timings.time("loops", () => this.loops.tick(now));
     if (ended !== null) this.onLoop(ended);
     for (const closed of this.timings.time("routines.tick", () => this.routines.tick(now))) this.skills.onBundleClosed(closed, this.clock);
+    this.syncPressWatch();
     this.skills.tick(this.clock);
     this.timings.time("edits", () => {
       for (const [id, w] of this.watches) {
@@ -469,6 +500,8 @@ export class PatternEngine {
   /** A new reader numbers windows from scratch: every open bundle closes, and every offer is stale. */
   readerRestarted(): void {
     this.routines.flush();
+    // The new reader watches no presses; the next occurrence sends its window again.
+    this.pressWatch = "";
     this.loops.reset();
     for (const o of this.offers.values()) if (o.state === "open") this.withdraw(o, "stale");
     this.watches.clear();

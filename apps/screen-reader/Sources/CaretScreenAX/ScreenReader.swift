@@ -44,6 +44,9 @@ public final class ScreenReader {
     private var started = false
     private var watchedPids: Set<pid_t> = []
     private var inputMonitor: Any?
+    /// B20: windows whose user presses are reported, by process; the monitor exists only while it is non-empty.
+    private var pressWatch: [pid_t: Set<String>] = [:]
+    private var pressMonitor: Any?
     /// EventKit calls block, so calendar verbs run here, one at a time, off the main thread.
     private let calendarQueue = DispatchQueue(label: "caret.screen.calendar")
 
@@ -88,6 +91,7 @@ public final class ScreenReader {
     /// After the helper reconnects it has no state, so walk everything again. Its watches are gone
     /// with it, so the reader drops its own until the new helper asks for some.
     public func resync() {
+        watchPresses([:])
         for w in workers.values {
             w.setWatched([])
             w.backgroundPass(reason: .initial, minAge: 0)
@@ -109,6 +113,13 @@ public final class ScreenReader {
         case let .watchInput(pids):
             watch(Set(pids.map { pid_t($0) }))
             answer(.ok, nil)
+            return
+        case let .watchPresses(list):
+            var byPid: [pid_t: Set<String>] = [:]
+            for w in list { byPid[pid_t(w.pid), default: []].insert(w.windowId) }
+            watchPresses(byPid)
+            let unread = byPid.keys.filter { workers[$0] == nil }.sorted()
+            answer(.ok, unread.isEmpty ? nil : "not read, so not watched: \(unread.map(String.init).joined(separator: ","))")
             return
         case let .watchWindows(list):
             // The list replaces every watch, so each worker gets its own windows or none.
@@ -172,6 +183,33 @@ public final class ScreenReader {
             let loc = NSEvent.mouseLocation
             MainActor.assumeIsolated { self.inputSeen(isKey: isKey, location: loc) }
         }
+    }
+
+    /**
+     * Reports the user's clicks on pressable elements in the named windows (B20). The same global mouse
+     * monitor as the input watch: it observes and cannot change or block an event. Only a left button going
+     * down is read, and only its location, which is matched to an element of a watched window.
+     */
+    private func watchPresses(_ byPid: [pid_t: Set<String>]) {
+        pressWatch = byPid.filter { !$0.value.isEmpty }
+        if pressWatch.isEmpty {
+            if let m = pressMonitor { NSEvent.removeMonitor(m) }
+            pressMonitor = nil
+            return
+        }
+        guard pressMonitor == nil else { return }
+        pressMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { _ in
+            let loc = NSEvent.mouseLocation
+            let at = nowMs()
+            MainActor.assumeIsolated { self.pressSeen(location: loc, at: at) }
+        }
+    }
+
+    private func pressSeen(location: NSPoint, at: Int64) {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let p = CGPoint(x: location.x, y: primaryHeight - location.y)
+        guard let owner = windowOwner(at: p), let ids = pressWatch[owner], let w = workers[owner] else { return }
+        w.observePress(at: p, time: at, windows: ids)
     }
 
     private func inputSeen(isKey: Bool, location: NSPoint) {

@@ -29,7 +29,21 @@ describe("golden protocol fixture", () => {
       "planRequest", "planProposal", "planProposal",
       "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
       "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
+      "readerCommand", "userPress",
     ]);
+  });
+
+  it("carries B20's press watch: the windows to watch, and a press the user made in one, read only", () => {
+    const watch = JSON.parse(lines[53] ?? "") as Record<string, unknown>;
+    const press = JSON.parse(lines[54] ?? "") as Record<string, unknown>;
+    expect(HelperToReader.parse(watch)).toMatchObject({ verb: { kind: "watchPresses", windows: [{ pid: 5150, windowId: "5150-7" }] } });
+    expect(ReaderMessage.parse(press)).toEqual({ type: "userPress", v: 1, at: 1790000601200, pid: 5150, windowId: "5150-7", key: "dev.caret.fixture/standard/button:send~0", role: "AXButton", label: "Send" });
+    // A press the walk did not keep has no key, and says so with null rather than leaving it out.
+    expect(ReaderMessage.parse({ ...press, key: null })).toMatchObject({ key: null });
+    const { key: _k, ...noKey } = press;
+    expect(ReaderMessage.safeParse(noKey).success).toBe(false);
+    expect(HelperMessage.safeParse(press).success).toBe(false);
+    expect(ConsumerMessage.safeParse(press).success).toBe(false);
   });
 
   it("carries B19's skills: a keep offer and its answer, skill entries in a memory reply, a promote offer, and an unprompted run", () => {

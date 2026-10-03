@@ -688,6 +688,56 @@
             "point"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "userPress"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "pid": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "windowId": {
+              "type": "string"
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "pid",
+            "windowId",
+            "key",
+            "role",
+            "label"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -7035,6 +7085,41 @@
                     "kind": {
                       "type": "string",
                       "const": "watchWindows"
+                    },
+                    "windows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "pid": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "windowId": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "pid",
+                          "windowId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "windows"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "watchPresses"
                     },
                     "windows": {
                       "type": "array",

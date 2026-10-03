@@ -77,7 +77,7 @@ export class FakeApp implements ReaderLink {
   }
 
   private perform(verb: ReaderVerb): { outcome: VerbResult["outcome"]; detail: string | null } {
-    if (verb.kind === "watchInput" || verb.kind === "watchWindows") return { outcome: "ok", detail: null };
+    if (verb.kind === "watchInput" || verb.kind === "watchWindows" || verb.kind === "watchPresses") return { outcome: "ok", detail: null };
     if (isCalendarVerb(verb)) return { outcome: "notAllowed", detail: "the fake app has no calendar" };
     if (verb.kind === "walk" && this.readable.has(verb.windowId)) return { outcome: "ok", detail: null };
     if (verb.pid !== FIXTURE_APP.pid) return { outcome: "notAllowed", detail: null };

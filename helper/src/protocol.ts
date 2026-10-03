@@ -160,6 +160,9 @@ export type Pasteboard = z.infer<typeof Pasteboard>;
  * `watchWindows` replaces the set of windows under a pending-state watch: the reader re-reads each
  * when the app posts a notification about it and every 10 s, as `watch` walks that send a snapshot
  * only when something changed. An empty list ends every watch. It only reads, so it needs no `--act-pids`.
+ * `watchPresses` (B20) replaces the set of windows whose user presses the reader reports as userPress: a
+ * click the user makes on a button, link or other pressable element inside one of them. It only reads;
+ * the reader never presses for it. An empty list stops reporting.
  * `raise` brings one window to the front and activates its app (AXRaise, then activation), re-walks it
  * and sends the snapshot; it writes nothing, but it moves focus, so it is gated like write and press.
  * The calendar verbs (B16) reach EventKit, which needs a native process. The reader answers them only when
@@ -217,6 +220,7 @@ export const ReaderCommand = z.object({
     }),
     z.object({ kind: z.literal("watchInput"), pids: z.array(z.number().int()) }),
     z.object({ kind: z.literal("watchWindows"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
+    z.object({ kind: z.literal("watchPresses"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
     z.object({ kind: z.literal("raise"), pid: z.number().int(), windowId: z.string(), taskId: GrantTask }),
     /** The event with this title, start and end in the reader's calendar of this name, if any. */
     z.object({ kind: z.literal("calendarFind"), ...CalendarSlot }),
@@ -336,7 +340,25 @@ export const UserInput = z.object({
 });
 export type UserInput = z.infer<typeof UserInput>;
 
-export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput]);
+/**
+ * The user pressed something in a window under a press watch (B20): the pressable element under their
+ * click, its role and its label as the element carries it, and when the button went down. `key` is the
+ * element's key in the window's latest walk, null when that walk did not keep it. The reader only observes;
+ * routines learn the press an occurrence ends with from it (patterns/routines.ts).
+ */
+export const UserPress = z.object({
+  type: z.literal("userPress"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  pid: z.number().int(),
+  windowId: z.string(),
+  key: z.string().nullable(),
+  role: z.string(),
+  label: z.string(),
+});
+export type UserPress = z.infer<typeof UserPress>;
+
+export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput, UserPress]);
 export type ReaderMessage = z.infer<typeof ReaderMessage>;
 
 /** Consumer asks for a fill proposal for the form around one field, without waiting for a focus event. */

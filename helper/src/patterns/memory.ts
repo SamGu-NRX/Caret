@@ -68,8 +68,9 @@ export type RoutineStep = z.infer<typeof RoutineStep>;
 /**
  * The press that ended a routine's occurrences and that Caret leaves to the user (B19): a button in the
  * destination window whose label reads as outbound, destructive or money (executor/risk.ts), found by
- * template and position like a step's field. Learned when the destination window closes after the
- * values went in (routines.ts finishOf).
+ * template and position like a step's field. Learned from the user's own click on it when the reader saw
+ * one (B20), else from the window's buttons when the destination window closes after the values went in
+ * (routines.ts finishPressed, finishOf).
  */
 export const RoutineFinish = z.object({
   label: z.string().min(1),
@@ -81,6 +82,11 @@ export const RoutineFinish = z.object({
    * presses: `label` names them all, no plan hands one of them off, and the skill is never run on its own.
    */
   ambiguous: z.boolean().optional(),
+  /**
+   * How it was learned (B20): the user's own click on it, which the reader observed, or the window's buttons
+   * when no click was seen. Absent on rows from before B20, which were all learned from buttons.
+   */
+  by: z.enum(["click", "buttons"]).optional(),
 });
 export type RoutineFinish = z.infer<typeof RoutineFinish>;
 
@@ -459,6 +465,8 @@ export class MemoryStore {
     if (hit !== undefined) {
       // The latest occurrence's positions are the best guess for the next one; the rest of the row stays.
       const f = routineJson(this.row(hit.id));
+      // A guess from the window's buttons never replaces a press the user was seen making (B20).
+      if (finish?.by !== "click" && f.finish?.by === "click") finish = undefined;
       this.stmt("UPDATE memory SET count = count + 1, last_seen = ?, fields = ? WHERE id = ?").run(at, JSON.stringify({ ...f, steps, ...(finish === undefined ? {} : { finish }) }), hit.id);
       // A press learned after the routine was kept holds its skill on Tab from now on.
       const skill = finish === undefined || finish === null ? null : this.skillFor(hit.id);

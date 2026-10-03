@@ -482,6 +482,37 @@ public final class AppWorker: @unchecked Sendable {
         }
     }
 
+    // MARK: - observed presses (B20)
+
+    /// How many ancestors above the element under a click are tried for a pressable one: a button's label or
+    /// image is often the element hit. Assumed.
+    static let pressClimb = 6
+
+    /// The user clicked at `point` (Accessibility coordinates) at `at`. When the element under it, or a near
+    /// ancestor, is pressable and sits in one of `windows`, reports it as a userPress with its key from the
+    /// window's latest walk and its label as the element carries it. Read only: nothing is pressed or set.
+    func observePress(at point: CGPoint, time at: Int64, windows ids: Set<String>) {
+        queue.async {
+            var hit: AXUIElement?
+            guard AXUIElementCopyElementAtPosition(self.ax, Float(point.x), Float(point.y), &hit) == .success, var el = hit else { return }
+            AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+            var role = AX.string(el, kAXRoleAttribute)
+            var climbed = 0
+            while let r = role, !Roles.pressable.contains(r), climbed < Self.pressClimb, let up = AX.element(el, kAXParentAttribute) {
+                el = up
+                AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+                role = AX.string(el, kAXRoleAttribute)
+                climbed += 1
+            }
+            guard let r = role, Roles.pressable.contains(r),
+                  let w = AX.element(el, kAXWindowAttribute).map(AXRef.init), let info = self.windows[w], ids.contains(info.id),
+                  let label = self.liveLabel(el) else { return }
+            let key = info.contexts[AXRef(el)]?.key
+            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: info.id, key: key, role: r,
+                                                       label: label.trimmingCharacters(in: .whitespacesAndNewlines))))
+        }
+    }
+
     // MARK: - verbs
 
     /// Runs one executor verb on this app's queue and answers through `reply`. Write and press re-walk
@@ -508,7 +539,7 @@ public final class AppWorker: @unchecked Sendable {
             gate.refusal(taskId: verb.taskId, pid: Int(pid), windowId: windowId).map { (.notAllowed, $0) }
         }
         switch verb {
-        case .watchInput, .watchWindows:
+        case .watchInput, .watchWindows, .watchPresses:
             return (.ok, nil)
         case .calendarFind, .calendarAdd, .calendarGet, .calendarRemove, .calendarDispose:
             // ScreenReader.perform sends these to the calendar adapter; none reaches an app's worker.

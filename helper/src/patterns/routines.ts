@@ -3,6 +3,10 @@
 // is the sorted set of its transfer shapes, as keyed hashes. Each completed bundle with at least two
 // shapes counts one occurrence of its routine.
 //
+// The press an occurrence ends with (B19's finish, "Send") is learned from the user's own click on it when
+// the reader saw one in the destination window (B20, protocol.ts UserPress), and otherwise guessed from the
+// window's buttons when it closes.
+//
 // When a window opens that holds every destination field of a known routine, still empty, Caret
 // predicts silently: it reads each step's source from the live windows now, and when the bundle
 // closes it scores the prediction against what the user did. Only the gate turns a prediction into
@@ -55,11 +59,24 @@ export interface BundleClose {
   scored: { routineId: string; hit: boolean; cells: RoutineCell[] }[];
 }
 
+/** A press the user made in a destination window, as the reader observed it (protocol.ts UserPress). */
+export interface ObservedPress {
+  at: number;
+  /** The element's key in the window's latest walk; null when the walk did not keep it. */
+  key: string | null;
+  role: string;
+  label: string;
+}
+
+/** Presses kept per bundle; only the last one is ever read. */
+const PRESSES_PER_BUNDLE = 4;
+
 interface Bundle {
   dstWindowId: string;
   lastAt: number;
   transfers: PatternTransfer[];
   predictions: SilentPrediction[];
+  presses: ObservedPress[];
 }
 
 export type Hash = (text: string) => string;
@@ -139,6 +156,19 @@ export class RoutineRecognizer {
     b.lastAt = t.at;
   }
 
+  /** The user pressed something in a window; kept only when that window has an occurrence under way. */
+  onPress(windowId: string, press: ObservedPress): void {
+    const b = this.bundles.get(windowId);
+    if (b === undefined) return;
+    b.presses.push(press);
+    if (b.presses.length > PRESSES_PER_BUNDLE) b.presses.shift();
+  }
+
+  /** The windows with an occurrence under way: where a press may end one, so the reader is asked to report presses there. */
+  openWindows(): string[] {
+    return [...this.bundles.keys()];
+  }
+
   onWindowClosed(windowId: string): BundleClose | null {
     const b = this.bundles.get(windowId);
     if (b === undefined) return null;
@@ -170,7 +200,7 @@ export class RoutineRecognizer {
 
   private bundle(windowId: string, at: number): Bundle {
     let b = this.bundles.get(windowId);
-    if (b === undefined) this.bundles.set(windowId, (b = { dstWindowId: windowId, lastAt: at, transfers: [], predictions: [] }));
+    if (b === undefined) this.bundles.set(windowId, (b = { dstWindowId: windowId, lastAt: at, transfers: [], predictions: [], presses: [] }));
     return b;
   }
 
@@ -211,8 +241,10 @@ export class RoutineRecognizer {
     }
     if (sig !== null) this.keepValues(sig, [...done.map((t) => t.value), ...b.predictions.flatMap((p) => p.cells.flatMap((c) => (c === null ? [] : [c.value])))]);
     // Read from the destination whether it closed or went idle; a press once learned is never forgotten, so a
-    // routine that has ended in a risky press stays one that never runs on its own.
-    const finish = dst === undefined ? undefined : (this.finishOf(dst) ?? undefined);
+    // routine that has ended in a risky press stays one that never runs on its own. The user's own last press
+    // decides when the reader saw one; the window's buttons are the guess only when it saw none.
+    const pressed = dst === undefined ? undefined : this.finishPressed(dst, b.presses);
+    const finish = dst === undefined ? undefined : pressed !== undefined ? (pressed ?? undefined) : (this.finishOf(dst) ?? undefined);
     const recorded = sig === null ? null : this.memory.recordRoutine(sig, steps, b.lastAt, finish);
     return { dstWindowId: b.dstWindowId, sig, recorded, scored };
   }
@@ -252,9 +284,34 @@ export class RoutineRecognizer {
     const at = pick ?? outbound[0] ?? first;
     const slot = windowIndex(w).slots.get(at.key);
     if (slot === undefined) return null;
-    const base = { why: at.why, templateHash: this.templateHash(slot.template), pos: slot.pos };
+    const base = { why: at.why, templateHash: this.templateHash(slot.template), pos: slot.pos, by: "buttons" as const };
     if (pick !== undefined) return { ...base, label: pick.label };
     return { ...base, label: [...new Set(risky.map((r) => r.label))].join(" or "), ambiguous: true };
+  }
+
+  /**
+   * The finish the user's own last press in this occurrence names (B20): a press that reads as outbound,
+   * destructive or money is the finish, found by template and position like a step's field; any other press
+   * means the occurrence did not end in one, so null, and no button is guessed. Undefined when the reader
+   * saw no press here, or the pressed element is no longer in the window as the model has it: then the
+   * window's buttons are the guess. A press with no key is placed by its label when exactly one button has it.
+   */
+  private finishPressed(w: WindowState, presses: readonly ObservedPress[]): RoutineFinish | null | undefined {
+    const p = presses.at(-1);
+    if (p === undefined) return undefined;
+    const label = p.label.trim();
+    let key = p.key;
+    if (key === null) {
+      const same = [...w.nodes.values()].filter((n) => n.role === p.role && (n.label ?? "").trim() === label);
+      key = same.length === 1 ? (same[0]?.key ?? null) : null;
+    }
+    const node = key === null ? undefined : w.nodes.get(key);
+    if (key === null || node === undefined) return undefined;
+    const why = label === "" ? "safe" : classifyLabel(label);
+    if (why === "safe") return null;
+    const slot = windowIndex(w).slots.get(key);
+    if (slot === undefined) return undefined;
+    return { label, why, templateHash: this.templateHash(slot.template), pos: slot.pos, by: "click" };
   }
 
   private step(t: PatternTransfer): RoutineStep {
