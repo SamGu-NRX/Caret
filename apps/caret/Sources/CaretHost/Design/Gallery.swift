@@ -1,5 +1,6 @@
 import AppKit
 import CaretHostCore
+import CaretScreenCore
 import SwiftUI
 
 /// Off-screen renders of every surface, from synthetic content: the reference images the snapshot

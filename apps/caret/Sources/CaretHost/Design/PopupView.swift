@@ -1,4 +1,5 @@
 import CaretHostCore
+import CaretScreenCore
 import SwiftUI
 
 /// A pop-up rendered from a `PopupSpec` (`SURFACES.md` section 4): the frame, then each block in

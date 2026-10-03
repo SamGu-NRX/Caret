@@ -4,9 +4,10 @@ import CaretHost
 // Launch by direct exec of Caret.app/Contents/MacOS/Caret so the process inherits the launching
 // app's Accessibility grant. Flags: --socket <path>, --model <path>, --allow <bundle,ids>,
 // --allow-pids <pid,pid>, --helper-socket <path>, --no-ghost, --no-fill-advance,
-// --appearance light|dark, --perch hidden|shown.
+// --appearance light|dark, --perch hidden|shown, --surfaces headless|shown, --test-hooks.
 // Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES,
-// CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off, CARET_PERCH=hidden.
+// CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off, CARET_PERCH=hidden,
+// CARET_SURFACES=headless, CARET_TEST_HOOKS=1.
 
 var configuration = HostRuntime.Configuration()
 
@@ -62,6 +63,18 @@ while let argument = arguments.next() {
         case "shown": configuration.perchDrawsOnScreen = true
         default: FileHandle.standardError.write(Data("caret: --perch takes hidden or shown\n".utf8)); exit(2)
         }
+    case "--surfaces":
+        // `headless`: helper offers are bound to the field the helper names and decided by the
+        // arbiter, but nothing is drawn and the host writes nothing, for socket-level runs while
+        // someone is using the Mac.
+        switch arguments.next() {
+        case "headless": configuration.surfacesHeadless = true
+        case "shown": configuration.surfacesHeadless = false
+        default: FileHandle.standardError.write(Data("caret: --surfaces takes headless or shown\n".utf8)); exit(2)
+        }
+    case "--test-hooks":
+        // The debug socket's `inject` and `progress`, which fake helper offers and their results.
+        configuration.testHooks = true
     case "--allow":
         if let value = arguments.next() {
             configuration.allowedBundleIDs = Set(value.split(separator: ",").map(String.init))

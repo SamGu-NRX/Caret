@@ -1,3 +1,4 @@
+import CaretScreenCore
 import XCTest
 @testable import CaretHostCore
 

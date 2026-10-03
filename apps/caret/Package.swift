@@ -46,6 +46,7 @@ let package = Package(
             name: "CaretHost",
             dependencies: [
                 "CaretHostCore",
+                .product(name: "CaretScreenCore", package: "screen-reader"),
                 .product(name: "AutocompleteCore", package: "AutocompleteCore"),
                 .product(name: "AppCompatibility", package: "AppCompatibility"),
                 .product(name: "MacContextCapture", package: "MacContextCapture"),
@@ -80,7 +81,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CaretHostTests",
-            dependencies: ["CaretHost", "CaretHostCore"],
+            dependencies: ["CaretHost", "CaretHostCore", .product(name: "CaretScreenCore", package: "screen-reader")],
             // Reference images, read and rewritten by #filePath (SnapshotTests).
             exclude: ["References"]
         ),

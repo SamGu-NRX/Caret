@@ -73,12 +73,29 @@ CARET_ALLOW_BUNDLES=com.apple.TextEdit .build/Caret.app/Contents/MacOS/Caret
 - `--no-ghost` (`CARET_GHOST=off`) skips the model: fill only.
 - `--no-fill-advance` (`CARET_FILL_ADVANCE=off`) keeps focus in a field after Tab fills it;
   by default the host posts Tab to the form's pid so focus moves on, as `SURFACES.md` section 5 asks.
+- `--surfaces headless` (`CARET_SURFACES=headless`) decides the helper's offers without drawing
+  them or writing anything: each offer is bound to the field the helper names, keys come from the
+  debug socket's `key` hook, and a text claim is refused as `headless`. For socket-level runs
+  while someone is using the Mac.
 - SIGTERM and SIGINT shut down cleanly, freeing llama/Metal before exit.
+
+## Offers from the helper
+
+The helper sends `alternatives`, `action` and `popup` for one field each (`HelperOffer`, types
+from `CaretScreenCore`). The host shows an offer only when its app is frontmost and the focused
+element's frame matches the field's to within a point; otherwise it holds the offer and retries
+for 30 s. `offerWithdrawn` takes a shown or held offer away. Alternatives are inserted by the host
+as ghost text is. Tab, the arrows and ⌘1 to ⌘3 on an action line or pop-up send `offerAccept`,
+and the work runs as the helper task whose id is the offer's key: its `taskProgress` ends the
+working line (done, stopped, handoff, paused). Esc on the working line after 3 s sends
+`offerStop`. A pop-up with a fields block is a fill: when its run is done the line becomes
+"Filled N fields from <source>" with ⌘Z, which sends `taskControl undo` for the task.
 
 ## Debug socket
 
 `~/.caret-run/sockets/host.sock` (override: `--socket`, `CARET_HOST_SOCKET`) answers one
-command per connection with JSON: `state` (default), `latency-reset`, `ping`, and test hooks:
+command per connection with JSON: `state` (default), `latency-reset`, `ping`, and test hooks
+(`inject` and `progress` only when the host runs with `--test-hooks` or `CARET_TEST_HOOKS=1`):
 
 - `key <tab|shift-tab|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:c> <pid>`
   routes a key headed for `<pid>` through the event tap's own decision code without posting any
@@ -110,6 +127,9 @@ latency. Field text never appears; only digests and lengths, plus the model's ow
   reads back the keystroke-to-paint samples and the field's text.
 - `scripts/fill_advance_check.py <dir>`: a verified fill moves focus to the next field and the
   next offer follows.
+- `scripts/offers_socket_acceptance.ts --out <dir>`: the helper's real offers through a
+  `--surfaces headless` host, with B7's simulated reader replaying the recorded sessions. Opens
+  no window and posts no event.
 - `scripts/surface_acceptance.py alternatives|fill <dir> [light|dark]`: alternatives, pop-ups and
   the fill line on caret-fixture through `inject` and `key`, with composed screenshots. It needs
   the Mac idle (`CARET_SURFACE_IDLE_MIN`, default 120 s), because caret-fixture takes the

@@ -312,7 +312,7 @@ def rig(out_dir, appearance):
     # The fixture writes view frames; Accessibility reports them 1 pt larger on every side.
     for g in gold:
         g["frame"] = next(f["frame"] for f in fields if all(abs(a - b) <= 2 for a, b in zip(f["frame"], g["frame"])))
-    args = [CARET, "--socket", HOST_SOCK, "--helper-socket", NO_HELPER, "--allow-pids", str(fx.pid), "--no-ghost",
+    args = [CARET, "--socket", HOST_SOCK, "--helper-socket", NO_HELPER, "--allow-pids", str(fx.pid), "--no-ghost", "--test-hooks",
             "--appearance", appearance]
     h = start("host", args, out_dir)
     if not wait_for(lambda: os.path.exists(HOST_SOCK), 15, 0.1):

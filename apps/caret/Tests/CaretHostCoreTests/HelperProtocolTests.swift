@@ -27,6 +27,11 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .error: return "error"
             case .activity: return "activity"
             case .activityReply: return "activityReply"
+            case .alternatives: return "alternatives"
+            case .action: return "action"
+            case .popup: return "popup"
+            case .offerWithdrawn: return "offerWithdrawn"
+            case .taskProgress: return "taskProgress"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
@@ -34,9 +39,59 @@ final class HelperProtocolGoldenTests: XCTestCase {
         XCTAssertEqual(kinds, [
             "skip:hello", "skip:snapshot", "skip:focus", "skip:appSwitch", "skip:windowClosed",
             "skip:pasteboard", "skip:fillRequest", "fillProposal", "error",
-            "skip:readerCommand", "skip:verbResult", "skip:userInput", "skip:taskProgress", "skip:readerCommand",
+            "skip:readerCommand", "skip:verbResult", "skip:userInput", "taskProgress", "skip:readerCommand",
             "skip:fillResult", "skip:taskControl", "skip:activityRequest", "activity", "activityReply",
+            // B7: the offers, the host's own answers to them, their withdrawal, and the reader's raise.
+            "alternatives", "action", "popup", "skip:offerAccept", "skip:offerStop", "offerWithdrawn", "skip:readerCommand",
         ])
+    }
+
+    func testTheSevenOfferLinesDecodeExactly() throws {
+        let lines = try goldenLines()
+        XCTAssertEqual(lines.count, 26)
+        guard case .alternatives(let alternatives) = try HelperInbound.decode(lines[19]) else { return XCTFail("line 20") }
+        XCTAssertEqual(alternatives.offerKey, "offer-4.0")
+        XCTAssertEqual(alternatives.at, 1_790_000_002_000)
+        XCTAssertEqual(alternatives.field, OfferField(
+            pid: 7170, windowId: "7170-1", key: "dev.caret.sheet/standard/table:guests/textfield:guest~2",
+            frame: Frame(x: 120, y: 288, width: 180, height: 22)
+        ))
+        XCTAssertEqual(alternatives.candidates.map(\.text), ["Cara Diaz", "Cal Duarte"])
+        XCTAssertEqual(alternatives.candidates[0].ref, .node(key: "5150-1/dev.caret.fixture/standard/statictext:cara diaz~0", quote: "Cara Diaz"))
+        XCTAssertTrue(alternatives.quoted)
+
+        guard case .action(let action) = try HelperInbound.decode(lines[20]) else { return XCTFail("line 21") }
+        XCTAssertEqual(action.offerKey, "offer-5")
+        XCTAssertEqual(action.app, "Sheet Fixture")
+        XCTAssertEqual(action.endState.text, "Finish the rest: 2 more values from Caret Fixture")
+        guard case .derived(let rule, let refs) = action.endState.ref else { return XCTFail("endState is not derived") }
+        XCTAssertEqual(rule, "loopFinish")
+        XCTAssertEqual(refs.count, 2)
+        XCTAssertEqual(action.actions, [PopupSpec.Action(id: "finish", label: "Finish", key: .tab)])
+        XCTAssertEqual(action.variants?.id, "variants-5")
+        XCTAssertEqual(action.variants?.figure, .needsYou)
+        XCTAssertEqual(action.variants?.choices?.rows.map(\.label.text), ["Caret Fixture", "Mail Fixture"])
+
+        guard case .popup(let popup) = try HelperInbound.decode(lines[21]) else { return XCTFail("line 22") }
+        XCTAssertEqual(popup.offerKey, "fill-2")
+        XCTAssertEqual(popup.field.frame, Frame(x: 200, y: 140, width: 260, height: 22))
+        XCTAssertEqual(popup.spec.id, "fill-2")
+        XCTAssertEqual(popup.spec.blocks.count, 4)
+        guard case .fields(let fields) = popup.spec.blocks[2].content else { return XCTFail("third block is not fields") }
+        XCTAssertEqual(fields.rows.map { $0.value?.text }, ["dana.whitfield@example.com", "+1 512 555 0142"])
+
+        XCTAssertEqual(try JSONDecoder().decode(OfferAccept.self, from: lines[22]),
+                       OfferAccept(offerId: "offer-5", actionId: "finish", overrides: ["variants": 1], at: 1_790_000_002_300))
+        XCTAssertEqual(try JSONDecoder().decode(OfferStop.self, from: lines[23]), OfferStop(offerId: "offer-5", at: 1_790_000_002_400))
+        XCTAssertEqual(try HelperInbound.decode(lines[24]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_002_500, id: "offer-4.0", reason: .taken)))
+        guard case .readerCommand(let raise) = try JSONDecoder().decode(Message.self, from: lines[25]) else { return XCTFail("line 26") }
+        XCTAssertEqual(raise.verb, .raise(pid: 5150, windowId: "5150-4"))
+    }
+
+    func testAnOfferWithAValueWithoutARefIsRejected() {
+        // The helper never sends one (B7 acceptance 3); the host refuses it all the same.
+        let line = Data(#"{"type":"alternatives","v":1,"offerKey":"k","at":1,"field":{"pid":1,"windowId":"1-1","key":"k","frame":null},"candidates":[{"text":"x"}],"quoted":false}"#.utf8)
+        XCTAssertThrowsError(try HelperInbound.decode(line))
     }
 
     func testGoldenActivityLinesBuildTheFeed() throws {

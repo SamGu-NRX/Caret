@@ -1,3 +1,4 @@
+import CaretScreenCore
 import Foundation
 import os
 

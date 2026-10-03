@@ -22,8 +22,23 @@ public struct UndoGrant: Equatable, Sendable {
     public var insertedStart: Int
     public var insertedLength: Int
     public var origin: FillOrigin?
+    /// Set when the helper's executor made the writes (a fill pop-up's run). ⌘Z then asks the
+    /// helper to undo that task (`taskControl undo`), which restores what its ledger recorded; the
+    /// host reverts nothing itself, and the value fields above are empty.
+    public var taskID: String?
     public var createdAt: Date
     public var lifetimeSeconds: Double
+
+    /// The grant for a helper task's writes. `target` is the field the offer was taken in, so only
+    /// a ⌘Z headed for that app takes it.
+    public static func task(_ taskID: String, target: TargetIdentity, createdAt: Date = Date(), lifetimeSeconds: Double = UndoGrant.defaultLifetime) -> UndoGrant {
+        var grant = UndoGrant(
+            target: target, priorValue: "", writtenValue: "", insertedStart: 0, insertedLength: 0, origin: nil,
+            createdAt: createdAt, lifetimeSeconds: lifetimeSeconds
+        )
+        grant.taskID = taskID
+        return grant
+    }
 
     public init(
         target: TargetIdentity, priorValue: String, writtenValue: String, insertedStart: Int,

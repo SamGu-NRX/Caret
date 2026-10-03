@@ -1,5 +1,6 @@
 import AppKit
 import CaretHostCore
+import CaretScreenCore
 import SwiftUI
 
 /// Whether a panel view draws its own surface, border and shadow. On screen the panel window
@@ -263,4 +264,27 @@ enum Captions {
     }
 
     static let stopped = "Stopped"
+
+    /// "1 field", "3 fields".
+    static func fields(_ count: Int) -> String { count == 1 ? "1 field" : "\(count) fields" }
+
+    /// The working line of a fill pop-up.
+    static func filling(_ count: Int) -> String { "Filling \(fields(count))" }
+
+    /// A fill run that stopped: what happened and what was left, without blame.
+    static func fillStopped(filled: Int) -> String {
+        filled == 0
+            ? "The form changed, so nothing was filled."
+            : "Filled \(fields(filled)). The form changed, so the rest was left as it is."
+    }
+
+    /// The run reached a send, submit, delete or pay step and left the press to the user.
+    static func handoff(app: String) -> String { "Your turn in \(app)" }
+
+    /// An undo that could not restore every field.
+    static func undoPartial(notRestored: Int) -> String {
+        notRestored == 1
+            ? "1 field changed after the fill, so it was left as it is."
+            : "\(notRestored) fields changed after the fill, so they were left as they are."
+    }
 }

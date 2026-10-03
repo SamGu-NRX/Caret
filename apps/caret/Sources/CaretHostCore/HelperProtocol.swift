@@ -5,13 +5,20 @@ import Foundation
 ///
 /// The wire types are the screen track's (`CaretScreenCore`, mirroring `helper/src/protocol.ts`).
 /// The host acts on `fillProposal`, `error`, the broadcast `activity` and the `activityReply` to
-/// its own request; anything else the helper sends is named and counted rather than treated as a
-/// broken connection, so a helper that adds message types does not disconnect an older host.
+/// its own request, the offers (`alternatives`, `action`, `popup`) and their withdrawal, and
+/// `taskProgress`, which ends the working line of an accepted offer. Anything else the helper sends
+/// is named and counted rather than treated as a broken connection, so a helper that adds message
+/// types does not disconnect an older host.
 public enum HelperInbound: Equatable, Sendable {
     case fillProposal(FillProposal)
     case error(HelperError)
     case activity(Activity)
     case activityReply(ActivityReply)
+    case alternatives(OfferAlternatives)
+    case action(OfferAction)
+    case popup(OfferPopup)
+    case offerWithdrawn(OfferWithdrawn)
+    case taskProgress(TaskProgress)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -24,16 +31,22 @@ public enum HelperInbound: Equatable, Sendable {
             throw ProtocolError("unsupported protocol version \(envelope.v) for \(envelope.type)")
         }
         switch envelope.type {
-        case FillProposal.type, HelperError.type, Activity.type, ActivityReply.type:
+        case FillProposal.type, HelperError.type, Activity.type, ActivityReply.type, OfferAlternatives.type,
+             OfferAction.type, OfferPopup.type, OfferWithdrawn.type, TaskProgress.type:
             switch try JSONDecoder().decode(Message.self, from: line) {
             case .fillProposal(let proposal): return .fillProposal(proposal)
             case .error(let error): return .error(error)
             case .activity(let activity): return .activity(activity)
             case .activityReply(let reply): return .activityReply(reply)
+            case .alternatives(let offer): return .alternatives(offer)
+            case .action(let offer): return .action(offer)
+            case .popup(let offer): return .popup(offer)
+            case .offerWithdrawn(let withdrawn): return .offerWithdrawn(withdrawn)
+            case .taskProgress(let progress): return .taskProgress(progress)
             default: return .notForConsumer(type: envelope.type)
             }
         case Hello.type, FillRequest.type, "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard",
-             "readerCommand", "verbResult", "userInput", "taskProgress", "taskControl", "activityRequest":
+             "readerCommand", "verbResult", "userInput", "taskControl", "activityRequest", OfferAccept.type, OfferStop.type:
             // Validated, so a malformed line is still counted as undecodable.
             _ = try JSONDecoder().decode(Message.self, from: line)
             return .notForConsumer(type: envelope.type)

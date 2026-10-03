@@ -73,7 +73,12 @@ final class HelperClient: @unchecked Sendable {
 
     /// `offerAccept` for an action line or pop-up the helper offered. Counted with the results.
     func send(_ accept: OfferAccept) {
-        sendLine(try? NDJSON.line(accept))
+        if sendLine(try? NDJSON.line(accept)) { stats.withLock { $0.accepts &+= 1 } }
+    }
+
+    /// `offerStop`: Esc on the working line of an offer the helper offered.
+    func send(_ stop: OfferStop) {
+        if sendLine(try? NDJSON.line(stop)) { stats.withLock { $0.stops &+= 1 } }
     }
 
     /// `taskControl` from the activity list or the input pause. True when written; a control for
@@ -189,6 +194,9 @@ final class HelperClient: @unchecked Sendable {
             switch message {
             case .fillProposal: s.proposals &+= 1
             case .activity, .activityReply: s.activity &+= 1
+            case .alternatives, .action, .popup: s.offers &+= 1
+            case .offerWithdrawn: s.withdrawals &+= 1
+            case .taskProgress: s.progress &+= 1
             case .error(let e):
                 s.errors &+= 1
                 // The helper answers a message it cannot parse with this error; until its schema

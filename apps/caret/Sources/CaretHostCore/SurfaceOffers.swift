@@ -1,3 +1,4 @@
+import CaretScreenCore
 import Foundation
 
 /// An action offer line: "▦ Calendar  Coffee with Dana, Thu 3:00 to 3:30  Tab".
@@ -33,32 +34,6 @@ public struct PopupOffer: Equatable, Sendable {
         self.offerKey = offerKey
         self.spec = spec
     }
-}
-
-extension PopupSpec {
-    /// The spec after `actionID`'s reveal: its target block replaced and the revealing action gone
-    /// from the bar. Unchanged when the action reveals nothing.
-    public func applyingReveal(of actionID: String) -> PopupSpec {
-        guard let action = actions.first(where: { $0.id == actionID }), let reveal = action.reveal else { return self }
-        var copy = self
-        copy.blocks = blocks.compactMap { block in
-            if block.id == reveal.replace { return reveal.with }
-            if case .actions(var bar) = block.content {
-                bar.items.removeAll { $0.id == actionID }
-                return Block(id: block.id, .actions(bar))
-            }
-            return block
-        }
-        return copy
-    }
-
-    /// Choice rows shown, which the arrows and Command-1 to 3 move between.
-    public var rowCount: Int { choices?.rows.count ?? 0 }
-
-    /// Command-digits bound to an action in the bar.
-    public var numberedDigits: Set<Int> { Set(actions.compactMap(\.key.digit)) }
-
-    public var hasDownAction: Bool { actions.contains { $0.key == .down } }
 }
 
 /// Where the user is inside the current offer. Reset whenever a new offer is published.

@@ -1,3 +1,4 @@
+import CaretScreenCore
 import XCTest
 @testable import CaretHostCore
 
@@ -13,24 +14,6 @@ final class PopupSpecTests: XCTestCase {
 
     private func data(_ object: Any) throws -> Data {
         try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-    }
-
-    /// The error as the fixture names it: `case(arg, arg)`, paths without the `$.` root.
-    private func short(_ error: PopupSpecError) -> String {
-        switch error {
-        case .unknownBlock(let type, let path): return "unknownBlock(\(type), \(path))"
-        case .missingReference(let path): return "missingReference(\(path))"
-        case .invalidReference(let path, _): return "invalidReference(\(path))"
-        case .tooManyChoices(let path, _): return "tooManyChoices(\(path))"
-        case .noPrimaryAction(let path): return "noPrimaryAction(\(path))"
-        case .actionKeyConflictsWithChoices(let path, _): return "actionKeyConflictsWithChoices(\(path))"
-        case .unknownRevealTarget(let path, _): return "unknownRevealTarget(\(path))"
-        case .invalidReveal(let path, _): return "invalidReveal(\(path))"
-        case .duplicateBlock(let type, let path): return "duplicateBlock(\(type), \(path))"
-        case .missingBlock(let type): return "missingBlock(\(type))"
-        case .unsupportedVersion(let v): return "unsupportedVersion(\(v))"
-        default: return error.description
-        }
     }
 
     func testTheThreeGoldenSpecsDecode() throws {
@@ -65,7 +48,7 @@ final class PopupSpecTests: XCTestCase {
                 _ = try PopupSpec.decode(data(item["spec"]!))
                 XCTFail("\(name): decoded, expected \(expected)")
             } catch let error as PopupSpecError {
-                XCTAssertEqual(short(error), expected, name)
+                XCTAssertEqual(error.short, expected, name)
             }
         }
     }

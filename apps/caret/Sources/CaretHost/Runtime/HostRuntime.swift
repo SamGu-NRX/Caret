@@ -25,6 +25,12 @@ public final class HostRuntime {
         /// without drawing them (`--perch hidden`, `CARET_PERCH=hidden`), for test runs while
         /// someone is using the Mac.
         public var perchDrawsOnScreen: Bool
+        /// True decides helper offers without drawing them or writing anything (`--surfaces
+        /// headless`, `CARET_SURFACES=headless`), for socket-level runs while someone is using the Mac.
+        public var surfacesHeadless: Bool
+        /// The debug socket accepts `inject` and `progress`, which fake offers and their results
+        /// (`--test-hooks`, `CARET_TEST_HOOKS=1`). Off in normal use: real offers come from the helper.
+        public var testHooks: Bool
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
@@ -34,9 +40,13 @@ public final class HostRuntime {
             allowedPIDs: Set<Int32>? = HostRuntime.pids(ProcessInfo.processInfo.environment["CARET_ALLOW_PIDS"]),
             ghostEnabled: Bool = ProcessInfo.processInfo.environment["CARET_GHOST"] != "off",
             fillAdvances: Bool = ProcessInfo.processInfo.environment["CARET_FILL_ADVANCE"] != "off",
-            perchDrawsOnScreen: Bool = ProcessInfo.processInfo.environment["CARET_PERCH"] != "hidden"
+            perchDrawsOnScreen: Bool = ProcessInfo.processInfo.environment["CARET_PERCH"] != "hidden",
+            surfacesHeadless: Bool = ProcessInfo.processInfo.environment["CARET_SURFACES"] == "headless",
+            testHooks: Bool = ProcessInfo.processInfo.environment["CARET_TEST_HOOKS"] == "1"
         ) {
             self.perchDrawsOnScreen = perchDrawsOnScreen
+            self.surfacesHeadless = surfacesHeadless
+            self.testHooks = testHooks
             self.socketPath = socketPath
             self.helperSocketPath = helperSocketPath
             self.modelURL = modelURL
@@ -96,7 +106,10 @@ public final class HostRuntime {
         self.coordinator = coordinator
         let fill = FillCoordinator(arbiter: arbiter, status: status, overlay: FillOverlay(), watcher: FillTargetWatcher(), policy: policy)
         self.fill = fill
-        let surface = SurfaceCoordinator(arbiter: arbiter, status: status, policy: policy, compatibilityStore: compatibilityStore)
+        let surface = SurfaceCoordinator(
+            arbiter: arbiter, status: status, policy: policy, compatibilityStore: compatibilityStore,
+            headless: configuration.surfacesHeadless
+        )
         self.surface = surface
         let executor = InsertionExecutor(
             arbiter: arbiter, status: status, compatibilityStore: compatibilityStore, policy: policy,
@@ -138,6 +151,12 @@ public final class HostRuntime {
                 MainActor.assumeIsolated {
                     fill.receive(message, at: at)
                     activity.receive(message)
+                    switch message {
+                    case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
+                    case .offerWithdrawn(let withdrawn): surface.withdrawn(withdrawn)
+                    case .taskProgress(let progress): surface.taskProgress(progress)
+                    default: break
+                    }
                 }
             }
         }, onLink: { up in
@@ -147,13 +166,17 @@ public final class HostRuntime {
         surface.client = helper
         activity.client = helper
         let pauseClient = helper
+        let writesNothing = configuration.surfacesHeadless
         let pauser = InputPauser(gate: activity.pauseGate) { taskIds, kind in
             for id in taskIds { pauseClient.send(TaskControl(taskId: id, action: .pause)) }
             activity.notePause(taskIds, kind: kind)
         }
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
             claimed: { claim in
-                if claim.insertsText { executor.submit(claim) }
+                if claim.insertsText {
+                    // A headless host writes nothing: the claim is decided and recorded, never applied.
+                    if writesNothing { arbiter.abandon(claimID: claim.claimID, reason: "headless") } else { executor.submit(claim) }
+                }
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         coordinator.claimed(claim)
@@ -172,8 +195,14 @@ public final class HostRuntime {
                 }
             },
             undo: { grant in
-                executor.submitUndo(grant)
-                DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoStarted(grant) } }
+                if let taskID = grant.taskID {
+                    // The helper's executor made these writes and keeps their ledger; it undoes them.
+                    pauseClient.send(TaskControl(taskId: taskID, action: .undo))
+                    DispatchQueue.main.async { MainActor.assumeIsolated { surface.undoStarted(grant) } }
+                } else {
+                    executor.submitUndo(grant)
+                    DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoStarted(grant) } }
+                }
             },
             keyDown: { status.noteKeyDown($0) },
             navigated: { offerID, ui in
@@ -188,9 +217,11 @@ public final class HostRuntime {
         let tap = self.tap
         let helper = self.helper
         let writeMethods = executor.writeMethods
+        let testHooks = configuration.testHooks
         let hooks = MainHooks(
             inject: { data in
                 MainActor.assumeIsolated {
+                    guard testHooks else { return #"{"error":"inject is a test hook: start the host with --test-hooks"}"# }
                     do {
                         let injection = try SurfaceInjection.decode(data)
                         if case .helperLine(let line) = injection {
@@ -204,7 +235,11 @@ public final class HostRuntime {
                     }
                 }
             },
-            progress: { phase in MainActor.assumeIsolated { surface.progress(phase) } },
+            progress: { phase in
+                MainActor.assumeIsolated {
+                    testHooks ? surface.progress(phase) : #"{"error":"progress is a test hook: start the host with --test-hooks"}"#
+                }
+            },
             surface: { MainActor.assumeIsolated { surface.debugInfo() } },
             perch: { words in MainActor.assumeIsolated { Self.perchCommand(words, perch: perch, activity: activity, pauser: pauser) } }
         )

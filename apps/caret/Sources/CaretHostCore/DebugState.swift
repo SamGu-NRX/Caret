@@ -158,6 +158,13 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var proposals: UInt64 = 0
         /// `activity` and `activityReply` messages received.
         public var activity: UInt64 = 0
+        /// `alternatives`, `action` and `popup` messages received.
+        public var offers: UInt64 = 0
+        public var withdrawals: UInt64 = 0
+        public var progress: UInt64 = 0
+        /// Lines written as `offerAccept` and `offerStop`, counted again in `resultsSent`.
+        public var accepts: UInt64 = 0
+        public var stops: UInt64 = 0
         public var errors: UInt64 = 0
         /// The helper's last error text: window ids and reasons, never screen text.
         public var lastError: String?
@@ -174,7 +181,7 @@ public struct DebugState: Codable, Equatable, Sendable {
     }
 
     public struct Toast: Codable, Equatable, Sendable {
-        /// `done`, `undone` or `error`.
+        /// `done`, `undone` or `error`; `undoing` while the helper undoes a fill pop-up's task.
         public var kind: String
         public var caption: String
         /// Set while ⌘Z can still revert the write.
@@ -244,7 +251,11 @@ public struct DebugState: Codable, Equatable, Sendable {
 
     /// Alternatives, action lines, pop-ups and the lines after an accepted action.
     public struct SurfaceInfo: Codable, Equatable, Sendable {
+        /// The host runs with `--surfaces headless`: offers are decided, never drawn.
+        public var headless: Bool?
         public var offerId: UInt64?
+        /// The helper's key for the shown offer.
+        public var offerKey: String?
         /// `ghost` (alternatives), `action` or `popup`.
         public var kind: String?
         public var source: String?
@@ -263,6 +274,10 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var lineText: String?
         /// Seconds the accepted work has run.
         public var working: Double?
+        /// The offer key (and helper task id) of the accepted work.
+        public var workingOn: String?
+        /// The fill pop-up's toast, and what its undo did.
+        public var toast: Toast?
         /// An injected offer waiting for its field to be where the user is looking
         /// (`SurfaceGate.Hold`), drawn nowhere meanwhile.
         public var held: String?

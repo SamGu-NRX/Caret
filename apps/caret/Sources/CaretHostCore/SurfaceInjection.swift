@@ -1,9 +1,10 @@
+import CaretScreenCore
 import Foundation
 
 /// An offer handed to the host through the debug socket's `inject` command, for tests and
-/// screenshots. The same shapes are what the helper will send once the screen track adds offer
-/// messages; until then only the debug socket produces them, and their claims are never reported
-/// to the helper (`OfferSource.debug`).
+/// screenshots only: the socket accepts it when the host runs with `CARET_TEST_HOOKS=1`. Real
+/// offers arrive from the helper as `alternatives`, `action` and `popup` messages (`HelperOffer`).
+/// An injected offer's claims are never reported to the helper (`OfferSource.debug`).
 ///
 /// ```
 /// {"kind":"alternatives","pid":123,"candidates":["…","…"],"quoted":false}
@@ -53,20 +54,17 @@ public enum SurfaceInjection: Equatable, Sendable {
             if case .bool(let q)? = o["quoted"] { quoted = q }
             return .alternatives(pid: try pid(), candidates: candidates, quoted: quoted)
         case "action":
-            guard let endState = o["endState"], case .array(let rawActions)? = o["actions"] else {
+            guard let endState = o["endState"], let rawActions = o["actions"] else {
                 throw Invalid("needs endState and actions")
             }
             do {
                 let value = try PopupSpec.parseValue(endState, path: "endState")
-                // The bar as a pop-up's actions block, so it follows the same rules.
-                let bar = try PopupSpec.parseBlock(.object(["type": .string("actions"), "items": .array(rawActions)]), path: "actions")
-                guard case .actions(let actions) = bar.content, actions.items.contains(where: { $0.key == .tab }) else {
-                    throw Invalid("actions need a tab action")
-                }
+                // The bar follows the rules of a pop-up's actions block, as the helper's does.
+                let actions = try PopupSpec.parseActionBar(rawActions, path: "actions")
                 let variants = try o["variants"].map(spec)
                 return .action(pid: try pid(), ActionLine(
                     offerKey: try string("offerKey"), app: try string("app"), endState: value,
-                    actions: actions.items, variants: variants
+                    actions: actions, variants: variants
                 ))
             } catch let error as PopupSpecError {
                 throw Invalid(error.description)
@@ -82,47 +80,9 @@ public enum SurfaceInjection: Equatable, Sendable {
     }
 }
 
-/// What the user accepted from an action line or pop-up: what the host sends the helper as
-/// `offerAccept` (Fable plan, section 2, "Hand-off to the executor") and reports on the debug
-/// socket. Not yet in `helper/src/protocol.ts`.
-public struct OfferAccept: Codable, Equatable, Sendable {
-    public static let type = "offerAccept"
-
-    public var offerId: String
-    public var actionId: String
-    /// Choices the user made before accepting: the highlighted row of a choices block (by block
-    /// id, or `variants` for an action line's picker), as a zero-based index.
-    public var overrides: [String: Int]
-    public var at: Int64
-
-    public init(offerId: String, actionId: String, overrides: [String: Int], at: Int64) {
-        self.offerId = offerId
-        self.actionId = actionId
-        self.overrides = overrides
-        self.at = at
-    }
-
-    enum CodingKeys: String, CodingKey { case type, v, offerId, actionId, overrides, at }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        guard try c.decode(String.self, forKey: .type) == Self.type else { throw SurfaceInjection.Invalid("not offerAccept") }
-        offerId = try c.decode(String.self, forKey: .offerId)
-        actionId = try c.decode(String.self, forKey: .actionId)
-        overrides = try c.decode([String: Int].self, forKey: .overrides)
-        at = try c.decode(Int64.self, forKey: .at)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(Self.type, forKey: .type)
-        try c.encode(1, forKey: .v)
-        try c.encode(offerId, forKey: .offerId)
-        try c.encode(actionId, forKey: .actionId)
-        try c.encode(overrides, forKey: .overrides)
-        try c.encode(at, forKey: .at)
-    }
-
+/// `offerAccept` is the screen track's type (CaretScreenCore, mirroring helper/src/protocol.ts); the
+/// host only builds it from a claim.
+extension OfferAccept {
     /// Builds the message for a claim on an action line or pop-up. Nil for text claims.
     public static func from(_ claim: Claim, at: Int64) -> OfferAccept? {
         guard let actionID = claim.choice.actionID else { return nil }

@@ -1,5 +1,6 @@
 import AppKit
 import CaretHostCore
+import CaretScreenCore
 import XCTest
 @testable import CaretHost
 
