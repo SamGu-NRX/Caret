@@ -51,38 +51,97 @@ interface LabelText {
   frame: Frame;
   t: string;
   labelLike: boolean;
+  /** Position in document order, so a search of a band of rows still breaks ties as a scan of every text would. */
+  order: number;
 }
 
 /**
  * Each window's label texts, built once per window state. The model replaces a window's state on every
  * snapshot, so a state never changes under its entry; the candidate generator asks for the nearest
- * label of many spans in one window, and scanning every node for each was most of its time.
+ * label of many spans in one window, and scanning every node for each was most of its time. The texts
+ * are also sorted by their top edge, so a query reads only the rows near its field; texts taller than
+ * TALL_TEXT are kept apart and always read, so one page-high text does not widen every band.
  */
-const labelIndex = new WeakMap<WindowState, LabelText[]>();
-
-function labelTexts(w: WindowState): LabelText[] {
-  let out = labelIndex.get(w);
-  if (out !== undefined) return out;
-  out = [];
-  for (const n of w.nodes.values()) {
-    if (n.role !== "AXStaticText" || n.frame === undefined) continue;
-    const t = clean(n.label ?? n.value);
-    if (t === null || t.length > MAX_LABEL_CHARS) continue;
-    out.push({ key: n.key, frame: n.frame, t, labelLike: isLabelLike(t) });
-  }
-  labelIndex.set(w, out);
-  return out;
+interface LabelIndex {
+  byTop: LabelText[];
+  tall: LabelText[];
+  /** The tallest text in byTop. */
+  maxH: number;
 }
 
-/** Nearest short static text to the left on the same row, else directly above. `labelOnly` keeps texts that pass isLabelLike. */
+/** Texts taller than this go in LabelIndex.tall. Chosen so ordinary lines and wrapped labels stay in the bands; not measured. */
+const TALL_TEXT = 200;
+const labelIndex = new WeakMap<WindowState, LabelIndex>();
+/** Whitespace that clean() would change: a run, a tab or line break, or space at either end. */
+const UNCLEAN = /\s\s|[^\S ]|^\s|\s$/;
+
+function labelTexts(w: WindowState): LabelIndex {
+  let idx = labelIndex.get(w);
+  if (idx !== undefined) return idx;
+  const byTop: LabelText[] = [];
+  const tall: LabelText[] = [];
+  let maxH = 0;
+  let order = 0;
+  for (const n of w.nodes.values()) {
+    if (n.role !== "AXStaticText" || n.frame === undefined) continue;
+    const raw = n.label ?? n.value;
+    if (raw === undefined || raw.length === 0) continue;
+    // With nothing to collapse, cleaning leaves the text as it is, so a long one is over the cap without running the replace.
+    const unclean = UNCLEAN.test(raw);
+    if (!unclean && raw.length > MAX_LABEL_CHARS) continue;
+    const t = unclean ? clean(raw) : raw;
+    if (t === null || t.length > MAX_LABEL_CHARS) continue;
+    const e: LabelText = { key: n.key, frame: n.frame, t, labelLike: isLabelLike(t), order: order++ };
+    // A negative height would break the band's bounds; such a frame is read on every query instead.
+    if (n.frame[3] > TALL_TEXT || !(n.frame[3] >= 0)) tall.push(e);
+    else {
+      byTop.push(e);
+      if (n.frame[3] > maxH) maxH = n.frame[3];
+    }
+  }
+  byTop.sort((a, b) => a.frame[1] - b.frame[1] || a.order - b.order);
+  idx = { byTop, tall, maxH };
+  labelIndex.set(w, idx);
+  return idx;
+}
+
+/** The first index in `xs`, sorted by top edge, whose top is at least `y`. */
+function firstTopAtLeast(xs: readonly LabelText[], y: number): number {
+  let lo = 0;
+  let hi = xs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((xs[mid] as LabelText).frame[1] < y) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Nearest short static text to the left on the same row, else directly above. `labelOnly` keeps texts
+ * that pass isLabelLike. Only texts whose top is in the band a match can lie in are read, then in
+ * document order, so the result is the one a scan of every text gives.
+ */
 export function nearestText(w: WindowState, target: Node, labelOnly = false): string | null {
   const f = target.frame;
   if (f === undefined) return null;
   const [fx, fy, , fh] = f;
   const cy = fy + fh / 2;
+  const idx = labelTexts(w);
+  // Same row: the text's centre within max(fh, h) / 2 of the field's. Above: its bottom within MAX_ABOVE_GAP over the field's top.
+  const m = Math.max(fh, idx.maxH);
+  const lo = Math.min(cy - m / 2 - idx.maxH / 2, fy - MAX_ABOVE_GAP - idx.maxH);
+  const hi = Math.max(cy + m / 2, fy + 4);
+  const band: LabelText[] = [...idx.tall];
+  for (let i = firstTopAtLeast(idx.byTop, lo); i < idx.byTop.length; i++) {
+    const e = idx.byTop[i] as LabelText;
+    if (e.frame[1] > hi) break;
+    band.push(e);
+  }
+  band.sort((a, b) => a.order - b.order);
   let left: { d: number; t: string } | null = null;
   let above: { d: number; t: string } | null = null;
-  for (const e of labelTexts(w)) {
+  for (const e of band) {
     if (e.key === target.key || (labelOnly && !e.labelLike)) continue;
     const [x, y, wd, h] = e.frame;
     const right = x + wd;
