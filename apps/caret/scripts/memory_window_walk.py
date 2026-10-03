@@ -266,6 +266,12 @@ def main():
     except SystemExit as stop:
         status = str(stop)
         ow.log(status)
+    except Exception as e:
+        # A crash is a failure, never "done".
+        import traceback
+        status = f"error: {e!r}"
+        result["traceback"] = traceback.format_exc()
+        ow.log(status)
     finally:
         dog.__exit__()
         if os.path.exists(os.path.join(run_dir, "host.log")):
