@@ -11,7 +11,7 @@
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt } from "node:crypto";
-import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppRef, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
+import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppRef, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { CalendarPort, ReaderLink, UrlOpener } from "./means.ts";
@@ -503,16 +503,27 @@ export class Executor {
     this.progress(task, "acting", i, `write ${attribute}; expect ${prediction}`);
     const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value, taskId: task.id };
     await this.deps.beforeAct?.(task.id, i);
-    let seen: Change[];
-    try {
-      seen = await this.act(task, verb, w.window.windowId);
-    } catch (e) {
-      // An axError may come after the value was set (a timeout while the reader settles and re-walks),
-      // so the write is recorded as if it happened. Undo restores it only if the field holds `value`.
-      if (attribute === "value" && e instanceof StepStop && e.message.includes("axError")) {
-        task.ledger.push({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value });
+    const sent = async (v: ReaderVerb): Promise<Change[]> => {
+      try {
+        return await this.act(task, v, w.window.windowId);
+      } catch (e) {
+        // An axError may come after the value was set (a timeout while the reader settles and re-walks),
+        // so the write is recorded as if it happened. Undo restores it only if the field holds `value`.
+        if (attribute === "value" && e instanceof StepStop && e.message.includes("axError")) {
+          task.ledger.push({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value });
+        }
+        throw e;
       }
-      throw e;
+    };
+    let seen = await sent(verb);
+    // B15: a web view whose window is not key answers a value write with ok and changes nothing. Then the
+    // field is focused, its text selected and replaced, as typing would; the comparison below checks it.
+    if (attribute === "value" && this.dropped(w.window.windowId, node.key, before, seen)) {
+      // Something else at work in the window stops the run before Caret writes again.
+      this.checkUnexpected(seen, node.key);
+      this.checkInterrupt(task);
+      this.progress(task, "acting", i, `insert; the value write changed nothing, so focus, select all and replace; expect ${prediction}`);
+      seen = [...seen, ...(await sent({ ...verb, attribute: "insert" }))];
     }
 
     const after = this.window(w.window.windowId);
@@ -643,6 +654,12 @@ export class Executor {
       await this.sleep(EFFECT_POLL_MS);
       seen.push(...(await this.walk(w)));
     }
+  }
+
+  /** The reader answered a value write with ok, yet the field still holds what it held before and the model recorded no change to it. */
+  private dropped(windowId: string, key: string, before: string, seen: readonly Change[]): boolean {
+    const now = this.deps.model.windows.get(windowId)?.nodes.get(key);
+    return now !== undefined && (now.value ?? "") === before && !seen.some((c) => c.kind === "value" && c.key === key);
   }
 
   /** A field the step did not target changed while it acted: something other than the plan is at work. */
@@ -800,7 +817,19 @@ export class Executor {
     // The reader acts only on an element it saw in a walk the executor asked for, so undo reads first.
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
     if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
-    const r = await this.deps.reader.run({ kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id });
+    const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id };
+    const seen: Change[] = [];
+    const off = this.deps.onChanges((cs) => {
+      for (const c of cs) if (c.windowId === e.windowId) seen.push(c);
+    });
+    let r: VerbResult;
+    try {
+      r = await this.deps.reader.run(restore);
+      // The same fallback as the run's own writes, for an app that drops value writes.
+      if (r.outcome === "ok" && this.dropped(e.windowId, e.key, e.after, seen)) r = await this.deps.reader.run({ ...restore, attribute: "insert" });
+    } finally {
+      off();
+    }
     if (r.outcome !== "ok") return r.outcome === "changed" ? `the field changed after Caret wrote it (${r.detail ?? "no detail"})` : `${r.outcome}: ${r.detail ?? ""}`;
     const now = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if ((now?.value ?? "") !== e.before) return `after the restore the field holds '${clip(now?.value ?? "(gone)")}'`;

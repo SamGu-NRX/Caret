@@ -41,6 +41,8 @@ describe("golden protocol fixture", () => {
     expect(HelperToReader.safeParse({ ...write, verb: { ...verb, taskId: "" } }).success).toBe(false);
     const { taskId: _, ...bare } = verb;
     expect(HelperToReader.safeParse({ ...write, verb: bare }).success).toBe(true);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "insert" } }).success).toBe(true);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "paste" } }).success).toBe(false);
   });
 
   it("carries the host's window identity, a fill's source apps, and done and undo counts", () => {

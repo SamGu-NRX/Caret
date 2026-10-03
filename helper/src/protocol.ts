@@ -182,8 +182,12 @@ export const ReaderCommand = z.object({
       windowId: z.string(),
       key: z.string(),
       role: z.string(),
-      /** "value" sets AXValue; "focused" sets AXFocused to true and ignores `value`. */
-      attribute: z.enum(["value", "focused"]),
+      /**
+       * "value" sets AXValue. "focused" sets AXFocused to true and ignores `value`. "insert" focuses the
+       * field, selects all of its text and replaces the selection with `value`, as typing over it would:
+       * the executor's fallback when an app answers a value write with success and changes nothing (B15).
+       */
+      attribute: z.enum(["value", "focused", "insert"]),
       /** The value the field must hold right before the write; "" for empty. */
       expect: z.string(),
       value: z.string(),

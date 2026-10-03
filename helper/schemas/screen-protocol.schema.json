@@ -5773,7 +5773,8 @@
                       "type": "string",
                       "enum": [
                         "value",
-                        "focused"
+                        "focused",
+                        "insert"
                       ]
                     },
                     "expect": {

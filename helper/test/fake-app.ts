@@ -18,8 +18,10 @@ export class FakeApp implements ReaderLink {
   focusedKey: string | null = null;
   readonly verbs: ReaderVerb[] = [];
   readonly buttons = new Map<string, (app: FakeApp) => void>();
-  /** Makes value writes report success while changing nothing, as Chromium does in the background. */
+  /** Makes value writes report success while changing nothing, as a web view whose window is not key does (B15). */
   dropWrites = false;
+  /** The same for focus-and-insert. */
+  dropInserts = false;
   /** Sets the value but answers axError, as a reader that timed out while settling does. */
   timeoutAfterWrite = false;
   /** Answers this many walks with axError first, as a walk cut short by a busy app is. */
@@ -91,9 +93,10 @@ export class FakeApp implements ReaderLink {
     if (n.role !== verb.role) return { outcome: "changed", detail: `role is ${n.role}` };
     if (verb.kind === "write") {
       if (n.states?.includes("secure")) return { outcome: "secure", detail: null };
-      if (verb.attribute === "value") {
+      if (verb.attribute === "value" || verb.attribute === "insert") {
         if ((n.value ?? "") !== verb.expect) return { outcome: "changed", detail: `value is '${n.value ?? ""}'` };
-        if (!this.dropWrites) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
+        if (verb.attribute === "insert") this.focusedKey = verb.key;
+        if (!(verb.attribute === "value" ? this.dropWrites : this.dropInserts)) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
         if (this.timeoutAfterWrite) return { outcome: "axError", detail: "no answer from the reader within 5000 ms" };
       } else this.focusedKey = verb.key;
     } else {

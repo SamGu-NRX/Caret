@@ -281,6 +281,12 @@ private func goldenLines() throws -> [Data] {
             #expect(bad != grant && bad != write)
             #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
         }
+        let insert = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"insert""#)
+        guard case .readerCommand(let ins) = try JSONDecoder().decode(Message.self, from: Data(insert.utf8)),
+              case let .write(_, _, _, _, attribute, _, _, _) = ins.verb else { Issue.record("an insert write does not decode"); return }
+        #expect(attribute == "insert")
+        let paste = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"paste""#)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(paste.utf8)) }
         let bare = write.replacingOccurrences(of: #","taskId":"offer-5""#, with: "")
         guard case .readerCommand(let noTask) = try JSONDecoder().decode(Message.self, from: Data(bare.utf8)) else { Issue.record("a write without taskId does not decode"); return }
         #expect(noTask.verb.taskId == nil)

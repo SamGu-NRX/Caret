@@ -81,14 +81,47 @@ describe("executor", () => {
     expect(await helper.executor.run("t3", plan([front], "p3"), {})).toMatchObject({ outcome: "done", acted: 0, skipped: 1 });
   });
 
-  it("aborts on a mismatch and names the step: the write reports success but nothing changed", async () => {
+  it("aborts on a mismatch and names the step: the write and its insert fallback report success but nothing changed", async () => {
     app.dropWrites = true;
+    app.dropInserts = true;
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 0 });
     expect(r.detail).toMatch(/^mismatch/);
     expect(stopReason(r.taskId)).toBe("mismatch");
     expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", step: 0, says: `${K("textfield:name~0")} holds Dana` });
-    expect(acts()).toHaveLength(1); // the second step never ran
+    // The value write, then the insert fallback; the second step never ran.
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "insert"]);
+  });
+
+  it("falls back to focus-and-insert when a value write is answered ok and changes nothing, and undoes the same way", async () => {
+    app.dropWrites = true;
+    const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(r).toMatchObject({ outcome: "done", acted: 1 });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("d@example.com");
+    expect(progress("t1").filter((p) => p.phase === "acting").map((p) => p.detail?.split(";")[0])).toEqual(["write value", "insert"]);
+    expect(acts().map((v) => (v.kind === "write" ? [v.attribute, v.expect] : v.kind))).toEqual([["value", "old@example.com"], ["insert", "old@example.com"]]);
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+  });
+
+  it("does not insert when another field changed while the dropped value write was on its way", async () => {
+    app.dropWrites = true;
+    app.afterVerb = (a, v) => {
+      if (v.kind === "write" && v.attribute === "value") {
+        a.setValue(K("textfield:name~0"), "someone else");
+        a.show();
+      }
+    };
+    const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+    expect(stopReason("t1")).toBe("changed");
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value"]);
+  });
+
+  it("does not insert after a value write the app took and reformatted", async () => {
+    app.normalize = (v) => v.toUpperCase();
+    await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value"]);
   });
 
   it("aborts when a field the step did not target changes while it acts", async () => {
