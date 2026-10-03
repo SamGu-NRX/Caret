@@ -1,0 +1,1 @@
+Host: KeyType's FocusedFieldSnapshot.caretRect is AppKit (bottom-left); the gate, surfaces and perch need FocusedFieldSnapshot.caretRectAX, or the gate tests a mirrored point and holds ghost text as covered.

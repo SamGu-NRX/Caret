@@ -1,0 +1,1 @@
+fill_acceptance popup needs the reader started with --act-pids: the executor writes through reader verbs, and without it the run stops with notAllowed and the host shows 'The form changed'.
