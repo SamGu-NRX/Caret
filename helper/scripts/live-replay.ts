@@ -8,8 +8,9 @@
 //
 //   node scripts/live-replay.ts --out DIR [--fill-dir DIR] [--sets cal-1,cal-2,...] [--compare FILE]
 //     [--variants "sources in Messages,..."] [--rules on|off|on,off] [--no-look] [--spend-limit USD]
+//     [--fixes "B13,..."]
 //
-// --variants, --rules and --no-look run part of it again, to see how much of a difference is Jev
+// --variants, --rules, --fixes and --no-look run part of it again, to see how much of a difference is Jev
 // answering differently on a second ask.
 //
 // Fill: each set is a fill calibration recording (reader-record.ndjson and gold.json from the
@@ -52,6 +53,7 @@ const { values: a } = parseArgs({
     rules: { type: "string", default: "on,off" },
     "no-look": { type: "boolean", default: false },
     "spend-limit": { type: "string", default: "0.29" },
+    fixes: { type: "string" },
   },
 });
 /** The run stops before spending more than this on Jev (--spend-limit). B13's brief allows $0.30 across its runs. */
@@ -221,6 +223,7 @@ for (const set of (a.sets ?? "").split(",").filter((s) => s !== "")) {
     if (a.variants !== undefined && !a.variants.split(",").includes(variant)) continue;
     for (const on of CAPS) {
       for (const fix of FIXES) {
+        if (a.fixes !== undefined && !a.fixes.split(",").includes(fix.name)) continue;
         // The comparison runs where conversations are cut: the Messages variants with the rule on.
         if (fix.name !== "B13" && !(variant !== "as recorded" && on)) continue;
         if (variant === "long Messages threads" && !on) continue;
