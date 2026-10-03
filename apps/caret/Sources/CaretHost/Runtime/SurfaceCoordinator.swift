@@ -47,8 +47,7 @@ final class SurfaceCoordinator {
     private let decor = HostedPanel(radius: 0, material: false)
     private let ownGhost = HostedPanel(radius: 0, material: false)
     /// Where the open list went for the shown offer, chosen once so the arrows never move it.
-    private var listFrame: CGRect?
-    private var listAbove = false
+    private var listSpot: FieldPanelPlacement.Choice?
     private let list = HostedPanel(radius: 8)
     private var panel = HostedPanel(radius: 10)
     /// Where the panel was placed around its field, and with what it was measured, so a redraw
@@ -273,28 +272,25 @@ final class SurfaceCoordinator {
         drawList(draw)
     }
 
-    /// The open list sits below the field, clear of the next field and its label; it flips above
-    /// only when below would cover something and above would not.
+    /// The open list goes where a pop-up would (`FieldPanelPlacement`): below the field, clear of
+    /// the next field and its label; else above, else beside the field. Chosen once per opening, so
+    /// the arrows never move it. A10's filled-field run showed the old below-or-above choice over
+    /// the first field putting the list on the window's title bar.
     private func drawList(_ draw: AlternativesDraw) {
         guard draw.ui.open else { return list.exit(duration: 0) }
         let candidates = draw.candidates
         let view = AlternativesListView(candidates: candidates, current: draw.ui.candidate)
-        let size = list.measure(view)
-        let x = draw.caret.minX - 12
-        let below = CGRect(x: x, y: draw.field.maxY + 6, width: size.width, height: size.height)
-        let above = CGRect(x: x, y: draw.field.minY - 6 - size.height, width: size.width, height: size.height)
-        if !list.isVisible || listFrame == nil {
-            let obstacles = ObstacleProbe.obstacles(pid: draw.pid, under: [below, above])
-                .filter { !$0.insetBy(dx: -2, dy: -2).contains(draw.field) }
-            let choice = PanelPlacement.choose([below, above], obstacles: obstacles, bounds: Screen.axVisibleFrame(around: draw.field))
-            listFrame = choice.frame
-            listAbove = choice.index == 1
+        if !list.isVisible || listSpot == nil {
+            let probe = ObstacleProbe.Session(pid: draw.pid, until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)
+            let choice = FieldPanelPlacement.choose(
+                field: draw.field, caret: draw.caret, size: list.measure(view), narrow: nil,
+                bounds: Screen.axVisibleFrame(around: draw.field), obstacles: { probe.under([$0]) }
+            )
+            listSpot = choice
+            status.increment("surface.list.\(choice.spot.rawValue)")
         }
-        let frame = Screen.cocoa(listFrame ?? below)
-        list.pin(HostedPanel.Anchor(
-            corner: listAbove ? .bottomLeft : .topLeft,
-            point: NSPoint(x: frame.minX, y: listAbove ? frame.minY : frame.maxY)
-        ))
+        guard let spot = listSpot else { return }
+        list.pin(HostedPanel.Anchor(corner: Self.corner(spot.spot.corner), point: Self.cocoaPoint(spot)))
         list.setContent(view)
         list.text = candidates.prefix(3).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: " | ")
         if !list.panel.isVisible || list.isExiting { list.panel.alphaValue = 1; list.panel.orderFrontRegardless() }
@@ -313,7 +309,7 @@ final class SurfaceCoordinator {
     }
 
     private func clearCaret() {
-        listFrame = nil
+        listSpot = nil
         ghost.hide()
         ownGhost.exit(duration: 0)
         decor.exit(duration: 0)

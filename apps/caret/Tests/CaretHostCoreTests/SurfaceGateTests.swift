@@ -72,12 +72,4 @@ final class SurfaceGateTests: XCTestCase {
         XCTAssertFalse(SurfaceGate.fitsInField(ghost: CGRect(x: 714, y: 138, width: 400, height: 16), field: field, textAfterCaret: false), "runs past the field")
         XCTAssertFalse(SurfaceGate.fitsInField(ghost: CGRect(x: 714, y: 138, width: 120, height: 16), field: field, textAfterCaret: true), "would cover text after the caret")
     }
-
-    func testTheListGoesBelowUnlessThatCoversAField() {
-        let bounds = CGRect(x: 0, y: 0, width: 1512, height: 982)
-        let below = CGRect(x: 700, y: 170, width: 300, height: 90), above = CGRect(x: 700, y: 30, width: 300, height: 90)
-        XCTAssertEqual(PanelPlacement.choose([below, above], obstacles: [], bounds: bounds).index, 0)
-        let next = CGRect(x: 710, y: 186, width: 320, height: 24)
-        XCTAssertEqual(PanelPlacement.choose([below, above], obstacles: [next], bounds: bounds).index, 1, "flips above when below covers a field")
-    }
 }

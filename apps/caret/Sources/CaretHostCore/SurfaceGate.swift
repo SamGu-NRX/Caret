@@ -86,18 +86,3 @@ public enum SurfaceGate {
         !textAfterCaret && field.insetBy(dx: 1, dy: 0).contains(ghost.insetBy(dx: 0.5, dy: 0.5))
     }
 }
-
-/// Where a panel goes among candidate frames: the first that is on screen and covers nothing,
-/// else the one covering least. Frames are global, top-left origin.
-public enum PanelPlacement {
-    public static func choose(_ candidates: [CGRect], obstacles: [CGRect], bounds: CGRect) -> (frame: CGRect, index: Int, overlap: CGFloat) {
-        var best: (CGRect, Int, CGFloat)?
-        for (i, frame) in candidates.enumerated() where bounds.contains(frame) {
-            let overlap = obstacles.map { $0.intersection(frame) }.filter { !$0.isNull }.reduce(0) { $0 + $1.width * $1.height }
-            if overlap == 0 { return (frame, i, 0) }
-            if best == nil || overlap < best!.2 { best = (frame, i, overlap) }
-        }
-        if let best { return (best.0, best.1, best.2) }
-        return (candidates[0], 0, .infinity)
-    }
-}

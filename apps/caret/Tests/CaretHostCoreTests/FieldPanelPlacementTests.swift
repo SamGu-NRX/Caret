@@ -43,6 +43,17 @@ final class FieldPanelPlacementTests: XCTestCase {
         assertCoversNothing(choice, others + [phone])
     }
 
+    /// A10's filled-field run: the open list over Full name went above, onto the title bar.
+    func testTheListOverTheFirstFieldGoesBesideItNotOntoTheTitleBar() {
+        let f = form()
+        let name = f.fields[0]
+        let others = f.fields.filter { $0 != name } + f.labels + [f.titleBar]
+        let list = CGSize(width: 400, height: 100)
+        let choice = FieldPanelPlacement.choose(field: name, caret: caret(in: name), size: list, narrow: nil, bounds: screen, obstacles: probe(others))
+        XCTAssertEqual(choice.spot, .right)
+        assertCoversNothing(choice, others)
+    }
+
     func testBelowWinsWhereThereIsRoom() {
         // Higher on the screen than A9's window, so the card fits under Promo code.
         let f = form(windowY: 300)
