@@ -274,3 +274,23 @@ describe("B13 review: a field that changes meaning while Jev answers", () => {
     expect(recheckFill(m, p)).toBe(`the field ${EMAIL} now reads differently`);
   });
 });
+
+describe("B13: candidate facts", () => {
+  it("does not label a web address with the email line above it, and keeps a real label", () => {
+    const m = new ScreenModel();
+    const sig = (key: string, label: string, y: number) => text(`sig/${key}`, label, [100, y, 240, 18]);
+    m.apply(
+      snap([sig("name", "Dana Whitfield", 60), sig("email", "dana@example.com", 120), sig("url", "https://example.com/dana", 140), sig("label", "Website", 200), sig("url2", "https://example.com/docs", 220)], {
+        at: 1000,
+        windowId: "6464-1",
+        title: "Notes",
+        app: NOTES,
+        values: [value("email", "dana@example.com", "sig/email"), value("url", "https://example.com/dana", "sig/url"), value("url", "https://example.com/docs", "sig/url2")],
+      }),
+    );
+    m.apply(scheduleForm(2000, ["Website"]));
+    const by = new Map(collectCandidates(m, FORM, { now: 3000 }).candidates.map((c) => [c.text, c]));
+    expect(by.get("https://example.com/dana")?.context).toBeNull();
+    expect(by.get("https://example.com/docs")?.context).toBe("Website");
+  });
+});

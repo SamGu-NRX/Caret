@@ -1,5 +1,7 @@
 // The candidate generator as it was before B6 (commit 129b4b3), frozen as the reference that the
-// early-capped generator must reproduce exactly. Not used by the helper.
+// early-capped generator must reproduce exactly. Not used by the helper. One deliberate change since
+// is carried over so the two stay comparable: a text holding a typed value is not a label (B13,
+// src/fill/descriptor.ts labelTexts).
 import type { Frame, Node, ValueKind } from "../src/protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../src/model.ts";
 import { isLabelLike } from "../src/fill/descriptor.ts";
@@ -129,10 +131,11 @@ function short(s: string): string | null {
   return t.length <= MAX_CONTEXT_CHARS ? t : `${t.slice(0, MAX_CONTEXT_CHARS - 1)}…`;
 }
 
-/** Nearest short static text to the left on the same row, else directly above. */
-function nearestText(w: WindowState, target: Node, accept: (t: string) => boolean = () => true): string | null {
+/** Nearest short static text to the left on the same row, else directly above. With `accept`, a text holding a typed value is skipped too. */
+function nearestText(w: WindowState, target: Node, accept?: (t: string) => boolean): string | null {
   const f = target.frame;
   if (f === undefined) return null;
+  const holdsValue = accept === undefined ? new Set<string>() : new Set(w.values.map((v) => v.nodeKey));
   const [fx, fy, , fh] = f;
   const cy = fy + fh / 2;
   let left: { d: number; t: string } | null = null;
@@ -140,7 +143,7 @@ function nearestText(w: WindowState, target: Node, accept: (t: string) => boolea
   for (const n of w.nodes.values()) {
     if (n.role !== "AXStaticText" || n.frame === undefined || n.key === target.key) continue;
     const t = clean(n.label ?? n.value);
-    if (t === null || t.length > MAX_LABEL_CHARS || !accept(t)) continue;
+    if (t === null || t.length > MAX_LABEL_CHARS || holdsValue.has(n.key) || (accept !== undefined && !accept(t))) continue;
     const [x, y, wd, h] = n.frame;
     const right = x + wd;
     const textCy = y + h / 2;
