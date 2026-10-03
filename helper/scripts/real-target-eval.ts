@@ -5,11 +5,13 @@
 //   chromium  Google Chrome (direct exec) with a temporary --user-data-dir, on the same form by file:// URL
 //
 //   node scripts/real-target-eval.ts --target T --bin ../apps/screen-reader/.build/debug --probe PATH --out DIR
-//        [--runs 20] [--safety-runs 10] [--means-runs 10] [--plans a,b] [--background]
+//        [--runs 20] [--safety-runs 10] [--means-runs 10] [--plans a,b] [--background | --front]
 //
 // --background puts this script's own bystander fixture in front (started with --foreground, then
 // `activate legacy`), so the target's window is not key while the executor acts, as for a form the user
-// is not looking at. The means table runs each reader means alone, N times, read back from the target.
+// is not looking at. --front (webkit only) starts the WebKit fixture with --foreground, activates it and
+// makes its WebKit window key, as Chrome and TextEdit are when launched. The means table runs each reader
+// means alone, N times, read back from the target.
 //
 // Per plan and run: reset the target, seed prior values, run the plan the way an accepted offer runs it
 // (with a grant), read the target's true state (the page's own JavaScript, or for TextEdit the probe's
@@ -45,6 +47,7 @@ const { values: a } = parseArgs({
     "safety-runs": { type: "string", default: "10" },
     "means-runs": { type: "string", default: "10" },
     background: { type: "boolean", default: false },
+    front: { type: "boolean", default: false },
     plans: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "real-eval.sock") },
   },
@@ -60,6 +63,8 @@ const RUNS = Number(a.runs);
 const SAFETY_RUNS = Number(a["safety-runs"]);
 const MEANS_RUNS = Number(a["means-runs"]);
 const BACKGROUND = a.background === true;
+const FRONT = a.front === true;
+if (FRONT && (BACKGROUND || TARGET !== "webkit")) throw new Error("--front is for --target webkit, without --background");
 const FORM = resolve(import.meta.dirname, "../fixtures/web/form.html");
 const TEXTEDIT = "/System/Applications/TextEdit.app/Contents/MacOS/TextEdit";
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -229,6 +234,8 @@ interface Target {
   fieldFocused(): Promise<boolean>;
   /** A press with a checkable effect: the button's label and a check on the target's state; null when the target has none. */
   press: { label: string; done: (s: State) => boolean } | null;
+  /** Makes the target the active app with its form window key (--front); only the WebKit fixture can be asked. */
+  front?(): Promise<void>;
   /** The plan window's window server number, once the reader has read it; a target whose checks find windows by title switches to it. */
   bind?(number: number): void;
   stop(): Promise<void>;
@@ -342,7 +349,7 @@ function webTarget(pid: number, win: WindowSel, js: (expr: string) => Promise<un
 }
 
 async function webkitTarget(): Promise<Target> {
-  const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(BIN), ["--windows", "executor", "--webkit", pathToFileURL(FORM).href, "--duration", "3600"]);
+  const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(BIN), ["--windows", "executor", "--webkit", pathToFileURL(FORM).href, "--duration", "3600", ...(FRONT ? ["--foreground"] : [])]);
   started("webkit fixture", fixture);
   const lines = lineReader(fixture, "the webkit fixture");
   const first = await lines.next();
@@ -358,7 +365,14 @@ async function webkitTarget(): Promise<Target> {
     return r.value;
   };
   await until("the page to load", async () => (await ask("web typeof caretState")).value === "function");
-  return webTarget(pid, { titleStartsWith: "Caret Fixture — WebKit" }, js, async () => "Caret Fixture — Executor", async () => void fixture.kill("SIGTERM"));
+  const t = webTarget(pid, { titleStartsWith: "Caret Fixture — WebKit" }, js, async () => "Caret Fixture — Executor", async () => void fixture.kill("SIGTERM"));
+  t.front = async () => {
+    for (const cmd of ["activate legacy", "focus webkit"]) {
+      const r = await ask(cmd);
+      if (r.ok !== true) throw new Error(`webkit ${cmd}: ${String(r.error)}`);
+    }
+  };
+  return t;
 }
 
 async function chromiumTarget(): Promise<Target> {
@@ -626,11 +640,19 @@ if (target.bind !== undefined) {
 // Chrome builds its web tree some time after the reader asks for it: plans start once the fields are there.
 const sf = target.safetyField;
 await until("the target's fields in the screen model", () => [...(windowOf(target.pid, titlePrefix)?.nodes.values() ?? [])].some((n) => n.role === sf.role && (sf.label === "" || n.label === sf.label)), 30_000);
+if (FRONT) {
+  await target.front?.();
+  await until("the WebKit fixture to be frontmost", () => switches.at(-1)?.to.pid === target.pid, 5000).catch((e: unknown) => {
+    throw new Error(`${String(e)}; app switches seen: ${JSON.stringify(switches.map((x) => [x.to.name, x.to.pid]))}, fixture pid ${target.pid}`);
+  });
+}
 if (BACKGROUND) {
   // The bystander is this script's own process; it takes the foreground so the target's window is not key.
   bystander.stdin.write("activate legacy\n");
   await bystanderLines.next();
-  await until("the bystander to be frontmost", () => switches.at(-1)?.to.pid === bystanderPid, 5000);
+  await until("the bystander to be frontmost", () => switches.at(-1)?.to.pid === bystanderPid, 5000).catch((e: unknown) => {
+    throw new Error(`${String(e)}; app switches seen: ${JSON.stringify(switches.map((x) => [x.to.name, x.to.pid]))}, bystander pid ${bystanderPid}`);
+  });
 }
 
 // MARK: - plans
@@ -857,7 +879,7 @@ const notDone = rows.filter((x) => !x.claimedDone);
 if (notDone.length > 0) md.push("", "Runs that did not finish:", ...notDone.map((x) => `- ${x.plan} ${x.run}: ${x.outcome} at step ${x.step}: ${x.detail}`));
 md.push(
   "",
-  `## Means, each alone (${BACKGROUND ? "target in the background: this script's fixture is in front" : "target as launched"})`,
+  `## Means, each alone (${BACKGROUND ? "target in the background: this script's fixture is in front" : FRONT ? "WebKit fixture activated, its form window key" : "target as launched"})`,
   "",
   "Landed is read from the target: the field holds the value written, it has the focus, or the press's effect shows. Silent means the reader answered ok and nothing landed.",
   "",
@@ -889,7 +911,7 @@ md.push("", `## Frontmost app changes during the run`, "", switches.length === 0
 md.push("", `## Cleanup`, "", `Processes still carrying this run's temporary profile after Chrome exited, then stopped: ${leftoverHelpers}. TextEdit processes before: [${textEditBefore.join(", ")}], after: [${textEditAfter.join(", ")}]. New entries in TextEdit's autosave and saved-state folders: ${JSON.stringify(autosave)}.`);
 md.push("", `Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}. Helper errors: ${errors.length}.`);
 writeFileSync(join(OUT, "real-target-eval.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "real-target-eval.json"), JSON.stringify({ target: TARGET, background: BACKGROUND, aborted, rows, means, safety: sr, progress, errors, switches, jevCalls, jevCost, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
+writeFileSync(join(OUT, "real-target-eval.json"), JSON.stringify({ target: TARGET, background: BACKGROUND, front: FRONT, aborted, rows, means, safety: sr, progress, errors, switches, jevCalls, jevCost, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
 writeFileSync(join(OUT, "reader.log"), readerLog);
 console.log(md.join("\n"));
 process.exit(aborted === null ? 0 : 3);

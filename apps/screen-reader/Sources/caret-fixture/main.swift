@@ -826,7 +826,8 @@ func focusCommand(_ name: String) -> [String: Any] {
     guard let w = namedWindows()[name] else { return ["ok": false, "error": "no window named \(name)"] }
     w.makeKey()
     let field = w.contentView.flatMap { firstTextField(in: $0) }
-    if let f = field { _ = w.makeFirstResponder(f) } else { _ = w.makeFirstResponder(w.contentView) }
+    // The WebKit window's page takes keys and edits only while the web view is first responder.
+    if let wv = webView, wv.window === w { _ = w.makeFirstResponder(wv) } else if let f = field { _ = w.makeFirstResponder(f) } else { _ = w.makeFirstResponder(w.contentView) }
     return ["ok": true, "at": ms(), "key": NSApp.keyWindow?.title ?? NSNull(), "isKey": w.isKeyWindow]
 }
 

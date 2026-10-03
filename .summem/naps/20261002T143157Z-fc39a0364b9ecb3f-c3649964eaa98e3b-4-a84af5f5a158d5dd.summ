@@ -1,0 +1,1 @@
+No SQLite writes on the gate's event path (buffer, flush on tick). Pending watch: status text and a vanishing progress bar arrive in separate snapshots; keep the trailing debounce. Background-only fixture: stdin 'focus NAME' still moves AX focus. No execFileSync in eval polls.
