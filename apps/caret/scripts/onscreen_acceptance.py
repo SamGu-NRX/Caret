@@ -238,6 +238,8 @@ def ask(out_dir, appearance):
     results["steps"].append({"step": "text", "shot": own_window_shot(out_dir, "ask-2-text", lw)})
 
     def press(name, done):
+        p = sa.host("perch")
+        results.setdefault("keyState", []).append({"key": name, "isKey": p.get("isKey"), "askEditing": p.get("askEditing"), "front": sa.front_pid()})
         r = pid_keys(h.pid, name)
         landed = sa.wait_for(done, 3, 0.1)
         results["delivery"][name] = "pid-keys" if landed else "socket hook (real key did not land)"

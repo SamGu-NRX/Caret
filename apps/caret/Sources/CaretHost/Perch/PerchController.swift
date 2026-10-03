@@ -399,6 +399,9 @@ final class PerchController {
     }
 
     private func renderList() {
+        // A new root view loses the field's keyboard focus; give it back if it had it.
+        let fieldHadFocus = list.panel.isKeyWindow && list.panel.firstResponder is NSTextView
+        defer { if fieldHadFocus { askModel.focusToken &+= 1 } }
         let page = center.page(pages: donePages)
         drawnAsk = ask.phase
         drawnHint = AskSection.showsHint(text: ask.text, phase: ask.phase)
@@ -463,6 +466,8 @@ final class PerchController {
         var overlapsField: Bool?
         var overlapsCaret: Bool?
         var isKey: Bool
+        /// The list is key and the ask field holds the keyboard (its field editor is first responder).
+        var askEditing: Bool
         /// The window server's numbers for the perch and the list, for window-only screenshots.
         var windowNumber: Int
         var listWindowNumber: Int
@@ -494,6 +499,7 @@ final class PerchController {
             targetWindow: box(target?.frame), avoid: avoid,
             overlapsField: choice?.overlapsField, overlapsCaret: choice?.overlapsCaret,
             isKey: panel.isKeyWindow || list.panel.isKeyWindow,
+            askEditing: list.panel.isKeyWindow && list.panel.firstResponder is NSTextView,
             windowNumber: panel.windowNumber, listWindowNumber: list.panel.windowNumber, listOpen: listOpen, listOnScreen: list.panel.isVisible,
             rows: center.page(pages: donePages).rows, more: center.page(pages: donePages).more, donePages: donePages,
             incomplete: center.feed.incomplete, feedSeq: center.feed.seq, listed: center.feed.listed,
