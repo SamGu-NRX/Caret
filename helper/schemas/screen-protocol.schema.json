@@ -1327,7 +1327,8 @@
                         "type": "string",
                         "enum": [
                           "disagree",
-                          "lowConfidence"
+                          "lowConfidence",
+                          "sourceCut"
                         ]
                       },
                       {
@@ -1336,58 +1337,68 @@
                     ]
                   },
                   "asks": {
-                    "type": "array",
-                    "prefixItems": [
+                    "anyOf": [
                       {
-                        "type": "object",
-                        "properties": {
-                          "choice": {
-                            "type": "string"
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "choice": {
+                                "type": "string"
+                              },
+                              "confidence": {
+                                "type": "number"
+                              },
+                              "value": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "choice",
+                              "confidence",
+                              "value"
+                            ],
+                            "additionalProperties": false
                           },
-                          "confidence": {
-                            "type": "number"
-                          },
-                          "value": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
+                          {
+                            "type": "object",
+                            "properties": {
+                              "choice": {
+                                "type": "string"
+                              },
+                              "confidence": {
+                                "type": "number"
+                              },
+                              "value": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "choice",
+                              "confidence",
+                              "value"
+                            ],
+                            "additionalProperties": false
                           }
-                        },
-                        "required": [
-                          "choice",
-                          "confidence",
-                          "value"
                         ],
-                        "additionalProperties": false
+                        "items": false,
+                        "minItems": 2,
+                        "maxItems": 2
                       },
                       {
-                        "type": "object",
-                        "properties": {
-                          "choice": {
-                            "type": "string"
-                          },
-                          "confidence": {
-                            "type": "number"
-                          },
-                          "value": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          }
-                        },
-                        "required": [
-                          "choice",
-                          "confidence",
-                          "value"
-                        ],
-                        "additionalProperties": false
+                        "type": "array",
+                        "prefixItems": [],
+                        "items": false,
+                        "maxItems": 0
                       }
-                    ],
-                    "items": false,
-                    "minItems": 2,
-                    "maxItems": 2
+                    ]
                   }
                 },
                 "required": [

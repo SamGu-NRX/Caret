@@ -9,14 +9,17 @@
 // (~/.caret-run/evidence/screen/fill-distractors/fill-eval.md), so agreement and the cutoff exist
 // to turn those into blanks.
 import { randomInt, randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type Node } from "../protocol.ts";
+import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type Node, type ValueKind } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
-import { describeCandidate, generateCandidates, type Candidate } from "./candidates.ts";
+import { candidateKinds, collectCandidates, cutKinds, describeCandidate, type Candidate } from "./candidates.ts";
+import { fieldKinds } from "./kinds.ts";
 import { SnippetLedger, type Snippet } from "../privacy.ts";
 import { describeField } from "./descriptor.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 
 export const NONE = "none";
+/** The proposal's model name when a cut withheld every field and Jev was not asked. */
+export const NOT_ASKED = "not asked";
 export const FILLABLE_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "AXComboBox"]);
 /** A form question beyond this many fields is cut to the fields nearest the trigger. Assumed. */
 export const MAX_FIELDS = 20;
@@ -127,6 +130,11 @@ export interface FillOptions {
   newId?: () => string;
   /** Windows that give no candidates. */
   exclude?: ReadonlySet<string>;
+  /**
+   * False turns off the source-cut rule, for the live replay's measure of what it costs and saves
+   * (scripts/live-replay.ts). The helper never sets it.
+   */
+  cutRule?: boolean;
 }
 
 export async function proposeFill(
@@ -145,17 +153,28 @@ export async function proposeFill(
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const ledger = new SnippetLedger();
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
-  const fields: { id: string; node: Node; descriptor: string; name: string }[] = [];
+  const fields: { id: string; node: Node; descriptor: string; name: string; kinds: Set<ValueKind> }[] = [];
   for (const n of formFields(w, triggerKey)) {
     const d = describeField(w, n);
     if (!ledger.take(w, "descriptor", [d.label, d.nearest, d.placeholder, d.section])) {
       if (n.key === triggerKey) throw new FillError(`the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
       continue;
     }
-    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field" });
+    const kinds = fieldKinds([d.label, d.nearest, d.placeholder]);
+    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field", kinds });
   }
-  const candidates = generateCandidates(model, windowId, undefined, now, ledger, opts.exclude);
+  const { candidates, cut } = collectCandidates(model, windowId, { now, ledger, ...(opts.exclude === undefined ? {} : { exclude: opts.exclude }) });
   if (candidates.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
+
+  // A window's budget can cut the value a field wants and keep another of the same kind: with the
+  // calibration sources as Messages windows, the cap cut the meeting block and Jev filled Meeting date
+  // with the order's Placed date (~/.caret-run/evidence/screen/b11/live/live-replay.md). So a field
+  // whose kind lost a value to a cut is not asked, since its candidates of that kind are a partial set,
+  // and an asked field's pick of such a kind is not proposed. A blank costs the user a paste; a wrong
+  // fill costs their trust.
+  const removed = opts.cutRule === false ? new Set<ValueKind>() : cutKinds(model, cut, ledger);
+  const isCut = (kinds: ReadonlySet<ValueKind>): boolean => [...kinds].some((k) => removed.has(k));
+  const asked = fields.filter((f) => !isCut(f.kinds));
 
   // The second ask sees the same candidates in another order under other ids, so neither position
   // nor id can carry a choice from one ask to the other. Windows keep their recency order and only
@@ -165,10 +184,10 @@ export async function proposeFill(
   const order = shuffledWithinWindows(candidates, opts.rand);
   const second = order.map((c, i) => ({ ...c, id: `v${i + 1}` }));
   const back = new Map(second.map((c, i) => [c.id, order[i]?.id ?? ""]));
-  const [r1, r2] = await Promise.all([
-    askJev(buildFillRequest(w, fields, candidates, 0, ledger.snippets, title)),
-    askJev(buildFillRequest(w, fields, second, 1, ledger.snippets, title)),
-  ]);
+  const [r1, r2] =
+    asked.length === 0
+      ? [null, null]
+      : await Promise.all([askJev(buildFillRequest(w, asked, candidates, 0, ledger.snippets, title)), askJev(buildFillRequest(w, asked, second, 1, ledger.snippets, title))]);
 
   const byId = new Map(candidates.map((c) => [c.id, c]));
   const readAsk = (r: JevResult, fieldId: string, mapId: (id: string) => string | undefined): FillAsk => {
@@ -182,12 +201,25 @@ export async function proposeFill(
   };
 
   const out: FillField[] = fields.map((f) => {
+    if (r1 === null || r2 === null || !asked.includes(f)) {
+      return { key: f.node.key, frame: f.node.frame ?? null, descriptor: f.descriptor, choice: NONE, confidence: 0, value: null, source: null, withheld: "sourceCut", asks: [] };
+    }
     const a1 = readAsk(r1, f.id, (id) => id);
     const a2 = readAsk(r2, f.id, (id) => back.get(id));
     const agree = a1.choice === a2.choice;
     const confidence = agree ? Math.min(a1.confidence, a2.confidence) : 0;
-    const withheld = a1.choice === NONE && a2.choice === NONE ? null : !agree ? "disagree" : confidence < cutoff ? "lowConfidence" : null;
-    const c = withheld === null && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    const picked = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
+    const withheld =
+      a1.choice === NONE && a2.choice === NONE
+        ? null
+        : !agree
+          ? "disagree"
+          : picked !== undefined && isCut(candidateKinds(model, picked))
+            ? "sourceCut"
+            : confidence < cutoff
+              ? "lowConfidence"
+              : null;
+    const c = withheld === null ? picked : undefined;
     return {
       key: f.node.key,
       frame: f.node.frame ?? null,
@@ -212,12 +244,10 @@ export async function proposeFill(
     triggerKey,
     fields: out,
     candidates: candidates.length,
-    jev: {
-      model: r1.model,
-      latencyMs: Math.max(r1.latencyMs, r2.latencyMs),
-      inputTokens: r1.inputTokens + r2.inputTokens,
-      costUsd: r1.costUsd + r2.costUsd,
-    },
+    jev:
+      r1 === null || r2 === null
+        ? { model: NOT_ASKED, latencyMs: 0, inputTokens: 0, costUsd: 0 }
+        : { model: r1.model, latencyMs: Math.max(r1.latencyMs, r2.latencyMs), inputTokens: r1.inputTokens + r2.inputTokens, costUsd: r1.costUsd + r2.costUsd },
     cutoff,
   };
 }

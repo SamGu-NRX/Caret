@@ -79,6 +79,13 @@ export interface GeneratorProfile {
   blockHead: number;
 }
 
+export interface Collected {
+  candidates: Candidate[];
+  stats: GenerateStats;
+  /** Windows the ledger closed: a span of theirs did not fit their budget, so what followed it was not offered. */
+  cut: string[];
+}
+
 export interface GenerateStats {
   /** Windows, typed values and nodes the generator looked at before it had enough or ran out of time. */
   windows: number;
@@ -96,7 +103,7 @@ export interface GenerateStats {
  * make the cut, so the cost follows the cap rather than the screen. The output is the same as building
  * every span and keeping the first `max`, as the generator did before B6 (test/legacy-candidates.ts).
  */
-export function collectCandidates(model: ScreenModel, targetWindowId: string, o: GenerateOptions = {}): { candidates: Candidate[]; stats: GenerateStats } {
+export function collectCandidates(model: ScreenModel, targetWindowId: string, o: GenerateOptions = {}): Collected {
   const max = o.max ?? MAX_CANDIDATES;
   const now = o.now ?? Date.now();
   const clock = o.clock ?? (() => performance.now());
@@ -162,10 +169,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     out.push(c);
   };
   const touched = new Set<string>();
-  const finish = (): { candidates: Candidate[]; stats: GenerateStats } => {
+  const finish = (): Collected => {
     stats.windows = touched.size;
     stats.ms = clock() - t0;
-    return { candidates: out, stats };
+    return { candidates: out, stats, cut: [...closed] };
   };
 
   for (const w of windows) {
@@ -213,6 +220,33 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
 /** The candidates for a fill; see collectCandidates. With a ledger, each window gives only what fits its budget. */
 export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now(), ledger?: SnippetLedger, exclude?: ReadonlySet<string>): Candidate[] {
   return collectCandidates(model, targetWindowId, { max, now, ...(ledger === undefined ? {} : { ledger }), ...(exclude === undefined ? {} : { exclude }) }).candidates;
+}
+
+/**
+ * The kinds of value the privacy budget kept out of a request: each typed value (the reader's, with its
+ * kind) of a window the ledger cut that no candidate text taken into the request contains. A value
+ * offered from another window, or inside a longer line that was taken, is not kept out.
+ */
+export function cutKinds(model: ScreenModel, cut: readonly string[], ledger: SnippetLedger): Set<ValueKind> {
+  const out = new Set<ValueKind>();
+  if (cut.length === 0) return out;
+  // One string, so each value is one search; NUL appears in no screen text, so a match never spans two texts.
+  const taken = ledger.snippets.filter((s) => s.kind === "candidate").map((s) => s.text).join("\u0000");
+  for (const id of cut) {
+    const w = model.windows.get(id);
+    if (w === undefined) continue;
+    for (const v of w.values) if (!out.has(v.kind) && w.nodes.has(v.nodeKey) && !taken.includes(v.text)) out.add(v.kind);
+  }
+  return out;
+}
+
+/** The kinds of the reader's typed values a candidate's text holds, its own kind included. */
+export function candidateKinds(model: ScreenModel, c: Candidate): Set<ValueKind> {
+  const out = new Set<ValueKind>(c.kind === null ? [] : [c.kind]);
+  for (const v of model.windows.get(c.source.windowId)?.values ?? []) {
+    if (c.text.includes(v.text) || (v.nodeKey === c.source.nodeKey && v.text.includes(c.text))) out.add(v.kind);
+  }
+  return out;
 }
 
 /** The screen text describeCandidate puts in a request for this candidate: the span, its facts, and its window's title. */
