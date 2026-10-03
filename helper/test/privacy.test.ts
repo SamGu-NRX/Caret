@@ -1,6 +1,7 @@
 // The privacy line, checked on every Jev request the producers and the first look make over the
 // synthetic sessions. The onboarding copy promises: "To decide what to offer, Caret sends short snippets
-// to a cloud model, such as a field's label and the values it might fill. Never whole windows."
+// to a cloud model, such as a field's label and the values it might fill. Never a whole document or
+// conversation."
 //
 // A recorder wraps the Jev client and keeps each request with the text of every window in the model at
 // that moment. A window's text is its title and every line of its nodes' labels, values and placeholders,
@@ -16,6 +17,10 @@
 // 3. No whole window. A window that is not a card of values (at most 24 lines, none over 80 characters)
 //    keeps more than half its text out of every request. A card may go out whole: its lines are each a
 //    value a fill might copy. That exemption is a decision, not a measurement, and the report says so.
+// 3a. No conversation, whole or half. The sessions name their conversation windows themselves (chats,
+//    a mail thread, agent threads), apart from conversation.ts. However short, each keeps more than half
+//    its text out of every request and gives at most CONVERSATION_CHARS, 600; the card exemption never
+//    applies to one. The short-chat sessions run once more with the rule off to show they went out whole.
 // 4. Nothing from a window that is not a source. Text unique to a window the request does not name in
 //    its snippets never appears, descriptors come from the one window the question is about, and the
 //    sessions' bystander windows (paragraphs no fill can use) give nothing to any request.
@@ -31,8 +36,8 @@ import type { WindowState } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type Node, type ReaderMessage, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { resolveTarget } from "../src/executor/target.ts";
-import { WINDOW_CHARS } from "../src/privacy.ts";
-import { FIXTURE_APP, focus, node, snap, text } from "./builders.ts";
+import { CONVERSATION_CHARS, WINDOW_CHARS, setConversationCap } from "../src/privacy.ts";
+import { FIXTURE_APP, field, focus, node, snap, text, value } from "./builders.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
 import { CODEX, T3, agentSnap, codexWindow, t3Window } from "./agent-fixtures.ts";
@@ -130,7 +135,7 @@ function measure(r: Recorded): WindowMeasure[] {
 }
 
 /** Every way the request breaks the line, as sentences naming windows and lengths, never the text. */
-function violations(r: Recorded, bystanders: ReadonlySet<string>): string[] {
+function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations: ReadonlySet<string> = CONVERSATIONS): string[] {
   const out: string[] = [];
   const body = bodyOf(r.req);
   const where = `${r.session} / ${r.producer}`;
@@ -158,6 +163,10 @@ function violations(r: Recorded, bystanders: ReadonlySet<string>): string[] {
     if (m.covered > WINDOW_CHARS) out.push(`${where}: ${m.covered} characters from ${m.windowId}, over ${WINDOW_CHARS}`);
     if (!m.card && m.covered * 2 >= m.chars && m.covered > 0) out.push(`${where}: ${m.covered} of ${m.chars} characters of ${m.windowId}, half or more of a window that is not a card`);
     if (bystanders.has(m.windowId) && m.covered > 0) out.push(`${where}: ${m.covered} characters from bystander ${m.windowId}`);
+    if (conversations.has(m.windowId) && m.covered > 0) {
+      if (m.covered * 2 >= m.chars) out.push(`${where}: ${m.covered} of ${m.chars} characters of conversation ${m.windowId}, half or more`);
+      if (m.covered > CONVERSATION_CHARS) out.push(`${where}: ${m.covered} characters from conversation ${m.windowId}, over ${CONVERSATION_CHARS}`);
+    }
   }
   return out;
 }
@@ -256,28 +265,103 @@ function notesWindow(at: number): ReaderMessage {
 }
 
 /**
- * A chat of 40 short, different messages, each one a fill could take: not a card, so a request may carry
- * less than half of it. Without the budget the generator would take every line.
+ * A chat of 40 short, different messages, each one a fill could take, every line naming its sender and
+ * time: a conversation, so a request may carry less than half of it and at most 600 characters. Without
+ * the budget the generator would take every line.
  */
 const CHAT = "7171-1";
 function chatWindow(at: number): ReaderMessage {
-  const lines = Array.from({ length: 40 }, (_, i) => text(`dev.caret.chat/standard/statictext:m${i}~0`, `Message ${i}: table ${i} is set for the ${i + 4} guests`));
+  const lines = Array.from({ length: 40 }, (_, i) =>
+    text(`dev.caret.chat/standard/statictext:m${i}~0`, `${i % 2 === 0 ? "Kofi Mensah" : "Aiko Tanaka"}, table ${i} is set for ${i + 4} guests, ${(i % 12) + 1}:${String(i).padStart(2, "0")} PM`),
+  );
   return snap(lines, { at, windowId: CHAT, app: { pid: 7171, bundleId: "dev.caret.chat", name: "Chat" }, title: "Team chat" });
 }
 
+/**
+ * Short chats, each small enough to pass as a card (24 lines or fewer, none over 80 characters), so that
+ * before B11 a fill could carry every line. The values the form wants are in them, as messages.
+ */
+const SHORT_CHAT = "7272-1";
+const MESSAGES_CHAT = "7373-1";
+const COMPOSER_CHAT = "7474-1";
+const MAIL_THREAD = "7575-1";
+const CHECKOUT = "5150-2";
+/** Ten lines: two senders, four times and four messages, in rows as Slack or a web chat draws them. */
+function shortChat(at: number): ReaderMessage {
+  const K = "dev.caret.webchat/standard/statictext";
+  const rows: [string, string, string][] = [
+    ["Dana Whitfield", "3:41 PM", "Can you send the vendor form back today?"],
+    ["Kofi Mensah", "3:42 PM", "Sure, which email should I put on it?"],
+    ["Dana Whitfield", "3:44 PM", "dana.whitfield@example.com"],
+    ["Kofi Mensah", "3:45 PM", "Got it, sending in ten"],
+  ];
+  const nodes = rows.flatMap(([who, when, body], i) => [
+    text(`${K}:sender${i}~0`, who, [100, 40 + i * 60, 140, 18]),
+    text(`${K}:time${i}~0`, when, [250, 40 + i * 60, 60, 18]),
+    text(`${K}:body${i}~0`, body, [100, 62 + i * 60, 500, 18]),
+  ]);
+  return snap(nodes, {
+    at,
+    windowId: SHORT_CHAT,
+    app: { pid: 7272, bundleId: "dev.caret.webchat", name: "Browser" },
+    title: "Chat with Dana",
+    focused: true,
+    values: [value("email", "dana.whitfield@example.com", `${K}:body2~0`)],
+  });
+}
+/** Six lines in Messages: its bundle id alone makes it a conversation. */
+function messagesChat(at: number): ReaderMessage {
+  const K = "com.apple.MobileSMS/standard/statictext";
+  const lines = ["Dana", "Are we still on for Thursday?", "Yes, 3 PM at the office", "My cell is +1 (512) 555-0142", "Perfect, see you", "Read"];
+  return snap(
+    lines.map((l, i) => text(`${K}:l${i}~0`, l, [100, 40 + i * 30, 400, 18])),
+    { at, windowId: MESSAGES_CHAT, app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" }, title: "Dana Whitfield", focused: true, values: [value("phone", "+1 (512) 555-0142", `${K}:l3~0`)] },
+  );
+}
+/** A web chat with no times: five lines and the message composer at the bottom. */
+function composerChat(at: number): ReaderMessage {
+  const K = "dev.caret.helpdesk/standard";
+  const lines = ["Support", "Hi Dana, how can we help?", "My order ORD-2026-48213 has not shipped", "Sorry about that, checking now", "It ships tomorrow"];
+  return snap(
+    [...lines.map((l, i) => text(`${K}/statictext:l${i}~0`, l, [100, 40 + i * 30, 400, 18])), field(`${K}/textarea:composer~0`, "", { role: "AXTextArea", frame: [40, 520, 700, 50], placeholder: "Write a message" })],
+    { at, windowId: COMPOSER_CHAT, app: { pid: 7474, bundleId: "dev.caret.helpdesk", name: "Helpdesk" }, title: "Support chat", focused: true },
+  );
+}
+/** A short mail thread in a mail app: a conversation by bundle id. */
+function mailThread(at: number): ReaderMessage {
+  const K = "com.apple.mail/standard/statictext";
+  const lines = ["Dana Whitfield <dana.whitfield@example.com>", "Re: vendor form", "Thanks Kofi, my name on it should be Dana Whitfield.", "Dana"];
+  return snap(
+    lines.map((l, i) => text(`${K}:l${i}~0`, l, [100, 40 + i * 30, 500, 18])),
+    { at, windowId: MAIL_THREAD, app: { pid: 7575, bundleId: "com.apple.mail", name: "Mail" }, title: "Re: vendor form", focused: true, values: [value("email", "dana.whitfield@example.com", `${K}:l0~0`)] },
+  );
+}
+/** The form the chats' values go into, focused last. */
+function checkout(at: number): ReaderMessage[] {
+  const F = "dev.caret.fixture/standard/textfield";
+  const fields = ["Name", "Email", "Phone"].map((label, i) => field(`${F}:${label.toLowerCase()}~0`, "", { label, frame: [100, 40 + i * 40, 200, 24] }));
+  return [snap(fields, { at, windowId: CHECKOUT, title: "Checkout", focused: true }), focus(CHECKOUT, `${F}:name~0`, at + 100)];
+}
+const shortChats = (): ReaderMessage[] => [mailThread(1000), composerChat(1100), messagesChat(1200), shortChat(1300), ...checkout(3000)];
+
 const all: Recorded[] = [];
 const BYSTANDERS = new Set([NOTES]);
+/** The sessions' conversation windows, named here rather than found by conversation.ts. */
+const CONVERSATIONS = new Set([CHAT, SHORT_CHAT, MESSAGES_CHAT, COMPOSER_CHAT, MAIL_THREAD, "8101-1", "8202-1"]);
 
-async function run(name: string, body: (s: Session) => Promise<void>): Promise<Recorded[]> {
+async function run(name: string, body: (s: Session) => Promise<void>, keep = true): Promise<Recorded[]> {
   const s = new Session(name);
   try {
     await body(s);
   } finally {
     s.close();
   }
-  all.push(...s.recorded);
+  if (keep) all.push(...s.recorded);
   return s.recorded;
 }
+
+/** Requests recorded with the conversation rule off, for the report's before-and-after; checked apart from `all`. */
+const capOff: Recorded[] = [];
 
 describe("the privacy line on every Jev request", () => {
   it("fill: a form beside a mail, a chat and private notes, then a first look", async () => {
@@ -367,17 +451,67 @@ describe("the privacy line on every Jev request", () => {
     expect(Math.max(...rec.flatMap(measure).filter((m) => m.windowId === NOTES).map((m) => m.covered))).toBeLessThanOrEqual(120);
   });
 
+  it("short chats: a ten-line chat, a Messages thread, a help chat with a composer and a mail thread beside a form", async () => {
+    const rec = await run("short chats", async (s) => {
+      await s.replay(shortChats(), "fill on focus");
+      await s.firstLook();
+    });
+    expect(rec.map((r) => r.producer)).toEqual(["fill on focus", "fill on focus", "first look", "first look"]);
+    expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
+    // Fill still takes a value from a message: the address Dana sent in the chat.
+    expect(rec.filter((r) => r.producer === "fill on focus").every((r) => bodyOf(r.req).includes('"dana.whitfield@example.com"'))).toBe(true);
+    // Each chat gave something, and none gave half.
+    const took = new Set(rec.flatMap(measure).filter((m) => m.covered > 0).map((m) => m.windowId));
+    for (const id of [SHORT_CHAT, MESSAGES_CHAT, MAIL_THREAD]) expect(took, id).toContain(id);
+  });
+
+  it("the same short chats went out whole with the conversation rule off, and the check catches that", async () => {
+    setConversationCap(false);
+    let rec: Recorded[];
+    try {
+      rec = await run("short chats, rule off", (s) => s.replay(shortChats(), "fill on focus"), false);
+    } finally {
+      setConversationCap(true);
+    }
+    capOff.push(...rec);
+    const whole = new Set(rec.flatMap(measure).filter((m) => m.covered >= m.chars).map((m) => m.windowId));
+    expect(whole).toContain(SHORT_CHAT);
+    expect(rec.flatMap((r) => violations(r, BYSTANDERS)).some((v) => v.includes(`conversation ${SHORT_CHAT}, half or more`))).toBe(true);
+  });
+
   it("catches what it is for: a request that pastes a window, or names text it did not declare", () => {
     const w: WindowText = { windowId: "x-1", title: "Big", lines: Array.from({ length: 60 }, (_, i) => `A line of the window, number ${i}`), chars: 0, card: false };
     w.chars = w.lines.reduce((n, l) => n + l.length, 0);
     const pasted: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: w.lines.join("\n") }, questions: {}, snippets: w.lines.map((t) => ({ windowId: "x-1", kind: "candidate", text: t })) } };
     expect(violations(pasted, new Set())).toEqual([expect.stringContaining("over 1200"), expect.stringContaining("half or more")]);
+    // A short chat that is a card: the card rule lets it go whole, the conversation rule does not.
+    const chat: WindowText = { windowId: "c-1", title: "Chat", lines: ["Dana", "3:41 PM", "see you at five", "Kofi", "3:42 PM", "on my way"], chars: 0, card: true };
+    chat.chars = chat.lines.reduce((n, l) => n + l.length, 0);
+    const chatWhole: Recorded = { session: "s", producer: "p", windows: [chat], req: { state: { now: chat.lines.join("\n") }, questions: {}, snippets: chat.lines.map((t) => ({ windowId: "c-1", kind: "candidate", text: t })) } };
+    expect(violations(chatWhole, new Set(), new Set())).toEqual([]);
+    expect(violations(chatWhole, new Set(), new Set(["c-1"]))).toEqual([expect.stringContaining("conversation c-1, half or more")]);
     const sneaky: Recorded = { ...pasted, req: { state: { now: w.lines.slice(0, 2).join("\n") }, questions: {}, snippets: [] } };
     const found = violations(sneaky, new Set(["x-1"]));
     expect(found.filter((v) => v.includes("undeclared line"))).toHaveLength(2);
     expect(found.filter((v) => v.includes("a window it does not name"))).toHaveLength(2);
     expect(found.filter((v) => v.includes("from bystander x-1"))).toHaveLength(1);
   });
+
+  /** For each session's window that any request took from: the most one request took, and its share of the window. */
+  const perWindow = (recs: readonly Recorded[]) => {
+    const best = new Map<string, { session: string; title: string; windowId: string; conversation: boolean; card: boolean; chars: number; covered: number; share: number }>();
+    for (const r of recs) {
+      for (const m of measure(r)) {
+        if (m.covered === 0) continue;
+        const k = `${r.session}\u0000${m.windowId}`;
+        const share = m.covered / m.chars;
+        if ((best.get(k)?.share ?? -1) >= share) continue;
+        const title = r.windows.find((w) => w.windowId === m.windowId)?.title ?? m.windowId;
+        best.set(k, { session: r.session, title, windowId: m.windowId, conversation: CONVERSATIONS.has(m.windowId), card: m.card, chars: m.chars, covered: m.covered, share: Math.round(share * 1000) / 1000 });
+      }
+    }
+    return [...best.values()].sort((a, b) => b.share - a.share);
+  };
 
   afterAll(() => {
     const ms = all.map((r) => ({ r, m: measure(r) }));
@@ -398,6 +532,15 @@ describe("the privacy line on every Jev request", () => {
       mostFromOneWindow: top === undefined ? null : { covered: top.covered, ofChars: top.chars, card: top.card, session: top.session, producer: top.producer },
       highestShareOfANonCardWindow: nonCard.length === 0 ? 0 : Math.max(...nonCard),
       highestShareOfACard: card.length === 0 ? 0 : Math.max(...card),
+      conversationCharsBound: CONVERSATION_CHARS,
+      conversationsSeen: [...CONVERSATIONS].filter((id) => all.some((r) => r.windows.some((w) => w.windowId === id))).length,
+      conversationsSentWhole: perWindow(all).filter((x) => x.conversation && x.covered >= x.chars).map((x) => `${x.session}: ${x.title}`),
+      highestShareOfAConversation: Math.max(0, ...perWindow(all).filter((x) => x.conversation).map((x) => x.share)),
+      mostFromAConversation: Math.max(0, ...perWindow(all).filter((x) => x.conversation).map((x) => x.covered)),
+      /** Every window a request took from, with the most any one request took and the share of the window that was. */
+      largestPerWindow: perWindow(all),
+      /** The short-chat session again with the conversation rule off, as the helper behaved before B11. */
+      ruleOff: perWindow(capOff),
     };
     if (process.env.PRIVACY_REPORT !== undefined) writeFileSync(process.env.PRIVACY_REPORT, `${JSON.stringify(report, null, 2)}\n`);
   });
