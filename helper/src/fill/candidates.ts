@@ -6,7 +6,7 @@ import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, type SnippetLedger } from "../privacy.ts";
-import { kindTerm, overlap, words } from "./kinds.ts";
+import { isKindTerm, kindTerm, overlap, words } from "./kinds.ts";
 
 export interface Candidate {
   id: string;
@@ -150,15 +150,23 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   };
   /** Windows whose budget a candidate did not fit; nothing more is taken from them. */
   const closed = new Set<string>();
-  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): void => {
-    if (full() || seen.has(text) || closed.has(w.window.windowId)) return;
+  /** Windows a span of which did not fit their budget, closed or not. */
+  const missed = new Set<string>();
+  /**
+   * Adds a span unless the cap is reached, its text is already in, or its window is closed. A lean span
+   * goes in with its window's title and no facts, which addFacts may give it later. A span that does not
+   * fit its window's budget closes the window, unless `skip`, when the next span may still fit. Returns
+   * the candidate, or null when it was not added.
+   */
+  const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null, lean = false, skip = false): Candidate | null => {
+    if (full() || seen.has(text) || closed.has(w.window.windowId)) return null;
     const c: Candidate = {
       id: `c${out.length + 1}`,
       text,
       kind,
-      context: timed("context", context),
-      section: timed("section", () => sectionAround(w, node)),
-      blockHead: timed("blockHead", () => blockHead(w, node, text)),
+      context: lean ? null : timed("context", context),
+      section: lean ? null : timed("section", () => sectionAround(w, node)),
+      blockHead: lean ? null : timed("blockHead", () => blockHead(w, node, text)),
       recency: recency(w),
       source: {
         pid: w.app.pid,
@@ -171,17 +179,31 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       },
     };
     if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
-      closed.add(w.window.windowId);
-      return;
+      missed.add(w.window.windowId);
+      if (!skip) closed.add(w.window.windowId);
+      return null;
     }
     seen.add(text);
     out.push(c);
+    return c;
+  };
+  /** Gives a lean candidate the facts its window's budget still holds: all three, else its label and section, else none. */
+  const addFacts = (w: WindowState, node: Node, c: Candidate, context: () => string | null): void => {
+    const label = timed("context", context);
+    const section = timed("section", () => sectionAround(w, node));
+    const head = timed("blockHead", () => blockHead(w, node, c.text));
+    for (const [cx, sx, hx] of [[label, section, head], [label, section, null]] as const) {
+      if (o.ledger?.take(w, "candidate", candidateTexts({ ...c, context: cx, section: sx, blockHead: hx })) === true) {
+        Object.assign(c, { context: cx, section: sx, blockHead: hx });
+        return;
+      }
+    }
   };
   const touched = new Set<string>();
   const finish = (): Collected => {
     stats.windows = touched.size;
     stats.ms = clock() - t0;
-    return { candidates: out, stats, cut: [...closed] };
+    return { candidates: out, stats, cut: [...missed] };
   };
 
   /** Conversations whose budget went by relevance; the line pass leaves them alone. */
@@ -251,10 +273,33 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       }
     }
     for (let i = 0; i < spans.length; i++) if (!used.has(i)) order.push(i);
-    for (const i of order) {
+    // Every typed value of a kind some field takes goes in first, bare, so a cut leaves out a value of
+    // that kind (cutKinds) only when the window holds more of them than its budget: with their facts,
+    // four spans used up the Reference window's 220 characters as a Messages window and the cut rule
+    // withheld most fields (B12 replay). Lines are not among them, since the reader reports each value
+    // in a line as a typed value of its own. Then those values get their facts while they fit, then the
+    // rest go in with theirs. A typed value that does not fit is passed over, so a long address does not
+    // shut out a short date after it; any other span that does not fit closes the window, as in screen order.
+    const kinds = new Set(fields.flatMap((f) => [...f].filter(isKindTerm)));
+    const takesKind = (i: number): boolean => {
+      const k = spans[i]?.kind;
+      return k !== null && k !== undefined && kinds.has(kindTerm(k));
+    };
+    const bare: [Candidate, (typeof spans)[number]][] = [];
+    for (const i of order.filter(takesKind)) {
       if (full() || outOfTime()) return false;
-      if (closed.has(w.window.windowId)) break;
       const sp = spans[i] as (typeof spans)[number];
+      const c = add(w, sp.node, sp.text, sp.kind, sp.context, true, true);
+      if (c !== null) bare.push([c, sp]);
+    }
+    for (const [c, sp] of bare) {
+      if (outOfTime()) return false;
+      addFacts(w, sp.node, c, sp.context);
+    }
+    for (const i of order.filter((x) => !takesKind(x))) {
+      if (full() || outOfTime()) return false;
+      const sp = spans[i] as (typeof spans)[number];
+      if (closed.has(w.window.windowId)) break;
       add(w, sp.node, sp.text, sp.kind, sp.context);
     }
     return true;

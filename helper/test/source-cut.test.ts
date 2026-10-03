@@ -267,8 +267,23 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     for (const [l, v] of [...ranked, ...inOrder]) expect(v === null || v === GOLD[l as string], `${l}: ${v}`).toBe(true);
     const filled = (m: Map<unknown, string | null>) => [...m.values()].filter((v) => v !== null).length;
     expect(filled(ranked)).toBeGreaterThan(filled(inOrder));
+    expect(ranked.get("Meeting date")).toBe("Thursday, October 8, 2026");
     expect(ranked.get("Start time")).toBe("3:00 PM");
     expect(ranked.get("Attendee email")).toBe("dana.whitfield@lumenlabs.example");
+  });
+
+  it("takes every value of a kind the form asks for before any facts, so the cut leaves those kinds whole", () => {
+    const m = model();
+    const ledger = new SnippetLedger();
+    const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: terms });
+    // The window still gives under half its text...
+    expect(cut).toEqual([REF]);
+    expect(ledger.chars(REF)).toBeLessThanOrEqual(windowBudget(m.windows.get(REF)!));
+    // ...but every date, time, URL and email in it is offered, so no field of those kinds is withheld.
+    const removed = cutKinds(m, cut, ledger);
+    for (const k of ["date", "time", "url", "email"] as const) expect(removed.has(k), k).toBe(false);
+    const texts = candidates.map((c) => c.text);
+    for (const v of m.windows.get(REF)!.values.filter((x) => ["date", "time", "url", "email"].includes(x.kind))) expect(texts).toContain(v.text);
   });
 
   it("goes round the fields: each field's best line before any field's second", () => {
@@ -278,7 +293,7 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     m.apply(
       snap(
         lines.map((l, i) => text(`c${i}`, l)),
-        { at: 1000, windowId: CHAT, app: MESSAGES, title: "Kofi", values: [value("amount", "$120.00", "c1"), value("amount", "$15.00", "c2")] },
+        { at: 1000, windowId: CHAT, app: MESSAGES, title: "Kofi", values: [value("amount", "$120.00", "c1"), value("amount", "$15.00", "c2"), value("id", "4417", "c3")] },
       ),
     );
     m.apply(scheduleForm(2000, ["Parking total", "Gate code"]));

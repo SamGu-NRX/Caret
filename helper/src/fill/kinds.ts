@@ -48,6 +48,7 @@ export function words(s: string | null | undefined): string[] {
 
 /** A kind as a term, so a field and a candidate of the same kind share a term whatever their words. */
 export const kindTerm = (k: ValueKind): string => `#${k}`;
+export const isKindTerm = (t: string): boolean => t.startsWith("#");
 
 /** A field's terms: its label words and the kinds they name. */
 export function fieldTerms(labelWords: readonly (string | null | undefined)[]): Set<string> {
