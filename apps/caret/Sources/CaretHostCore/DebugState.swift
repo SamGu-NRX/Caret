@@ -324,6 +324,46 @@ public struct DebugState: Codable, Equatable, Sendable {
         }
     }
 
+    /// The debug socket's `onboarding` reply (`OnboardingFlow.debugInfo`).
+    public struct OnboardingInfo: Codable, Equatable, Sendable {
+        public struct TryItInfo: Codable, Equatable, Sendable {
+            /// The staged field's text: the synthetic sample value, or what the run typed.
+            public var value: String
+            public var offerVisible: Bool
+            public var completed: Bool
+            public var declined: Bool
+            public var tabs: Int
+        }
+
+        public var step: String
+        public var stepIndex: Int
+        public var roles: [String]
+        public var level: String
+        public var canContinue: Bool
+        public var finished: Bool
+        public var permissions: OnboardingPermissions?
+        public var showsInputMonitoring: Bool?
+        public var advancingAfterGrant: Bool?
+        public var tryIt: TryItInfo?
+        /// `idle`, `asking`, `found`, `nothing` or `failed`.
+        public var firstLook: String?
+        public var firstLookRequest: String?
+        public var firstLookKind: String?
+        public var firstLookTitle: String?
+        public var firstLookError: String?
+        /// The window is on screen. False on a run with `--onboarding hidden`.
+        public var windowShown: Bool?
+
+        public init(step: String, stepIndex: Int, roles: [String], level: String, canContinue: Bool, finished: Bool) {
+            self.step = step
+            self.stepIndex = stepIndex
+            self.roles = roles
+            self.level = level
+            self.canContinue = canContinue
+            self.finished = finished
+        }
+    }
+
     public struct UndoInfo: Codable, Equatable, Sendable {
         public var grantID: UInt64
         public var ok: Bool
