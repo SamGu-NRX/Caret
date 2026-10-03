@@ -118,6 +118,25 @@ describe("the executor's uses", () => {
     expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
   });
 
+  it("checks the entry at the write itself, after what is awaited before it (B17 fix-check)", async () => {
+    const id = helper.memory.addTyped({ label: "Name", value: "Sam Rivera", source: "typed" }, (l) => `typed:${l.toLowerCase()}`, 1).id;
+    const dir2 = mkdtempSync(join(tmpdir(), "caret-exec-mem-"));
+    const store2 = new Store(join(dir2, "data"));
+    const app2 = new FakeApp(executorWindow());
+    // The user forgets the entry while the step is about to act, after the step's own reads.
+    const h2: Helper = new Helper({ store: store2, memory: helper.memory, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => undefined, readerLink: app2, executorHooks: { beforeAct: async () => void h2.memory.forget(id, 2) } });
+    app2.helper = h2;
+    app2.show();
+    try {
+      const r = await h2.executor.run("t", plan([{ ...write(K("textfield:email~0"), "Sam Rivera"), memory: id }]), {});
+      expect(r).toMatchObject({ outcome: "stopped", acted: 0 });
+      expect(app2.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+    } finally {
+      store2.close();
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
   it("files a Pay hand-off under sensitive, a safe hand-off under nothing, and says when a run stopped", async () => {
     await helper.executor.run("t1", plan([{ says: "You press Pay", end: { kind: "handoff", window: W, target: { key: K("button:pay invoice~0"), describe: "the Pay invoice button" }, why: "money" } }]), {});
     await helper.executor.run("t2", plan([{ says: "You press Archive", end: { kind: "handoff", window: W, target: { key: K("button:archive~0"), describe: "the Archive button" }, why: "unverifiable" } }]), {});

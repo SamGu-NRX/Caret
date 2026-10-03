@@ -130,8 +130,9 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   // instruction names another section that has a field of the same label. A label only one section has
   // ("Phone" under Contact details) is still named by its own words.
   const sectionsSaid = new Set(fields.flatMap((f) => (f.section !== null && relevance(instruction, f.section) > 0 ? [f.section] : [])));
+  const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
   const outranked = (f: Field): boolean =>
-    f.section !== null && !sectionsSaid.has(f.section) && fields.some((g) => g !== f && g.section !== null && sectionsSaid.has(g.section) && g.label === f.label);
+    f.section !== null && !sectionsSaid.has(f.section) && fields.some((g) => g !== f && g.section !== null && sectionsSaid.has(g.section) && same(g.label, f.label));
   const named = new Set(fields.filter((f) => relevance(instruction, f.name) > 0 && !outranked(f)).map((f) => f.node.key));
   const askedFields = fields.filter((f) => taken.has(f.node.key) && (named.size === 0 || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
@@ -211,7 +212,13 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   const sources: Record<string, string> = {};
   // Writes come first, in order, so step i fills slot v<i+1>.
   for (const wr of checked.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;
-  const withSources: Plan = Object.keys(sources).length === 0 ? plan : { ...plan, sources };
+  // A value copied from memory names its entry, so the executor checks the entry still holds it right before
+  // the write: forgetting it after accepting the plan stops that write (B17 fix-check).
+  const steps2 = plan.steps.map((s, i) => {
+    const t = checked.writes.find((wr) => wr.step === i)?.trace;
+    return t?.from === "memory" ? { ...s, memory: t.id } : s;
+  });
+  const withSources: Plan = { ...plan, steps: steps2, ...(Object.keys(sources).length === 0 ? {} : { sources }) };
   return { plan: withSources, slots, checked, answers, withheld, jev };
 }
 

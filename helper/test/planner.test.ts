@@ -262,6 +262,15 @@ describe("planTask", () => {
     const two = plannerJev({ fields: { "Billing City": "Lisbon", "Contact details Phone": "555-0100" } });
     await planTask("Set the billing city to Lisbon and the phone to 555-0100", contact, mem(), opts(two));
     expect(sectionsAsked(two.requests[0] as JevRequest).sort()).toEqual(["Billing City", "Contact details Phone"]);
+    // Labels match whatever their case.
+    const cased = desk(executorWindow().map((n) => (n.key === K("group:shipping/textfield:city~0") ? { ...n, label: "city" } : n)));
+    const lower = plannerJev({ fields: { "Billing City": "Lisbon" } });
+    await planTask("Set the billing city to Lisbon", cased, mem(), opts(lower));
+    expect(sectionsAsked(lower.requests[0] as JevRequest)).toEqual(["Billing City"]);
+    // A value copied from memory names its entry on the step, for the executor's check at the write.
+    const fromMemory = plannerJev({ fields: { Name: "sam@work.example" } });
+    const dm = await planTask("Put my work email in Name", desk(), mem([{ id: "about-w", label: "Work email", text: "sam@work.example" }]), opts(fromMemory));
+    expect(dm.plan.steps.map((s) => s.memory)).toEqual(["about-w"]);
     // With no section named, a city is a city in either.
     const both = plannerJev({ fields: { "Shipping City": "Lisbon" } });
     await planTask("Set the city to Lisbon", desk(), mem(), opts(both));

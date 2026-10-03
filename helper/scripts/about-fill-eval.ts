@@ -115,9 +115,18 @@ const fieldOf = (instructions: string): FormField => {
   const m = /Label: '(.*?)'\.(?: |$)|Placeholder: '(.*?)'\.(?: |$)/.exec(instructions);
   const name = m?.[1] ?? m?.[2] ?? "";
   const section = /Section: '(.*?)'\.(?: |$)/.exec(instructions)?.[1] ?? null;
-  // The descriptor cuts a long label with an ellipsis (descriptor.ts).
-  const same = (x: string | null): boolean => x !== null && (x === name || (name.endsWith("…") && x.startsWith(name.slice(0, -1))));
-  const hits = (current?.fields ?? []).filter((x) => same(x.label ?? x.placeholder) && x.section === section);
+  // As the descriptor reads them (descriptor.ts): whitespace collapsed, a long label cut with an ellipsis, and a
+  // section past 60 characters left out.
+  const clean = (x: string | null): string | null => (x === null ? null : x.replace(/\s+/g, " ").trim() || null);
+  const sectionAsRead = (x: string | null): string | null => {
+    const c = clean(x);
+    return c !== null && c.length <= 60 ? c : null;
+  };
+  const same = (raw: string | null): boolean => {
+    const x = clean(raw);
+    return x !== null && (x === name || (name.endsWith("…") && x.startsWith(name.slice(0, -1))));
+  };
+  const hits = (current?.fields ?? []).filter((x) => same(x.label ?? x.placeholder) && sectionAsRead(x.section) === section);
   if (hits.length !== 1) throw new Error(`question names '${name}' in section '${section}', which matches ${hits.length} fields of ${current?.id}`);
   return hits[0] as FormField;
 };

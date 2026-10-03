@@ -323,6 +323,15 @@ export class MemoryStore {
     return this.get(this.upsert("about", match(label), { label, value, source: "typed" }, at, null));
   }
 
+  /** The text an active About or people entry gives a plan or fill: its value or the person's name; null when gone, paused or another kind. */
+  text(id: string): string | null {
+    const r = this.stmt("SELECT * FROM memory WHERE id = ?").get(id) as Row | undefined;
+    if (r === undefined || r.paused !== 0) return null;
+    if (r.kind === "about") return AboutFields.parse(this.fields(r)).value;
+    if (r.kind === "people") return PeopleFields.parse(this.fields(r)).name;
+    return null;
+  }
+
   /** The entry of this kind with this match key, or null. */
   owner(kind: MemoryKind, match: string): string | null {
     return (this.stmt("SELECT id FROM memory WHERE kind = ? AND match = ?").get(kind, match) as { id: string } | undefined)?.id ?? null;

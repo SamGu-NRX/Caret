@@ -264,7 +264,8 @@ export class Helper {
       publish: (m) => this.publish(m),
       onTask: (e) => this.onTaskEvent(e),
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
-      memoryHolds: (id, value) => this.aboutNow(id)?.value === value,
+      // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
+      memoryHolds: (id, value) => this.memory.text(id) === value,
       onChanges: (l) => {
         this.changeListeners.add(l);
         return () => this.changeListeners.delete(l);
@@ -593,7 +594,7 @@ export class Helper {
     return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true });
   }
 
-  private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings"): void {
+  private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings" | "stale"): void {
     if (!this.planOffers.delete(offerKey)) return;
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
@@ -678,6 +679,7 @@ export class Helper {
       if (r === undefined || !refersToMemory(r.message, memoryId)) continue;
       if (this.fillPopups.has(key)) this.withdrawFill(key, "stale");
       else if (this.firstLooks.has(key)) this.withdrawFirstLook(key, "stale");
+      else if (this.planOffers.has(key)) this.withdrawPlan(key, "stale");
       else this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: key, reason: "stale" });
     }
   }

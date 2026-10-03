@@ -555,9 +555,6 @@ export class Executor {
       task.handedOff = { action: "sensitive", what: "a password field", windowId: w.window.windowId };
       throw StepStop.handoff(`'${step.says}' targets a password field; that is left to you`);
     }
-    if (step.memory !== undefined && this.deps.memoryHolds?.(step.memory, value) !== true) {
-      throw StepStop.stop("changed", `what you told Caret for '${step.says}' changed or is gone, so Caret did not write it`);
-    }
     const before = node.value ?? "";
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
     this.checkInterrupt(task);
@@ -565,6 +562,11 @@ export class Executor {
     const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value, taskId: task.id };
     await this.deps.beforeAct?.(task.id, i);
     const sent = async (v: ReaderVerb): Promise<Change[]> => {
+      // A value from memory must still be what its entry holds at each dispatch, the insert fallback's
+      // included, after everything awaited before it: the user may forget or pause the entry mid-run.
+      if (step.memory !== undefined && this.deps.memoryHolds?.(step.memory, value) !== true) {
+        throw StepStop.stop("changed", `what you told Caret for '${step.says}' changed or is gone, so Caret did not write it`);
+      }
       try {
         return await this.act(task, v, w.window.windowId);
       } catch (e) {
