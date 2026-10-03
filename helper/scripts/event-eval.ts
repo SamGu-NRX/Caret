@@ -71,7 +71,7 @@ const positives = rows.filter((r) => r.id.startsWith("s"));
 const md = [
   "# Event card sentences, live Jev",
   "",
-  `Reference time ${golden.now} (America/Chicago). Code decides person and time; Jev answers whether the writer is arranging something they will attend, twice, and only two yeses make an offer.`,
+  `Reference time ${golden.now} (America/Chicago). Code decides person and time; Jev answers whether the user, who is typing the sentence, is arranging something they will attend, twice, and only two yeses make an offer.`,
   "",
   `- Sentences code passed to Jev: ${asked.length} (fixture expects ${golden.sentences.filter((s) => s.attend !== null).length})`,
   `- Of the 20 that should make an offer: ${positives.filter((r) => r.yes === true).length} got two yeses from live Jev`,
