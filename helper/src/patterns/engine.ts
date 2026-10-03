@@ -29,7 +29,7 @@ import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import { decide, type Decision } from "./gate.ts";
 import { LoopRecognizer, type LoopCell, type LoopEvent } from "./loops.ts";
-import { MemoryError, dontOfferMatch, routineProven, typedAboutKey, type MemoryStore } from "./memory.ts";
+import { MemoryError, dontOfferMatch, routineProven, typedAboutKey, type MemoryStore, type RoutineRecord } from "./memory.ts";
 import { applyMemory, captureEdit } from "./preferences.ts";
 import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
 import { describeTransfer, templateOf } from "./shape.ts";
@@ -565,7 +565,8 @@ export class PatternEngine {
           if (cleanRun(o.plan, r)) for (const c of o.cells) this.watch(c, o.msg.id);
           return;
         }
-        if (live) {
+        // Offered with Tab only if the whole gate would let it speak now; its budget unit was taken at the trigger.
+        if (live && routine !== null && this.speaksNow(o, routine)) {
           o.state = "open";
           o.closedAt = null;
           this.show(o);
@@ -576,6 +577,23 @@ export class PatternEngine {
       })
       .finally(() => this.unprompted.delete(p));
     this.unprompted.add(p);
+  }
+
+  /** The speak-now gate for a routine offer, asked again without its hourly budget, which the offer already spent. */
+  private speaksNow(o: OfferState, routine: RoutineRecord): boolean {
+    const memory = this.deps.memory;
+    const d = decide(
+      { offerKind: "routine", hits: routine.hits, misses: routine.misses, paused: routine.paused || routine.skillPaused, grounded: true },
+      {
+        shadow: this.deps.shadow(),
+        permission: memory.permission(this.writeAction(o.msg.windowId)),
+        dontOfferHere: memory.dontOffer("routine", o.msg.bundleId),
+        ignoredToday: memory.ignoredOn("routine", o.msg.bundleId, this.clock),
+        settings: this.deps.gate.holds("routine", this.clock).filter((h) => h !== "hourlyBudget"),
+        routineSightings: this.deps.gate.rules.routineSightings,
+      },
+    );
+    return d.speak;
   }
 
   /** Take, dismiss, or "Don't offer this here". Problems are published as errors. */

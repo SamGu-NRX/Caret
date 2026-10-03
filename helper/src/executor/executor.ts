@@ -335,7 +335,7 @@ export class Executor {
     if (takeOver && task.undoing) return this.stopUndo(task);
     const by = takeOver ? "takeOver" : reason ?? "control";
     if (task.finished === "paused") {
-      if (takeOver) this.progress(task, "paused", task.next, this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
+      if (takeOver) this.progress(task, "paused", this.stepAt(task), this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
       return;
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
@@ -352,7 +352,7 @@ export class Executor {
     if (task.finished === "paused") {
       task.finished = "stopped";
       releaseSources(task);
-      this.stopped(task, task.next, `stopped by you ${this.boundary(task)}`, "you", "you");
+      this.stopped(task, this.stepAt(task), `stopped by you ${this.boundary(task)}`, "you", "you");
       this.reportUses(task, "stopped");
       return;
     }
@@ -376,6 +376,11 @@ export class Executor {
   /** Throws at a step boundary when a pause or stop is pending. */
   private checkInterrupt(task: Task): void {
     if (task.interrupt !== null) throw new Interrupted();
+  }
+
+  /** The step a run stands before, or null once it is past the last one. */
+  private stepAt(task: Task): number | null {
+    return task.next < task.plan.steps.length ? task.next : null;
   }
 
   /** Where a run stands between steps, in words: before a step, or after the last one. */
@@ -490,8 +495,7 @@ export class Executor {
       const it = task.interrupt;
       if (e instanceof Interrupted && it !== null) {
         task.interrupt = null;
-        // Past the last step there is no step to name.
-        const at = i < steps.length ? i : null;
+        const at = this.stepAt(task);
         if (it.kind === "stop") {
           const detail = `stopped by you ${this.boundary(task)}`;
           task.finished = "stopped";

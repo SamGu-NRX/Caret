@@ -194,6 +194,7 @@ export class Skills {
   runsOnItsOwn(routineId: string, action: WriteAction, plan: Plan): boolean {
     const s = this.activeSkill(routineId);
     if (s === null || !s.onItsOwn || s.handsOff !== null) return false;
+    if (this.deps.memory.routine(routineId)?.finish != null) return false;
     if (handedPress(plan) !== null) return false;
     return mayRunUnasked(action, this.deps.memory.permission(action));
   }
@@ -258,7 +259,7 @@ export class Skills {
 
   private maybePromote(s: SkillRecord, plan: Plan, taskId: string): void {
     if (s.onItsOwn || s.promote !== null || s.cleanRuns < s.needed || this.offeringHeld()) return;
-    if (s.handsOff !== null || handedPress(plan) !== null) return;
+    if (s.handsOff !== null || handedPress(plan) !== null || this.deps.memory.routine(s.routineId)?.finish != null) return;
     if (!s.wrote.every((a) => mayRunUnasked(a, this.deps.memory.permission(a)))) return;
     this.deps.memory.updateSkill(s.id, { promote: "offered" }, this.clock);
     this.offer({

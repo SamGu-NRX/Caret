@@ -460,6 +460,11 @@ export class MemoryStore {
       // The latest occurrence's positions are the best guess for the next one; the rest of the row stays.
       const f = routineJson(this.row(hit.id));
       this.stmt("UPDATE memory SET count = count + 1, last_seen = ?, fields = ? WHERE id = ?").run(at, JSON.stringify({ ...f, steps, ...(finish === undefined ? {} : { finish }) }), hit.id);
+      // A press learned after the routine was kept holds its skill on Tab from now on.
+      const skill = finish === undefined || finish === null ? null : this.skillFor(hit.id);
+      if (skill !== null && finish !== undefined && finish !== null && (skill.handsOff?.label !== finish.label || skill.onItsOwn)) {
+        this.updateSkill(skill.id, { handsOff: { label: finish.label, why: finish.why }, onItsOwn: false }, at);
+      }
       return this.routine(hit.id);
     }
     const id = `routine-${randomUUID().slice(0, 8)}`;

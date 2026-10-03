@@ -93,11 +93,12 @@ function touchesValue(text: string, values: readonly string[]): boolean {
   });
 }
 
-/** Whether every word of a short value stands as a word of `text`. */
+/** Whether every word of a short value stands as a word of `text`; a value with no letters or digits ("-") is looked for as it is. */
 function holdsShortValue(text: string, value: string): boolean {
   const v = tokens(value);
+  if (v.length === 0) return norm(text).includes(value);
   const t = new Set(tokens(text));
-  return v.length > 0 && v.every((w) => t.has(w));
+  return v.every((w) => t.has(w));
 }
 
 /** The facts with every label that touches a value, or is too long to be a label, left out. */

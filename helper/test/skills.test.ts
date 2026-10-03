@@ -11,6 +11,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { HelperMessage, PROTOCOL_VERSION, ConsumerMessage, type MemoryEntry, type MemoryReply, type PatternOffer, type SkillOffer, type TaskProgress } from "../src/protocol.ts";
 import { checkName, fallbackName, nameCandidates, nameRoutine, safeFacts, type RoutineFacts } from "../src/patterns/naming.ts";
 import { cleanRun, handedPress, mayRunUnasked, PROMOTE_AFTER } from "../src/patterns/skills.ts";
+import { dontOfferMatch } from "../src/patterns/memory.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
 import { Desk, buttonKey, cellKey, type GridWindow, type ListWindow } from "./scene.ts";
 import { FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
@@ -117,6 +118,9 @@ describe("naming a routine from its structure", () => {
     expect(short.dstLabels).toEqual(["Link"]);
     expect(checkName("Account 42 into Mail Fixture", facts({ values: ["42"] }))).toMatch(/holds a value/);
     expect(checkName("Link into Mail Fixture", facts({ values: ["42"] }))).toBeNull();
+    // A value with no letters or digits is looked for as it is.
+    expect(safeFacts(facts({ dstLabels: ["Subject -", "Link"], values: ["-"] })).dstLabels).toEqual(["Link"]);
+    expect(checkName("Copy Subject - into Mail Fixture", facts({ values: ["-"] }))).toMatch(/holds a value/);
   });
 
   it("declares a line another window shows when a composed name holds it", async () => {
@@ -592,6 +596,16 @@ describe("skills in the helper", () => {
     expect(unprompted(at)).toEqual([]);
     expect(values(c)).toEqual(["", "", ""]);
     desk.close(c.windowId);
+    // The rule went back to ask first and the user had said "Don't offer this here": the Tab offer is held too.
+    at = sent.length;
+    c = open();
+    setRule("writeElsewhere", "ask");
+    helper.memory.upsert("preference", dontOfferMatch("routine", MAIL_APP.bundleId), { rule: "dontOffer", offerKind: "routine", bundleId: MAIL_APP.bundleId, appName: MAIL_APP.name }, desk.at, MAIL_APP.name);
+    await helper.patterns.unpromptedSettled();
+    expect(unprompted(at)).toEqual([]);
+    expect(since("patternOffer", at)).toEqual([]);
+    desk.close(c.windowId);
+    setRule("writeElsewhere", "actIfApproved");
     // Caret paused: nothing.
     at = sent.length;
     c = open();
@@ -627,6 +641,13 @@ describe("skills in the helper", () => {
     finish(r);
     expect(r.result).toMatchObject({ outcome: "paused", step: null, detail: "Caret handed this back to you after the last of 3 steps" });
     expect(skills()[0]!.fields).toMatchObject({ cleanRuns: 0, runs: 3 });
+    // A later take over or stop of that paused run names no step past the last either.
+    const taskId = r.offer!.id;
+    for (const action of ["takeOver", "stop"] as const) {
+      const at = sent.length;
+      await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action });
+      expect(since("taskProgress", at).at(-1)).toMatchObject({ step: null, steps: 3 });
+    }
   });
 
   it("counts no run of a re-offer that only fills what the user left", async () => {
@@ -685,6 +706,19 @@ describe("skills in the helper", () => {
       expect(r.skillOffers).toEqual([]);
     }
     expect(desk.pressed).toEqual([]);
+  });
+
+  it("holds a kept skill on Tab once its window turns out to end in a press", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    await keep();
+    expect(skills()[0]!.fields.handsOff).toBeNull();
+    buttons = ["Send", "Send later"];
+    for (let i = 1; i <= PROMOTE_AFTER + 1; i++) {
+      const r = await caretRun();
+      finish(r);
+      expect(r.skillOffers, `run ${i}`).toEqual([]);
+    }
+    expect(skills()[0]!.fields).toMatchObject({ handsOff: { label: "Send or Send later", why: "outbound" }, onItsOwn: false });
   });
 
   it("names nothing and offers nothing for a routine whose predictions miss", async () => {
