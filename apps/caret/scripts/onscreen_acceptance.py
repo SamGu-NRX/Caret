@@ -100,6 +100,12 @@ PIDKEYS = os.path.join(ROOT, "apps", "caret", ".build", "pid-keys")
 def pid_keys(pid, *keys):
     """Keys posted to the host's pid only (CGEventPostToPid), its executable rechecked before each.
     cua-driver's background route refuses here: Caret's panels are not in the host's AXWindows."""
+    # Events posted to a pid reset HIDIdleTime as a person's would (A13: the watchdog stopped the
+    # first ask run at the first posted key). Each burst is this run's own input, so the watchdog
+    # ignores input inside its window, as it does for the host's own Tab; a person's key inside
+    # that window is missed.
+    chars = sum(len(k) - 5 if k.startswith("text:") else 1 for k in keys)
+    sa.expect_synthetic(2.0 + 0.03 * chars)
     out = subprocess.run([PIDKEYS, str(pid), "Caret", *keys], capture_output=True, text=True)
     try:
         return json.loads(out.stdout or "{}")
