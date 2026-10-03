@@ -33,6 +33,11 @@ describe("pattern acceptance on synthetic streams", () => {
     const c = checkStream(s, r, helper);
     expect(c.loops.map((l) => [l.name, l.foundAtRoundTwo, l.predictionRight, l.finishRight])).toEqual(c.loops.map((l) => [l.name, true, true, true]));
     expect(c.routines.map((x) => x.offeredAt)).toEqual([[4, 5], [4, 5]]);
+    // The stream's user types every offered value by hand. Each routine day has three: the first two
+    // each leave a re-offer of the rest, and the third ends it. A loop's finish is re-offered only where
+    // the user paused longer than EDIT_SETTLE_MS between rows (B9).
+    expect(c.routines.map((x) => x.reofferedAt)).toEqual([[4, 4, 5, 5], [4, 4, 5, 5]]);
+    expect(c.loops.map((l) => l.finishReoffers)).toEqual([1, 2, 0]);
     expect(c.routines.every((x) => x.offersRight)).toBe(true);
     expect(c.unexpectedOffers).toEqual([]);
   });

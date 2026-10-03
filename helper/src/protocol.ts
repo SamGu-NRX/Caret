@@ -605,16 +605,24 @@ export type PatternOffer = z.infer<typeof PatternOffer>;
  * the user typing them, or the user went to the window it offered to open. `diverged`: the user entered
  * something else. `idle`: no longer sent; lifetimes replaced it. `stale`: a window it reads or writes
  * closed or changed, the reader restarted, or its memory entry was paused or forgotten. `expired`: its
- * lifetime ended (offers/lifetimes.ts). `id` is a patternOffer's id, or the offerKey of an
- * alternatives, action or popup message.
+ * lifetime ended (offers/lifetimes.ts). `reoffered`: the user entered some of a loopFinish's or
+ * routine's values by hand, and the rest are offered again under the key in `replacedBy`, which comes
+ * with this reason and no other. `id` is a patternOffer's id, or the offerKey of an alternatives,
+ * action or popup message.
  */
-export const OfferWithdrawn = z.object({
-  type: z.literal("offerWithdrawn"),
-  v: z.literal(PROTOCOL_VERSION),
-  at: ms,
-  id: z.string(),
-  reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "expired"]),
-});
+export const OfferWithdrawn = z
+  .object({
+    type: z.literal("offerWithdrawn"),
+    v: z.literal(PROTOCOL_VERSION),
+    at: ms,
+    id: z.string(),
+    reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "expired", "reoffered"]),
+    replacedBy: z.string().min(1).optional(),
+  })
+  .refine((m) => (m.reason === "reoffered") === (m.replacedBy !== undefined), {
+    message: "replacedBy comes with reason reoffered, and reoffered needs it",
+    path: ["replacedBy"],
+  });
 export type OfferWithdrawn = z.infer<typeof OfferWithdrawn>;
 
 export const MemoryStatus = z.enum(["learning", "active", "paused"]);

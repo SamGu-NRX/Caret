@@ -38,7 +38,7 @@ import { offerField } from "../offers/field.ts";
 /** How long after Caret fills a field an edit to it is read as a preference. Assumed. */
 export const EDIT_WATCH_MS = 60_000;
 /** How long an edit must be still before it is judged, as for transfers. Assumed. */
-const EDIT_SETTLE_MS = 1500;
+export const EDIT_SETTLE_MS = 1500;
 /** Offers are kept this long after they close, so "Don't offer this here" can follow an undo. */
 const OFFER_KEEP_MS = 10 * 60 * 1000;
 
@@ -77,6 +77,11 @@ interface OfferState {
   alts: { cell: number; msg: OfferAlternatives; candidates: AltCandidate[] }[];
   /** Memory entries that only the alternatives read; the offer is withdrawn when one goes, as for its own cells. */
   altMemory: Set<string>;
+  /**
+   * A loopFinish or routine some of whose destinations the user is filling by hand: the time of the
+   * latest change to them, or null. Judged once they have been still for EDIT_SETTLE_MS (handEntry).
+   */
+  handEditAt: number | null;
 }
 
 interface AltCandidate {
@@ -203,16 +208,21 @@ export class PatternEngine {
 
   /**
    * An open offer that a change in one of its windows made impossible to take as shown is withdrawn
-   * now, rather than refused when the host accepts it. A loopFinish or routine is checked as its take
-   * would check it (recheck), and is `taken` when every destination already holds what it would have
-   * written, `stale` otherwise. A loopNext is judged by what its alternatives show now (recheckShown).
+   * now, rather than refused when the host accepts it. A loopFinish or routine is judged against what
+   * the user entered by hand (handEntry). A loopNext is judged by what its alternatives show now
+   * (recheckShown).
    */
   private recheckOpen(windowIds: ReadonlySet<string>): void {
-    for (const o of this.offers.values()) {
+    // A copy: a re-offer adds to the map.
+    for (const o of [...this.offers.values()]) {
       if (o.state !== "open") continue;
       const sources = o.alts.length > 0 ? o.alts.flatMap((a) => a.candidates.map((x) => x.sources[0]?.srcWindowId)) : o.cells.map((c) => c.srcWindowId);
       if (!o.cells.some((c) => windowIds.has(c.dstWindowId)) && !sources.some((id) => id !== undefined && windowIds.has(id))) continue;
-      const live = o.msg.kind === "loopNext" && o.loopId !== null && this.loops.active?.id === o.loopId;
+      if (o.msg.kind !== "loopNext") {
+        this.handEntry(o, false);
+        continue;
+      }
+      const live = o.loopId !== null && this.loops.active?.id === o.loopId;
       const verdict = o.alts.length > 0 ? this.recheckShown(o, live) : this.recheck(o) === null ? null : this.allEntered(o) ? "taken" : "stale";
       if (verdict === null) continue;
       this.withdraw(o, verdict);
@@ -221,9 +231,71 @@ export class PatternEngine {
         const ev = this.loops.invalidate(o.loopId);
         if (ev !== null) this.onLoop(ev);
       }
-      // The user entered every value themselves: no run follows, so the prepared work is over.
-      if (verdict === "taken" && o.msg.kind !== "loopNext") this.deps.enteredByUser?.(o.msg.id);
     }
+  }
+
+  /**
+   * Judges a loopFinish or routine against what the user has entered by hand. A destination that is
+   * gone, or an empty one whose source no longer shows its value, makes it `stale` now. Every
+   * destination holding what the offer would write makes it `taken` now. Anything in between waits
+   * until the destinations have been still for EDIT_SETTLE_MS, since a value typed by hand passes
+   * through every prefix of itself: then a value other than the offer's is `stale`, and if some cells
+   * hold the offer's values and the rest are empty, the empty ones are offered again (reoffer).
+   */
+  private handEntry(o: OfferState, settled: boolean): void {
+    const model = this.deps.model;
+    const empty: number[] = [];
+    let typed = false;
+    for (const [i, c] of o.cells.entries()) {
+      const node = model.windows.get(c.dstWindowId)?.nodes.get(c.dstKey);
+      if (node === undefined || node.editable !== true) return this.withdraw(o, "stale");
+      const v = node.value ?? "";
+      if (v === "") {
+        if (!this.stillShows({ srcWindowId: c.srcWindowId, srcKey: c.srcKey, value: c.value })) return this.withdraw(o, "stale");
+        empty.push(i);
+      } else if (v !== c.written) typed = true;
+    }
+    if (empty.length === o.cells.length) {
+      o.handEditAt = null;
+      return;
+    }
+    if (!typed && empty.length === 0) {
+      this.withdraw(o, "taken");
+      // The user entered every value themselves: no run follows, so the prepared work is over.
+      this.deps.enteredByUser?.(o.msg.id);
+      return;
+    }
+    if (!settled) {
+      o.handEditAt = this.clock;
+      return;
+    }
+    if (typed) this.withdraw(o, "stale");
+    else this.reoffer(o, empty);
+  }
+
+  /**
+   * Offers the cells at `keep` again, under a new id, as the same kind of offer: the user entered the
+   * others by hand. The old offer is withdrawn as `reoffered`, naming the new one. The gate is not asked
+   * again, since this narrows an offer it already let speak. The new offer's lifetime starts now; that
+   * is assumed, like the lifetimes themselves.
+   */
+  private reoffer(o: OfferState, keep: readonly number[]): void {
+    const model = this.deps.model;
+    const w = model.windows.get(o.msg.windowId);
+    if (w === undefined) return this.withdraw(o, "stale");
+    const id = `offer-${++this.seq}`;
+    const cells = keep.map((i) => o.cells[i] as OfferState["cells"][number]);
+    const msgCells = keep.map((i) => {
+      const c = o.msg.cells[i] as OfferCell;
+      return { ...c, frame: model.windows.get(c.windowId)?.nodes.get(c.key)?.frame ?? null };
+    });
+    const { plan, slots } = this.plan(id, o.msg.kind, w.window.title, o.msg.bundleId, cells);
+    const msg: PatternOffer = { ...o.msg, id, at: this.clock, says: this.says(o.msg.kind, msgCells), cells: msgCells };
+    const n: OfferState = { msg, cells, plan, slots, loopId: o.loopId, routineId: o.routineId, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null };
+    this.withdraw(o, "reoffered", id);
+    this.offers.set(id, n);
+    this.deps.publish(msg);
+    this.offerAction(n);
   }
 
   /** The source node still shows this text, whole or as one of its window's typed values, as recheck asks. */
@@ -333,6 +405,12 @@ export class PatternEngine {
         if (w.pending === null && now > w.until) this.watches.delete(id);
       }
     });
+    for (const o of [...this.offers.values()]) {
+      if (o.state === "open" && o.handEditAt !== null && this.clock - o.handEditAt >= EDIT_SETTLE_MS) {
+        o.handEditAt = null;
+        this.handEntry(o, true);
+      }
+    }
     for (const o of this.offers.values()) {
       if (o.state !== "open" || !expired(o.msg.kind, o.msg.at, this.clock)) continue;
       // The user let a loop's offer run out; that counts against its kind here today, as walking past it did before lifetimes.
@@ -558,7 +636,7 @@ export class PatternEngine {
     };
     // A memory rule may change what Caret writes; the loop must accept that value when it comes back as a transfer.
     if (ids.loopId !== null) for (const c of written) if (c.written !== c.value) this.loops.expect(ids.loopId, c.dstKey, c.written, c.kind);
-    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, alts: [], altMemory: new Set() };
+    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null };
     this.offers.set(id, o);
     this.deps.publish(msg);
     if (kind !== "loopNext") this.offerAction(o);
@@ -676,13 +754,15 @@ export class PatternEngine {
     return { plan: { id, title: kind === "loopFinish" ? "Finish the rest" : kind === "loopNext" ? "Fill the next row" : "Run the routine", slots: declared, steps }, slots };
   }
 
-  private withdraw(o: OfferState, reason: OfferWithdrawn["reason"]): void {
+  /** `replacedBy` is the new offer's id, and only for `reoffered`. */
+  private withdraw(o: OfferState, reason: OfferWithdrawn["reason"], replacedBy?: string): void {
     if (o.state === "open") o.state = "closed";
     o.closedAt = this.clock;
+    o.handEditAt = null;
     // The cells' alternatives go first, so the offer's own withdrawal is the last word on it.
     for (const a of o.alts) this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: a.msg.offerKey, reason });
     o.alts = [];
-    this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: o.msg.id, reason });
+    this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: o.msg.id, reason, ...(replacedBy === undefined ? {} : { replacedBy }) });
   }
 
   /** Withdraws every open offer built from this memory entry: its routine, or a value a memory rule changed. */

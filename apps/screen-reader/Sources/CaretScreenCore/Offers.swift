@@ -219,22 +219,32 @@ public struct OfferWithdrawn: Codable, Equatable, Sendable {
     /// `taken`: its values were entered, by Caret or by the user, or the user went to the window it
     /// offered to open. `diverged`: the user entered something else. `idle`: no longer sent. `stale`: a
     /// window it reads or writes closed or changed, the reader restarted, or its memory entry was paused
-    /// or forgotten. `expired`: its lifetime ended (helper/src/offers/lifetimes.ts).
-    public enum Reason: String, Codable, Sendable { case taken, dismissed, diverged, idle, stale, expired }
+    /// or forgotten. `expired`: its lifetime ended (helper/src/offers/lifetimes.ts). `reoffered`: the
+    /// user entered some of a loopFinish's or routine's values by hand, and the rest are offered again
+    /// under `replacedBy`.
+    public enum Reason: String, Codable, Sendable { case taken, dismissed, diverged, idle, stale, expired, reoffered }
     public var at: Int64
     public var id: String
     public var reason: Reason
-    public init(at: Int64, id: String, reason: Reason) { self.at = at; self.id = id; self.reason = reason }
-    enum CodingKeys: String, CodingKey { case at, id, reason }
+    /// The new offer's key; present with `reoffered` and with no other reason.
+    public var replacedBy: String?
+    public init(at: Int64, id: String, reason: Reason, replacedBy: String? = nil) {
+        self.at = at; self.id = id; self.reason = reason; self.replacedBy = replacedBy
+    }
+    enum CodingKeys: String, CodingKey { case at, id, reason, replacedBy }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         at = try c.decode(Int64.self, forKey: .at); id = try c.decode(String.self, forKey: .id)
         reason = try c.decode(Reason.self, forKey: .reason)
+        replacedBy = try c.decodeOptional(String.self, forKey: .replacedBy)
+        if replacedBy?.isEmpty == true { throw ProtocolError("replacedBy is empty") }
+        if (reason == .reoffered) != (replacedBy != nil) { throw ProtocolError("replacedBy comes with reason reoffered, and reoffered needs it") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(at, forKey: .at); try c.encode(id, forKey: .id); try c.encode(reason, forKey: .reason)
+        try c.encodeIfPresent(replacedBy, forKey: .replacedBy)
     }
 }

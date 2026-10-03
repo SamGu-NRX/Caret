@@ -16,7 +16,7 @@ describe("golden protocol fixture", () => {
       "readerCommand", "verbResult", "userInput", "taskProgress",
       "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
       "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
-      "offerWithdrawn", "taskControl", "taskProgress", "taskProgress",
+      "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
     ]);
   });
 
@@ -27,7 +27,7 @@ describe("golden protocol fixture", () => {
     expect(popup?.field.window).toEqual({ number: null, title: "Checkout" });
     expect(popup?.sourceApps).toEqual(["Mail Fixture"]);
     expect(ReaderMessage.parse(JSON.parse(lines[1] ?? ""))).toMatchObject({ window: { number: 4417 } });
-    const [done, undone] = lines.slice(28).map((l) => HelperMessage.parse(JSON.parse(l)));
+    const [done, undone] = lines.slice(28, 30).map((l) => HelperMessage.parse(JSON.parse(l)));
     expect(done).toMatchObject({ phase: "done", written: 3 });
     expect(undone).toMatchObject({ phase: "undone", restored: 2, notRestored: 1, notUndoablePresses: 0 });
     const p = JSON.parse(lines[21] ?? "") as Record<string, unknown>;
@@ -50,6 +50,16 @@ describe("golden protocol fixture", () => {
     expect(activity.task.says).toBe("'Upload' in Caret Fixture is waiting for you");
     const { frame: _, ...noFrame } = activity.task;
     expect(HelperMessage.safeParse({ ...activity, task: noFrame }).success).toBe(false);
+  });
+
+  it("carries B9's re-offer: reoffered names the new key, and only reoffered may", () => {
+    const line = JSON.parse(lines[30] ?? "") as Record<string, unknown>;
+    expect(HelperMessage.parse(line)).toMatchObject({ type: "offerWithdrawn", reason: "reoffered", replacedBy: "offer-6" });
+    const { replacedBy: _, ...bare } = line;
+    expect(HelperMessage.safeParse(bare).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...line, replacedBy: "" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...line, reason: "stale" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...bare, reason: "stale" }).success).toBe(true);
   });
 
   it("parses every line, and each parse is lossless", () => {

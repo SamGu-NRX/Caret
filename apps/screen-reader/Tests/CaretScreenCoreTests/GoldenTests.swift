@@ -48,7 +48,7 @@ private func goldenLines() throws -> [Data] {
                           "readerCommand", "verbResult", "userInput", "taskProgress",
                           "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
                           "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
-                          "offerWithdrawn", "taskControl", "taskProgress", "taskProgress"])
+                          "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -195,6 +195,15 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: negativeRow) }
         let badReason = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"timedOut"}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badReason) }
+        let reofferedBare = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"reoffered"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: reofferedBare) }
+        let staleReplaced = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"stale","replacedBy":"p"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: staleReplaced) }
+        let nullReplaced = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"reoffered","replacedBy":null}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: nullReplaced) }
+        let lines = try goldenLines()
+        guard case .offerWithdrawn(let reoffered) = try JSONDecoder().decode(Message.self, from: lines[30]) else { Issue.record("line 31 is not an offerWithdrawn"); return }
+        #expect(reoffered == OfferWithdrawn(at: 1_790_000_124_000, id: "offer-5", reason: .reoffered, replacedBy: "offer-6"))
     }
 
     @Test func rejectsAWrongVersionAndAnUnknownType() {

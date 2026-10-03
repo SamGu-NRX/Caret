@@ -1654,8 +1654,13 @@
                 "diverged",
                 "idle",
                 "stale",
-                "expired"
+                "expired",
+                "reoffered"
               ]
+            },
+            "replacedBy": {
+              "type": "string",
+              "minLength": 1
             }
           },
           "required": [

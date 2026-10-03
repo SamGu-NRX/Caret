@@ -495,8 +495,9 @@ export class Helper {
         pending: null,
       });
     } else if (m.type === "offerWithdrawn" && m.reason !== "taken" && this.tasks.get(m.id)?.state === "ready") {
-      const by: TaskCause = m.reason === "dismissed" || m.reason === "diverged" ? "you" : m.reason === "expired" ? "caret" : "screen";
-      this.tasks.update(m.id, { state: "undone", cause: by, detail: `withdrawn: ${m.reason}` });
+      const by: TaskCause = m.reason === "dismissed" || m.reason === "diverged" || m.reason === "reoffered" ? "you" : m.reason === "expired" ? "caret" : "screen";
+      const detail = m.reason === "reoffered" ? `you entered some values; the rest are offered as ${m.replacedBy}` : `withdrawn: ${m.reason}`;
+      this.tasks.update(m.id, { state: "undone", cause: by, detail });
     }
   }
 
