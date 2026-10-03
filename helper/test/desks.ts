@@ -1,7 +1,7 @@
 // Synthetic desks: sets of windows the privacy test and the live replay (scripts/live-replay.ts) both
 // load. Every name, number and address is invented.
-import type { ReaderMessage } from "../src/protocol.ts";
-import { field, focus, snap, text, value } from "./builders.ts";
+import type { AppRef, Node, ReaderMessage, TypedValue } from "../src/protocol.ts";
+import { field, FIXTURE_APP, focus, node, snap, text, value } from "./builders.ts";
 import { CODEX, T3, agentSnap, codexWindow, t3Window } from "./agent-fixtures.ts";
 
 /** Long paragraphs: text no fill can use, since every line is over 80 characters. */
@@ -104,4 +104,87 @@ export function agentThreads(): ReaderMessage[] {
     agentSnap(CODEX, codexWindow({ running: true, threads, transcriptLines: 450, last: ["Allow this command? pnpm install --frozen-lockfile"] }), { at: 1100, windowId: "8202-1", title: "Badge export", focused: true }),
     t3({ running: false, threads, transcriptLines: 450, last: ["Updated all four seating files and ran the checks: 48 of 48 passed."] }, 1200, false),
   ];
+}
+
+export const MESSAGES: AppRef = { pid: 8181, bundleId: "com.apple.MobileSMS", name: "Messages" };
+export const REF = "8181-1";
+export const SCHEDULE_FORM = "5150-7";
+export const R = "dev.caret.messages/standard";
+
+/**
+ * The fill calibration fixture's Reference window, block by block, as a Messages window: the window
+ * whose cut gave B11's wrong fill (~/.caret-run/evidence/screen/b11/live/live-replay.md).
+ */
+export function reference(at: number): ReturnType<typeof snap> {
+  const nodes: Node[] = [];
+  const values: TypedValue[] = [];
+  const block = (name: string, lines: [string, ...([TypedValue["kind"], string] | [])][]): void => {
+    const g = `${R}/group:${name}~0`;
+    nodes.push(node(g, "AXGroup", { label: name }));
+    lines.forEach(([line, kind, v], i) => {
+      const key = `${g}/statictext:${i}~0`;
+      nodes.push(text(key, line, undefined, g));
+      if (kind !== undefined && v !== undefined) values.push(value(kind, v, key));
+    });
+    nodes.push(text(`${g}/statictext:title~0`, name, undefined, g));
+  };
+  block("Order confirmation", [
+    ["Order number: ORD-2026-48213", "id", "ORD-2026-48213"],
+    ["Placed: September 28, 2026", "date", "September 28, 2026"],
+    ["Total: $1,315.50", "amount", "$1,315.50"],
+    ["Ship to: 1200 Barton Springs Rd, Austin, TX 78704", "address", "1200 Barton Springs Rd, Austin, TX 78704"],
+    ["Tracking: TRK-88213-55", "id", "TRK-88213-55"],
+  ]);
+  block("Email signature", [
+    ["Dana Whitfield"],
+    ["Senior Product Designer"],
+    ["Lumen Labs"],
+    ["dana.whitfield@lumenlabs.example", "email", "dana.whitfield@lumenlabs.example"],
+    ["+1 (512) 555-0142", "phone", "+1 (512) 555-0142"],
+    ["https://lumenlabs.example/dana", "url", "https://lumenlabs.example/dana"],
+  ]);
+  block("Meeting", [
+    ["Design review with Priya Raman"],
+    ["Thursday, October 8, 2026", "date", "Thursday, October 8, 2026"],
+    ["3:00 PM to 3:45 PM", "time", "3:00 PM"],
+    ["https://meet.example.com/xqp-rtz-kfa", "url", "https://meet.example.com/xqp-rtz-kfa"],
+  ]);
+  values.push(value("time", "3:45 PM", `${R}/group:Meeting~0/statictext:2~0`));
+  return snap(nodes, { at, windowId: REF, title: "Reference", app: MESSAGES, focused: true, values });
+}
+
+export const FORM_KEY = (label: string): string => `dev.caret.fixture/standard/textfield:${label.toLowerCase().replace(/ /g, "-")}~0`;
+export function scheduleForm(at: number, labels: readonly string[]): ReturnType<typeof snap> {
+  return snap(
+    labels.map((l, i) => field(FORM_KEY(l), "", { label: l, frame: [100, 40 + i * 40, 300, 24] })),
+    { at, windowId: SCHEDULE_FORM, title: "Schedule follow-up", app: FIXTURE_APP, focused: true },
+  );
+}
+
+export const LONG_THREAD = "8181-4";
+/**
+ * Messages sources for a Schedule follow-up form: the Reference thread, and a longer thread of earlier
+ * messages full of dates, times, amounts and links, more than its budget holds. Focus lands on the
+ * form's first field, so fill asks with the conversation rule cutting both threads.
+ */
+export function messagesSources(): ReaderMessage[] {
+  const K = `${R}/statictext`;
+  const rows: [string, TypedValue["kind"], string][] = [
+    ["Kofi: the venue deposit of $240.00 is due September 30, 2026", "date", "September 30, 2026"],
+    ["Aiko: call me after 4:30 PM", "time", "4:30 PM"],
+    ["Kofi: plan is at https://docs.example.com/q4-plan", "url", "https://docs.example.com/q4-plan"],
+    ["Aiko: standup moves to Tuesday, October 6, 2026", "date", "Tuesday, October 6, 2026"],
+    ["Kofi: retro is Thursday, October 15, 2026", "date", "Thursday, October 15, 2026"],
+    ["Aiko: join at https://meet.example.com/rtv-pkq-wzd", "url", "https://meet.example.com/rtv-pkq-wzd"],
+    ["Kofi: ordered on September 21, 2026", "date", "September 21, 2026"],
+    ["Aiko: room hold ends 5:45 PM", "time", "5:45 PM"],
+    ["Kofi: slides at https://slides.example.com/kickoff", "url", "https://slides.example.com/kickoff"],
+    ["Aiko: invoice went out Friday, September 25, 2026", "date", "Friday, September 25, 2026"],
+  ];
+  const thread = snap(
+    rows.map(([line], i) => text(`${K}:long${i}~0`, line)),
+    { at: 1100, windowId: LONG_THREAD, title: "Kofi and Aiko", app: { ...MESSAGES, pid: 8182 }, values: rows.map(([, kind, v], i) => value(kind, v, `${K}:long${i}~0`)) },
+  );
+  const labels = ["Meeting date", "Start time", "Video link", "Attendee email", "Attendee job title"];
+  return [thread, reference(1200), scheduleForm(3000, labels), focus(SCHEDULE_FORM, FORM_KEY("Meeting date"), 3100)];
 }

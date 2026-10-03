@@ -155,15 +155,16 @@ export async function proposeFill(
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const ledger = new SnippetLedger();
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
-  const fields: { id: string; node: Node; descriptor: string; name: string; kinds: Set<ValueKind>; terms: Set<string> }[] = [];
+  const fields: { id: string; node: Node; descriptor: string; name: string; kinds: Set<ValueKind>; terms: Set<string>; texts: (string | null)[] }[] = [];
   for (const n of formFields(w, triggerKey)) {
     const d = describeField(w, n);
-    if (!ledger.take(w, "descriptor", [d.label, d.nearest, d.placeholder, d.section])) {
+    const texts = [d.label, d.nearest, d.placeholder, d.section];
+    if (!ledger.take(w, "descriptor", texts)) {
       if (n.key === triggerKey) throw new FillError(`the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
       continue;
     }
     const labelWords = [d.label, d.nearest, d.placeholder];
-    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field", kinds: fieldKinds(labelWords), terms: fieldTerms(labelWords) });
+    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field", kinds: fieldKinds(labelWords), terms: fieldTerms(labelWords), texts });
   }
   const { candidates, cut } = collectCandidates(model, windowId, {
     now,
@@ -183,6 +184,11 @@ export async function proposeFill(
   const isCut = (kinds: ReadonlySet<ValueKind>): boolean => [...kinds].some((k) => removed.has(k));
   // With every candidate cut away there is nothing to ask about.
   const asked = candidates.length === 0 ? [] : fields.filter((f) => !isCut(f.kinds));
+  // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
+  // window was still charged for them, which errs on the side of saying less.
+  const sent = new Set(asked.flatMap((f) => f.texts));
+  const unsent = new Set(fields.filter((f) => !asked.includes(f)).flatMap((f) => f.texts).filter((t) => t !== null && !sent.has(t) && t !== title));
+  const snippets = ledger.snippets.filter((x) => !(x.kind === "descriptor" && x.windowId === windowId && unsent.has(x.text)));
 
   // The second ask sees the same candidates in another order under other ids, so neither position
   // nor id can carry a choice from one ask to the other. Windows keep their recency order and only
@@ -195,7 +201,7 @@ export async function proposeFill(
   const [r1, r2] =
     asked.length === 0
       ? [null, null]
-      : await Promise.all([askJev(buildFillRequest(w, asked, candidates, 0, ledger.snippets, title)), askJev(buildFillRequest(w, asked, second, 1, ledger.snippets, title))]);
+      : await Promise.all([askJev(buildFillRequest(w, asked, candidates, 0, snippets, title)), askJev(buildFillRequest(w, asked, second, 1, snippets, title))]);
 
   const byId = new Map(candidates.map((c) => [c.id, c]));
   const readAsk = (r: JevResult, fieldId: string, mapId: (id: string) => string | undefined): FillAsk => {

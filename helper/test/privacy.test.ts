@@ -40,7 +40,7 @@ import { CONVERSATION_CHARS, WINDOW_CHARS, setConversationCap } from "../src/pri
 import { FIXTURE_APP, focus, node, snap, text } from "./builders.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
-import { CHAT, COMPOSER_CHAT, MAIL_THREAD, MESSAGES_CHAT, NOTES, SHORT_CHAT, agentThreads, chatWindow, notesWindow, shortChats } from "./desks.ts";
+import { CHAT, COMPOSER_CHAT, LONG_THREAD, MAIL_THREAD, MESSAGES_CHAT, NOTES, REF, SHORT_CHAT, agentThreads, chatWindow, messagesSources, notesWindow, shortChats } from "./desks.ts";
 
 const CARD_LINES = 24;
 const CARD_LINE_CHARS = 80;
@@ -256,7 +256,7 @@ class Session {
 const all: Recorded[] = [];
 const BYSTANDERS = new Set([NOTES]);
 /** The sessions' conversation windows, named here rather than found by conversation.ts. */
-const CONVERSATIONS = new Set([CHAT, SHORT_CHAT, MESSAGES_CHAT, COMPOSER_CHAT, MAIL_THREAD, "8101-1", "8202-1"]);
+const CONVERSATIONS = new Set([CHAT, SHORT_CHAT, MESSAGES_CHAT, COMPOSER_CHAT, MAIL_THREAD, "8101-1", "8202-1", REF, LONG_THREAD]);
 
 async function run(name: string, body: (s: Session) => Promise<void>, keep = true): Promise<Recorded[]> {
   const s = new Session(name);
@@ -367,6 +367,18 @@ describe("the privacy line on every Jev request", () => {
     // Each chat gave something, and none gave half.
     const took = new Set(rec.flatMap(measure).filter((m) => m.covered > 0).map((m) => m.windowId));
     for (const id of [SHORT_CHAT, MESSAGES_CHAT, MAIL_THREAD]) expect(took, id).toContain(id);
+  });
+
+  it("Messages sources: the B11 Reference thread and a long thread, spent nearest the fields and a kind at a time", async () => {
+    const rec = await run("messages sources", async (s) => {
+      await s.replay(messagesSources(), "fill on focus");
+      await s.firstLook();
+    });
+    expect(rec.filter((r) => r.producer === "fill on focus").length).toBeGreaterThan(0);
+    expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
+    // Both threads gave something, under half and under 600 characters (violations checks both).
+    const took = new Set(rec.flatMap(measure).filter((m) => m.covered > 0).map((m) => m.windowId));
+    for (const id of [REF, LONG_THREAD]) expect(took, id).toContain(id);
   });
 
   it("the same short chats went out whole with the conversation rule off, and the check catches that", async () => {

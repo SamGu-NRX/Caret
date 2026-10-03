@@ -10,60 +10,8 @@ import { proposeFill, NOT_ASKED } from "../src/fill/fill.ts";
 import { fieldKinds, fieldTerms } from "../src/fill/kinds.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { SnippetLedger, windowBudget } from "../src/privacy.ts";
-import type { AppRef, Node, TypedValue } from "../src/protocol.ts";
-import { field, FIXTURE_APP, node, snap, text, value } from "./builders.ts";
-
-const MESSAGES: AppRef = { pid: 8181, bundleId: "com.apple.MobileSMS", name: "Messages" };
-const REF = "8181-1";
-const FORM = "5150-7";
-const R = "dev.caret.messages/standard";
-
-/** The calibration fixture's Reference window, block by block, as a Messages window. */
-function reference(at: number): ReturnType<typeof snap> {
-  const nodes: Node[] = [];
-  const values: TypedValue[] = [];
-  const block = (name: string, lines: [string, ...([TypedValue["kind"], string] | [])][]): void => {
-    const g = `${R}/group:${name}~0`;
-    nodes.push(node(g, "AXGroup", { label: name }));
-    lines.forEach(([line, kind, v], i) => {
-      const key = `${g}/statictext:${i}~0`;
-      nodes.push(text(key, line, undefined, g));
-      if (kind !== undefined && v !== undefined) values.push(value(kind, v, key));
-    });
-    nodes.push(text(`${g}/statictext:title~0`, name, undefined, g));
-  };
-  block("Order confirmation", [
-    ["Order number: ORD-2026-48213", "id", "ORD-2026-48213"],
-    ["Placed: September 28, 2026", "date", "September 28, 2026"],
-    ["Total: $1,315.50", "amount", "$1,315.50"],
-    ["Ship to: 1200 Barton Springs Rd, Austin, TX 78704", "address", "1200 Barton Springs Rd, Austin, TX 78704"],
-    ["Tracking: TRK-88213-55", "id", "TRK-88213-55"],
-  ]);
-  block("Email signature", [
-    ["Dana Whitfield"],
-    ["Senior Product Designer"],
-    ["Lumen Labs"],
-    ["dana.whitfield@lumenlabs.example", "email", "dana.whitfield@lumenlabs.example"],
-    ["+1 (512) 555-0142", "phone", "+1 (512) 555-0142"],
-    ["https://lumenlabs.example/dana", "url", "https://lumenlabs.example/dana"],
-  ]);
-  block("Meeting", [
-    ["Design review with Priya Raman"],
-    ["Thursday, October 8, 2026", "date", "Thursday, October 8, 2026"],
-    ["3:00 PM to 3:45 PM", "time", "3:00 PM"],
-    ["https://meet.example.com/xqp-rtz-kfa", "url", "https://meet.example.com/xqp-rtz-kfa"],
-  ]);
-  values.push(value("time", "3:45 PM", `${R}/group:Meeting~0/statictext:2~0`));
-  return snap(nodes, { at, windowId: REF, title: "Reference", app: MESSAGES, focused: true, values });
-}
-
-const FORM_KEY = (label: string): string => `dev.caret.fixture/standard/textfield:${label.toLowerCase().replace(/ /g, "-")}~0`;
-function scheduleForm(at: number, labels: readonly string[]): ReturnType<typeof snap> {
-  return snap(
-    labels.map((l, i) => field(FORM_KEY(l), "", { label: l, frame: [100, 40 + i * 40, 300, 24] })),
-    { at, windowId: FORM, title: "Schedule follow-up", app: FIXTURE_APP, focused: true },
-  );
-}
+import { snap, text, value } from "./builders.ts";
+import { FORM_KEY, MESSAGES, REF, R, SCHEDULE_FORM as FORM, reference, scheduleForm } from "./desks.ts";
 
 const SCHEDULE = ["Meeting date", "Start time", "Video link", "Attendee email", "Attendee job title"] as const;
 const GOLD: Record<string, string> = {
