@@ -5,6 +5,7 @@
 import type { FillSource, Node, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
+import type { SnippetLedger } from "../privacy.ts";
 
 export interface Candidate {
   id: string;
@@ -60,6 +61,12 @@ export interface GenerateOptions {
   clock?: () => number;
   /** When given, wall time by part of the work is added to it, for the audit's probe. */
   profile?: GeneratorProfile;
+  /**
+   * The request's screen-text budget. A candidate goes in only when its text and facts fit its window's
+   * budget; the first that does not closes that window to the rest of the generator. Absent for the
+   * audit's measures, which send nothing.
+   */
+  ledger?: SnippetLedger;
 }
 
 /** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
@@ -123,10 +130,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       prof[part] += performance.now() - t;
     }
   };
+  /** Windows whose budget a candidate did not fit; nothing more is taken from them. */
+  const closed = new Set<string>();
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): void => {
-    if (full() || seen.has(text)) return;
-    seen.add(text);
-    out.push({
+    if (full() || seen.has(text) || closed.has(w.window.windowId)) return;
+    const c: Candidate = {
       id: `c${out.length + 1}`,
       text,
       kind,
@@ -143,7 +151,13 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         nodeKey: node.key,
         kind,
       },
-    });
+    };
+    if (o.ledger !== undefined && !o.ledger.take(w, "candidate", candidateTexts(c))) {
+      closed.add(w.window.windowId);
+      return;
+    }
+    seen.add(text);
+    out.push(c);
   };
   const touched = new Set<string>();
   const finish = (): { candidates: Candidate[]; stats: GenerateStats } => {
@@ -166,6 +180,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   for (const w of windows) {
     if (full()) break;
     touched.add(w.window.windowId);
+    if (closed.has(w.window.windowId)) continue;
     for (const node of w.nodes.values()) {
       if (full() || outOfTime()) return finish();
       stats.nodes++;
@@ -193,9 +208,14 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   return finish();
 }
 
-/** The candidates for a fill; see collectCandidates. */
-export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now()): Candidate[] {
-  return collectCandidates(model, targetWindowId, { max, now }).candidates;
+/** The candidates for a fill; see collectCandidates. With a ledger, each window gives only what fits its budget. */
+export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now(), ledger?: SnippetLedger): Candidate[] {
+  return collectCandidates(model, targetWindowId, { max, now, ...(ledger === undefined ? {} : { ledger }) }).candidates;
+}
+
+/** The screen text describeCandidate puts in a request for this candidate: the span, its facts, and its window's title. */
+export function candidateTexts(c: Candidate): (string | null)[] {
+  return [c.text, c.context, c.blockHead, c.section, c.source.windowTitle];
 }
 
 /**

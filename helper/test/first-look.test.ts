@@ -149,7 +149,7 @@ describe("the first look over the socket", () => {
   it("reports a watched job that finished, with Open, when only pending is asked for", async () => {
     ask = async (req) =>
       req.questions.finished !== undefined
-        ? { model: "jev-test", answers: { finished: { choice: /passed/i.test(String((req.state as Record<string, unknown>).now)) ? "yes" : "no", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 }
+        ? { model: "jev-test", answers: { finished: { choice: /passed/i.test(String((req.state as Record<string, unknown>).lines_that_changed)) ? "yes" : "no", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 }
         : fill(req);
     await (reader as SocketReader).replay(loadRecording("offers-pending.ndjson"), hooks);
     await helper.pending.whenIdle();

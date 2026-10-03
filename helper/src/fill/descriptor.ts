@@ -25,8 +25,9 @@ const MAX_ABOVE_GAP = 48;
 const MAX_LABEL_CHARS = 60;
 
 export function describeField(w: WindowState, field: Node): FieldDescriptor {
-  const label = clean(field.label);
-  const placeholder = clean(field.placeholder);
+  // A label or placeholder is a short snippet in the question (privacy.ts): a long one is cut, ellipsis included.
+  const label = cutLabel(clean(field.label));
+  const placeholder = cutLabel(clean(field.placeholder));
   const nearest = label === null ? nearestText(w, field) : null;
   const section = sectionOf(w, field);
   const parts = [`${ROLE_NAMES[field.role] ?? "Field"}.`];
@@ -133,6 +134,10 @@ function clean(s: string | undefined | null): string | null {
   if (s === undefined || s === null) return null;
   const t = s.replace(/\s+/g, " ").trim();
   return t.length === 0 ? null : t;
+}
+
+function cutLabel(s: string | null): string | null {
+  return s === null || s.length <= MAX_LABEL_CHARS ? s : `${s.slice(0, MAX_LABEL_CHARS - 1)}…`;
 }
 
 function stripColon(s: string | null): string | null {

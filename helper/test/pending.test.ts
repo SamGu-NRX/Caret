@@ -68,7 +68,7 @@ class Reader implements ReaderLink {
   }
 }
 
-/** A scripted Jev: answers from the "now" text by the rules the test sets, and records every request. */
+/** A scripted Jev: answers from the lines that changed by the rules the test sets, and records every request. */
 class Jev {
   readonly requests: JevRequest[] = [];
   delayMs = 0;
@@ -77,7 +77,7 @@ class Jev {
   readonly ask = async (req: JevRequest): Promise<JevResult> => {
     this.requests.push(req);
     if (this.delayMs > 0) await new Promise((r) => setTimeout(r, this.delayMs));
-    const now = String((req.state as Record<string, unknown>).now);
+    const now = String((req.state as Record<string, unknown>).lines_that_changed);
     const a = this.answer(now);
     return { model: "jev-test", answers: { finished: { choice: a.finished, confidence: 0.9 }, waiting: { choice: a.waiting, confidence: 0.95 } }, inputTokens: 300, latencyMs: 40, costUsd: 0.0000126 };
   };
@@ -234,17 +234,20 @@ describe("pending-state watch", () => {
     expect(helper.pending.stats.registered).toBe(1);
   });
 
-  it("asks with the window's text as data, never a typed field value, and at most 30 lines now", async () => {
+  it("asks with snippets only: the signs then and now and the lines that changed, never a typed value or the rest of the window", async () => {
     const many = Array.from({ length: 60 }, (_, i) => text(K(`statictext:line ${i}~0`), `Log line ${i}`));
     leaveJob("Running tests… 12 of 48", [node(K("progressindicator:~0"), "AXProgressIndicator"), ...many]);
     show(JOB, jobNodes("Done. 48 of 48 tests passed.", many));
     await helper.pending.whenIdle();
     const req = jev.requests[0]!;
     const state = req.state as Record<string, string>;
-    expect(JSON.stringify(req)).not.toContain("my private note");
-    expect(state.now!.split("\n").length).toBeLessThanOrEqual(30);
-    expect(state.now).toContain("Done. 48 of 48 tests passed.");
-    expect(state.when_the_user_left).toContain("Running tests… 12 of 48");
+    const body = JSON.stringify({ state: req.state, questions: req.questions });
+    expect(body).not.toContain("my private note");
+    expect(body).not.toContain("Log line");
+    expect(state.lines_that_changed).toBe("Done. 48 of 48 tests passed.");
+    expect(state.signs_of_running_work_when_the_user_left).toBe("Running tests… 12 of 48\n[progress bar]");
+    expect(state.signs_of_running_work_now).toBe("none");
+    expect(req.snippets.map((x) => x.text)).toEqual(["Test run", "Done. 48 of 48 tests passed.", "Running tests… 12 of 48"]);
     expect(Object.keys(req.questions)).toEqual(["finished", "waiting"]);
   });
 

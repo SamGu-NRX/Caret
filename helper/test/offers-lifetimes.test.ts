@@ -40,7 +40,7 @@ const FILL_VALUES: Record<string, string> = { Name: "Dana Whitfield", Email: "da
 let jevGate: Promise<void> | null = null;
 const askJev: AskJev = async (req) => {
   if (req.questions.finished !== undefined) {
-    const done = /done|passed/i.test(String((req.state as Record<string, unknown>).now));
+    const done = /done|passed/i.test(String((req.state as Record<string, unknown>).lines_that_changed));
     return { model: "jev-test", answers: { finished: { choice: done ? "yes" : "no", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
   }
   if (jevGate !== null) await jevGate;
