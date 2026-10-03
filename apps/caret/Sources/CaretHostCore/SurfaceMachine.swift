@@ -404,7 +404,7 @@ public final class SurfaceMachine {
     func clear(exit: TimeInterval) {
         stopWatch()
         guard let shown else { return }
-        emit(.clearCaret(offerID: shown.offerID))
+        if !headless { emit(.clearCaret(offerID: shown.offerID)) }
         if work == nil, resultTimer == nil { takeLineDown(exit: exit) }
         self.shown = nil
     }
@@ -511,7 +511,7 @@ public final class SurfaceMachine {
         )
         if claim.offer.source == .helper, let accept { _ = sendToHelper(.accept(accept)) }
         // The panel stays: the line, in place, becomes the working caption.
-        emit(.clearCaret(offerID: shown.offerID))
+        if !headless { emit(.clearCaret(offerID: shown.offerID)) }
         stopWatch()
         self.shown = nil
         startWork(claim, offerKey: accept?.offerId ?? "?")
