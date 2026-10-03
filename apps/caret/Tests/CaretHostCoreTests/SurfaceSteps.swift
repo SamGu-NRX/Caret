@@ -22,6 +22,8 @@ enum Step {
     /// Another app activated: the shown surface is rechecked at once.
     case activated
     case fillLineToast
+    /// The insertion queue finished writing a text claim.
+    case inserted
     case helperDown
     /// Checks the state now.
     case expect(Expect)
@@ -96,6 +98,7 @@ extension XCTestCase {
                 rig.machine.focusChanged(Fx.identity(element))
             case .activated: rig.machine.recheckVisibility()
             case .fillLineToast: rig.fillLineToast()
+            case .inserted: rig.inserted()
             case .helperDown: rig.helperConnected = false
             case .did(let expected):
                 XCTAssertEqual(rig.takeLog(), expected, at, file: t.file, line: t.line)

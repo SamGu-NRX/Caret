@@ -181,6 +181,13 @@ final class SurfaceRig {
     private(set) var log: [String] = []
     private(set) var counts: [String] = []
     private(set) var sent: [String] = []
+    /// The `at` of each offerAccept and offerStop sent, in milliseconds.
+    private(set) var sentAt: [Int64] = []
+    /// A text claim the insertion queue is still writing (`inserted` ends it).
+    private(set) var inserting: UInt64?
+    /// The fill line's toast, as `FillCoordinator` holds it: dropped when another toast takes the
+    /// arbiter's slot and says so (`toastSlotTaken`).
+    private(set) var fillToastID: UInt64?
     private(set) var panels: [PanelContent] = []
     /// What `sendToHelper` answers: false is a helper that is not connected.
     var helperConnected = true
@@ -195,8 +202,8 @@ final class SurfaceRig {
         machine.sendToHelper = { [unowned self] message in
             self.onSend?(message)
             switch message {
-            case .accept(let a): self.sent.append("accept \(a.offerId) \(a.actionId)")
-            case .stop(let s): self.sent.append("stop \(s.offerId)")
+            case .accept(let a): self.sent.append("accept \(a.offerId) \(a.actionId)"); self.sentAt.append(a.at)
+            case .stop(let s): self.sent.append("stop \(s.offerId)"); self.sentAt.append(s.at)
             case .control(let c): self.sent.append("\(c.action.rawValue) \(c.taskId)")
             }
             return self.helperConnected
@@ -221,7 +228,10 @@ final class SurfaceRig {
             }
         case .hidePanel(let exit): log.append("hide \(exit)")
         case .workingChanged(let on): log.append(on ? "working on" : "working off")
-        case .toastSlotTaken: log.append("toast slot")
+        case .toastSlotTaken:
+            log.append("toast slot")
+            // FillCoordinator.toastChanged: its toast is gone once the slot holds another.
+            if let id = fillToastID, arbiter.snapshot().toast?.id != id { fillToastID = nil }
         }
     }
 
@@ -245,8 +255,11 @@ final class SurfaceRig {
     private func route(_ decision: OfferArbiter.Decision) {
         switch decision {
         case .consume(let claim):
-            // The insertion queue writes text claims; here they land at once.
-            if claim.insertsText { arbiter.finishInsertion(claimID: claim.claimID, error: nil) }
+            // The tap hands a text claim to the insertion queue before main hears of it; a headless
+            // host refuses it there. Here it stays in flight until `inserted`.
+            if claim.insertsText {
+                if machine.headless { arbiter.abandon(claimID: claim.claimID, reason: "headless") } else { inserting = claim.claimID }
+            }
             machine.claimed(claim)
         case .undo(let grant):
             if grant.taskID != nil { machine.undoStarted(grant) }
@@ -260,9 +273,16 @@ final class SurfaceRig {
         }
     }
 
+    /// The insertion queue finished writing the text claim.
+    func inserted() {
+        guard let claimID = inserting else { return XCTFail("no text claim in flight") }
+        inserting = nil
+        arbiter.finishInsertion(claimID: claimID, error: nil)
+    }
+
     /// The fill line's own toast takes the arbiter's toast slot, as `FillCoordinator` does.
     func fillLineToast() {
-        arbiter.showToast(UndoGrant(
+        fillToastID = arbiter.showToast(UndoGrant(
             target: Fx.identity(.phone), priorValue: "", writtenValue: "x", insertedStart: 0, insertedLength: 1, origin: nil,
             createdAt: clock.now
         ))

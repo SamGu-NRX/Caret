@@ -198,6 +198,8 @@ final class SurfaceMachineTests: XCTestCase {
                 .expect(.custom("the arbiter refused the publish") { $0.arbiter.snapshot().refusedPublishCount == 1 }),
                 .deliver,
                 .sent([]), .expect(.workingOn(nil)),
+                .inserted,
+                .offer(Fx.action()), .expect(.shown("offer-5")),
             ]),
         ])
     }
@@ -307,9 +309,18 @@ final class SurfaceMachineTests: XCTestCase {
                 .expect(.line("Sheet Fixture wouldn't take it. Open Sheet Fixture to add it.")),
                 .wait(6), .expect(.line(nil)),
             ]),
-            Transition("handoff: your turn", actionWorking + [
+            Transition("handoff: your turn, for 6 s", actionWorking + [
                 .progress("offer-5", .handoff),
                 .expect(.line("Your turn in Sheet Fixture")),
+                .wait(5.9), .expect(.line("Your turn in Sheet Fixture")),
+                .wait(0.1), .expect(.line(nil)),
+            ]),
+            Transition("a newer offer ends the result, and its timer with it", actionWorking + [
+                .progress("offer-5", .done),
+                .wait(1),
+                .offer(Fx.action(key: "offer-6")),
+                .wait(5),
+                .expect(.shown("offer-6")), .expect(.line(actionLine)), .expect(.panelUp(true)),
             ]),
             Transition("paused: the line goes; the activity list carries it", actionWorking + [
                 .progress("offer-5", .paused),
@@ -340,6 +351,37 @@ final class SurfaceMachineTests: XCTestCase {
                     figure: .absent, app: "Caret Fixture", text: "\(filling), 3 s", emphasis: .plain,
                     hints: [Hint(key: "Esc", label: "Stop")], appGlyphOnly: true
                 ))),
+            ]),
+        ])
+    }
+
+    func testMessagesCarryTheClocksTime() {
+        let rig = SurfaceRig()
+        rig.screen.front()
+        rig.machine.receive(Fx.fillPopup())
+        rig.clock.advance(by: 1.25)
+        rig.press(Fx.tab())
+        rig.clock.advance(by: 3)
+        rig.press(Fx.esc())
+        let start = Int64(rig.clock.now.timeIntervalSince1970 * 1000) - 4250
+        XCTAssertEqual(rig.sent, ["accept fill-2 fillAll", "stop fill-2"])
+        XCTAssertEqual(rig.sentAt, [start + 1250, start + 4250])
+    }
+
+    func testAHideStillLandsWhileTheLastLineFades() {
+        play([
+            Transition("withdrawn (100 ms fade), then alternatives at once: the fade is cut short", [
+                .screen { $0.front() }, .offer(Fx.action()),
+                .withdraw("offer-5", .dismissed),
+                .offer(Fx.alternatives()),
+                .did(["panel enter \(actionLine)", "clear caret", "hide 0.1", "hide 0.0", "alternatives enter Cara Diaz quoted"]),
+            ]),
+            Transition("once the fade is over, nothing more to hide", [
+                .screen { $0.front() }, .offer(Fx.action()),
+                .withdraw("offer-5", .dismissed),
+                .wait(0.1),
+                .offer(Fx.alternatives()),
+                .did(["panel enter \(actionLine)", "clear caret", "hide 0.1", "alternatives enter Cara Diaz quoted"]),
             ]),
         ])
     }

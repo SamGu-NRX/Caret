@@ -129,6 +129,9 @@ public final class SurfaceMachine {
     public internal(set) var figure: FigureState?
     /// The panel was last told to show, not to hide.
     public internal(set) var panelUp = false
+    /// When the panel's last exit finishes. Until then a hide still goes out: an immediate one
+    /// cuts a running fade short, so an old line does not fade over a new offer.
+    var panelExitEnds: Date?
 
     public init(arbiter: OfferArbiter, world: SurfaceWorld, clock: SurfaceClock, headless: Bool) {
         self.arbiter = arbiter
@@ -383,14 +386,22 @@ public final class SurfaceMachine {
         lineText = text
         self.figure = figure
         guard !headless else { return }
-        emit(.showPanel(content, text: text ?? "", placement: .atCaret(caret, entering: entering)))
+        showPanel(content, text: text ?? "", placement: .atCaret(caret, entering: entering))
+    }
+
+    func showPanel(_ content: PanelContent, text: String, placement: PanelPlacementRequest) {
+        emit(.showPanel(content, text: text, placement: placement))
         panelUp = true
+        panelExitEnds = nil
     }
 
     func hidePanel(exit: TimeInterval) {
-        guard !headless, panelUp else { return }
+        guard !headless else { return }
+        let fading = panelExitEnds.map { clock.now < $0 } ?? false
+        guard panelUp || fading else { return }
         emit(.hidePanel(exit: exit))
         panelUp = false
+        panelExitEnds = clock.now.addingTimeInterval(exit)
     }
 
     func takeLineDown(exit: TimeInterval) {
@@ -429,7 +440,7 @@ public final class SurfaceMachine {
             // Typing: 80 ms (the text itself at once). Esc: 100 ms.
             clear(exit: reason == .closed ? 0.10 : 0.08)
         }
-        if let work, snapshot.statusLine?.id != work.statusID {
+        if let work, snapshot.statusLine?.id != work.statusID, panelUp {
             // A key passed through and dismissed the working line; the work goes on unseen and
             // its result still reports.
             hidePanel(exit: 0.08)

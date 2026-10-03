@@ -56,8 +56,7 @@ extension SurfaceMachine {
         lineText = caption
         figure = .working
         if !headless {
-            emit(.showPanel(.line(content), text: caption, placement: .inPlace))
-            panelUp = true
+            showPanel(.line(content), text: caption, placement: .inPlace)
         }
         publish()
     }
@@ -190,6 +189,12 @@ extension SurfaceMachine {
         if work.source == .helper { _ = sendToHelper(.stop(OfferStop(offerId: work.offerKey, at: nowMs))) }
         endWork()
         count("surface.workStopped")
+        guard !lineSuppressed else {
+            // The tap took Esc, then the line went down before this ran: nobody sees "Stopped", so
+            // it is not shown and takes no key.
+            takeLineDown(exit: 0)
+            return publish()
+        }
         resultStatusID = arbiter.showStatus(StatusLine(pid: line.pid, kind: .result, offerKey: line.offerKey))
         showResult(LineContent(figure: .done, text: Captions.stopped, emphasis: .plain), text: Captions.stopped, lifetime: 2)
     }
@@ -223,8 +228,7 @@ extension SurfaceMachine {
         lineText = text
         figure = content.figure
         if !headless, !lineSuppressed {
-            emit(.showPanel(.line(content), text: text, placement: .inPlace))
-            panelUp = true
+            showPanel(.line(content), text: text, placement: .inPlace)
         }
         cancelResultTimer()
         let statusID = resultStatusID
