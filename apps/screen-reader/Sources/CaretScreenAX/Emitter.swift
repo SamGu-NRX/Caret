@@ -197,6 +197,9 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
                 case .actGrant(let g):
                     grants?.issue(g, uptimeMs: uptimeMs())
                     log("act grant: task \(g.taskId), process \(g.pid), window \(g.windowId), for \(g.expires - g.at) ms")
+                case .calendarGrant(let g):
+                    grants?.issueCalendar(g, uptimeMs: uptimeMs())
+                    log("calendar grant: task \(g.taskId), for \(g.expires - g.at) ms")
                 case .actRevoke(let r):
                     grants?.revoke(taskId: r.taskId)
                     log("act grant revoked: task \(r.taskId)")

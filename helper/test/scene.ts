@@ -2,7 +2,7 @@
 // Helper as reader snapshots, with a clock the test advances. All names and addresses are invented.
 import type { Helper } from "../src/helper.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
-import { PROTOCOL_VERSION, type AppRef, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
+import { isCalendarVerb, PROTOCOL_VERSION, type AppRef, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
 
 export const PEOPLE = [
@@ -82,6 +82,7 @@ export class Desk implements ReaderLink {
     this.verbs.push(verb);
     const answer = (outcome: VerbResult["outcome"], detail: string | null = null): VerbResult => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "desk", at: this.at, outcome, detail });
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return answer("ok");
+    if (isCalendarVerb(verb)) return answer("notAllowed", "the desk has no calendar");
     // A list window is read-only here: its walk changes nothing, as a walk of an unchanged window sends nothing new.
     if (verb.kind === "walk" && !this.grids.has(verb.windowId) && this.h.model.windows.has(verb.windowId)) return answer("ok");
     const g = this.grids.get(verb.windowId);

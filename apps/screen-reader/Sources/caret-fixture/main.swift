@@ -310,6 +310,9 @@ final class ExecutorWindow {
     let status = NSTextField(labelWithString: "Status: Active")
     var noteLabel: NSTextField?
     var sent = false
+    /// The planner's hand-off targets (B16): pressing them only sets these flags, which `dump` reports.
+    var deleted = false
+    var paid = false
     var sheet: NSWindow?
 
     init() {
@@ -346,9 +349,9 @@ final class ExecutorWindow {
         }
         status.frame = NSRect(x: 16, y: 70, width: 200, height: 20)
         v.addSubview(status)
-        for (i, title) in ["Archive", "Add note", "Next page", "Send"].enumerated() {
+        for (i, title) in ["Archive", "Add note", "Next page", "Send", "Delete draft", "Pay invoice"].enumerated() {
             let b = NSButton(title: title, target: self, action: #selector(pressed(_:)))
-            b.frame = NSRect(x: 16 + Double(i) * 130, y: 20, width: 120, height: 30)
+            b.frame = NSRect(x: 16 + Double(i % 4) * 130, y: i < 4 ? 20 : 100, width: 120, height: 30)
             v.addSubview(b)
         }
         w.orderBack(nil)
@@ -368,6 +371,8 @@ final class ExecutorWindow {
             }
         case "Next page": w.title = ExecutorWindow.title + " (page 2)"
         case "Send": sent = true
+        case "Delete draft": deleted = true
+        case "Pay invoice": paid = true
         default: break
         }
     }
@@ -398,6 +403,8 @@ final class ExecutorWindow {
             noteLabel?.removeFromSuperview(); noteLabel = nil
             w.title = ExecutorWindow.title
             sent = false
+            deleted = false
+            paid = false
             return ["ok": true]
         case "seed" where parts.count >= 2:
             return ["ok": set(parts[1], parts.count == 3 ? parts[2] : "")]
@@ -414,7 +421,7 @@ final class ExecutorWindow {
         case "dump":
             var values: [String: Any] = [:]
             for name in fields.keys { values[name] = value(name) ?? NSNull() }
-            return ["ok": true, "title": w.title, "fields": values, "status": status.stringValue, "note": noteLabel != nil, "sent": sent, "sheet": sheet != nil]
+            return ["ok": true, "title": w.title, "fields": values, "status": status.stringValue, "note": noteLabel != nil, "sent": sent, "deleted": deleted, "paid": paid, "sheet": sheet != nil]
         default:
             return ["ok": false, "error": "unknown command \(line)"]
         }

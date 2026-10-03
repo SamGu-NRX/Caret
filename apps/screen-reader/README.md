@@ -33,6 +33,18 @@ The helper sends `readerCommand` lines back over the same socket. `walk` re-read
 
 Write, press and raise act only under a live act grant. The helper sends `actGrant` (a task, a process, one window, an expiry) when an accepted offer starts that task, and `actRevoke` when the task ends, pauses, is stopped or is taken over. A command acts only when it names the granted task (`taskId`), process and window; the reader checks before it re-walks and again right before the Accessibility call, ends every grant 120 s after it arrives at the latest, and drops all of them when the helper's connection closes. Otherwise the answer is `notAllowed`, with the reason in `detail`. Grants arrive only on the reader's own connection to the helper, and the helper accepts none from a consumer. For fixture tests, `--act-pids` (a subset of `--only-pids`) lets the executor act in named processes without a grant. `watchInput` turns on a global key and mouse monitor for the named processes and reports that input happened, its process and a click's location: never key codes or characters.
 
+## Calendar
+
+With `--calendar-test` the reader answers the helper's calendar verbs (`calendarFind`, `calendarAdd`, `calendarGet`, `calendarRemove`, `calendarDispose`) through EventKit, which needs a native process. `CalendarAdapter` (in `CaretScreenCore`, tested with a fake store) holds the rules, and `EventKitBackend` (`CaretScreenCalendar`) talks to EventKit:
+
+- It never asks for Calendar access, since that would put a system prompt on the user's screen. Without full access every verb answers `blocked` with `blocked: tcc`, and no EventKit store is created.
+- It writes only to calendars it created itself on a local (On My Mac) source, which no account syncs. With no local source an add answers `blocked: noLocalSource`. It looks events up only by the ids of events it added, and only while each is still in its calendar, so an event in any other calendar is never read.
+- An add of an event already in its calendar is refused, so two tasks never share one event.
+- A write names its task and needs that task's live `calendarGrant`, checked on the calendar queue right before the write. The helper sends one only for a task from an accepted offer, and `actRevoke` ends it.
+- `calendarDispose`, and the reader stopping, delete the calendars it created. A reader that is killed leaves them behind.
+
+Without the flag every calendar verb answers `notAllowed`. `--calendar-probe` prints the authorization status and nothing else, and `--calendar-audit TITLE` lists, through a store of its own, every event calendar with that title, its source and its event count. Both only read and need no Accessibility. Calendar is a per-user TCC service, decided for the responsible process by its real path. The VM run that exercised all of this against real EventKit is in `~/.caret-run/evidence/screen/b16/`.
+
 ## Element keys
 
 `<app>/<window kind>/<named ancestors>/<role>:<label>~<ordinal>`. Labels are lowercased with digit runs masked as `#`, so counters and dates do not move keys. Unnamed containers are left out, so wrapping does not move keys. Page titles and labels equal to the window title are left out, since Chrome renames its top group and web area on every title change. The ordinal counts earlier siblings with the same role and label. E8 measured the result: 191 of 196 elements kept one key over 100 walks, and every drift was in a window built to cause it.
@@ -43,4 +55,4 @@ Write, press and raise act only under a live act grant. The helper sends `actGra
 
 ## Tests
 
-`swift test` covers element keys, compaction, typed-value detection and the golden protocol fixture shared with the helper (`helper/fixtures/golden/protocol.ndjson`).
+`swift test` covers element keys, compaction, typed-value detection, act and calendar grants, the calendar adapter's rules, the golden protocol fixture shared with the helper (`helper/fixtures/golden/protocol.ndjson`), and the date and time spans the event card's sentences hold (`helper/fixtures/golden/event-sentences.json`).

@@ -48,6 +48,13 @@ export const EndState = z.discriminatedUnion("kind", [
    * raise the window and activate its app. It writes nothing, so it leaves nothing for undo.
    */
   z.object({ kind: z.literal("windowFocused"), window: WindowSel }),
+  /**
+   * The user presses this control themselves. It never holds and the executor never acts on it: the run
+   * resolves the control, then stops there as a hand-off that names it. A planner writes it where a press
+   * reads as outbound, destructive or money (risk.ts), or where code cannot predict what the press changes
+   * and so could not verify it (`unverifiable`).
+   */
+  z.object({ kind: z.literal("handoff"), ...InWindow, why: z.enum(["outbound", "destructive", "money", "unverifiable"]) }),
   /** An event with this title, start and end exists in the named calendar. Checked through the calendar interface, not the screen. */
   z.object({
     kind: z.literal("calendarEvent"),

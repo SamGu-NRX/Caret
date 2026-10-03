@@ -11,10 +11,10 @@
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt } from "node:crypto";
-import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppRef, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppRef, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
-import type { CalendarPort, ReaderLink, UrlOpener } from "./means.ts";
+import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
 import { classifyLabel } from "./risk.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
@@ -91,8 +91,8 @@ export interface TaskResult {
 }
 
 /** One undo ledger entry. Writes record the value they replaced; presses are recorded as not undoable. */
-/** The numbers a done or undone taskProgress carries beside its sentence. */
-type ProgressCounts = Pick<TaskProgress, "written" | "restored" | "notRestored" | "notUndoablePresses">;
+/** The numbers a done or undone taskProgress carries beside its sentence, and a calendar hand-off's reason. */
+type ProgressCounts = Pick<TaskProgress, "written" | "restored" | "notRestored" | "notUndoablePresses"> & { blocked?: CalendarBlock };
 
 export type LedgerEntry =
   | { kind: "write"; step: number; pid: number; windowId: string; key: string; role: string; before: string; after: string }
@@ -142,6 +142,8 @@ interface Task {
   granted: boolean;
   /** The act grant the reader holds for this task now, or null. One window per task. */
   grant: { pid: number; windowId: string } | null;
+  /** The reader holds a calendar grant for this task now (protocol.ts CalendarGrant). */
+  calendarGranted: boolean;
 }
 
 /**
@@ -158,19 +160,22 @@ class StepStop extends Error {
   readonly reason: StopReason | null;
   /** A stop caused by the screen changing under the task, not by a mismatch after Caret acted. */
   readonly by: TaskCause;
-  private constructor(outcome: "stopped" | "handoff", reason: StopReason | null, message: string, by: TaskCause) {
+  /** On a hand-off from the calendar: what the user has to give. */
+  readonly blocked: CalendarBlock | null;
+  private constructor(outcome: "stopped" | "handoff", reason: StopReason | null, message: string, by: TaskCause, blocked: CalendarBlock | null = null) {
     super(message);
     this.outcome = outcome;
     this.reason = reason;
     this.by = by;
+    this.blocked = blocked;
   }
 
   static stop(reason: StopReason, message: string, by: TaskCause = "caret"): StepStop {
     return new StepStop("stopped", reason, message, by);
   }
 
-  static handoff(message: string): StepStop {
-    return new StepStop("handoff", null, message, "caret");
+  static handoff(message: string, blocked: CalendarBlock | null = null): StepStop {
+    return new StepStop("handoff", null, message, "caret", blocked);
   }
 }
 
@@ -197,7 +202,10 @@ export class Executor {
   readerRestarted(): void {
     this.session++;
     // The reader dropped every grant with the old connection.
-    for (const t of this.tasks.values()) t.grant = null;
+    for (const t of this.tasks.values()) {
+      t.grant = null;
+      t.calendarGranted = false;
+    }
   }
 
   /** Whether a run with this id exists, running or finished. */
@@ -248,6 +256,7 @@ export class Executor {
       }),
       granted: opts.grant === true,
       grant: null,
+      calendarGranted: false,
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -363,6 +372,7 @@ export class Executor {
     // the window its writes went to, until the restore ends.
     const written = task.ledger.find((e) => e.kind === "write");
     if (written !== undefined) this.issueGrant(task, written.pid, written.windowId);
+    if (task.ledger.some((e) => e.kind === "calendar")) this.issueCalendarGrant(task);
     try {
       for (const e of [...task.ledger].reverse()) {
         if (e.kind === "press") {
@@ -377,7 +387,7 @@ export class Executor {
               ? "you stopped the undo"
               : e.kind === "write"
                 ? await this.undoWrite(task, e)
-                : await this.undoCalendar(e);
+                : await this.undoCalendar(task, e);
         if (reason === null) out.restored++;
         else {
           out.notRestored.push({ step: e.step, reason });
@@ -444,7 +454,7 @@ export class Executor {
       const outcome = e instanceof StepStop ? e.outcome : "stopped";
       const detail = e instanceof Error ? e.message : String(e);
       task.finished = outcome;
-      if (outcome === "handoff") this.progress(task, "handoff", i, detail, e instanceof StepStop ? e.by : "caret");
+      if (outcome === "handoff") this.progress(task, "handoff", i, detail, e instanceof StepStop ? e.by : "caret", e instanceof StepStop && e.blocked !== null ? { blocked: e.blocked } : {});
       else this.stopped(task, i, detail, e instanceof StepStop ? e.by : "caret", e instanceof StepStop ? (e.reason ?? "error") : "error");
       return this.result(task, outcome, i, detail);
     } finally {
@@ -484,6 +494,14 @@ export class Executor {
       return;
     }
     if (end.kind === "windowFocused") return this.raiseStep(task, i, w, step);
+    if (end.kind === "handoff") {
+      const node = await this.resolve(task, i, w, end.target, step.says);
+      const label = (node.label ?? "").trim();
+      const what = label === "" ? end.target.describe : `'${label}'`;
+      // The control's own label decides the reason, as for a press: a plan cannot call a Send press unverifiable.
+      const risk = label === "" ? "safe" : classifyLabel(label);
+      throw StepStop.handoff(risk === "safe" ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${risk}; Caret leaves that press to you`);
+    }
 
     if (end.kind === "valueEquals" || end.kind === "focused") {
       const node = await this.resolve(task, i, w, end.target, step.says);
@@ -585,6 +603,17 @@ export class Executor {
   }
 
   private async calendarStep(task: Task, i: number, end: Extract<EndState, { kind: "calendarEvent" }>): Promise<void> {
+    try {
+      await this.calendarAct(task, i, end);
+    } catch (e) {
+      // No Calendar access or no local account is the user's to give: a hand-off that says which.
+      if (e instanceof CalendarBlocked) throw StepStop.handoff(e.message, e.reason);
+      if (e instanceof CalendarRefused) throw StepStop.stop("reader", e.message);
+      throw e;
+    }
+  }
+
+  private async calendarAct(task: Task, i: number, end: Extract<EndState, { kind: "calendarEvent" }>): Promise<void> {
     const cal = this.deps.calendar;
     if (cal === null) throw StepStop.stop("notConfigured", "no calendar is configured");
     if ((await cal.find(end.calendar, end.title, end.start, end.end)) !== null) {
@@ -595,10 +624,25 @@ export class Executor {
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `add event '${end.title}' to ${end.calendar}; expect it to be found there`);
     this.checkSession(task);
-    const ev = await cal.add(end.calendar, end.title, end.start, end.end);
+    // Only a task from an accepted offer gets one; without it the reader refuses the add.
+    this.issueCalendarGrant(task);
+    let ev: Awaited<ReturnType<CalendarPort["add"]>>;
+    try {
+      ev = await cal.add(end.calendar, end.title, end.start, end.end, task.id);
+    } catch (e) {
+      // An add whose answer was lost (no answer in time, axError) may still have been saved: if the event is
+      // there now, it goes in the ledger so undo can remove it, and the run still stops on the error. Any
+      // other refusal (an identical event another task added) means this task added nothing.
+      if (e instanceof CalendarRefused && e.outcome === "axError") {
+        const late = await cal.find(end.calendar, end.title, end.start, end.end).catch(() => null);
+        if (late !== null) task.ledger.push({ kind: "calendar", step: i, eventId: late.id, calendar: late.calendar, title: late.title, start: late.start, end: late.end });
+      }
+      throw e;
+    }
+    // In the ledger before it is checked, so undo can remove an event that fails the check.
+    task.ledger.push({ kind: "calendar", step: i, eventId: ev.id, calendar: ev.calendar, title: ev.title, start: ev.start, end: ev.end });
     const found = await cal.find(end.calendar, end.title, end.start, end.end);
     if (found === null || found.id !== ev.id) throw StepStop.stop("mismatch", "mismatch: the added event is not found by the same query");
-    task.ledger.push({ kind: "calendar", step: i, eventId: ev.id, calendar: ev.calendar, title: ev.title, start: ev.start, end: ev.end });
     task.acted++;
     this.progress(task, "verified", i, null);
   }
@@ -641,9 +685,19 @@ export class Executor {
     task.grant = { pid, windowId };
   }
 
+  /** Gives the reader a calendar grant for this task, on the same terms as issueGrant. */
+  private issueCalendarGrant(task: Task): void {
+    if (!task.granted || task.calendarGranted || task.interrupt !== null || this.deps.reader.grant === undefined) return;
+    const at = Date.now();
+    this.deps.reader.grant({ type: "calendarGrant", v: PROTOCOL_VERSION, taskId: task.id, at, expires: at + GRANT_MAX_MS });
+    task.calendarGranted = true;
+  }
+
+  /** Ends both of the task's grants with one revoke. */
   private revokeGrant(task: Task): void {
-    if (task.grant === null) return;
+    if (task.grant === null && !task.calendarGranted) return;
     task.grant = null;
+    task.calendarGranted = false;
     this.deps.reader.grant?.({ type: "actRevoke", v: PROTOCOL_VERSION, taskId: task.id, at: Date.now() });
   }
 
@@ -789,6 +843,9 @@ export class Executor {
     switch (end.kind) {
       case "windowTitle":
         return w.window.title === end.title;
+      case "handoff":
+        // The user's own press is never something Caret finds already done.
+        return false;
       case "windowFocused":
         // The window must be the app's focused one and the app the one the user is in: a request walk
         // marks a background app's own focused window as focused, which alone would skip the raise.
@@ -846,7 +903,15 @@ export class Executor {
     return null;
   }
 
-  private async undoCalendar(e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
+  private async undoCalendar(task: Task, e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
+    try {
+      return await this.undoCalendarEvent(task, e);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private async undoCalendarEvent(task: Task, e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
     const cal = this.deps.calendar;
     if (cal === null) return "no calendar is configured";
     const ev = await cal.get(e.eventId);
@@ -854,7 +919,7 @@ export class Executor {
     if (ev.title !== e.title || ev.calendar !== e.calendar || Date.parse(ev.start) !== Date.parse(e.start) || Date.parse(ev.end) !== Date.parse(e.end)) {
       return "the event changed after Caret added it";
     }
-    await cal.remove(e.eventId);
+    await cal.remove(e.eventId, task.id);
     return (await cal.get(e.eventId)) === null ? null : "the event is still there after removal";
   }
 
@@ -866,11 +931,19 @@ export class Executor {
   }
 
   private progress(task: Task, phase: Exclude<TaskPhase, "stopped">, step: number | null, detail: string | null, cause: TaskCause | null = null, counts: ProgressCounts = {}): void {
-    this.publishProgress(task, { phase, ...counts }, step, detail, cause);
+    const { blocked, ...numbers } = counts;
+    if (phase === "handoff") this.publishProgress(task, blocked === undefined ? { phase } : { phase, blocked }, step, detail, cause);
+    else this.publishProgress(task, { phase, ...numbers }, step, detail, cause);
   }
 
-  /** `head` is the phase with what only that phase carries: a stop's reason, or a done or undone's counts. */
-  private publishProgress(task: Task, head: { phase: "stopped"; stopReason: StopReason } | ({ phase: Exclude<TaskPhase, "stopped"> } & ProgressCounts), step: number | null, detail: string | null, cause: TaskCause | null): void {
+  /** `head` is the phase with what only that phase carries: a stop's reason, a hand-off's calendar block, or a done or undone's counts. */
+  private publishProgress(
+    task: Task,
+    head: { phase: "stopped"; stopReason: StopReason } | { phase: "handoff"; blocked?: CalendarBlock } | ({ phase: Exclude<TaskPhase, "stopped" | "handoff"> } & Omit<ProgressCounts, "blocked">),
+    step: number | null,
+    detail: string | null,
+    cause: TaskCause | null,
+  ): void {
     const phase = head.phase;
     const says = step === null ? null : (task.plan.steps[step]?.says ?? null);
     const steps = task.plan.steps.length;

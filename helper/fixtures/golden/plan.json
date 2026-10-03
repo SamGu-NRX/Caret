@@ -69,6 +69,15 @@
       "end": { "kind": "windowFocused", "window": { "bundleId": "dev.caret.fixture", "titleStartsWith": "Caret Fixture — Executor" } }
     },
     {
+      "says": "You send the follow-up yourself",
+      "end": {
+        "kind": "handoff",
+        "window": { "titleStartsWith": "Caret Fixture — Executor" },
+        "target": { "role": "AXButton", "label": "Send", "describe": "the Send button" },
+        "why": "outbound"
+      }
+    },
+    {
       "says": "The help page is open",
       "end": { "kind": "windowTitle", "window": { "titleStartsWith": "Caret Fixture — Help" }, "title": "Caret Fixture — Help" },
       "via": { "kind": "openUrl", "url": "https://example.com/help" }

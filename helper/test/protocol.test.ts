@@ -19,7 +19,54 @@ describe("golden protocol fixture", () => {
       "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
       "settings", "settings", "offerWithdrawn",
       "actGrant", "readerCommand", "verbResult", "actRevoke",
+      "planRequest", "planProposal", "planProposal",
+      "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
     ]);
+  });
+
+  it("carries B16's calendar verbs: an add, its event, a refusal for no Calendar access, and the hand-off it becomes", () => {
+    const [add, added, blocked, handoff] = lines.slice(41, 45).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(HelperToReader.parse(add)).toMatchObject({ verb: { kind: "calendarAdd", calendar: "Caret Test", taskId: "event-1" } });
+    const grant = JSON.parse(lines[45] ?? "") as Record<string, unknown>;
+    expect(HelperToReader.parse(grant)).toMatchObject({ type: "calendarGrant", taskId: "event-1" });
+    expect(ConsumerMessage.safeParse(grant).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...grant, expires: (grant.at as number) + GRANT_MAX_MS + 1 }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...grant, taskId: "" }).success).toBe(false);
+    expect(ConsumerMessage.safeParse(add).success).toBe(false);
+    expect(ReaderMessage.parse(added)).toMatchObject({ outcome: "ok", event: { id: "ev-1", title: "Coffee with Dana" } });
+    expect(ReaderMessage.parse(blocked)).toMatchObject({ outcome: "blocked", blocked: "tcc" });
+    expect(HelperMessage.parse(handoff)).toMatchObject({ phase: "handoff", blocked: "tcc" });
+    expect(ReaderMessage.safeParse({ ...blocked, blocked: undefined }).success).toBe(false);
+    expect(ReaderMessage.safeParse({ ...added, blocked: "tcc" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...handoff, phase: "done" }).success).toBe(false);
+  });
+
+  it("carries B16's planner pair: a request from the host, a proposal with a hand-off, and an error", () => {
+    const [req, proposal, failed] = lines.slice(38, 41).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(ConsumerMessage.parse(req)).toMatchObject({ type: "planRequest", windowId: "5150-1" });
+    expect(HelperMessage.safeParse(req).success).toBe(false);
+    expect(HelperMessage.parse(proposal)).toMatchObject({ outcome: "proposed", offerKey: "plan-1-ask-1", handoff: { label: "Send", why: "outbound" } });
+    expect(HelperMessage.parse(failed)).toMatchObject({ outcome: "error", error: { code: "untracedValue" } });
+    expect(ConsumerMessage.safeParse(proposal).success).toBe(false);
+    for (const bad of [
+      { ...req, instruction: "" },
+      { ...req, instruction: "x".repeat(501) },
+      { ...req, windowId: "" },
+    ]) expect(ConsumerMessage.safeParse(bad).success).toBe(false);
+    // The Swift mirror counts the same way (GoldenTests readsThePlannerPair): 250 emoji pass.
+    expect(ConsumerMessage.safeParse({ ...req, instruction: "😀".repeat(250) }).success).toBe(true);
+    expect(HelperMessage.safeParse({ ...failed, at: -1 }).success).toBe(false);
+    for (const bad of [
+      { ...proposal, error: { code: "unsure", detail: "x" } },
+      { ...proposal, spec: null },
+      { ...proposal, offerKey: null },
+      { ...failed, error: null },
+      { ...failed, offerKey: "plan-2" },
+      { ...failed, handoff: { label: "Send", why: "outbound" } },
+      { ...failed, error: { code: "guess", detail: "x" } },
+      { ...failed, error: { code: "unsure", detail: "" } },
+      { ...proposal, handoff: { label: "Send", why: "risky" } },
+    ]) expect(HelperMessage.safeParse(bad).success).toBe(false);
   });
 
   it("carries B15's act grant: helper to reader only, capped, and a write that names its task", () => {
@@ -175,7 +222,7 @@ describe("plan schema", () => {
   it("parses the golden plan losslessly, with one step of every end-state kind and both vias", () => {
     const p = Plan.parse(golden);
     expect(p).toEqual(golden);
-    expect(new Set(p.steps.map((s) => s.end.kind))).toEqual(new Set(["valueEquals", "exists", "absent", "focused", "windowTitle", "windowFocused", "calendarEvent"]));
+    expect(new Set(p.steps.map((s) => s.end.kind))).toEqual(new Set(["valueEquals", "exists", "absent", "focused", "windowTitle", "windowFocused", "handoff", "calendarEvent"]));
     expect(new Set(p.steps.flatMap((s) => (s.via === undefined ? [] : [s.via.kind])))).toEqual(new Set(["press", "openUrl"]));
   });
 

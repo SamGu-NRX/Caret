@@ -162,7 +162,19 @@ export type Pasteboard = z.infer<typeof Pasteboard>;
  * only when something changed. An empty list ends every watch. It only reads, so it needs no `--act-pids`.
  * `raise` brings one window to the front and activates its app (AXRaise, then activation), re-walks it
  * and sends the snapshot; it writes nothing, but it moves focus, so it is gated like write and press.
+ * The calendar verbs (B16) reach EventKit, which needs a native process. The reader answers them only when
+ * started with --calendar-test, and then only in calendars it created itself on a local (On My Mac)
+ * source, which `calendarDispose` deletes. A write (add, remove, dispose) names its task and needs that
+ * task's live CalendarGrant, checked right before the write. It never asks for Calendar access: without
+ * it, or without a local source, the answer is `blocked`.
  */
+/** One event in a calendar, as the calendar verbs name it: times are ISO 8601 with offset. */
+const CalendarSlot = { calendar: z.string().min(1), title: z.string(), start: z.iso.datetime({ offset: true }), end: z.iso.datetime({ offset: true }) };
+export const CalendarEventShape = z.object({ id: z.string().min(1), ...CalendarSlot });
+/** Why the reader's calendar refused: no Calendar access (it never asks), or no local source to create its calendar on. */
+export const CalendarBlock = z.enum(["tcc", "noLocalSource"]);
+export type CalendarBlock = z.infer<typeof CalendarBlock>;
+
 /** The task whose act grant covers a write, press or raise. Without it only `--act-pids` processes are acted in. */
 const GrantTask = z.string().min(1).optional();
 export const ReaderCommand = z.object({
@@ -206,10 +218,26 @@ export const ReaderCommand = z.object({
     z.object({ kind: z.literal("watchInput"), pids: z.array(z.number().int()) }),
     z.object({ kind: z.literal("watchWindows"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
     z.object({ kind: z.literal("raise"), pid: z.number().int(), windowId: z.string(), taskId: GrantTask }),
+    /** The event with this title, start and end in the reader's calendar of this name, if any. */
+    z.object({ kind: z.literal("calendarFind"), ...CalendarSlot }),
+    /** Adds the event, creating the calendar on a local source first if the reader has not yet; an identical event already there is returned instead. */
+    z.object({ kind: z.literal("calendarAdd"), ...CalendarSlot, taskId: z.string().min(1) }),
+    /** One event by id, only if it is one the reader added. */
+    z.object({ kind: z.literal("calendarGet"), id: z.string().min(1) }),
+    /** Removes an event by id, only one the reader added. */
+    z.object({ kind: z.literal("calendarRemove"), id: z.string().min(1), taskId: z.string().min(1) }),
+    /** Deletes the calendar of this name the reader created, with its events. Nothing else is touched. */
+    z.object({ kind: z.literal("calendarDispose"), calendar: z.string().min(1), taskId: z.string().min(1) }),
   ]),
 });
 export type ReaderCommand = z.infer<typeof ReaderCommand>;
 export type ReaderVerb = ReaderCommand["verb"];
+export type CalendarVerb = Extract<ReaderVerb, { kind: "calendarFind" | "calendarAdd" | "calendarGet" | "calendarRemove" | "calendarDispose" }>;
+const CALENDAR_VERBS: ReadonlySet<string> = new Set(["calendarFind", "calendarAdd", "calendarGet", "calendarRemove", "calendarDispose"]);
+/** A verb for the reader's calendar adapter rather than an app's window. */
+export function isCalendarVerb(v: ReaderVerb): v is CalendarVerb {
+  return CALENDAR_VERBS.has(v.kind);
+}
 
 /**
  * Longest an act grant lasts after the reader receives it, whatever its `expires` says. Assumed, not
@@ -240,7 +268,17 @@ export const ActGrant = z
   });
 export type ActGrant = z.infer<typeof ActGrant>;
 
-/** Ends a task's act grant: the run finished, paused, was stopped or taken over, or its undo finished. */
+/**
+ * Lets the reader write to its calendars for one task until `expires`, at most GRANT_MAX_MS after `at`.
+ * The helper sends it only for a task from an accepted offer, before the task's first calendar write and
+ * again for its undo; the task's actRevoke ends it with the act grant.
+ */
+export const CalendarGrant = z
+  .object({ type: z.literal("calendarGrant"), v: z.literal(PROTOCOL_VERSION), taskId: z.string().min(1), at: ms, expires: ms })
+  .refine((g) => g.expires > g.at && g.expires - g.at <= GRANT_MAX_MS, { message: `expires must be after at and at most ${GRANT_MAX_MS} ms after it`, path: ["expires"] });
+export type CalendarGrant = z.infer<typeof CalendarGrant>;
+
+/** Ends a task's act grant and calendar grant: the run finished, paused, was stopped or taken over, or its undo finished. */
 export const ActRevoke = z.object({
   type: z.literal("actRevoke"),
   v: z.literal(PROTOCOL_VERSION),
@@ -260,18 +298,28 @@ export const VerbOutcome = z.enum([
   "secure",
   /** The Accessibility call itself failed; `detail` holds its error code. */
   "axError",
+  /** A calendar verb the reader may not carry out here; `blocked` says why. */
+  "blocked",
 ]);
 export type VerbOutcome = z.infer<typeof VerbOutcome>;
 
-/** The reader's answer to one readerCommand. Any snapshot the verb produced was sent before it. */
-export const VerbResult = z.object({
-  type: z.literal("verbResult"),
-  v: z.literal(PROTOCOL_VERSION),
-  id: z.string(),
-  at: ms,
-  outcome: VerbOutcome,
-  detail: z.string().nullable(),
-});
+/**
+ * The reader's answer to one readerCommand. Any snapshot the verb produced was sent before it. A calendar
+ * verb's answer carries the event it found, added or got (absent when there is none); `blocked` comes
+ * with outcome `blocked` and no other.
+ */
+export const VerbResult = z
+  .object({
+    type: z.literal("verbResult"),
+    v: z.literal(PROTOCOL_VERSION),
+    id: z.string(),
+    at: ms,
+    outcome: VerbOutcome,
+    detail: z.string().nullable(),
+    event: CalendarEventShape.optional(),
+    blocked: CalendarBlock.optional(),
+  })
+  .refine((r) => (r.outcome === "blocked") === (r.blocked !== undefined), { message: "blocked comes with outcome blocked, and blocked needs it", path: ["blocked"] });
 export type VerbResult = z.infer<typeof VerbResult>;
 
 /**
@@ -498,10 +546,12 @@ export type OfferStop = z.infer<typeof OfferStop>;
 
 /**
  * What Caret helps with, as the host's onboarding and menu bar name it (CaretRole on v2/host). `fill` is
- * grounded fill, `repeat` loops and routines, `watch` the pending-state watch, `words` the host's own
+ * grounded fill, `repeat` loops and routines, `watch` the pending-state watch, `calendar` the event card
+ * (B16; v2/host's CaretRole does not list it yet, so a host that sends its own roles turns it off),
+ * `words` the host's own
  * ghost text, which the helper accepts and ignores.
  */
-export const SettingsRole = z.enum(["fill", "repeat", "watch", "words"]);
+export const SettingsRole = z.enum(["fill", "repeat", "watch", "calendar", "words"]);
 export type SettingsRole = z.infer<typeof SettingsRole>;
 /** How often Caret speaks up. The helper's gate reads it from offers/settings.ts LEVELS. */
 export const SettingsLevel = z.enum(["quiet", "balanced", "eager"]);
@@ -542,7 +592,22 @@ export const FirstLook = z.object({
 });
 export type FirstLook = z.infer<typeof FirstLook>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook]);
+/**
+ * The user asked Caret to do something. The helper plans it against the screen model and memory and
+ * answers with `planProposal`, to the asker only. `windowId` is the window the user means, when the host
+ * knows it (the one they were in when they asked); without it Caret picks among the open windows.
+ */
+export const PlanRequest = z.object({
+  type: z.literal("planRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(200),
+  at: ms,
+  instruction: z.string().min(1).max(500),
+  windowId: z.string().min(1).optional(),
+});
+export type PlanRequest = z.infer<typeof PlanRequest>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -682,13 +747,16 @@ const TaskProgressFields = z.object({
   notUndoablePresses: z.number().int().nonnegative().optional(),
 });
 /**
- * A stopped progress says why in `stopReason`, and no other phase may carry one. Two variants on the
- * phase rather than a refinement, so the exported JSON Schema states the rule too.
+ * A stopped progress says why in `stopReason`, and no other phase may carry one. A hand-off may say
+ * `blocked` (B16): the calendar step needs something only the user can give, Calendar access or a local
+ * calendar account. Variants on the phase rather than refinements, so the exported JSON Schema states
+ * the rules too.
  */
 export const TaskProgress = z.discriminatedUnion("phase", [
-  TaskProgressFields.extend({ phase: TaskPhase.exclude(["stopped"]), stopReason: z.never().optional() }),
+  TaskProgressFields.extend({ phase: TaskPhase.exclude(["stopped", "handoff"]), stopReason: z.never().optional(), blocked: z.never().optional() }),
+  TaskProgressFields.extend({ phase: z.literal("handoff"), stopReason: z.never().optional(), blocked: CalendarBlock.optional() }),
   /** The activity record of the same stop says "failed". */
-  TaskProgressFields.extend({ phase: z.literal("stopped"), stopReason: StopReason }),
+  TaskProgressFields.extend({ phase: z.literal("stopped"), stopReason: StopReason, blocked: z.never().optional() }),
 ]);
 export type TaskProgress = z.infer<typeof TaskProgress>;
 
@@ -961,13 +1029,74 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
   }
 }
 
+// MARK: - the planner: "do X" becomes a checked plan
+
+
+/**
+ * Why no plan was proposed. `schema`: the drafted plan is not a valid plan. `noWindow`: no open window
+ * can carry the task, or Jev chose none. `unsure`: Jev's two asks disagreed, or agreed below the cutoff.
+ * `nothingToDo`: no field to write and no control to press. `unsupportedStep`: a step other than a field
+ * write or a hand-off. `multipleWindows`: steps in more than one window. `unknownWindow`,
+ * `ambiguousWindow`, `unknownTarget`, `ambiguousTarget`: a window or target is not (or not uniquely) in
+ * the screen model now. `notEditable`: a write to something that is not a writable field.
+ * `untracedValue`: a value that no window, memory entry or the instruction shows verbatim.
+ * `stepAfterHandoff`: a step after the press handed to the user. `riskMismatch`: a hand-off whose reason
+ * is not the one the risk table gives its control. `unavailable`: Jev is off, the helper is in shadow
+ * mode, Caret is paused, or no reader is connected. `jevFailed`: the Jev request failed. `privacy`: the
+ * question would carry more of a window than one Jev request may (privacy.ts), so it was not asked. `internal`: the
+ * planner failed in a way no other code names; the helper logged why.
+ */
+export const PlanErrorCode = z.enum([
+  "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
+  "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
+]);
+export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
+
+/**
+ * The planner's answer. A proposal is an offer: nothing runs until the host sends offerAccept with
+ * `offerKey` and the spec's Tab action, and then the plan runs through the executor under an act grant
+ * for `window` only. `spec` lists each field write with its value and source, and the press left to the
+ * user, if any; `handoff` names that press. On `error`, `error.code` says which check failed and
+ * `error.detail` says it in a sentence that may quote the plan's own step. The reply goes to the asker
+ * only, as a memory reply does.
+ */
+export const PlanProposal = z
+  .object({
+    type: z.literal("planProposal"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string(),
+    at: ms,
+    outcome: z.enum(["proposed", "error"]),
+    offerKey: z.string().min(1).nullable(),
+    window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }).nullable(),
+    spec: PopupSpec.nullable(),
+    handoff: z.object({ label: z.string(), why: z.enum(["outbound", "destructive", "money", "unverifiable"]) }).nullable(),
+    error: z.object({ code: PlanErrorCode, detail: z.string().min(1) }).nullable(),
+  })
+  .superRefine((m, ctx) => {
+    const proposed = m.outcome === "proposed";
+    const problem = proposed
+      ? m.offerKey === null || m.window === null || m.spec === null
+        ? "outcome proposed needs offerKey, window and spec"
+        : m.error !== null
+          ? "outcome proposed carries no error"
+          : null
+      : m.error === null
+        ? "outcome error needs error"
+        : m.offerKey !== null || m.spec !== null || m.handoff !== null
+          ? "outcome error carries no offerKey, spec or handoff"
+          : null;
+    if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["outcome"] });
+  });
+export type PlanProposal = z.infer<typeof PlanProposal>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
-  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply,
+  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
 /** What the helper sends the reader. A consumer can send none of these: ConsumerMessage refuses them. */
-export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand, ActGrant, ActRevoke]);
+export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand, ActGrant, ActRevoke, CalendarGrant]);
 export type HelperToReader = z.infer<typeof HelperToReader>;
 export type HelperMessage = z.infer<typeof HelperMessage>;
 

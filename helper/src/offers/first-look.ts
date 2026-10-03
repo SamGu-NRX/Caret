@@ -21,6 +21,7 @@ import { offerField } from "./field.ts";
 import { FAMILIES, LEVELS, type Family } from "./settings.ts";
 import type { AcceptHandler, AcceptResult } from "./registry.ts";
 import type { PatternEngine } from "../patterns/engine.ts";
+import { eventCardSpec, type EventCards } from "./event-card.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 
@@ -38,10 +39,11 @@ const MAX_NAMED = 8;
 
 /**
  * Which kind of offer wins when several are found, lower first. Assumed, not measured: a window waiting
- * on the user cannot go on without them; a grounded fill and a routine save the most typing; a loop's
- * remaining rows next; work that already finished can wait.
+ * on the user cannot go on without them; a grounded fill and a routine save the most typing, and an event
+ * card (B16) sits between them, since the moment it helps is now; a loop's remaining rows next; work that
+ * already finished can wait.
  */
-const RANK = { needsYou: 0, fill: 1, routine: 2, loopFinish: 3, loopNext: 4, done: 5 } as const;
+const RANK = { needsYou: 0, fill: 1, event: 2, routine: 3, loopFinish: 4, loopNext: 5, done: 6 } as const;
 
 export interface FirstLookDeps {
   model: ScreenModel;
@@ -56,6 +58,8 @@ export interface FirstLookDeps {
   /** Watched windows that finished or wait on the user and still have an Open offer. */
   resolvedWatches: () => { windowId: string; status: string; state: "done" | "needsYou" }[];
   patterns: PatternEngine;
+  /** The event card generator, whose first-look scan the `event` family runs. */
+  events: EventCards;
   run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>) => Promise<TaskResult>;
   /**
    * Records the found offer so an offerAccept with its key reaches `accept`. `underlying` is the id of the
@@ -208,7 +212,35 @@ export class FirstLookRunner {
       case "loop":
       case "routine":
         return Promise.resolve(this.patternOffers(family, LEVELS[req.level].routineSightings, exclude));
+      case "event":
+        return this.eventOffers(exclude);
     }
+  }
+
+  // MARK: - event cards
+
+  private async eventOffers(exclude: ReadonlySet<string>): Promise<Candidate[]> {
+    const events = this.deps.events;
+    if (this.deps.askJev === null) throw new LookError("Jev is off");
+    let found: Awaited<ReturnType<EventCards["firstLook"]>>;
+    try {
+      found = await events.firstLook(exclude);
+    } catch {
+      throw new LookError("Jev request failed");
+    }
+    return found.map(({ w, key, candidate }) => ({
+      family: "event" as const,
+      kind: "action" as const,
+      rank: RANK.event,
+      weight: w.lastFocusedAt,
+      window: w,
+      key,
+      spec: (offerKey: string) => eventCardSpec(offerKey, candidate, events.calendar, w.window.windowId, key),
+      accept: (offerKey: string) => () => {
+        this.deps.withdraw(offerKey, "taken");
+        return events.acceptFound(offerKey, w.window.windowId, key, candidate, (t, p, s) => this.deps.run(t, p, s));
+      },
+    }));
   }
 
   // MARK: - fill

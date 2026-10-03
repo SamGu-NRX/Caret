@@ -7,6 +7,7 @@ import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type ActRevoke, type HelperMessage, type HelperToReader } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
+import { planError } from "./planner/proposal.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
 const MAX_LINE_CHARS = 32 * 1024 * 1024;
@@ -37,7 +38,8 @@ export class HelperServer {
   sendToReader(m: HelperToReader): boolean {
     if (this.reader === null || this.reader.destroyed) return false;
     this.reader.write(JSON.stringify(m) + "\n");
-    if (m.type === "actGrant") this.granted.add(m.taskId);
+    // An act grant and a calendar grant both end with the task's one actRevoke.
+    if (m.type === "actGrant" || m.type === "calendarGrant") this.granted.add(m.taskId);
     else if (m.type === "actRevoke") this.granted.delete(m.taskId);
     return true;
   }
@@ -154,6 +156,19 @@ export class HelperServer {
               .catch((e: unknown) => {
                 this.warn(`first look ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
                 return { type: "firstLookReply", v: PROTOCOL_VERSION, requestId, at: Date.now(), outcome: "error", found: null, scanned: null, error: "the look failed" } as const;
+              })
+              .then((r) => {
+                if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+              });
+          }
+          // A proposal quotes values and names windows, so it goes to the asker only, as a first look's reply does.
+          else if (m.data.type === "planRequest") {
+            const requestId = m.data.requestId;
+            void this.helper()
+              .handlePlanRequest(m.data)
+              .catch((e: unknown) => {
+                this.warn(`plan ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
+                return planError(requestId, "internal", "the planner failed; the helper logged why", Date.now());
               })
               .then((r) => {
                 if (!s.destroyed) s.write(JSON.stringify(r) + "\n");

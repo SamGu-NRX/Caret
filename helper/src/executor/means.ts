@@ -1,7 +1,7 @@
 // The executor's means of acting, each behind an interface so tests and fixture runs never touch a
 // real account: reader verbs over the socket, a calendar, and a URL opener.
 import { randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type HelperToReader, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarBlock, type CalendarGrant, type HelperToReader, type ReaderVerb, type VerbResult } from "../protocol.ts";
 
 /** The reader's verbs. Each resolves with the reader's answer, after any snapshot the verb produced has been applied. */
 export interface ReaderLink {
@@ -10,7 +10,7 @@ export interface ReaderLink {
    * Hands the reader an act grant or revoke. The reader answers neither: a grant that does not arrive
    * shows up as the next act's notAllowed. A link without it (read-only tests) grants nothing.
    */
-  grant?(m: ActGrant | ActRevoke): void;
+  grant?(m: ActGrant | ActRevoke | CalendarGrant): void;
 }
 
 /**
@@ -28,7 +28,7 @@ export class SocketReaderLink implements ReaderLink {
     this.timeoutMs = timeoutMs;
   }
 
-  grant(m: ActGrant | ActRevoke): void {
+  grant(m: ActGrant | ActRevoke | CalendarGrant): void {
     this.send(m);
   }
 
@@ -70,14 +70,16 @@ export interface CalendarEvent {
 }
 
 /**
- * EventKit, seen from the executor. The only implementation in this repository is FakeCalendar:
- * a real adapter must write only to a calendar it created for the purpose, never to a synced account.
+ * EventKit, seen from the executor. FakeCalendar keeps events in memory; ReaderCalendar asks the reader,
+ * whose EventKit adapter writes only to a calendar it created on a local source, never to a synced
+ * account. A call the calendar may not carry out throws CalendarBlocked.
  */
 export interface CalendarPort {
   find(calendar: string, title: string, start: string, end: string): Promise<CalendarEvent | null>;
-  add(calendar: string, title: string, start: string, end: string): Promise<CalendarEvent>;
+  /** `taskId`: the task writing, whose calendar grant the reader's adapter checks. */
+  add(calendar: string, title: string, start: string, end: string, taskId: string): Promise<CalendarEvent>;
   get(id: string): Promise<CalendarEvent | null>;
-  remove(id: string): Promise<void>;
+  remove(id: string, taskId: string): Promise<void>;
 }
 
 /** An in-memory calendar store. It records every call so a test can show what was asked of it. */
@@ -95,7 +97,7 @@ export class FakeCalendar implements CalendarPort {
     return null;
   }
 
-  async add(calendar: string, title: string, start: string, end: string): Promise<CalendarEvent> {
+  async add(calendar: string, title: string, start: string, end: string, _taskId?: string): Promise<CalendarEvent> {
     this.calls.push(`add ${calendar}`);
     const ev = { id: randomUUID(), calendar, title, start, end };
     this.events.set(ev.id, ev);
@@ -108,9 +110,74 @@ export class FakeCalendar implements CalendarPort {
     return ev === undefined ? null : { ...ev };
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, _taskId?: string): Promise<void> {
     this.calls.push("remove");
     this.events.delete(id);
+  }
+}
+
+/** The calendar refused for a reason only the user can change: no Calendar access, or no local calendar account. */
+export class CalendarBlocked extends Error {
+  readonly reason: CalendarBlock;
+  constructor(reason: CalendarBlock, message: string) {
+    super(message);
+    this.reason = reason;
+  }
+}
+
+/** The reader answered a calendar verb with a refusal other than blocked: the run stops as a reader refusal. */
+export class CalendarRefused extends Error {
+  readonly outcome: VerbResult["outcome"];
+  constructor(outcome: VerbResult["outcome"], message: string) {
+    super(message);
+    this.outcome = outcome;
+  }
+}
+
+/** What the user is told for each reason, as a hand-off's detail. */
+export const BLOCKED_SAYS: Record<CalendarBlock, string> = {
+  tcc: "blocked: tcc. Caret has no Calendar access, and never asks for it on its own; grant it in System Settings, Privacy & Security, Calendars",
+  noLocalSource: "blocked: noLocalSource. There is no On My Mac calendar account, and Caret adds events only to a calendar of its own there, never to a synced one",
+};
+
+/**
+ * The reader's EventKit adapter over the reader link (protocol.ts calendar verbs). Every call is one
+ * verb; a `blocked` answer throws CalendarBlocked, any other refusal CalendarRefused naming the outcome.
+ */
+export class ReaderCalendar implements CalendarPort {
+  private readonly reader: ReaderLink;
+  constructor(reader: ReaderLink) {
+    this.reader = reader;
+  }
+
+  private async call(verb: ReaderVerb): Promise<CalendarEvent | null> {
+    const r = await this.reader.run(verb);
+    if (r.outcome === "blocked") throw new CalendarBlocked(r.blocked ?? "tcc", BLOCKED_SAYS[r.blocked ?? "tcc"]);
+    if (r.outcome !== "ok") throw new CalendarRefused(r.outcome, `the reader's calendar refused ${verb.kind}: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+    return r.event ?? null;
+  }
+
+  find(calendar: string, title: string, start: string, end: string): Promise<CalendarEvent | null> {
+    return this.call({ kind: "calendarFind", calendar, title, start, end });
+  }
+
+  async add(calendar: string, title: string, start: string, end: string, taskId: string): Promise<CalendarEvent> {
+    const ev = await this.call({ kind: "calendarAdd", calendar, title, start, end, taskId });
+    if (ev === null) throw new Error("the reader added the event but did not return it");
+    return ev;
+  }
+
+  get(id: string): Promise<CalendarEvent | null> {
+    return this.call({ kind: "calendarGet", id });
+  }
+
+  async remove(id: string, taskId: string): Promise<void> {
+    await this.call({ kind: "calendarRemove", id, taskId });
+  }
+
+  /** Deletes the calendar of this name the reader created, with its events, under `taskId`'s calendar grant. For tests and evaluations. */
+  async dispose(calendar: string, taskId: string): Promise<void> {
+    await this.call({ kind: "calendarDispose", calendar, taskId });
   }
 }
 

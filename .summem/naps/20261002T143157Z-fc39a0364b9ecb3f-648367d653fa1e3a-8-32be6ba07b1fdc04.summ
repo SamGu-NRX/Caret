@@ -1,1 +1,0 @@
-Gate path: no SQLite writes, flush on tick. Keep the pending watch's trailing debounce. No execFileSync in eval polls. Background fixture: stdin focus moves AX focus. Human input: powerd UserIsActive (B5). Count a departure once. Shadow store: ro .backup. Markers: structure.
