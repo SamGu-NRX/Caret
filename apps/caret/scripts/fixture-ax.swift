@@ -9,6 +9,7 @@
 //        fixture-ax focused <pid>             print the focused element's role and frame
 //        fixture-ax set-text <pid> <window title> <old> <new>   rewrite a label (AXValue) if settable
 //        fixture-ax set-field <pid> <x,y,w,h> <value>  write a text field's AXValue, as typing it would
+//        fixture-ax caret-end <pid> <x,y,w,h>  put the caret after the field's text (AXSelectedTextRange)
 //        fixture-ax close <pid> <window title>                  press the window's close button
 //        fixture-ax frontmost                 print the frontmost pid (NSWorkspace and lsappinfo)
 //        fixture-ax activate <pid>            ask macOS to activate the fixture (may be refused)
@@ -195,6 +196,13 @@ case "set-field" where args.count == 4:
     let field = textField(pid: pid, frame: parseFrame(args[2]))
     let result = AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, args[3] as CFString)
     emit(["ok": result == .success, "axError": result.rawValue, "value": string(field, kAXValueAttribute) ?? NSNull()])
+case "caret-end" where args.count == 3:
+    let pid = requirePID(args[1])
+    let field = textField(pid: pid, frame: parseFrame(args[2]))
+    var range = CFRange(location: (string(field, kAXValueAttribute) ?? "").utf16.count, length: 0)
+    guard let value = AXValueCreate(.cfRange, &range) else { fail("cannot make a range") }
+    let result = AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, value)
+    emit(["ok": result == .success, "axError": result.rawValue, "location": range.location])
 case "key-window" where args.count == 3:
     // Make one fixture window its app's key window by writing AXMain on it, the way a user
     // switching windows inside the app would. Reports the app's focused window before and after,

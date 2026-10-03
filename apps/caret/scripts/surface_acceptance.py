@@ -159,7 +159,12 @@ def host(command="state"):
     s.settimeout(5)
     s.connect(HOST_SOCK)
     s.sendall((command + "\n").encode())
-    s.shutdown(socket.SHUT_WR)
+    try:
+        s.shutdown(socket.SHUT_WR)
+    except OSError:
+        # The host answered and closed first (seen as ENOTCONN when polling every 20 ms); the
+        # reply is still in the socket's buffer.
+        pass
     chunks = []
     while True:
         c = s.recv(65536)
@@ -328,11 +333,17 @@ def rig(out_dir, appearance):
 
 
 def prefill(pid, field):
-    """In a filled run, writes the field's existing text and returns it; otherwise ''."""
+    """In a filled run, writes the field's existing text, focuses the field with the caret after
+    that text, and returns it; otherwise focuses the field and returns ''."""
     text = PREFILL.get(field["label"], "") if FILLED else ""
     if text:
         r = ax(pid, "set-field", pid, frame_arg(field["frame"]), text)
         check(f"{field['label']} holds text before its offer", r.get("ok") and r.get("value") == text, result=r)
+    ax(pid, "focus", pid, frame_arg(field["frame"]))
+    if text:
+        time.sleep(0.2)
+        r = ax(pid, "caret-end", pid, frame_arg(field["frame"]))
+        check(f"{field['label']}: caret after its text", r.get("ok"), result=r)
     return text
 
 
@@ -368,7 +379,6 @@ def alternatives(out_dir, appearance):
     # --- Alternatives in the Full name field --------------------------------------------------
     field = by_label["Full name"]
     existing = prefill(pid, field)
-    ax(pid, "focus", pid, frame_arg(field["frame"]))
     time.sleep(0.3)
     before = watch(pid)
     candidates = ["Dana Whitfield", "Dana R. Whitfield", "D. Whitfield", "Dana Whitfield-Ames"]
@@ -417,7 +427,6 @@ def alternatives(out_dir, appearance):
     # --- One typed character removes everything ----------------------------------------------
     field = by_label["Email"]
     prefill(pid, field)
-    ax(pid, "focus", pid, frame_arg(field["frame"]))
     time.sleep(0.3)
     inject({"kind": "alternatives", "pid": pid, "candidates": ["dana@lumenlabs.example", "dana.whitfield@lumenlabs.example"]})
     key("down", pid)
@@ -432,7 +441,6 @@ def alternatives(out_dir, appearance):
     # --- Pop-ups -------------------------------------------------------------------------------
     field = by_label["Phone"]
     prefill(pid, field)
-    ax(pid, "focus", pid, frame_arg(field["frame"]))
     time.sleep(0.3)
     before = watch(pid)
     reply = inject({"kind": "popup", "pid": pid, "offerKey": "card-1", "spec": golden("eventCard")})
