@@ -1,0 +1,1 @@
+Never edit a running bash script (write a new file, mv it). ScreenModel.apply makes new WindowState/nodes per snapshot (WeakMap caches): never mutate w.nodes. Repeating KeyframeAnimator redraws off screen (10.9% CPU; use Timer blinks). Debug JSON omits nil: test == null.

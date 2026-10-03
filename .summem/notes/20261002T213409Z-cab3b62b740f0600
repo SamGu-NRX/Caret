@@ -1,1 +1,0 @@
-The host's debug-socket JSON omits nil optionals (Swift JSONEncoder), so scripts must test == null / undefined, not === null.

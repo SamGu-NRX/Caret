@@ -1,1 +1,0 @@
-A repeating SwiftUI KeyframeAnimator redraws every frame, even through long holds and in a panel never ordered on screen: the perch's 5 s blink plus breath cost the host 10.9% of a core; one-shot blinks on a Timer cost about 1%.
