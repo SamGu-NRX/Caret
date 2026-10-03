@@ -104,15 +104,27 @@ export class OpenAppOffers {
         const held: Entry = { ...e, offerKey: `open-${e.watchId}.${++this.seq}`, boundTo: null };
         this.entries.set(held.offerKey, held);
         // The user may already be in another field: its focus came while the offer was still bound here.
-        const f = this.lastField;
-        if (f !== null && f.windowId !== windowId && f.windowId !== e.windowId && this.deps.model.windows.has(f.windowId)) this.show(held, f);
+        const f = this.currentLastField(windowId, e.windowId);
+        if (f !== null) this.show(held, f);
       }
     }
     if (this.lastField?.windowId === windowId) this.lastField = null;
   }
 
   /** Window ids start over with a new reader, so every offer names a window that no longer exists. */
+  /**
+   * The last focused field, if it is still there, editable and in the frontmost app, and in neither the
+   * closing window nor the watched one, with its frame read now.
+   */
+  private currentLastField(closing: string, watched: string): OfferField | null {
+    const f = this.lastField;
+    if (f === null || f.windowId === closing || f.windowId === watched || this.deps.model.frontmostPid !== f.pid) return null;
+    const n = this.deps.model.windows.get(f.windowId)?.nodes.get(f.key);
+    return n?.editable === true ? { ...f, frame: n.frame ?? null } : null;
+  }
+
   readerRestarted(): void {
+    this.lastField = null;
     for (const e of [...this.entries.values()]) this.drop(e.offerKey, "stale");
   }
 

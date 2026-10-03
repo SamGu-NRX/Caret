@@ -102,7 +102,7 @@ export type LoopEvent =
   | { type: "predict"; loop: Loop; cells: LoopCell[]; alternatives: LoopCell[][]; repeats: LoopCell[][] }
   /** The predicted round was taken or typed; `rest` is every round after it that can be read from the screen. */
   | { type: "confirmed"; loop: Loop; rest: LoopCell[][] }
-  | { type: "ended"; loop: Loop; reason: "diverged" | "idle" | "dismissed" };
+  | { type: "ended"; loop: Loop; reason: "diverged" | "idle" | "dismissed" | "stale" };
 
 export class LoopRecognizer {
   private history: PatternTransfer[] = [];
@@ -210,11 +210,18 @@ export class LoopRecognizer {
       switchFit(loop, j);
     }
     loop.others = loop.others.filter((f) => f.srcWindowId !== windowId);
-    // The round's cells now expect only what a remaining fit predicts or would write, so the closed list's value no longer counts as the round.
+    // The round's cells keep only the values offered for them that a remaining fit still predicts or would
+    // write, so neither the closed list's value nor a fit's value that was never shown counts as the round.
     for (const c of loop.prediction) {
-      const keep = new Set([...(loop.mainAccepts.get(c.dstKey) ?? []), ...loop.others.flatMap((f) => [...(f.accepts.get(c.dstKey) ?? [])])]);
-      loop.expected.set(c.dstKey, keep);
+      const surviving = new Set([...(loop.mainAccepts.get(c.dstKey) ?? []), ...loop.others.flatMap((f) => [...(f.accepts.get(c.dstKey) ?? [])])]);
+      loop.expected.set(c.dstKey, new Set([...(loop.expected.get(c.dstKey) ?? [])].filter((v) => surviving.has(v))));
     }
+  }
+
+  /** The prediction no longer matches the screen (a source line it copies changed): the loop ends, so typing the old value does not confirm it. */
+  invalidate(loopId: string): LoopEvent | null {
+    if (this.loop?.id !== loopId) return null;
+    return this.end("stale");
   }
 
   /** Ends a loop whose last transfer is older than the gap. */
@@ -223,7 +230,7 @@ export class LoopRecognizer {
     return null;
   }
 
-  private end(reason: "diverged" | "idle" | "dismissed"): LoopEvent {
+  private end(reason: "diverged" | "idle" | "dismissed" | "stale"): LoopEvent {
     const loop = this.loop as Loop;
     this.loop = null;
     this.history = [];

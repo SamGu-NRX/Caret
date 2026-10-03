@@ -203,8 +203,10 @@ describe("offer lifetimes over the socket", () => {
       await until(() => hooks.applied("6160-9", search.at));
       reader.send(focus("6160-9", M("textfield:search~0"), reader.clock + 10, { app: MAIL_APP }));
       await until(() => helper.model.frontmostPid === MAIL_APP.pid);
-      reader.send(focus(FORM, F("textfield:name~0"), reader.clock + 20));
+      // More focuses inside the form than any fixed log would hold: the one that left must still count.
+      for (let i = 0; i < 120; i++) reader.send(focus(FORM, F(i % 2 === 0 ? "textfield:name~0" : "textfield:email~0"), reader.clock + 20 + i, { empty: true }));
       await until(() => helper.model.frontmostPid === FIXTURE_APP.pid);
+      await new Promise((r) => setTimeout(r, 50));
       release();
       await new Promise((r) => setTimeout(r, 100));
       expect(host.received.filter((m) => (m as Sent).type === "popup")).toEqual([]);
@@ -296,6 +298,13 @@ describe("offer lifetimes over the socket", () => {
     const shown = reader.show(ROSTER);
     await until(() => hooks.applied(ROSTER, shown.at));
     expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-1")).toMatchObject({ reason: "stale" });
+    // The loop ended with its prediction: the old value typed now does not confirm it.
+    expect(helper.patterns.loops.active).toBeNull();
+    const typed = reader.setValue(SEATING, guest(2), "Marcus Lowe");
+    await until(() => hooks.applied(SEATING, typed.at));
+    helper.tick(typed.at + 2000);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(host.received.some((m) => (m as Sent).type === "action")).toBe(false);
   });
 
   it("routine: expires ten minutes after its window opened", async () => {
@@ -371,6 +380,24 @@ describe("offer lifetimes over the socket", () => {
     expect(again).toMatchObject({ offerKey: "open-watch-id-1.2", field: { windowId: "6160-9" } });
   });
 
+  it("open: does not rebind to a field that has since gone from its window", async () => {
+    await reader.replay(loadRecording("offers-pending.ndjson"), hooks);
+    await helper.pending.whenIdle();
+    const action = await host.waitFor<{ offerKey: string }>((m) => m.type === "action");
+    const search = snap([{ key: M("textfield:search~0"), parent: null, role: "AXTextField", label: "Search", editable: true }], { at: reader.clock + 10, windowId: "6160-9", title: "Search", app: MAIL_APP, focused: true, reason: "focus" });
+    reader.send(search);
+    await until(() => hooks.applied("6160-9", search.at));
+    reader.send(focus("6160-9", M("textfield:search~0"), reader.clock + 10, { app: MAIL_APP }));
+    const empty = snap([], { at: reader.clock + 20, windowId: "6160-9", title: "Search", app: MAIL_APP, focused: true });
+    reader.send(empty);
+    await until(() => hooks.applied("6160-9", empty.at));
+    reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 30, windowId: "6160-4" });
+    await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === action.offerKey);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(host.received.filter((m) => (m as Sent).type === "action")).toHaveLength(1);
+    expect(helper.openApp.pending()).toEqual([{ offerKey: "open-watch-id-1.2", published: false }]);
+  });
+
   describe("partial withdrawal of alternatives", () => {
     it("drops the other list's candidate when its window closes, and withdraws only when none remain", async () => {
       await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
@@ -437,6 +464,65 @@ describe("offer lifetimes over the socket", () => {
       expect(quoted(again)).toBe(other);
       expect(again.quoted).toBe(true);
       expect(withdrawals()).toEqual([]);
+    });
+
+    it("does not re-point a value to a second list that no longer shows it", async () => {
+      const copy = roster(PEOPLE, "5150-9");
+      const events = recordDesk((desk) => {
+        desk.showList(roster());
+        desk.showList(copy);
+        desk.advance(1000);
+        const g = grid();
+        desk.showGrid(g);
+        desk.fill(g, 0, 0, PEOPLE[0] as string);
+        desk.fill(g, 1, 0, PEOPLE[1] as string);
+      });
+      await replayDesk(events);
+      const first = await host.waitFor<OfferAlternatives>((m) => m.type === "alternatives");
+      const gone = String((first.candidates[0]?.ref as { node: string }).node.split("/")[0]);
+      const other = gone === "5150-1" ? "5150-9" : "5150-1";
+      // The other list's copy of the predicted name changes before the quoted list closes.
+      const w = reader.windows.get(other)!;
+      const n = w.nodes.find((x) => x.label === PEOPLE[2])!;
+      n.label = `${PEOPLE[2]} (moved)`;
+      const shown = reader.show(other);
+      await until(() => hooks.applied(other, shown.at));
+      reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: gone });
+      await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-1");
+      expect(withdrawals()).toEqual([
+        ["offer-1.0", "stale"],
+        ["offer-1", "stale"],
+      ]);
+      expect(host.received.filter((m) => (m as Sent).type === "alternatives")).toHaveLength(1);
+    });
+
+    it("does not let a list whose value was never offered take the round when another window closes", async () => {
+      const lists = [
+        roster(PEOPLE, "5150-1"),
+        roster([PEOPLE[0]!, PEOPLE[1]!, "Ines Okafor", ...PEOPLE.slice(3)], "5150-11"),
+        roster([PEOPLE[0]!, PEOPLE[1]!, "Tomas Berg", ...PEOPLE.slice(3)], "5150-12"),
+        roster([PEOPLE[0]!, PEOPLE[1]!, "Keiko Sato", ...PEOPLE.slice(3)], "5150-13"),
+      ];
+      const events = recordDesk((desk) => {
+        for (const l of lists) desk.showList(l);
+        desk.showList({ windowId: "5150-30", app: FIXTURE_APP, title: "Unrelated", group: "Notes", lines: ["nothing here"] });
+        desk.advance(1000);
+        const g = grid();
+        desk.showGrid(g);
+        desk.fill(g, 0, 0, PEOPLE[0] as string);
+        desk.fill(g, 1, 0, PEOPLE[1] as string);
+      });
+      await replayDesk(events);
+      const first = await host.waitFor<OfferAlternatives>((m) => m.type === "alternatives");
+      expect(first.candidates.map((c) => c.text)).not.toContain("Keiko Sato");
+      reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: "5150-30" });
+      await until(() => !helper.model.windows.has("5150-30"));
+      const typed = reader.setValue("6160-2", M("textfield:guest~2"), "Keiko Sato");
+      await until(() => hooks.applied("6160-2", typed.at));
+      helper.tick(typed.at + 2000);
+      await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-1");
+      expect(withdrawals().filter(([id]) => id === "offer-1")).toEqual([["offer-1", "diverged"]]);
+      expect(host.received.some((m) => (m as Sent).type === "action")).toBe(false);
     });
 
     it("does not take the closed list's value as the round once that list is gone", async () => {

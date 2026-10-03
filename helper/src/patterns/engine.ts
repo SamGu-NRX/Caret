@@ -215,9 +215,21 @@ export class PatternEngine {
       const verdict = o.alts.length > 0 ? this.recheckShown(o, live) : this.recheck(o) === null ? null : this.allEntered(o) ? "taken" : "stale";
       if (verdict === null) continue;
       this.withdraw(o, verdict);
+      // A live loop's prediction is wrong now; its loop ends too, or the old value typed later would still confirm it.
+      if (live && o.loopId !== null) {
+        const ev = this.loops.invalidate(o.loopId);
+        if (ev !== null) this.onLoop(ev);
+      }
       // The user entered every value themselves: no run follows, so the prepared work is over.
       if (verdict === "taken" && o.msg.kind !== "loopNext") this.deps.enteredByUser?.(o.msg.id);
     }
+  }
+
+  /** The source node still shows this text, whole or as one of its window's typed values, as recheck asks. */
+  private stillShows(s: { srcWindowId: string; srcKey: string; value: string }): boolean {
+    const sw = this.deps.model.windows.get(s.srcWindowId);
+    const src = sw?.nodes.get(s.srcKey);
+    return sw !== undefined && src !== undefined && (nodeText(src) === s.value || sw.values.some((v) => v.nodeKey === s.srcKey && v.text === s.value));
   }
 
   /** Every destination holds the value the offer would have written there. */
@@ -239,11 +251,7 @@ export class PatternEngine {
     for (const a of o.alts) {
       for (const x of a.candidates) {
         const s = x.sources[0];
-        const sw = s === undefined ? undefined : model.windows.get(s.srcWindowId);
-        const src = s === undefined ? undefined : sw?.nodes.get(s.srcKey);
-        // As recheck: the node's text, or one of its typed values when the cell is a part of the line, such as an email.
-        if (s === undefined || sw === undefined || src === undefined) return "stale";
-        if (nodeText(src) !== s.value && !sw.values.some((v) => v.nodeKey === s.srcKey && v.text === s.value)) return "stale";
+        if (s === undefined || !this.stillShows(s)) return "stale";
       }
     }
     let filled = 0;
@@ -291,7 +299,8 @@ export class PatternEngine {
         continue;
       }
       const candidates = a.candidates.flatMap((x): AltCandidate[] => {
-        const sources = x.sources.filter((s) => s.srcWindowId !== windowId);
+        // Only lists that still show the value: a repeat's source may have changed since it was offered.
+        const sources = x.sources.filter((s) => s.srcWindowId !== windowId && this.stillShows(s));
         const first = sources[0];
         if (first === undefined) return [];
         // With no memory rule behind it, the value is the text Caret copies, so it becomes the remaining list's own spelling.
@@ -461,7 +470,7 @@ export class PatternEngine {
         if (ev.reason === "idle") return;
         for (const o of loopOffers) {
           // An offer the user walked past without a word counts against its kind here today.
-          if (ev.reason !== "dismissed") this.deps.memory.recordReaction(o.msg.kind, o.msg.bundleId, "ignored", this.clock);
+          if (ev.reason === "diverged") this.deps.memory.recordReaction(o.msg.kind, o.msg.bundleId, "ignored", this.clock);
           this.withdraw(o, ev.reason);
         }
         return;

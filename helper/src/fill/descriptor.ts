@@ -71,6 +71,8 @@ interface LabelIndex {
 
 /** Texts taller than this go in LabelIndex.tall. Chosen so ordinary lines and wrapped labels stay in the bands; not measured. */
 const TALL_TEXT = 200;
+/** Points a band reaches past its computed bounds; far above any rounding error, and it only reads a few more texts. */
+const BAND_SLACK = 1;
 const labelIndex = new WeakMap<WindowState, LabelIndex>();
 /** Whitespace that clean() would change: a run, a tab or line break, or space at either end. */
 const UNCLEAN = /\s\s|[^\S ]|^\s|\s$/;
@@ -129,9 +131,10 @@ export function nearestText(w: WindowState, target: Node, labelOnly = false): st
   const cy = fy + fh / 2;
   const idx = labelTexts(w);
   // Same row: the text's centre within max(fh, h) / 2 of the field's. Above: its bottom within MAX_ABOVE_GAP over the field's top.
+  // Widened by BAND_SLACK, since the exact tests below round differently from these bounds at the edge.
   const m = Math.max(fh, idx.maxH);
-  const lo = Math.min(cy - m / 2 - idx.maxH / 2, fy - MAX_ABOVE_GAP - idx.maxH);
-  const hi = Math.max(cy + m / 2, fy + 4);
+  const lo = Math.min(cy - m / 2 - idx.maxH / 2, fy - MAX_ABOVE_GAP - idx.maxH) - BAND_SLACK;
+  const hi = Math.max(cy + m / 2, fy + 4) + BAND_SLACK;
   const band: LabelText[] = [...idx.tall];
   for (let i = firstTopAtLeast(idx.byTop, lo); i < idx.byTop.length; i++) {
     const e = idx.byTop[i] as LabelText;

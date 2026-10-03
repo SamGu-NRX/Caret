@@ -68,4 +68,32 @@ describe("nearestText", () => {
     }
     expect(compared).toBe(300 * 60 * 2);
   });
+
+  it("finds a text whose gap is exactly the limit though its fractional top rounds past the band's edge", () => {
+    const model = new ScreenModel();
+    model.apply(snap([
+      { key: "label", parent: null, role: "AXStaticText", label: "Name:", frame: [100, 0.6, 80, 1.4] },
+      { key: "field", parent: null, role: "AXTextField", editable: true, frame: [100, 50, 100, 20] },
+    ], { at: 1, windowId: "w" }));
+    const w = model.windows.get("w") as WindowState;
+    const field = w.nodes.get("field") as Node;
+    expect(scanNearest(w, field, false)).toBe("Name");
+    expect(nearestText(w, field)).toBe("Name");
+  });
+
+  it("matches the scan on fractional coordinates", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const r = rng(seed * 7919);
+      const nodes: Node[] = [];
+      for (let i = 0; i < 40; i++) {
+        const frac = (n: number): number => Math.round(r() * n * 10) / 10;
+        const frame: [number, number, number, number] = [frac(400), frac(300), 1 + frac(200), r() < 0.05 ? 250 : 0.2 + frac(30)];
+        nodes.push(i % 4 === 0 ? { key: `n${i}`, parent: null, role: "AXTextField", editable: true, frame } : { key: `n${i}`, parent: null, role: "AXStaticText", label: `Label ${i % 7}:`, frame });
+      }
+      const model = new ScreenModel();
+      model.apply(snap(nodes, { at: 1, windowId: "w" }));
+      const w = model.windows.get("w") as WindowState;
+      for (const target of w.nodes.values()) expect(nearestText(w, target), `seed ${seed} ${target.key}`).toBe(scanNearest(w, target, false));
+    }
+  });
 });
