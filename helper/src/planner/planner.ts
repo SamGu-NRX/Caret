@@ -106,8 +106,12 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   const ledger = new SnippetLedger(model.windows.values());
   ledger.plan([instruction]);
   ledger.take(w, "descriptor", [w.window.title]);
-  const askedFields = fields.filter((f) => ledger.take(w, "descriptor", [f.descriptor]));
-  const askedButtons = buttons.filter((b) => ledger.take(w, "descriptor", [b.label]));
+  // A window that is not a card gives a question less than half its text (privacy.ts), which may not hold
+  // every field and button: what the instruction names is taken first, the rest in document order.
+  const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label }))]);
+  const taken = new Set(order.filter((x) => ledger.take(w, "descriptor", [x.text])).map((x) => x.key));
+  const askedFields = fields.filter((f) => taken.has(f.node.key));
+  const askedButtons = buttons.filter((b) => taken.has(b.key));
   const values = valueOptions(instruction, model, w, memory.values(), ledger, o.now ?? Date.now());
   if ((askedFields.length === 0 || values.length === 0) && askedButtons.length === 0) {
     throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret could fill from what is on screen, in memory or in your instruction, and no button`);
@@ -169,6 +173,19 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   for (const wr of checked.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;
   const withSources: Plan = Object.keys(sources).length === 0 ? plan : { ...plan, sources };
   return { plan: withSources, slots, checked, answers, jev };
+}
+
+/** Words that say what to do rather than where; they do not make a field or button relevant. */
+const COMMON = new Set(["the", "and", "for", "from", "into", "with", "this", "that", "set", "put", "write", "fill", "copy", "use", "make", "add", "enter", "type", "change", "her", "his", "their", "our", "your", "its"]);
+const wordsOf = (s: string): string[] => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x.length >= 3 && !COMMON.has(x));
+
+/** Items by how many of the instruction's words their names share, most first; ties keep document order. */
+export function byRelevance<T extends { name: string }>(instruction: string, items: readonly T[]): T[] {
+  const said = new Set(wordsOf(instruction));
+  return items
+    .map((it, i) => ({ it, i, score: new Set(wordsOf(it.name).filter((x) => said.has(x))).size }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((x) => x.it);
 }
 
 /** The plan's sentence: the instruction, cut to a line. */

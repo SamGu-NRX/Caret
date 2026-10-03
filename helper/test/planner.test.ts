@@ -14,7 +14,7 @@ import type { Plan, Step } from "../src/executor/schema.ts";
 import { instructionValues } from "../src/planner/spans.ts";
 import { occursBounded, traceValue, type MemoryValue } from "../src/planner/trace.ts";
 import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
-import { planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
+import { byRelevance, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
@@ -140,6 +140,16 @@ describe("the plan check", () => {
 
   it("reads hand-off reasons from the risk table", () => {
     expect([handoffWhy("Send"), handoffWhy("Delete draft"), handoffWhy("Pay invoice"), handoffWhy("Archive"), handoffWhy("")]).toEqual(["outbound", "destructive", "money", "unverifiable", "unverifiable"]);
+  });
+});
+
+describe("relevance order", () => {
+  it("puts what the instruction names first and keeps document order among the rest", () => {
+    const items = ["Name", "Email", "Send", "Delete draft", "Pay invoice"].map((name) => ({ name }));
+    expect(byRelevance("Delete the draft", items).map((x) => x.name)).toEqual(["Delete draft", "Name", "Email", "Send", "Pay invoice"]);
+    expect(byRelevance("Pay the invoice", items).map((x) => x.name)).toEqual(["Pay invoice", "Name", "Email", "Send", "Delete draft"]);
+    expect(byRelevance("Set the shipping city to Austin", [{ name: "Billing City" }, { name: "Shipping City" }]).map((x) => x.name)).toEqual(["Shipping City", "Billing City"]);
+    expect(byRelevance("Copy it", items).map((x) => x.name)).toEqual(["Name", "Email", "Send", "Delete draft", "Pay invoice"]);
   });
 });
 

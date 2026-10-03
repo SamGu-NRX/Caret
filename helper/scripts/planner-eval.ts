@@ -112,7 +112,7 @@ const fakeJev: AskJev = async (req: JevRequest) => {
       const want = byName.get([section, label].filter((x) => x !== undefined).join(" "));
       choice = want === undefined ? "keep" : find((d) => d.startsWith(`"${want}"`));
     }
-    if (choice === undefined) throw new Error(`the fake Jev found no option for ${id} in ${c.id}`);
+    if (choice === undefined) throw new Error(`the fake Jev found no option for ${id} in ${c.id}; offered ${JSON.stringify(Object.values(q.criteria))}`);
     answers[id] = { choice, confidence: 0.95 };
   }
   return { model: "jev-fake", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 };
@@ -159,11 +159,13 @@ const tick = setInterval(() => helper.tick(), 250);
 
 const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(a.bin), ["--windows", "executor,reference,distractors", "--duration", "1800"]);
 let reader: ChildProcessWithoutNullStreams | null = null;
-// Only the two processes this script started are ever signalled.
+// Only the two processes this script started are ever signalled, however the script ends: a stop from
+// the GUI wrapper (the user came back) exits through the same hook, which closes the fixture's windows.
 process.on("exit", () => {
   reader?.kill("SIGTERM");
   fixture.kill("SIGTERM");
 });
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => process.exit(143));
 let fixtureBuf = "";
 let fixtureErr = "";
 let fixturePid = 0;
@@ -209,6 +211,10 @@ const walkExecutor = async (): Promise<void> => {
   const r = await helper.readerVerb({ kind: "walk", pid: w.app.pid, windowId: w.window.windowId });
   if (r.outcome !== "ok") throw new Error(`walk failed: ${r.outcome} ${r.detail ?? ""}`);
 };
+
+// The executor window as the reader reports it (synthetic fixture text), so a missing control can be seen.
+const ew = executorWindow();
+writeFileSync(join(OUT, "executor-window.json"), JSON.stringify([...(ew?.nodes.values() ?? [])].map((n) => ({ key: n.key, role: n.role, label: n.label ?? null, editable: n.editable === true, states: n.states ?? [] })), null, 2) + "\n");
 
 const workId = memory.upsert("about", "about:work email", { label: "Work email", value: WORK_EMAIL, source: "typed" }, Date.now(), null);
 let homeId = "";
