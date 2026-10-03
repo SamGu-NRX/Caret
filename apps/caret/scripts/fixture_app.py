@@ -112,6 +112,64 @@ class GuiLease:
             self.id = None
 
 
+class Watchdog:
+    """Reads HIDIdleTime every 0.2 s for a foreground run, and interrupts the main thread
+    (KeyboardInterrupt, so the run's `finally` hands the foreground back) as soon as there is
+    input under 5 s old that `synthetic(t)` does not claim as the run's own key at time t.
+    Checks made only at socket reads left gaps of up to 6 s, during sleeps and screenshots.
+
+    Also records the frontmost app whenever it changes, as (seconds into the run, pid, name),
+    from `front()`, which returns {"pid": ...}. `names` maps pids the run started to a label;
+    any other app is recorded by pid and process name only."""
+
+    def __init__(self, synthetic, front, names, interval=0.2):
+        self.synthetic = synthetic
+        self.front = front
+        self.names = names
+        self.interval = interval
+        self.start = time.time()
+        self.timeline = []
+        self.tripped = None
+        self._stop = False
+        self._thread = None
+
+    def __enter__(self):
+        import threading
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop = True
+        if self._thread:
+            self._thread.join(timeout=2)
+
+    def _name(self, pid):
+        if pid in self.names:
+            return self.names[pid]
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True).stdout.strip()
+        return os.path.basename(out) or "?"
+
+    def _run(self):
+        import _thread
+        last_pid = None
+        tick = 0
+        while not self._stop:
+            idle = hid_idle_seconds()
+            last_input = time.time() - idle
+            if idle < 5 and last_input > self.start + 0.5 and not self.synthetic(last_input):
+                self.tripped = time.strftime("%H:%M:%S", time.localtime(last_input))
+                _thread.interrupt_main()
+                return
+            if tick % 3 == 0:
+                pid = (self.front() or {}).get("pid")
+                if pid != last_pid:
+                    self.timeline.append((round(time.time() - self.start, 2), pid, self._name(pid) if pid else None))
+                    last_pid = pid
+            tick += 1
+            time.sleep(self.interval)
+
+
 def send(proc, line):
     """One stdin command to a fixture started with stdin=PIPE."""
     proc.stdin.write((line + "\n").encode())

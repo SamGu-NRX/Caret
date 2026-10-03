@@ -50,6 +50,8 @@ CLAIM = "Caret Fixture — Claim form"
 REFERENCE = "Caret Fixture — Reference"
 
 STARTED = []
+# pid to name for the frontmost-app timeline: only processes this run started are named.
+NAMES = {}
 # Run before the processes stop: the fixture hands the foreground back while it still can.
 BEFORE_STOP = []
 CLEANUP = []
@@ -124,6 +126,7 @@ def start(name, args, out_dir, env=None, stdin=None):
     out = open(os.path.join(out_dir, f"{name}.log"), "w")
     proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, stdin=stdin)
     STARTED.append((name, proc))
+    NAMES[proc.pid] = name
     log("started", name, proc.pid)
     return proc
 
@@ -600,16 +603,31 @@ if __name__ == "__main__":
     appearance = sys.argv[3] if len(sys.argv) == 4 else "light"
     results = {}
     lease = fixture_app.GuiLease() if FOREGROUND else None
+    dog = fixture_app.Watchdog(lambda t: any(a - 0.2 <= t <= b for a, b in SYNTHETIC), front_pid, NAMES) if FOREGROUND else None
+    stopped_by = None
     try:
         if lease:
             lease.__enter__()
+        if dog:
+            dog.__enter__()
         results = {"alternatives": alternatives, "fill": fill, "realkeys": realkeys}[mode](out, appearance)
+    except KeyboardInterrupt:
+        stopped_by = f"deferred: user active (input at {dog.tripped})" if dog and dog.tripped else "interrupted"
+        log(stopped_by)
     finally:
+        if dog:
+            dog.__exit__()
         for hand_back in BEFORE_STOP:
             hand_back()
         stop_all()
         if lease:
             lease.__exit__()
+        if dog:
+            # One reading after the hand-back: whose app is in front now.
+            dog.timeline.append((round(time.time() - dog.start, 2), front_pid().get("pid"), "after hand-back"))
+            results["frontTimeline"] = dog.timeline
+        if stopped_by:
+            results["stoppedBy"] = stopped_by
         for undo in CLEANUP:
             undo()
         os.makedirs(out, exist_ok=True)
