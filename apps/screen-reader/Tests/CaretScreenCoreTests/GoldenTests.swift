@@ -143,8 +143,8 @@ private func goldenLines() throws -> [Data] {
         let lines = try goldenLines()
         guard case .settings(let all) = try JSONDecoder().decode(Message.self, from: lines[31]),
               case .settings(let quiet) = try JSONDecoder().decode(Message.self, from: lines[32]) else { Issue.record("lines 32 and 33 are not settings"); return }
-        // The host's own message, which does not yet name the calendar role B16 added.
-        #expect(all == GateSettings(at: 1_790_000_130_000, roles: [.fill, .repeat, .watch, .words], level: .balanced, paused: false))
+        // The host's balanced settings as v2/host sends them since A13: every role, the calendar among them.
+        #expect(all == GateSettings(at: 1_790_000_130_000, roles: [.fill, .repeat, .watch, .calendar, .words], level: .balanced, paused: false))
         let calendar = Data(#"{"type":"settings","v":1,"at":1,"roles":["fill","calendar"],"level":"eager","paused":false}"#.utf8)
         guard case .settings(let withCalendar) = try JSONDecoder().decode(Message.self, from: calendar) else { Issue.record("a settings message with the calendar role does not decode"); return }
         #expect(withCalendar.roles == [.fill, .calendar])

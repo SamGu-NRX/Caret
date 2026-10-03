@@ -165,7 +165,7 @@ describe("golden protocol fixture", () => {
 
   it("carries B10's settings: roles, level and pause from the host, and a withdrawal they caused", () => {
     const [full, paused, gone] = lines.slice(31, 34).map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(ConsumerMessage.parse(full)).toEqual({ type: "settings", v: 1, at: 1790000130000, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: false });
+    expect(ConsumerMessage.parse(full)).toEqual({ type: "settings", v: 1, at: 1790000130000, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "balanced", paused: false });
     expect(ConsumerMessage.parse(paused)).toMatchObject({ roles: ["watch"], level: "quiet", paused: true });
     expect(ConsumerMessage.safeParse({ ...full, roles: ["watch", "watch"] }).success).toBe(false);
     expect(HelperMessage.parse(gone)).toMatchObject({ type: "offerWithdrawn", reason: "settings" });

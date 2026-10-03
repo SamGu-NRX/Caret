@@ -29,7 +29,7 @@
 {"type":"taskProgress","v":1,"at":1790000003100,"taskId":"offer-5","planId":"offer-5","phase":"done","step":null,"steps":3,"says":null,"detail":"3 acted, 0 already true","written":3}
 {"type":"taskProgress","v":1,"at":1790000003900,"taskId":"offer-5","planId":"offer-5","phase":"undone","step":null,"steps":3,"says":null,"detail":"restored 2; not restored 1; presses not undoable 0","restored":2,"notRestored":1,"notUndoablePresses":0}
 {"type":"offerWithdrawn","v":1,"at":1790000124000,"id":"offer-5","reason":"reoffered","replacedBy":"offer-6"}
-{"type":"settings","v":1,"at":1790000130000,"roles":["fill","repeat","watch","words"],"level":"balanced","paused":false}
+{"type":"settings","v":1,"at":1790000130000,"roles":["fill","repeat","watch","calendar","words"],"level":"balanced","paused":false}
 {"type":"settings","v":1,"at":1790000131000,"roles":["watch"],"level":"quiet","paused":true}
 {"type":"offerWithdrawn","v":1,"at":1790000131000,"id":"fill-2","reason":"settings"}
 {"type":"actGrant","v":1,"taskId":"offer-5","pid":5150,"windowId":"5150-1","at":1790000140000,"expires":1790000260000}
