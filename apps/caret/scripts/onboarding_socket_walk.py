@@ -261,7 +261,25 @@ def main():
         check("work screen holds the choices", r["roles"] == ["fill", "watch", "words"] and r["level"] == "eager", r)
         # The run's own grants: both off, so the permission screen asks for both.
         ob("permissions off off")
+        # What Caret knows so far (A11): typed by hand, an incomplete email held, then kept.
+        r = ob("next", "know")
+        check("the know screen opens empty", r.get("about") == {"name": 0, "email": 0}, r.get("about"))
+        ob("about email dana.whitfield@example")
+        r = ob("next", "know")
+        check("an incomplete email holds Continue and says why", r.get("aboutProblem") == "That email looks incomplete.", r)
+        ob("about name Dana Whitfield")
+        r = ob("about email dana.whitfield@example.com")
+        check("the debug state gives lengths, not values", r.get("about") == {"name": 14, "email": 26} and "Dana" not in json.dumps(r), r.get("about"))
         r = ob("next", "permissions")
+        wait_for(lambda: len([m for _, m in helper.received if m.get("type") == "memoryRequest" and m.get("op") == "add"]) >= 2, 2)
+        adds = [m for _, m in helper.received if m.get("type") == "memoryRequest" and m.get("op") == "add"]
+        check("Continue hands the name and email to memory as add requests (the host's contract, memory.ndjson)",
+              [(m.get("kind"), m.get("fields")) for m in adds]
+              == [("about", {"label": "Name", "value": "Dana Whitfield", "source": "typed"}),
+                  ("about", {"label": "Email", "value": "dana.whitfield@example.com", "source": "typed"})], adds)
+        m = host.ask("memory")
+        check("unanswered, the typed values wait in memory, by length",
+              [(t["label"], t["valueLength"]) for t in m["book"]["typed"]] == [("Name", 14), ("Email", 26)], m["book"]["typed"])
         check("Input Monitoring row shown when it is off", r.get("showsInputMonitoring") is True, r)
         check("Continue waits for Accessibility", r["canContinue"] is False, r)
         s = settings()
@@ -415,7 +433,7 @@ def main():
     lone = Host(binary, run_dir, os.path.join(run_dir, "absent.sock"), "nohelper")
     try:
         # Still paused from the walk: the first look has nothing it may run, and asks nothing.
-        for c in ["permissions on on", "next", "next", "next", "key tab", "next"]:
+        for c in ["permissions on on", "next", "next", "next", "next", "key tab", "next"]:
             lone.ask("onboarding " + c)
         r = lone.ask("onboarding")
         check("paused: the first look asks for nothing", r.get("firstLook") == "nothing" and "firstLookRequest" not in r, r)

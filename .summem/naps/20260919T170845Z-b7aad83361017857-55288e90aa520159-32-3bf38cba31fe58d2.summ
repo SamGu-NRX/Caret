@@ -1,1 +1,0 @@
-v1 lore and build: .scratch/ never committed, five upstreams, Screenpipe sidecar behind a hard-failing last-N facade, Mac CI on macos-26, screenpipe@0.4.50 as its own launchd job, xcodeproj and gateway config pitfalls.

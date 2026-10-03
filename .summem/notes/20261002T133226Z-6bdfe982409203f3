@@ -1,1 +1,0 @@
-Writing AXMain on a background fixture window makes it the app's key window with no activation and no z-order change; use it to stage 'user looked at Reference, then went to the form'.

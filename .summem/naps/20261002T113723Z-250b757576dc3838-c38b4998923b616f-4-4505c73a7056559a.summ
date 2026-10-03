@@ -1,1 +1,0 @@
-Shared-Mac fixture lore: synthetic keys go to LaunchServices' front app and caret-fixture can take the foreground, so poll lsappinfo front; reader writes act only in --act-pids; fill recency uses the window left just before the form.

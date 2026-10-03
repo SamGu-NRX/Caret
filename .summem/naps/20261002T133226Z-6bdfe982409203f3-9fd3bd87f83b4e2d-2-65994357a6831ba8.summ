@@ -1,0 +1,1 @@
+caret-fixture: writing AXMain makes a background window key with no activation (stage 'looked at Reference, then the form'); it ignores pid-posted Cmd-V (no Edit menu), so the host falls back to AXSelectedText, learned per app.
