@@ -1,5 +1,6 @@
 // Builders for synthetic reader messages. All names, numbers and addresses are invented.
 import type { AskJev } from "../src/fill/jev.ts";
+import type { Whose } from "../src/fill/fill.ts";
 import { PROTOCOL_VERSION, type AppRef, type Focus, type Frame, type Node, type Snapshot, type TypedValue, type ValueKind } from "../src/protocol.ts";
 
 export const FIXTURE_APP: AppRef = { pid: 5150, bundleId: "dev.caret.fixture", name: "Caret Fixture" };
@@ -70,14 +71,17 @@ export function focus(windowId: string, key: string | null, at: number, o: { emp
 /**
  * A fake Jev that answers each fill question by candidate text, so the same pick holds in both asks
  * although the second ask shuffles and renumbers the candidates. `pick` returns the text to choose,
- * or null for none.
+ * or null for none. `whose` answers each whose-details question; the user's by default.
  */
-export function jevPickingText(pick: (fieldId: string, instructions: string) => string | null, confidence = 0.9): AskJev {
+export function jevPickingText(pick: (fieldId: string, instructions: string) => string | null, confidence = 0.9, whose: (instructions: string) => Whose = () => "user"): AskJev {
   return async (req) => ({
     model: "jev-test",
     answers: Object.fromEntries(
       Object.entries(req.questions).map(([id, q]) => {
-        const want = pick(id, typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions));
+        const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+        // A whose-details question (fill.ts whoseId) asked beside a field offered a value from memory.
+        if (id.endsWith("_whose")) return [id, { choice: whose(ins), confidence }];
+        const want = pick(id, ins);
         const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
         return [id, { choice: hit?.[0] ?? "none", confidence }];
       }),

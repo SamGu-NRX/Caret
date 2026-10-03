@@ -33,6 +33,25 @@ export const MAX_FIELDS = 20;
  */
 export const FILL_CUTOFF = 0.75;
 
+/**
+ * A value the user told Caret (about.ts) is filled on different evidence from a window's. Beside the
+ * value question, each field offered one is asked whose details it wants: the user's, someone else's, or
+ * unclear (WHOSE_CRITERIA). The value is proposed when both asks agree on it at MEMORY_CUTOFF or above and
+ * both whose answers say the user's at WHOSE_CUTOFF or above. B17 found live Jev choosing the user's value
+ * on the right fields at 0.23 to 0.88, under FILL_CUTOFF, so 1 to 3 of 17 were filled.
+ *
+ * Chosen on B18's dev half (evidence/screen/b18/mem-dev, 18 forms, 55 fields, two live passes per option):
+ * - A memory cutoff alone needed 0.6 for no wrong fill in both passes, which filled 4 and 7 of 20 own values;
+ *   ambiguous fields ("Primary contact" Name) drew the user's value at up to 0.61.
+ * - The whose question answered "user" at 0.58 or more (lower of the two asks) on every own field the value
+ *   asks agreed on, and at 0.36 or less on every ambiguous one; never on a field for someone else. At these
+ *   cutoffs both passes filled 12 of 20 with no wrong fill. 14 of 20 is the most the code rules offer.
+ * WHOSE_CUTOFF sits between 0.36 and 0.58; MEMORY_CUTOFF is a floor that cost nothing on dev. Both rest on
+ * one synthetic dev set; recheck on real forms.
+ */
+export const MEMORY_CUTOFF = 0.3;
+export const WHOSE_CUTOFF = 0.5;
+
 export class FillError extends Error {}
 
 /** The empty fillable fields of the trigger's window, nearest the trigger first. The trigger is always included. */
@@ -75,6 +94,20 @@ export interface AskAbout {
   about: AboutValue;
 }
 
+/** The answers to a question about whose details a field asks for (see WHOSE_WORDINGS). */
+export const WHOSE_CRITERIA = {
+  user: "The user's own details: the field asks about the person filling in the form.",
+  other: "Someone else's details: a contact, guest, recipient, attendee, family member, colleague or another person the form or the screen names.",
+  unclear: "The form does not make clear whose details this field asks for.",
+} as const;
+export type Whose = keyof typeof WHOSE_CRITERIA;
+const WHOSE_WORDINGS = [
+  (where: string, d: string): string => `A form in the ${where} has this field: ${d} Whose name or email does this field ask for?`,
+  (where: string, d: string): string => `Field: ${d} It is in a form in the ${where}. Is it for the details of the user filling in the form, of someone else, or can you not tell?`,
+] as const;
+/** The id of a field's whose-details question. */
+export const whoseId = (fieldId: string): string => `${fieldId}_whose`;
+
 /** The criterion for a value the user told Caret: what it is, and that it is the user's own. */
 export function describeAbout(a: AboutValue): string {
   return `"${a.value}" (${a.kind === "email" ? "email" : "a name"}; the user's own ${a.label}, which the user told Caret)`;
@@ -93,6 +126,7 @@ export function buildFillRequest(
   declared: Declared = { snippets: [], charged: {} },
   title: string | null = w.window.title,
   about: ReadonlyMap<string, readonly AskAbout[]> = new Map(),
+  whose = false,
 ): JevRequest {
   const shared: Record<string, string> = {};
   for (const c of candidates) shared[c.id] = describeCandidate(c);
@@ -103,6 +137,7 @@ export function buildFillRequest(
     for (const a of about.get(f.id) ?? []) criteria[a.id] = describeAbout(a.about);
     criteria[NONE] = "No candidate is the value this field asks for.";
     questions[f.id] = { type: "choice", instructions: WORDINGS[wording](where, f.descriptor), criteria };
+    if (whose && (about.get(f.id)?.length ?? 0) > 0) questions[whoseId(f.id)] = { type: "choice", instructions: WHOSE_WORDINGS[wording](where, f.descriptor), criteria: { ...WHOSE_CRITERIA } };
   }
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
   return {
@@ -167,6 +202,15 @@ export interface FillOptions {
    * for it. A form can then be filled with no other window open. Without it, nothing from memory is offered.
    */
   about?: readonly AboutValue[];
+  /** Lowest agreed confidence for a value from memory: MEMORY_CUTOFF, or FILL_CUTOFF with `whose` false. */
+  memoryCutoff?: number;
+  /**
+   * False skips the whose-details question and holds a value from memory to the memory cutoff alone, for
+   * the eval's measure of that option (scripts/about-fill-eval.ts). The helper never sets it.
+   */
+  whose?: boolean;
+  /** Lowest confidence, the lower of the two asks, at which "the user's" counts as the whose answer: WHOSE_CUTOFF. */
+  whoseCutoff?: number;
 }
 
 export async function proposeFill(
@@ -178,6 +222,9 @@ export async function proposeFill(
   opts: FillOptions = {},
 ): Promise<FillProposal> {
   const cutoff = opts.cutoff ?? FILL_CUTOFF;
+  const whose = opts.whose !== false;
+  const memoryCutoff = opts.memoryCutoff ?? (whose ? MEMORY_CUTOFF : cutoff);
+  const whoseCutoff = opts.whoseCutoff ?? WHOSE_CUTOFF;
   const w = model.windows.get(windowId);
   if (w === undefined) throw new FillError(`unknown window ${windowId}`);
   // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
@@ -269,8 +316,8 @@ export async function proposeFill(
     asked.length === 0
       ? [null, null]
       : await Promise.all([
-          askJev(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds))),
-          askJev(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond))),
+          askJev(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose)),
+          askJev(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose)),
         ]);
 
   type Pick = { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue };
@@ -290,6 +337,18 @@ export async function proposeFill(
   // Picks of a kind a cut took are withheld (see above); a value from memory is of its own kind.
   const pickCut = (p: Pick): boolean =>
     p.from === "window" ? isCut(candidateKinds(model, p.c)) || (nameCut && isNameLike(p.c.text, p.c.context)) : p.a.kind === "email" ? isCut(new Set(["email"])) : nameCut;
+  /**
+   * Whether both asks said the field wants the user's own details, at the whose cutoff or above. A value
+   * from memory that fails this is withheld as lowConfidence: Jev was not sure enough the details are the
+   * user's, and the protocol's reasons stay the three a host already reads.
+   */
+  const theUsers = (f: { id: string }): boolean => {
+    if (!whose || r1 === null || r2 === null) return true;
+    const w1 = r1.answers[whoseId(f.id)];
+    const w2 = r2.answers[whoseId(f.id)];
+    if (w1 === undefined || w2 === undefined) throw new FillError(`Jev returned no answer about whose details ${f.id} asks for`);
+    return w1.choice === "user" && w2.choice === "user" && Math.min(w1.confidence, w2.confidence) >= whoseCutoff;
+  };
   const out: FillField[] = fields.map((f) => {
     if (r1 === null || r2 === null || !asked.includes(f)) {
       // Not asked: a cut took its kind (or every candidate), or, with no cut, nothing could be offered for it.
@@ -308,7 +367,7 @@ export async function proposeFill(
           ? "disagree"
           : picked !== undefined && pickCut(picked)
             ? "sourceCut"
-            : confidence < cutoff
+            : confidence < (picked?.from === "memory" ? memoryCutoff : cutoff) || (picked?.from === "memory" && !theUsers(f))
               ? "lowConfidence"
               : null;
     const p = withheld === null ? picked : undefined;

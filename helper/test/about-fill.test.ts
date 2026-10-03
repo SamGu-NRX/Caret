@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { aboutKind, aboutValues, fieldAsksFor, ABOUT_SAYS, type AboutValue } from "../src/fill/about.ts";
-import { FillError, proposeFill } from "../src/fill/fill.ts";
+import { FILL_CUTOFF, FillError, MEMORY_CUTOFF, proposeFill, WHOSE_CUTOFF, type Whose } from "../src/fill/fill.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill } from "../src/offers/fill-popup.ts";
 import { Helper } from "../src/helper.ts";
@@ -103,8 +103,9 @@ describe("proposeFill with values the user told Caret", () => {
     // Each value is offered only in the question of the field that asks for it, and is declared as memory.
     expect(requests).toHaveLength(2);
     for (const r of requests) {
-      expect(Object.keys(r.questions)).toHaveLength(2);
-      const crit = Object.values(r.questions).map((q) => Object.values(q.criteria).filter((c) => c?.includes("which the user told Caret")));
+      // A value question and a whose-details question for each of Name and Email; none for Phone.
+      expect(Object.keys(r.questions).sort()).toEqual(["f1", "f1_whose", "f2", "f2_whose"]);
+      const crit = ["f1", "f2"].map((id) => Object.values(r.questions[id]?.criteria ?? {}).filter((c) => c?.includes("which the user told Caret")));
       expect(crit.map((c) => c.length)).toEqual([1, 1]);
       // Values and their labels both go into the question, so both are declared (review B17 #1).
       expect(r.snippets.filter((s) => s.windowId === "memory").map((s) => s.text).sort()).toEqual(["Email", "Name", "Sam Rivera", "sam.rivera@example.com"]);
@@ -179,6 +180,97 @@ describe("proposeFill with values the user told Caret", () => {
     expect(recheckFill(m, p, (id) => held.get(id) ?? null)).toBe("what you told Caret as Email changed");
     // Each write from memory names its entry, for the executor's check right before it writes.
     expect(fillPlan(m, p).plan.steps.map((s) => s.memory)).toEqual([NAME.id, EMAIL.id]);
+  });
+});
+
+// B18: a value from memory needs both asks to say the field wants the user's own details (fill.ts WHOSE_CUTOFF),
+// and its value pick is held to MEMORY_CUTOFF, not FILL_CUTOFF. A window's value is judged as before.
+describe("whose details a field offered a value from memory wants", () => {
+  /** Answers like `recording`, then sets the value answers' and the whose answers' confidences apart, per ask. */
+  function answering(byLabel: Record<string, string>, o: { value: number; whose: number; who?: [Whose, Whose] | Whose }): { ask: AskJev; requests: JevRequest[] } {
+    const requests: JevRequest[] = [];
+    let n = 0;
+    const ask: AskJev = async (req) => {
+      requests.push(req);
+      const k = n++;
+      const who = Array.isArray(o.who) ? o.who[k % 2] : (o.who ?? "user");
+      const r = await jevPickingText((_, ins) => byLabel[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.9, () => who as Whose)(req);
+      for (const [id, a] of Object.entries(r.answers)) a.confidence = id.endsWith("_whose") ? o.whose : o.value;
+      return r;
+    };
+    return { ask, requests };
+  }
+  const fill = async (ask: AskJev, opts: { whose?: boolean } = {}) => {
+    const m = new ScreenModel();
+    form(m, ["Name", "Email"]);
+    const p = await proposeFill(m, ask, FORM, key("Name"), 3000, { about: [NAME, EMAIL], ...opts });
+    return p.fields.find((f) => f.key === key("Name"));
+  };
+  const SAM = { Name: "Sam Rivera" };
+
+  it("fills from memory under the window cutoff when both asks say the user's", async () => {
+    expect(MEMORY_CUTOFF).toBeLessThan(FILL_CUTOFF);
+    const f = await fill(answering(SAM, { value: 0.55, whose: 0.6 }).ask);
+    expect(f).toMatchObject({ value: "Sam Rivera", memory: { id: NAME.id }, withheld: null, confidence: 0.55 });
+  });
+
+  it("withholds a value from memory when the field wants someone else's details, however sure the pick", async () => {
+    const f = await fill(answering(SAM, { value: 0.95, whose: 0.95, who: "other" }).ask);
+    expect(f).toMatchObject({ value: null, memory: null, withheld: "lowConfidence", choice: "none" });
+    expect(f?.asks.map((a) => a.value)).toEqual(["Sam Rivera", "Sam Rivera"]);
+  });
+
+  it("withholds when whose is unclear, when the asks disagree on it, or when 'the user's' is under the whose cutoff", async () => {
+    expect((await fill(answering(SAM, { value: 0.9, whose: 0.9, who: "unclear" }).ask))?.withheld).toBe("lowConfidence");
+    expect((await fill(answering(SAM, { value: 0.9, whose: 0.9, who: ["user", "unclear"] }).ask))?.withheld).toBe("lowConfidence");
+    expect((await fill(answering(SAM, { value: 0.9, whose: WHOSE_CUTOFF - 0.01 }).ask))?.withheld).toBe("lowConfidence");
+    expect((await fill(answering(SAM, { value: 0.9, whose: WHOSE_CUTOFF }).ask))?.value).toBe("Sam Rivera");
+  });
+
+  it("holds the value pick to the memory cutoff", async () => {
+    expect((await fill(answering(SAM, { value: MEMORY_CUTOFF - 0.01, whose: 0.99 }).ask))?.withheld).toBe("lowConfidence");
+    expect((await fill(answering(SAM, { value: MEMORY_CUTOFF, whose: 0.99 }).ask))?.value).toBe("Sam Rivera");
+  });
+
+  it("asks whose only beside fields offered a value from memory, in both wordings", async () => {
+    const m = new ScreenModel();
+    form(m, ["Name", "Phone", "Guest name"]);
+    m.apply(snap([text("dev.caret.mail/standard/statictext:p~0", "+1 (415) 555-0199")], { at: 1000, windowId: "6160-5", title: "Note", app: MAIL_APP, values: [value("phone", "+1 (415) 555-0199", "dev.caret.mail/standard/statictext:p~0")] }));
+    const { ask, requests } = answering(SAM, { value: 0.9, whose: 0.9 });
+    await proposeFill(m, ask, FORM, key("Name"), 3000, { about: [NAME, EMAIL] });
+    expect(requests).toHaveLength(2);
+    for (const r of requests) {
+      expect(Object.keys(r.questions).filter((id) => id.endsWith("_whose"))).toEqual(["f1_whose"]);
+      expect(Object.keys(r.questions.f1_whose?.criteria ?? {})).toEqual(["user", "other", "unclear"]);
+      expect(String(r.questions.f1_whose?.instructions)).toContain("Label: 'Name'");
+    }
+    expect(requests[0]?.questions.f1_whose?.instructions).not.toEqual(requests[1]?.questions.f1_whose?.instructions);
+  });
+
+  it("refuses a reply that leaves a whose question unanswered", async () => {
+    const inner = answering(SAM, { value: 0.9, whose: 0.9 }).ask;
+    const ask: AskJev = async (req) => {
+      const r = await inner(req);
+      delete r.answers.f1_whose;
+      return r;
+    };
+    await expect(fill(ask)).rejects.toThrow(/no answer about whose details f1/);
+  });
+
+  it("judges a window's value as before: no whose gate, FILL_CUTOFF", async () => {
+    const m = new ScreenModel();
+    const mk = "dev.caret.mail/standard/statictext:dana~0";
+    m.apply(snap([text(mk, "Dana Whitfield")], { at: 1000, windowId: "6160-6", title: "Contact", app: MAIL_APP }));
+    form(m, ["Name", "Email"]);
+    const p = await proposeFill(m, answering({ Name: "Dana Whitfield" }, { value: 0.8, whose: 0.95, who: "other" }).ask, FORM, key("Name"), 3000, { about: [NAME, EMAIL] });
+    expect(p.fields.find((f) => f.key === key("Name"))).toMatchObject({ value: "Dana Whitfield", memory: null, source: { windowId: "6160-6" } });
+  });
+
+  it("with whose off (the eval's other option), asks no whose question and holds memory to FILL_CUTOFF", async () => {
+    const { ask, requests } = answering(SAM, { value: FILL_CUTOFF - 0.01, whose: 0.99 });
+    expect((await fill(ask, { whose: false }))?.withheld).toBe("lowConfidence");
+    expect(requests.flatMap((r) => Object.keys(r.questions)).filter((id) => id.endsWith("_whose"))).toEqual([]);
+    expect((await fill(answering(SAM, { value: FILL_CUTOFF, whose: 0.99 }).ask, { whose: false }))?.value).toBe("Sam Rivera");
   });
 });
 
