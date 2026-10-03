@@ -1,0 +1,1 @@
+Chrome: top AXGroup is named after the window title and AXWebArea after the page title, so keep both out of element keys (E8); Chrome/Helium reject AXManualAccessibility (-25205) yet expose web AX, Electron accepts it; web pages post no AX notification for DOM text changes (E1).

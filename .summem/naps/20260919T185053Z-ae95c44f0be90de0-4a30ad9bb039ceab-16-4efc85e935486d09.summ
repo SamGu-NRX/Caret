@@ -1,1 +1,0 @@
-v1: skills JSON in caret/skills/<id>/; screenpipe@0.4.50 (:3031) has its own AX prompt, /search needs Bearer SCREENPIPE_LOCAL_API_KEY + X-Screenpipe-Client: api; last-N hard-fails; xcodeproj IDs unique (Info.plist B100…62); make install needs packages/keytype.
