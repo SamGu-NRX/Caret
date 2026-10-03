@@ -343,7 +343,8 @@ final class SurfaceCoordinator {
                     let usable = Screen.axVisibleFrame(around: field).insetBy(dx: FieldPanelPlacement.margin, dy: FieldPanelPlacement.margin)
                     let under = ObstacleProbe.probe(pid: pid, under: [grown], until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)?
                         .filter { !$0.insetBy(dx: -2, dy: -2).contains(field) }
-                    if !usable.contains(grown) || under.map({ $0.contains(where: { $0.intersects(grown) }) }) ?? true {
+                    // A probe that ran out of time is no reason to move a panel the user is reading.
+                    if !usable.contains(grown) || under?.contains(where: { $0.intersects(grown) }) == true {
                         placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
                     } else {
                         current.choice.frame = grown
@@ -377,10 +378,11 @@ final class SurfaceCoordinator {
     }
 
     /// Hit-testing for one placement stops after this long on the main thread; a spot not fully
-    /// probed by then is not taken. Assumed: A10 measured 9 to 49 ms for three to five spots in
-    /// the claim form at the coarser grid, and an unresponsive app could otherwise cost 50 ms per
-    /// point.
-    static let probeBudget: UInt64 = 150_000_000
+    /// probed by then is not taken. Assumed, from A10's on-screen runs in the claim form: 9 to 49
+    /// ms for three to five spots at the coarser grid, 42 to 105 ms at this one with other runs
+    /// loading the Mac, before points outside the app's windows were skipped. An unresponsive app
+    /// could otherwise cost 50 ms per point.
+    static let probeBudget: UInt64 = 200_000_000
 
     /// The frame a panel of `size` takes when pinned at `choice`'s corner.
     static func frame(pinnedAt choice: FieldPanelPlacement.Choice, size: CGSize) -> CGRect {

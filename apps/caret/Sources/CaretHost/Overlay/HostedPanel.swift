@@ -233,7 +233,9 @@ final class HostedPanel {
 /// The grid has a row every `rowPitch` points and a column every `columnPitch`, at least two rows
 /// and four columns, so a 28 pt line is probed on its two rows as before and a 170 pt card has no
 /// gap a 16 pt tall or 20 pt wide label could hide in; a narrower label still can. A point inside
-/// an element already found is not asked again, so a wide field costs one hit per row.
+/// an element already found is not asked again, so a wide field costs one hit per row, and a point
+/// outside every one of the app's windows is not asked at all: nothing of the app is there, and in
+/// A10's on-screen run asking about the empty space beside a form cost a full 150 ms grid.
 enum ObstacleProbe {
     static let rowPitch: CGFloat = 14
     static let columnPitch: CGFloat = 20
@@ -270,9 +272,12 @@ enum ObstacleProbe {
     static func probe(pid: pid_t, under candidates: [CGRect], until deadline: UInt64?) -> [CGRect]? {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        // No window list read: every point is asked, as before.
+        let windows = AXRead.elements(kAXWindowsAttribute, on: app).compactMap { AXRead.frame(of: $0) }
+        let inApp: (CGPoint) -> Bool = windows.isEmpty ? { _ in true } : { p in windows.contains { $0.contains(p) } }
         var found: [CGRect] = []
         for rect in candidates {
-            for point in points(in: rect) where !found.contains(where: { $0.contains(point) }) {
+            for point in points(in: rect) where !found.contains(where: { $0.contains(point) }) && inApp(point) {
                 if let deadline, DispatchTime.now().uptimeNanoseconds > deadline { return nil }
                 var hit: AXUIElement?
                 guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
