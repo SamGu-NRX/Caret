@@ -235,6 +235,13 @@ describe("planTask", () => {
     expect(a.checked.handoff).toMatchObject({ label: "Archive", why: "unverifiable" });
   });
 
+  it("withholds a field the asks split on or agree on weakly, and writes the rest", async () => {
+    const d = await planTask("Set Name to Dana Whitfield and the billing city to Lisbon", desk(), mem(), opts(plannerJev({ fields: { Name: "Dana Whitfield", "Billing City": "Lisbon" }, flip: "Billing City" })));
+    expect(d.slots).toEqual({ v1: "Dana Whitfield" });
+    expect(d.withheld).toEqual([{ name: "Billing City", why: "disagree" }]);
+    expect(d.answers["Billing City"]).toEqual(["Lisbon", "keep"]);
+  });
+
   it("refuses when the asks disagree, agree too weakly, find nothing, or the request fails", async () => {
     await expect(planTask("Set Name to Dana Whitfield", desk(), mem(), opts(plannerJev({ fields: { Name: "Dana Whitfield" }, flip: "Name" })))).rejects.toMatchObject({ code: "unsure" });
     await expect(planTask("Set Name to Dana Whitfield", desk(), mem(), opts(plannerJev({ fields: { Name: "Dana Whitfield" }, conf: 0.6 })))).rejects.toMatchObject({ code: "unsure" });

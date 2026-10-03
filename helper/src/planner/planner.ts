@@ -6,7 +6,9 @@
 //      write: spans of the instruction (spans.ts), memory values, and the fill generator's candidates
 //      from the other windows. Jev answers one question per field ("which value, or keep") and one about
 //      buttons ("which to press, or none"), asked twice with the options shuffled and the wording
-//      changed. Every answer must agree between the asks, and a value must clear the cutoff.
+//      changed. A field is written only when both asks pick the same value and the lower confidence
+//      clears the cutoff; otherwise it is withheld and left as it is, as fill withholds a field (fill.ts).
+//      The plan fails as unsure only when it withheld something and has nothing left to do.
 //   3. Code writes the plan: one valueEquals step per field that gets a value, keyed by element key,
 //      then a handoff step for the press, its reason from the risk table (risk.ts). A press is never a
 //      step Caret takes: code cannot predict what a press changes, so it could not verify it.
@@ -65,6 +67,8 @@ export interface PlanDraft {
   checked: CheckedPlan;
   /** Each question's two answers, for evaluation: `window`, each field by name, and `press`. */
   answers: Record<string, AskPair>;
+  /** Fields (and `press`) left as they are because the asks disagreed or agreed below the cutoff. */
+  withheld: { name: string; why: "disagree" | "lowConfidence" }[];
   jev: { calls: number; costUsd: number; latencyMs: number };
 }
 
@@ -124,6 +128,8 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
     fieldRequest(instruction, w, questioned, values, askedButtons, 0, declared),
     fieldRequest(instruction, w, questioned, second.values, second.buttons, 1, declared),
   );
+  const withheld: PlanDraft["withheld"] = [];
+  /** The agreed option, or null for keep or none and for an answer withheld as unsure. */
   const agreed = (q: string, name: string, map1: ReadonlyMap<string, string>, map2: ReadonlyMap<string, string>, idle: string): string | null => {
     const a1 = r1.answers[q];
     const a2 = r2.answers[q];
@@ -132,10 +138,15 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
     const t2 = a2.choice === idle ? idle : map2.get(a2.choice);
     if (t1 === undefined || t2 === undefined) throw new PlannerError("jevFailed", `Jev chose an option that was not offered for ${name}`);
     answers[name] = [t1, t2];
-    if (t1 !== t2) throw new PlannerError("unsure", `the two asks disagreed about ${name}`);
+    if (t1 !== t2) {
+      withheld.push({ name, why: "disagree" });
+      return null;
+    }
     if (t1 === idle) return null;
-    const conf = Math.min(a1.confidence, a2.confidence);
-    if (conf < cutoff) throw new PlannerError("unsure", `the asks agreed about ${name} at confidence ${conf.toFixed(2)}, under ${cutoff}`);
+    if (Math.min(a1.confidence, a2.confidence) < cutoff) {
+      withheld.push({ name, why: "lowConfidence" });
+      return null;
+    }
     return t1;
   };
   const byId = (xs: readonly { id: string; text: string }[]): Map<string, string> => new Map(xs.map((x) => [x.id, x.text]));
@@ -147,7 +158,10 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   const pressLabel = askedButtons.length === 0 ? null : agreed("press", "press", byId(askedButtons.map((b) => ({ id: b.id, text: b.key }))), byId(second.buttons.map((b) => ({ id: b.id, text: b.key }))), NONE);
   const press = pressLabel === null ? null : (askedButtons.find((b) => b.key === pressLabel) ?? null);
   if (press !== null) answers.press = [press.label, press.label];
-  if (writes.length === 0 && press === null) throw new PlannerError("nothingToDo", "Jev found nothing in your instruction to write or press here");
+  if (writes.length === 0 && press === null) {
+    if (withheld.length > 0) throw new PlannerError("unsure", `Jev was not sure enough about ${withheld.map((x) => `${x.name} (${x.why === "disagree" ? "the asks disagreed" : "low confidence"})`).join(", ")}, and nothing else is left to do`);
+    throw new PlannerError("nothingToDo", "Jev found nothing in your instruction to write or press here");
+  }
 
   const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title };
   const slots: Record<string, string> = {};
@@ -172,7 +186,7 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   // Writes come first, in order, so step i fills slot v<i+1>.
   for (const wr of checked.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;
   const withSources: Plan = Object.keys(sources).length === 0 ? plan : { ...plan, sources };
-  return { plan: withSources, slots, checked, answers, jev };
+  return { plan: withSources, slots, checked, answers, withheld, jev };
 }
 
 /** Words that say what to do rather than where; they do not make a field or button relevant. */
