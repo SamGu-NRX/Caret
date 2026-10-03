@@ -542,7 +542,22 @@ export const FirstLook = z.object({
 });
 export type FirstLook = z.infer<typeof FirstLook>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook]);
+/**
+ * The user asked Caret to do something. The helper plans it against the screen model and memory and
+ * answers with `planProposal`, to the asker only. `windowId` is the window the user means, when the host
+ * knows it (the one they were in when they asked); without it Caret picks among the open windows.
+ */
+export const PlanRequest = z.object({
+  type: z.literal("planRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(200),
+  at: ms,
+  instruction: z.string().min(1).max(500),
+  windowId: z.string().min(1).optional(),
+});
+export type PlanRequest = z.infer<typeof PlanRequest>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -961,8 +976,68 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
   }
 }
 
+// MARK: - the planner: "do X" becomes a checked plan
+
+
+/**
+ * Why no plan was proposed. `schema`: the drafted plan is not a valid plan. `noWindow`: no open window
+ * can carry the task, or Jev chose none. `unsure`: Jev's two asks disagreed, or agreed below the cutoff.
+ * `nothingToDo`: no field to write and no control to press. `unsupportedStep`: a step other than a field
+ * write or a hand-off. `multipleWindows`: steps in more than one window. `unknownWindow`,
+ * `ambiguousWindow`, `unknownTarget`, `ambiguousTarget`: a window or target is not (or not uniquely) in
+ * the screen model now. `notEditable`: a write to something that is not a writable field.
+ * `untracedValue`: a value that no window, memory entry or the instruction shows verbatim.
+ * `stepAfterHandoff`: a step after the press handed to the user. `riskMismatch`: a hand-off whose reason
+ * is not the one the risk table gives its control. `unavailable`: Jev is off, the helper is in shadow
+ * mode, Caret is paused, or no reader is connected. `jevFailed`: the Jev request failed. `internal`: the
+ * planner failed in a way no other code names; the helper logged why.
+ */
+export const PlanErrorCode = z.enum([
+  "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
+  "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "internal",
+]);
+export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
+
+/**
+ * The planner's answer. A proposal is an offer: nothing runs until the host sends offerAccept with
+ * `offerKey` and the spec's Tab action, and then the plan runs through the executor under an act grant
+ * for `window` only. `spec` lists each field write with its value and source, and the press left to the
+ * user, if any; `handoff` names that press. On `error`, `error.code` says which check failed and
+ * `error.detail` says it in a sentence that may quote the plan's own step. The reply goes to the asker
+ * only, as a memory reply does.
+ */
+export const PlanProposal = z
+  .object({
+    type: z.literal("planProposal"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string(),
+    at: ms,
+    outcome: z.enum(["proposed", "error"]),
+    offerKey: z.string().min(1).nullable(),
+    window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }).nullable(),
+    spec: PopupSpec.nullable(),
+    handoff: z.object({ label: z.string(), why: z.enum(["outbound", "destructive", "money", "unverifiable"]) }).nullable(),
+    error: z.object({ code: PlanErrorCode, detail: z.string().min(1) }).nullable(),
+  })
+  .superRefine((m, ctx) => {
+    const proposed = m.outcome === "proposed";
+    const problem = proposed
+      ? m.offerKey === null || m.window === null || m.spec === null
+        ? "outcome proposed needs offerKey, window and spec"
+        : m.error !== null
+          ? "outcome proposed carries no error"
+          : null
+      : m.error === null
+        ? "outcome error needs error"
+        : m.offerKey !== null || m.spec !== null || m.handoff !== null
+          ? "outcome error carries no offerKey, spec or handoff"
+          : null;
+    if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["outcome"] });
+  });
+export type PlanProposal = z.infer<typeof PlanProposal>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
-  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply,
+  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

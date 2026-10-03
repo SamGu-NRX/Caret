@@ -29,6 +29,9 @@ import {
   type OfferControl,
   type OfferStop,
   type OfferWithdrawn,
+  type OfferPopup,
+  type PlanProposal,
+  type PlanRequest,
   type HelperToReader,
   type ReaderMessage,
   type ReaderVerb,
@@ -55,6 +58,11 @@ import { OpenAppOffers } from "./offers/open-app.ts";
 import { DEFAULT_SETTINGS, LEVELS, OfferGate, type Family, type UserSettings } from "./offers/settings.ts";
 import { FirstLookRunner } from "./offers/first-look.ts";
 import { expired } from "./offers/lifetimes.ts";
+import { offerField } from "./offers/field.ts";
+import { planTask, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
+import { PlannerError, validatePlan } from "./planner/validate.ts";
+import { planError, proposed } from "./planner/proposal.ts";
+import type { MemoryValue } from "./planner/trace.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -86,6 +94,8 @@ export interface HelperOptions {
   auditProbeEveryMs?: number;
   /** The user's settings until the host sends its own; DEFAULT_SETTINGS (the host's defaults) when absent. */
   settings?: UserSettings;
+  /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
+  plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Makes the random part of proposal and watch ids, so tests can expect exact messages. */
@@ -189,6 +199,12 @@ export class Helper {
   readonly firstLookRunner: FirstLookRunner;
   /** Offers a first look found and recorded, by key, until taken, expired or withdrawn, with the engine offer each reports, if any. */
   private readonly firstLooks = new Map<string, { at: number; family: Family; underlying: string | null }>();
+  /**
+   * Planned tasks on offer, by offerKey: the draft, when it was proposed, and what each field it writes
+   * held then, so a field the user changes before the run's first read stops it.
+   */
+  private readonly planOffers = new Map<string, { at: number; draft: PlanDraft; instruction: string; expect: Record<string, Record<string, string>> }>();
+  private planSeq = 0;
   /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
   private readerConnected: boolean;
 
@@ -294,6 +310,7 @@ export class Helper {
         this.readerSession++;
         this.audit?.readerRestarted(this.now());
         this.firstLooks.clear();
+        this.planOffers.clear();
         this.readerConnected = true;
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
@@ -408,6 +425,8 @@ export class Helper {
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.opts.store.count("settings.applied", 1);
     this.withdrawFamilies(off);
+    // A pause holds every offer, a planned task's included.
+    if (m.paused) for (const k of [...this.planOffers.keys()]) this.withdrawPlan(k, "settings");
     if (!m.roles.includes("watch")) this.pending.stopAll("you turned off watching");
     // Watches ask nothing while Caret is paused; once it is not, a window that changed meanwhile is asked about.
     else if (this.gate.enabled("pending")) this.pending.resumeAsks();
@@ -429,6 +448,92 @@ export class Helper {
     const r = await this.firstLookRunner.run(m);
     this.opts.store.count(`firstLook.${r.outcome}`, 1);
     return r;
+  }
+
+  /** Memory the planner may copy from: About values and people's names, not paused. */
+  private plannerMemory(): MemoryValue[] {
+    const out: MemoryValue[] = [];
+    for (const e of this.memory.list()) {
+      if (e.status === "paused") continue;
+      if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value });
+      else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name });
+    }
+    return out;
+  }
+
+  /**
+   * The user asked Caret to do something. The planner drafts a plan against the screen model and memory
+   * and checks it (planner/); a plan that passes is recorded as an offer under its key and runs only when
+   * the host accepts it. The reply goes to the asker only.
+   */
+  async handlePlanRequest(m: PlanRequest): Promise<PlanProposal> {
+    const store = this.opts.store;
+    store.count("plan.request", 1);
+    const fail = (code: Parameters<typeof planError>[1], detail: string): PlanProposal => {
+      store.count(`plan.error_${code}`, 1);
+      return planError(m.requestId, code, detail, this.now());
+    };
+    const ask = this.opts.askJev;
+    if (ask === null) return fail("unavailable", "Jev is off");
+    if (this.mode !== "live") return fail("unavailable", "the helper is in shadow mode");
+    if (this.gate.settings.paused) return fail("unavailable", "Caret is paused");
+    if (!this.readerConnected) return fail("unavailable", "no reader is connected");
+    const offerKey = `plan-${++this.planSeq}-${m.requestId}`;
+    const session = this.readerSession;
+    let draft: PlanDraft;
+    try {
+      draft = await planTask(m.instruction, this.model, { values: () => this.plannerMemory() }, {
+        askJev: ask,
+        offerKey,
+        now: this.now(),
+        ...(m.windowId === undefined ? {} : { windowId: m.windowId }),
+        ...this.opts.plannerHooks,
+      });
+    } catch (e) {
+      if (e instanceof PlannerError) return fail(e.code, e.message);
+      throw e;
+    }
+    // Window ids start over with a new reader; a plan drafted in the old session names other windows now.
+    if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
+    if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused");
+    const reply = proposed(m.requestId, draft, this.now());
+    const w = draft.checked.window;
+    const anchor = draft.checked.writes[0]?.node.key ?? draft.checked.handoff?.node.key ?? w.window.windowId;
+    const spec = reply.spec;
+    if (spec === null) return fail("schema", "the proposal has no pop-up");
+    // Recorded, not published: the host shows the proposal from this reply, and its offerAccept reaches acceptPlan.
+    const msg: OfferPopup = { type: "popup", v: PROTOCOL_VERSION, offerKey, at: reply.at, field: offerField(w, anchor), spec };
+    const checked = HelperMessage.safeParse(msg);
+    if (!checked.success) return fail("schema", `the proposal's pop-up failed the protocol check: ${checked.error.issues[0]?.message ?? "invalid"}`);
+    this.offers.record(msg, () => this.acceptPlan(offerKey));
+    const expect = { [w.window.windowId]: Object.fromEntries(draft.checked.writes.map((wr) => [wr.node.key, wr.node.value ?? ""])) };
+    this.planOffers.set(offerKey, { at: this.now(), draft, instruction: m.instruction, expect });
+    store.count("plan.proposed", 1);
+    if (draft.checked.handoff !== null) store.count(`plan.handoff_${draft.checked.handoff.why}`, 1);
+    return reply;
+  }
+
+  /**
+   * Runs an accepted plan as the task with the offer's key, under an act grant for its one window. The
+   * plan is checked again against the screen and memory as they are now; a check that fails refuses the
+   * accept with its code, and nothing is written.
+   */
+  private async acceptPlan(offerKey: string): Promise<AcceptResult> {
+    const p = this.planOffers.get(offerKey);
+    if (p === undefined) return { refused: "the plan was withdrawn" };
+    this.withdrawPlan(offerKey, "taken");
+    try {
+      validatePlan(p.draft.plan, p.draft.slots, { model: this.model, memory: this.plannerMemory(), instruction: p.instruction });
+    } catch (e) {
+      if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
+      throw e;
+    }
+    return this.executor.run(offerKey, p.draft.plan, p.draft.slots, p.expect, { grant: true });
+  }
+
+  private withdrawPlan(offerKey: string, reason: "taken" | "expired" | "settings"): void {
+    if (!this.planOffers.delete(offerKey)) return;
+    this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
 
   /** Ends an offer a first look recorded: its key leaves the registry and consumers get offerWithdrawn. */
@@ -642,6 +747,7 @@ export class Helper {
     this.record(this.transfers.tick(now));
     this.patterns.tick(now);
     for (const [k, f] of [...this.firstLooks]) if (expired("firstLook", f.at, now)) this.withdrawFirstLook(k, "expired");
+    for (const [k, p] of [...this.planOffers]) if (expired("plan", p.at, now)) this.withdrawPlan(k, "expired");
     if (this.mode === "shadow") this.shadowLogger.tick(now);
     this.audit?.tick(now);
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {

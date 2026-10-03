@@ -28,6 +28,11 @@ export const OFFER_LIFETIMES = {
    * is rechecked when taken, so the timer only keeps an offer nobody took from lingering in the registry.
    */
   firstLook: { ms: 5 * 60 * 1000, until: null },
+  /**
+   * A planned task (planner/). The user asked for it, so it is shown at once; the timer only keeps an
+   * offer nobody took from lingering. It is checked again against the screen when taken.
+   */
+  plan: { ms: 5 * 60 * 1000, until: null },
 } as const satisfies Record<string, OfferLifetime>;
 
 export type OfferProducer = keyof typeof OFFER_LIFETIMES;

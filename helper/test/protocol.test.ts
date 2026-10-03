@@ -19,7 +19,33 @@ describe("golden protocol fixture", () => {
       "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
       "settings", "settings", "offerWithdrawn",
       "actGrant", "readerCommand", "verbResult", "actRevoke",
+      "planRequest", "planProposal", "planProposal",
     ]);
+  });
+
+  it("carries B16's planner pair: a request from the host, a proposal with a hand-off, and an error", () => {
+    const [req, proposal, failed] = lines.slice(38, 41).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(ConsumerMessage.parse(req)).toMatchObject({ type: "planRequest", windowId: "5150-1" });
+    expect(HelperMessage.safeParse(req).success).toBe(false);
+    expect(HelperMessage.parse(proposal)).toMatchObject({ outcome: "proposed", offerKey: "plan-1-ask-1", handoff: { label: "Send", why: "outbound" } });
+    expect(HelperMessage.parse(failed)).toMatchObject({ outcome: "error", error: { code: "untracedValue" } });
+    expect(ConsumerMessage.safeParse(proposal).success).toBe(false);
+    for (const bad of [
+      { ...req, instruction: "" },
+      { ...req, instruction: "x".repeat(501) },
+      { ...req, windowId: "" },
+    ]) expect(ConsumerMessage.safeParse(bad).success).toBe(false);
+    for (const bad of [
+      { ...proposal, error: { code: "unsure", detail: "x" } },
+      { ...proposal, spec: null },
+      { ...proposal, offerKey: null },
+      { ...failed, error: null },
+      { ...failed, offerKey: "plan-2" },
+      { ...failed, handoff: { label: "Send", why: "outbound" } },
+      { ...failed, error: { code: "guess", detail: "x" } },
+      { ...failed, error: { code: "unsure", detail: "" } },
+      { ...proposal, handoff: { label: "Send", why: "risky" } },
+    ]) expect(HelperMessage.safeParse(bad).success).toBe(false);
   });
 
   it("carries B15's act grant: helper to reader only, capped, and a write that names its task", () => {
