@@ -6,8 +6,8 @@
 //
 // Refuses unless the pid is alive and its executable is the expected one, rechecked right before
 // every event, so a reused pid never receives a key. Prints one JSON line.
-import AppKit
 import CoreGraphics
+import Darwin
 import Foundation
 
 let args = CommandLine.arguments
@@ -17,10 +17,13 @@ guard args.count >= 4, let pid = pid_t(args[1]) else {
 }
 let expected = args[2]
 
+// The kernel's path for the pid, not NSRunningApplication, which a command-line tool without a run
+// loop saw return nothing for a live host mid-run (A13 ask-light, typing refused after 24 keys).
 func isExpected() -> Bool {
-    guard kill(pid, 0) == 0, let app = NSRunningApplication(processIdentifier: pid),
-          let url = app.executableURL else { return false }
-    return url.lastPathComponent == expected
+    guard kill(pid, 0) == 0 else { return false }
+    var buffer = [CChar](repeating: 0, count: 4096)
+    guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+    return URL(fileURLWithPath: String(cString: buffer)).lastPathComponent == expected
 }
 
 func post(_ code: CGKeyCode, text: String? = nil) -> Bool {
