@@ -250,3 +250,16 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
   const said = k === "text" && fits.has("city") && /\d/.test(v) ? "text with digits" : KIND_SAYS[k];
   return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is ${said}, and the field takes ${[...fits].map((f) => FIT_SAYS[f]).join(" or ")}`;
 }
+
+/**
+ * The street line and the city of a whole address, each verbatim as the address shows them
+ * ("455 Congress Ave, Austin, TX 78701" gives "455 Congress Ave" and "Austin"), so a Street or City field
+ * can be offered the part that fits it. Null for any text that is not a whole address; the city is null
+ * when the second part is not plain words.
+ */
+export function addressParts(value: string): { street: string; city: string | null } | null {
+  if (textKind(value) !== "address") return null;
+  const [head, second] = value.split(",").map((p) => p.trim().replace(/\s+/g, " "));
+  if (head === undefined) return null;
+  return { street: head, city: second !== undefined && /^\p{L}[\p{L} .'’-]*$/u.test(second) ? second : null };
+}

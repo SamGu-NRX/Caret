@@ -13,7 +13,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import { instructionValues } from "../src/planner/spans.ts";
 import { occursBounded, traceValue, type MemoryValue } from "../src/planner/trace.ts";
-import { misfit, textKind, type TextKind } from "../src/fill/kinds.ts";
+import { addressParts, misfit, textKind, type TextKind } from "../src/fill/kinds.ts";
 import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
 import { asksToFillForm, byRelevance, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
@@ -191,6 +191,12 @@ describe("whether a value's kind fits a field (B18, kinds.ts)", () => {
     ["Reach me at sam.rivera@example.com", "Phone", "text", false],
     ["Senior Product Designer", "Event title", "text", true],
   ];
+  it("splits a whole address into its street line and city, verbatim", () => {
+    expect(addressParts("455 Congress Ave, Austin, TX 78701")).toEqual({ street: "455 Congress Ave", city: "Austin" });
+    expect(addressParts("12 Rue X, 75001 Paris")).toEqual({ street: "12 Rue X", city: null });
+    expect(addressParts("455 Congress Ave")).toBeNull();
+    expect(addressParts("Room 4B, Building C")).toBeNull();
+  });
   it.each(table)("'%s' in a field labelled %s reads as %s and fits: %s", (value, label, kind, fits) => {
     expect(textKind(value)).toBe(kind);
     expect(misfit(value, [label]) === null).toBe(fits);
@@ -338,20 +344,24 @@ describe("planTask", () => {
     expect(Object.values(da.slots).sort()).toEqual(["Dana Whitfield", "dana.whitfield@lumenlabs.example"]);
   });
 
-  it("offers each field only the values that fit it, so a whole address never reaches City", async () => {
+  it("offers each field only the values that fit it, so a whole address never reaches City, but its city does", async () => {
     const m = desk();
     const M = (x: string): string => `dev.caret.mail/standard/${x}`;
     m.apply(snap([text(M("statictext:ship to~0"), "Ship to: 455 Congress Ave, Austin, TX 78701")], { at: 600, windowId: "6160-9", title: "Mail Fixture — Earlier order", app: MAIL_APP, values: [{ kind: "address", text: "455 Congress Ave, Austin, TX 78701", nodeKey: M("statictext:ship to~0") }] }));
     const jev = plannerJev({ fields: { "Billing City": "Austin" } });
-    // The whole address is the only value; City is not offered it, so Jev can only keep the field.
-    await expect(planTask("Billing city should be where my earlier order shipped", m, mem(), opts(plannerJev({})))).rejects.toMatchObject({ code: "nothingToDo" });
-    await expect(planTask("Billing city should be where my earlier order shipped", m, mem(), opts(jev))).rejects.toThrow(/found no option/);
+    // City is offered the address's city, described by the whole address, but never the whole address as a value.
+    const d = await planTask("Billing city should be where my earlier order shipped", m, mem(), opts(jev));
+    expect(d.slots).toEqual({ v1: "Austin" });
+    expect(d.checked.writes[0]?.trace).toMatchObject({ from: "window", windowId: "6160-9" });
     const city = Object.entries((jev.requests[0] as JevRequest).questions).find(([id]) => id !== "press")?.[1];
-    expect(Object.values(city?.criteria ?? {}).some((d) => d?.includes("455 Congress Ave"))).toBe(false);
-    // The address fits neither City nor Email, so no question carries it, and no request declares it.
-    const two = plannerJev({});
-    await expect(planTask("Put where my earlier order shipped in the billing city and the email", m, mem(), opts(two))).rejects.toMatchObject({ code: "nothingToDo" });
-    for (const r of two.requests) {
+    const offered = Object.values(city?.criteria ?? {}).filter((x): x is string => typeof x === "string");
+    expect(offered.some((x) => x.startsWith('"455 Congress Ave, Austin, TX 78701"'))).toBe(false);
+    expect(offered.some((x) => x.startsWith('"Austin" (the city of "455 Congress Ave, Austin, TX 78701"'))).toBe(true);
+    expect(offered.some((x) => x.startsWith('"455 Congress Ave" '))).toBe(false);
+    // Email takes neither the address nor its parts, so a question about Email alone carries none of them, and its requests declare none.
+    const email = plannerJev({});
+    await expect(planTask("Put where my earlier order shipped in the email", m, mem(), opts(email))).rejects.toMatchObject({ code: "nothingToDo" });
+    for (const r of email.requests) {
       expect(JSON.stringify(r.questions)).not.toContain("455 Congress Ave");
       expect(r.snippets.some((x) => x.text.includes("455 Congress Ave"))).toBe(false);
     }

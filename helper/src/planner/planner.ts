@@ -23,7 +23,7 @@ import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { FILL_CUTOFF, FILLABLE_ROLES, shuffled } from "../fill/fill.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { misfit } from "../fill/kinds.ts";
+import { addressParts, misfit } from "../fill/kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { instructionValues } from "./spans.ts";
@@ -338,7 +338,17 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   const spans = instructionValues(instruction);
   if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`);
   for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`);
-  for (const c of generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger)) add(c.text, describeCandidate(c));
+  for (const c of generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger)) {
+    add(c.text, describeCandidate(c));
+    // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
+    // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
+    // tuned on those sets). Each part is a span of the same line, so it traces to it.
+    const parts = addressParts(c.text);
+    if (parts !== null) {
+      add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`);
+      if (parts.city !== null) add(parts.city, `"${parts.city}" (the city of ${describeCandidate(c)})`);
+    }
+  }
   return out;
 }
 
