@@ -1,6 +1,7 @@
 // The privacy line, checked on every Jev request the producers and the first look make over the
 // synthetic sessions. The onboarding copy promises: "To decide what to offer, Caret sends short snippets
-// to a cloud model, such as a field's label and the values it might fill. Never whole windows."
+// to a cloud model, such as a field's label and the values it might fill. Never a whole document or
+// conversation."
 //
 // A recorder wraps the Jev client and keeps each request with the text of every window in the model at
 // that moment. A window's text is its title and every line of its nodes' labels, values and placeholders,
@@ -16,6 +17,10 @@
 // 3. No whole window. A window that is not a card of values (at most 24 lines, none over 80 characters)
 //    keeps more than half its text out of every request. A card may go out whole: its lines are each a
 //    value a fill might copy. That exemption is a decision, not a measurement, and the report says so.
+// 3a. No conversation, whole or half. The sessions name their conversation windows themselves (chats,
+//    a mail thread, agent threads), apart from conversation.ts. However short, each keeps more than half
+//    its text out of every request and gives at most CONVERSATION_CHARS, 600; the card exemption never
+//    applies to one. The short-chat sessions run once more with the rule off to show they went out whole.
 // 4. Nothing from a window that is not a source. Text unique to a window the request does not name in
 //    its snippets never appears, descriptors come from the one window the question is about, and the
 //    sessions' bystander windows (paragraphs no fill can use) give nothing to any request.
@@ -31,11 +36,11 @@ import type { WindowState } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type Node, type ReaderMessage, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { resolveTarget } from "../src/executor/target.ts";
-import { WINDOW_CHARS } from "../src/privacy.ts";
+import { CONVERSATION_CHARS, WINDOW_CHARS, setConversationCap } from "../src/privacy.ts";
 import { FIXTURE_APP, focus, node, snap, text } from "./builders.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
-import { CODEX, T3, agentSnap, codexWindow, t3Window } from "./agent-fixtures.ts";
+import { CHAT, COMPOSER_CHAT, LONG_THREAD, MAIL_THREAD, MESSAGES_CHAT, NOTES, REF, SHORT_CHAT, agentThreads, chatWindow, messagesSources, notesWindow, shortChats } from "./desks.ts";
 
 const CARD_LINES = 24;
 const CARD_LINE_CHARS = 80;
@@ -130,7 +135,7 @@ function measure(r: Recorded): WindowMeasure[] {
 }
 
 /** Every way the request breaks the line, as sentences naming windows and lengths, never the text. */
-function violations(r: Recorded, bystanders: ReadonlySet<string>): string[] {
+function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations: ReadonlySet<string> = CONVERSATIONS): string[] {
   const out: string[] = [];
   const body = bodyOf(r.req);
   const where = `${r.session} / ${r.producer}`;
@@ -155,9 +160,15 @@ function violations(r: Recorded, bystanders: ReadonlySet<string>): string[] {
   const subjects = new Set(r.req.snippets.filter((s) => s.kind === "descriptor").map((s) => s.windowId));
   if (subjects.size > 1) out.push(`${where}: descriptors from ${subjects.size} windows`);
   for (const m of measure(r)) {
+    const charged = r.req.charged[m.windowId] ?? 0;
+    if (m.covered > charged) out.push(`${where}: covers ${m.covered} characters of ${m.windowId}, and its ledger charged ${charged}`);
     if (m.covered > WINDOW_CHARS) out.push(`${where}: ${m.covered} characters from ${m.windowId}, over ${WINDOW_CHARS}`);
     if (!m.card && m.covered * 2 >= m.chars && m.covered > 0) out.push(`${where}: ${m.covered} of ${m.chars} characters of ${m.windowId}, half or more of a window that is not a card`);
     if (bystanders.has(m.windowId) && m.covered > 0) out.push(`${where}: ${m.covered} characters from bystander ${m.windowId}`);
+    if (conversations.has(m.windowId) && m.covered > 0) {
+      if (m.covered * 2 >= m.chars) out.push(`${where}: ${m.covered} of ${m.chars} characters of conversation ${m.windowId}, half or more`);
+      if (m.covered > CONVERSATION_CHARS) out.push(`${where}: ${m.covered} characters from conversation ${m.windowId}, over ${CONVERSATION_CHARS}`);
+    }
   }
   return out;
 }
@@ -244,40 +255,24 @@ class Session {
   }
 }
 
-/** Long paragraphs: text no fill can use, since every line is over 80 characters. */
-const NOTES = "7070-1";
-function notesWindow(at: number): ReaderMessage {
-  const para = (i: number): string =>
-    `Paragraph ${i} of the private notes, which runs well past eighty characters so that no fill could ever take it as a value.`;
-  return snap(
-    Array.from({ length: 12 }, (_, i) => text(`dev.caret.notes/standard/statictext:p${i}~0`, para(i))),
-    { at, windowId: NOTES, app: { pid: 7070, bundleId: "dev.caret.notes", name: "Notes" }, title: "Private notes" },
-  );
-}
-
-/**
- * A chat of 40 short, different messages, each one a fill could take: not a card, so a request may carry
- * less than half of it. Without the budget the generator would take every line.
- */
-const CHAT = "7171-1";
-function chatWindow(at: number): ReaderMessage {
-  const lines = Array.from({ length: 40 }, (_, i) => text(`dev.caret.chat/standard/statictext:m${i}~0`, `Message ${i}: table ${i} is set for the ${i + 4} guests`));
-  return snap(lines, { at, windowId: CHAT, app: { pid: 7171, bundleId: "dev.caret.chat", name: "Chat" }, title: "Team chat" });
-}
-
 const all: Recorded[] = [];
 const BYSTANDERS = new Set([NOTES]);
+/** The sessions' conversation windows, named here rather than found by conversation.ts. */
+const CONVERSATIONS = new Set([CHAT, SHORT_CHAT, MESSAGES_CHAT, COMPOSER_CHAT, MAIL_THREAD, "8101-1", "8202-1", REF, LONG_THREAD]);
 
-async function run(name: string, body: (s: Session) => Promise<void>): Promise<Recorded[]> {
+async function run(name: string, body: (s: Session) => Promise<void>, keep = true): Promise<Recorded[]> {
   const s = new Session(name);
   try {
     await body(s);
   } finally {
     s.close();
   }
-  all.push(...s.recorded);
+  if (keep) all.push(...s.recorded);
   return s.recorded;
 }
+
+/** Requests recorded with the conversation rule off, for the report's before-and-after; checked apart from `all`. */
+const capOff: Recorded[] = [];
 
 describe("the privacy line on every Jev request", () => {
   it("fill: a form beside a mail, a chat and private notes, then a first look", async () => {
@@ -321,16 +316,7 @@ describe("the privacy line on every Jev request", () => {
 
   it("pending: agent threads behind 450-line transcripts, watched and looked at once", async () => {
     const rec = await run("agent threads", async (s) => {
-      const threads = [{ title: "Venue shortlist", status: "Working" }, { title: "Badge printing" }];
-      const t3 = (o: Parameters<typeof t3Window>[0], at: number, focused: boolean) => agentSnap(T3, t3Window(o), { at, windowId: "8101-1", title: "Seating chart", focused });
-      await s.replay(
-        [
-          t3({ running: true, threads, transcriptLines: 450 }, 1000, true),
-          agentSnap(CODEX, codexWindow({ running: true, threads, transcriptLines: 450, last: ["Allow this command? pnpm install --frozen-lockfile"] }), { at: 1100, windowId: "8202-1", title: "Badge export", focused: true }),
-          t3({ running: false, threads, transcriptLines: 450, last: ["Updated all four seating files and ran the checks: 48 of 48 passed."] }, 1200, false),
-        ],
-        "pending watch",
-      );
+      await s.replay(agentThreads(), "pending watch");
       await s.firstLook();
     });
     expect(rec.map((r) => r.producer)).toEqual(["pending watch", "first look"]);
@@ -356,23 +342,117 @@ describe("the privacy line on every Jev request", () => {
       await s.replay([notesWindow(500), snap([...city("Shipping"), ...city("Billing")], { at: 1000, windowId: "5150-9", title: "Addresses", app: FIXTURE_APP })], "executor target");
       const w = s.helper.model.windows.get("5150-9") as WindowState;
       s.producer = "executor target";
-      await resolveTarget(w, { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", s.ask);
+      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", s.ask);
+      // A plan's value can be any text a window shows; here a whole page of the private notes. It goes out cut short.
+      const page = [...(s.helper.model.windows.get(NOTES)?.nodes.values() ?? [])].map((n) => n.label ?? "").join(" ");
+      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask);
+      // The same value with the plan saying where it was copied from (Plan.sources): the part the cut goal shows is charged to the notes.
+      const notes = s.helper.model.windows.get(NOTES);
+      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask, undefined, undefined, [{ text: page, window: notes }]);
     });
-    expect(rec).toHaveLength(2);
+    expect(rec).toHaveLength(6);
+    expect(rec.slice(4).every((r) => r.req.snippets.some((x) => x.windowId === NOTES && x.kind === "candidate"))).toBe(true);
+    // The notes are a bystander for every other producer; here the plan quoted them, and the cut kept the request under the bound.
+    expect(rec.flatMap((r) => violations(r, new Set()))).toEqual([]);
+    expect(Math.max(...rec.flatMap(measure).filter((m) => m.windowId === NOTES).map((m) => m.covered))).toBeLessThanOrEqual(120);
+  });
+
+  it("short chats: a ten-line chat, a Messages thread, a help chat with a composer and a mail thread beside a form", async () => {
+    const rec = await run("short chats", async (s) => {
+      await s.replay(shortChats(), "fill on focus");
+      await s.firstLook();
+    });
+    expect(rec.map((r) => r.producer)).toEqual(["fill on focus", "fill on focus", "first look", "first look"]);
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
+    // Fill still takes a value from a message: the address Dana sent in the chat.
+    expect(rec.filter((r) => r.producer === "fill on focus").every((r) => bodyOf(r.req).includes('"dana.whitfield@example.com"'))).toBe(true);
+    // Each chat gave something, and none gave half.
+    const took = new Set(rec.flatMap(measure).filter((m) => m.covered > 0).map((m) => m.windowId));
+    for (const id of [SHORT_CHAT, MESSAGES_CHAT, MAIL_THREAD]) expect(took, id).toContain(id);
+  });
+
+  it("Messages sources: the B11 Reference thread and a long thread, spent nearest the fields and a kind at a time", async () => {
+    const rec = await run("messages sources", async (s) => {
+      await s.replay(messagesSources(), "fill on focus");
+      await s.firstLook();
+    });
+    expect(rec.filter((r) => r.producer === "fill on focus").length).toBeGreaterThan(0);
+    expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
+    // Both threads gave something, under half and under 600 characters (violations checks both).
+    const took = new Set(rec.flatMap(measure).filter((m) => m.covered > 0).map((m) => m.windowId));
+    for (const id of [REF, LONG_THREAD]) expect(took, id).toContain(id);
+  });
+
+  it("the same short chats went out whole with the conversation rule off, and the check catches that", async () => {
+    setConversationCap(false);
+    let rec: Recorded[];
+    try {
+      rec = await run("short chats, rule off", (s) => s.replay(shortChats(), "fill on focus"), false);
+    } finally {
+      setConversationCap(true);
+    }
+    capOff.push(...rec);
+    const whole = new Set(rec.flatMap(measure).filter((m) => m.covered >= m.chars).map((m) => m.windowId));
+    expect(whole).toContain(SHORT_CHAT);
+    expect(rec.flatMap((r) => violations(r, BYSTANDERS)).some((v) => v.includes(`conversation ${SHORT_CHAT}, half or more`))).toBe(true);
   });
 
   it("catches what it is for: a request that pastes a window, or names text it did not declare", () => {
     const w: WindowText = { windowId: "x-1", title: "Big", lines: Array.from({ length: 60 }, (_, i) => `A line of the window, number ${i}`), chars: 0, card: false };
     w.chars = w.lines.reduce((n, l) => n + l.length, 0);
-    const pasted: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: w.lines.join("\n") }, questions: {}, snippets: w.lines.map((t) => ({ windowId: "x-1", kind: "candidate", text: t })) } };
+    const pasted: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: w.lines.join("\n") }, questions: {}, snippets: w.lines.map((t) => ({ windowId: "x-1", kind: "candidate", text: t })), charged: { "x-1": w.chars } } };
     expect(violations(pasted, new Set())).toEqual([expect.stringContaining("over 1200"), expect.stringContaining("half or more")]);
-    const sneaky: Recorded = { ...pasted, req: { state: { now: w.lines.slice(0, 2).join("\n") }, questions: {}, snippets: [] } };
+    // A short chat that is a card: the card rule lets it go whole, the conversation rule does not.
+    const chat: WindowText = { windowId: "c-1", title: "Chat", lines: ["Dana", "3:41 PM", "see you at five", "Kofi", "3:42 PM", "on my way"], chars: 0, card: true };
+    chat.chars = chat.lines.reduce((n, l) => n + l.length, 0);
+    const chatWhole: Recorded = { session: "s", producer: "p", windows: [chat], req: { state: { now: chat.lines.join("\n") }, questions: {}, snippets: chat.lines.map((t) => ({ windowId: "c-1", kind: "candidate", text: t })), charged: { "c-1": chat.chars } } };
+    expect(violations(chatWhole, new Set(), new Set())).toEqual([]);
+    expect(violations(chatWhole, new Set(), new Set(["c-1"]))).toEqual([expect.stringContaining("conversation c-1, half or more")]);
+    const sneaky: Recorded = { ...pasted, req: { state: { now: w.lines.slice(0, 2).join("\n") }, questions: {}, snippets: [], charged: {} } };
     const found = violations(sneaky, new Set(["x-1"]));
     expect(found.filter((v) => v.includes("undeclared line"))).toHaveLength(2);
     expect(found.filter((v) => v.includes("a window it does not name"))).toHaveLength(2);
     expect(found.filter((v) => v.includes("from bystander x-1"))).toHaveLength(1);
+    // A ledger that charged a window less than the request shows of it.
+    const under: Recorded = { ...chatWhole, req: { ...chatWhole.req, charged: { "c-1": chat.chars - 1 } } };
+    expect(violations(under, new Set(), new Set())).toEqual([expect.stringContaining(`its ledger charged ${chat.chars - 1}`)]);
   });
+
+  /** For each session's window that any request took from: the most one request took, and its share of the window. */
+  const perWindow = (recs: readonly Recorded[]) => {
+    const best = new Map<string, { session: string; title: string; windowId: string; conversation: boolean; card: boolean; chars: number; covered: number; share: number }>();
+    for (const r of recs) {
+      for (const m of measure(r)) {
+        if (m.covered === 0) continue;
+        const k = `${r.session}\u0000${m.windowId}`;
+        const share = m.covered / m.chars;
+        if ((best.get(k)?.share ?? -1) >= share) continue;
+        const title = r.windows.find((w) => w.windowId === m.windowId)?.title ?? m.windowId;
+        best.set(k, { session: r.session, title, windowId: m.windowId, conversation: CONVERSATIONS.has(m.windowId), card: m.card, chars: m.chars, covered: m.covered, share: Math.round(share * 1000) / 1000 });
+      }
+    }
+    return [...best.values()].sort((a, b) => b.share - a.share);
+  };
+
+  const ledgerVsTest = (recs: readonly Recorded[]) => {
+    const rows = recs.map((r) => ({
+      session: r.session,
+      producer: r.producer,
+      windows: measure(r)
+        .filter((m) => m.covered > 0 || (r.req.charged[m.windowId] ?? 0) > 0)
+        .map((m) => ({ windowId: m.windowId, title: r.windows.find((w) => w.windowId === m.windowId)?.title ?? m.windowId, conversation: CONVERSATIONS.has(m.windowId), test: m.covered, ledger: r.req.charged[m.windowId] ?? 0 })),
+    }));
+    const pairs = rows.flatMap((r) => r.windows);
+    return {
+      requests: rows.length,
+      windowsCounted: pairs.length,
+      ledgerBelowTest: pairs.filter((p) => p.ledger < p.test).length,
+      equal: pairs.filter((p) => p.ledger === p.test).length,
+      ledgerAboveTest: pairs.filter((p) => p.ledger > p.test).length,
+      requestsAgreeing: rows.filter((r) => r.windows.every((p) => p.ledger >= p.test)).length,
+      rows,
+    };
+  };
 
   afterAll(() => {
     const ms = all.map((r) => ({ r, m: measure(r) }));
@@ -393,6 +473,21 @@ describe("the privacy line on every Jev request", () => {
       mostFromOneWindow: top === undefined ? null : { covered: top.covered, ofChars: top.chars, card: top.card, session: top.session, producer: top.producer },
       highestShareOfANonCardWindow: nonCard.length === 0 ? 0 : Math.max(...nonCard),
       highestShareOfACard: card.length === 0 ? 0 : Math.max(...card),
+      conversationCharsBound: CONVERSATION_CHARS,
+      conversationsSeen: [...CONVERSATIONS].filter((id) => all.some((r) => r.windows.some((w) => w.windowId === id))).length,
+      conversationsSentWhole: perWindow(all).filter((x) => x.conversation && x.covered >= x.chars).map((x) => `${x.session}: ${x.title}`),
+      highestShareOfAConversation: Math.max(0, ...perWindow(all).filter((x) => x.conversation).map((x) => x.share)),
+      mostFromAConversation: Math.max(0, ...perWindow(all).filter((x) => x.conversation).map((x) => x.covered)),
+      /** Every window a request took from, with the most any one request took and the share of the window that was. */
+      largestPerWindow: perWindow(all),
+      /** The short-chat session again with the conversation rule off, as the helper behaved before B11. */
+      ruleOff: perWindow(capOff),
+      /**
+       * The ledger against this test, request by request: for each window either one counts, the characters
+       * the test measures the request covers and the characters the ledger charged it. The ledger never
+       * charging less is what lets it hold the caps at runtime (violations checks it on every request).
+       */
+      ledgerVsTest: ledgerVsTest(all),
     };
     if (process.env.PRIVACY_REPORT !== undefined) writeFileSync(process.env.PRIVACY_REPORT, `${JSON.stringify(report, null, 2)}\n`);
   });

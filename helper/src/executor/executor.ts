@@ -120,6 +120,19 @@ interface Task {
   session: number;
   /** True while undo is restoring this task's writes. */
   undoing: boolean;
+  /**
+   * Slot values the plan copied from windows, by the window's id (Plan.sources), each with its window as
+   * the task found it: a target question charges that window for the value even after it has closed.
+   */
+  sourced: { text: string; windowId: string; window: WindowState | undefined }[];
+}
+
+/**
+ * Lets go of the source windows a task kept, once it can no longer ask a target question: tasks stay in
+ * the executor's map for undo, which needs only the write ledger, and a kept window holds all its nodes.
+ */
+function releaseSources(task: Task): void {
+  task.sourced = task.sourced.map((v) => ({ ...v, window: undefined }));
 }
 
 class StepStop extends Error {
@@ -198,6 +211,10 @@ export class Executor {
       resolved: new Map(),
       session: this.session,
       undoing: false,
+      sourced: Object.entries(parsed.data.sources ?? {}).flatMap(([slot, windowId]) => {
+        const text = slots[slot];
+        return text === undefined ? [] : [{ text, windowId, window: this.deps.model.windows.get(windowId) }];
+      }),
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -253,6 +270,7 @@ export class Executor {
     const task = this.need(taskId);
     if (task.finished === "paused") {
       task.finished = "stopped";
+      releaseSources(task);
       this.progress(task, "stopped", task.next, `stopped by you before step ${task.next + 1} of ${task.plan.steps.length}`, "you");
       return;
     }
@@ -290,6 +308,7 @@ export class Executor {
     // A paused run whose writes are being restored cannot continue from where it was, so it stops
     // being resumable before the first restore is awaited.
     if (task.finished === "paused") task.finished = "stopped";
+    releaseSources(task);
     task.undoing = true;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
@@ -369,6 +388,7 @@ export class Executor {
       this.progress(task, outcome === "handoff" ? "handoff" : "stopped", i, detail, e instanceof StepStop ? e.by : "caret");
       return this.result(task, outcome, i, detail);
     } finally {
+      if (task.finished !== null && task.finished !== "paused") releaseSources(task);
       await this.updateWatch();
     }
   }
@@ -647,7 +667,10 @@ export class Executor {
       // A cached choice still has to fit the locator in the current tree.
       if (n !== undefined && (t.role === undefined || n.role === t.role) && (t.label === undefined || norm(n.label) === norm(t.label))) return n;
     }
-    const r = await resolveTarget(w, t, goal, this.deps.askJev, this.deps.rand ?? randomInt, this.deps.targetCutoff);
+    // The window as it is now, or as the task found it once it has closed (B13 review: a closed source's
+    // value went out as uncharged plan text).
+    const sourced = task.sourced.map((v) => ({ text: v.text, window: this.deps.model.windows.get(v.windowId) ?? v.window }));
+    const r = await resolveTarget(w, this.deps.model.windows.values(), t, goal, this.deps.askJev, this.deps.rand ?? randomInt, this.deps.targetCutoff, sourced);
     if (r.jev !== null) {
       task.jevCalls += 2;
       this.targetChoices.push({ taskId: task.id, step: i, chose: r.ok ? r.node.key : null, jev: r.jev });

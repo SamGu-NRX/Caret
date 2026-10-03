@@ -12,6 +12,7 @@ import type { PendingInfo, ReaderVerb, TaskCause, TaskState, VerbResult } from "
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { SnippetLedger, cut, flat } from "../privacy.ts";
+import { composers } from "../conversation.ts";
 import { FINISHED, type TaskRegistry } from "./registry.ts";
 
 /**
@@ -184,24 +185,6 @@ export function isStopLabel(label: string | undefined): boolean {
   return STOP_OBJECTS.has(second);
 }
 
-/**
- * Where the user writes to an agent: an editable text field or area, not secure, in the lower 40% of
- * the window and at least a quarter of its width. The census found one in 117 of 139 T3 Code snapshots
- * and 68 of 71 Codex ones.
- */
-export function composers(w: WindowState): readonly [number, number, number, number][] {
-  const win = w.window.frame;
-  if (win === null || win[3] <= 0) return [];
-  const out: [number, number, number, number][] = [];
-  for (const n of w.nodes.values()) {
-    if (n.editable !== true || n.frame === undefined || n.states?.includes("secure")) continue;
-    if (n.role !== "AXTextArea" && n.role !== "AXTextField") continue;
-    const [, y, wd, h] = n.frame;
-    if ((y + h / 2 - win[1]) / win[3] >= 0.6 && wd >= win[2] * 0.25) out.push(n.frame);
-  }
-  return out;
-}
-
 /** Level with a composer or within 80 points above or below it, and over it horizontally within 40 points. */
 export function nearComposer(f: readonly [number, number, number, number] | undefined, comps: readonly (readonly [number, number, number, number])[]): boolean {
   if (f === undefined) return false;
@@ -305,12 +288,13 @@ const WAITING_CRITERIA: Record<Waiting, string> = {
  */
 export function buildPendingRequest(
   w: WindowState,
+  screen: Iterable<WindowState>,
   then: readonly string[],
   now: readonly string[],
   thenMarkers: readonly Marker[] = [],
   nowMarkers: readonly Marker[] = [],
 ): JevRequest {
-  const ledger = new SnippetLedger();
+  const ledger = new SnippetLedger(screen);
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const before = new Set(then.map(mask));
   const changed = now.filter((l) => !before.has(mask(l)));
@@ -343,7 +327,7 @@ export function buildPendingRequest(
         criteria: WAITING_CRITERIA,
       },
     },
-    snippets: ledger.snippets,
+    ...ledger.declared(),
   };
 }
 
@@ -357,7 +341,8 @@ const windowName = (w: WindowState, title: string | null): string => (title === 
 
 /**
  * Up to `max` of the lines, each cut to SNIPPET_CHARS, that fit the window's budget in the ledger. An
- * indicator's line ("[progress bar]") names a role, not text on screen, so it costs nothing.
+ * indicator's line ("[progress bar]") names a role, not text on screen, so it costs nothing, unless some
+ * text in the window reads the same; a marker from when the user left may name an indicator now gone.
  */
 function takeLines(ledger: SnippetLedger, w: WindowState, lines: readonly string[], max: number): string[] {
   const out: string[] = [];
@@ -365,9 +350,17 @@ function takeLines(ledger: SnippetLedger, w: WindowState, lines: readonly string
     if (out.length >= max) break;
     const t = cut(flat(l));
     if (t === "" || out.includes(t)) continue;
-    if (INDICATOR_RULES.has(t) || ledger.take(w, "candidate", [t])) out.push(t);
+    if (isIndicatorLine(w, t) || ledger.take(w, "candidate", [t])) out.push(t);
   }
   return out;
+}
+
+function isIndicatorLine(w: WindowState, line: string): boolean {
+  if (!INDICATOR_RULES.has(line)) return false;
+  const reads = (x: string | undefined): boolean => x !== undefined && x.split("\n").some((y) => flat(y) === line);
+  if (reads(w.window.title)) return false;
+  for (const n of w.nodes.values()) if (reads(n.label) || reads(n.value) || reads(n.placeholder)) return false;
+  return true;
 }
 
 /**
@@ -376,8 +369,8 @@ function takeLines(ledger: SnippetLedger, w: WindowState, lines: readonly string
  * markers and its last few lines, as snippets within the window's budget; `lines` is that tail, so the
  * caller can quote it.
  */
-export function buildLookRequest(w: WindowState, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
-  const ledger = new SnippetLedger();
+export function buildLookRequest(w: WindowState, screen: Iterable<WindowState>, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
+  const ledger = new SnippetLedger(screen);
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const signs = takeLines(ledger, w, markerLines(markers), SIGN_LINES);
   const tail = takeLines(ledger, w, allWatchLines(w).slice(-CHANGED_LINES), CHANGED_LINES);
@@ -399,7 +392,7 @@ export function buildLookRequest(w: WindowState, markers: readonly Marker[]): { 
           criteria: WAITING_CRITERIA,
         },
       },
-      snippets: ledger.snippets,
+      ...ledger.declared(),
     },
   };
 }
@@ -623,6 +616,11 @@ export class PendingWatcher {
     this.resolved.clear();
   }
 
+  /** Caret is no longer paused: every watch whose window changed since its last answer is asked about now. */
+  resumeAsks(): void {
+    for (const watch of this.watches.values()) if (!watch.paused && watch.sig !== watch.asked && watch.timer === null && watch.inflight === null) this.schedule(watch);
+  }
+
   /** The user turned the watch role off: every watch ends as a stop by the user would end it. */
   stopAll(detail: string): void {
     for (const watch of [...this.watches.values()]) this.end(watch, "failed", "you", detail);
@@ -700,8 +698,9 @@ export class PendingWatcher {
 
   private async ask(watch: Watch): Promise<void> {
     const askJev = this.deps.askJev;
-    // One question at a time per window; a change meanwhile is asked about when this one returns.
-    if (askJev === null || watch.paused || !this.live(watch) || watch.inflight !== null) return;
+    // One question at a time per window; a change meanwhile is asked about when this one returns. While
+    // Caret is paused (live() false) nothing is asked; resumeAsks asks once it is not.
+    if (askJev === null || watch.paused || !this.live(watch) || watch.inflight !== null || !this.deps.live()) return;
     const w = this.deps.model.windows.get(watch.windowId);
     if (w === undefined) return;
     const sig = watch.sig;
@@ -735,7 +734,7 @@ export class PendingWatcher {
     let answer: ReturnType<typeof readPendingAnswer>;
     let latencyMs: number;
     try {
-      const r = await askJev(buildPendingRequest(w, watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w)));
+      const r = await askJev(buildPendingRequest(w, this.deps.model.windows.values(), watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w)));
       latencyMs = r.latencyMs;
       answer = readPendingAnswer(r);
     } catch (e) {
@@ -748,8 +747,9 @@ export class PendingWatcher {
     watch.tries = 0;
     watch.info.asks++;
     const state = stateFor(answer.finished.choice, answer.waiting.choice);
-    // The window changed while Jev answered, or the watch ended or paused: the answer is about a screen that is gone.
-    const stale = watch.sig !== sig || !this.live(watch) || watch.paused;
+    // The window changed while Jev answered, or the watch ended or paused, or Caret was paused: the answer
+    // is about a screen that is gone, or one the user asked Caret not to act on now.
+    const stale = watch.sig !== sig || !this.live(watch) || watch.paused || !this.deps.live();
     this.asks.push({ watchId: watch.id, at: t0, latencyMs, finished: answer.finished.choice, waiting: answer.waiting.choice, state, stale });
     if (stale) {
       this.stats.stale++;

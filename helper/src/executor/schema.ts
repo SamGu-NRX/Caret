@@ -83,6 +83,12 @@ export const Plan = z.object({
   title: z.string(),
   /** Slot names and what each holds. Strings in steps refer to them as {{name}}. */
   slots: z.record(z.string(), z.string()),
+  /**
+   * For a slot whose value was copied from a window, that window's id. When a step's goal or target
+   * quotes the value in a Jev target question, the question charges it to that window's budget
+   * (privacy.ts), as if it took the value from the window itself. A slot not listed is plan text.
+   */
+  sources: z.record(z.string(), z.string()).optional(),
   steps: z.array(Step).min(1),
 });
 export type Plan = z.infer<typeof Plan>;
@@ -98,6 +104,9 @@ const SLOT = /\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g;
 export function fillSlots(plan: Plan, values: Record<string, string>): Plan {
   for (const name of Object.keys(plan.slots)) {
     if (values[name] === undefined) throw new PlanError(`slot ${name} has no value`);
+  }
+  for (const name of Object.keys(plan.sources ?? {})) {
+    if (!(name in plan.slots)) throw new PlanError(`source for ${name}, which is not a declared slot of plan ${plan.id}`);
   }
   const sub = (s: string): string =>
     s.replace(SLOT, (_, name: string) => {

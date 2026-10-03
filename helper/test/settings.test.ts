@@ -5,6 +5,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
@@ -45,6 +46,37 @@ describe("the level table and the gate", () => {
     expect(g.spokenLastHour(10 + HOUR)).toBe(0);
   });
 
+  it("keeps the hour's offers across a restart, as times only, so a new helper holds the same budget", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caret-budget-"));
+    try {
+      const log = (st: Store) => ({ load: () => st.offerTimes(), record: (at: number) => st.recordOffer(at) });
+      const first = new Store(dir);
+      const g = new OfferGate(DEFAULT_SETTINGS, log(first));
+      for (const at of [1000, 2000, 3000, 4000]) g.spoke(at);
+      expect(g.holds("fill", 5000)).toEqual(["hourlyBudget"]);
+      first.close();
+
+      // A restarted helper reads the same store: Balanced's four offers still hold the fifth.
+      const second = new Store(dir);
+      const helper = new Helper({ store: second, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => undefined });
+      expect(helper.gate.holds("fill", 5000)).toEqual(["hourlyBudget"]);
+      expect(helper.gate.holds("fill", 1000 + HOUR)).toEqual([]);
+      helper.shutdown();
+      helper.memory.close();
+
+      // The table holds a time per offer and nothing else, and drops times over an hour older than the newest.
+      const g2 = new OfferGate(DEFAULT_SETTINGS, log(second));
+      g2.spoke(3500 + HOUR);
+      expect(second.offerTimes()).toEqual([4000, 3500 + HOUR]);
+      second.close();
+      const db = new DatabaseSync(join(dir, "screen.sqlite"), { readOnly: true });
+      expect((db.prepare("PRAGMA table_info(offer_budget)").all() as { name: string }[]).map((c) => c.name)).toEqual(["id", "at"]);
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports the families a change turns off, and every allowed one on pause", () => {
     const g = new OfferGate();
     expect(g.apply({ roles: ["fill", "watch"], level: "balanced", paused: false })).toEqual(["loop", "routine"]);
@@ -69,11 +101,13 @@ describe("pending watches follow the watch role", () => {
   let dir: string;
   let store: Store;
   let helper: Helper;
+  let asks: number;
   beforeEach(() => {
+    asks = 0;
     dir = mkdtempSync(join(tmpdir(), "caret-settings-"));
     store = new Store(dir);
     const ask: AskJev = async () => ({ model: "jev-test", answers: { finished: { choice: "no", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 });
-    helper = new Helper({ store, askJev: ask, shadow: false, allowBackgroundFocus: false, publish: () => undefined, readerLink: { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: 0, outcome: "ok", detail: null }) } });
+    helper = new Helper({ store, askJev: (req) => (asks++, ask(req)), shadow: false, allowBackgroundFocus: false, publish: () => undefined, readerLink: { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: 0, outcome: "ok", detail: null }) } });
   });
   afterEach(() => {
     helper.shutdown();
@@ -97,6 +131,20 @@ describe("pending watches follow the watch role", () => {
     expect(watches()).toEqual(["running:"]);
     helper.handleSettings(settings({ roles: ["fill"] }));
     expect(watches()).toEqual(["failed:you turned off watching"]);
+  });
+
+  it("asks nothing about a watched window while Caret is paused, and asks once it is not", async () => {
+    leaveRunningJob(1000);
+    expect(watches()).toEqual(["running:"]);
+    helper.handleSettings(settings({ paused: true }));
+    helper.handleReader(snap([text("dev.caret.fixture/standard/statictext:done~0", "Done. 48 of 48 tests passed.")], { at: 2000, windowId: JOB, title: "Test run" }));
+    await helper.pending.whenIdle();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(asks).toBe(0);
+    helper.handleSettings(settings());
+    await new Promise((r) => setTimeout(r, 200));
+    await helper.pending.whenIdle();
+    expect(asks).toBe(1);
   });
 });
 
@@ -201,6 +249,32 @@ describe("settings over the socket take effect on the next decision", () => {
     expect(popups()).toEqual([]);
     store.flush();
     expect(store.counts()).toMatchObject({ "fill.held_caretPaused": 1 });
+  });
+
+  it("charges an offer to the hour from when it was shown, not from when it was asked for", async () => {
+    host.send(settings({ level: "quiet" }));
+    let release = (): void => {};
+    jevGate = new Promise((r) => (release = r));
+    await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+    await settled();
+    expect(jevCalls).toBe(2);
+    // Jev answers ten minutes after the focus that asked.
+    clock += 10 * 60 * 1000;
+    const shownAt = clock;
+    release();
+    const first = await host.waitFor<{ offerKey: string }>((m) => m.type === "popup");
+    host.send(settings({ level: "quiet", roles: ["watch"] }));
+    await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === first.offerKey);
+    host.send(settings({ level: "quiet" }));
+    jevGate = null;
+    // An hour after the ask but not after the showing: still held.
+    clock = shownAt + HOUR - 60_000;
+    focusName();
+    await settled();
+    expect(jevCalls).toBe(2);
+    clock = shownAt + HOUR + 1;
+    focusName();
+    await host.waitFor((m) => m.type === "popup" && m.offerKey !== first.offerKey);
   });
 
   it("a fill role turned off holds fills; Quiet then allows one offer an hour", async () => {

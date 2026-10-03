@@ -5,7 +5,7 @@
 import type { Node } from "../protocol.ts";
 import { nodeText, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
-import { SnippetLedger, type Snippet } from "../privacy.ts";
+import { SnippetLedger, cut, type Declared } from "../privacy.ts";
 import { shuffled } from "../fill/fill.ts";
 import type { Target } from "./schema.ts";
 
@@ -89,21 +89,52 @@ export function describeElement(w: WindowState, n: Node): string {
   return `${t.label === null ? "(no label)" : `'${t.label}'`} (${facts.join("; ")})`;
 }
 
+/** A slot value a plan copied from a window, with that window as it is now or as the task found it; undefined when no state of it is known. */
+export interface SourcedValue {
+  text: string;
+  window: WindowState | undefined;
+}
+
+/**
+ * How much of `value` a sent text shows: all of it, or, when the text was cut (privacy.ts cut) partway
+ * through the value, the start of it before the ellipsis, however short. Null when it shows none. B12
+ * ignored a start under 3 characters, which a conversation with a budget of one or two then gave
+ * uncharged (B13 review).
+ */
+export function quotedPart(sent: string, value: string): string | null {
+  if (value === "") return null;
+  if (sent.includes(value)) return value;
+  if (!sent.endsWith("…")) return null;
+  const kept = sent.slice(0, -1);
+  for (let k = Math.min(value.length - 1, kept.length); k >= 1; k--) if (kept.endsWith(value.slice(0, k))) return value.slice(0, k);
+  return null;
+}
+
 /**
  * The screen text of a target question: the window's title and every candidate element, held to the
- * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan). Null
- * when the candidates do not all fit: the question is then not asked, since leaving one out could leave
- * out the right one.
+ * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan),
+ * each cut to SNIPPET_CHARS since a plan's values were copied from windows the question does not name.
+ * A value the plan says it copied from a window (Plan.sources), and that the cut goal or target quotes,
+ * is charged to that window first, as it is now or as the task found it; plan text also pays for any
+ * window line it holds. Null when a quoted value's window is unknown, or a quoted value or the candidates
+ * do not all fit: the question is then not asked, since leaving one out could leave out the right one.
  */
-export function targetSnippets(w: WindowState, goal: string, t: Target, cands: readonly { node: Node }[]): Snippet[] | null {
-  const ledger = new SnippetLedger();
-  ledger.plan([goal, t.describe]);
+export function targetSnippets(w: WindowState, screen: Iterable<WindowState>, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): Declared | null {
+  const ledger = new SnippetLedger(screen);
+  const sent = [cut(goal), cut(t.describe)];
+  for (const v of sourced) {
+    const shown = sent.map((s) => quotedPart(s, v.text)).filter((p): p is string => p !== null);
+    if (shown.length === 0) continue;
+    // A value whose window is not known cannot be held to that window's budget, so it is not sent.
+    if (v.window === undefined || !ledger.take(v.window, "candidate", shown)) return null;
+  }
+  if (!ledger.plan(sent)) return null;
   if (!ledger.take(w, "descriptor", [w.window.title])) return null;
   for (const c of cands) {
     const e = elementTexts(w, c.node);
     if (!ledger.take(w, "candidate", [e.label, e.value, e.inside, e.placeholder])) return null;
   }
-  return ledger.snippets;
+  return ledger.declared();
 }
 
 function clip(s: string): string {
@@ -116,25 +147,29 @@ const WORDINGS = [
   (goal: string, what: string) => `To reach this end state: ${goal} the executor must act on ${what}. Pick that element, or none if it is not listed.`,
 ] as const;
 
-export function buildTargetRequest(w: WindowState, goal: string, t: Target, cands: { id: string; node: Node }[], wording: 0 | 1, snippets: readonly Snippet[] = []): JevRequest {
+export function buildTargetRequest(w: WindowState, goal: string, t: Target, cands: { id: string; node: Node }[], wording: 0 | 1, declared: Declared = { snippets: [], charged: {} }): JevRequest {
   const criteria: Record<string, string> = {};
   for (const c of cands) criteria[c.id] = describeElement(w, c.node);
   criteria[NONE] = "None of these elements.";
   return {
     state: { window: `${w.app.name} window '${w.window.title}'`, task: "Choose the element an automated step should act on." },
-    questions: { target: { type: "choice", instructions: WORDINGS[wording](goal, t.describe), criteria } },
-    snippets,
+    // The goal and target are plan text, which can quote a value copied from any window: each goes out cut to SNIPPET_CHARS.
+    questions: { target: { type: "choice", instructions: WORDINGS[wording](cut(goal), cut(t.describe)), criteria } },
+    snippets: declared.snippets,
+    charged: declared.charged,
   };
 }
 
 /** Resolves a target, asking Jev twice when the locator is ambiguous. */
 export async function resolveTarget(
   w: WindowState,
+  screen: Iterable<WindowState>,
   t: Target,
   goal: string,
   askJev: AskJev | null,
   rand?: (n: number) => number,
   cutoff = TARGET_CUTOFF,
+  sourced: readonly SourcedValue[] = [],
 ): Promise<Resolution> {
   const local = resolveLocally(w, t);
   if ("node" in local) return { ok: true, node: local.node, how: local.how, jev: null };
@@ -142,10 +177,10 @@ export async function resolveTarget(
   if (askJev === null) return { ok: false, reason: `${local.ambiguous.length} elements match and Jev is off`, jev: null };
 
   const first = local.ambiguous.map((node, i) => ({ id: `e${i + 1}`, node }));
-  const snippets = targetSnippets(w, goal, t, first);
-  if (snippets === null) return { ok: false, reason: `${first.length} elements match, more than one question may describe from this window`, jev: null };
+  const declared = targetSnippets(w, screen, goal, t, first, sourced);
+  if (declared === null) return { ok: false, reason: `${first.length} elements match, and asking would take more of a window than one question may`, jev: null };
   const second = shuffled(first, rand).map((c, i) => ({ id: `k${i + 1}`, node: c.node }));
-  const [r1, r2] = await Promise.all([askJev(buildTargetRequest(w, goal, t, first, 0, snippets)), askJev(buildTargetRequest(w, goal, t, second, 1, snippets))]);
+  const [r1, r2] = await Promise.all([askJev(buildTargetRequest(w, goal, t, first, 0, declared)), askJev(buildTargetRequest(w, goal, t, second, 1, declared))]);
   const pick = (r: typeof r1, list: typeof first): { key: string | null; confidence: number } => {
     const a = r.answers.target;
     if (a === undefined) throw new Error("Jev returned no answer for the target question");

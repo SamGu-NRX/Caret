@@ -79,9 +79,9 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
 }
 
 /**
- * Why the fill can no longer be done as shown, or null. Every destination must still be there, editable
- * and empty, and every source must still show the value: a fill value is a span, so the source node's
- * text must contain it, or one of its typed values must be it.
+ * Why the fill can no longer be done as shown, or null. Every destination must still be there, editable,
+ * empty and described as it was when Jev was asked, and every source must still show the value: a fill
+ * value is a span, so the source node's text must contain it, or one of its typed values must be it.
  */
 export function recheckFill(model: ScreenModel, p: GroundedProposal): string | null {
   const w = model.windows.get(p.windowId);
@@ -90,6 +90,7 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal): string | n
     const node = w.nodes.get(f.key);
     if (node === undefined) return `the field ${f.key} is gone`;
     if (node.editable !== true || (node.value ?? "") !== "") return `the field ${f.key} is no longer empty`;
+    if (describeField(w, node).text !== f.descriptor) return `the field ${f.key} now reads differently`;
     const sw = model.windows.get(f.source.windowId);
     const src = sw?.nodes.get(f.source.nodeKey);
     if (sw === undefined || src === undefined) return `the source ${f.source.nodeKey} is gone`;
@@ -107,9 +108,13 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
   const w = model.windows.get(p.windowId);
   const slots: Record<string, string> = { title: w?.window.title ?? "" };
   const declared: Record<string, string> = { title: "the form window's title" };
+  // Where each slot was read, so a target question that quotes one charges that window (Plan.sources).
+  const sources: Record<string, string> = { title: p.windowId };
   const steps = p.fields.map((f, i) => {
     slots[`v${i}`] = f.value;
     slots[`l${i}`] = fieldLabel(model, p.windowId, f.key);
+    sources[`v${i}`] = f.source.windowId;
+    sources[`l${i}`] = p.windowId;
     declared[`v${i}`] = `value ${i + 1}`;
     declared[`l${i}`] = `the name of field ${i + 1}`;
     return {
@@ -122,5 +127,5 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       },
     };
   });
-  return { plan: { id: p.id, title: `Fill ${p.fields.length} fields`, slots: declared, steps }, slots };
+  return { plan: { id: p.id, title: `Fill ${p.fields.length} fields`, slots: declared, sources, steps }, slots };
 }

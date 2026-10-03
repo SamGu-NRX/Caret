@@ -408,7 +408,9 @@ public struct FillAsk: Codable, Equatable, Sendable {
     }
 }
 
-public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence }
+/// Why no value was proposed: the asks disagreed, agreed below the cutoff, or a window's privacy budget
+/// cut a value of the field's kind, so the field was not asked or its pick not proposed.
+public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut }
 
 public struct FillField: Codable, Equatable, Sendable {
     public var key: String
@@ -419,9 +421,9 @@ public struct FillField: Codable, Equatable, Sendable {
     /// The chosen candidate's text, copied verbatim by the helper. Nil when the choice is "none".
     public var value: String?
     public var source: FillSource?
-    /// Why a value an ask picked was not proposed: the asks disagreed, or agreed below the cutoff.
     public var withheld: FillWithheld?
-    /// Exactly two: the first ask, and the second with candidates shuffled and the field reworded.
+    /// Two: the first ask, and the second with candidates shuffled and the field reworded. None when the
+    /// field was not asked (withheld as sourceCut).
     public var asks: [FillAsk]
     enum CodingKeys: String, CodingKey { case key, frame, descriptor, choice, confidence, value, source, withheld, asks }
     public init(from decoder: Decoder) throws {
@@ -432,7 +434,7 @@ public struct FillField: Codable, Equatable, Sendable {
         value = try c.decodeNullable(String.self, forKey: .value); source = try c.decodeNullable(FillSource.self, forKey: .source)
         withheld = try c.decodeNullable(FillWithheld.self, forKey: .withheld)
         asks = try c.decode([FillAsk].self, forKey: .asks)
-        if asks.count != 2 { throw ProtocolError("asks must hold exactly two entries, got \(asks.count)") }
+        if asks.count != 2 && asks.count != 0 { throw ProtocolError("asks must hold two entries or none, got \(asks.count)") }
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)

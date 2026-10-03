@@ -27,6 +27,7 @@ import {
   type OfferAccept,
   type OfferControl,
   type OfferStop,
+  type OfferWithdrawn,
   type ReaderCommand,
   type ReaderMessage,
   type ReaderVerb,
@@ -48,6 +49,7 @@ import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { describeField } from "./fill/descriptor.ts";
 import { OpenAppOffers } from "./offers/open-app.ts";
 import { DEFAULT_SETTINGS, LEVELS, OfferGate, type Family, type UserSettings } from "./offers/settings.ts";
 import { FirstLookRunner } from "./offers/first-look.ts";
@@ -184,8 +186,8 @@ export class Helper {
   readonly gate: OfferGate;
   /** Answers the host's firstLook. */
   readonly firstLookRunner: FirstLookRunner;
-  /** Offers a first look found and recorded, by key, until taken, expired or withdrawn. */
-  private readonly firstLooks = new Map<string, { at: number; family: Family }>();
+  /** Offers a first look found and recorded, by key, until taken, expired or withdrawn, with the engine offer each reports, if any. */
+  private readonly firstLooks = new Map<string, { at: number; family: Family; underlying: string | null }>();
   /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
   private readerConnected: boolean;
 
@@ -193,7 +195,7 @@ export class Helper {
     this.opts = opts;
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
-    this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS);
+    this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) });
     this.readerConnected = opts.readerLink !== undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     this.mode = opts.shadow ? "shadow" : "live";
@@ -255,9 +257,9 @@ export class Helper {
       resolvedWatches: () => this.openApp.resolvedWindows(),
       patterns: this.patterns,
       run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect),
-      record: (msg, family, accept) => {
+      record: (msg, family, accept, underlying) => {
         this.offers.record(msg, accept);
-        this.firstLooks.set(msg.offerKey, { at: this.now(), family });
+        this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
       },
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
       now: this.now,
@@ -398,6 +400,8 @@ export class Helper {
     this.opts.store.count("settings.applied", 1);
     this.withdrawFamilies(off);
     if (!m.roles.includes("watch")) this.pending.stopAll("you turned off watching");
+    // Watches ask nothing while Caret is paused; once it is not, a window that changed meanwhile is asked about.
+    else if (this.gate.enabled("pending")) this.pending.resumeAsks();
   }
 
   /** Whether a reader is connected, as the first look sees it. */
@@ -419,7 +423,7 @@ export class Helper {
   }
 
   /** Ends an offer a first look recorded: its key leaves the registry and consumers get offerWithdrawn. */
-  private withdrawFirstLook(offerKey: string, reason: "taken" | "stale" | "expired" | "settings"): void {
+  private withdrawFirstLook(offerKey: string, reason: Exclude<OfferWithdrawn["reason"], "reoffered">): void {
     if (!this.firstLooks.delete(offerKey)) return;
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
@@ -753,13 +757,14 @@ export class Helper {
         store.count("fill.popup", 1, now);
         if (this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p))) {
           this.fillPopups.set(p.id, { p, form: formKey });
-          this.gate.spoke(now);
+          // The hour runs from when the offer is shown, not from when it was asked for.
+          this.gate.spoke(this.now());
         }
         return p;
       }
       this.proposals.set(p.id, { at: now, windowId: p.windowId, values: new Map(p.fields.flatMap((f) => (f.value === null ? [] : [[f.key, f.value] as const]))) });
       this.publish(p);
-      if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(now);
+      if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(this.now());
       return p;
     } catch (e) {
       store.count("fill.error", 1, now);
@@ -774,7 +779,8 @@ export class Helper {
   /**
    * Jev answers in a few hundred milliseconds, and the screen can move meanwhile. A proposal is
    * dropped when the helper left live mode, the window closed, or its trigger field is gone or no
-   * longer empty; a field that has since been filled, or whose source window closed, is left out.
+   * longer empty; a field that has since been filled, that now reads differently (an app can reuse a
+   * field's key for another field: B13 review), or whose source window closed, is left out.
    */
   private revalidate(p: FillProposal): FillProposal | null {
     if (this.mode !== "live") return null;
@@ -783,7 +789,7 @@ export class Helper {
     if (w === undefined || trigger === undefined || (trigger.value ?? "") !== "") return null;
     const fields = p.fields.filter((f) => {
       const n = w.nodes.get(f.key);
-      if (n === undefined || (n.value ?? "") !== "") return false;
+      if (n === undefined || (n.value ?? "") !== "" || describeField(w, n).text !== f.descriptor) return false;
       return f.source === null || this.model.windows.has(f.source.windowId);
     });
     return { ...p, fields };
@@ -881,6 +887,10 @@ export class Helper {
       this.offers.record(m as HostOffer, accept ?? null);
     } else if (m.type === "offerWithdrawn") this.offers.remove(m.id);
     this.opts.publish(m);
+    // A first look's key that reports this offer ends with it.
+    if (m.type === "offerWithdrawn") {
+      for (const [k, f] of [...this.firstLooks]) if (f.underlying === m.id) this.withdrawFirstLook(k, m.reason === "reoffered" ? "stale" : m.reason);
+    }
     return true;
   }
 

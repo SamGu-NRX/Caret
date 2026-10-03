@@ -531,12 +531,17 @@ export const FillField = z.object({
   value: z.string().nullable(),
   source: FillSource.nullable(),
   /**
-   * Why a value was not proposed although an ask picked one: the two asks picked different
-   * candidates, or they agreed below the confidence cutoff. Null otherwise.
+   * Why no value was proposed although one might have been: the two asks picked different candidates,
+   * they agreed below the confidence cutoff, or a window's privacy budget cut a value of the kind the
+   * field takes or the asks picked ("sourceCut", fill.ts), so the candidates of that kind were a partial
+   * set. Null otherwise.
    */
-  withheld: z.enum(["disagree", "lowConfidence"]).nullable(),
-  /** The first ask, and the second with candidates shuffled and the field reworded. */
-  asks: z.tuple([FillAsk, FillAsk]),
+  withheld: z.enum(["disagree", "lowConfidence", "sourceCut"]).nullable(),
+  /**
+   * The first ask, and the second with candidates shuffled and the field reworded. Empty when the field
+   * was not asked: withheld as "sourceCut" before any ask.
+   */
+  asks: z.union([z.tuple([FillAsk, FillAsk]), z.tuple([])]),
 });
 export type FillField = z.infer<typeof FillField>;
 
@@ -844,6 +849,8 @@ export const FirstLookFound = z.object({
   offerKey: z.string().min(1),
   window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }),
   spec: PopupSpec,
+  /** A fill's source apps, each once, in field order, as OfferPopup.sourceApps; absent for a report. */
+  sourceApps: z.array(z.string().min(1)).min(1).refine((a) => new Set(a).size === a.length, "sourceApps repeats an app").optional(),
 });
 export type FirstLookFound = z.infer<typeof FirstLookFound>;
 

@@ -1,5 +1,6 @@
-// The persisted store. It holds counts, keyed hashes and matched transfers described by hashes
-// and metadata. Plain screen text never reaches it; the rolling text window is memory only.
+// The persisted store. It holds counts, keyed hashes, matched transfers described by hashes and
+// metadata, and the times of the last hour's offers. Plain screen text never reaches it; the rolling
+// text window is memory only.
 import { createHmac, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -74,7 +75,13 @@ CREATE TABLE IF NOT EXISTS shadow_episodes (
   src_age_ms INTEGER,
   kind TEXT
 );
+CREATE TABLE IF NOT EXISTS offer_budget (
+  id INTEGER PRIMARY KEY,
+  at INTEGER NOT NULL
+);
 `;
+
+const HOUR_MS = 60 * 60 * 1000;
 
 export class Store {
   private readonly db: DatabaseSync;
@@ -149,6 +156,22 @@ export class Store {
            src_bundle, src_key_hash, src_age_ms, kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(r.at, r.trigger, r.dstBundle, r.dstKeyHash, r.enteredLength, r.enteredHash, r.existed, r.srcBundle, r.srcKeyHash, r.srcAgeMs, r.kind);
+  }
+
+  /**
+   * Records that an offer counted against the hourly budget was shown at `at` (settings.ts), and drops
+   * the ones over an hour older than it. Only the time is kept: no offer text, key or window. Written at
+   * once rather than buffered like counts, so a crash cannot lose one; the budget itself bounds these
+   * writes to a few an hour.
+   */
+  recordOffer(at: number): void {
+    this.db.prepare("INSERT INTO offer_budget (at) VALUES (?)").run(at);
+    this.db.prepare("DELETE FROM offer_budget WHERE at <= ?").run(at - HOUR_MS);
+  }
+
+  /** The times recordOffer kept, oldest first. */
+  offerTimes(): number[] {
+    return (this.db.prepare("SELECT at FROM offer_budget ORDER BY at, id").all() as { at: number }[]).map((r) => Number(r.at));
   }
 
   counts(day?: string): Record<string, number> {

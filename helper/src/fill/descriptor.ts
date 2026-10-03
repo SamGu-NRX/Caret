@@ -72,6 +72,11 @@ function labelTexts(w: WindowState): LabelText[] {
   let out = labelIndex.get(w);
   if (out !== undefined) return out;
   out = [];
+  // A text that holds one of the reader's typed values is content, not a label. An email or a web address
+  // passes isLabelLike's shape (one word, no digits), so the calibration fixture's signature labelled its
+  // phone and website with the email line above them, which cost a conversation's budget 32 characters a
+  // candidate and told Jev something false (B13).
+  const holdsValue = new Set(w.values.map((v) => v.nodeKey));
   for (const n of w.nodes.values()) {
     if (n.role !== "AXStaticText" || n.frame === undefined) continue;
     const raw = n.label ?? n.value;
@@ -81,7 +86,7 @@ function labelTexts(w: WindowState): LabelText[] {
     if (!unclean && raw.length > MAX_LABEL_CHARS) continue;
     const t = unclean ? clean(raw) : raw;
     if (t === null || t.length > MAX_LABEL_CHARS) continue;
-    out.push({ key: n.key, frame: n.frame, t, labelLike: isLabelLike(t) });
+    out.push({ key: n.key, frame: n.frame, t, labelLike: !holdsValue.has(n.key) && isLabelLike(t) });
   }
   labelIndex.set(w, out);
   return out;

@@ -12,7 +12,8 @@
 import { createHmac, randomBytes } from "node:crypto";
 import type { Frame, Node } from "./protocol.ts";
 import { nodeText, type WindowState } from "./model.ts";
-import { composers, markerRule, nearComposer, STATUS_VERBS, type MarkerRule } from "./tasks/pending.ts";
+import { markerRule, nearComposer, STATUS_VERBS, type MarkerRule } from "./tasks/pending.ts";
+import { composers } from "./conversation.ts";
 
 export const CONTROL_WORDS = [
   "stop", "interrupt", "cancel", "abort", "pause", "send", "submit", "approve", "allow", "accept", "deny", "reject", "decline",
