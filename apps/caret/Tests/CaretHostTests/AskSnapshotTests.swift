@@ -13,6 +13,11 @@ final class AskSnapshotTests: XCTestCase {
         try SnapshotTests.check(Gallery.ask())
     }
 
+    /// A14: a value from what the user told Caret, ghosted in an empty form's first field with its line.
+    func testAMemoryValueOnAFormMatchesItsReference() throws {
+        try SnapshotTests.check([Gallery.Item(name: "fill-from-memory", view: AnyView(LayoutFixScene(moment: .fromMemory)))])
+    }
+
     func testTheEventSurfacesMatchTheirReferences() throws {
         try SnapshotTests.check(Gallery.events())
     }

@@ -224,7 +224,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
         XCTAssertEqual(p.cutoff, 0.75)
         XCTAssertEqual(p.jev.model, "jev-1.13.0")
         XCTAssertEqual(p.jev.latencyMs, 201.5)
-        XCTAssertEqual(p.fields.count, 2)
+        XCTAssertEqual(p.fields.count, 3)
 
         let email = p.fields[0]
         XCTAssertEqual(email.frame, Frame(x: 150, y: 120, width: 300, height: 24))
@@ -245,6 +245,14 @@ final class HelperProtocolGoldenTests: XCTestCase {
         XCTAssertNil(promo.source)
         XCTAssertEqual(promo.withheld, .disagree)
         XCTAssertEqual(promo.asks[1].value, "SAVE-10")
+        XCTAssertNil(promo.memory)
+
+        // B17: a value from what the user told Caret carries its entry and no window.
+        let name = p.fields[2]
+        XCTAssertEqual(name.value, "Dana Whitfield")
+        XCTAssertNil(name.source)
+        XCTAssertEqual(name.memory, FillMemory(id: "about-9f8e7d6c", label: "Name", says: "what you told Caret"))
+        XCTAssertNil(email.memory)
     }
 
     func testGoldenErrorDecodes() throws {
@@ -346,8 +354,28 @@ final class FillSelectionTests: XCTestCase {
         XCTAssertEqual(origin.proposalID, "fill-1")
         XCTAssertEqual(origin.windowID, "5150-1")
         XCTAssertEqual(origin.fieldKey, field.key)
-        XCTAssertEqual(origin.sourcePID, 5150)
+        XCTAssertEqual(origin.source, .window(.init(appName: "Caret Fixture", title: "Reference", bundleID: "dev.caret.fixture", pid: 5150)))
         XCTAssertEqual(origin.sourceCaption, "from Caret Fixture, Reference")
+    }
+
+    /// The golden Full name comes from what the user told Caret: offered with its entry, named so,
+    /// and with no window to recheck (brief A14, part 2).
+    func testAMemoryValueIsOfferedFromItsEntry() throws {
+        let nameFrame = Frame(x: 150, y: 80, width: 300, height: 24)
+        let p = try goldenProposal()
+        let result = FillSelection.select(p, focusedFrame: nameFrame, focusedValue: "", secure: false)
+        guard case .offer(let field, let origin) = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(field.value, "Dana Whitfield")
+        XCTAssertEqual(origin.source, .memory(id: "about-9f8e7d6c"))
+        XCTAssertEqual(origin.memoryID, "about-9f8e7d6c")
+        XCTAssertEqual(origin.sourceCaption, "from what you told Caret")
+        XCTAssertEqual(origin.toastSource, "from what you told Caret")
+        XCTAssertEqual(FillSelection.select(p, focusedFrame: nameFrame, focusedValue: "", secure: false, changedMemory: ["about-9f8e7d6c"]), .skip(.memoryChanged))
+        XCTAssertEqual(FillSelection.select(p, focusedFrame: nameFrame, focusedValue: "", secure: false, changedMemory: ["about-other"]), result)
+        // The window values of the same proposal ignore memory changes.
+        guard case .offer = FillSelection.select(p, focusedFrame: emailFrame, focusedValue: "", secure: false, changedMemory: ["about-9f8e7d6c"]) else {
+            return XCTFail("a window's value is not an entry's")
+        }
     }
 
     func testAFrameWithinAPointStillMatches() throws {
@@ -377,7 +405,9 @@ final class FillSelectionTests: XCTestCase {
     func testAWithheldFieldShowsNoGhostValue() throws {
         let frame = #"[150,120,300,24]"#
         func line(_ withheld: String, value: String, asks: String) -> Data {
-            Data(#"{"type":"fillProposal","v":1,"id":"fill-9","at":1790000000500,"pid":5150,"windowId":"5150-1","bundleId":"dev.caret.fixture","triggerKey":"k:email","candidates":2,"cutoff":0.75,"jev":{"model":"m","latencyMs":1,"inputTokens":1,"costUsd":0},"fields":[{"key":"k:email","frame":\#(frame),"descriptor":"Email","choice":"c1","confidence":0.9,"value":\#(value),"source":{"pid":5150,"windowId":"5150-2","bundleId":"dev.caret.fixture","appName":"Caret Fixture","windowTitle":"Reference","nodeKey":"n","kind":"email"},"withheld":\#(withheld),"asks":\#(asks)}]}"#.utf8)
+            // A value comes with its source, and no value with none (protocol.ts FillField, B17).
+            let source = value == "null" ? "null" : #"{"pid":5150,"windowId":"5150-2","bundleId":"dev.caret.fixture","appName":"Caret Fixture","windowTitle":"Reference","nodeKey":"n","kind":"email"}"#
+            return Data(#"{"type":"fillProposal","v":1,"id":"fill-9","at":1790000000500,"pid":5150,"windowId":"5150-1","bundleId":"dev.caret.fixture","triggerKey":"k:email","candidates":2,"cutoff":0.75,"jev":{"model":"m","latencyMs":1,"inputTokens":1,"costUsd":0},"fields":[{"key":"k:email","frame":\#(frame),"descriptor":"Email","choice":"c1","confidence":0.9,"value":\#(value),"source":\#(source),"withheld":\#(withheld),"asks":\#(asks)}]}"#.utf8)
         }
         let ask = #"{"choice":"c1","confidence":0.9,"value":"dana@example.com"}"#
         let cases: [(String, Data)] = [
@@ -415,9 +445,12 @@ final class FillSelectionTests: XCTestCase {
             sourceWindowTitle: "Caret Fixture — Reference", sourceBundleID: "", sourcePID: 1, proposedAtMs: 0
         )
         XCTAssertEqual(origin.sourceCaption, "from Caret Fixture, Reference")
-        var bare = origin
-        bare.sourceWindowTitle = ""
+        let bare = FillOrigin(
+            proposalID: "p", windowID: "1-1", fieldKey: "k", sourceAppName: "Caret Fixture",
+            sourceWindowTitle: "", sourceBundleID: "", sourcePID: 1, proposedAtMs: 0
+        )
         XCTAssertEqual(bare.sourceCaption, "from Caret Fixture")
+        XCTAssertEqual(bare.toastSource, "from Caret Fixture")
     }
 
     func testARefusedOrUndoneValueIsNotOfferedInThatFieldAgain() throws {

@@ -25,11 +25,11 @@ enum SourceCheck {
     static let maxNodes = 4_000
     static let deadline: TimeInterval = 0.25
 
-    static func check(value: String, origin: FillOrigin) -> Outcome {
-        guard let pid = origin.sourcePID else { return .sourceUnknown }
+    static func check(value: String, source: FillOrigin.Window) -> Outcome {
+        guard let pid = source.pid else { return .sourceUnknown }
         let app = AXUIElementCreateApplication(pid)
         let windows = AXRead.elements(kAXWindowsAttribute, on: app)
-            .filter { AXRead.string(kAXTitleAttribute, on: $0) == origin.sourceWindowTitle }
+            .filter { AXRead.string(kAXTitleAttribute, on: $0) == source.title }
         guard !windows.isEmpty else { return .windowGone }
         let started = Date()
         var queue = windows

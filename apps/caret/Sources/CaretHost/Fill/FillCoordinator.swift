@@ -56,6 +56,7 @@ final class FillCoordinator {
     }
 
     func displaced(_ offer: Offer) { machine.displaced(offer) }
+    func memoryChanged(_ id: String) { machine.memoryChanged(id: id) }
     func offerChanged(_ reason: OfferArbiter.PassReason) { machine.offerChanged(reason) }
     func claimed(_ claim: Claim) { machine.claimed(claim) }
     func undoStarted(_ grant: UndoGrant) { machine.undoStarted(grant) }

@@ -90,6 +90,10 @@ public final class MemoryBook {
     public var send: (HelperMemory.Request) -> Bool = { _ in false }
     /// After every change to `state`.
     public var onChange: () -> Void = {}
+    /// An entry's value changed or stopped being usable: the helper accepted an edit, pause, forget
+    /// or an add that replaced a value. A fill held from before then must not offer the old value
+    /// (`FillMachine.memoryChanged`).
+    public var onEntryChanged: (String) -> Void = { _ in }
 
     let clock: SurfaceClock
     private let prefix: String
@@ -148,6 +152,7 @@ public final class MemoryBook {
             if let f = state.confirmingForget, !ids.contains(f) { state.confirmingForget = nil }
         case .edit, .rule, .pause, .resume:
             guard let id = p.entryId else { break }
+            if p.op == .edit || p.op == .pause { onEntryChanged(id) }
             if let entry = reply.entries.first(where: { $0.id == id }), let i = state.entries.firstIndex(where: { $0.id == id }) {
                 state.entries[i] = entry
             }
@@ -157,11 +162,14 @@ public final class MemoryBook {
             requestList()
         case .forget:
             guard let id = p.entryId else { break }
+            onEntryChanged(id)
             state.entries.removeAll { $0.id == id }
             state.problems[id] = nil
             if state.editor?.entryId == id { state.editor = nil }
             requestList()
         case .add:
+            // A second add with the same label replaces that entry's value (protocol.ts MemoryRequest).
+            for entry in reply.entries { onEntryChanged(entry.id) }
             state.typed.removeAll { $0.id == p.typedId }
             requestList()
         }

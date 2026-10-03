@@ -219,6 +219,10 @@ public final class FillMachine {
     var lastFieldFrame: CGRect?
     /// Values refused or undone, per field (`FillSelection.suppressionKey`).
     var suppressed: Set<String> = []
+    /// When each memory entry was last edited, paused or forgotten. The helper cannot take back one
+    /// field of a proposal it sent, so a held proposal's value from an entry changed after it
+    /// arrived is skipped here; entries older than `proposalMaxAge` are dropped with the proposals.
+    var memoryChangedAt: [String: Date] = [:]
     var toast: Toast?
     var watch: Watch?
     /// The read after a write, per app.
@@ -254,6 +258,18 @@ public final class FillMachine {
         status.cachedProposals = held.count
         emit(.watchApp(pid))
         evaluate(pid: pid, trigger: .proposal(uptime))
+    }
+
+    /// The user edited, paused or forgot a memory entry (`MemoryBook.onEntryChanged`). A value from
+    /// it that is up is taken down, and no proposal that came before is offered from it again.
+    public func memoryChanged(id: String) {
+        let now = clock.now
+        memoryChangedAt = memoryChangedAt.filter { now.timeIntervalSince($0.value) <= Self.proposalMaxAge }
+        memoryChangedAt[id] = now
+        let pids = Set(held.values
+            .filter { $0.proposal.fields.contains { $0.memory?.id == id } }
+            .compactMap { FillSelection.pid(fromWindowID: $0.proposal.windowId) })
+        for pid in pids.sorted() { evaluate(pid: pid, trigger: .other) }
     }
 
     /// The form's app notified a focus or value change.
@@ -300,7 +316,9 @@ public final class FillMachine {
         let focusedFrame = Frame(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
         var skip = FillSelection.Skip.noFieldAtFocus
         for candidate in candidates {
-            switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: field.value, secure: field.secure, suppressed: suppressed) {
+            let changed = Set(memoryChangedAt.filter { $0.value >= candidate.receivedAt }.keys)
+            switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: field.value, secure: field.secure,
+                                        suppressed: suppressed, changedMemory: changed) {
             case .offer(let proposed, let origin):
                 return present(proposed, origin: origin, field: field, trigger: trigger)
             case .skip(let reason):
@@ -462,7 +480,7 @@ public final class FillMachine {
             let id = arbiter.showToast(grant)
             // The toast names the app only ("Filled 4 fields from Mail", SURFACES.md section 6);
             // the offer line already named the window.
-            let caption = "1 field from \(origin.sourceAppName)"
+            let caption = "1 field \(origin.toastSource)"
             showToast(
                 FillToastDraw(kind: .done, lead: "Filled", text: caption, keycap: Hint(key: "⌘Z", label: "Undo"), field: lastFieldFrame, pid: pid, source: origin.sourceCaption),
                 lifetime: grant.lifetimeSeconds, grantID: id,

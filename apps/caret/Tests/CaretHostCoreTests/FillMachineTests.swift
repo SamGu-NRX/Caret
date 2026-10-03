@@ -452,3 +452,79 @@ final class SharedToastSlotTests: XCTestCase {
         XCTAssertNil(rig.arbiter.snapshot().toast, "the pop-up's own 5 s end its toast")
     }
 }
+
+/// Per-field fills from what the user told Caret (brief A14, part 2): an About entry's value is
+/// offered like a window's, named "from what you told Caret", and never from an entry the user
+/// changed after the proposal came.
+final class MemoryFillTests: XCTestCase {
+    private let memoryCaption = "from what you told Caret"
+
+    private func shown() -> FillRig {
+        let rig = FillRig()
+        rig.world.front(.email)
+        rig.propose(FillFx.memoryProposal())
+        XCTAssertEqual(rig.takeLog(), ["watch 5150", "offer \(FillFx.email) \(memoryCaption) showLine"])
+        return rig
+    }
+
+    func testAValueFromMemoryIsOfferedAndNamesWhatYouToldCaret() {
+        let rig = shown()
+        XCTAssertEqual(rig.arbiter.snapshot().current?.kind.fillOrigin?.source, .memory(id: FillFx.emailEntry))
+        rig.press(Fx.tab())
+        rig.world.focus(.email, value: FillFx.email)
+        rig.inserted()
+        XCTAssertEqual(rig.takeLog(), ["working", "toast done Filled 1 field from what you told Caret ⌘Z", "toast slot"])
+        XCTAssertEqual(rig.sent.map(\.outcome), [.inserted])
+    }
+
+    func testTheSameProposalsWindowValueStillNamesItsWindow() {
+        let rig = FillRig()
+        rig.world.front(.phone)
+        rig.propose(FillFx.memoryProposal())
+        XCTAssertEqual(rig.takeLog(), ["watch 5150", "offer \(FillFx.phone) \(FillFx.caption) showLine"])
+    }
+
+    func testForgettingTheEntryTakesItsValueDownAndKeepsItDown() {
+        let rig = shown()
+        rig.clock.advance(by: 1)
+        rig.machine.memoryChanged(id: FillFx.emailEntry)
+        XCTAssertEqual(rig.takeLog(), ["hide offer"])
+        XCTAssertNil(rig.arbiter.snapshot().current, "Tab passes through once the value is gone")
+        XCTAssertEqual(rig.machine.status.lastSkip, "memoryChanged")
+        rig.machine.fieldChanged(pid: Fx.app, at: 3)
+        XCTAssertNil(rig.arbiter.snapshot().current, "the held proposal is not offered from the entry again")
+        // Its window value is unaffected.
+        rig.world.focus(.phone)
+        rig.machine.fieldChanged(pid: Fx.app, at: 4)
+        XCTAssertEqual(rig.arbiter.snapshot().current?.text, FillFx.phone)
+    }
+
+    func testAChangeAtTheSameMomentAsTheProposalCountsAsAfterIt() {
+        let rig = FillRig()
+        rig.world.front(.email)
+        rig.machine.memoryChanged(id: FillFx.emailEntry)
+        rig.propose(FillFx.memoryProposal())
+        XCTAssertNil(rig.arbiter.snapshot().current)
+        XCTAssertEqual(rig.machine.status.lastSkip, "memoryChanged")
+    }
+
+    func testAProposalAfterTheChangeIsOffered() {
+        let rig = shown()
+        rig.clock.advance(by: 1)
+        rig.machine.memoryChanged(id: FillFx.emailEntry)
+        rig.takeLog()
+        rig.clock.advance(by: 1)
+        // The helper's next proposal is made from the entry as it is now.
+        rig.propose(FillFx.memoryProposal(id: "fill-m2"))
+        XCTAssertEqual(rig.arbiter.snapshot().current?.kind.fillOrigin?.proposalID, "fill-m2")
+    }
+
+    func testAnotherEntrysChangeLeavesTheOfferUp() {
+        let rig = shown()
+        let shownID = rig.machine.shownOfferID
+        rig.clock.advance(by: 1)
+        rig.machine.memoryChanged(id: "about-name")
+        XCTAssertEqual(rig.takeLog(), [])
+        XCTAssertEqual(rig.arbiter.snapshot().current?.id, shownID)
+    }
+}

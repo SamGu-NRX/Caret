@@ -13,7 +13,8 @@ import TextInsertion
 ///
 /// 1. Reread the focused field of the offer's own pid (never the system-wide focused element, which
 ///    belongs to whatever app is in front).
-/// 2. For a fill, recheck that the source still shows the value (`SourceCheck`).
+/// 2. For a fill from a window, recheck that the source still shows the value (`SourceCheck`). A
+///    fill from memory has no window to look in and skips this step only.
 /// 3. Let `OfferArbiter.confirm` run the insertion guard against that reread.
 /// 4. Write. By default KeyType's `PasteboardCompletionInserter` with a synthesizer that posts ⌘V to
 ///    the target's pid (`PidKeystrokeSynthesizer`). An app that leaves the field unchanged after a
@@ -142,8 +143,10 @@ final class InsertionExecutor: @unchecked Sendable {
         guard policy.allowsLive(pid: pid), let processStart = ProcessStart.of(pid) else { return refuse("targetNotAllowed") }
         // The source walk can take up to its deadline; the field is reread after it, so the guard
         // approves the field as it is immediately before the write.
-        if let origin {
-            let source = SourceCheck.check(value: claim.offer.text, origin: origin)
+        // A value from memory has no window to look in (`FillOrigin.Source.memory`); only a
+        // window's value is rechecked there. Both still pass the field reread below.
+        if case .window(let window)? = origin?.source {
+            let source = SourceCheck.check(value: claim.offer.text, source: window)
             guard source == .present else { return refuse("source.\(source)") }
         }
         guard let reread = FieldReader.readFocused(pid: pid) else { return refuse("fieldUnreadable") }

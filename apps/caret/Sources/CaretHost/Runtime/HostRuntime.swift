@@ -221,6 +221,7 @@ public final class HostRuntime {
         onboarding.onForgetTyped = { [weak memory] in memory?.forgetTyped(labels: $0) }
         onboarding.knowAvailable = { [weak memory] in memory?.book.state.acceptsAdd ?? false }
         perch.onOpenMemory = { [weak memory] in memory?.open() }
+        memory.book.onEntryChanged = { id in fill.memoryChanged(id) }
         let askClient = helper
         perch.ask.send = { [weak askClient] message in
             guard let askClient else { return false }

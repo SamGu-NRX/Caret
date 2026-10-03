@@ -137,6 +137,9 @@ enum Gallery {
             line("line-fill-source", LineContent(figure: .offering, text: "from Mail, Invoice 2041", emphasis: .secondary, hints: [Hint(key: "Tab")])),
             line("line-fill-source-compact", LineContent(figure: .offering, text: "from Mail, Invoice 2041", emphasis: .secondary, hints: [Hint(key: "Tab")]), compact: true),
             line("line-fill-toast", LineContent(figure: .done, lead: "Filled", text: "1 field from Mail", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])),
+            // A value from what the user told Caret (A14): the same line, naming no window.
+            line("line-fill-memory", LineContent(figure: .offering, text: FillOrigin.memoryCaption, emphasis: .secondary, hints: [Hint(key: "Tab")])),
+            line("line-fill-memory-toast", LineContent(figure: .done, lead: "Filled", text: "1 field \(FillOrigin.memoryCaption)", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])),
             Item(name: "alternatives-collapsed-quoted", view: AnyView(AlternativesScene(character: character, collapsed: true))),
             Item(name: "alternatives-open", view: AnyView(AlternativesScene(character: character))),
         ]
@@ -297,7 +300,8 @@ struct FigureGalleryView: View {
 /// the host places it. Off screen, so both themes render on one Mac whatever the form app's own
 /// appearance.
 struct LayoutFixScene: View {
-    enum Moment { case toastGivesWay, lineAfterToast }
+    /// `fromMemory`: an empty form whose Full name is offered from what the user told Caret (A14).
+    enum Moment { case toastGivesWay, lineAfterToast, fromMemory }
 
     var moment: Moment
     var character: FigureCharacter = .pebble
@@ -312,8 +316,15 @@ struct LayoutFixScene: View {
     var body: some View {
         let toast = LineContent(figure: .done, lead: "Filled", text: "1 field from Caret Fixture", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])
         let source = LineContent(figure: .offering, text: "from Caret Fixture, Reference", emphasis: .secondary, hints: [Hint(key: "Tab")])
-        // Toast for row 1 while row 2's value waits; or, after the toast, row 2's own line.
-        let (content, anchorRow) = moment == .toastGivesWay ? (toast, 0) : (source, 2)
+        let memory = LineContent(figure: .offering, text: FillOrigin.memoryCaption, emphasis: .secondary, hints: [Hint(key: "Tab")])
+        // Toast for row 1 while row 2's value waits; or, after the toast, row 2's own line; or the
+        // first field's line on a form nothing has filled yet.
+        let (content, anchorRow): (LineContent, Int)
+        switch moment {
+        case .toastGivesWay: (content, anchorRow) = (toast, 0)
+        case .lineAfterToast: (content, anchorRow) = (source, 2)
+        case .fromMemory: (content, anchorRow) = (memory, 0)
+        }
         let width = NSHostingView(rootView: LineView(content: content, character: character, animated: false)).fittingSize.width
         let compactWidth = NSHostingView(rootView: LineView(content: content, character: character, compact: true, animated: false)).fittingSize.width
         let obstacles = (0..<Self.rows.count).filter { $0 != anchorRow }.map(Self.field)
@@ -322,7 +333,12 @@ struct LayoutFixScene: View {
             field: Self.field(anchorRow), width: width, compactWidth: compactWidth, obstacles: obstacles,
             bounds: CGRect(x: -8, y: -8, width: 516, height: 260)
         )
-        let filled = moment == .toastGivesWay ? 1 : 2
+        let filled: Int
+        switch moment {
+        case .toastGivesWay: filled = 1
+        case .lineAfterToast: filled = 2
+        case .fromMemory: filled = 0
+        }
         return ZStack(alignment: .topLeading) {
             ForEach(Array(Self.rows.enumerated()), id: \.offset) { i, label in
                 Text(label + ":").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink))

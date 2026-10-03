@@ -134,6 +134,32 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertEqual(rig.last?.op, .list)
     }
 
+    /// A fill held from before an edit, pause, forget or replacing add must not offer the old value
+    /// (`FillMachine.memoryChanged`); a resume or a refusal changes no value.
+    func testEveryAcceptedChangeToAnEntryIsReported() throws {
+        let rig = try Rig()
+        var changed: [String] = []
+        rig.book.onEntryChanged = { changed.append($0) }
+        XCTAssertTrue(rig.book.pause(Self.about))
+        var paused = try XCTUnwrap(rig.entry(Self.about))
+        paused.status = .paused
+        rig.answer(HelperMemory.Reply(requestId: "", error: nil, entries: [paused]))
+        XCTAssertEqual(changed, [Self.about])
+        rig.answer(try HelperMemoryTests.reply(1))
+        XCTAssertTrue(rig.book.resume("people-5e6f7a8b"))
+        rig.answer(HelperMemory.Reply(requestId: "", error: nil, entries: []))
+        XCTAssertEqual(changed, [Self.about], "a resume changes no value")
+        rig.answer(try HelperMemoryTests.reply(1))
+        rig.book.askToForget(Self.routine)
+        rig.book.confirmForget()
+        rig.refuse("no")
+        XCTAssertEqual(changed, [Self.about], "a refused forget changes nothing")
+        rig.book.askToForget(Self.routine)
+        rig.book.confirmForget()
+        rig.answer(HelperMemory.Reply(requestId: "", error: nil, entries: []))
+        XCTAssertEqual(changed, [Self.about, Self.routine])
+    }
+
     func testARefusalShowsOnTheRowAndTheEntryStays() throws {
         let rig = try Rig()
         rig.book.askToForget(Self.about)
