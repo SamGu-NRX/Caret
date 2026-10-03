@@ -54,6 +54,28 @@ final class OnboardingHostTests: XCTestCase {
         )
     }
 
+    /// The know screen's words (A11 brief): what it asks for, why, and where it can be changed.
+    func testTheKnowScreensWordingIsPinned() {
+        XCTAssertEqual(KnowScreen.title, "What Caret knows so far.")
+        XCTAssertEqual(KnowScreen.detail, "Type your name and email, and Caret can fill them in for you.")
+        XCTAssertEqual(KnowScreen.footnote, "Caret keeps these on this Mac. Change or remove them any time in What Caret Knows, in the menu bar.")
+        XCTAssertEqual(AboutField.allCases.map(\.label), ["Name", "Email"])
+        var draft = AboutDraft()
+        draft.email = "dana@"
+        XCTAssertEqual(draft.problem, "That email looks incomplete.")
+        for line in [KnowScreen.title, KnowScreen.detail, KnowScreen.footnote, draft.problem!] {
+            XCTAssertFalse(line.contains("\u{2014}") || line.contains("\u{2013}") || line.contains("!"), line)
+        }
+    }
+
+    func testReturnThatEndsAnInputMethodsCompositionStaysInTheField() {
+        XCTAssertNil(OnboardingController.event(for: key(36, "\r"), step: .know, offerVisible: false, composing: true))
+        XCTAssertNil(OnboardingController.event(for: key(53, "\u{1b}"), step: .know, offerVisible: false, composing: true))
+        XCTAssertEqual(OnboardingController.event(for: key(36, "\r"), step: .know, offerVisible: false), .next)
+        XCTAssertNil(OnboardingController.event(for: key(0, "a"), step: .know, offerVisible: false), "typing goes to the field")
+        XCTAssertNil(OnboardingController.event(for: key(48, "\t"), step: .know, offerVisible: false), "Tab moves between the fields")
+    }
+
     // MARK: - Keys
 
     private func key(_ code: UInt16, _ chars: String = "", mods: NSEvent.ModifierFlags = []) -> NSEvent {
@@ -118,6 +140,8 @@ final class OnboardingHostTests: XCTestCase {
         let controller = OnboardingController(mode: .hidden, testHooks: true, store: store)
         var asked: [FirstLookRequest] = []
         controller.sendFirstLook = { asked.append($0); return true }
+        var kept: [[TypedAbout]] = []
+        controller.onRemember = { kept.append($0) }
         XCTAssertEqual(controller.command(["onboarding"]), #"{"open":false}"#)
         func run(_ line: String) throws -> DebugState.OnboardingInfo {
             let words = line.split(separator: " ", maxSplits: line.hasPrefix("onboarding reply") ? 2 : Int.max).map(String.init)
@@ -130,9 +154,12 @@ final class OnboardingHostTests: XCTestCase {
         _ = try run("onboarding next")
         _ = try run("onboarding role repeat off")
         XCTAssertEqual(try run("onboarding level quiet").level, "quiet")
-        XCTAssertEqual(try run("onboarding next").step, "permissions")
+        XCTAssertEqual(try run("onboarding next").step, "know")
         XCTAssertEqual(store.settings.roles, [.fill, .watch, .words], "the choices are saved on leaving the screen")
         XCTAssertEqual(store.settings.level, .quiet)
+        XCTAssertEqual(try run("onboarding about name Dana Whitfield").about?["name"], 14)
+        XCTAssertEqual(try run("onboarding next").step, "permissions")
+        XCTAssertEqual(kept, [[TypedAbout(label: "Name", value: "Dana Whitfield")]], "Continue hands the typed name to memory")
         XCTAssertEqual(try run("onboarding next").step, "tryIt")
         XCTAssertFalse(try run("onboarding key return").tryIt!.completed)
         XCTAssertTrue(try run("onboarding key tab").tryIt!.completed)

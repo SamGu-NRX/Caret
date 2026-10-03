@@ -40,6 +40,8 @@ final class PerchController {
     private let panel = PerchPanel.make()
     private let list = HostedPanel(radius: 12, interactive: true)
     private let locator = WindowLocator()
+    /// "What Caret knows" at the foot of the list.
+    var onOpenMemory: (() -> Void)?
 
     /// The menu bar's "Show Perch" choice. Hidden stops drawing; the list still opens from the menu.
     var hidden: Bool {
@@ -335,7 +337,11 @@ final class PerchController {
         let view = ActivityListView(
             rows: page.rows, more: page.more, incomplete: center.feed.incomplete, mood: subject?.mood,
             character: FigureSettings.shared.character, busy: center.busy, animated: !Motion.reduceMotion,
-            onMore: { [weak self] in self?.showMore() }
+            onMore: { [weak self] in self?.showMore() },
+            onKnows: { [weak self] in
+                self?.closeList()
+                self?.onOpenMemory?()
+            }
         ) { [weak self] taskId, action in
             self?.center.control(taskId, action)
         }

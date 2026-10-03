@@ -30,10 +30,11 @@ final class OnboardingFlowTests: XCTestCase {
             return nil
         }
 
-        /// Welcome, work and permissions passed with Accessibility already on.
+        /// Welcome, work, what Caret knows (skipped) and permissions passed with Accessibility
+        /// already on.
         static func atTryIt() -> Rig {
             let rig = Rig(ax: true)
-            rig.send(.next, .next, .next)
+            rig.send(.next, .next, .next, .next)
             XCTAssertEqual(rig.step, .tryIt)
             rig.take()
             return rig
@@ -41,7 +42,7 @@ final class OnboardingFlowTests: XCTestCase {
 
         static func atFirstLook(settings: CaretSettings = CaretSettings()) -> Rig {
             let rig = Rig(settings: settings, ax: true)
-            rig.send(.next, .next, .next, .key(.tab), .next)
+            rig.send(.next, .next, .next, .next, .key(.tab), .next)
             XCTAssertEqual(rig.step, .firstLook)
             return rig
         }
@@ -83,7 +84,7 @@ final class OnboardingFlowTests: XCTestCase {
     func testLeavingTheWorkScreenWritesTheChoicesToSettings() {
         let rig = Rig()
         rig.send(.next, .setRole(.repeats, false), .setLevel(.quiet), .next)
-        XCTAssertEqual(rig.step, .permissions)
+        XCTAssertEqual(rig.step, .know)
         XCTAssertEqual(rig.take(), [.saveChoices(roles: [.fill, .watch, .words], level: .quiet, onboarded: false)])
     }
 
@@ -108,7 +109,7 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testPermissionsWaitForAccessibilityThenMoveOnByThemselves() {
         let rig = Rig(ax: false, input: true)
-        rig.send(.next, .next)
+        rig.send(.next, .next, .next)
         XCTAssertEqual(rig.step, .permissions)
         XCTAssertFalse(rig.flow.state.canContinue)
         XCTAssertFalse(rig.flow.state.showsInputMonitoring, "Input Monitoring is not asked for when it is already on")
@@ -126,7 +127,7 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testAGrantTakenBackBeforeTheMoveKeepsTheScreen() {
         let rig = Rig(ax: false)
-        rig.send(.next, .next)
+        rig.send(.next, .next, .next)
         rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
         rig.send(.permissions(OnboardingPermissions(accessibility: false, inputMonitoring: true)))
         rig.clock.advance(by: 2)
@@ -136,7 +137,7 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testAlreadyGrantedMeansNoJumpButContinueWorks() {
         let rig = Rig(ax: true)
-        rig.send(.next, .next)
+        rig.send(.next, .next, .next)
         rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
         rig.clock.advance(by: 2)
         XCTAssertEqual(rig.step, .permissions, "nothing appeared, so nothing moves")
@@ -146,7 +147,7 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testInputMonitoringIsAskedWhenMissingAndTheMoveWaitsForEveryShownRow() {
         let rig = Rig(ax: false, input: false)
-        rig.send(.next, .next)
+        rig.send(.next, .next, .next)
         XCTAssertTrue(rig.flow.state.showsInputMonitoring)
         rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: false)))
         rig.clock.advance(by: 2)
@@ -160,10 +161,10 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testLeavingThePermissionsScreenCancelsTheMove() {
         let rig = Rig(ax: false)
-        rig.send(.next, .next)
+        rig.send(.next, .next, .next)
         rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)), .back)
         rig.clock.advance(by: 2)
-        XCTAssertEqual(rig.step, .work)
+        XCTAssertEqual(rig.step, .know)
     }
 
     // MARK: - Try it
@@ -320,7 +321,7 @@ final class OnboardingFlowTests: XCTestCase {
             let f = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: true, inputMonitoring: true), clock: clock, token: token)
             var asked: FirstLookRequest?
             f.output = { if case .askFirstLook(let r) = $0 { asked = r } }
-            for e: OnboardingFlow.Event in [.next, .next, .next, .key(.tab), .next] { f.send(e) }
+            for e: OnboardingFlow.Event in [.next, .next, .next, .next, .key(.tab), .next] { f.send(e) }
             return (f, { asked })
         }
         let (first, firstAsked) = flow("a")
@@ -351,7 +352,7 @@ final class OnboardingFlowTests: XCTestCase {
 
     func testTakingInputMonitoringBackDuringTheMoveStops() {
         let rig = Rig(ax: false, input: false)
-        rig.send(.next, .next)
+        rig.send(.next, .next, .next)
         rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
         XCTAssertTrue(rig.flow.state.advancingAfterGrant)
         rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: false)))
@@ -359,6 +360,100 @@ final class OnboardingFlowTests: XCTestCase {
         rig.clock.advance(by: 2)
         XCTAssertEqual(rig.step, .permissions)
         XCTAssertTrue(rig.flow.state.canContinue, "Input Monitoring is optional; Continue still works")
+    }
+
+    // MARK: - What Caret knows so far
+
+    private func atKnow() -> Rig {
+        let rig = Rig(ax: true)
+        rig.send(.next, .next)
+        XCTAssertEqual(rig.step, .know)
+        rig.take()
+        return rig
+    }
+
+    func testTheKnowScreenSitsBetweenWorkAndPermissions() {
+        let rig = atKnow()
+        XCTAssertEqual(OnboardingStep.allCases, [.welcome, .work, .know, .permissions, .tryIt, .firstLook])
+        rig.send(.back)
+        XCTAssertEqual(rig.step, .work)
+        rig.send(.next, .next)
+        XCTAssertEqual(rig.step, .permissions)
+        rig.send(.back)
+        XCTAssertEqual(rig.step, .know)
+        XCTAssertEqual(rig.flow.state.direction, .back)
+    }
+
+    func testContinueKeepsWhatWasTypedTrimmed() {
+        let rig = atKnow()
+        rig.send(.setAbout(.name, "  Dana Whitfield"), .setAbout(.email, "dana.whitfield@example.com "), .next)
+        XCTAssertEqual(rig.step, .permissions)
+        XCTAssertEqual(rig.take(), [.remember([TypedAbout(label: "Name", value: "Dana Whitfield"), TypedAbout(label: "Email", value: "dana.whitfield@example.com")])])
+    }
+
+    func testEmptyFieldsContinueWithoutKeepingAnything() {
+        let rig = atKnow()
+        rig.send(.setAbout(.name, "   "), .next)
+        XCTAssertEqual(rig.step, .permissions)
+        XCTAssertEqual(rig.take(), [])
+    }
+
+    func testSkipDropsWhatWasTyped() {
+        let rig = atKnow()
+        rig.send(.setAbout(.name, "Dana Whitfield"), .setAbout(.email, "not an email"), .skip)
+        XCTAssertEqual(rig.step, .permissions)
+        XCTAssertEqual(rig.take(), [], "Skip keeps nothing, even a value that would pass")
+        XCTAssertEqual(rig.flow.state.about.name, "")
+    }
+
+    func testAnIncompleteEmailHoldsContinueAndSaysWhyUntilTheNextKeystroke() {
+        let rig = atKnow()
+        rig.send(.setAbout(.email, "dana@example"))
+        XCTAssertFalse(rig.flow.state.about.showsProblem, "no problem shown while typing")
+        XCTAssertTrue(rig.flow.state.canContinue)
+        rig.send(.next)
+        XCTAssertEqual(rig.step, .know)
+        XCTAssertEqual(rig.flow.debugInfo().aboutProblem, "That email looks incomplete.")
+        XCTAssertEqual(rig.take(), [])
+        rig.send(.setAbout(.email, "dana@example.com"))
+        XCTAssertNil(rig.flow.debugInfo().aboutProblem)
+        rig.send(.next)
+        XCTAssertEqual(rig.step, .permissions)
+    }
+
+    func testTheEmailCheckCatchesTyposOnly() {
+        for good in ["a@b.co", "dana.whitfield+caret@example.com", "x@sub.example.org"] {
+            XCTAssertTrue(AboutDraft.looksLikeEmail(good), good)
+        }
+        for bad in ["dana", "dana@", "@example.com", "dana@example", "dana@example.", "dana@.com", "da na@example.com", "a@b@c.com"] {
+            XCTAssertFalse(AboutDraft.looksLikeEmail(bad), bad)
+        }
+    }
+
+    func testGoingBackAndOnAgainKeepsOnlyWhatChanged() {
+        let rig = atKnow()
+        rig.send(.setAbout(.name, "Dana"), .setAbout(.email, "dana@example.com"), .next)
+        rig.take()
+        rig.send(.back, .setAbout(.name, "Dana Whitfield"), .next)
+        XCTAssertEqual(rig.take(), [.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])])
+        rig.send(.back, .next)
+        XCTAssertEqual(rig.take(), [], "nothing changed, nothing sent")
+    }
+
+    func testTheKnowScreensEventsDoNothingElsewhere() {
+        let rig = Rig(ax: true)
+        rig.send(.next, .setAbout(.name, "Dana"), .skip)
+        XCTAssertEqual(rig.step, .work)
+        XCTAssertEqual(rig.flow.state.about.name, "")
+    }
+
+    func testTheDebugStateGivesLengthsNotValues() throws {
+        let rig = atKnow()
+        rig.send(.setAbout(.name, "Dana"))
+        let info = rig.flow.debugInfo()
+        XCTAssertEqual(info.about, ["name": 4, "email": 0])
+        let json = String(decoding: try JSONEncoder().encode(info), as: UTF8.self)
+        XCTAssertFalse(json.contains("Dana"))
     }
 
     // MARK: - The end
@@ -377,6 +472,7 @@ final class OnboardingFlowTests: XCTestCase {
     func testTheWholeWalkInOrder() throws {
         let rig = Rig(ax: false, input: false)
         rig.send(.next, .setRole(.watch, false), .setLevel(.eager), .next)
+        rig.send(.setAbout(.name, " Dana Whitfield "), .next)
         rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
         rig.clock.advance(by: OnboardingFlow.advanceAfterGrant)
         rig.send(.key(.character("x")), .key(.delete), .key(.tab), .next)
@@ -384,6 +480,7 @@ final class OnboardingFlowTests: XCTestCase {
         rig.send(.firstLookReply(try reply(asked.requestId, .nothing)), .next)
         XCTAssertEqual(rig.take(), [
             .saveChoices(roles: [.fill, .repeats, .words], level: .eager, onboarded: false),
+            .remember([TypedAbout(label: "Name", value: "Dana Whitfield")]),
             .filled,
             .askFirstLook(FirstLookRequest(requestId: asked.requestId, at: asked.at, families: ["fill", "loop", "routine"], level: .eager)),
             .saveChoices(roles: [.fill, .repeats, .words], level: .eager, onboarded: true),

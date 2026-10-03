@@ -18,6 +18,9 @@ final class CopyRulesTests: XCTestCase {
         "CaretHostCore/FillMachine.swift",
         "CaretHostCore/SurfaceMachine+Work.swift",
         "CaretHostCore/OnboardingFlow.swift",
+        "CaretHostCore/MemoryPage.swift",
+        "CaretHostCore/MemoryBook.swift",
+        "CaretHost/Memory/MemoryView.swift",
         "Caret/AppDelegate.swift",
     ]
 

@@ -132,7 +132,11 @@ struct ActivityListView: View {
     var animated = true
     var now = Date()
     var onMore: () -> Void = {}
+    /// "What Caret knows" at the foot of the list: the memory window.
+    var onKnows: () -> Void = {}
     var onAction: (String, RowAction) -> Void = { _, _ in }
+
+    static let knowsLink = "What Caret knows"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -177,6 +181,13 @@ struct ActivityListView: View {
                     .padding(.leading, 10)
                     .padding(.top, 6)
             }
+            // The way to what Caret knows and may do: quiet, under everything the list reports.
+            Rectangle().fill(Color(token: Tokens.border)).frame(height: 1).padding(.top, 10)
+            Button(Self.knowsLink, action: onKnows)
+                .buttonStyle(MoreButtonStyle())
+                .padding(.leading, 10)
+                .padding(.top, 6)
+                .accessibilityHint("Opens what Caret remembers and what it may do")
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)

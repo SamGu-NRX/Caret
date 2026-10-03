@@ -164,6 +164,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var progress: UInt64 = 0
         /// `firstLookReply` messages received.
         public var firstLookReplies: UInt64 = 0
+        /// `memoryReply` messages received.
+        public var memoryReplies: UInt64 = 0
         /// Lines written as `offerAccept` and `offerStop`, counted again in `resultsSent`.
         public var accepts: UInt64 = 0
         public var stops: UInt64 = 0
@@ -371,6 +373,10 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var showsInputMonitoring: Bool?
         public var advancingAfterGrant: Bool?
         public var tryIt: TryItInfo?
+        /// The `know` screen: how long each typed value is (never the value), and the problem
+        /// Continue showed.
+        public var about: [String: Int]?
+        public var aboutProblem: String?
         /// `idle`, `asking`, `found`, `nothing` or `failed`.
         public var firstLook: String?
         public var firstLookRequest: String?

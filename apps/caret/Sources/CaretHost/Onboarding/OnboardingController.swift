@@ -50,6 +50,8 @@ final class OnboardingController {
     var sendAccept: (OfferAccept) -> Bool = { _ in false }
     var sendStop: (OfferStop) -> Bool = { _ in false }
     var sendControl: (TaskControl) -> Bool = { _ in false }
+    /// The name and email typed on the `know` screen, for memory to keep.
+    var onRemember: ([TypedAbout]) -> Void = { _ in }
     /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
     var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
     /// What the window refused to do because it is hidden, for the debug state.
@@ -142,6 +144,7 @@ final class OnboardingController {
                 s.level = level
                 if onboarded { s.onboarded = true }
             }
+        case .remember(let items): onRemember(items)
         case .openSystemSettings(let pane):
             guard drawsWindow else { return suppressed.append("openSystemSettings.\(pane.rawValue)") }
             Self.openSettings(pane)
@@ -234,7 +237,10 @@ final class OnboardingController {
             MainActor.assumeIsolated {
                 guard let self, let flow = self.flow, event.window === self.window else { return event }
                 let state = flow.state
-                guard let mapped = Self.event(for: event, step: state.step, offerVisible: state.tryIt.offerVisible, firstLook: state.firstLookKeys) else { return event }
+                // Return that commits an input method's composition (Japanese, Chinese) in the name
+                // field belongs to the field, not to Continue.
+                let composing = (event.window?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
+                guard let mapped = Self.event(for: event, step: state.step, offerVisible: state.tryIt.offerVisible, firstLook: state.firstLookKeys, composing: composing) else { return event }
                 flow.send(mapped)
                 return nil
             }
@@ -244,7 +250,9 @@ final class OnboardingController {
     /// Tab is the staged field's only while its offer shows; otherwise it moves focus as usual. On
     /// the first look, Tab, ⌘1 to ⌘3, ⌘Z and Esc go to the offer and its line only while they
     /// take them (`FirstLookKeys`); otherwise they keep the window's meaning.
-    static func event(for event: NSEvent, step: OnboardingStep, offerVisible: Bool, firstLook: FirstLookKeys = .none) -> OnboardingFlow.Event? {
+    static func event(for event: NSEvent, step: OnboardingStep, offerVisible: Bool, firstLook: FirstLookKeys = .none, composing: Bool = false) -> OnboardingFlow.Event? {
+        // Keys that finish or cancel an input method's composition are the text field's.
+        if composing { return nil }
         let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if step == .firstLook, mods == .command {
             switch event.keyCode {
@@ -291,6 +299,7 @@ final class OnboardingController {
     ///   onboarding key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>
     ///   onboarding permissions on|off on|off   (Accessibility, Input Monitoring: the run's own grants)
     ///   onboarding reply <firstLookReply json>              onboarding look-again
+    ///   onboarding about name|email <text...>               onboarding skip
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -313,6 +322,10 @@ final class OnboardingController {
         case ("next", 1): flow.send(.next)
         case ("back", 1): flow.send(.back)
         case ("look-again", 1): flow.send(.lookAgain)
+        case ("skip", 1): flow.send(.skip)
+        case ("about", _) where rest.count >= 2:
+            guard let field = AboutField(rawValue: rest[1]) else { return #"{"error":"usage: onboarding about name|email <text>"}"# }
+            flow.send(.setAbout(field, rest.dropFirst(2).joined(separator: " ")))
         case ("role", 3):
             guard let role = CaretRole(rawValue: rest[1]), let on = onOff(rest[2]) else { return #"{"error":"usage: onboarding role fill|repeat|watch|words on|off"}"# }
             flow.send(.setRole(role, on))

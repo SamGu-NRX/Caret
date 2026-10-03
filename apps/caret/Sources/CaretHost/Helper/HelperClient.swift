@@ -114,6 +114,13 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? request.line())
     }
 
+    /// `memoryRequest`; the reply comes back to this connection only. False when the helper is not
+    /// connected: the memory window then shows what it knew last, read only.
+    @discardableResult
+    func send(_ request: HelperMemory.Request) -> Bool {
+        sendLine(try? request.line())
+    }
+
     /// The user's settings for the helper's gate (B10). Sent now when connected and the roles,
     /// level or pause changed, and again after every hello, so a helper that restarts hears them
     /// before anything else the host writes. Any thread.
@@ -247,6 +254,7 @@ final class HelperClient: @unchecked Sendable {
             case .offerWithdrawn: s.withdrawals &+= 1
             case .taskProgress: s.progress &+= 1
             case .firstLookReply: s.firstLookReplies &+= 1
+            case .memoryReply: s.memoryReplies &+= 1
             case .error(let e):
                 s.errors &+= 1
                 // The helper answers a message it cannot parse with this error; until its schema

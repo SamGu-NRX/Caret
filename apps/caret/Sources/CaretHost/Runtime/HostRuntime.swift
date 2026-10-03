@@ -104,6 +104,7 @@ public final class HostRuntime {
     private let tap: TapThread
     private let socket: DebugStateSocket
     private let onboarding: OnboardingController
+    private let memory: MemoryController
     private var engineTask: Task<Void, Never>?
 
     public init(configuration: Configuration = Configuration()) {
@@ -156,6 +157,8 @@ public final class HostRuntime {
         self.onboarding = onboarding
         let activity = ActivityCenter()
         self.activity = activity
+        let memory = MemoryController(testHooks: configuration.testHooks)
+        self.memory = memory
         let perch = PerchController(center: activity, drawsOnScreen: configuration.perchDrawsOnScreen)
         self.perch = perch
         activity.onChange = { perch.refresh() }
@@ -164,6 +167,8 @@ public final class HostRuntime {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     activity.receive(message)
+                    // Memory is the user's to see and change whatever the gate holds.
+                    if case .memoryReply(let reply) = message { return memory.receive(reply) }
                     // Pause and the roles the host can tell apart (`HostGate`); the perch still
                     // hears about work, which the user asked to see.
                     guard HostGate.allows(message, SettingsStore.shared.settings) else {
@@ -187,6 +192,7 @@ public final class HostRuntime {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     activity.linkChanged(up)
+                    memory.linkChanged(up)
                     if !up { surface.helperGone() }
                 }
             }
@@ -197,6 +203,10 @@ public final class HostRuntime {
         onboarding.sendAccept = { firstLookClient.send($0) }
         onboarding.sendStop = { firstLookClient.send($0) }
         onboarding.sendControl = { firstLookClient.send($0) }
+        let memoryClient = helper
+        memory.send = { memoryClient.send($0) }
+        onboarding.onRemember = { memory.remember($0) }
+        perch.onOpenMemory = { memory.open() }
         // The helper's gate holds the same roles, level and pause: sent after every hello and on
         // every change (B10). The client drops a change that leaves all three as they were.
         let gateClient = helper
@@ -296,7 +306,8 @@ public final class HostRuntime {
             surface: { MainActor.assumeIsolated { surface.debugInfo() } },
             perch: { words in MainActor.assumeIsolated { Self.perchCommand(words, perch: perch, activity: activity, pauser: pauser) } },
             settings: { words in MainActor.assumeIsolated { Self.settingsCommand(words) } },
-            onboarding: { words in MainActor.assumeIsolated { onboarding.command(words) } }
+            onboarding: { words in MainActor.assumeIsolated { onboarding.command(words) } },
+            memory: { words in MainActor.assumeIsolated { memory.command(words) } }
         )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
             Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods, hooks: hooks)
@@ -321,6 +332,9 @@ public final class HostRuntime {
 
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
+
+    /// The menu's What Caret Knows: the memory window.
+    public func openMemory() { memory.open() }
 
     public func start() throws {
         try socket.start()
@@ -359,6 +373,7 @@ public final class HostRuntime {
         surface.shutdown()
         perch.shutdown()
         onboarding.close()
+        memory.close()
         overlay.hide()
         arbiter.invalidate()
         // A paste in progress must finish and put the user's clipboard back before exit.
@@ -402,6 +417,8 @@ public final class HostRuntime {
         let settings: @Sendable ([String]) -> String
         /// `onboarding ...` (`OnboardingController.command`).
         let onboarding: @Sendable ([String]) -> String
+        /// `memory ...` (`MemoryController.command`).
+        let memory: @Sendable ([String]) -> String
     }
 
     /// `settings` reads the settings file, the choices and the gate they make; `settings set
@@ -513,6 +530,10 @@ public final class HostRuntime {
             let parts = command.split(separator: " ", maxSplits: 2).map(String.init)
             let args = parts.count == 3 && parts[1] == "reply" ? parts : words
             let reply = DispatchQueue.main.sync { hooks.onboarding(args) }
+            return Data((reply + "\n").utf8)
+        case "memory":
+            // `memory draft <key> <text>` and `memory remember <label> <value>` keep their spaces.
+            let reply = DispatchQueue.main.sync { hooks.memory(words) }
             return Data((reply + "\n").utf8)
         case "perch", "activity", "control", "click", "perch-avoid":
             let reply = DispatchQueue.main.sync { hooks.perch(words) }

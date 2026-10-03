@@ -1,0 +1,119 @@
+import CaretScreenCore
+import XCTest
+@testable import CaretHostCore
+
+/// The memory protocol as the host reads and writes it, against `Fixtures/memory.ndjson` (the
+/// helper's shapes, plus the host's `add` op and permission `uses`), and the permission table
+/// against the helper's own source.
+final class HelperMemoryTests: XCTestCase {
+    static let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/memory.ndjson")
+
+    static func lines() throws -> [Data] {
+        try String(contentsOf: fixture, encoding: .utf8).split(separator: "\n").map { Data($0.utf8) }
+    }
+
+    static func reply(_ index: Int) throws -> HelperMemory.Reply {
+        try HelperMemory.Reply.decode(lines()[index])
+    }
+
+    private func json(_ data: Data) throws -> NSDictionary {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary)
+    }
+
+    func testTheListReplyReadsEveryKind() throws {
+        let reply = try Self.reply(1)
+        XCTAssertNil(reply.error)
+        XCTAssertEqual(reply.unreadable, [])
+        XCTAssertEqual(reply.entries.count, 13)
+        XCTAssertEqual(reply.entries.map(\.kind.rawValue).filter { $0 != "permission" }, ["about", "people", "preference", "preference", "preference", "routine"])
+        let about = try XCTUnwrap(reply.entries[0].about)
+        XCTAssertEqual(about, HelperMemory.About(label: "Guest", value: "Marcus Lowe (ops)", source: .edit))
+        XCTAssertEqual(reply.entries[0].evidence, HelperMemory.Evidence(count: 1, lastSeen: 1_790_000_060_000, app: "Mail Fixture"))
+        XCTAssertEqual(reply.entries[1].status, .paused)
+        XCTAssertEqual(reply.entries[2].fields, .preference(.format(template: "###-###-####")))
+        XCTAssertEqual(reply.entries[3].fields, .preference(.useInstead(field: "Guest", aboutId: "about-1a2b3c4d")))
+        XCTAssertEqual(reply.entries[4].fields, .preference(.dontOffer(offerKind: "routine", appName: "Mail Fixture")))
+        guard case .routine(let routine) = reply.entries[5].fields else { return XCTFail("not a routine") }
+        XCTAssertNil(routine.name)
+        XCTAssertEqual(routine.silent.hits, 0)
+        let permissions = reply.entries.compactMap(\.permission)
+        XCTAssertEqual(permissions.map(\.action), HelperMemory.ActionType.allCases)
+        XCTAssertEqual(reply.entries.first { $0.permission?.action == .writeHere }?.uses?.count, 2)
+        XCTAssertNil(reply.entries.first { $0.permission?.action == .outbound }?.uses, "no uses key: not reported")
+    }
+
+    func testRequestsMatchTheFixtureLines() throws {
+        let lines = try Self.lines()
+        let requests: [(Int, HelperMemory.Request)] = [
+            (0, .init(requestId: "host-memory-1", op: .list)),
+            (2, .init(requestId: "host-memory-2", op: .edit, id: "about-1a2b3c4d", fields: ["value": .text("Marcus Lowe, Operations")])),
+            (4, .init(requestId: "host-memory-3", op: .add, kind: .about, fields: ["label": .text("Name"), "value": .text("Dana Whitfield"), "source": .text("typed")])),
+            (6, .init(requestId: "host-memory-4", op: .edit, id: "permission-writeHere", fields: ["rule": .text("act")])),
+        ]
+        for (index, request) in requests {
+            XCTAssertEqual(try json(request.line()), try json(lines[index]), "line \(index)")
+        }
+    }
+
+    func testAClearedRoutineNameIsSentAsNull() throws {
+        let r = HelperMemory.Request(requestId: "r", op: .edit, id: "routine-1", fields: ["name": .null])
+        let fields = try XCTUnwrap(try json(r.line())["fields"] as? NSDictionary)
+        XCTAssertEqual(fields["name"] as? NSNull, NSNull())
+    }
+
+    func testAnEntryThisHostCannotReadIsCountedAndTheRestApply() throws {
+        let line = #"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[{"kind":"habit","id":"h-1","status":"active","says":"x","evidence":{"count":1,"lastSeen":1,"app":null},"fields":{}},{"kind":"preference","id":"p-1","status":"active","says":"y","evidence":{"count":1,"lastSeen":1,"app":null},"fields":{"rule":"shout","x":1}},{"kind":"about","id":"a-1","status":"active","says":"Name: Dana (you typed this)","evidence":{"count":1,"lastSeen":1,"app":null},"fields":{"label":"Name","value":"Dana","source":"typed"}}]}"#
+        let reply = try HelperMemory.Reply.decode(Data(line.utf8))
+        XCTAssertEqual(reply.entries.map(\.id), ["a-1"])
+        XCTAssertEqual(reply.unreadable.count, 2)
+    }
+
+    func testUsesOnAnythingButAPermissionIsRefused() throws {
+        let line = #"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[{"kind":"about","id":"a-1","status":"active","says":"x","evidence":{"count":1,"lastSeen":1,"app":null},"fields":{"label":"Name","value":"Dana","source":"typed"},"uses":[]}]}"#
+        XCTAssertEqual(try HelperMemory.Reply.decode(Data(line.utf8)).unreadable.count, 1)
+    }
+
+    func testTheEnvelopeIsStrict() {
+        XCTAssertThrowsError(try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":2,"requestId":"r","error":null,"entries":[]}"#.utf8)))
+        XCTAssertThrowsError(try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","entries":[]}"#.utf8)), "error must be present, null on success")
+    }
+
+    func testTheInboundDecoderRoutesMemoryReplies() throws {
+        let line = try Self.lines()[8]
+        guard case .memoryReply(let reply) = try HelperInbound.decode(line) else { return XCTFail("not routed") }
+        XCTAssertEqual(reply.error, "sensitive can be handoff, not act")
+        XCTAssertEqual(try HelperInbound.decode(Self.lines()[0]).typeName, "memoryRequest", "our own request echoed is not for us")
+    }
+
+    // MARK: - The permission table
+
+    /// The helper's `PERMISSIONS` table, read from its source: each action's `allowed` list must be
+    /// the host's, so the list never offers a rule the helper refuses or hides one it allows.
+    func testThePermissionTableMatchesTheHelpers() throws {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../../helper/src/patterns/memory.ts").standardized
+        let text = try String(contentsOf: source, encoding: .utf8)
+        let pattern = try NSRegularExpression(pattern: #"^\s*(\w+): \{ rule: "(\w+)", allowed: \[([^\]]*)\]"#, options: .anchorsMatchLines)
+        var seen: Set<HelperMemory.ActionType> = []
+        for m in pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            let name = String(text[Range(m.range(at: 1), in: text)!])
+            let allowed = String(text[Range(m.range(at: 3), in: text)!])
+                .split(separator: ",").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \"")) }
+            let action = try XCTUnwrap(HelperMemory.ActionType(rawValue: name), name)
+            seen.insert(action)
+            XCTAssertEqual(Set(PermissionPolicy.allowed(action).map(\.rawValue)), Set(allowed), name)
+        }
+        XCTAssertEqual(seen, Set(HelperMemory.ActionType.allCases), "every action type found in memory.ts")
+    }
+
+    func testSendingDeletingMoneyAndPasswordsNeverGoPastAskFirst() {
+        for action in [HelperMemory.ActionType.outbound, .destructive, .sensitive] {
+            XCTAssertFalse(PermissionPolicy.permits(action, .act), action.rawValue)
+            XCTAssertFalse(PermissionPolicy.permits(action, .actIfApproved), action.rawValue)
+            XCTAssertTrue(PermissionPolicy.permits(action, .handoff), action.rawValue)
+        }
+        XCTAssertTrue(PermissionPolicy.permits(.outbound, .ask))
+        XCTAssertFalse(PermissionPolicy.permits(.sensitive, .ask), "money stays handed off")
+        XCTAssertEqual(PermissionPolicy.allowed(.writeHere), [.ask, .act], "least autonomous first")
+    }
+}

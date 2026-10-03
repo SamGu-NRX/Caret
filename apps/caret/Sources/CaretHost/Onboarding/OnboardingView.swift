@@ -2,7 +2,7 @@ import CaretHostCore
 import CaretScreenCore
 import SwiftUI
 
-/// Onboarding's five screens, drawn from `OnboardingFlow.State` (`SURFACES.md` section 7, with
+/// Onboarding's six screens, drawn from `OnboardingFlow.State` (`SURFACES.md` section 7, with
 /// the A7 brief's order and the Fable plan's copy fixes). Every control is drawn here in SwiftUI,
 /// not taken from AppKit, so the off-screen renders show exactly what the window shows.
 ///
@@ -51,13 +51,15 @@ struct OnboardingView: View {
         switch state.step {
         case .welcome: WelcomeScreen(character: character, animated: animated)
         case .work: WorkScreen(state: state, send: send)
+        case .know: KnowScreen(state: state, send: send)
         case .permissions: PermissionsScreen(state: state, animated: animated, send: send)
         case .tryIt: TryItScreen(state: state, character: character, animated: animated)
         case .firstLook: FirstLookScreen(state: state, character: character, animated: animated, send: send)
         }
     }
 
-    /// Back on the left from the second screen, five dots in the middle, the primary on the right.
+    /// Back on the left from the second screen, a dot per screen in the middle, the primary on the
+    /// right, with Skip beside it on the screen that can be skipped.
     /// Return and Esc are the window's (`OnboardingController`), so they work from anywhere.
     private var bar: some View {
         ZStack {
@@ -67,6 +69,9 @@ struct OnboardingView: View {
                     Button("Back") { send(.back) }.buttonStyle(OnboardingButtonStyle(kind: .secondary))
                 }
                 Spacer()
+                if state.step == .know {
+                    Button("Skip") { send(.skip) }.buttonStyle(OnboardingButtonStyle(kind: .secondary))
+                }
                 Button(state.step == .firstLook ? "Done" : "Continue") { send(.next) }
                     .buttonStyle(OnboardingButtonStyle(kind: .primary))
                     .disabled(!state.canContinue)
@@ -360,7 +365,72 @@ struct LevelPicker: View {
     }
 }
 
-// MARK: - 3. Permissions
+// MARK: - 3. What Caret knows so far
+
+/// The Fable plan's minute two: the first view of memory, typed by hand (no Contacts in A11).
+/// Continue hands what was typed to memory; Skip keeps nothing. The wording is pinned by
+/// `OnboardingHostTests.testTheKnowScreensWordingIsPinned`.
+struct KnowScreen: View {
+    static let title = "What Caret knows so far."
+    static let detail = "Type your name and email, and Caret can fill them in for you."
+    static let footnote = "Caret keeps these on this Mac. Change or remove them any time in What Caret Knows, in the menu bar."
+    static let namePlaceholder = "Your name"
+    static let emailPlaceholder = "you@example.com"
+
+    var state: OnboardingFlow.State
+    var send: (OnboardingFlow.Event) -> Void
+
+    /// Where focus is: the email after Continue found a problem with it, else the name until it
+    /// holds something. On screen the problem moves focus there; off screen it draws the ring.
+    private var focus: AboutField {
+        if state.about.showsProblem, state.about.problem != nil, !state.about.email.isEmpty { return .email }
+        return state.about.name.isEmpty ? .name : .email
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScreenTitle(title: Self.title, detail: Self.detail)
+            OnboardingCard {
+                VStack(spacing: 0) {
+                    row(.name, placeholder: Self.namePlaceholder)
+                    Rectangle().fill(Color(token: Tokens.border)).frame(height: 1).padding(.leading, 14)
+                    row(.email, placeholder: Self.emailPlaceholder)
+                }
+            }
+            .padding(.top, 18)
+            if state.about.showsProblem, let problem = state.about.problem {
+                Text(problem)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(token: Tokens.ink))
+                    .padding(.top, 8)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+            Text(Self.footnote)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(token: Tokens.secondary))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 14)
+        }
+        .padding(.horizontal, 32)
+        .padding(.top, 30)
+    }
+
+    private func row(_ field: AboutField, placeholder: String) -> some View {
+        HStack(spacing: 12) {
+            FieldLabel(text: field.label).frame(width: 44, alignment: .leading)
+            EntryField(
+                title: field.label, text: state.about[field], placeholder: placeholder,
+                autofocus: field == .name, showsFocus: focus == field,
+                focusNow: field == .email && state.about.showsProblem,
+                onChange: { send(.setAbout(field, $0)) }
+            )
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+}
+
+// MARK: - 4. Permissions
 
 struct PermissionsScreen: View {
     /// What leaves the Mac, as B10's privacy test bounds it: field descriptors and candidate
@@ -469,7 +539,7 @@ struct PermissionRow: View {
     }
 }
 
-// MARK: - 4. Try it
+// MARK: - 5. Try it
 
 /// A sample source window Caret draws itself (left) and a form whose Amount field is offered the
 /// value from it (right). The figure in the source line looks left, at the invoice: where it looks
@@ -657,7 +727,7 @@ struct SampleField<Content: View>: View {
     }
 }
 
-// MARK: - 5. First look
+// MARK: - 6. First look
 
 struct FirstLookScreen: View {
     var state: OnboardingFlow.State

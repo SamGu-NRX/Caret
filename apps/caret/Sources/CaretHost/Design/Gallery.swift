@@ -25,6 +25,7 @@ enum Gallery {
         appearance.performAsCurrentDrawingAppearance {
             let content = view
                 .environment(\.drawsOwnSurface, true)
+                .environment(\.rendersOffscreen, true)
                 .environment(\.colorScheme, dark ? .dark : .light)
                 .padding(padding)
                 .background(canvas(dark: dark))
@@ -170,7 +171,7 @@ extension Gallery {
             for event in events { flow.send(event) }
             return flow.state
         }
-        let toTryIt: [OnboardingFlow.Event] = [.next, .next, .next]
+        let toTryIt: [OnboardingFlow.Event] = [.next, .next, .next, .next]
         let toFirstLook = toTryIt + [.key(.tab), .next]
         // The flow's first request, with its default token.
         let found = FirstLookReply(requestId: "first-look-1-1", at: 0, outcome: .found, found: firstLookFound)
@@ -179,8 +180,12 @@ extension Gallery {
             ("welcome", flow([])),
             // The screen as it opens: every role on, watch included, and Balanced.
             ("work", flow([.next])),
-            ("permissions-waiting", flow(ax: false, input: false, [.next, .next])),
-            ("permissions-on", flow(ax: false, input: false, [.next, .next, .permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true))])),
+            // What Caret knows so far: as it opens, typed in, and an email Continue would not keep.
+            ("know", flow([.next, .next])),
+            ("know-typed", flow([.next, .next, .setAbout(.name, "Dana Whitfield"), .setAbout(.email, "dana.whitfield@example.com")])),
+            ("know-problem", flow([.next, .next, .setAbout(.name, "Dana Whitfield"), .setAbout(.email, "dana.whitfield@example"), .next])),
+            ("permissions-waiting", flow(ax: false, input: false, [.next, .next, .next])),
+            ("permissions-on", flow(ax: false, input: false, [.next, .next, .next, .permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true))])),
             ("try-it", flow(toTryIt)),
             ("try-it-declined", flow(toTryIt + [.key(.character("9"))])),
             ("try-it-filled", flow(toTryIt + [.key(.tab)])),
@@ -530,5 +535,83 @@ struct PerchScene: View {
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: Tokens.srgb(dark ? 0x2E2F33 : 0xFBFBFC))))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color(token: Tokens.border), lineWidth: 1))
         }
+    }
+}
+
+// MARK: - What Caret knows
+
+extension Gallery {
+    /// The memory window over synthetic entries: the helper's shapes as the contract fixture has
+    /// them (`Tests/CaretHostCoreTests/Fixtures/memory.ndjson`), built here so the app target does
+    /// not read test files. 2026-09-21 09:16 CDT for the evidence lines.
+    static let memoryNow = Date(timeIntervalSince1970: 1_790_000_160)
+
+    static func memoryEntries() -> [HelperMemory.Entry] {
+        let t: Int64 = 1_790_000_000_000
+        func ev(_ count: Int, _ dt: Int64, _ app: String?) -> HelperMemory.Evidence { HelperMemory.Evidence(count: count, lastSeen: t + dt, app: app) }
+        func routine() -> HelperMemory.Fields {
+            .routine(.init(srcApps: ["Caret Fixture"], dstApp: "Mail Fixture", steps: 3, name: nil, silent: .init(hits: 1, misses: 0)))
+        }
+        var entries: [HelperMemory.Entry] = [
+            .init(id: "about-1", status: .active, says: "Guest: Marcus Lowe (ops) (from your edit)", evidence: ev(1, 60_000, "Mail Fixture"),
+                  fields: .about(.init(label: "Guest", value: "Marcus Lowe (ops)", source: .edit))),
+            .init(id: "people-1", status: .paused, says: "\"Dana\" in Mail Fixture usually means Dana Reyes (chosen 3 times)", evidence: ev(3, 30_000, "Mail Fixture"),
+                  fields: .people(.init(alias: "Dana", name: "Dana Reyes"))),
+            .init(id: "preference-1", status: .active, says: "Phone numbers go in as 512-555-0100 (you changed this 2 times)", evidence: ev(2, 20_000, "Caret Fixture"),
+                  fields: .preference(.format(template: "###-###-####"))),
+            .init(id: "preference-2", status: .active, says: "Guest gets your Guest, Marcus Lowe (ops) (you changed this once)", evidence: ev(1, 60_000, "Mail Fixture"),
+                  fields: .preference(.useInstead(field: "Guest", aboutId: "about-1"))),
+            .init(id: "routine-1", status: .learning, says: "3 values from Caret Fixture to Mail Fixture (seen 2 times; learning, 1 of 3 silent predictions right)",
+                  evidence: ev(2, 90_000, "Mail Fixture"), fields: routine()),
+        ]
+        let starts: [(HelperMemory.ActionType, HelperMemory.Rule, Bool)] = [
+            (.read, .act, true), (.show, .act, true), (.writeHere, .ask, false), (.writeElsewhere, .ask, false),
+            (.outbound, .handoff, false), (.destructive, .handoff, false), (.sensitive, .handoff, true),
+        ]
+        for (action, rule, fixed) in starts {
+            let uses: [HelperMemory.Use]? = action == .writeHere
+                ? [.init(at: t + 120_000, says: "Filled Guest in Mail Fixture", app: "Mail Fixture"), .init(at: t + 60_000, says: "Filled Email in Caret Fixture", app: "Caret Fixture")]
+                : nil
+            entries.append(.init(id: "permission-\(action.rawValue)", status: .active, says: "", evidence: ev(0, 0, nil),
+                                 fields: .permission(.init(action: action, rule: rule, fixed: fixed)), uses: uses))
+        }
+        return entries
+    }
+
+    /// A book in each state the window shows, reached by the calls the window makes.
+    static func memoryState(_ setup: (MemoryBook) -> Void = { _ in }, connected: Bool = true, entries: [HelperMemory.Entry]? = nil) -> MemoryBook.State {
+        let book = MemoryBook(clock: StillClock())
+        var asked: [HelperMemory.Request] = []
+        book.send = { asked.append($0); return true }
+        book.linkChanged(true)
+        book.receive(HelperMemory.Reply(requestId: asked.last!.requestId, error: nil, entries: entries ?? memoryEntries()))
+        setup(book)
+        if !connected { book.linkChanged(false) }
+        return book.state
+    }
+
+    static func memory(_ character: FigureCharacter = .pebble) -> [Item] {
+        func window(_ state: MemoryBook.State, _ tab: MemoryView.Tab = .memory) -> AnyView {
+            AnyView(MemoryView(state: state, tab: tab, character: character, animated: false, now: memoryNow)
+                .environment(\.timeZone, TimeZone(identifier: "America/Chicago")!)
+                .environment(\.locale, Locale(identifier: "en_US")))
+        }
+        return [
+            Item(name: "memory-list", view: window(memoryState())),
+            Item(name: "memory-edit", view: window(memoryState { book in
+                book.beginEdit("about-1")
+                book.updateDraft("value", "Marcus Lowe, Operations")
+            })),
+            Item(name: "memory-edit-problem", view: window(memoryState { book in
+                book.beginEdit("preference-1")
+                book.updateDraft("template", "512-###-####")
+                book.saveEdit()
+            })),
+            Item(name: "memory-forget", view: window(memoryState { $0.askToForget("routine-1") })),
+            Item(name: "memory-typed-offline", view: window(memoryState({ $0.remember([TypedAbout(label: "Name", value: "Dana Whitfield")]) }, connected: false))),
+            Item(name: "memory-empty", view: window(memoryState(entries: []))),
+            Item(name: "memory-permissions", view: window(memoryState(), .permissions)),
+            Item(name: "memory-permissions-refused", view: window(memoryState { $0.setRule(.outbound, .act) }, .permissions)),
+        ]
     }
 }

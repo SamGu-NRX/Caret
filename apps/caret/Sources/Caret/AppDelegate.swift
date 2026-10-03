@@ -122,6 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runtime.toggleActivityList()
     }
 
+    @objc private func showMemory(_ sender: NSMenuItem) {
+        runtime.openMemory()
+    }
+
     @objc private func togglePerch(_ sender: NSMenuItem) {
         runtime.perchHidden.toggle()
     }
@@ -145,6 +149,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let activityItem = NSMenuItem(title: "Activity", action: #selector(showActivity(_:)), keyEquivalent: "")
         activityItem.target = self
         menu.addItem(activityItem)
+        // What Caret remembers and what it may do, to see and change.
+        let memoryItem = NSMenuItem(title: "What Caret Knows…", action: #selector(showMemory(_:)), keyEquivalent: "")
+        memoryItem.target = self
+        menu.addItem(memoryItem)
         // The perch can be hidden; work still shows in Activity and the glyph still tints.
         perchItem.action = #selector(togglePerch(_:))
         perchItem.target = self

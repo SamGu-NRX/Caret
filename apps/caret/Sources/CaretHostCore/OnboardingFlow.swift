@@ -1,13 +1,74 @@
 import CaretScreenCore
 import Foundation
 
-/// The five screens of onboarding, in order (`SURFACES.md` section 7, reordered by the A7 brief:
+/// The six screens of onboarding, in order (`SURFACES.md` section 7, reordered by the A7 brief:
 /// how you want to work comes before permissions, so the permission screen can say what the
-/// chosen help needs).
+/// chosen help needs). `know` is the Fable plan's minute two, "What I know so far" (A11): the
+/// first view of memory, typed by hand.
 public enum OnboardingStep: String, CaseIterable, Codable, Sendable {
-    case welcome, work, permissions, tryIt, firstLook
+    case welcome, work, know, permissions, tryIt, firstLook
 
     public var index: Int { Self.allCases.firstIndex(of: self)! }
+}
+
+/// The two values onboarding asks for by hand (no Contacts in A11).
+public enum AboutField: String, CaseIterable, Codable, Sendable {
+    case name, email
+
+    /// The About-you label the helper stores it under.
+    public var label: String {
+        switch self {
+        case .name: return "Name"
+        case .email: return "Email"
+        }
+    }
+}
+
+/// What the user typed on the `know` screen.
+public struct AboutDraft: Equatable, Sendable {
+    public var name = ""
+    public var email = ""
+    /// Continue was pressed with a problem; the problem shows until the next keystroke.
+    public var showsProblem = false
+    /// What Continue last handed to memory, by label, so Back and Continue again sends only a
+    /// change.
+    public var kept: [String: String] = [:]
+
+    public init() {}
+
+    public subscript(field: AboutField) -> String {
+        get { field == .name ? name : email }
+        set { if field == .name { name = newValue } else { email = newValue } }
+    }
+
+    /// Why Continue cannot keep these, in words; nil when it can. Empty is fine: the step can be
+    /// skipped. Lengths follow the helper's About value limit (500).
+    public var problem: String? {
+        let n = name.trimmed, e = email.trimmed
+        if n.utf16.count > 500 { return "That name is too long." }
+        if !e.isEmpty && !Self.looksLikeEmail(e) { return "That email looks incomplete." }
+        if e.utf16.count > 500 { return "That email is too long." }
+        return nil
+    }
+
+    /// Something@something.something, no spaces. A check for typos, not a validator.
+    static func looksLikeEmail(_ s: String) -> Bool {
+        guard !s.contains(where: \.isWhitespace) else { return false }
+        let parts = s.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty else { return false }
+        let domain = parts[1]
+        guard let dot = domain.lastIndex(of: "."), dot != domain.startIndex, domain.index(after: dot) != domain.endIndex else { return false }
+        return true
+    }
+
+    /// The values Continue would keep that differ from what was kept already.
+    public var toKeep: [TypedAbout] {
+        AboutField.allCases.compactMap { f in
+            let v = self[f].trimmed
+            guard !v.isEmpty, kept[f.label] != v else { return nil }
+            return TypedAbout(label: f.label, value: v)
+        }
+    }
 }
 
 /// The grants onboarding asks for, as the host reads them.
@@ -98,6 +159,7 @@ public final class OnboardingFlow {
         public var showsInputMonitoring = false
         /// A grant appeared and every shown row is on: the screen moves on by itself shortly.
         public var advancingAfterGrant = false
+        public var about = AboutDraft()
         public var tryIt = TryIt()
         public var firstLook: FirstLookState = .idle
         /// The first look's offer, taken: its work and result (`FirstLookRun`).
@@ -108,6 +170,9 @@ public final class OnboardingFlow {
             switch step {
             case .welcome: return true
             case .work: return !roles.isEmpty
+            // A problem is shown when Continue is pressed, not by greying the button while the
+            // user is still typing.
+            case .know: return true
             case .permissions: return permissions.accessibility
             case .tryIt: return tryIt.completed
             case .firstLook: return true
@@ -125,6 +190,10 @@ public final class OnboardingFlow {
         case toggleRole(CaretRole)
         case setRole(CaretRole, Bool)
         case setLevel(CaretLevel)
+        /// A keystroke in the name or email field: the field's whole text.
+        case setAbout(AboutField, String)
+        /// Skip on the `know` screen: what was typed is not kept.
+        case skip
         /// The host read the grants again (it polls while the window is up).
         case permissions(OnboardingPermissions)
         case openSystemSettings(Pane)
@@ -151,6 +220,8 @@ public final class OnboardingFlow {
     public enum Command: Equatable, Sendable {
         /// Write the choices to settings (`SettingsStore`, source `onboarding`).
         case saveChoices(roles: Set<CaretRole>, level: CaretLevel, onboarded: Bool)
+        /// Hand typed values to memory (`MemoryBook.remember`), which keeps them through the helper.
+        case remember([TypedAbout])
         case openSystemSettings(Pane)
         case askFirstLook(FirstLookRequest)
         /// Take the first look's offer: the helper runs it as the task named by its key.
@@ -223,6 +294,16 @@ public final class OnboardingFlow {
         case .setLevel(let level):
             guard state.step == .work else { return }
             state.level = level
+        case .setAbout(let field, let text):
+            guard state.step == .know else { return }
+            state.about[field] = text
+            state.about.showsProblem = false
+        case .skip:
+            guard state.step == .know else { return }
+            state.about.name = ""
+            state.about.email = ""
+            state.about.showsProblem = false
+            go(to: .permissions, .forward)
         case .permissions(let p): permissionsChanged(p)
         case .openSystemSettings(let pane):
             guard state.step == .permissions else { return }
@@ -231,7 +312,7 @@ public final class OnboardingFlow {
             switch state.step {
             case .tryIt: tryItKey(key)
             case .firstLook: firstLookKey(key)
-            case .welcome, .work, .permissions: return
+            case .welcome, .work, .know, .permissions: return
             }
         case .firstLookReply(let reply): firstLookReplied(reply)
         case .taskProgress(let progress): firstLookProgress(progress)
@@ -256,6 +337,17 @@ public final class OnboardingFlow {
         case .work:
             // The choices count from here, even if onboarding stops before its end.
             output(.saveChoices(roles: state.roles, level: state.level, onboarded: false))
+            go(to: .know, .forward)
+        case .know:
+            guard state.about.problem == nil else {
+                state.about.showsProblem = true
+                return
+            }
+            let keep = state.about.toKeep
+            if !keep.isEmpty {
+                for item in keep { state.about.kept[item.label] = item.value }
+                output(.remember(keep))
+            }
             go(to: .permissions, .forward)
         case .permissions: go(to: .tryIt, .forward)
         case .tryIt: go(to: .firstLook, .forward)
@@ -267,7 +359,8 @@ public final class OnboardingFlow {
         switch state.step {
         case .welcome: return
         case .work: go(to: .welcome, .back)
-        case .permissions: go(to: .work, .back)
+        case .know: go(to: .work, .back)
+        case .permissions: go(to: .know, .back)
         case .tryIt: go(to: .permissions, .back)
         case .firstLook: go(to: .tryIt, .back)
         }
@@ -282,7 +375,7 @@ public final class OnboardingFlow {
             state.showsInputMonitoring = state.showsInputMonitoring || !state.permissions.inputMonitoring
         case .firstLook:
             askFirstLook()
-        case .welcome, .work, .tryIt:
+        case .welcome, .work, .know, .tryIt:
             break
         }
     }
@@ -302,7 +395,7 @@ public final class OnboardingFlow {
             state.firstLook = .idle
             endRunTimers()
             state.firstLookRun = nil
-        case .welcome, .work, .tryIt:
+        case .welcome, .work, .know, .tryIt:
             break
         }
     }
@@ -431,6 +524,8 @@ public final class OnboardingFlow {
             level: state.level.rawValue, canContinue: state.canContinue, finished: state.finished
         )
         info.permissions = state.permissions
+        info.about = Dictionary(uniqueKeysWithValues: AboutField.allCases.map { ($0.rawValue, state.about[$0].utf16.count) })
+        info.aboutProblem = state.about.showsProblem ? state.about.problem : nil
         info.showsInputMonitoring = state.showsInputMonitoring
         info.advancingAfterGrant = state.advancingAfterGrant ? true : nil
         info.tryIt = DebugState.OnboardingInfo.TryItInfo(
