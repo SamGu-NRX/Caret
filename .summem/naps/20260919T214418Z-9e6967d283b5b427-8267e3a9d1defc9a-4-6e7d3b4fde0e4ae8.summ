@@ -1,0 +1,1 @@
+v1 keys and skills: vercel-api-gateway-key is a bare token file; make install needs packages/keytype; Debug last-N skips Caret Debug, inference last_n_windows does not; Translate reads a selection or the clipboard, never the caret line.
