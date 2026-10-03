@@ -21,10 +21,11 @@ enum MemoryAction: Equatable {
 /// own window, painted like onboarding (Window ground, white cards), drawn from
 /// `MemoryBook.State` through `MemoryPage`.
 ///
-/// Motion, all of it state indication: an edit opens and closes with a 160 ms ease-out height and
-/// fade, a confirmed change washes its row in Carrot once (400 ms), a forgotten row fades out in
-/// 120 ms. Switching tabs and picking a rule do not animate: they are choices made by click or
-/// key, not journeys. Reduce Motion keeps the fades and drops the height change.
+/// Motion, all of it state indication: an edit opens with a 160 ms ease-out height and fade and
+/// closes at once (Return and Esc close it), a confirmed change washes its row in Carrot once
+/// (400 ms, the try-it field's wash), a forgotten row fades out in 120 ms. Switching tabs and
+/// picking a rule do not animate: they are choices, not journeys. Reduce Motion keeps the fades
+/// and the wash and drops the height change.
 struct MemoryView: View {
     enum Tab: String, CaseIterable, Codable { case memory, permissions }
 
@@ -297,7 +298,9 @@ struct MemoryRowView: View {
                 Rectangle().fill(Color(token: Tokens.carrotWash)).opacity(wash)
             }
         }
-        .animation(animated ? Motion.curve(Motion.easeOut, 0.16) : nil, value: editor == nil)
+        // Opening animates (a click on Edit); closing is instant, since Return and Esc close it and
+        // a key's result should not wait on motion. Reduce Motion drops the height change too.
+        .animation(animated && !reduceMotion && editor != nil ? Motion.curve(Motion.easeOut, 0.16) : nil, value: editor == nil)
         .accessibilityElement(children: .contain)
         .onChange(of: washed) { _, now in
             guard now else { return }

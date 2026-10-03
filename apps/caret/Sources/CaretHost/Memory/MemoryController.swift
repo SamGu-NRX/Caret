@@ -7,8 +7,8 @@ import SwiftUI
 /// activity list's "What Caret knows" and from the menu bar. Unlike the activity list, this window
 /// becomes key: editing a value takes typing.
 ///
-/// The debug socket drives the same book without a window (`memory ...`), so a test run never puts
-/// one up.
+/// The debug socket drives the same book without a window (`memory ...`); only the `memory show`
+/// test hook puts the window up, for a foreground walk with real keys.
 @MainActor
 final class MemoryController {
     final class Model: ObservableObject {
@@ -144,6 +144,7 @@ final class MemoryController {
     ///   memory rule <action> <rule>               pick a rule on the permissions list
     ///   memory remember <label> <value...>        what onboarding's Continue hands over
     ///   memory remove <typedId>                   drop a typed value not kept yet
+    ///   memory show | memory close                the window itself, as the menu opens it (foreground runs only)
     func command(_ words: [String]) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -182,6 +183,8 @@ final class MemoryController {
         case ("remember", _) where rest.count >= 3:
             book.remember([TypedAbout(label: rest[1], value: text)])
         case ("remove", 2): book.dropTyped(rest[1])
+        case ("show", 1): open()
+        case ("close", 1): close()
         default:
             return #"{"error":"unknown memory command"}"#
         }

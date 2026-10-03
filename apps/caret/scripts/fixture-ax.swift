@@ -13,7 +13,7 @@
 //        fixture-ax close <pid> <window title>                  press the window's close button
 //        fixture-ax frontmost                 print the frontmost pid (NSWorkspace and lsappinfo)
 //        fixture-ax activate <pid>            ask macOS to activate the fixture (may be refused)
-//        fixture-ax key-if-front <pid> tab|space|return|cmd-z|char <c>
+//        fixture-ax key-if-front <pid> tab|space|return|esc|cmd-z|cmd-a|char <c>
 //        fixture-ax windows-at <x> <y>       the on-screen windows over a global point, front to
 //            back (owner, pid, layer, alpha, bounds), as the host's visibility gate reads them
 //        fixture-ax hand-back <pid>          activate <pid>, the app that was frontmost before the
@@ -263,15 +263,17 @@ case "key-if-front" where args.count == 3 || args.count == 4:
     // One real HID key, posted only if LaunchServices says the fixture is frontmost, checked by
     // two independent routes immediately before the post.
     let pid = requirePID(args[1])
-    let codes: [String: (CGKeyCode, String?)] = ["tab": (48, "\t"), "space": (49, " "), "cmd-z": (6, "z"), "return": (36, "\r")]
-    let flags: CGEventFlags = args[2] == "cmd-z" ? .maskCommand : []
+    let codes: [String: (CGKeyCode, String?)] = [
+        "tab": (48, "\t"), "space": (49, " "), "cmd-z": (6, "z"), "cmd-a": (0, "a"), "return": (36, "\r"), "esc": (53, "\u{1b}"),
+    ]
+    let flags: CGEventFlags = args[2].hasPrefix("cmd-") ? .maskCommand : []
     var key: (CGKeyCode, String?)
     if let known = codes[args[2]] {
         key = known
     } else if args[2] == "char", args.count == 4, args[3].count == 1 {
         key = (0, args[3])
     } else {
-        fail("key must be tab, space, return, cmd-z or char <c>")
+        fail("key must be tab, space, return, esc, cmd-z, cmd-a or char <c>")
     }
     guard isFront(pid) else { emit(["posted": false, "reason": "notFrontmost"]); exit(3) }
     let source = CGEventSource(stateID: .hidSystemState)
