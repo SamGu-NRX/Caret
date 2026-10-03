@@ -212,7 +212,9 @@ final class SurfaceCoordinator {
     }
 
     private func present(_ incoming: Incoming) -> String {
-        guard let pid = incoming.pid, policy.allowsLive(pid: pid) else {
+        // A headless host reads and writes nothing, so its pids need not be live processes: socket
+        // runs use the recordings' synthetic pids.
+        guard let pid = incoming.pid, headless ? policy.allows(pid: pid, bundleID: nil) : policy.allowsLive(pid: pid) else {
             status.increment("surface.refused.pidNotAllowed")
             return #"{"error":"pid not allowed"}"#
         }
