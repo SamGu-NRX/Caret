@@ -19,6 +19,8 @@ import {
   type FillProposal,
   type FillResult,
   type FillRequest,
+  type FirstLook,
+  type FirstLookReply,
   type Focus,
   type MemoryReply,
   type MemoryRequest,
@@ -48,6 +50,8 @@ import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
 import { OpenAppOffers } from "./offers/open-app.ts";
 import { DEFAULT_SETTINGS, LEVELS, OfferGate, type Family, type UserSettings } from "./offers/settings.ts";
+import { FirstLookRunner } from "./offers/first-look.ts";
+import { expired } from "./offers/lifetimes.ts";
 
 export interface HelperOptions {
   store: Store;
@@ -178,12 +182,19 @@ export class Helper {
   readonly openApp: OpenAppOffers;
   /** The user's settings and the hourly offer budget, which every producer asks before it offers. */
   readonly gate: OfferGate;
+  /** Answers the host's firstLook. */
+  readonly firstLookRunner: FirstLookRunner;
+  /** Offers a first look found and recorded, by key, until taken, expired or withdrawn. */
+  private readonly firstLooks = new Map<string, { at: number; family: Family }>();
+  /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
+  private readerConnected: boolean;
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS);
+    this.readerConnected = opts.readerLink !== undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
@@ -234,6 +245,23 @@ export class Helper {
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
     this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots), gate: this.gate, now: this.now });
+    this.firstLookRunner = new FirstLookRunner({
+      model: this.model,
+      askJev: opts.askJev,
+      walk: (pid, windowId) => this.readerVerb({ kind: "walk", pid, windowId }),
+      readerConnected: () => this.readerConnected,
+      live: () => this.mode === "live",
+      paused: () => this.gate.settings.paused,
+      resolvedWatches: () => this.openApp.resolvedWindows(),
+      patterns: this.patterns,
+      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect),
+      record: (msg, family, accept) => {
+        this.offers.record(msg, accept);
+        this.firstLooks.set(msg.offerKey, { at: this.now(), family });
+      },
+      withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
+      now: this.now,
+    });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
   }
 
@@ -258,6 +286,8 @@ export class Helper {
         this.fillPopups.clear();
         this.readerSession++;
         this.audit?.readerRestarted(this.now());
+        this.firstLooks.clear();
+        this.readerConnected = true;
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
         return null;
@@ -370,9 +400,34 @@ export class Helper {
     if (!m.roles.includes("watch")) this.pending.stopAll("you turned off watching");
   }
 
+  /** Whether a reader is connected, as the first look sees it. */
+  get hasReader(): boolean {
+    return this.readerConnected;
+  }
+
+  /** The reader's connection closed. A first look then answers that no reader is connected. */
+  readerClosed(): void {
+    this.readerConnected = false;
+  }
+
+  /** The host's first look: the best offer across the windows open now, answered to the asker only. */
+  async handleFirstLook(m: FirstLook): Promise<FirstLookReply> {
+    this.opts.store.count("firstLook.request", 1);
+    const r = await this.firstLookRunner.run(m);
+    this.opts.store.count(`firstLook.${r.outcome}`, 1);
+    return r;
+  }
+
+  /** Ends an offer a first look recorded: its key leaves the registry and consumers get offerWithdrawn. */
+  private withdrawFirstLook(offerKey: string, reason: "taken" | "stale" | "expired" | "settings"): void {
+    if (!this.firstLooks.delete(offerKey)) return;
+    this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
+  }
+
   /** Withdraws every offer shown of these families, as `settings`. */
   private withdrawFamilies(families: readonly Family[]): void {
     if (families.length === 0) return;
+    for (const [k, f] of [...this.firstLooks]) if (families.includes(f.family)) this.withdrawFirstLook(k, "settings");
     if (families.includes("fill")) for (const id of [...this.fillPopups.keys()]) this.withdrawFill(id, "settings");
     if (families.includes("pending")) this.openApp.withdrawAll();
     this.patterns.withdrawFamilies(families);
@@ -571,6 +626,7 @@ export class Helper {
   tick(now = this.now()): void {
     this.record(this.transfers.tick(now));
     this.patterns.tick(now);
+    for (const [k, f] of [...this.firstLooks]) if (expired("firstLook", f.at, now)) this.withdrawFirstLook(k, "expired");
     if (this.mode === "shadow") this.shadowLogger.tick(now);
     this.audit?.tick(now);
     if (now - this.lastPrune >= PRUNE_EVERY_MS) {

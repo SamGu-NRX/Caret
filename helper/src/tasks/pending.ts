@@ -349,6 +349,43 @@ export function buildPendingRequest(
   };
 }
 
+/** Lines of a window's end a first look shows Jev, and the longest any of them may be. Assumed: an agent's or a job's news is in its last few lines. */
+export const LOOK_TAIL_LINES = 6;
+export const LOOK_LINE_CHARS = 120;
+const LOOK_MARKER_LINES = 4;
+
+const cut = (s: string): string => (s.length <= LOOK_LINE_CHARS ? s : `${s.slice(0, LOOK_LINE_CHARS - 1)}…`);
+
+/**
+ * The first look's question about a window that shows running work, asked once with no "before" to
+ * compare: does it show the work finished, and is it waiting on the user. Jev sees the window's name, its
+ * markers and its last few lines, each cut short; `lines` is that text, so the caller can quote it.
+ */
+export function buildLookRequest(w: WindowState, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
+  const tail = allWatchLines(w).slice(-LOOK_TAIL_LINES).map(cut);
+  const markerLines = [...new Set(markers.map((m) => cut(m.line)))].slice(0, LOOK_MARKER_LINES);
+  return {
+    lines: tail,
+    req: {
+      state: {
+        window: `${w.app.name} window '${w.window.title}'`,
+        situation: "The window shows signs of running work. Caret looks at it once to tell the user whether the work is done or needs them.",
+        signs_of_running_work: markerLines.length === 0 ? "none" : markerLines.join("\n"),
+        last_lines: tail.join("\n"),
+      },
+      questions: {
+        finished: { type: "choice", instructions: "Look at what the window shows. Has the work it was doing finished?", criteria: FINISHED_CRITERIA },
+        waiting: {
+          type: "choice",
+          instructions:
+            "Is the window waiting for the user to do something, such as approve, confirm, answer a question, choose an option or sign in, before the work can go on?",
+          criteria: WAITING_CRITERIA,
+        },
+      },
+    },
+  };
+}
+
 export class PendingAnswerError extends Error {}
 
 export function readPendingAnswer(r: JevResult): { finished: { choice: Finished; confidence: number }; waiting: { choice: Waiting; confidence: number } } {

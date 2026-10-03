@@ -28,7 +28,7 @@ import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import { decide, type Decision } from "./gate.ts";
 import { LoopRecognizer, type LoopCell, type LoopEvent } from "./loops.ts";
-import { MemoryError, dontOfferMatch, type MemoryStore } from "./memory.ts";
+import { MemoryError, dontOfferMatch, routineProven, type MemoryStore } from "./memory.ts";
 import { applyMemory, captureEdit } from "./preferences.ts";
 import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
 import { describeTransfer, templateOf } from "./shape.ts";
@@ -438,9 +438,10 @@ export class PatternEngine {
 
   /**
    * Runs an open offer's plan as the task with the offer's id: from offerControl take, and from the
-   * host's offerAccept of the offer's action line. A refusal says why and has written nothing.
+   * host's offerAccept of the offer's action line. A first look that reported the offer runs it under its
+   * own key, `taskId`. A refusal says why and has written nothing.
    */
-  async take(offerId: string): Promise<AcceptResult> {
+  async take(offerId: string, taskId = offerId): Promise<AcceptResult> {
     const o = this.offers.get(offerId);
     if (o === undefined) return { refused: "no such offer, or it expired" };
     if (o.state !== "open") return { refused: `already ${o.state === "taken" ? "taken" : "withdrawn"}` };
@@ -458,7 +459,7 @@ export class PatternEngine {
       // recheck found every destination empty; one the user fills before the run's first read stops it.
       const empty: Record<string, Record<string, string>> = {};
       for (const c of o.cells) (empty[c.dstWindowId] ??= {})[c.dstKey] = "";
-      r = await this.deps.run(o.msg.id, o.plan, o.slots, empty);
+      r = await this.deps.run(taskId, o.plan, o.slots, empty);
     } catch (e) {
       return { refused: e instanceof Error ? e.message : String(e) };
     }
@@ -606,7 +607,50 @@ export class PatternEngine {
     });
     if (!decision.speak) return null;
     this.deps.gate.spoke(this.clock);
+    return this.create(kind, patternId, ids, cells, w.window.windowId, decision.showProbability, true);
+  }
 
+  /**
+   * The loop and routine offers a first look may report: every open one, best first (a routine, then a
+   * loopFinish, then a loopNext), and for a window already open that holds a routine's empty destinations,
+   * the routine's prediction now, made an offer without being shown when it is proven at `sightings`
+   * silent hits and every value is on screen. The window-open path asks the speak-now gate; this one is
+   * the host's own request, so only the routine's proof applies.
+   */
+  firstLook(families: readonly Family[], sightings: number | null): PatternOffer[] {
+    const open = [...this.offers.values()].filter((o) => o.state === "open" && families.includes(familyOf(o.msg.kind)));
+    const rank: Record<OfferKind, number> = { routine: 0, loopFinish: 1, loopNext: 2 };
+    const out = open.sort((a, b) => rank[a.msg.kind] - rank[b.msg.kind] || b.msg.at - a.msg.at).map((o) => o.msg);
+    if (!families.includes("routine") || sightings === null || this.deps.shadow()) return out;
+    const covered = new Set(open.filter((o) => o.msg.kind === "routine").map((o) => o.msg.windowId));
+    for (const w of this.deps.model.windows.values()) {
+      const windowId = w.window.windowId;
+      if (covered.has(windowId)) continue;
+      const preds = this.routines.predict(windowId, this.clock).filter((p) => p.grounded && !p.routine.paused && routineProven(p.routine.hits, p.routine.misses, sightings));
+      const best = preds.sort((a, b) => b.routine.hits - a.routine.hits)[0];
+      if (best === undefined) continue;
+      const cells = best.cells.filter((c): c is RoutineCell => c !== null);
+      const o = this.create("routine", best.routine.id, { loopId: null, routineId: best.routine.id }, cells, windowId, (best.routine.hits + 1) / (best.routine.hits + best.routine.misses + 2), false);
+      out.push(o.msg);
+    }
+    return out;
+  }
+
+  /** Builds an offer that has passed its gate and keeps it open; `show` publishes it to consumers, with an action line for loopFinish and routine. */
+  private create(
+    kind: OfferKind,
+    patternId: string,
+    ids: { loopId: string | null; routineId: string | null },
+    cells: Cell[],
+    windowId: string,
+    showProbability: number,
+    show: boolean,
+  ): OfferState {
+    const model = this.deps.model;
+    const w = model.windows.get(windowId);
+    if (w === undefined) throw new Error(`offer for window ${windowId}, which is not in the model`);
+    const memory = this.deps.memory;
+    const bundleId = w.app.bundleId;
     const id = `offer-${++this.seq}`;
     const written = cells.map((c) => {
       const node = w.nodes.get(c.dstKey);
@@ -637,12 +681,13 @@ export class PatternEngine {
       windowId,
       bundleId,
       cells: msgCells,
-      showProbability: decision.showProbability,
+      showProbability,
     };
     // A memory rule may change what Caret writes; the loop must accept that value when it comes back as a transfer.
     if (ids.loopId !== null) for (const c of written) if (c.written !== c.value) this.loops.expect(ids.loopId, c.dstKey, c.written, c.kind);
     const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null };
     this.offers.set(id, o);
+    if (!show) return o;
     this.deps.publish(msg);
     if (kind !== "loopNext") this.offerAction(o);
     return o;

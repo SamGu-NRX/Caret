@@ -16,7 +16,7 @@ import { describeField } from "./descriptor.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 
 export const NONE = "none";
-const FILLABLE_ROLES = new Set(["AXTextField", "AXTextArea", "AXComboBox"]);
+export const FILLABLE_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "AXComboBox"]);
 /** A form question beyond this many fields is cut to the fields nearest the trigger. Assumed. */
 export const MAX_FIELDS = 20;
 /**

@@ -16,6 +16,8 @@ interface Entry {
   watchId: string;
   windowId: string;
   status: string;
+  /** What the watch's answer was: the work finished, or the window waits on the user. */
+  state: "done" | "needsYou";
   /** The field the offer is shown in; null while it waits for one. */
   boundTo: OfferField | null;
   /** Shown once already, so it has counted against the hourly budget; showing it again in another field does not count again. */
@@ -60,15 +62,20 @@ export class OpenAppOffers {
     return [...this.entries.values()].map((e) => ({ offerKey: e.offerKey, published: e.boundTo !== null }));
   }
 
+  /** The watched windows that finished or need the user and still have an offer, held or shown, with the status line it quotes. For the first look. */
+  resolvedWindows(): { windowId: string; status: string; state: "done" | "needsYou" }[] {
+    return [...this.entries.values()].map((e) => ({ windowId: e.windowId, status: e.status, state: e.state }));
+  }
+
   /** A watch ended as done or became needsYou. A newer resolution of the same watch replaces an older offer. */
-  resolved(e: { watchId: string; windowId: string; status: string | null }): void {
+  resolved(e: { watchId: string; windowId: string; state: "done" | "needsYou"; status: string | null }): void {
     for (const old of [...this.entries.values()]) if (old.watchId === e.watchId) this.drop(old.offerKey, "stale");
     const offerKey = `open-${e.watchId}.${++this.seq}`;
     if (e.status === null) return;
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined || statusNode(w, e.status) === null) return;
     if (!this.deps.gate.enabled("pending")) return;
-    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, boundTo: null, counted: false };
+    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, state: e.state, boundTo: null, counted: false };
     this.entries.set(offerKey, entry);
     const field = this.fieldNow(e.windowId);
     if (field !== null) this.show(entry, field);

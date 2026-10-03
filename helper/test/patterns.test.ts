@@ -395,6 +395,33 @@ describe("pattern engine in the helper", () => {
       expect(r?.fields).toMatchObject({ silent: { hits: 0 } });
     });
 
+    it("a first look finds a proven routine for a window that was already open, and its key runs it", async () => {
+      for (let d = 1; d <= 4; d++) occurrence(d);
+      // Caret was paused when day 5's compose window opened, so the window-open path offered nothing.
+      helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: true });
+      desk.at += DAY;
+      const cal = calendar(5);
+      desk.showList(cal);
+      desk.advance(1000);
+      const c = compose(5);
+      desk.showGrid(c);
+      expect(offers("routine")).toEqual([]);
+      helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: false });
+
+      // Eager or Balanced, the routine is proven (3 hits); at Quiet it is not looked for.
+      const quiet = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "q", at: desk.at, families: ["routine"], level: "quiet", deadlineMs: 2000 });
+      expect(quiet.outcome).toBe("nothing");
+      const r = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "look", at: desk.at, families: ["routine"], level: "balanced", deadlineMs: 2000 });
+      expect(r).toMatchObject({ outcome: "found", found: { kind: "fill", family: "routine", offerKey: "look.0", window: { windowId: c.windowId } } });
+      const fields = r.found?.spec.blocks.find((b) => b.type === "fields");
+      expect(fields?.type === "fields" ? fields.rows.map((x) => x.value?.text) : []).toEqual(cal.lines);
+      expect(offers("routine")).toEqual([]);
+
+      const done = await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "look.0", actionId: "fill", overrides: {}, at: desk.at });
+      expect(done).toMatchObject({ taskId: "look.0", outcome: "done" });
+      expect([0, 1, 2].map((i) => c.values.get(cellKey(c, 0, i)))).toEqual(cal.lines);
+    });
+
     it("pausing a routine stops its predictions and offers until it is resumed", () => {
       for (let d = 1; d <= 4; d++) occurrence(d);
       const id = ask("list", { kind: "routine" }).entries[0]!.id;

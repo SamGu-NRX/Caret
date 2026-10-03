@@ -145,7 +145,7 @@ describe("offer lifetimes over the socket", () => {
   });
 
   it("keeps the lifetimes in one table", () => {
-    expect(Object.fromEntries(Object.entries(OFFER_LIFETIMES).map(([k, v]) => [k, v.ms]))).toEqual({ fill: null, loopNext: 2 * MIN, loopFinish: 5 * MIN, routine: 10 * MIN, open: null });
+    expect(Object.fromEntries(Object.entries(OFFER_LIFETIMES).map(([k, v]) => [k, v.ms]))).toEqual({ fill: null, loopNext: 2 * MIN, loopFinish: 5 * MIN, routine: 10 * MIN, open: null, firstLook: 5 * MIN });
   });
 
   describe("fill pop-up: until the field or the form changes", () => {

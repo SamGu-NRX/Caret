@@ -476,7 +476,26 @@ export const Settings = z.object({
 });
 export type Settings = z.infer<typeof Settings>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings]);
+// MARK: - the first look (host's contract: CaretHostCore/FirstLook.swift and first-look.ndjson on v2/host)
+
+/**
+ * At the end of onboarding the host asks for the best real offer across the windows already open. The
+ * helper walks every window once, runs each named family's generator once, and answers within
+ * `deadlineMs` with `firstLookReply`, to the asker only. `families` is checked by the helper rather than
+ * here, so an unknown name is answered as an error reply the host is waiting for, not a bare error.
+ */
+export const FirstLook = z.object({
+  type: z.literal("firstLook"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  at: ms,
+  families: z.array(z.string()),
+  level: SettingsLevel,
+  deadlineMs: z.number().int().positive(),
+});
+export type FirstLook = z.infer<typeof FirstLook>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -815,8 +834,58 @@ export const ActivityReply = z.object({
 });
 export type ActivityReply = z.infer<typeof ActivityReply>;
 
+/** The best offer a first look found: a pop-up spec, so every value on it points back to the screen. */
+export const FirstLookFound = z.object({
+  /** `action`: something Caret can do; `fill`: values to copy into a form; `report`: work that finished or needs the user. */
+  kind: z.enum(["action", "fill", "report"]),
+  /** The family that produced it; one of the request's families. */
+  family: z.string().min(1),
+  /** The helper's key: offerAccept with it runs the offer as the task with this id. */
+  offerKey: z.string().min(1),
+  window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }),
+  spec: PopupSpec,
+});
+export type FirstLookFound = z.infer<typeof FirstLookFound>;
+
+/**
+ * The first look's answer. Every key is present, null where it does not apply, and the host refuses a
+ * reply whose fields contradict its outcome: `found` exactly with an offer, `error` exactly with a
+ * non-empty reason (window ids and reasons, never screen text), `nothing` with neither.
+ */
+export const FirstLookReply = z
+  .object({
+    type: z.literal("firstLookReply"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string(),
+    at: ms,
+    outcome: z.enum(["found", "nothing", "error"]),
+    found: FirstLookFound.nullable(),
+    scanned: z.object({ windows: z.number().int().nonnegative(), apps: z.number().int().nonnegative(), ms: z.number().int().nonnegative() }).nullable(),
+    error: z.string().nullable(),
+  })
+  .superRefine((m, ctx) => {
+    const problem = firstLookProblem(m);
+    if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["outcome"] });
+  });
+export type FirstLookReply = z.infer<typeof FirstLookReply>;
+
+/** The host's FirstLookReply.problem, rule for rule: what makes a reply contradict its outcome, or null. */
+export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "error">): string | null {
+  switch (m.outcome) {
+    case "found":
+      if (m.found === null) return "outcome found needs found";
+      if (m.error !== null) return "outcome found carries no error";
+      return null;
+    case "nothing":
+      return m.found !== null || m.error !== null ? "outcome nothing carries neither found nor error" : null;
+    case "error":
+      if (m.found !== null) return "outcome error carries no found";
+      return (m.error ?? "") === "" ? "outcome error needs error" : null;
+  }
+}
+
 export const HelperMessage = z.discriminatedUnion("type", [
-  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup,
+  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
