@@ -6,7 +6,7 @@ import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, type SnippetLedger } from "../privacy.ts";
-import { isKindTerm, kindTerm, overlap, valueKinds, words } from "./kinds.ts";
+import { isKindTerm, isNameLike, kindTerm, NAME_TERM, overlap, valueKinds, words } from "./kinds.ts";
 
 export interface Candidate {
   id: string;
@@ -83,6 +83,11 @@ export interface GenerateOptions {
    * by cost per field served; for the live replay's comparison. The helper never sets it.
    */
   kindsByCost?: boolean;
+  /**
+   * False leaves a conversation's name-like lines ungrouped, as B13 did, for the live replay's
+   * comparison. The helper never sets it.
+   */
+  nameGroup?: boolean;
 }
 
 /** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
@@ -105,6 +110,11 @@ export interface Collected {
    */
   cutTerms: ReadonlySet<string>;
   cutAll: boolean;
+  /**
+   * A field takes a name and a name may have been kept out: a conversation's names did not all fit, or
+   * a window was cut whose left-out lines were not read. Fill then proposes no name-like value (fill.ts).
+   */
+  namesCut: boolean;
 }
 
 export interface GenerateStats {
@@ -205,7 +215,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const finish = (): Collected => {
     stats.windows = touched.size;
     stats.ms = clock() - t0;
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll };
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || cutTerms.has(NAME_TERM)) };
   };
   /**
    * Stops early, on the cap or the clock, partway through `reading`: what of it was offered is a partial
@@ -223,13 +233,16 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   /** Conversations whose budget went by relevance; the line pass leaves them alone. */
   const ranked = new Set<string>();
   const relevance = o.fields !== undefined && o.fields.length > 0 && o.ledger !== undefined ? o.fields : null;
+  /** Some field takes a name, so a conversation's name-like lines are a group like a kind's values. */
+  const wantsNames = relevance !== null && o.nameGroup !== false && relevance.some((f) => f.has(NAME_TERM));
 
   /**
    * Every span of a conversation, typed values first and then lines as the two passes below would take
    * them, each with the terms of its line, its section and the kinds of typed values it holds; then adds
-   * them in relevance order. False when the cap or the clock ran out.
+   * them in relevance order. False when the cap or the clock ran out. A span's group is the term of the
+   * whole-or-nothing set it goes in with: its kind's for a typed value, NAME_TERM for a name-like line.
    */
-  type Span = { node: Node; text: string; kind: ValueKind | null; context: () => string | null; terms: Set<string> };
+  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string> };
   const byRelevance = (w: WindowState, fields: readonly ReadonlySet<string>[]): boolean => {
     const spans: Span[] = [];
     const built = { done: false };
@@ -264,7 +277,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined) continue;
-      spans.push({ node, text: v.text, kind: v.kind, context: () => contextFor(w, node, v.text), terms: termsOf(node, lineHolding(nodeText(node), v.text), [v.kind]) });
+      spans.push({ node, text: v.text, kind: v.kind, group: kindTerm(v.kind), context: () => contextFor(w, node, v.text), terms: termsOf(node, lineHolding(nodeText(node), v.text), [v.kind]) });
     }
     for (const node of w.nodes.values()) {
       if (outOfTime()) return false;
@@ -278,7 +291,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         if (s === null) continue;
         const kinds = (valuesOf.get(node.key) ?? []).filter((v) => s.line.includes(v.text)).map((v) => v.kind);
         const context = s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField);
-        spans.push({ node, text: s.text, kind: null, context, terms: termsOf(node, s.line, kinds) });
+        const terms = termsOf(node, s.line, kinds);
+        const name = wantsNames && isNameLike(s.text, s.label);
+        if (name) terms.add(NAME_TERM);
+        spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms });
       }
     }
     built.done = true;
@@ -307,21 +323,22 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // missing, and none lost the facts (label, section, block) that set it apart from another. The first
     // B12 replays spent a conversation's budget value by value: four values with facts used up a
     // 220-character Messages window, and values let in bare, to fit, let Jev take a padding thread's
-    // meeting link for the form's (~/.caret-run/evidence/screen/b12/live-run5).
+    // meeting link for the form's (~/.caret-run/evidence/screen/b12/live-run5). Name-like lines are one
+    // more such group when a field takes a name (kinds.ts NAME_TERM).
     const kinds = new Set(fields.flatMap((f) => [...f].filter(isKindTerm)));
     const takesKind = (i: number): boolean => {
-      const k = spans[i]?.kind;
-      return k !== null && k !== undefined && kinds.has(kindTerm(k));
+      const g = spans[i]?.group;
+      return g !== null && g !== undefined && kinds.has(g);
     };
-    const kindOrder = [...new Set(order.filter(takesKind).map((i) => spans[i]?.kind as ValueKind))];
-    const groups = new Map<ValueKind, Candidate[]>();
+    const kindOrder = [...new Set(order.filter(takesKind).map((i) => spans[i]?.group as string))];
+    const groups = new Map<string, Candidate[]>();
     for (const k of kindOrder) {
       if (outOfTime()) return false;
       const group: Candidate[] = [];
       const texts = new Set<string>();
       for (const i of order) {
         const sp = spans[i] as (typeof spans)[number];
-        if (sp.kind !== k || seen.has(sp.text) || texts.has(sp.text)) continue;
+        if (sp.group !== k || seen.has(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
         group.push(build(w, sp.node, sp.text, sp.kind, sp.context));
       }
@@ -331,10 +348,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // since a kind's facts can share texts (the window's title, a section) with one already in. B12 took
     // them in the order the fields first wanted them, so one dear kind could spend the budget that two
     // cheap ones needed. No run measured this before B13's replay.
-    const served = (k: ValueKind): number => fields.filter((f) => f.has(kindTerm(k))).length;
+    const served = (k: string): number => fields.filter((f) => f.has(k)).length;
     for (;;) {
       if (full() || outOfTime()) return false;
-      let best: { k: ValueKind; rate: number } | null = null;
+      let best: { k: string; rate: number } | null = null;
       for (const [k, group] of groups) {
         const cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
         if (cost === null || cost === undefined) continue;
@@ -352,7 +369,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       }
     }
     /** Kinds left out whole, since none of them fits what is left; a line holding a value of one stays out too. */
-    const leftOut = new Set([...groups.keys()].map(kindTerm));
+    const leftOut = new Set(groups.keys());
     if (leftOut.size > 0) missed.add(w.window.windowId);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {

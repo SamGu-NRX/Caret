@@ -242,11 +242,13 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     expect(b12.get("Meeting date")).toBe("Thursday, October 8, 2026");
     expect(b12.get("Start time")).toBe("3:00 PM");
     // By cost per field the budget serves three fields where B12's order served two: the two dates cost
-    // more than a time, an email and the links together.
+    // more than a time, an email and the chat's names together. Before B14 grouped names the links got
+    // the third share; the names are cheaper per field served (kinds.ts NAME_TERM).
     expect(filled(byCost)).toBeGreaterThan(filled(b12));
     expect(byCost.get("Start time")).toBe("3:00 PM");
     expect(byCost.get("Attendee email")).toBe(GOLD["Attendee email"]);
-    expect(byCost.get("Video link")).toBe(GOLD["Video link"]);
+    expect(byCost.get("Attendee job title")).toBe(GOLD["Attendee job title"]);
+    expect(byCost.get("Video link")).toBeNull();
     expect(byCost.get("Meeting date")).toBeNull();
   });
 
@@ -266,9 +268,10 @@ describe("a conversation's budget goes to the lines nearest each field first", (
       // A value offered carries the facts a window that is not a conversation would give it.
       for (const c of of) if (c !== undefined) expect(c.section, c.text).not.toBeNull();
     }
-    // The cheapest kinds per field get in whole: a time, an email and the links, not the two dates.
-    expect(removed.has("date")).toBe(true);
-    for (const k of ["time", "email", "url"] as const) expect(removed.has(k), k).toBe(false);
+    // The cheapest groups per field get in whole: a time, an email and the names, not the dates or links.
+    for (const k of ["date", "url"] as const) expect(removed.has(k), k).toBe(true);
+    for (const k of ["time", "email"] as const) expect(removed.has(k), k).toBe(false);
+    for (const n of ["Dana Whitfield", "Senior Product Designer", "Lumen Labs"]) expect(candidates.map((c) => c.text)).toContain(n);
   });
 
   it("goes round the fields: each field's best line before any field's second", () => {

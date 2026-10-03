@@ -2,7 +2,8 @@
 // a candidate's surroundings share. Fill uses the kinds to keep a privacy cut from leaving a decoy: when
 // a window's budget cuts a date, no date field is asked with the dates that survived (fill.ts). The
 // candidate generator uses the word overlap to spend a conversation's budget on the lines nearest each
-// field's label first (candidates.ts).
+// field's label first (candidates.ts). Names are grouped the same way under NAME_TERM, read from the
+// line's shape since the reader types no names.
 import type { ValueKind } from "../protocol.ts";
 
 /**
@@ -63,10 +64,47 @@ export function words(s: string | null | undefined): string[] {
 export const kindTerm = (k: ValueKind): string => `#${k}`;
 export const isKindTerm = (t: string): boolean => t.startsWith("#");
 
-/** A field's terms: its label words and the kinds they name. */
+/**
+ * The term of a field that takes a name (a person, a company, a title) and of a line that looks like
+ * one. The reader types no names, so a conversation's name-like lines are grouped by this term and go
+ * into a request whole or not at all, as a kind's typed values do (candidates.ts): B13 left a cut chat's
+ * plain "Dana Whitfield" beside another window's plain name, with nothing to say a name had been cut.
+ */
+export const NAME_TERM = "#name";
+
+/** Label words that say a field takes a name. Written for common form labels, not measured on real forms. */
+const NAME_WORDS = /\b(?:name|company|organi[sz]ation|employer|business|firm|title|position|role)\b/;
+
+/** Lowercase words that can sit inside a name: "Head of Operations", "Acme & Sons", "Ana de la Cruz". */
+const NAME_JOINERS = new Set(["of", "and", "&", "the", "for", "de", "del", "della", "da", "di", "du", "la", "le", "van", "von", "der", "den", "y", "bin", "al"]);
+/** A capitalized word of a name: letters, with apostrophes, hyphens and a closing period ("O'Neil", "Mary-Jane", "Ltd."). */
+const NAME_WORD = /^\p{Lu}[\p{L}'’-]*\.?$/u;
+/** Assumed bounds on a name's words and length; a longer line is a sentence or a heading. */
+const NAME_MAX_WORDS = 6;
+const NAME_MAX_CHARS = 60;
+
+/**
+ * Whether a span may be a name. A span labelled with a name word is one whatever its shape ("dana w."
+ * labelled Name). Otherwise its shape decides: two to six words, each capitalized or a joining word,
+ * starting with a capital, with no digit or other punctuation. "Lumen Labs" and "Senior Product
+ * Designer" are names; "Design review", "Thanks" and "Room 4B" are not. A chat's "Hi Dana" passes too,
+ * which errs toward withholding a name field rather than offering a partial set of names.
+ */
+export function isNameLike(text: string, label: string | null): boolean {
+  if (label !== null && NAME_WORDS.test(label.toLowerCase())) return true;
+  const t = text.trim();
+  if (t.length > NAME_MAX_CHARS) return false;
+  const ws = t.split(/\s+/);
+  if (ws.length < 2 || ws.length > NAME_MAX_WORDS || !NAME_WORD.test(ws[0] ?? "")) return false;
+  return ws.every((w) => NAME_WORD.test(w) || NAME_JOINERS.has(w));
+}
+
+/** A field's terms: its label words, the kinds they name, and NAME_TERM when they ask for a name. */
 export function fieldTerms(labelWords: readonly (string | null | undefined)[]): Set<string> {
   const out = new Set(labelWords.flatMap(words));
   for (const k of fieldKinds(labelWords)) out.add(kindTerm(k));
+  const s = labelWords.filter((w): w is string => typeof w === "string").join(" ").toLowerCase();
+  if (NAME_WORDS.test(s)) out.add(NAME_TERM);
   return out;
 }
 
