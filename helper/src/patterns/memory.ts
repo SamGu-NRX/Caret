@@ -28,6 +28,9 @@ import {
   type MemoryStatus,
   type OfferKind,
   type PermissionRule,
+  type PermissionUse,
+  MAX_PERMISSION_USES,
+  UseOutcome,
 } from "../protocol.ts";
 
 /** A routine forgotten by the user is not relearned for this long (plan section 4, assumed). */
@@ -134,6 +137,15 @@ CREATE TABLE IF NOT EXISTS reactions (
   action TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS reactions_day ON reactions (day, offer_kind, bundle_id);
+-- A permission's last uses (B17): AES-256-GCM of the JSON {says, app, outcome}, since a use names a
+-- field and an app. At most MAX_PERMISSION_USES rows per action.
+CREATE TABLE IF NOT EXISTS uses (
+  id INTEGER PRIMARY KEY,
+  action TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  sealed BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS uses_action ON uses (action, at);
 `;
 
 const SEALED: ReadonlySet<MemoryKind> = new Set(["about", "people", "preference"]);
@@ -171,6 +183,8 @@ export class MemoryStore {
    * 11 ms once on a loaded disk (patterns-eval, 2026-10-02), so decisions are written on the tick.
    */
   private pendingDecisions: DecisionRow[] = [];
+  /** Permission uses not yet written, for the same reason: an offer shown on the event path is a use. */
+  private pendingUses: { action: ActionType; use: Required<PermissionUse> }[] = [];
   /** Every routine with its steps, read once per change: window openings consult it on the event path. */
   private routineCache: RoutineRecord[] | null = null;
   /**
@@ -407,8 +421,39 @@ export class MemoryStore {
     }
   }
 
-  /** Writes buffered decisions in one transaction. Called on the helper's tick and at close. */
+  /**
+   * Records one use of a permission (B17): what Caret did under it, where, when and how it ended. Buffered
+   * like decisions and written on the tick; each action keeps its last MAX_PERMISSION_USES.
+   */
+  recordUse(action: ActionType, use: Required<PermissionUse>): void {
+    this.pendingUses.push({ action, use });
+  }
+
+  /** Writes buffered uses, then trims each action they touched to its last MAX_PERMISSION_USES. */
+  private flushUses(): void {
+    if (this.pendingUses.length === 0) return;
+    const insert = this.stmt("INSERT INTO uses (action, at, sealed) VALUES (?, ?, ?)");
+    const trim = this.stmt("DELETE FROM uses WHERE action = ? AND id NOT IN (SELECT id FROM uses WHERE action = ? ORDER BY at DESC, id DESC LIMIT ?)");
+    this.batch(() => {
+      for (const { action, use } of this.pendingUses) insert.run(action, use.at, seal(this.key, JSON.stringify({ says: use.says, app: use.app, outcome: use.outcome })));
+      for (const action of new Set(this.pendingUses.map((u) => u.action))) trim.run(action, action, MAX_PERMISSION_USES);
+    });
+    this.pendingUses = [];
+  }
+
+  /** A permission's last uses, newest first. */
+  uses(action: ActionType): Required<PermissionUse>[] {
+    this.flushUses();
+    const rows = this.stmt("SELECT at, sealed FROM uses WHERE action = ? ORDER BY at DESC, id DESC LIMIT ?").all(action, MAX_PERMISSION_USES) as { at: number; sealed: Uint8Array }[];
+    return rows.map((r) => {
+      const f = UseFields.parse(JSON.parse(open(this.key, Buffer.from(r.sealed))));
+      return { at: Number(r.at), ...f };
+    });
+  }
+
+  /** Writes buffered decisions and permission uses, each in one transaction. Called on the helper's tick and at close. */
   flushDecisions(): void {
+    this.flushUses();
     if (this.pendingDecisions.length === 0) return;
     const stmt = this.stmt("INSERT INTO decisions (at, offer_kind, pattern, bundle_id, speak, reasons, p_show) VALUES (?, ?, ?, ?, ?, ?, ?)");
     this.db.exec("BEGIN");
@@ -525,7 +570,7 @@ export class MemoryStore {
       }
       case "permission": {
         const f = PermissionFields.parse(this.fields(r));
-        return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}` };
+        return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}`, uses: this.uses(f.action) };
       }
     }
   }
@@ -545,6 +590,9 @@ export class MemoryStore {
 }
 
 const ABOUT_SOURCE: Record<AboutFields["source"], string> = { contacts: "from your Contacts card", typed: "you typed this", edit: "from your edit" };
+
+/** A use's sealed fields, checked when read back. */
+const UseFields = z.object({ says: z.string().min(1), app: z.string().nullable(), outcome: UseOutcome });
 
 /** What an `add` may carry: an About entry the user typed, nothing else. */
 const TypedAbout = z.strictObject({ label: AboutFields.shape.label, value: AboutFields.shape.value, source: z.literal("typed") });

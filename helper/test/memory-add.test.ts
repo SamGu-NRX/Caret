@@ -24,8 +24,8 @@ describe("the host's memory contract, line by line", () => {
     for (const l of lines.filter((x) => x.type === "memoryRequest")) expect(MemoryRequest.parse(l)).toEqual(l);
   });
 
-  it("parses the add, edit and refusal replies losslessly", () => {
-    for (const id of ["host-memory-2", "host-memory-3", "host-memory-4", "host-memory-5"]) {
+  it("parses every reply losslessly, the list's permission uses and ops included", () => {
+    for (const id of ["host-memory-1", "host-memory-2", "host-memory-3", "host-memory-4", "host-memory-5"]) {
       const l = line(id, "memoryReply");
       expect(MemoryReply.parse(l), id).toEqual(l);
     }

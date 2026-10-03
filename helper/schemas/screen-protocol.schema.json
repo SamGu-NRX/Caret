@@ -2648,6 +2648,46 @@
                           "fixed"
                         ],
                         "additionalProperties": false
+                      },
+                      "uses": {
+                        "maxItems": 5,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "at": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Milliseconds since the Unix epoch"
+                            },
+                            "says": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "app": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "outcome": {
+                              "type": "string",
+                              "enum": [
+                                "done",
+                                "handedOff",
+                                "stopped",
+                                "failed"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "at",
+                            "says",
+                            "app"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [

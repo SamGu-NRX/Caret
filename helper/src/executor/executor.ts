@@ -11,11 +11,11 @@
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt } from "node:crypto";
-import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppRef, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { GRANT_MAX_MS, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
-import { classifyLabel } from "./risk.ts";
+import { classifyLabel, type RiskClass } from "./risk.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
 
@@ -41,7 +41,20 @@ export interface ExecutorDeps {
   beforeAct?: (taskId: string, step: number) => Promise<void>;
   /** Overrides TARGET_CUTOFF, for runs that measure the confidences of target questions. */
   targetCutoff?: number;
+  /** Each use of a permission a run made, reported when the run ends (B17; the helper keeps the last few in memory). */
+  onUse?: (u: TaskUse) => void;
 }
+
+/** One use of a permission by a run: its action type, what it did as a sentence, the app, and how it ended. */
+export interface TaskUse {
+  action: ActionType;
+  says: string;
+  app: string | null;
+  outcome: UseOutcome;
+}
+
+/** The permission a press of this risk class falls under (plan section 3); a safe press needs none of these. */
+const RISK_ACTION: Record<Exclude<RiskClass, "safe">, ActionType> = { outbound: "outbound", destructive: "destructive", money: "sensitive" };
 
 /** How a run was started. Only a run from an accepted offer may hold an act grant. */
 export interface RunOptions {
@@ -97,7 +110,7 @@ type ProgressCounts = Pick<TaskProgress, "written" | "restored" | "notRestored" 
 export type LedgerEntry =
   | { kind: "write"; step: number; pid: number; windowId: string; key: string; role: string; before: string; after: string }
   | { kind: "calendar"; step: number; eventId: string; calendar: string; title: string; start: string; end: string }
-  | { kind: "press"; step: number; label: string };
+  | { kind: "press"; step: number; label: string; windowId: string };
 
 export interface UndoResult {
   restored: number;
@@ -144,6 +157,15 @@ interface Task {
   grant: { pid: number; windowId: string } | null;
   /** The reader holds a calendar grant for this task now (protocol.ts CalendarGrant). */
   calendarGranted: boolean;
+  /**
+   * The window the user was in when the run started: writes there use "Write where you are", writes to any
+   * other window "Reversible write elsewhere". Null when the model knows no frontmost window.
+   */
+  userWindow: string | null;
+  /** Ledger entries already reported as uses, so a resumed run reports each once. */
+  reported: Set<LedgerEntry>;
+  /** The press or field a hand-off left to the user, with the permission it falls under; null when none. */
+  handedOff: { action: ActionType; what: string; windowId: string } | null;
 }
 
 /**
@@ -257,6 +279,9 @@ export class Executor {
       granted: opts.grant === true,
       grant: null,
       calendarGranted: false,
+      userWindow: this.userWindow(),
+      reported: new Set(),
+      handedOff: null,
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -318,6 +343,7 @@ export class Executor {
       task.finished = "stopped";
       releaseSources(task);
       this.stopped(task, task.next, `stopped by you before step ${task.next + 1} of ${task.plan.steps.length}`, "you", "you");
+      this.reportUses(task, "stopped");
       return;
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to stop`);
@@ -360,7 +386,10 @@ export class Executor {
     if (task.session !== this.session) throw new PlanError(`task ${taskId} ran under an earlier reader session; its window ids no longer apply, so nothing is restored`);
     // A paused run whose writes are being restored cannot continue from where it was, so it stops
     // being resumable before the first restore is awaited.
-    if (task.finished === "paused") task.finished = "stopped";
+    if (task.finished === "paused") {
+      task.finished = "stopped";
+      this.reportUses(task, "stopped");
+    }
     releaseSources(task);
     task.undoing = true;
     task.undoStopped = false;
@@ -434,6 +463,7 @@ export class Executor {
       // Fields this run wrote, each once however many writes it took; presses and calendar events are not fields.
       const written = new Set(task.ledger.flatMap((e) => (e.kind === "write" ? [`${e.windowId}\u0000${e.key}`] : []))).size;
       this.progress(task, "done", null, `${task.acted} acted, ${task.skipped} already true`, null, { written });
+      this.reportUses(task, "done");
       return this.result(task, "done", null, null);
     } catch (e) {
       const i = task.next;
@@ -444,6 +474,7 @@ export class Executor {
           const detail = `stopped by you before step ${i + 1} of ${steps.length}`;
           task.finished = "stopped";
           this.stopped(task, i, detail, "you", "you");
+          this.reportUses(task, "stopped");
           return this.result(task, "stopped", i, detail);
         }
         const detail = this.pauseDetail(task, it);
@@ -456,6 +487,7 @@ export class Executor {
       task.finished = outcome;
       if (outcome === "handoff") this.progress(task, "handoff", i, detail, e instanceof StepStop ? e.by : "caret", e instanceof StepStop && e.blocked !== null ? { blocked: e.blocked } : {});
       else this.stopped(task, i, detail, e instanceof StepStop ? e.by : "caret", e instanceof StepStop ? (e.reason ?? "error") : "error");
+      this.reportUses(task, outcome);
       return this.result(task, outcome, i, detail);
     } finally {
       if (task.finished !== null && task.finished !== "paused") releaseSources(task);
@@ -500,6 +532,7 @@ export class Executor {
       const what = label === "" ? end.target.describe : `'${label}'`;
       // The control's own label decides the reason, as for a press: a plan cannot call a Send press unverifiable.
       const risk = label === "" ? "safe" : classifyLabel(label);
+      if (risk !== "safe") task.handedOff = { action: RISK_ACTION[risk], what, windowId: w.window.windowId };
       throw StepStop.handoff(risk === "safe" ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${risk}; Caret leaves that press to you`);
     }
 
@@ -516,7 +549,10 @@ export class Executor {
   // MARK: - means
 
   private async writeStep(task: Task, i: number, w: WindowState, node: Node, attribute: "value" | "focused", value: string, step: Step): Promise<void> {
-    if (node.states?.includes("secure")) throw StepStop.handoff(`'${step.says}' targets a password field; that is left to you`);
+    if (node.states?.includes("secure")) {
+      task.handedOff = { action: "sensitive", what: "a password field", windowId: w.window.windowId };
+      throw StepStop.handoff(`'${step.says}' targets a password field; that is left to you`);
+    }
     const before = node.value ?? "";
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
     this.checkInterrupt(task);
@@ -571,12 +607,15 @@ export class Executor {
     const label = (node.label ?? "").trim();
     if (label === "") throw StepStop.handoff(`the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
     const risk = classifyLabel(label);
-    if (risk !== "safe") throw StepStop.handoff(`'${label}' reads as ${risk}; Caret leaves that press to you`);
+    if (risk !== "safe") {
+      task.handedOff = { action: RISK_ACTION[risk], what: `'${label}'`, windowId: w.window.windowId };
+      throw StepStop.handoff(`'${label}' reads as ${risk}; Caret leaves that press to you`);
+    }
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
     const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label, taskId: task.id }, w.window.windowId);
-    task.ledger.push({ kind: "press", step: i, label });
+    task.ledger.push({ kind: "press", step: i, label, windowId: w.window.windowId });
     await this.awaitEffect(task, i, step, w.window.windowId, seen);
     this.checkUnexpected(seen, null);
     await this.verified(task, i, step);
@@ -925,6 +964,55 @@ export class Executor {
 
   // MARK: - reporting
 
+  /** The focused window of the frontmost app, where the user is; null when the model cannot say. */
+  private userWindow(): string | null {
+    const m = this.deps.model;
+    const w = m.focusedWindowId === null ? undefined : m.windows.get(m.focusedWindowId);
+    return w !== undefined && w.app.pid === m.frontmostPid ? w.window.windowId : null;
+  }
+
+  /**
+   * Reports what a run that ended did under each permission (B17): its writes, grouped by window, as
+   * "Write where you are" in the window the user was in when it started and "Reversible write elsewhere"
+   * anywhere else; each calendar event it added, elsewhere; and the press or field it handed off, under
+   * the permission that press needs. A paused run reports when it ends, each ledger entry once.
+   */
+  private reportUses(task: Task, outcome: Exclude<Outcome, "paused">): void {
+    const onUse = this.deps.onUse;
+    if (onUse === undefined) return;
+    const fresh = task.ledger.filter((e) => !task.reported.has(e));
+    for (const e of fresh) task.reported.add(e);
+    const appOf = (windowId: string): string | null => this.deps.model.windows.get(windowId)?.app.name ?? null;
+    const done: UseOutcome = outcome === "stopped" ? "stopped" : "done";
+    const byWindow = new Map<string, { fields: Set<string>; labels: string[]; presses: string[] }>();
+    const group = (windowId: string) => {
+      let g = byWindow.get(windowId);
+      if (g === undefined) byWindow.set(windowId, (g = { fields: new Set(), labels: [], presses: [] }));
+      return g;
+    };
+    for (const e of fresh) {
+      if (e.kind === "write") {
+        const g = group(e.windowId);
+        if (g.fields.has(e.key)) continue;
+        g.fields.add(e.key);
+        g.labels.push(this.deps.model.windows.get(e.windowId)?.nodes.get(e.key)?.label?.trim() || "a field");
+      } else if (e.kind === "press") group(e.windowId).presses.push(`'${e.label}'`);
+      else onUse({ action: "writeElsewhere", says: `${outcome === "stopped" ? "Added, before stopping," : "Added"} '${e.title}' to your ${e.calendar} calendar`, app: "Calendar", outcome: done });
+    }
+    for (const [windowId, g] of byWindow) {
+      const app = appOf(windowId);
+      const what = [...(g.labels.length === 0 ? [] : [`filled ${names(g.labels)}`]), ...(g.presses.length === 0 ? [] : [`pressed ${names(g.presses)}`])].join(" and ");
+      const said = `${what.charAt(0).toUpperCase()}${what.slice(1)}${app === null ? "" : ` in ${app}`}${outcome === "stopped" ? ", then stopped" : ""}`;
+      onUse({ action: windowId === task.userWindow ? "writeHere" : "writeElsewhere", says: said, app, outcome: done });
+    }
+    const h = task.handedOff;
+    if (outcome === "handoff" && h !== null) {
+      const app = appOf(h.windowId);
+      onUse({ action: h.action, says: `Left ${h.what}${app === null ? "" : ` in ${app}`} to you`, app, outcome: "handedOff" });
+    }
+    task.handedOff = null;
+  }
+
   /** A stop, which always says why (protocol.ts StopReason); progress() takes every other phase. */
   private stopped(task: Task, step: number | null, detail: string, cause: TaskCause, reason: StopReason): void {
     this.publishProgress(task, { phase: "stopped", stopReason: reason }, step, detail, cause);
@@ -986,6 +1074,12 @@ function editableValues(w: WindowState): Map<string, string> {
 
 function contains(f: [number, number, number, number], p: [number, number]): boolean {
   return p[0] >= f[0] && p[0] <= f[0] + f[2] && p[1] >= f[1] && p[1] <= f[1] + f[3];
+}
+
+/** "Name", "Name and Email", or "3 fields" past two. */
+function names(xs: readonly string[]): string {
+  if (xs.length <= 2) return xs.join(" and ");
+  return xs.every((x) => x.startsWith("'")) ? `${xs.length} controls` : `${xs.length} fields`;
 }
 
 function clip(s: string): string {

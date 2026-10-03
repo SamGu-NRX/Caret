@@ -876,6 +876,21 @@ export const RoutineFields = z.object({
 });
 export const PermissionFields = z.object({ action: ActionType, rule: PermissionRule, fixed: z.boolean() });
 
+/** How a use of a permission ended: done; handed off to the user; stopped partway; or tried and failed. */
+export const UseOutcome = z.enum(["done", "handedOff", "stopped", "failed"]);
+export type UseOutcome = z.infer<typeof UseOutcome>;
+/** Uses each permission keeps, newest first; older ones are deleted. The host shows them all (A11). */
+export const MAX_PERMISSION_USES = 5;
+
+/**
+ * One use of a permission: what Caret did under it (`says`, outcome included, as the host shows it),
+ * where (`app`), when (`at`) and how it ended (`outcome`). The host's contract (fixtures/golden/
+ * memory.ndjson) has the first three; `outcome` is always set by this helper and optional only so the
+ * contract's lines, which predate it, still parse.
+ */
+export const PermissionUse = z.object({ at: ms, says: z.string().min(1), app: z.string().nullable(), outcome: UseOutcome.optional() });
+export type PermissionUse = z.infer<typeof PermissionUse>;
+
 const entryBase = {
   id: z.string(),
   status: MemoryStatus,
@@ -888,7 +903,8 @@ export const MemoryEntry = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("people"), ...entryBase, fields: PeopleFields }),
   z.object({ kind: z.literal("preference"), ...entryBase, fields: PreferenceFields }),
   z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields }),
-  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields }),
+  /** `uses`: the permission's last MAX_PERMISSION_USES uses, newest first; this helper always sends it, empty when none. */
+  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields, uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
 ]);
 export type MemoryEntry = z.infer<typeof MemoryEntry>;
 
