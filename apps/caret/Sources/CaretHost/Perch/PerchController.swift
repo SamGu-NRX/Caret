@@ -45,6 +45,9 @@ final class PerchController {
     private let askModel = AskModel()
     /// The ask phase last drawn into the list, so a change of phase resizes it and typing does not.
     private var drawnAsk: AskCaret.Phase = .idle
+    /// Whether the drawn list shows the Return hint under the field, which appears with the first
+    /// character typed and adds a row: the list is measured again only when that changes.
+    private var drawnHint = false
     /// "What Caret knows" at the foot of the list.
     var onOpenMemory: (() -> Void)?
 
@@ -104,6 +107,8 @@ final class PerchController {
         }
         askModel.edit = { [weak self] text in self?.ask.edit(text) }
         askModel.submit = { [weak self] in self?.ask.submit() }
+        askModel.run = { [weak self] in self?.ask.tab() }
+        askModel.escape = { [weak self] in self?.ask.escape() }
         ask.onChange = { [weak self] in self?.askChanged() }
     }
 
@@ -114,7 +119,7 @@ final class PerchController {
         if askModel.phase != ask.phase { askModel.phase = ask.phase }
         // A new phase can change the list's height; typing alone does not, and redrawing the panel
         // on each key would cost a measure per keystroke.
-        if listOpen, drawnAsk != ask.phase { renderList() }
+        if listOpen, drawnAsk != ask.phase || drawnHint != AskSection.showsHint(text: ask.text, phase: ask.phase) { renderList() }
     }
 
     /// Return, Tab and Esc while the list is key, before the field editor sees them. Return plans
@@ -130,9 +135,11 @@ final class PerchController {
         case KeyStroke.returnKeyCode, 76:
             return editing && ask.submit()
         case KeyStroke.tabKeyCode:
-            return ask.tab()
+            // Only from the ask field: with Full Keyboard Access, Tab from a row's button moves on.
+            return editing && ask.tab()
         case KeyStroke.escapeKeyCode:
-            if !ask.escape() { closeList() }
+            // A key closes the list at once: keyboard-initiated changes do not animate.
+            if !ask.escape() { closeList(exit: 0) }
             return true
         default:
             return false
@@ -376,7 +383,7 @@ final class PerchController {
         renderList()
     }
 
-    func closeList() {
+    func closeList(exit: TimeInterval = 0.1) {
         guard listOpen else { return }
         listOpen = false
         // A card nobody can see takes no Tab, so it goes; a run goes on and the list still reports
@@ -388,12 +395,13 @@ final class PerchController {
         donePages = 1
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
-        list.exit(duration: 0.1)
+        list.exit(duration: exit)
     }
 
     private func renderList() {
         let page = center.page(pages: donePages)
         drawnAsk = ask.phase
+        drawnHint = AskSection.showsHint(text: ask.text, phase: ask.phase)
         let character = FigureSettings.shared.character
         let view = ActivityListView(
             rows: page.rows, more: page.more, incomplete: center.feed.incomplete, mood: subject?.mood,

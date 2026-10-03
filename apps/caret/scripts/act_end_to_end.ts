@@ -686,7 +686,7 @@ try {
         await sleep(200);
         row.readBack = await t.read();
         row.valueOk = JSON.stringify(row.readBack) === JSON.stringify(afterFirst);
-        row.stopOk = end.phase === "stopped" && end.stopReason === "you" && end.step === 1 && row.stoppedLine === "Stopped before step 2 of 3";
+        row.stopOk = end.phase === "stopped" && end.stopReason === "you" && end.step === 1 && row.stoppedLine === "You stopped it before step 2 of 3";
         await checkRevoked();
       } else {
         const end = await until("the run to end", () => ended(["stopped", "done", "handoff", "paused"]), 15_000);

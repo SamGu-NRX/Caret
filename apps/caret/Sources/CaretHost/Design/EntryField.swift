@@ -51,7 +51,9 @@ struct EntryField: View {
             .overlay {
                 if offscreen ? showsFocus : focused {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(Color(token: Tokens.carrot).opacity(0.7), lineWidth: 2)
+                        // Full Carrot: at 0.7 the light ring read 2.4:1 against the field (A13
+                        // prep-for-prod); full, it is 3.6:1 on white.
+                        .strokeBorder(Color(token: Tokens.carrot), lineWidth: 2)
                         .padding(-2)
                 }
             }

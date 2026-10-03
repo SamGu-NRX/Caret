@@ -11,6 +11,8 @@ final class AskModel: ObservableObject {
     @Published var focusToken = 0
     var edit: (String) -> Void = { _ in }
     var submit: () -> Void = {}
+    var run: () -> Void = {}
+    var escape: () -> Void = {}
 }
 
 /// The ask field at the top of the activity list, and under it what Caret made of the request:
@@ -29,8 +31,25 @@ struct AskSection: View {
     var animated = true
     var onEdit: (String) -> Void = { _ in }
     var onSubmit: () -> Void = {}
+    var onRun: () -> Void = {}
+    var onEscape: () -> Void = {}
 
     static let fieldTitle = "Ask Caret"
+
+    /// The Return hint shows only while there is a request to send.
+    static func showsHint(text: String, phase: AskCaret.Phase) -> Bool {
+        phase == .idle && !text.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// What VoiceOver says the field does now.
+    private var fieldHint: String {
+        switch phase {
+        case .proposed: return "Tab runs the plan below. Escape puts it away."
+        case .running: return "A plan is running. Escape stops it."
+        case .asking: return "Caret is planning what you asked."
+        case .idle, .failed, .ended: return "Return plans it. Nothing runs until you press Tab."
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -38,7 +57,7 @@ struct AskSection: View {
                 title: Self.fieldTitle, text: text, placeholder: AskCopy.placeholder, showsFocus: showsFocus,
                 focusToken: focusToken, onChange: onEdit, onSubmit: onSubmit
             )
-            .accessibilityHint("Return plans it. Nothing runs until you press Tab.")
+            .accessibilityHint(fieldHint)
             under
         }
     }
@@ -48,7 +67,7 @@ struct AskSection: View {
         case .idle:
             // Says what Return does and that nothing runs on its own, only while there is a request
             // to send: an empty field needs no instructions.
-            if !text.trimmingCharacters(in: .whitespaces).isEmpty {
+            if Self.showsHint(text: text, phase: phase) {
                 HStack(spacing: 5) {
                     Keycap(text: "Return")
                     Text("plans it. Nothing runs until you press Tab.")
@@ -63,11 +82,11 @@ struct AskSection: View {
         case .failed(let sentence):
             status(.error, sentence, ink: true)
         case .proposed(let card):
-            AskCard(card: card, ending: nil, running: false, character: character, animated: animated).padding(.top, 8)
+            AskCard(card: card, ending: nil, running: false, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
         case .running(let card):
-            AskCard(card: card, ending: nil, running: true, character: character, animated: animated).padding(.top, 8)
+            AskCard(card: card, ending: nil, running: true, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
         case .ended(let card, let line):
-            AskCard(card: card, ending: line, running: false, character: character, animated: animated).padding(.top, 8)
+            AskCard(card: card, ending: line, running: false, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
         }
     }
 
@@ -96,6 +115,9 @@ struct AskCard: View {
     var running: Bool
     var character: FigureCharacter
     var animated = true
+    /// The card's keys as named VoiceOver actions: Tab's run, and Esc's stop or dismiss.
+    var onRun: () -> Void = {}
+    var onEscape: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -129,6 +151,7 @@ struct AskCard: View {
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color(token: Tokens.border), lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Caret's plan")
+        .modifier(CardActions(proposed: !running && ending == nil, running: running, action: card.action, onRun: onRun, onEscape: onEscape))
     }
 
     private var figure: FigureState {
@@ -158,6 +181,25 @@ struct AskCard: View {
                 HintView(hint: Hint(key: "Esc", label: "Dismiss"))
                 Spacer(minLength: 0)
             }
+        }
+    }
+}
+
+/// The keys the card names, also as VoiceOver actions, so it never depends on knowing them.
+private struct CardActions: ViewModifier {
+    var proposed: Bool
+    var running: Bool
+    var action: String
+    var onRun: () -> Void
+    var onEscape: () -> Void
+
+    func body(content: Content) -> some View {
+        if proposed {
+            content.accessibilityAction(named: Text(action), onRun).accessibilityAction(named: Text("Dismiss"), onEscape)
+        } else if running {
+            content.accessibilityAction(named: Text("Stop"), onEscape)
+        } else {
+            content.accessibilityAction(named: Text("Close"), onEscape)
         }
     }
 }
@@ -226,7 +268,7 @@ struct AskLiveSection: View {
     var body: some View {
         AskSection(
             text: model.text, phase: model.phase, character: character, focusToken: model.focusToken, animated: animated,
-            onEdit: { model.edit($0) }, onSubmit: { model.submit() }
+            onEdit: { model.edit($0) }, onSubmit: { model.submit() }, onRun: { model.run() }, onEscape: { model.escape() }
         )
         .onChange(of: announcement) { _, words in
             if let words { AccessibilityNotification.Announcement(words).post() }
@@ -236,7 +278,8 @@ struct AskLiveSection: View {
     /// What VoiceOver says when the phase changes: the plan's title, the reason there is none, or the ending.
     private var announcement: String? {
         switch model.phase {
-        case .idle, .running: return nil
+        case .idle: return nil
+        case .running(let card): return "Running in \(card.app). Escape stops it."
         case .asking: return AskCopy.planning
         case .failed(let sentence): return sentence
         case .proposed(let card): return "\(card.title). Tab to \(card.action.lowercased()), Escape to dismiss."
