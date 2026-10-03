@@ -1,0 +1,1 @@
+Shared-Mac input: synthetic HID keys go to LaunchServices' front app (guard on lsappinfo front); caret-screen write/press act only in --act-pids (subset of --only-pids), and rechecks fail closed on unreadable role/value/label.

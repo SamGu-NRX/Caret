@@ -173,8 +173,8 @@ enum Fx {
 /// One `SurfaceMachine` with a fake screen and clock, and the arbiter's decisions routed to it as
 /// the tap thread and `HostRuntime` route them.
 final class SurfaceRig {
-    let arbiter = OfferArbiter()
-    let clock = ManualClock()
+    let arbiter: OfferArbiter
+    let clock: ManualClock
     let screen = FakeScreen()
     let machine: SurfaceMachine
     /// Commands since the last `takeLog`, in a short readable form; `publish` and counts left out.
@@ -195,8 +195,13 @@ final class SurfaceRig {
     var onSend: ((SurfaceSend) -> Void)?
     /// A decision the tap made that main has not handled yet (`pressLate`, `deliver`).
     private var inFlight: OfferArbiter.Decision?
+    /// Called on `toastSlotTaken`, as `HostRuntime` calls `FillCoordinator.toastChanged`.
+    var onToastSlotTaken: (() -> Void)?
 
-    init(headless: Bool = false) {
+    /// `arbiter` and `clock` are shared when a test runs `FillMachine` beside this machine.
+    init(headless: Bool = false, arbiter: OfferArbiter = OfferArbiter(), clock: ManualClock = ManualClock()) {
+        self.arbiter = arbiter
+        self.clock = clock
         machine = SurfaceMachine(arbiter: arbiter, world: screen, clock: clock, headless: headless)
         machine.output = { [unowned self] command in self.record(command) }
         machine.sendToHelper = { [unowned self] message in
@@ -232,6 +237,7 @@ final class SurfaceRig {
             log.append("toast slot")
             // FillCoordinator.toastChanged: its toast is gone once the slot holds another.
             if let id = fillToastID, arbiter.snapshot().toast?.id != id { fillToastID = nil }
+            onToastSlotTaken?()
         }
     }
 

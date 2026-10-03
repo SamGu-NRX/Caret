@@ -1,1 +1,0 @@
-caret-screen write/press verbs act only in --act-pids, which must be a subset of --only-pids; without it the reader only reads. Rechecks fail closed on unreadable role/subrole/value/label.

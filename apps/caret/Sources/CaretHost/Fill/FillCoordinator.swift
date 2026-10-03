@@ -3,76 +3,43 @@ import ApplicationServices
 import AutocompleteCore
 import CaretHostCore
 import CaretScreenCore
+import CompletionUI
 import Foundation
 
-/// Main-thread orchestration of grounded fill: helper proposals and form focus in; fill offers,
-/// the overlay, results to the helper and the undo toast out.
-///
-/// The helper proposes once per form (one entry per empty field) and then stays quiet for that
-/// form for 30 s, so the coordinator keeps the latest proposal per window and re-evaluates it on
-/// every focus or value change in the form's app. The invariant matches `HostCoordinator`'s: a
-/// fill value is on screen exactly when the arbiter holds the fill offer it was drawn for.
+/// The screen side of `FillMachine`, which decides grounded fill: which proposal to offer in which
+/// field, when to hold or withdraw it, the result toast and its ⌘Z. This class answers the
+/// machine's reads from Accessibility, NSWorkspace and the window server, draws its commands with
+/// `FillOverlay`, and sends its results to the helper. Every decision is the machine's and is
+/// tested there (`FillMachineTests`).
 @MainActor
 final class FillCoordinator {
-    private struct Held {
-        let proposal: FillProposal
-        let receivedAt: Date
-    }
-
-    private enum Trigger {
-        /// A proposal arrived at this uptime.
-        case proposal(UInt64)
-        /// The form's app notified at this uptime.
-        case focus(UInt64)
-        case other
-    }
-
-    /// A held proposal is used for at most this long. Assumed: the helper re-proposes a form after
-    /// 30 s of quiet, and its values are rechecked against the source before every write anyway.
-    private let proposalMaxAge: TimeInterval = 120
-
-    private let arbiter: OfferArbiter
+    private let machine: FillMachine
+    private let world: FillWorldAdapter
     private let status: HostStatus
     private let overlay: FillOverlay
     private let watcher: FillTargetWatcher
-    private let policy: TargetPolicy
     var executor: InsertionExecutor?
     var client: HelperClient?
     /// Called when this coordinator's toast took the arbiter's one toast slot, so another toast
     /// drawn for the slot (a fill pop-up's) can take itself down.
     var onToastShown: (() -> Void)?
-
-    private var held: [String: Held] = [:]
-    private var shownOfferID: UInt64?
-    /// What the shown offer is for, so a repeat evaluation of the same state does not republish.
-    private var shownKey: String?
-    private var lastFieldFrame: CGRect?
-    private var toastGrantID: UInt64?
-    /// Values refused or undone, per field (`FillSelection.suppressionKey`).
-    private var suppressed: Set<String> = []
-    private var toastGrantTimer: Timer?
-    /// Watches whatever fill surface is shown (the offer, then its toast) and takes it down when
-    /// the form is no longer where the user is looking.
-    private let watch = VisibilityWatch()
     private var activationObserver: NSObjectProtocol?
 
     init(arbiter: OfferArbiter, status: HostStatus, overlay: FillOverlay, watcher: FillTargetWatcher, policy: TargetPolicy) {
-        self.arbiter = arbiter
         self.status = status
         self.overlay = overlay
         self.watcher = watcher
-        self.policy = policy
-        watcher.onChange = { [weak self] pid, at in self?.evaluate(pid: pid, trigger: .focus(at)) }
-        // A held proposal's app coming to the front is a reason to look again.
+        let world = FillWorldAdapter(policy: policy)
+        self.world = world
+        machine = FillMachine(arbiter: arbiter, world: world, clock: RunLoopClock())
+        machine.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
+        watcher.onChange = { [weak self] pid, at in self?.machine.fieldChanged(pid: pid, at: at) }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             let pid = app.processIdentifier
-            MainActor.assumeIsolated {
-                guard let self, self.held.values.contains(where: { FillSelection.pid(fromWindowID: $0.proposal.windowId) == pid }) else { return }
-                self.evaluate(pid: pid, trigger: .other)
-            }
+            MainActor.assumeIsolated { self?.machine.appActivated(pid: pid) }
         }
         overlay.onChange = { [weak self, weak overlay] in
             guard let self, let overlay else { return }
@@ -81,301 +48,113 @@ final class FillCoordinator {
         }
     }
 
-    // MARK: - Helper messages
+    // MARK: - Events in, forwarded to the machine
 
     func receive(_ message: HelperInbound, at uptime: UInt64) {
         guard case .fillProposal(let proposal) = message else { return }
-        status.update { s in
-            s.fill.lastProposalID = proposal.id
-            s.fill.lastProposalFields = proposal.fields.count
-            s.fill.lastProposalValues = proposal.fields.filter { $0.value != nil }.count
-        }
-        guard let pid = FillSelection.pid(fromWindowID: proposal.windowId),
-              policy.allows(pid: pid, bundleID: NSRunningApplicationBundle.id(of: pid))
-        else {
-            status.update { $0.fill.lastSkip = "notAllowed" }
-            return status.increment("fill.proposalNotAllowed")
-        }
-        held[proposal.windowId] = Held(proposal: proposal, receivedAt: Date())
-        status.update { $0.fill.cachedProposals = self.held.count }
-        watcher.watch(pid)
-        evaluate(pid: pid, trigger: .proposal(uptime))
+        machine.receive(proposal, at: uptime)
     }
 
-    // MARK: - Evaluation
-
-    private func evaluate(pid: pid_t, trigger: Trigger) {
-        switch trigger {
-        case .proposal: status.increment("fill.eval.proposal")
-        case .focus: status.increment("fill.eval.focus")
-        case .other: status.increment("fill.eval.afterWrite")
-        }
-        let now = Date()
-        held = held.filter { now.timeIntervalSince($0.value.receivedAt) <= proposalMaxAge }
-        let candidates = held.values
-            .filter { FillSelection.pid(fromWindowID: $0.proposal.windowId) == pid }
-            .sorted { $0.receivedAt > $1.receivedAt }
-        status.update { $0.fill.cachedProposals = self.held.count }
-        guard !candidates.isEmpty else {
-            watcher.unwatch(pid)
-            return withdraw("noProposal")
-        }
-        // A claim on its way into this app: its own write will change the field; leave the line.
-        if arbiter.snapshot().insertingClaimID != nil {
-            return status.increment("fill.skip.inserting")
-        }
-
-        guard let reread = FieldReader.readFocused(pid: pid), let frame = AXRead.frame(of: reread.element) else {
-            return withdraw("fieldUnreadable")
-        }
-        let (element, field) = reread
-        guard policy.allows(pid: pid, bundleID: field.identity.bundleID) else { return withdraw("notAllowed") }
-        guard field.selection.isEmpty else { return withdraw("selection") }
-
-        let focusedFrame = Frame(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
-        var skip = FillSelection.Skip.noFieldAtFocus
-        for candidate in candidates {
-            switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: field.value, secure: field.secure, suppressed: suppressed) {
-            case .offer(let proposed, let origin):
-                return present(proposed, origin: origin, element: element, field: field, frame: frame, trigger: trigger)
-            case .skip(let reason):
-                // Report the most specific reason: a matched field outranks "nothing here".
-                if skip == .noFieldAtFocus { skip = reason }
-            }
-        }
-        withdraw(skip.rawValue)
-    }
-
-    private func present(_ proposed: FillField, origin: FillOrigin, element: AXUIElement, field: FieldState, frame: CGRect, trigger: Trigger) {
-        guard let value = proposed.value else { return withdraw(FillSelection.Skip.answerNone.rawValue) }
-        let key = [origin.proposalID, origin.fieldKey, field.identity.elementID, field.identity.elementRevision].joined(separator: "\u{1}")
-        if key == shownKey, let shownOfferID, arbiter.snapshot().current?.id == shownOfferID { return }
-        // The value is drawn in the field and the line by its top right corner: both must be
-        // visible, in the frontmost app's focused field (SurfaceGate). Otherwise hold the proposal
-        // and draw nothing; activation or a focus change looks again.
-        let anchors = [CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.maxX - 2, y: frame.minY + 2)]
-        if let hold = Visibility.hold(for: field.identity, anchors: anchors) {
-            return withdraw("held.\(hold.rawValue)")
-        }
-
-        let offer = Offer(
-            text: value, kind: .fill(origin), target: field.identity, fieldValue: field.value,
-            caretUTF16: field.selection.start, maxAgeSeconds: 60
-        )
-        guard let offerID = arbiter.publish(offer) else {
-            status.increment("fill.offerRefused")
-            return
-        }
-        shownOfferID = offerID
-        shownKey = key
-        lastFieldFrame = frame
-        executor?.remember(offerID: offerID, context: TextFieldContext(
-            beforeCursor: "", target: AppTarget(bundleIdentifier: field.identity.bundleID, appName: "")
-        ))
-        let outcome = overlay.showOffer(
-            value: value, fieldFrame: frame, style: FieldStyleProbe.style(of: element),
-            caption: origin.sourceCaption, pid: field.identity.pid,
-            hasPlaceholder: !(AXRead.string(kAXPlaceholderValueAttribute, on: element) ?? "").isEmpty
-        )
-        if outcome == .replaceToast, let toastGrantID {
-            // The toast gave way to an offer from another source, and its undo went with it.
-            arbiter.dismissToast(grantID: toastGrantID)
-            self.toastGrantID = nil
-            toastGrantTimer?.invalidate()
-            status.update { $0.fill.toast = nil }
-        }
-        status.increment("fill.line.\(outcome)")
-        watchShown(target: field.identity, anchors: anchors)
-
-        let elapsedMs: (UInt64) -> Double = { Double(DispatchTime.now().uptimeNanoseconds &- $0) / 1_000_000 }
-        switch trigger {
-        case .proposal(let at): status.proposalToOffer.record(elapsedMs(at))
-        case .focus(let at): status.focusToOffer.record(elapsedMs(at))
-        case .other: break
-        }
-        status.update { s in
-            s.fill.offersShown &+= 1
-            s.fill.lastSkip = nil
-        }
-    }
-
-    private func watchShown(target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool = true) {
-        watch.start(check: { Visibility.hold(for: target, anchors: anchors, requireFocus: requireFocus) }, onLost: { [weak self] hold in
-            guard let self else { return }
-            self.status.increment("fill.withdrawn.\(hold.rawValue)")
-            self.withdraw("held.\(hold.rawValue)")
-            if let grant = self.toastGrantID {
-                self.arbiter.dismissToast(grantID: grant)
-                self.toastGrantID = nil
-                self.toastGrantTimer?.invalidate()
-                self.status.update { $0.fill.toast = nil }
-            }
-            self.overlay.hideAll()
-        })
-    }
-
-    private func withdraw(_ reason: String) {
-        status.update { $0.fill.lastSkip = reason }
-        status.increment("fill.skip.\(reason)")
-        guard let shownOfferID else { return }
-        arbiter.invalidate(offerID: shownOfferID)
-        overlay.hideOffer(byTyping: false)
-        self.shownOfferID = nil
-        shownKey = nil
-    }
-
-    /// A newer offer from another producer replaced the fill offer on screen.
-    func displaced(_ offer: Offer) {
-        guard offer.id == shownOfferID else { return }
-        overlay.hideOffer(byTyping: false)
-        shownOfferID = nil
-        shownKey = nil
-    }
-
-    // MARK: - Keys (posted to main by the tap thread)
-
-    func offerChanged(_ reason: OfferArbiter.PassReason) {
-        let snapshot = arbiter.snapshot()
-        if let shownOfferID, snapshot.current?.id != shownOfferID {
-            overlay.hideOffer(byTyping: reason == .dismissed || reason == .typedThrough)
-            self.shownOfferID = nil
-            shownKey = nil
-        }
-        syncToast(snapshot, byTyping: reason != .toastDismissed && reason != .closed)
-    }
-
-    func claimed(_ claim: Claim) {
-        syncToast(arbiter.snapshot(), byTyping: false)
-        guard case .fill = claim.offer.kind, claim.offer.id == shownOfferID else { return }
-        overlay.markWorking()
-        shownOfferID = nil
-        shownKey = nil
-    }
-
-    /// ⌘Z took the grant; the executor is already reverting.
-    func undoStarted(_ grant: UndoGrant) {
-        toastGrantTimer?.invalidate()
-        toastGrantID = nil
-        status.update { $0.fill.toast?.grantID = nil }
-    }
-
-    /// Another coordinator's toast took the arbiter's toast slot: this one's toast, if any, is gone.
-    func toastChanged() {
-        syncToast(arbiter.snapshot(), byTyping: false)
-    }
-
-    private func syncToast(_ snapshot: OfferArbiter.Snapshot, byTyping: Bool) {
-        guard let toastGrantID, snapshot.toast?.id != toastGrantID else { return }
-        self.toastGrantID = nil
-        toastGrantTimer?.invalidate()
-        overlay.hideToast(byTyping: byTyping)
-        status.update { $0.fill.toast = nil }
-    }
-
-    // MARK: - Results
+    func displaced(_ offer: Offer) { machine.displaced(offer) }
+    func offerChanged(_ reason: OfferArbiter.PassReason) { machine.offerChanged(reason) }
+    func claimed(_ claim: Claim) { machine.claimed(claim) }
+    func undoStarted(_ grant: UndoGrant) { machine.undoStarted(grant) }
+    func toastChanged() { machine.toastChanged() }
 
     func insertionFinished(_ result: InsertionExecutor.Result) {
-        guard let origin = result.claim.offer.kind.fillOrigin else { return }
-        let pid = result.claim.offer.target.pid
-        let verified = result.insertion.verified == true
-        if !verified {
-            suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: result.claim.offer.text))
-        }
-        let outcome: FillResult.Outcome = result.rejected ? .rejected : (verified ? .inserted : .failed)
-        report(FillResult(
-            at: Self.nowMs(), proposalId: origin.proposalID, windowId: origin.windowID, fieldKey: origin.fieldKey,
-            outcome: outcome, reason: verified ? nil : result.reason, method: result.rejected ? nil : result.method,
-            valueLength: verified ? UTF16Text.length(result.claim.insertionText) : 0
+        machine.insertionFinished(FillInsertion(
+            claim: result.claim, verified: result.insertion.verified == true, rejected: result.rejected,
+            reason: result.reason, method: result.method, undo: result.undo,
+            insertedLength: UTF16Text.length(result.claim.insertionText)
         ))
-
-        if verified, let grant = result.undo {
-            if let frame = lastFieldFrame {
-                watchShown(target: grant.target, anchors: [CGPoint(x: frame.maxX - 2, y: frame.minY + 2)], requireFocus: false)
-            }
-            let id = arbiter.showToast(grant)
-            toastGrantID = id
-            onToastShown?()
-            // The toast names the app only ("Filled 4 fields from Mail", SURFACES.md section 6); the
-            // offer line already named the window.
-            let caption = "1 field from \(origin.sourceAppName)"
-            overlay.showToast(
-                .done, lead: "Filled", text: caption, keycap: Hint(key: "⌘Z", label: "Undo"), lifetime: grant.lifetimeSeconds,
-                field: lastFieldFrame, pid: pid, source: origin.sourceCaption
-            )
-            status.update { $0.fill.toast = DebugState.Toast(kind: "done", caption: "Filled \(caption)", grantID: id) }
-            toastGrantTimer?.invalidate()
-            toastGrantTimer = Timer.scheduledTimer(withTimeInterval: grant.lifetimeSeconds, repeats: false) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, self.toastGrantID == id else { return }
-                    self.arbiter.dismissToast(grantID: id)
-                    self.toastGrantID = nil
-                    self.status.update { $0.fill.toast = nil }
-                }
-            }
-        } else {
-            let caption = Self.errorCaption(result.reason)
-            overlay.showToast(.error, lead: nil, text: caption, keycap: nil, lifetime: 6, field: lastFieldFrame, pid: pid, source: origin.sourceCaption)
-            status.update { $0.fill.toast = DebugState.Toast(kind: "error", caption: caption, grantID: nil) }
-        }
-        // A verified fill moves focus on; the watcher reports it, but re-read now in case the app
-        // posts nothing for a programmatic focus change.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            MainActor.assumeIsolated { self?.evaluate(pid: pid, trigger: .other) }
-        }
     }
 
     func undoFinished(_ result: InsertionExecutor.UndoResult) {
-        guard let origin = result.grant.origin else { return }
-        let pid = result.grant.target.pid
-        if result.ok {
-            suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: result.grant.writtenValue))
-        }
-        report(FillResult(
-            at: Self.nowMs(), proposalId: origin.proposalID, windowId: origin.windowID, fieldKey: origin.fieldKey,
-            outcome: result.ok ? .undone : .undoFailed, reason: result.error, method: .axValue,
-            valueLength: result.ok ? 0 : UTF16Text.length(result.grant.writtenValue)
-        ))
-        if result.ok {
-            overlay.showToast(.undone, lead: nil, text: "Cleared 1 field", keycap: nil, lifetime: 2, field: lastFieldFrame, pid: pid, source: origin.sourceCaption)
-            status.update { $0.fill.toast = DebugState.Toast(kind: "undone", caption: "Cleared 1 field", grantID: nil) }
-        } else {
-            let caption = "The field changed after the fill, so it was left as it is."
-            overlay.showToast(.error, lead: nil, text: caption, keycap: nil, lifetime: 6, field: lastFieldFrame, pid: pid, source: origin.sourceCaption)
-            status.update { $0.fill.toast = DebugState.Toast(kind: "error", caption: caption, grantID: nil) }
-        }
+        machine.undoFinished(FillUndo(grant: result.grant, ok: result.ok, error: result.error))
     }
 
     func shutdown() {
-        watch.stop()
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        activationObserver = nil
         watcher.stop()
-        toastGrantTimer?.invalidate()
-        overlay.hideAll()
-        arbiter.invalidate(kind: "fill")
+        machine.shutdown()
     }
 
-    private func report(_ result: FillResult) {
-        status.update { $0.fill.lastResult = result }
-        client?.send(result)
+    // MARK: - Carrying out the machine's commands
+
+    private func perform(_ command: FillCommand) {
+        switch command {
+        case .watchApp(let pid): watcher.watch(pid)
+        case .unwatchApp(let pid): watcher.unwatch(pid)
+        case .drawOffer(let draw):
+            let element = world.element(readID: draw.readID)
+            overlay.showOffer(
+                value: draw.value, fieldFrame: draw.field,
+                style: element.map(FieldStyleProbe.style(of:)) ?? OverlayTextStyle(),
+                caption: draw.caption, pid: draw.pid, outcome: draw.line,
+                hasPlaceholder: !(element.flatMap { AXRead.string(kAXPlaceholderValueAttribute, on: $0) } ?? "").isEmpty
+            )
+        case .hideOffer(let byTyping): overlay.hideOffer(byTyping: byTyping)
+        case .markWorking: overlay.markWorking()
+        case .drawToast(let draw):
+            overlay.showToast(
+                FillOverlay.ToastKind(rawValue: draw.kind.rawValue) ?? .error, lead: draw.lead, text: draw.text,
+                keycap: draw.keycap, field: draw.field, pid: draw.pid, source: draw.source
+            )
+        case .hideToast(let byTyping): overlay.hideToast(byTyping: byTyping)
+        case .hideAll: overlay.hideAll()
+        case .remember(let offerID, let bundleID):
+            executor?.remember(offerID: offerID, context: TextFieldContext(
+                beforeCursor: "", target: AppTarget(bundleIdentifier: bundleID, appName: "")
+            ))
+        case .toastSlotTaken: onToastShown?()
+        case .send(let result): client?.send(result)
+        case .offerShown(let trigger):
+            let elapsedMs: (UInt64) -> Double = { Double(DispatchTime.now().uptimeNanoseconds &- $0) / 1_000_000 }
+            switch trigger {
+            case .proposal(let at): status.proposalToOffer.record(elapsedMs(at))
+            case .focus(let at): status.focusToOffer.record(elapsedMs(at))
+            case .other: break
+            }
+        case .count(let name): status.increment(name)
+        case .publish:
+            let info = machine.status
+            status.update { info.apply(to: &$0.fill) }
+        }
+    }
+}
+
+/// The machine's reads, answered on the main thread. The last field read is kept so the drawing
+/// layer can take the field's font and placeholder from the same element.
+@MainActor
+private final class FillWorldAdapter: FillWorld {
+    private let policy: TargetPolicy
+    private var lastRead: (id: UInt64, element: AXUIElement)?
+    private var nextReadID: UInt64 = 1
+
+    init(policy: TargetPolicy) { self.policy = policy }
+
+    func element(readID: UInt64) -> AXUIElement? {
+        lastRead.flatMap { $0.id == readID ? $0.element : nil }
     }
 
-    /// What went wrong and what next, without blame or probabilities (`IDENTITY.md` captions).
-    nonisolated static func errorCaption(_ reason: String?) -> String {
-        switch reason ?? "" {
-        case let r where r.hasPrefix("source."):
-            return "The source changed, so nothing was filled."
-        case "targetMoved", "fieldContentChanged", "selectionMoved", "replacedTextChanged":
-            return "The field changed, so nothing was filled."
-        case "offerExpired":
-            return "That suggestion was too old, so nothing was filled."
-        case "writeIgnored", "writeMismatch":
-            return "The field didn't take the value. Type it in to fill it."
-        default:
-            return "Nothing was filled."
+    nonisolated func allows(pid: Int32, bundleID: String?) -> Bool { policy.allows(pid: pid, bundleID: bundleID) }
+
+    nonisolated func bundleID(pid: Int32) -> String? { NSRunningApplicationBundle.id(of: pid) }
+
+    nonisolated func focusedField(pid: Int32) -> FillFieldRead? {
+        MainActor.assumeIsolated {
+            guard let (element, field) = FieldReader.readFocused(pid: pid), let frame = AXRead.frame(of: element) else { return nil }
+            let id = nextReadID
+            nextReadID &+= 1
+            lastRead = (id, element)
+            return FillFieldRead(identity: field.identity, value: field.value, selection: field.selection, secure: field.secure, frame: frame, readID: id)
         }
     }
 
-    private static func nowMs() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
+    nonisolated func hold(for target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) -> SurfaceGate.Hold? {
+        MainActor.assumeIsolated { Visibility.hold(for: target, anchors: anchors, requireFocus: requireFocus) }
+    }
 }
 
 enum NSRunningApplicationBundle {

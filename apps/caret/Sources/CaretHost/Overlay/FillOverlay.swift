@@ -43,7 +43,6 @@ final class FillOverlay {
     private let ghostLabel = NSTextField(labelWithString: "")
     private var line: LineState?
     private var deferred: Deferred?
-    private var toastTimer: Timer?
     private var character: FigureCharacter { FigureSettings.shared.character }
 
     var isShowingOffer: Bool { line?.role == .offer }
@@ -82,15 +81,13 @@ final class FillOverlay {
 
     // MARK: - Offer
 
-    /// Draws the value in the field and names its source. Returns what happened to a toast that
-    /// was still up; on `.replaceToast` the caller drops the toast's undo grant.
-    @discardableResult
+    /// Draws the value in the field and names its source. `outcome` is `FillMachine`'s decision
+    /// about a toast still up (`FillLineRule`): wait behind it, replace it, or nothing in the way.
     func showOffer(
-        value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, pid: pid_t, hasPlaceholder: Bool = false
-    ) -> FillLineRule.Outcome {
+        value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, pid: pid_t,
+        outcome: FillLineRule.Outcome, hasPlaceholder: Bool = false
+    ) {
         drawGhost(value: value, fieldFrame: fieldFrame, style: style, masksPlaceholder: hasPlaceholder)
-        let toastSource = line?.role == .toast ? line?.source : nil
-        let outcome = FillLineRule.resolve(toastSource: toastSource, offerSource: caption)
         switch outcome {
         case .deferLine:
             deferred = Deferred(caption: caption, field: fieldFrame, pid: pid)
@@ -101,7 +98,6 @@ final class FillOverlay {
             showLine(caption: caption, field: fieldFrame, pid: pid)
         }
         onChange?()
-        return outcome
     }
 
     /// `masksPlaceholder`: the field shows placeholder text where the value goes, and the two
@@ -201,13 +197,12 @@ final class FillOverlay {
     // MARK: - Toast
 
     /// Turns the offer line into the result toast where it stands. A line already reporting an
-    /// earlier field gives way to one at this field.
+    /// earlier field gives way to one at this field. `FillMachine` ends it (`hideToast`).
     func showToast(
-        _ kind: ToastKind, lead: String?, text: String, keycap: Hint?, lifetime: TimeInterval,
+        _ kind: ToastKind, lead: String?, text: String, keycap: Hint?,
         field: CGRect?, pid: pid_t, source: String
     ) {
         ghost.orderOut(nil)
-        toastTimer?.invalidate()
         let content = LineContent(
             figure: kind == .error ? .error : .done, lead: lead, text: text, emphasis: .plain,
             hints: keycap.map { [$0] } ?? []
@@ -226,9 +221,6 @@ final class FillOverlay {
             line = LineState(panel: panel, role: .toast, choice: choice, field: field, source: source)
             panel.enter()
         }
-        toastTimer = Timer.scheduledTimer(withTimeInterval: lifetime, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.hideToast(byTyping: false) }
-        }
         onChange?()
     }
 
@@ -242,8 +234,6 @@ final class FillOverlay {
     }
 
     private func endToast(exit duration: TimeInterval) {
-        toastTimer?.invalidate()
-        toastTimer = nil
         guard let current = line, current.role == .toast else { return }
         current.panel.exit(duration: duration)
         line = nil

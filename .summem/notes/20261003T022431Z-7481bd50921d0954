@@ -1,0 +1,1 @@
+apps/caret: fill decisions (proposal hold, withdraw, toast lifetime, its Cmd-Z grant) live in CaretHostCore FillMachine; FillCoordinator only reads AX and draws. Test with FillRig; the shared toast slot with SharedToastSlotTests.TwoOwners (one arbiter).

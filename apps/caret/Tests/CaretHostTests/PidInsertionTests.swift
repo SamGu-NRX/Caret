@@ -63,9 +63,9 @@ final class PidInsertionTests: XCTestCase {
     }
 
     func testErrorCaptionsSayWhatAndWhatNext() {
-        XCTAssertEqual(FillCoordinator.errorCaption("source.valueGone"), "The source changed, so nothing was filled.")
-        XCTAssertEqual(FillCoordinator.errorCaption("targetMoved"), "The field changed, so nothing was filled.")
-        XCTAssertEqual(FillCoordinator.errorCaption("writeIgnored"), "The field didn't take the value. Type it in to fill it.")
+        XCTAssertEqual(FillMachine.errorCaption("source.valueGone"), "The source changed, so nothing was filled.")
+        XCTAssertEqual(FillMachine.errorCaption("targetMoved"), "The field changed, so nothing was filled.")
+        XCTAssertEqual(FillMachine.errorCaption("writeIgnored"), "The field didn't take the value. Type it in to fill it.")
     }
 }
 

@@ -478,6 +478,7 @@ public final class SurfaceMachine {
     }
 
     public func claimed(_ claim: Claim) {
+        releaseWhatTheKeyCleared()
         let shown: Shown
         if let current = self.shown, current.offerID == claim.offer.id {
             shown = current
@@ -531,6 +532,21 @@ public final class SurfaceMachine {
         // the line's anchor uncovered. Focus may move; the line reports on work, not on a field.
         startWatch(.line, target: claim.offer.target, anchors: [CGPoint(x: shown.caret.midX, y: shown.caret.midY)], requireFocus: false)
         publish()
+    }
+
+    /// A Tab that took another owner's offer (the fill line's) also cleared this machine's working
+    /// line and toast in the arbiter, as any key headed for their app does. Without this the
+    /// toast stayed on screen reading "⌘Z Undo" while ⌘Z belonged to the app again (A7 finding,
+    /// `SharedToastSlotTests`).
+    func releaseWhatTheKeyCleared() {
+        let snapshot = arbiter.snapshot()
+        if let work, snapshot.statusLine?.id != work.statusID, panelUp { hidePanel(exit: 0.08) }
+        if let toastGrantID, snapshot.toast?.id != toastGrantID {
+            self.toastGrantID = nil
+            toastInfo = nil
+            cancelResultTimer()
+            takeLineDown(exit: 0.08)
+        }
     }
 
     public func shutdown() {
