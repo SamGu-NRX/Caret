@@ -44,17 +44,17 @@ public enum SurfaceGate {
     ///
     /// A window above the normal layer that covers a whole display is skipped too: utilities draw
     /// transparent full-screen overlays there, and counting them would hide Caret everywhere.
-    /// Measured on 2026-10-03: Snipaste keeps one window at layer 25, alpha 1, spanning every
-    /// display at once ([-1977, -1207, 5168, 3188] around a 2560 x 1440 main display), and A10's
-    /// first surface run held every offer as `covered` under it. So a window equal to one display,
-    /// or containing every display, is skipped. Nothing here proves such a window transparent; a
-    /// real opaque one at such a layer is assumed rare, and one covering only part of a display
-    /// still counts (A10 review).
+    /// Measured on 2026-10-03: Snipaste keeps one window at layer 25, alpha 1, at
+    /// [-1977, -1207, 5168, 3188]. It contains the 2560 x 1440 main display but not the second
+    /// display below it ([541, 1440, 1512, 982] in these coordinates), and A10's surface runs held
+    /// every offer as `covered` under it, both with the old rule (equal to a display) and with a
+    /// narrower one tried after review (containing every display). So any elevated window that
+    /// contains a whole display is skipped. Nothing here proves it transparent: an opaque one is
+    /// assumed rare, and one covering only part of a display still counts.
     public static func topPID(at point: CGPoint, windows: [Window], ownPID: Int32, displays: [CGRect] = []) -> Int32? {
         for window in windows {
             guard window.pid != ownPID, window.alpha > 0.01, window.bounds.contains(point) else { continue }
-            if window.layer > 0, !displays.isEmpty,
-               displays.contains(where: { $0.equalTo(window.bounds) }) || displays.allSatisfy({ window.bounds.contains($0) }) { continue }
+            if window.layer > 0, displays.contains(where: { window.bounds.contains($0) }) { continue }
             return window.pid
         }
         return nil

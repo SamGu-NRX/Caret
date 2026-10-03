@@ -48,16 +48,14 @@ final class SurfaceGateTests: XCTestCase {
                                        windows: windows, ownPID: caret, displays: [display]))
     }
 
-    /// Snipaste's overlay as measured on 2026-10-03: one layer-25 window spanning both displays.
-    func testAnOverlaySpanningEveryDisplayIsIgnored() {
-        let main = CGRect(x: 0, y: 0, width: 2560, height: 1440), side = CGRect(x: -1512, y: -982, width: 1512, height: 982)
+    /// Snipaste's overlay and this Mac's displays as measured on 2026-10-03: the layer-25 window
+    /// contains the main display but not the second one below it.
+    func testAnOverlayContainingAWholeDisplayIsIgnored() {
+        let main = CGRect(x: 0, y: 0, width: 2560, height: 1440), side = CGRect(x: 541, y: 1440, width: 1512, height: 982)
         let overlay = SurfaceGate.Window(pid: messages, bounds: CGRect(x: -1977, y: -1207, width: 5168, height: 3188), layer: 25)
+        XCTAssertFalse(overlay.bounds.contains(side), "the measured case: not every display")
         XCTAssertNil(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [anchor],
                                        windows: [overlay, SurfaceGate.Window(pid: form, bounds: formWindow)], ownPID: caret, displays: [main, side]))
-        // Larger than the main display but not spanning the side one: nothing says it is clear.
-        let big = SurfaceGate.Window(pid: messages, bounds: CGRect(x: -10, y: -10, width: 2600, height: 1500), layer: 25)
-        XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [anchor],
-                                         windows: [big, SurfaceGate.Window(pid: form, bounds: formWindow)], ownPID: caret, displays: [main, side]), .covered)
         // A floating window that covers only part of a display still covers the field.
         let panel = SurfaceGate.Window(pid: messages, bounds: CGRect(x: 600, y: 100, width: 600, height: 400), layer: 25)
         XCTAssertEqual(SurfaceGate.check(targetPID: form, frontmostPID: form, fieldIsFocused: true, anchors: [anchor],
