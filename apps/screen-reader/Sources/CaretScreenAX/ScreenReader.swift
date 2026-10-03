@@ -89,9 +89,10 @@ public final class ScreenReader {
     }
 
     /// After the helper reconnects it has no state, so walk everything again. Its watches are gone
-    /// with it, so the reader drops its own until the new helper asks for some.
+    /// with it, so the reader drops its own until the new helper asks for some. The press watch is kept: a
+    /// resync also follows dropped snapshots with no reconnect, when the helper still counts on it (B20 review),
+    /// and after a reconnect the new helper sends its own list with its next occurrence.
     public func resync() {
-        watchPresses([:])
         for w in workers.values {
             w.setWatched([])
             w.backgroundPass(reason: .initial, minAge: 0)

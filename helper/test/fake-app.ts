@@ -22,6 +22,9 @@ export class FakeApp implements ReaderLink {
   dropWrites = false;
   /** The same for focus-and-insert. */
   dropInserts = false;
+  /** Leaves the field out of the walk right after an insert and back in the next one, as B15's WebKit window did. */
+  vanishOnInsert = false;
+  private vanished: Node | null = null;
   /** Sets the value but answers axError, as a reader that timed out while settling does. */
   timeoutAfterWrite = false;
   /** Answers this many walks with axError first, as a walk cut short by a busy app is. */
@@ -58,8 +61,9 @@ export class FakeApp implements ReaderLink {
   /** Sends the window's current state to the helper, as a full walk. */
   show(): void {
     this.at += 10;
+    const nodes = this.vanished === null ? this.nodes : this.nodes.filter((n) => n.key !== this.vanished?.key);
     void this.helper?.handleReader(
-      snap(structuredClone(this.nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request" }),
+      snap(structuredClone(nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request" }),
     );
   }
 
@@ -87,6 +91,7 @@ export class FakeApp implements ReaderLink {
       return { outcome: "axError", detail: "the walk was cut short" };
     }
     if (verb.kind === "raise") return { outcome: "notAllowed", detail: "the fake app does not raise its window" };
+    if (verb.kind === "walk") this.vanished = null;
     this.show();
     if (verb.kind === "walk") return { outcome: "ok", detail: null };
     const n = this.node(verb.key);
@@ -98,6 +103,7 @@ export class FakeApp implements ReaderLink {
         if ((n.value ?? "") !== verb.expect) return { outcome: "changed", detail: `value is '${n.value ?? ""}'` };
         if (verb.attribute === "insert") this.focusedKey = verb.key;
         if (!(verb.attribute === "value" ? this.dropWrites : this.dropInserts)) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
+        if (verb.attribute === "insert" && this.vanishOnInsert) this.vanished = n;
         if (this.timeoutAfterWrite) return { outcome: "axError", detail: "no answer from the reader within 5000 ms" };
       } else this.focusedKey = verb.key;
     } else {

@@ -11,6 +11,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { HelperMessage, PROTOCOL_VERSION, ConsumerMessage, type MemoryEntry, type MemoryReply, type PatternOffer, type SkillOffer, type TaskProgress } from "../src/protocol.ts";
 import { checkName, fallbackName, nameCandidates, nameRoutine, safeFacts, type RoutineFacts } from "../src/patterns/naming.ts";
 import { cleanRun, handedPress, mayRunUnasked, PROMOTE_AFTER } from "../src/patterns/skills.ts";
+import { PRESS_ENDS_MS } from "../src/patterns/routines.ts";
 import { dontOfferMatch } from "../src/patterns/memory.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
 import { Desk, buttonKey, cellKey, type GridWindow, type ListWindow } from "./scene.ts";
@@ -811,12 +812,41 @@ describe("skills in the helper", () => {
     expect(since("patternOffer", at).filter((o) => o.kind === "routine")).toHaveLength(1);
   });
 
-  it("asks the reader to watch presses only in a window with an occurrence under way, and stops when it closes", () => {
+  it("asks the reader to watch presses in a window the user is filling, and stops when it closes", () => {
     byHandPressing(null);
     const c = compose(day);
     const watches = pressWatches();
     expect(watches.at(-2)).toEqual([c.windowId]);
     expect(watches.at(-1)).toEqual([]);
+  });
+
+  it("keeps a Send clicked before the copied values settled, as a fast user's is (B20 review)", () => {
+    buttons = ["Send", "Send later"];
+    // The first occurrence, so no prediction made a bundle when the window opened.
+    const c = open();
+    // Typed in quick succession, then Send at once: no transfer has settled when the click comes.
+    for (let j = 0; j < 3; j++) {
+      c.values.set(cellKey(c, 0, j), calendar(day).lines[j]!);
+      desk.showGrid(c);
+      desk.advance(200);
+    }
+    expect(pressWatches().at(-1)).toEqual([c.windowId]);
+    press(c, "Send");
+    desk.close(c.windowId);
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "click" });
+  });
+
+  it("does not take a safe click as how an occurrence ended unless the window closed right after it", () => {
+    buttons = ["Save draft", "Send"];
+    for (let i = 0; i < 3; i++) {
+      const c = open();
+      for (let j = 0; j < 3; j++) desk.fill(c, 0, j, calendar(day).lines[j]!);
+      press(c, "Save draft");
+      // More work after the save, then the window closes some seconds later, as after a keyboard Send.
+      desk.advance(PRESS_ENDS_MS + 1000);
+      desk.close(c.windowId);
+    }
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "buttons" });
   });
 
   it("names nothing and offers nothing for a routine whose predictions miss", async () => {

@@ -614,6 +614,9 @@ export class Executor {
       // A WebKit window that is not key can leave the field out of the walk right after the insert (B15: the
       // field read as gone); one more read tells a field that is back unchanged from one that really went.
       if (this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
+      // A pause, stop or take-over that came in meanwhile is the user's word on the run, not a hand-off.
+      this.checkSession(task);
+      this.checkInterrupt(task);
       // Every means answered ok and the field holds what it held: this app takes no text written this way, as a
       // WebKit window that is not key does (B15, B20). Nothing was written, so the field is the user's to fill,
       // said plainly, not a failed run.
@@ -635,7 +638,8 @@ export class Executor {
       if (now !== undefined && (now.value ?? "") !== before) {
         task.ledger.push({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: now.value ?? "" });
       }
-      const recorded = seen.some((c) => c.kind === "value" && c.key === node.key && c.after === value);
+      // A field the walk lost and then found again (B15's WebKit window) comes back as an added node holding the value.
+      const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);
       if (now === undefined || (now.value ?? "") !== value || !recorded) {
         throw StepStop.stop("mismatch", `mismatch: expected ${prediction}; the field now holds '${clip(now?.value ?? "(gone)")}'`);
       }

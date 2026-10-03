@@ -32,7 +32,7 @@ import { decide, type Decision } from "./gate.ts";
 import { LoopRecognizer, type LoopCell, type LoopEvent } from "./loops.ts";
 import { MemoryError, dontOfferMatch, routineProven, typedAboutKey, type MemoryStore, type RoutineRecord } from "./memory.ts";
 import { applyMemory, captureEdit } from "./preferences.ts";
-import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
+import { BUNDLE_IDLE_MS, RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
 import { describeTransfer, templateOf } from "./shape.ts";
 import { normalizeValue } from "../normalize.ts";
 import { offerField } from "../offers/field.ts";
@@ -194,6 +194,11 @@ export class PatternEngine {
   private clock = 0;
   /** The press watch last sent to the reader, as sorted window ids; "" for none. */
   private pressWatch = "";
+  /**
+   * Windows the user changed a field in, and when last: an occurrence may be under way there before its
+   * transfers settle into a bundle, and Send may come first (B20 review), so their presses are watched too.
+   */
+  private readonly editing = new Map<string, number>();
 
   constructor(deps: EngineDeps) {
     this.deps = deps;
@@ -247,9 +252,10 @@ export class PatternEngine {
     this.routines.onPress(m.windowId, { at: m.at, key: m.key, role: m.role, label: m.label });
   }
 
-  /** Sends the reader the windows with an occurrence under way when that set changed. */
+  /** Sends the reader the windows with an occurrence under way, or with recent edits, when that set changed. */
   private syncPressWatch(): void {
-    const ids = this.routines.openWindows().sort();
+    for (const [id, at] of this.editing) if (this.clock - at > BUNDLE_IDLE_MS || !this.deps.model.windows.has(id)) this.editing.delete(id);
+    const ids = [...new Set([...this.routines.openWindows(), ...this.editing.keys()])].sort();
     const key = ids.join(",");
     if (key === this.pressWatch || this.deps.watchPresses === undefined) return;
     this.pressWatch = key;
@@ -273,12 +279,15 @@ export class PatternEngine {
         if (preds.length > 0) this.onPredictions(preds);
         if (preds.length > 0) this.syncPressWatch();
       } else if (c.kind === "value" && c.key !== null) {
+        // The user's own edits, in the window they are in; Caret's writes elsewhere open no watch.
+        if (c.editable && this.deps.model.windows.get(c.windowId)?.focused === true) this.editing.set(c.windowId, c.at);
         const w = this.watches.get(`${c.windowId}\u0000${c.key}`);
         if (w !== undefined) w.pending = c.after === w.written ? null : { value: c.after ?? "", at: c.at };
       }
     }
     const touched = new Set(changes.filter((c) => c.kind === "value" || c.kind === "removed").map((c) => c.windowId));
     if (touched.size > 0) this.recheckOpen(touched);
+    if (changes.some((c) => c.kind === "value" && c.editable && this.editing.has(c.windowId))) this.syncPressWatch();
   }
 
   /**
@@ -420,7 +429,8 @@ export class PatternEngine {
 
   /** Called before the window leaves the model. */
   onWindowClosed(windowId: string): void {
-    const closed = this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId));
+    const closed = this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId, this.clock));
+    this.editing.delete(windowId);
     if (closed !== null) this.skills.onBundleClosed(closed, this.clock);
     this.syncPressWatch();
     this.loops.sourceClosed(windowId);
@@ -507,6 +517,7 @@ export class PatternEngine {
     this.routines.flush();
     // The new reader watches no presses; the next occurrence sends its window again.
     this.pressWatch = "";
+    this.editing.clear();
     this.loops.reset();
     for (const o of this.offers.values()) if (o.state === "open") this.withdraw(o, "stale");
     this.watches.clear();

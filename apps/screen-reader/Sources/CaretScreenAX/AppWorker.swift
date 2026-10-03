@@ -37,6 +37,37 @@ struct WindowInfo {
     var decided: [String: AXRef] = [:]
 }
 
+/// The worker's windows, and the keys of their pressable elements as of each window's latest walk, readable
+/// from any thread. A user's press is resolved the moment the button goes down, not behind walks queued on the
+/// worker, since Send can close its window before those finish (B20 review).
+final class PressIndex: @unchecked Sendable {
+    private let lock = NSLock()
+    private var byWindow: [AXRef: (id: String, keys: [AXRef: String])] = [:]
+
+    func set(_ w: AXRef, id: String, contexts: [AXRef: KeyContext]) {
+        let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
+        lock.lock(); defer { lock.unlock() }
+        byWindow[w] = (id, keys)
+    }
+
+    func remove(_ w: AXRef) {
+        lock.lock(); defer { lock.unlock() }
+        byWindow.removeValue(forKey: w)
+    }
+
+    func removeAll() {
+        lock.lock(); defer { lock.unlock() }
+        byWindow.removeAll()
+    }
+
+    /// The window's id and the element's key, nil when the reader has not walked that window.
+    func lookup(window w: AXRef, element el: AXRef) -> (id: String, key: String?)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry = byWindow[w] else { return nil }
+        return (entry.id, entry.keys[el])
+    }
+}
+
 private let observerCallback: AXObserverCallback = { _, element, notification, refcon in
     guard let refcon else { return }
     let worker = Unmanaged<AppWorker>.fromOpaque(refcon).takeUnretainedValue()
@@ -50,6 +81,9 @@ public final class AppWorker: @unchecked Sendable {
     let ax: AXUIElement
     let queue: DispatchQueue
     let ctx: ReaderContext
+    /// Resolves user presses at once, beside `queue` rather than behind it.
+    private let pressQueue: DispatchQueue
+    private let pressIndex = PressIndex()
 
     // Confined to `queue`.
     private var windows: [AXRef: WindowInfo] = [:]
@@ -96,6 +130,7 @@ public final class AppWorker: @unchecked Sendable {
         self.appPart = ElementKey.appPart(bundleId: app.bundleId.isEmpty ? nil : app.bundleId, name: app.name)
         self.ax = AXUIElementCreateApplication(pid)
         self.queue = DispatchQueue(label: "caret.screen.app.\(pid)", qos: .utility)
+        self.pressQueue = DispatchQueue(label: "caret.screen.press.\(pid)", qos: .userInitiated)
         self.ctx = ctx
         AXUIElementSetMessagingTimeout(ax, AX.elementTimeout)
     }
@@ -187,6 +222,7 @@ public final class AppWorker: @unchecked Sendable {
         for (w, info) in windows where targets.contains(info.id) {
             if case .failed(.invalidUIElement) = AX.read(w.el, kAXRoleAttribute) {
                 windows.removeValue(forKey: w)
+                pressIndex.remove(w)
                 watched.remove(info.id)
                 ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
                 continue
@@ -222,6 +258,7 @@ public final class AppWorker: @unchecked Sendable {
             self.removeObserver()
             for (_, info) in self.windows { self.ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id))) }
             self.windows.removeAll()
+            self.pressIndex.removeAll()
         }
     }
 
@@ -245,6 +282,7 @@ public final class AppWorker: @unchecked Sendable {
             walkWindow(el, reason: .event, isFocused: el == currentFocusedWindow())
         case kAXUIElementDestroyedNotification:
             if let info = windows.removeValue(forKey: el) {
+                pressIndex.remove(el)
                 ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
                 if focusedWindow == el { focusedWindow = nil }
             } else {
@@ -421,6 +459,7 @@ public final class AppWorker: @unchecked Sendable {
         for (h, kc) in result.contexts { contexts[AXRef(walker.elements[h])] = kc }
         info.contexts = contexts
         info.lastWalk = CFAbsoluteTimeGetCurrent()
+        pressIndex.set(w, id: info.id, contexts: contexts)
 
         let frame = AX.frame(of: w.el)
         var h = Hasher()
@@ -453,6 +492,7 @@ public final class AppWorker: @unchecked Sendable {
         for (h, c) in result.contexts { info.contexts[AXRef(walker.elements[h])] = c }
         info.contentHash = nil
         windows[w] = info
+        pressIndex.set(w, id: info.id, contexts: info.contexts)
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: .event, app: app,
                             window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: AX.frame(of: w.el), number: info.number),
                             focused: w == focusedWindow, root: kc.key, nodes: result.nodes, values: ctx.detector.values(for: result.nodes),
@@ -472,6 +512,7 @@ public final class AppWorker: @unchecked Sendable {
         let live = Set(ws.map(AXRef.init))
         for (w, info) in windows where !live.contains(w) {
             windows.removeValue(forKey: w)
+            pressIndex.remove(w)
             ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
         }
         let focused = eventDriven ? (focusedWindow ?? currentFocusedWindow()) : nil
@@ -492,7 +533,7 @@ public final class AppWorker: @unchecked Sendable {
     /// ancestor, is pressable and sits in one of `windows`, reports it as a userPress with its key from the
     /// window's latest walk and its label as the element carries it. Read only: nothing is pressed or set.
     func observePress(at point: CGPoint, time at: Int64, windows ids: Set<String>) {
-        queue.async {
+        pressQueue.async {
             var hit: AXUIElement?
             guard AXUIElementCopyElementAtPosition(self.ax, Float(point.x), Float(point.y), &hit) == .success, var el = hit else { return }
             AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
@@ -505,10 +546,9 @@ public final class AppWorker: @unchecked Sendable {
                 climbed += 1
             }
             guard let r = role, Roles.pressable.contains(r),
-                  let w = AX.element(el, kAXWindowAttribute).map(AXRef.init), let info = self.windows[w], ids.contains(info.id),
+                  let w = AX.element(el, kAXWindowAttribute).map(AXRef.init), let (id, key) = self.pressIndex.lookup(window: w, element: AXRef(el)), ids.contains(id),
                   let label = self.liveLabel(el) else { return }
-            let key = info.contexts[AXRef(el)]?.key
-            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: info.id, key: key, role: r,
+            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: id, key: key, role: r,
                                                        label: label.trimmingCharacters(in: .whitespacesAndNewlines))))
         }
     }
