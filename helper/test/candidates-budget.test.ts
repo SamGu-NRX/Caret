@@ -1,7 +1,7 @@
 // The early-capped candidate generator: the same output as the generator before B6, a cost that
 // follows the cap rather than the screen, and a time budget that stops it.
 import { describe, expect, it } from "vitest";
-import { collectCandidates, countSpans, generateCandidates, MAX_CANDIDATES } from "../src/fill/candidates.ts";
+import { collectCandidates, countSpans, generateCandidates, MAX_CANDIDATES, setGeneratorClock } from "../src/fill/candidates.ts";
 import { ScreenModel } from "../src/model.ts";
 import type { Node, TypedValue } from "../src/protocol.ts";
 import { legacyGenerateCandidates } from "./legacy-candidates.ts";
@@ -153,6 +153,13 @@ describe("candidate generator", () => {
   });
 
   it("keeps generateCandidates' signature and default cap", () => {
-    expect(generateCandidates(scene.model, scene.formWindowId, undefined, NOW)).toEqual(legacyGenerateCandidates(scene.model, scene.formWindowId, MAX_CANDIDATES, NOW));
+    // generateCandidates takes no clock, so the budget's default one is fixed: under CPU stress the wall
+    // clock ran out on this scene before the cap (B14).
+    setGeneratorClock(() => 0);
+    try {
+      expect(generateCandidates(scene.model, scene.formWindowId, undefined, NOW)).toEqual(legacyGenerateCandidates(scene.model, scene.formWindowId, MAX_CANDIDATES, NOW));
+    } finally {
+      setGeneratorClock(null);
+    }
   });
 });

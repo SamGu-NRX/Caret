@@ -47,6 +47,19 @@ export const MAX_CANDIDATES = 80;
  * are taken most recent first.
  */
 export const GENERATOR_BUDGET_MS = 15;
+const wallClock = (): number => performance.now();
+let defaultClock: () => number = wallClock;
+
+/**
+ * Sets the clock the budget reads when a call passes none; null puts back the wall clock. Tests whose
+ * answers must not depend on the machine's load fix it: under CPU stress the wall clock stopped a long
+ * chat partway, which withheld Name on the fill desk in 2 of 20 suite runs (B14). The budget's own tests
+ * pass a clock per call instead. The helper never sets it.
+ */
+export function setGeneratorClock(clock: (() => number) | null): void {
+  defaultClock = clock ?? wallClock;
+}
+
 /** Nodes or values between clock reads. */
 const CLOCK_EVERY = 64;
 const MIN_LINE = 2;
@@ -137,7 +150,7 @@ export interface GenerateStats {
 export function collectCandidates(model: ScreenModel, targetWindowId: string, o: GenerateOptions = {}): Collected {
   const max = o.max ?? MAX_CANDIDATES;
   const now = o.now ?? Date.now();
-  const clock = o.clock ?? (() => performance.now());
+  const clock = o.clock ?? defaultClock;
   const budget = o.budgetMs ?? GENERATOR_BUDGET_MS;
   const t0 = clock();
   const stats: GenerateStats = { windows: 0, values: 0, nodes: 0, overBudget: false, ms: 0 };

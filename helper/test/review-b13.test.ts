@@ -4,13 +4,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { ScreenModel } from "../src/model.ts";
-import { collectCandidates } from "../src/fill/candidates.ts";
+import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
 import { SnippetLedger, WINDOW_CHARS, windowBudget } from "../src/privacy.ts";
@@ -20,6 +20,11 @@ import { PROTOCOL_VERSION, type AppRef, type FillProposal, type HelperMessage, t
 import type { AskJev } from "../src/fill/jev.ts";
 import { field, snap, text, value } from "./builders.ts";
 import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, chatWindow, notesWindow, scheduleForm } from "./desks.ts";
+
+// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
+// change an answer these tests check (candidates.ts setGeneratorClock).
+beforeAll(() => setGeneratorClock(() => 0));
+afterAll(() => setGeneratorClock(null));
 
 const CALENDAR: AppRef = { pid: 6363, bundleId: "dev.caret.calendar", name: "Calendar" };
 const NOTES: AppRef = { pid: 6464, bundleId: "dev.caret.notes", name: "Notes" };

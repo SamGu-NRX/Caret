@@ -29,7 +29,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { setGeneratorClock } from "../src/fill/candidates.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import type { WindowState } from "../src/model.ts";
@@ -41,6 +42,11 @@ import { FIXTURE_APP, focus, node, snap, text } from "./builders.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { largeScene } from "./large-scene.ts";
 import { CHAT, COMPOSER_CHAT, LONG_THREAD, MAIL_THREAD, MESSAGES_CHAT, NOTES, REF, SHORT_CHAT, agentThreads, chatWindow, messagesSources, notesWindow, shortChats } from "./desks.ts";
+
+// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
+// change an answer these tests check (candidates.ts setGeneratorClock).
+beforeAll(() => setGeneratorClock(() => 0));
+afterAll(() => setGeneratorClock(null));
 
 const CARD_LINES = 24;
 const CARD_LINE_CHARS = 80;
