@@ -1,1 +1,0 @@
-Every Jev request builder must take its screen text through a SnippetLedger (helper/src/privacy.ts) and set req.snippets; test/privacy.test.ts fails on any undeclared window line, over 1,200 chars from one window, or half of a non-card window (B10).
