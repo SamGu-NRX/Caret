@@ -63,6 +63,9 @@ extension SurfaceMachine {
         if progress.phase == .undone, undoing == progress.taskId {
             return finishUndo(progress)
         }
+        if work == nil, let stopped = stoppedWork, stopped.offerKey == progress.taskId {
+            return confirmStop(stopped, progress)
+        }
         if work?.offerKey == progress.taskId {
             if progress.steps > 0 { work?.steps = progress.steps }
             switch progress.phase {
@@ -190,8 +193,10 @@ extension SurfaceMachine {
         showResult(line, lifetime: partial ? 6 : 2)
     }
 
-    /// Esc on a working line after 3 s: stop, and say so for 2 s. Work the helper runs is stopped
+    /// Esc on a working line after 3 s: stop, and say so for 3 s. Work the helper runs is stopped
     /// there too (`offerStop`); what it already wrote stays, as the activity list's undo can restore.
+    /// The line names the step from the progress seen so far; the helper's own ending corrects it
+    /// (`confirmStop`).
     public func stopWork(_ line: StatusLine) {
         guard let work, work.statusID == line.id else { return }
         if work.source == .helper { _ = sendToHelper(.stop(OfferStop(offerId: work.offerKey, at: nowMs))) }
@@ -208,9 +213,35 @@ extension SurfaceMachine {
         // list says it.
         let steps = work.steps ?? 0
         showResult(WorkLines.stoppedByYou(next: work.nextStep ?? (steps > 0 ? 0 : nil), of: steps), lifetime: 3)
+        if work.source == .helper { stoppedWork = work }
+    }
+
+    /// The helper's ending for work Esc stopped, while its line still shows. A stop names the step
+    /// the helper stopped before; a run that finished before the stop reached it says Done. The
+    /// line keeps its place and its timer; anything else the run reports changes nothing.
+    func confirmStop(_ stopped: Work, _ progress: TaskProgress) {
+        guard resultStatusID != nil, !lineSuppressed || headless else { return }
+        let line: WorkLine
+        switch progress.phase {
+        case .stopped:
+            let steps = progress.steps > 0 ? progress.steps : (stopped.steps ?? 0)
+            line = WorkLines.stoppedByYou(next: progress.step ?? stopped.nextStep, of: steps)
+        case .done:
+            line = WorkLines.done(app: stopped.app, character: world.character)
+        default:
+            return
+        }
+        stoppedWork = nil
+        guard line.text != lineText else { return publish() }
+        count("surface.stop.corrected")
+        lineText = line.text
+        figure = line.content.figure
+        if !headless { showPanel(.line(line.content), text: line.text, placement: .inPlace) }
+        publish()
     }
 
     func endResult() {
+        stoppedWork = nil
         cancelResultTimer()
         if let id = resultStatusID { arbiter.clearStatus(id: id) }
         resultStatusID = nil

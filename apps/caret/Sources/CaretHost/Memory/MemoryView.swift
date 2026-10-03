@@ -277,10 +277,10 @@ struct MemoryRowView: View {
     @FocusState private var focused: MemoryPage.Control?
 
     /// Edit, Pause and Forget show on the row under the pointer or holding keyboard focus, and on a
-    /// row that waits for the user (a Forget to confirm, a refusal to retry). Hidden, they stay in
-    /// the accessibility tree and the key loop, so VoiceOver and Tab still reach them, and reaching
-    /// one shows them. A trailing menu was the other choice; it puts every action two clicks away,
-    /// and Pause is the one people use most.
+    /// row that waits for the user (a Forget to confirm, a refusal to retry). Hidden, they keep their
+    /// place in the key loop, so keyboard focus reaching one shows them; VoiceOver gets the same
+    /// controls as the row's own actions, whatever is drawn. A trailing menu was the other choice;
+    /// it puts every action two clicks away, and Pause is the one people use most.
     private var revealed: Bool { forceReveal || hovering || focused != nil || confirming || row.problem != nil }
 
     var body: some View {
@@ -341,6 +341,7 @@ struct MemoryRowView: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
+        .modifier(RowActions(row: row, enabled: editor == nil && !confirming, send: send))
         .onChange(of: washed) { _, now in
             guard now else { return }
             // A color change, not movement: it plays under Reduce Motion too.
@@ -372,6 +373,22 @@ struct MemoryRowView: View {
         // Opacity only, so it plays under Reduce Motion too; leaving is as quick as arriving.
         .opacity(revealed ? 1 : 0)
         .animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil, value: revealed)
+    }
+}
+
+/// A row's controls as named accessibility actions, so VoiceOver offers Edit, Pause and Forget on
+/// the row itself, never depending on whether the buttons are drawn.
+private struct RowActions: ViewModifier {
+    var row: MemoryPage.Row
+    var enabled: Bool
+    var send: (MemoryAction) -> Void
+
+    func body(content: Content) -> some View {
+        row.controls.reduce(AnyView(content)) { view, control in
+            guard enabled, !row.busy else { return view }
+            let title = row.typed && control == .forget ? "Remove" : MemoryPage.controlTitle(control)
+            return AnyView(view.accessibilityAction(named: Text(title)) { send(.control(row.id, control, typed: row.typed)) })
+        }
     }
 }
 

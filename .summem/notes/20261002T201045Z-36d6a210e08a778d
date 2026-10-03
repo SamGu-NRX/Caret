@@ -1,1 +1,0 @@
-leak-check.ts hashes every word-bounded substring of each line (quadratic in line length): an NDJSON with 50 KB lines never finishes; check one string per line instead.

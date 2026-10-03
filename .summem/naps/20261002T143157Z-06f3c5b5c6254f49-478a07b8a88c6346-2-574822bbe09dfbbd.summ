@@ -1,0 +1,1 @@
+Pattern code: RollingText.find credits a value seen in two windows to the most recent one; use findAll and pick the window that explains every round. Replay tests tick the helper on a fixed 250 ms grid of stream time like main.ts, or dense streams delay every transfer.

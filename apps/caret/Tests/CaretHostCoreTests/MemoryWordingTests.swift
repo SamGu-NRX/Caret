@@ -82,6 +82,9 @@ final class MemoryWordingTests: XCTestCase {
         let pref = entry(.preference(.useInstead(field: "Guest", aboutId: "about-1")), id: "pref-1")
         XCTAssertEqual(words(pref, with: [about]), ["Guest fields get Marcus Lowe (ops)", "You changed it once · today \(nineFourteen)"])
         XCTAssertEqual(words(pref), ["Guest fields get a value Caret no longer has", "You changed it once · today \(nineFourteen)"])
+        let pausedAbout = entry(.about(.init(label: "Guest", value: "Marcus Lowe (ops)", source: .edit)), status: .paused, id: "about-1")
+        XCTAssertEqual(words(pref, with: [pausedAbout])[0], "Guest fields would get Marcus Lowe (ops), but it's paused",
+                       "the helper substitutes nothing from a paused entry")
     }
 
     func testDontOfferNamesWhatStopped() {

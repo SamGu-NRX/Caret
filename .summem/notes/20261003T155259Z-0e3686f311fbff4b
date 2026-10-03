@@ -1,0 +1,1 @@
+Onboarding's know step shows only when a memoryReply list carries ops naming add (host contract, Tests/CaretHostCoreTests/Fixtures/memory.ndjson); today's helper sends no ops, so the step is hidden until B17 adds the op and the ops field (A12).

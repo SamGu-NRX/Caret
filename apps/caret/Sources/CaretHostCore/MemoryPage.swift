@@ -159,8 +159,14 @@ public enum MemoryPage {
                 title = "Phone numbers go in as \(sampleNumber(template))"
                 how = "you changed it \(times(e.evidence.count))"
             case .useInstead(let field, let aboutId):
-                let value = entries.first { $0.id == aboutId }?.about?.value
-                title = value.map { "\(field) fields get \($0)" } ?? "\(field) fields get a value Caret no longer has"
+                // The helper substitutes only an About entry that exists and is not paused
+                // (memory.ts `about`), so the title says what a fill gets today.
+                let about = entries.first { $0.id == aboutId }
+                switch (about?.about?.value, about?.status) {
+                case (let value?, .paused?): title = "\(field) fields would get \(value), but it's paused"
+                case (let value?, _): title = "\(field) fields get \(value)"
+                default: title = "\(field) fields get a value Caret no longer has"
+                }
                 how = "you changed it \(times(e.evidence.count))"
             case .dontOffer(let offerKind, let appName):
                 title = "No \(offerWords(offerKind)) in \(appName)"

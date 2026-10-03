@@ -119,14 +119,15 @@ public enum Captions {
         case .you: return "you stopped it"
         case .changed: return "\(app) changed while Caret was working"
         case .sheet: return "a dialog opened in \(app)"
-        case .windowGone: return "the \(app) window closed"
+        // The helper's windowGone covers a window that closed and one that never matched.
+        case .windowGone: return "Caret couldn't find the \(app) window"
         case .ambiguous: return "more than one \(app) window matched"
         case .readerRestarted: return "Caret lost its view of the screen"
         case .reader: return "Caret couldn't read or change \(app)"
         case .mismatch: return "\(app) didn't take the change"
         case .unreachable: return "Caret couldn't find the spot in \(app)"
         case .notConfigured: return "Caret isn't set up for this yet"
-        case .refused: return "the offer had already closed"
+        case .refused: return "Caret couldn't run that offer"
         case .error: return "something unexpected happened"
         }
     }
@@ -141,7 +142,9 @@ public enum Captions {
     /// A run the helper stopped for `reason`. A fill says what it filled first.
     public static func stopped(_ reason: TaskProgress.StopReason, app: String, next: Int?, steps: Int, fillFilled: Int?) -> String {
         if reason == .you { return stoppedByYou(next: next, of: steps) }
-        if reason == .refused { return "That offer had already closed, so nothing ran." }
+        // The helper refuses an accept for an offer that closed, ran already, or asked for an
+        // action it does not have; in every case nothing ran.
+        if reason == .refused { return "Caret couldn't run that offer, so nothing changed." }
         let cause = stopCause(reason, app: app)
         switch fillFilled {
         case .some(0): return "Filled nothing, because \(cause)."

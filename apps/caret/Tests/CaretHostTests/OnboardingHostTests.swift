@@ -58,7 +58,7 @@ final class OnboardingHostTests: XCTestCase {
     func testTheKnowScreensWordingIsPinned() {
         XCTAssertEqual(KnowScreen.title, "What Caret knows so far.")
         XCTAssertEqual(KnowScreen.detail, "Type your name and email, and Caret can fill them in for you.")
-        XCTAssertEqual(KnowScreen.footnote, "Saved on this Mac. When Caret works out what to fill, these may go to its cloud model. Change or remove them any time in What Caret Knows, in the menu bar.")
+        XCTAssertEqual(KnowScreen.footnote, "Continue saves these on this Mac. When Caret works out what to fill, they may go to its cloud model. Change or remove them any time in What Caret Knows, in the menu bar.")
         XCTAssertFalse(KnowScreen.footnote.contains("keeps these"), "nothing keeps them until the helper accepts add")
         XCTAssertEqual(AboutField.allCases.map(\.label), ["Name", "Email"])
         var draft = AboutDraft()

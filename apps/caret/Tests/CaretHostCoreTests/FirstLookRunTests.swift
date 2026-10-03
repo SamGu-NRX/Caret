@@ -172,6 +172,46 @@ final class FirstLookRunTests: XCTestCase {
         XCTAssertEqual(rig.flow.state.firstLookKeys, .none)
     }
 
+    /// An action found by the first look (no fields block): Tab runs it; when its run says it wrote
+    /// something, ⌘Z undoes it as on the real surfaces.
+    private func foundAction() throws -> FirstLookReply.Found {
+        let json = #"{"kind":"action","family":"pending","offerKey":"first-look-1.0","window":{"pid":5151,"windowId":"5151-2","appName":"Notes","title":"Draft"},"spec":{"v":1,"id":"fl","figure":"offering","blocks":[{"type":"header","title":{"text":"Write the note","ref":{"node":"5151-2/body"}}},{"type":"actions","items":[{"id":"run","label":"Write it","key":"tab"}]}]}}"#
+        return try JSONDecoder().decode(FirstLookReply.Found.self, from: Data(json.utf8))
+    }
+
+    func testAnActionThatWroteTakesCommandZ() throws {
+        let rig = Rig.atFirstLook(settings: { var s = CaretSettings(); s.roles = [.fill, .watch]; return s }())
+        rig.send(.firstLookReply(FirstLookReply(requestId: rig.request!.requestId, at: 1, outcome: .found, found: try foundAction())))
+        rig.take()
+        rig.send(.key(.tab), .taskProgress(progress(.done, written: 1)))
+        XCTAssertEqual(rig.flow.state.firstLookKeys, FirstLookKeys(undo: true))
+        XCTAssertEqual(rig.flow.state.firstLookRun?.line(character: .pebble)?.content.hints, [Hint(key: "⌘Z", label: "Undo")])
+        rig.take()
+        rig.send(.key(.undo))
+        XCTAssertEqual(rig.take(), [.undo(TaskControl(taskId: "first-look-1.0", action: .undo))])
+
+        let pressesOnly = Rig.atFirstLook(settings: { var s = CaretSettings(); s.roles = [.fill, .watch]; return s }())
+        pressesOnly.send(.firstLookReply(FirstLookReply(requestId: pressesOnly.request!.requestId, at: 1, outcome: .found, found: try foundAction())))
+        pressesOnly.send(.key(.tab), .taskProgress(progress(.done, written: 0)))
+        XCTAssertEqual(pressesOnly.flow.state.firstLookKeys, .none, "nothing written, nothing to undo")
+    }
+
+    func testTheHelpersStopCorrectsTheStepEscNamed() throws {
+        let rig = shown(try found())
+        rig.send(.key(.tab), .taskProgress(progress(.verified, step: 0, steps: 3)))
+        rig.clock.advance(by: 3)
+        rig.send(.key(.escape))
+        XCTAssertEqual(line(rig), "Stopped before step 2 of 3")
+        rig.send(.taskProgress(progress(.verified, step: 1, steps: 3)), .taskProgress(progress(.stopped, reason: .you, step: 2, steps: 3)))
+        XCTAssertEqual(line(rig), "Stopped before step 3 of 3", "step 2 finished before the stop reached the helper")
+
+        let finished = shown(try found())
+        finished.send(.key(.tab))
+        finished.clock.advance(by: 3)
+        finished.send(.key(.escape), .taskProgress(progress(.done, written: 4)))
+        XCTAssertEqual(line(finished), "Filled 4 fields from Mail", "the run finished before the stop reached it")
+    }
+
     func testEscStopsOnlyAfterThreeSecondsOtherwiseGoesBack() throws {
         let rig = shown(try found())
         rig.send(.key(.tab))

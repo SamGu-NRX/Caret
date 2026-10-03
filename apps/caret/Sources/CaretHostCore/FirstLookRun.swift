@@ -75,10 +75,11 @@ public struct FirstLookRun: Equatable, Sendable {
     /// Esc stops it: it has run long enough to be worth stopping, as on the real working line.
     public var stoppable: Bool { working && Double(seconds) >= StatusLine.stoppableAfter }
 
-    /// ⌘Z undoes it: a fill that wrote something.
+    /// ⌘Z undoes it: a fill that wrote something, or an action whose run says it wrote something
+    /// (presses alone have nothing to undo), as on the real surfaces.
     public var undoable: Bool {
-        guard case .done(let written) = phase, fillRows != nil else { return false }
-        return (written ?? verified) > 0
+        guard case .done(let written) = phase else { return false }
+        return fillRows != nil ? (written ?? verified) > 0 : (written ?? 0) > 0
     }
 
     /// The line under the card, or nil when there is none (paused).
@@ -89,7 +90,7 @@ public struct FirstLookRun: Equatable, Sendable {
         case .done(let written):
             let filled = written ?? verified
             if fillRows != nil, filled > 0 { return WorkLines.filled(filled, from: source) }
-            return WorkLines.done(app: app, character: character)
+            return WorkLines.done(app: app, character: character, undo: undoable)
         case .stopped(let reason): return WorkLines.stopped(app: app, reason: reason, next: nextStep, steps: steps, fillFilled: fillRows.map { _ in verified })
         case .handoff: return WorkLines.handoff(app: app)
         case .paused: return nil
@@ -205,6 +206,13 @@ extension OnboardingFlow {
         case .paused where run.working:
             endRunTimers()
             state.firstLookRun?.phase = .paused
+        // Esc showed where the run stopped from the progress seen so far; the helper's own ending
+        // corrects it: the step it stopped before, or Done when the run finished first.
+        case .stopped where run.phase == .stoppedByYou:
+            if progress.steps > 0 { state.firstLookRun?.steps = progress.steps }
+            if let step = progress.step { state.firstLookRun?.nextStep = step }
+        case .done where run.phase == .stoppedByYou:
+            state.firstLookRun?.phase = .done(written: progress.written)
         case .undone where run.phase == .undoing:
             state.firstLookRun?.phase = .undone(OfferLifecycle.undoCount(progress))
         default:

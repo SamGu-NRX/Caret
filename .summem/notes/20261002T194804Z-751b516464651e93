@@ -1,1 +1,0 @@
-caret-fixture launched without --background-only takes the foreground within 0.5 s; the host's pid-posted keys also reset HIDIdleTime, so idle guards must allow for them.

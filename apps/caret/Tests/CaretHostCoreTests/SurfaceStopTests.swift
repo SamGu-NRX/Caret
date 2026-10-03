@@ -38,14 +38,14 @@ final class SurfaceStopTests: XCTestCase {
     func testStoppedByYou() { stops(.you, says: "Stopped before step 2 of 3") }
     func testStoppedBecauseTheScreenChanged() { stops(.changed, says: "Stopped because Sheet Fixture changed while Caret was working.") }
     func testStoppedBecauseADialogOpened() { stops(.sheet, says: "Stopped because a dialog opened in Sheet Fixture.") }
-    func testStoppedBecauseTheWindowClosed() { stops(.windowGone, says: "Stopped because the Sheet Fixture window closed.") }
+    func testStoppedBecauseTheWindowIsGone() { stops(.windowGone, says: "Stopped because Caret couldn't find the Sheet Fixture window.") }
     func testStoppedBecauseSeveralWindowsMatched() { stops(.ambiguous, says: "Stopped because more than one Sheet Fixture window matched.") }
     func testStoppedBecauseTheReaderRestarted() { stops(.readerRestarted, says: "Stopped because Caret lost its view of the screen.") }
     func testStoppedBecauseTheReaderRefused() { stops(.reader, says: "Stopped because Caret couldn't read or change Sheet Fixture.") }
     func testStoppedBecauseTheChangeDidNotHold() { stops(.mismatch, says: "Stopped because Sheet Fixture didn't take the change.") }
     func testStoppedBecauseTheTargetWasNotFound() { stops(.unreachable, says: "Stopped because Caret couldn't find the spot in Sheet Fixture.") }
     func testStoppedBecauseNothingIsSetUp() { stops(.notConfigured, says: "Stopped because Caret isn't set up for this yet.") }
-    func testStoppedBecauseTheOfferHadClosed() { stops(.refused, says: "That offer had already closed, so nothing ran.") }
+    func testStoppedBecauseTheOfferWasRefused() { stops(.refused, says: "Caret couldn't run that offer, so nothing changed.") }
     func testStoppedForAnotherReason() { stops(.error, says: "Stopped because something unexpected happened.") }
 
     func testEveryReasonHasItsOwnWords() {
@@ -58,8 +58,8 @@ final class SurfaceStopTests: XCTestCase {
     }
 
     func testAFillSaysWhatItFilledBeforeTheReason() {
-        XCTAssertEqual(Captions.stopped(.windowGone, app: "Safari", next: 2, steps: 3, fillFilled: 2), "Filled 2 fields, then stopped because the Safari window closed.")
-        XCTAssertEqual(Captions.stopped(.windowGone, app: "Safari", next: 0, steps: 3, fillFilled: 0), "Filled nothing, because the Safari window closed.")
+        XCTAssertEqual(Captions.stopped(.windowGone, app: "Safari", next: 2, steps: 3, fillFilled: 2), "Filled 2 fields, then stopped because Caret couldn't find the Safari window.")
+        XCTAssertEqual(Captions.stopped(.windowGone, app: "Safari", next: 0, steps: 3, fillFilled: 0), "Filled nothing, because Caret couldn't find the Safari window.")
         XCTAssertEqual(Captions.stopped(.you, app: "Safari", next: 2, steps: 3, fillFilled: 2), "Stopped before step 3 of 3", "a stop you asked for names the step, fill or not")
     }
 
@@ -75,6 +75,28 @@ final class SurfaceStopTests: XCTestCase {
             .taskLine(Fx.progress("offer-5", .stopped, reason: .you, step: 1, steps: 3)),
             .expect(.line("Stopped before step 2 of 3")),
             .wait(3), .expect(.line(nil)), .expect(.escOwned(false)),
+        ]))
+    }
+
+    func testAStepThatFinishedBeforeTheStopCorrectsTheLine() {
+        play(Transition("Esc, then step 2 verifies and the helper stops before step 3", midRun + [
+            .wait(3), .press(Fx.esc()),
+            .expect(.line("Stopped before step 2 of 3")),
+            .taskLine(Fx.progress("offer-5", .verified, step: 1, steps: 3)),
+            .expect(.line("Stopped before step 2 of 3")),
+            .taskLine(Fx.progress("offer-5", .stopped, reason: .you, step: 2, steps: 3)),
+            .expect(.line("Stopped before step 3 of 3")), .expect(.counted("surface.stop.corrected")),
+            .wait(3), .expect(.line(nil)),
+        ]))
+        play(Transition("Esc, then the run turns out to have finished", midRun + [
+            .wait(3), .press(Fx.esc()),
+            .taskLine(Fx.progress("offer-5", .done, written: 1, steps: 3)),
+            .expect(.line("Done, in Sheet Fixture")), .expect(.toast(nil)),
+        ]))
+        play(Transition("another task's ending leaves the stopped line", midRun + [
+            .wait(3), .press(Fx.esc()),
+            .taskLine(Fx.progress("offer-9", .stopped, reason: .you, step: 2, steps: 3)),
+            .expect(.line("Stopped before step 2 of 3")),
         ]))
     }
 

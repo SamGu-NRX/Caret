@@ -78,6 +78,8 @@ const CARET = resolve(a.caret as string);
 const RUNS = Number(a.runs);
 const ESC_RUNS = Number(a["esc-runs"]);
 const IDLE_MIN = Number(a["idle-min"]);
+if (!Number.isInteger(RUNS) || !Number.isInteger(ESC_RUNS) || RUNS < 0 || ESC_RUNS < 0 || RUNS + ESC_RUNS === 0) throw new Error("--runs and --esc-runs are whole numbers, and at least one run is asked for");
+if (!Number.isFinite(IDLE_MIN) || IDLE_MIN < 0) throw new Error("--idle-min is a number of seconds");
 const FORM = resolve(ROOT, "helper", "fixtures", "web", "form.html");
 const TEXTEDIT = "/System/Applications/TextEdit.app/Contents/MacOS/TextEdit";
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -157,8 +159,8 @@ function hidIdleSeconds(): number {
 }
 class Deferred extends Error {}
 let deferred: string | null = null;
-/** When this script last posted a key: input at that moment is its own, not a person's. */
-let ownKeyAt = 0;
+/** When this script's keys were posted, start to end: input inside one of these is its own. */
+const ownKeys: { start: number; end: number }[] = [];
 if (quietUntil() * 1000 > Date.now()) {
   writeFileSync(join(OUT, "results.json"), JSON.stringify({ deferred: "quiet window" }) + "\n");
   console.log("deferred: quiet window");
@@ -174,8 +176,10 @@ const idleWatch = setInterval(() => {
   try {
     const s = hidIdleSeconds();
     const lastInputAt = Date.now() - s * 1000;
-    // Input within 1.5 s of one of this script's keys is that key.
-    if (s < 5 && Math.abs(lastInputAt - ownKeyAt) > 1500 && lastInputAt > ownKeyAt + 1500 && deferred === null) {
+    // HIDIdleTime counts from the last input of any kind; the last input is ours only when it falls
+    // inside one of our posts (with 300 ms for the event to land). Anything else is a person.
+    const ours = ownKeys.some((k) => lastInputAt >= k.start - 100 && lastInputAt <= k.end + 300);
+    if (s < 5 && !ours && deferred === null) {
       deferred = `HID idle dropped to ${s.toFixed(1)} s at ${new Date().toISOString()} with no key of this script's`;
       for (const { proc } of own.values()) proc.kill("SIGTERM");
     }
@@ -200,20 +204,23 @@ async function until<T>(what: string, ok: () => T | null | undefined | false | P
 /** One real key at the HID level, refused by fixture-keys unless `pid` owns the front app and the focus. */
 async function key(pid: number, name: "tab" | "escape" | "cmd-z"): Promise<void> {
   checkDeferred();
-  ownKeyAt = Date.now();
+  const post = { start: Date.now(), end: Number.POSITIVE_INFINITY };
+  ownKeys.push(post);
   try {
     await run(KEYS, [String(pid), "key", name]);
   } catch (e) {
     const err = (e as { stderr?: string }).stderr ?? String(e);
     throw new Deferred(`deferred: foreground (fixture-keys ${name}: ${err.trim()})`);
+  } finally {
+    post.end = Date.now();
   }
-  ownKeyAt = Date.now();
 }
 
 // MARK: - the helper, in process
 
 const progress: TaskProgress[] = [];
-const toReader: { at: number; type: string; taskId?: string }[] = [];
+/** Grant messages for the reader, and whether the socket took each one. */
+const toReader: { at: number; type: string; taskId?: string; sent: boolean }[] = [];
 const fromHost: { at: number; m: OfferAccept | OfferStop | TaskControl | RunPlan }[] = [];
 const errors: string[] = [];
 /** Tasks whose second step waits, so Esc lands mid-run. */
@@ -238,8 +245,9 @@ const helper = new Helper({
     server?.publish(m);
   },
   sendToReader: (m) => {
-    if (m.type === "actGrant" || m.type === "actRevoke") toReader.push({ at: Date.now(), type: m.type, taskId: m.taskId });
-    return server?.sendToReader(m) ?? false;
+    const sent = server?.sendToReader(m) ?? false;
+    if (m.type === "actGrant" || m.type === "actRevoke") toReader.push({ at: Date.now(), type: m.type, taskId: m.taskId, sent });
+    return sent;
   },
   executorHooks: {
     beforeStep: async (taskId, step) => {
@@ -277,6 +285,7 @@ function hostCommand(command: string): Promise<Record<string, unknown>> {
   });
 }
 interface Surface {
+  lastAccepted?: { offerKey?: string };
   offerKey?: string;
   kind?: string;
   lineText?: string;
@@ -477,6 +486,7 @@ interface Row {
   valueOk: boolean;
   revoked: boolean;
   secondAct: string;
+  secondActDetail: string | null;
   secondActChanged: boolean;
   toast: string | null;
   undoOk: boolean | null;
@@ -533,7 +543,7 @@ try {
   const offerKeyFor = (kind: string, r: number) => `a12-${TARGET}-${kind}-${r}`;
   const doRun = async (kind: "tab" | "esc", r: number): Promise<void> => {
     checkDeferred();
-    const row: Row = { kind, run: r, shown: false, accepted: false, outcome: "", readBack: {}, valueOk: false, revoked: false, secondAct: "", secondActChanged: false, toast: null, undoOk: null, afterUndo: null, stoppedLine: null, stopOk: null, ms: 0, problem: null };
+    const row: Row = { kind, run: r, shown: false, accepted: false, outcome: "", readBack: {}, valueOk: false, revoked: false, secondAct: "", secondActDetail: null, secondActChanged: false, toast: null, undoOk: null, afterUndo: null, stoppedLine: null, stopOk: null, ms: 0, problem: null };
     rows.push(row);
     const t0 = Date.now();
     try {
@@ -565,54 +575,72 @@ try {
       await key(t.pid, "tab");
       await until("offerAccept at the helper", () => fromHost.find((x) => "actionId" in x.m && x.m.offerId === offerKey), 5000);
       row.accepted = true;
+      const ended = (phases: string[]) => progress.find((p) => p.taskId === offerKey && phases.includes(p.phase));
       if (kind === "esc") {
-        await until("the working line to offer Esc", async () => ((await surface()).lineText ?? "").length > 0 && ((await surface()).working ?? 0) >= 3.2, 10_000);
+        // One snapshot per poll, and it must be this task's working line.
+        await until("the working line to offer Esc", async () => {
+          const x = await surface();
+          return x.workingOn === offerKey && (x.working ?? 0) >= 3.2 ? x : null;
+        }, 10_000);
         if (r === 0) await shot("esc-working");
         await key(t.pid, "escape");
-        const s = await until("the stopped line", async () => {
+        await until("the stopped line", async () => {
           const x = await surface();
           return x.workingOn === undefined && (x.lineText ?? "").startsWith("Stopped") ? x : null;
         }, 8000);
-        row.stoppedLine = s.lineText ?? null;
+        const end = await until("the run to end", () => ended(["stopped", "done"]), 10_000);
+        row.outcome = end.phase === "stopped" ? `stopped:${end.stopReason}` : end.phase;
+        // The helper's own ending may correct the step the line named; read the line after it.
+        await sleep(200);
+        row.stoppedLine = (await surface()).lineText ?? null;
         if (r === 0) await shot("esc-stopped");
-        await until("the run to end", () => progress.find((p) => p.taskId === offerKey && ["stopped", "done"].includes(p.phase)), 10_000);
-        row.outcome = progress.find((p) => p.taskId === offerKey && ["stopped", "done"].includes(p.phase))?.phase ?? "";
-        await sleep(400);
+        await sleep(200);
         row.readBack = await t.read();
         row.valueOk = JSON.stringify(row.readBack) === JSON.stringify(afterFirst);
-        row.stopOk = row.outcome === "stopped" && row.stoppedLine === "Stopped before step 2 of 3";
+        row.stopOk = end.phase === "stopped" && end.stopReason === "you" && end.step === 1 && row.stoppedLine === "Stopped before step 2 of 3";
       } else {
-        await until("the run to end", () => progress.find((p) => p.taskId === offerKey && ["stopped", "done", "handoff", "paused"].includes(p.phase)), 15_000);
-        row.outcome = progress.find((p) => p.taskId === offerKey && ["stopped", "done", "handoff", "paused"].includes(p.phase))?.phase ?? "";
+        const end = await until("the run to end", () => ended(["stopped", "done", "handoff", "paused"]), 15_000);
+        row.outcome = end.phase === "stopped" ? `stopped:${end.stopReason}` : end.phase;
         await sleep(300);
         row.readBack = await t.read();
-        row.valueOk = row.outcome === "done" && JSON.stringify(row.readBack) === JSON.stringify(want);
-        const s = await until("the toast", async () => ((await surface()).toast?.grantID !== undefined ? await surface() : null), 5000).catch(() => null);
+        row.valueOk = end.phase === "done" && JSON.stringify(row.readBack) === JSON.stringify(want);
+        // This task's toast: the host's last accept is this offer and its toast holds an undo grant.
+        const s = await until("the toast", async () => {
+          const x = await surface();
+          return x.toast?.grantID !== undefined && x.lastAccepted?.offerKey === offerKey ? x : null;
+        }, 4000).catch(() => null);
         row.toast = s?.toast?.caption ?? null;
-        if (r === 0) await shot("tab-toast");
+        if (row.toast !== null) {
+          // ⌘Z first: the toast lives 5 s. The screenshot of the first run's toast is quick, and
+          // the toast is checked again before the key.
+          if (r === 0) await shot("tab-toast");
+          const still = await surface();
+          if (still.toast?.grantID === undefined) throw new Error("the toast ended before ⌘Z");
+          await key(t.pid, "cmd-z");
+          await until("the undo at the helper", () => fromHost.find((x) => "action" in x.m && x.m.taskId === offerKey && x.m.action === "undo"), 5000);
+          const undone = await until("the undone progress", () => progress.find((p) => p.taskId === offerKey && p.phase === "undone"), 15_000);
+          await sleep(300);
+          row.afterUndo = await t.read();
+          if (r === 0) await shot("tab-undone");
+          row.undoOk = JSON.stringify(row.afterUndo) === JSON.stringify(before) && (undone.restored ?? 0) >= 1 && undone.notRestored === 0;
+        }
       }
-      // The grant is gone: revoked on the way to the reader, and a write under the task's id is refused.
-      row.revoked = await until("actRevoke for the task", () => toReader.some((x) => x.type === "actRevoke" && x.taskId === offerKey), 5000).then(() => true, () => false);
+      // The grant is gone: the last grant message for the task that reached the reader is a revoke,
+      // and a write under the task's id is refused and changes nothing.
+      row.revoked = await until("actRevoke for the task", () => {
+        const sent = toReader.filter((x) => x.taskId === offerKey && x.sent);
+        return sent.length > 0 && sent.at(-1)?.type === "actRevoke";
+      }, 5000).then(() => true, () => false);
       const w = windowOf();
       const n = w?.nodes.get(f.n.key);
       if (w !== undefined && n !== undefined) {
         const now = await t.read();
         const res: VerbResult = await helper.readerVerb({ kind: "write", pid: t.pid, windowId: w.window.windowId, key: n.key, role: n.role, attribute: "value", expect: n.value ?? "", value: "SHOULD NOT APPEAR", taskId: offerKey });
         row.secondAct = res.outcome;
+        row.secondActDetail = res.detail;
         await sleep(200);
         row.secondActChanged = JSON.stringify(await t.read()) !== JSON.stringify(now);
       } else row.secondAct = "field gone";
-      if (kind === "tab" && row.toast !== null) {
-        const revokesBefore = toReader.filter((x) => x.type === "actRevoke" && x.taskId === offerKey).length;
-        await key(t.pid, "cmd-z");
-        await until("the undo at the helper", () => fromHost.find((x) => "action" in x.m && x.m.taskId === offerKey && x.m.action === "undo"), 5000);
-        await until("the undone progress", () => progress.find((p) => p.taskId === offerKey && p.phase === "undone"), 15_000);
-        await sleep(300);
-        row.afterUndo = await t.read();
-        if (r === 0) await shot("tab-undone");
-        row.undoOk = JSON.stringify(row.afterUndo) === JSON.stringify(before)
-          && toReader.filter((x) => x.type === "actRevoke" && x.taskId === offerKey).length > revokesBefore;
-      }
     } catch (e) {
       if (e instanceof Deferred) throw e;
       row.problem = e instanceof Error ? e.message : String(e);

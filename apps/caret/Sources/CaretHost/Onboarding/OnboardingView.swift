@@ -373,9 +373,10 @@ struct LevelPicker: View {
 struct KnowScreen: View {
     static let title = "What Caret knows so far."
     static let detail = "Type your name and email, and Caret can fill them in for you."
-    /// Shown only when the helper keeps typed values (`OnboardingFlow.State.showsKnow`), so
-    /// "saved" is true whenever anyone reads it.
-    static let footnote = "Saved on this Mac. When Caret works out what to fill, these may go to its cloud model. Change or remove them any time in What Caret Knows, in the menu bar."
+    /// The step shows only when the helper says it keeps typed values (`OnboardingFlow.State.showsKnow`),
+    /// so Continue does hand them to something that saves them; the footnote says what Continue
+    /// does, not that it is done.
+    static let footnote = "Continue saves these on this Mac. When Caret works out what to fill, they may go to its cloud model. Change or remove them any time in What Caret Knows, in the menu bar."
     static let namePlaceholder = "Your name"
     static let emailPlaceholder = "you@example.com"
 

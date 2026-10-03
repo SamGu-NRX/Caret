@@ -320,8 +320,13 @@ def rig(out_dir, appearance):
     # The fixture writes view frames; Accessibility reports them 1 pt larger on every side.
     for g in gold:
         g["frame"] = next(f["frame"] for f in fields if all(abs(a - b) <= 2 for a, b in zip(f["frame"], g["frame"])))
+    # A settings file of the run's own: an injected helper line takes the helper's route, gate
+    # included (A12), so a paused Caret or Fill turned off in the user's settings would refuse it.
+    settings = os.path.join(out_dir, "settings.json")
+    if os.path.exists(settings):
+        os.remove(settings)
     args = [CARET, "--socket", HOST_SOCK, "--helper-socket", NO_HELPER, "--allow-pids", str(fx.pid), "--no-ghost", "--test-hooks",
-            "--appearance", appearance]
+            "--appearance", appearance, "--settings", settings]
     h = start("host", args, out_dir)
     if not wait_for(lambda: os.path.exists(HOST_SOCK), 15, 0.1):
         raise SystemExit("host did not open its socket")

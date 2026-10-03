@@ -129,6 +129,9 @@ public final class SurfaceMachine {
     var pendingTimer: SurfaceTimer?
     var watch: Watch?
     var work: Work?
+    /// The work Esc stopped, kept while its "Stopped" line shows: a step can finish between Esc
+    /// and the helper's stop, so the helper's own ending corrects the line.
+    var stoppedWork: Work?
     var swap: Swap?
     /// Set by `present` when it redrew a re-sent offer in place; read by `receive`.
     var replacedInPlace = false

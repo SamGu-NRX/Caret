@@ -1,0 +1,1 @@
+Never edit a running bash script in place (bash reads it as it runs): write a new file and mv it over. ScreenModel.apply makes a new WindowState and nodes Map per snapshot, and candidates.ts/descriptor.ts cache per-state indexes in WeakMaps, so never mutate w.nodes in place.
