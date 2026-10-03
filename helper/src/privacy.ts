@@ -5,7 +5,8 @@
 // it through a SnippetLedger, which holds each window to its budget. test/privacy.test.ts records every
 // request the producers make over the synthetic sessions and checks the request text against the
 // declarations and these bounds.
-import { nodeText, type WindowState } from "./model.ts";
+import type { WindowState } from "./model.ts";
+import type { Node } from "./protocol.ts";
 import { isConversation } from "./conversation.ts";
 
 /**
@@ -63,22 +64,195 @@ export function cut(s: string, max = SNIPPET_CHARS): string {
 /** Lines shorter than this are not charged when a taken text contains them: a letter or two is in most texts. */
 const CONTAINED_MIN = 3;
 
-/** A window's text as the ledger reads it, whatever the conversation rule says. */
-interface WindowText {
-  chars: number;
-  card: boolean;
-  /** The window's distinct lines of CONTAINED_MIN or more characters, for charging the lines a taken text contains. */
-  lines: readonly string[];
-  /** The same lines joined by NUL, which no screen text holds, so a search for a text finds it only inside one line. */
-  joined: string;
+/**
+ * A window's text as the ledger reads it, whatever the conversation rule says: its distinct lines, and
+ * an index of them for finding the lines a taken text holds and whether a line holds a text.
+ *
+ * A window's text is its title and every line of its nodes' labels, values and placeholders, each
+ * distinct line counted once. Reading a window of 5,000 lines from scratch and searching it took a
+ * ledger's first take 15 to 20 ms on eight such windows (B14 bench, ~/.caret-run/evidence/screen/b14).
+ * So one table follows each window id from snapshot to snapshot: the model gives every snapshot a new
+ * WindowState, and the table moves to the newest state it is asked about by changing only the lines of
+ * nodes whose text differs. A table belongs to one state at a time; asking about an earlier state (a
+ * task's kept source window) moves it back the same way, so every answer is about the state asked.
+ */
+class LineTable {
+  owner: WindowState;
+  /** Each distinct line, and how many of the title's and the nodes' lines read it. */
+  private readonly counts = new Map<string, number>();
+  /** Characters of the distinct lines. */
+  chars = 0;
+  /** Distinct lines longer than CARD_LINE_CHARS. */
+  private long = 0;
+  /** Distinct lines of CONTAINED_MIN or more characters by their first CONTAINED_MIN: their lengths, each with how many lines have it. */
+  private readonly starts = new Map<string, Map<number, number>>();
+  /** Texts asked about, and whether a line of the window holds them; kept right as lines come and go. */
+  private readonly inside = new Map<string, boolean>();
+  /** The lines of CONTAINED_MIN or more characters joined by NUL, which no screen text holds; null until a search needs it again. */
+  private joined: string | null = null;
+
+  constructor(w: WindowState) {
+    this.owner = w;
+    this.addField(w.window.title);
+    for (const n of w.nodes.values()) this.addNode(n);
+  }
+
+  get card(): boolean {
+    return this.counts.size <= CARD_LINES && this.long === 0;
+  }
+
+  /** Moves the table to another state of the same window, changing the lines of the nodes and title that differ. */
+  moveTo(w: WindowState): void {
+    const before = this.owner;
+    this.owner = w;
+    if (before.window.title !== w.window.title) {
+      this.removeField(before.window.title);
+      this.addField(w.window.title);
+    }
+    let kept = 0;
+    for (const [k, n] of w.nodes) {
+      const o = before.nodes.get(k);
+      if (o !== undefined) kept++;
+      if (o === n || (o !== undefined && o.label === n.label && o.value === n.value && o.placeholder === n.placeholder)) continue;
+      if (o !== undefined) this.removeNode(o);
+      this.addNode(n);
+    }
+    if (kept < before.nodes.size) for (const [k, o] of before.nodes) if (!w.nodes.has(k)) this.removeNode(o);
+  }
+
+  /** Whether some line of the window holds `t`, which is CONTAINED_MIN or more characters long. */
+  holds(t: string): boolean {
+    let r = this.inside.get(t);
+    if (r !== undefined) return r;
+    if (this.counts.has(t)) r = true;
+    else {
+      this.joined ??= `\u0000${[...this.counts.keys()].filter((l) => l.length >= CONTAINED_MIN).join("\u0000")}\u0000`;
+      r = this.joined.includes(t);
+    }
+    // Bounded, since every candidate a request prices is asked about. No measurement behind the number.
+    if (this.inside.size >= INSIDE_CACHE) this.inside.clear();
+    this.inside.set(t, r);
+    return r;
+  }
+
+  /** Every distinct line of the window that `t` holds, by where it starts in `t`; each line once. */
+  linesIn(t: string, out: Set<string>): void {
+    for (let i = 0; i + CONTAINED_MIN <= t.length; i++) {
+      const lens = this.starts.get(t.slice(i, i + CONTAINED_MIN));
+      if (lens === undefined) continue;
+      for (const len of lens.keys()) {
+        if (i + len > t.length) continue;
+        const l = len === t.length ? t : t.slice(i, i + len);
+        if (this.counts.has(l)) out.add(l);
+      }
+    }
+  }
+
+  private addNode(n: Node): void {
+    this.addField(n.label);
+    this.addField(n.value);
+    this.addField(n.placeholder);
+  }
+
+  private removeNode(n: Node): void {
+    this.removeField(n.label);
+    this.removeField(n.value);
+    this.removeField(n.placeholder);
+  }
+
+  private addField(raw: string | undefined): void {
+    if (raw === undefined || raw === "") return;
+    if (!raw.includes("\n")) return this.addLine(flat(raw));
+    for (const line of raw.split("\n")) this.addLine(flat(line));
+  }
+
+  private removeField(raw: string | undefined): void {
+    if (raw === undefined || raw === "") return;
+    if (!raw.includes("\n")) return this.removeLine(flat(raw));
+    for (const line of raw.split("\n")) this.removeLine(flat(line));
+  }
+
+  private addLine(t: string): void {
+    if (t === "") return;
+    const c = this.counts.get(t);
+    this.counts.set(t, (c ?? 0) + 1);
+    if (c !== undefined) return;
+    this.chars += t.length;
+    if (t.length > CARD_LINE_CHARS) this.long++;
+    if (t.length < CONTAINED_MIN) return;
+    const p = t.slice(0, CONTAINED_MIN);
+    let lens = this.starts.get(p);
+    if (lens === undefined) this.starts.set(p, (lens = new Map()));
+    lens.set(t.length, (lens.get(t.length) ?? 0) + 1);
+    if (this.joined !== null) this.joined = null;
+    for (const [s, held] of this.inside) if (!held && t.includes(s)) this.inside.set(s, true);
+  }
+
+  private removeLine(t: string): void {
+    if (t === "") return;
+    const c = this.counts.get(t);
+    if (c === undefined) throw new Error(`the line table of window ${this.owner.window.windowId} lost count of a line`);
+    if (c > 1) return void this.counts.set(t, c - 1);
+    this.counts.delete(t);
+    this.chars -= t.length;
+    if (t.length > CARD_LINE_CHARS) this.long--;
+    if (t.length < CONTAINED_MIN) return;
+    const lens = this.starts.get(t.slice(0, CONTAINED_MIN)) as Map<number, number>;
+    const k = lens.get(t.length) as number;
+    if (k > 1) lens.set(t.length, k - 1);
+    else if (lens.size > 1) lens.delete(t.length);
+    else this.starts.delete(t.slice(0, CONTAINED_MIN));
+    if (this.joined !== null) this.joined = null;
+    // Another line may hold the same texts, so they are asked again.
+    for (const [s, held] of this.inside) if (held && t.includes(s)) this.inside.delete(s);
+  }
+}
+
+/** Texts each window's table remembers asking about. Assumed. */
+const INSIDE_CACHE = 4096;
+/** Windows whose tables are kept after their state was last asked about; the oldest goes first. Assumed: more windows than a screen usually has open. */
+const TABLES_KEPT = 64;
+
+/** The table of each window id, most recently used last. */
+const tables = new Map<string, LineTable>();
+
+function windowText(w: WindowState): LineTable {
+  const id = w.window.windowId;
+  let t = tables.get(id);
+  if (t !== undefined) {
+    tables.delete(id);
+    if (t.owner !== w) t.moveTo(w);
+  } else {
+    t = new LineTable(w);
+    if (tables.size >= TABLES_KEPT) tables.delete(tables.keys().next().value as string);
+  }
+  tables.set(id, t);
+  return t;
+}
+
+/**
+ * Brings the window's line table up to this state. The helper calls it as each snapshot arrives, so a
+ * window is read from scratch once, when it first arrives, and after that only its changed nodes are,
+ * instead of every window a request could reveal at the request's first take.
+ */
+export function readWindow(w: WindowState): void {
+  windowText(w);
+}
+
+/** Lets go of a closed window's table. A state of it that a task kept is read from scratch if asked about. */
+export function forgetWindow(windowId: string): void {
+  tables.delete(windowId);
+}
+
+/** Lets go of every table, for a new reader session whose window ids start over. */
+export function forgetWindows(): void {
+  tables.clear();
 }
 
 interface WindowShare {
   budget: number;
-  text: WindowText;
 }
 
-const texts = new WeakMap<WindowState, WindowText>();
 let budgets = new WeakMap<WindowState, WindowShare>();
 let conversationCap = true;
 
@@ -96,49 +270,20 @@ export function setConversationCap(on: boolean): void {
  * at most CONVERSATION_CHARS. Any other window gives WINDOW_CHARS when it is a card of values or has more
  * than twice that much text, else just under half its text. Overlapping texts each count in
  * full, so outside a card the budget holds a request under half the window with room to spare. A window's
- * text is its title and every line of its nodes' labels, values and placeholders, each counted once;
- * cached per window state, which the model replaces on every snapshot.
+ * text is its title and every line of its nodes' labels, values and placeholders, each counted once
+ * (LineTable); the budget is cached per window state, which the model replaces on every snapshot.
  */
 export function windowBudget(w: WindowState): number {
   return windowShare(w).budget;
 }
 
-function windowText(w: WindowState): WindowText {
-  const cached = texts.get(w);
+function windowShare(w: WindowState): WindowShare {
+  const cached = budgets.get(w);
   if (cached !== undefined) return cached;
-  const seen = new Set<string>();
-  let chars = 0;
-  let card = true;
   // Every line is read, however large the window. B10 stopped at 2 * WINDOW_CHARS, where the budget no
   // longer changes, but then had no lines to charge a containing text for, so a parent's label that
   // joins its children's went out uncharged for them (B13 review: 907 characters of a Messages window
   // covered on a 595 charge).
-  const add = (raw: string | undefined): void => {
-    if (raw === undefined) return;
-    for (const line of raw.split("\n")) {
-      const t = flat(line);
-      if (t === "" || seen.has(t)) continue;
-      seen.add(t);
-      chars += t.length;
-      if (t.length > CARD_LINE_CHARS || seen.size > CARD_LINES) card = false;
-    }
-  };
-  add(w.window.title);
-  // nodeText is a node's label, value or both, so these three cover it.
-  for (const n of w.nodes.values()) {
-    add(n.label);
-    add(n.value);
-    add(n.placeholder);
-  }
-  const lines = [...seen].filter((l) => l.length >= CONTAINED_MIN);
-  const out = { chars, card, lines, joined: `\u0000${lines.join("\u0000")}\u0000` };
-  texts.set(w, out);
-  return out;
-}
-
-function windowShare(w: WindowState): WindowShare {
-  const cached = budgets.get(w);
-  if (cached !== undefined) return cached;
   const text = windowText(w);
   // A card's budget is not its size: a request quotes a value both as a span and inside its labelled line
   // ("Priya Raman <priya@…>" and "priya@…"), so the texts taken can add up to more than the card holds
@@ -146,7 +291,7 @@ function windowShare(w: WindowState): WindowShare {
   const half = Math.max(0, Math.floor((text.chars - 1) / 2));
   const large = text.chars >= 2 * WINDOW_CHARS;
   const budget = heldAsConversation(w) ? Math.min(CONVERSATION_CHARS, half) : large || text.card ? WINDOW_CHARS : Math.min(WINDOW_CHARS, half);
-  const share = { budget, text };
+  const share = { budget };
   budgets.set(w, share);
   return share;
 }
@@ -155,11 +300,6 @@ function windowShare(w: WindowState): WindowShare {
 export function heldAsConversation(w: WindowState): boolean {
   return conversationCap && isConversation(w);
 }
-
-/** Lines by their first CONTAINED_MIN characters: each line, and the ids of the windows that show it. */
-type LineIndex = Map<string, Map<string, string[]>>;
-/** The last index built, with the window states it was built over. */
-let lastIndex: { states: readonly WindowState[]; index: LineIndex } | null = null;
 
 interface Priced {
   fresh: string[];
@@ -187,8 +327,6 @@ interface Entry {
 export class SnippetLedger {
   private readonly entries = new Map<string, Entry>();
   private readonly known = new Map<string, WindowState>();
-  /** Every known window's lines by their first CONTAINED_MIN characters: each line, and the windows that show it. */
-  private index: LineIndex | null = null;
   /**
    * What each text reveals, worked out once per ledger: the lines it holds, with their windows, and the
    * windows that show it inside a line. The generator prices each kind of a conversation again after
@@ -214,7 +352,6 @@ export class SnippetLedger {
   private know(w: WindowState): void {
     if (this.known.has(w.window.windowId)) return;
     this.known.set(w.window.windowId, w);
-    this.index = null;
     this.reveals.clear();
   }
 
@@ -222,43 +359,23 @@ export class SnippetLedger {
     let r = this.reveals.get(t);
     if (r !== undefined) return r;
     const shownBy: string[] = [];
-    if (t.length >= CONTAINED_MIN) for (const [wid, w] of this.known) if (windowText(w).joined.includes(t)) shownBy.push(wid);
-    r = { lines: this.contained(t), shownBy };
-    this.reveals.set(t, r);
-    return r;
-  }
-
-  private lineIndex(): LineIndex {
-    if (this.index !== null) return this.index;
-    const states = [...this.known.values()];
-    // Consecutive requests over an unchanged screen (a fill's two asks, a first look's questions) share one index.
-    if (lastIndex !== null && lastIndex.states.length === states.length && lastIndex.states.every((w, i) => w === states[i])) return (this.index = lastIndex.index);
-    const idx: LineIndex = new Map();
-    for (const w of states) {
-      const id = w.window.windowId;
-      for (const l of windowText(w).lines) {
-        const p = l.slice(0, CONTAINED_MIN);
-        let bucket = idx.get(p);
-        if (bucket === undefined) idx.set(p, (bucket = new Map()));
-        const ids = bucket.get(l);
-        if (ids === undefined) bucket.set(l, [id]);
-        else ids.push(id);
+    const lines = new Map<string, string[]>();
+    const found = new Set<string>();
+    for (const [wid, w] of this.known) {
+      const table = windowText(w);
+      if (t.length >= CONTAINED_MIN && table.holds(t)) shownBy.push(wid);
+      // Every line of this window the text holds, with the windows that show it.
+      found.clear();
+      table.linesIn(t, found);
+      for (const l of found) {
+        const ids = lines.get(l);
+        if (ids === undefined) lines.set(l, [wid]);
+        else ids.push(wid);
       }
     }
-    lastIndex = { states, index: idx };
-    return (this.index = idx);
-  }
-
-  /** Every known window's line the text holds, each with the windows that show it. */
-  private contained(t: string): [string, string[]][] {
-    const idx = this.lineIndex();
-    const out = new Map<string, string[]>();
-    for (let i = 0; i + CONTAINED_MIN <= t.length; i++) {
-      const bucket = idx.get(t.slice(i, i + CONTAINED_MIN));
-      if (bucket === undefined) continue;
-      for (const [l, ids] of bucket) if (!out.has(l) && t.startsWith(l, i)) out.set(l, ids);
-    }
-    return [...out];
+    r = { lines: [...lines], shownBy };
+    this.reveals.set(t, r);
+    return r;
   }
 
   /**

@@ -4,6 +4,7 @@
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
 import { ScreenModel } from "./model.ts";
+import { forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
@@ -277,6 +278,7 @@ export class Helper {
         this.record(this.transfers.flush());
         this.shadowLogger.close();
         this.model.reset();
+        forgetWindows();
         this.text.clear();
         this.executor.readerRestarted();
         this.patterns.readerRestarted();
@@ -302,7 +304,10 @@ export class Helper {
         const changes = this.model.apply(m);
         if (changes.length > 0) for (const l of this.changeListeners) l(changes);
         const w = this.model.windows.get(m.window.windowId);
-        if (w !== undefined) this.text.observe(w, m.at);
+        if (w !== undefined) {
+          this.text.observe(w, m.at);
+          readWindow(w);
+        }
         store.count(`reader.snapshot_${m.reason}`, 1, m.at);
         store.count("reader.nodes", m.nodes.length, m.at);
         if (m.stats.truncated) store.count("reader.truncated", 1, m.at);
@@ -357,6 +362,7 @@ export class Helper {
         this.openApp.onWindowClosed(m.windowId);
         this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
+        forgetWindow(m.windowId);
         this.checkFills(m.windowId);
         return null;
       }
