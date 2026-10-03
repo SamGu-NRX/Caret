@@ -57,7 +57,7 @@ describe("the host's golden pop-up specs", () => {
 });
 
 describe("offer messages carry only checked values and specs", () => {
-  const field = { pid: 5150, windowId: "5150-1", key: "k", frame: null };
+  const field = { pid: 5150, windowId: "5150-1", key: "k", frame: null, window: { number: null, title: "Notes" } };
   const value = { text: "Dana Reyes", ref: { node: "6060-1/body", quote: "Dana Reyes" } };
 
   it("refuses an alternatives candidate with no ref", () => {

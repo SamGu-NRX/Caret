@@ -11,6 +11,9 @@ OUT=$2
 DUR=${3:-300}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../.build/debug"
+# The bundled fixture (scripts/bundle-fixture.sh): macOS will not activate the bare executable.
+FIXTURE="$BIN/CaretFixture.app/Contents/MacOS/caret-fixture"
+[[ -x "$FIXTURE" ]] || { echo "no $FIXTURE; run ../scripts/bundle-fixture.sh $BIN"; exit 1; }
 HELPER="$HERE/../../../helper"
 PERIOD_MS=1200
 FIX_CYCLES=$(( DUR * 1000 / PERIOD_MS / 7 + 1 ))
@@ -29,7 +32,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$BIN/caret-fixture" --foreground --windows "" --e1 "$OUT/fixture-actions.ndjson" --cycles "$FIX_CYCLES" --period 1.2 \
+"$FIXTURE" --foreground --windows "" --e1 "$OUT/fixture-actions.ndjson" --cycles "$FIX_CYCLES" --period 1.2 \
   --webkit "$PAGE" --duration $(( DUR + 30 )) > "$OUT/fixture.log" 2>&1 &
 FIX=$!
 open -n -g -a "Google Chrome" --args --user-data-dir="$CHROME_PROFILE" --no-first-run --no-default-browser-check \

@@ -58,6 +58,16 @@ export interface GenerateOptions {
   budgetMs?: number;
   /** Milliseconds, for the budget. Tests pass a fake clock. */
   clock?: () => number;
+  /** When given, wall time by part of the work is added to it, for the audit's probe. */
+  profile?: GeneratorProfile;
+}
+
+/** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
+export interface GeneratorProfile {
+  split: number;
+  context: number;
+  section: number;
+  blockHead: number;
 }
 
 export interface GenerateStats {
@@ -103,6 +113,16 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const seen = new Set<string>();
   const full = (): boolean => out.length >= max;
   /** Adds a span unless the cap is reached or its text is already in; its context is worked out only then. */
+  const prof = o.profile;
+  const timed = <T>(part: keyof GeneratorProfile, f: () => T): T => {
+    if (prof === undefined) return f();
+    const t = performance.now();
+    try {
+      return f();
+    } finally {
+      prof[part] += performance.now() - t;
+    }
+  };
   const add = (w: WindowState, node: Node, text: string, kind: ValueKind | null, context: () => string | null): void => {
     if (full() || seen.has(text)) return;
     seen.add(text);
@@ -110,9 +130,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       id: `c${out.length + 1}`,
       text,
       kind,
-      context: context(),
-      section: sectionAround(w, node),
-      blockHead: blockHead(w, node, text),
+      context: timed("context", context),
+      section: timed("section", () => sectionAround(w, node)),
+      blockHead: timed("blockHead", () => blockHead(w, node, text)),
       recency: recency(w),
       source: {
         pid: w.app.pid,
@@ -151,7 +171,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       stats.nodes++;
       const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
-      const lines = nodeText(node).split(/\r?\n/);
+      const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
         // A node can hold thousands of lines (a log, a transcript), so the cap and the clock apply per line too.
         if (full() || outOfTime()) return finish();
@@ -209,10 +229,21 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
   return { spans: seen.size, typed };
 }
 
+/**
+ * The label of the first "Label: value" line of the node whose value holds the span; else the field's
+ * own label, or the nearest label text. Only lines holding the span can match, so it searches the text
+ * for the span instead of splitting all of it: a typed value in a long log or transcript would
+ * otherwise split the whole node again for every value (B8 measured 20 ms per focus on one 220 KB node).
+ */
 function contextFor(w: WindowState, node: Node, span: string): string | null {
-  for (const line of nodeText(node).split(/\r?\n/)) {
-    const m = LABELLED.exec(line.trim());
+  const text = nodeText(node);
+  for (let at = text.indexOf(span); at >= 0; ) {
+    const start = text.lastIndexOf("\n", at) + 1;
+    const nl = text.indexOf("\n", at);
+    const m = LABELLED.exec(text.slice(start, nl < 0 ? text.length : nl).trim());
     if (m !== null && m[1] !== undefined && m[2]?.includes(span)) return m[1].trim();
+    if (nl < 0) break;
+    at = text.indexOf(span, nl + 1);
   }
   if (node.editable === true && node.label !== undefined) return node.label;
   return nearestText(w, node, true);
@@ -257,21 +288,45 @@ function childrenOf(w: WindowState, parent: string): Node[] {
  * box repeats its title as a static text.
  */
 function blockHead(w: WindowState, node: Node, span: string): string | null {
-  const own = nodeText(node).split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  const text = nodeText(node);
+  const own = firstLines(text);
   let head: string | undefined;
-  if (own.length > 1) head = own[0];
+  if (own.more) head = own.first;
   else if (node.parent !== null) {
     const section = w.nodes.get(node.parent)?.label;
     for (const n of childrenOf(w, node.parent)) {
       if (!LINE_ROLES.has(n.role)) continue;
-      const first = nodeText(n).split(/\r?\n/)[0]?.trim();
-      if (first === undefined || first.length === 0 || first === section) continue;
+      const t = nodeText(n);
+      const nl = t.indexOf("\n");
+      const first = (nl < 0 ? t : t.slice(0, nl)).trim();
+      if (first.length === 0 || first === section) continue;
       head = first;
       break;
     }
   }
-  if (head === undefined || head.includes(span) || head === nodeText(node).trim()) return null;
+  // With two lines of its own, the node's trimmed text holds a line break, so it cannot equal one line.
+  if (head === undefined || head.includes(span) || (!own.more && head === text.trim())) return null;
   return short(head);
+}
+
+/**
+ * The first non-empty trimmed line of a text, and whether another non-empty line follows, reading only
+ * as far as that second line: the node may be a whole log, and this runs for every span kept from it.
+ */
+function firstLines(text: string): { first: string | undefined; more: boolean } {
+  let first: string | undefined;
+  for (let start = 0; start <= text.length; ) {
+    const nl = text.indexOf("\n", start);
+    const end = nl < 0 ? text.length : nl;
+    const line = text.slice(start, end).trim();
+    if (line.length > 0) {
+      if (first !== undefined) return { first, more: true };
+      first = line;
+    }
+    if (nl < 0) break;
+    start = nl + 1;
+  }
+  return { first, more: false };
 }
 
 function short(s: string): string | null {

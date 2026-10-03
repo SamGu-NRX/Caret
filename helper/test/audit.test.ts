@@ -75,6 +75,31 @@ describe("audit", () => {
       { at, windowId: MAIL, app: MAIL_APP, focused, title: "Re: venue deposit", values: [value("email", "priya.raman@example.org", M("statictext:b~0"))] },
     );
 
+  it("probes the generator on the frontmost window at its interval, keeping counts and times only", () => {
+    const probing = new Helper({ store, askJev: null, shadow: true, audit: true, auditProbeEveryMs: 30_000, allowBackgroundFocus: false, readerLink: reader, publish: () => undefined });
+    void probing.handleReader(job(1000, "Exporting 40%", false, false));
+    probing.tick(1000);
+    expect(probing.audit?.summary().probes).toEqual([]); // no window focused yet
+    void probing.handleReader(mail(2000, true));
+    probing.tick(31_000);
+    probing.tick(40_000); // not due yet
+    probing.tick(61_000);
+    const probes = probing.audit?.summary().probes ?? [];
+    expect(probes.map((p) => [p.at, p.bundleId, p.windows])).toEqual([
+      [31_000, "dev.caret.mail", 2],
+      [61_000, "dev.caret.mail", 2],
+    ]);
+    const p = probes[0]!;
+    expect(p.first.values + p.first.nodesRead).toBeGreaterThan(0);
+    for (const x of [p.first.wallMs, p.first.cpuMs, p.first.threadCpuMs, p.second.wallMs, p.second.cpuMs, p.second.threadCpuMs, ...Object.values(p.first.profile)]) expect(x).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(probes)).not.toMatch(/Export|venue|priya/i);
+    // An app switch to an app with no window in the model yet: nothing is probed, rather than a background window.
+    void probing.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 62_000, from: MAIL_APP, to: { pid: 999, bundleId: "dev.caret.other", name: "Other" } });
+    probing.tick(91_000);
+    expect(probing.audit?.summary().probes).toHaveLength(2);
+    probing.memory.close();
+  });
+
   it("refuses to run outside shadow mode or with Jev on", () => {
     expect(() => new Helper({ store, askJev: null, shadow: false, audit: true, allowBackgroundFocus: false, publish: () => undefined })).toThrow(/shadow mode/);
   });

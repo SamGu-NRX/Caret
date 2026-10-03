@@ -28,6 +28,8 @@ public final class ReaderContext: @unchecked Sendable {
 struct WindowInfo {
     let id: String
     var kind: String
+    /// The window server's number, read once: it lasts as long as the window.
+    let number: Int?
     var lastWalk: CFAbsoluteTime = 0
     var contentHash: Int?
     var contexts: [AXRef: KeyContext] = [:]
@@ -394,7 +396,7 @@ public final class AppWorker: @unchecked Sendable {
     private func info(for w: AXRef) -> WindowInfo {
         if let i = windows[w] { return i }
         let kind = ElementKey.windowKind(subrole: AX.string(w.el, kAXSubroleAttribute), identifier: AX.string(w.el, kAXIdentifierAttribute))
-        let i = WindowInfo(id: "\(pid)-\(nextWindow)", kind: kind)
+        let i = WindowInfo(id: "\(pid)-\(nextWindow)", kind: kind, number: AX.windowNumber(of: w.el))
         nextWindow += 1
         windows[w] = i
         return i
@@ -432,7 +434,7 @@ public final class AppWorker: @unchecked Sendable {
         if unchanged { return (result.nodes, walker.truncated || walker.clipped) }
 
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: reason, app: app,
-                            window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: frame),
+                            window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: frame, number: info.number),
                             focused: isFocused, root: nil, nodes: result.nodes, values: ctx.detector.values(for: result.nodes),
                             focusedKey: result.focusedKey,
                             stats: WalkStats(walkMs: (walkMs * 10).rounded() / 10, visited: walker.visited, truncated: walker.truncated))
@@ -452,7 +454,7 @@ public final class AppWorker: @unchecked Sendable {
         info.contentHash = nil
         windows[w] = info
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: .event, app: app,
-                            window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: AX.frame(of: w.el)),
+                            window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: AX.frame(of: w.el), number: info.number),
                             focused: w == focusedWindow, root: kc.key, nodes: result.nodes, values: ctx.detector.values(for: result.nodes),
                             focusedKey: result.focusedKey,
                             stats: WalkStats(walkMs: (walker.elapsedMs * 10).rounded() / 10, visited: walker.visited, truncated: false))

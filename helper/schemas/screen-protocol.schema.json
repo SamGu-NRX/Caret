@@ -144,6 +144,11 @@
                       "type": "null"
                     }
                   ]
+                },
+                "number": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "required": [
@@ -774,6 +779,12 @@
                 "takeOver",
                 "undo"
               ]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "input"
+              ]
             }
           },
           "required": [
@@ -957,7 +968,9 @@
               "const": 1
             },
             "requestId": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
             },
             "op": {
               "type": "string",
@@ -1435,6 +1448,26 @@
                 "string",
                 "null"
               ]
+            },
+            "written": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "restored": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "notRestored": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "notUndoablePresses": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
             }
           },
           "required": [
@@ -1620,7 +1653,8 @@
                 "dismissed",
                 "diverged",
                 "idle",
-                "stale"
+                "stale",
+                "expired"
               ]
             }
           },
@@ -2313,6 +2347,33 @@
                     "null"
                   ]
                 },
+                "frame": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 4,
+                      "maxItems": 4
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "step": {
                   "anyOf": [
                     {
@@ -2460,6 +2521,7 @@
                 "app",
                 "windowId",
                 "windowTitle",
+                "frame",
                 "step",
                 "steps",
                 "stepSays",
@@ -2595,6 +2657,33 @@
                     "type": [
                       "string",
                       "null"
+                    ]
+                  },
+                  "frame": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ],
+                        "items": false,
+                        "minItems": 4,
+                        "maxItems": 4
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "step": {
@@ -2744,6 +2833,7 @@
                   "app",
                   "windowId",
                   "windowTitle",
+                  "frame",
                   "step",
                   "steps",
                   "stepSays",
@@ -2886,6 +2976,33 @@
                         "type": [
                           "string",
                           "null"
+                        ]
+                      },
+                      "frame": {
+                        "anyOf": [
+                          {
+                            "type": "array",
+                            "prefixItems": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "number"
+                              }
+                            ],
+                            "items": false,
+                            "minItems": 4,
+                            "maxItems": 4
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       },
                       "step": {
@@ -3035,6 +3152,7 @@
                       "app",
                       "windowId",
                       "windowTitle",
+                      "frame",
                       "step",
                       "steps",
                       "stepSays",
@@ -3135,13 +3253,39 @@
                       "type": "null"
                     }
                   ]
+                },
+                "window": {
+                  "type": "object",
+                  "properties": {
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "number",
+                    "title"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "pid",
                 "windowId",
                 "key",
-                "frame"
+                "frame",
+                "window"
               ],
               "additionalProperties": false
             },
@@ -3241,13 +3385,39 @@
                       "type": "null"
                     }
                   ]
+                },
+                "window": {
+                  "type": "object",
+                  "properties": {
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "number",
+                    "title"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "pid",
                 "windowId",
                 "key",
-                "frame"
+                "frame",
+                "window"
               ],
               "additionalProperties": false
             },
@@ -3769,13 +3939,39 @@
                       "type": "null"
                     }
                   ]
+                },
+                "window": {
+                  "type": "object",
+                  "properties": {
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "number",
+                    "title"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "pid",
                 "windowId",
                 "key",
-                "frame"
+                "frame",
+                "window"
               ],
               "additionalProperties": false
             },
@@ -4196,6 +4392,14 @@
                 "blocks"
               ],
               "additionalProperties": false
+            },
+            "sourceApps": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           },
           "required": [

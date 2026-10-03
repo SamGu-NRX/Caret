@@ -121,7 +121,7 @@ describe("offers over the socket", () => {
       v: 1,
       offerKey: "id-1",
       at: 0,
-      field: { pid: 5150, windowId: FORM, key: F("textfield:name~0"), frame: [100, 40, 200, 24] },
+      field: { pid: 5150, windowId: FORM, key: F("textfield:name~0"), frame: [100, 40, 200, 24], window: { number: null, title: "Checkout" } },
       spec: {
         v: 1,
         id: "id-1",
@@ -155,6 +155,7 @@ describe("offers over the socket", () => {
           { type: "actions", items: [{ id: "fillAll", label: "Fill all", key: "tab" }] },
         ],
       },
+      sourceApps: ["Mail Fixture"],
     });
     expect(host.received.some((m) => (m as { type: string }).type === "fillProposal")).toBe(false);
 
@@ -176,7 +177,7 @@ describe("offers over the socket", () => {
       v: 1,
       offerKey: "offer-1.0",
       at: 0,
-      field: { pid: 6160, windowId: SEATING, key: guest(2), frame: [100, 100, 200, 24] },
+      field: { pid: 6160, windowId: SEATING, key: guest(2), frame: [100, 100, 200, 24], window: { number: null, title: "Seating" } },
       candidates: [
         { text: "Marcus Lowe", ref: { node: `${ROSTER}/${attendee("Marcus Lowe")}`, quote: "Marcus Lowe" } },
         { text: "Lena Hartmann", ref: { node: `${DIRECTORY}/${person("Lena Hartmann")}`, quote: "Lena Hartmann" } },
@@ -194,7 +195,7 @@ describe("offers over the socket", () => {
       v: 1,
       offerKey: "offer-2",
       at: 0,
-      field: { pid: 6160, windowId: SEATING, key: guest(3), frame: [100, 130, 200, 24] },
+      field: { pid: 6160, windowId: SEATING, key: guest(3), frame: [100, 130, 200, 24], window: { number: null, title: "Seating" } },
       app: "Mail Fixture",
       endState: {
         text: "Finish the rest: 3 more values from Directory Fixture",
@@ -224,7 +225,7 @@ describe("offers over the socket", () => {
       v: 1,
       offerKey: "open-watch-id-1.1",
       at: 0,
-      field: { pid: 6160, windowId: COMPOSE, key: M("textfield:to~0"), frame: [100, 40, 300, 24] },
+      field: { pid: 6160, windowId: COMPOSE, key: M("textfield:to~0"), frame: [100, 40, 300, 24], window: { number: null, title: "New message" } },
       app: "Caret Fixture",
       endState: { text: "Done. 48 of 48 tests passed.", ref: { node: `${JOB}/${F("statictext:done. # of # tests passed.~0")}`, quote: "Done. 48 of 48 tests passed." } },
       actions: [{ id: "open", label: "Open Caret Fixture", key: "tab" }],
@@ -273,16 +274,7 @@ describe("offers over the socket", () => {
     expect(late).toMatchObject({ taskId: "id-1", phase: "stopped", steps: 0 });
   });
 
-  it("loop: closing the other list's window withdraws the alternatives that quote it", async () => {
-    await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
-    await host.waitFor((m) => m.type === "alternatives");
-    reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: DIRECTORY });
-    await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-1");
-    expect(host.received.filter((m) => (m as { type: string }).type === "offerWithdrawn").map((m) => [(m as { id: string }).id, (m as { reason: string }).reason])).toEqual([
-      ["offer-1.0", "stale"],
-      ["offer-1", "stale"],
-    ]);
-  });
+  // Closing a source window of alternatives: offers-lifetimes.test.ts, "partial withdrawal of alternatives".
 
   it("fill: an explicit fillRequest still gets the fillProposal it asks for", async () => {
     await reader.replay(loadRecording("offers-fill.ndjson"), hooks);

@@ -1,0 +1,1 @@
+test/fake-app.ts's executor window is not focused, so a key userInput pauses nothing there; tests use a click inside its frame instead.

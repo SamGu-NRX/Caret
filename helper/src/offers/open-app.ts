@@ -1,24 +1,22 @@
 // "Open <app>": when a pending-state watch sees its window finish, or start waiting on the user, the
 // host is offered an action line in the field the user is in now, and Tab brings the watched window to
 // the front through the executor. The line quotes the window's status line from the node that shows
-// it; with no status line, or none on screen, nothing is offered.
+// it; with no status line, or none on screen, nothing is offered. It has no timer (OFFER_LIFETIMES.open):
+// it lasts until the user visits the window, the window closes, or the watch resolves again.
 import { PROTOCOL_VERSION, type Focus, type HelperMessage, type OfferAction, type OfferField, type OfferWithdrawn } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { AcceptHandler, AcceptResult } from "./registry.ts";
-
-/** How long an offer waits for the user to land in a field of another window, and stays offered. Assumed, not measured. */
-export const OPEN_HOLD_MS = 10 * 60 * 1000;
+import { offerField } from "./field.ts";
 
 interface Entry {
   offerKey: string;
   watchId: string;
   windowId: string;
   status: string;
-  createdAt: number;
-  /** False while the offer waits for a field to be bound to. */
-  published: boolean;
+  /** The field the offer is shown in; null while it waits for one. */
+  boundTo: OfferField | null;
 }
 
 export interface OpenAppDeps {
@@ -40,6 +38,8 @@ export function statusNode(w: WindowState, status: string): string | null {
 
 export class OpenAppOffers {
   private readonly entries = new Map<string, Entry>();
+  /** The latest editable field the user focused in the app they are in, to bind an offer held again after its field's window closed. */
+  private lastField: OfferField | null = null;
   /** Numbers each offer of a watch: a watch can resolve twice (needsYou, then done), and each offer runs as its own task. */
   private seq = 0;
   private readonly deps: OpenAppDeps;
@@ -52,7 +52,7 @@ export class OpenAppOffers {
 
   /** Offers for watches, held or shown, by offerKey. For tests. */
   pending(): { offerKey: string; published: boolean }[] {
-    return [...this.entries.values()].map((e) => ({ offerKey: e.offerKey, published: e.published }));
+    return [...this.entries.values()].map((e) => ({ offerKey: e.offerKey, published: e.boundTo !== null }));
   }
 
   /** A watch ended as done or became needsYou. A newer resolution of the same watch replaces an older offer. */
@@ -62,7 +62,7 @@ export class OpenAppOffers {
     if (e.status === null) return;
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined || statusNode(w, e.status) === null) return;
-    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, createdAt: this.now(), published: false };
+    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, boundTo: null };
     this.entries.set(offerKey, entry);
     const field = this.fieldNow(e.windowId);
     if (field !== null) this.show(entry, field);
@@ -74,14 +74,13 @@ export class OpenAppOffers {
    * window, in the frontmost app, binds a held offer to that field.
    */
   onFocus(m: Focus): void {
+    const focused = this.deps.model.windows.get(m.windowId);
+    if (m.frontmost && m.editable && m.key !== null && focused !== undefined) this.lastField = offerField(focused, m.key);
     for (const e of [...this.entries.values()]) {
       if (m.windowId === e.windowId) {
         if (m.frontmost) this.drop(e.offerKey, "taken");
       }
-      else if (!e.published && m.frontmost && m.editable && m.key !== null) {
-        const frame = this.deps.model.windows.get(m.windowId)?.nodes.get(m.key)?.frame ?? null;
-        this.show(e, { pid: m.app.pid, windowId: m.windowId, key: m.key, frame });
-      }
+      else if (e.boundTo === null && m.frontmost && m.editable && m.key !== null && focused !== undefined) this.show(e, offerField(focused, m.key));
     }
   }
 
@@ -90,18 +89,39 @@ export class OpenAppOffers {
     for (const e of [...this.entries.values()]) if (e.windowId === windowId) this.drop(e.offerKey, "taken");
   }
 
+  /**
+   * The watched window closing ends its offer. The window of the field an offer is shown in closing
+   * withdraws that showing: the offer is held again, under a new key, for the next field the user lands in.
+   */
   onWindowClosed(windowId: string): void {
-    for (const e of [...this.entries.values()]) if (e.windowId === windowId) this.drop(e.offerKey, "stale");
-  }
-
-  /** Drops offers older than OPEN_HOLD_MS, held or shown. */
-  tick(): void {
-    const now = this.now();
-    for (const e of [...this.entries.values()]) if (now - e.createdAt > OPEN_HOLD_MS) this.drop(e.offerKey, "stale");
+    for (const e of [...this.entries.values()]) {
+      if (e.windowId === windowId) this.drop(e.offerKey, "stale");
+      else if (e.boundTo?.windowId === windowId) {
+        this.drop(e.offerKey, "stale");
+        const held: Entry = { ...e, offerKey: `open-${e.watchId}.${++this.seq}`, boundTo: null };
+        this.entries.set(held.offerKey, held);
+        // The user may already be in another field: its focus came while the offer was still bound here.
+        const f = this.currentLastField(windowId, e.windowId);
+        if (f !== null) this.show(held, f);
+      }
+    }
+    if (this.lastField?.windowId === windowId) this.lastField = null;
   }
 
   /** Window ids start over with a new reader, so every offer names a window that no longer exists. */
+  /**
+   * The last focused field, if it is still there, editable and in the frontmost app, and in neither the
+   * closing window nor the watched one, with its frame read now.
+   */
+  private currentLastField(closing: string, watched: string): OfferField | null {
+    const f = this.lastField;
+    if (f === null || f.windowId === closing || f.windowId === watched || this.deps.model.frontmostPid !== f.pid) return null;
+    const w = this.deps.model.windows.get(f.windowId);
+    return w?.nodes.get(f.key)?.editable === true ? offerField(w, f.key) : null;
+  }
+
   readerRestarted(): void {
+    this.lastField = null;
     for (const e of [...this.entries.values()]) this.drop(e.offerKey, "stale");
   }
 
@@ -111,9 +131,8 @@ export class OpenAppOffers {
     if (id === null || id === watched) return null;
     const w = this.deps.model.windows.get(id);
     const key = w?.focusedKey ?? null;
-    const n = key === null ? undefined : w?.nodes.get(key);
-    if (w === undefined || key === null || n?.editable !== true) return null;
-    return { pid: w.app.pid, windowId: id, key, frame: n.frame ?? null };
+    if (w === undefined || key === null || w.nodes.get(key)?.editable !== true) return null;
+    return offerField(w, key);
   }
 
   /** Publishes the offer bound to `field`, after checking that the status line is still on screen. */
@@ -134,7 +153,7 @@ export class OpenAppOffers {
       endState: { text: e.status, ref: { node: `${e.windowId}/${node}`, quote: e.status } },
       actions: [{ id: "open", label: `Open ${w.app.name}`, key: "tab" }],
     };
-    if (this.deps.publish(msg, () => this.accept(e.offerKey))) e.published = true;
+    if (this.deps.publish(msg, () => this.accept(e.offerKey))) e.boundTo = field;
     else this.entries.delete(e.offerKey);
   }
 
@@ -142,7 +161,7 @@ export class OpenAppOffers {
     const e = this.entries.get(offerKey);
     if (e === undefined) return;
     this.entries.delete(offerKey);
-    if (e.published) this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
+    if (e.boundTo !== null) this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
 
   /** Raises the watched window as the task `offerKey`. The window's title and app name are slots, read now. */

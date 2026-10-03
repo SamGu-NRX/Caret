@@ -147,10 +147,10 @@ describe("pending-state watch", () => {
     leaveJob("Uploading 3 files to the shared drive…", [node(K("busyindicator:~0"), "AXBusyIndicator")]);
     show(JOB, jobNodes("Approve? Three files already exist. Replace them?", [node(K("button:approve~0"), "AXButton", { label: "Approve" })]));
     await helper.pending.whenIdle();
-    expect(last()).toMatchObject({ state: "needsYou", cause: "screen", detail: "the window is waiting for you" });
+    expect(last()).toMatchObject({ state: "needsYou", cause: "screen", detail: "the window is waiting for you", says: "'Test run' in Caret Fixture is waiting for you", frame: [0, 0, 800, 600] });
     show(JOB, jobNodes("Uploading 3 files to the shared drive…", [node(K("busyindicator:~0"), "AXBusyIndicator")]));
     await helper.pending.whenIdle();
-    expect(last()).toMatchObject({ state: "running", cause: null });
+    expect(last()).toMatchObject({ state: "running", cause: null, says: "Watching 'Test run' in Caret Fixture" });
     void helper.handleReader({ type: "windowClosed", v: PROTOCOL_VERSION, at: at + 1, windowId: JOB });
     expect(last()).toMatchObject({ state: "failed", cause: "screen", detail: "the window closed before Caret saw the work finish" });
     expect(records().map((r) => r.state)).toEqual(["running", "needsYou", "running", "failed"]);

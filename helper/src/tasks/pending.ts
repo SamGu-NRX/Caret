@@ -392,6 +392,14 @@ interface Watch {
   tries: number;
   retry: ReturnType<typeof setTimeout> | null;
   info: PendingInfo;
+  /** The window's title and app name when the watch began, for the row's sentence. */
+  title: string;
+  appName: string;
+}
+
+/** The watch's row: what is watched, or, while the window waits on the user, that it does. */
+function watchSays(watch: Watch, state: TaskState): string {
+  return state === "needsYou" ? `'${watch.title}' in ${watch.appName} is waiting for you` : `Watching '${watch.title}' in ${watch.appName}`;
 }
 
 export interface PendingDeps {
@@ -495,6 +503,8 @@ export class PendingWatcher {
       tries: 0,
       retry: null,
       info: { markedBy: markers[0]?.line ?? "", status: null, finished: null, waiting: null, asks: 0 },
+      title: w.window.title,
+      appName: w.app.name,
     };
     this.watches.set(windowId, watch);
     this.stats.registered++;
@@ -503,10 +513,11 @@ export class PendingWatcher {
       kind: "watch",
       state: "running",
       cause: null,
-      says: `Watching '${w.window.title}' in ${w.app.name}`,
+      says: watchSays(watch, "running"),
       app: w.app,
       windowId,
       windowTitle: w.window.title,
+      frame: w.window.frame,
       step: null,
       steps: null,
       stepSays: null,
@@ -566,13 +577,13 @@ export class PendingWatcher {
         if (watch.paused) return;
         watch.paused = true;
         this.clearTimers(watch);
-        this.deps.tasks.update(watch.id, { state: "paused", cause: "you", detail: "you paused this watch" });
+        this.update(watch, { state: "paused", cause: "you", detail: "you paused this watch" });
         this.syncReader();
         return;
       case "resume":
         if (!watch.paused) throw new PendingControlError(`watch ${taskId} is not paused`);
         watch.paused = false;
-        this.deps.tasks.update(watch.id, { state: "running", cause: "you", detail: null });
+        this.update(watch, { state: "running", cause: "you", detail: null });
         this.syncReader();
         if (watch.sig !== watch.asked) this.schedule(watch);
         return;
@@ -691,7 +702,7 @@ export class PendingWatcher {
     const detail = state === "needsYou" ? "the window is waiting for you" : state === "done" ? "the work finished" : state === "failed" ? "the work ended in an error" : null;
     const before = this.deps.tasks.get(watch.id)?.state;
     if (FINISHED.has(state)) this.end(watch, state, "screen", detail);
-    else this.deps.tasks.update(watch.id, { state, cause: state === "running" ? null : "screen", detail, pending: { ...watch.info } });
+    else this.update(watch, { state, cause: state === "running" ? null : "screen", detail, pending: { ...watch.info } });
     if (state === "done" || (state === "needsYou" && before !== "needsYou")) {
       this.deps.onResolved?.({ watchId: watch.id, windowId: watch.windowId, state, status: watch.info.status });
     }
@@ -702,8 +713,14 @@ export class PendingWatcher {
     this.clearTimers(watch);
     this.watches.delete(watch.windowId);
     this.resolved.set(watch.windowId, watch.sig);
-    this.deps.tasks.update(watch.id, { state, cause, detail, pending: { ...watch.info } });
+    this.update(watch, { state, cause, detail, pending: { ...watch.info } });
     this.syncReader();
+  }
+
+  /** A transition of the watch's row, with the sentence for its new state and the window's frame now, while the window is open. */
+  private update(watch: Watch, patch: { state: TaskState; cause: TaskCause | null; detail: string | null; pending?: PendingInfo }): void {
+    const frame = this.deps.model.windows.get(watch.windowId)?.window.frame;
+    this.deps.tasks.update(watch.id, { ...patch, says: watchSays(watch, patch.state), ...(frame === undefined ? {} : { frame }) });
   }
 
   /** Tells the reader which windows to re-read: every watch that is not paused. */

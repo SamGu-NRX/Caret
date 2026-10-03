@@ -76,7 +76,11 @@ export interface Loop {
   dstPos: number[];
   /** The round predicted and not yet confirmed; null once confirmed or when nothing more can be predicted. */
   prediction: LoopCell[] | null;
-  /** Fits other than the main one whose prediction offered at least one alternative value; empty once confirmed. */
+  /**
+   * Fits other than the main one that predict any cell of the round, whether their value is offered as
+   * an alternative or repeats one already offered; empty once confirmed. A closed source window's fit
+   * leaves, and a closed main source hands the loop to the first of these (sourceClosed).
+   */
   others: LoopFit[];
   /** The main fit's values for the predicted round, by destination key: its source text and what memory rules make of it. */
   mainAccepts: Map<string, Set<string>>;
@@ -91,12 +95,14 @@ export interface Loop {
 export type LoopEvent =
   /**
    * Round two matched round one: here is round three. `alternatives[i]` holds other source windows'
-   * values for `cells[i]`, distinct from it and from each other, at most MAX_ALTERNATIVES.
+   * values for `cells[i]`, distinct from it and from each other, at most MAX_ALTERNATIVES. `repeats[i]`
+   * holds other windows' cells whose value, normalized, is one already offered for `cells[i]`: more
+   * sources for that value.
    */
-  | { type: "predict"; loop: Loop; cells: LoopCell[]; alternatives: LoopCell[][] }
+  | { type: "predict"; loop: Loop; cells: LoopCell[]; alternatives: LoopCell[][]; repeats: LoopCell[][] }
   /** The predicted round was taken or typed; `rest` is every round after it that can be read from the screen. */
   | { type: "confirmed"; loop: Loop; rest: LoopCell[][] }
-  | { type: "ended"; loop: Loop; reason: "diverged" | "idle" | "dismissed" };
+  | { type: "ended"; loop: Loop; reason: "diverged" | "idle" | "dismissed" | "stale" };
 
 export class LoopRecognizer {
   private history: PatternTransfer[] = [];
@@ -188,13 +194,43 @@ export class LoopRecognizer {
     return this.end("dismissed");
   }
 
+  /**
+   * A source window closed. Its fit leaves the loop; when it was the main fit, the first other fit whose
+   * round is on offer and fits every cell the user already filled this round becomes the main one, as
+   * taking its value would have made it. With none, the loop keeps its closed main fit, and its next transfer decides.
+   */
+  sourceClosed(windowId: string): void {
+    const loop = this.loop;
+    if (loop === null || loop.prediction === null) return;
+    if (loop.srcWindowId === windowId) {
+      // Only a fit whose whole round is on offer: one whose values were never shown would fill cells the user did not see.
+      const shown = (f: LoopFit): boolean => f.prediction.every((c) => loop.expected.get(c.dstKey)?.has(normalizeValue(c.value, c.kind)) === true);
+      const j = loop.others.findIndex((f) => f.srcWindowId !== windowId && shown(f) && [...loop.filled].every(([k, v]) => f.accepts.get(k)?.has(v) === true));
+      if (j < 0) return;
+      switchFit(loop, j);
+    }
+    loop.others = loop.others.filter((f) => f.srcWindowId !== windowId);
+    // The round's cells keep only the values offered for them that a remaining fit still predicts or would
+    // write, so neither the closed list's value nor a fit's value that was never shown counts as the round.
+    for (const c of loop.prediction) {
+      const surviving = new Set([...(loop.mainAccepts.get(c.dstKey) ?? []), ...loop.others.flatMap((f) => [...(f.accepts.get(c.dstKey) ?? [])])]);
+      loop.expected.set(c.dstKey, new Set([...(loop.expected.get(c.dstKey) ?? [])].filter((v) => surviving.has(v))));
+    }
+  }
+
+  /** The prediction no longer matches the screen (a source line it copies changed): the loop ends, so typing the old value does not confirm it. */
+  invalidate(loopId: string): LoopEvent | null {
+    if (this.loop?.id !== loopId) return null;
+    return this.end("stale");
+  }
+
   /** Ends a loop whose last transfer is older than the gap. */
   tick(now: number): LoopEvent | null {
     if (this.loop !== null && now - this.loop.lastAt > LOOP_GAP_MS) return this.end("idle");
     return null;
   }
 
-  private end(reason: "diverged" | "idle" | "dismissed"): LoopEvent {
+  private end(reason: "diverged" | "idle" | "dismissed" | "stale"): LoopEvent {
     const loop = this.loop as Loop;
     this.loop = null;
     this.history = [];
@@ -280,43 +316,49 @@ export class LoopRecognizer {
         addExpected(loop, c.dstKey, c.value, c.kind);
         addTo(loop.mainAccepts, c.dstKey, normalizeValue(c.value, c.kind));
       }
-      const alternatives = this.alternatives(loop, next, rest);
+      const { alternatives, repeats } = this.alternatives(loop, next, rest);
       this.loop = loop;
       this.history = [];
-      return { type: "predict", loop, cells: next, alternatives };
+      return { type: "predict", loop, cells: next, alternatives, repeats };
     }
     return null;
   }
 
   /**
    * Per predicted cell, the values other fitting source windows predict for it: each distinct from the
-   * main value and from the others once normalized, at most MAX_ALTERNATIVES, in fit order. A fit that
-   * offers any value is kept on the loop so taking that value can switch to it.
+   * main value and from the others once normalized, at most MAX_ALTERNATIVES, in fit order; and the
+   * cells that repeat a value already offered. A fit that predicts any cell is kept on the loop, so
+   * taking its value can switch to it and a closed source can hand the loop to it.
    */
-  private alternatives(loop: Loop, cells: LoopCell[], rest: { columns: LoopColumn[]; srcWindowId: string; srcPos: number[] }[]): LoopCell[][] {
+  private alternatives(loop: Loop, cells: LoopCell[], rest: { columns: LoopColumn[]; srcWindowId: string; srcPos: number[] }[]): { alternatives: LoopCell[][]; repeats: LoopCell[][] } {
     const out: LoopCell[][] = cells.map(() => []);
+    const repeats: LoopCell[][] = cells.map(() => []);
     const seen = cells.map((c) => new Set([normalizeValue(c.value, c.kind)]));
     for (const f of rest) {
       const prediction = this.predict({ srcWindowId: f.srcWindowId, dstWindowId: loop.dstWindowId, columns: f.columns }, f.srcPos, loop.dstPos);
       if (prediction === null) continue;
       const fit: LoopFit = { ...f, prediction, accepts: new Map() };
-      let offered = false;
+      let predicts = false;
       cells.forEach((c, i) => {
         const alt = prediction.find((x) => x.dstKey === c.dstKey);
         if (alt === undefined) return;
+        predicts = true;
         const v = normalizeValue(alt.value, alt.kind);
         addTo(fit.accepts, c.dstKey, v);
         const list = out[i] as LoopCell[];
         const taken = seen[i] as Set<string>;
-        if (list.length >= MAX_ALTERNATIVES || taken.has(v)) return;
+        if (taken.has(v)) {
+          (repeats[i] as LoopCell[]).push(alt);
+          return;
+        }
+        if (list.length >= MAX_ALTERNATIVES) return;
         taken.add(v);
         list.push(alt);
-        offered = true;
         addExpected(loop, c.dstKey, alt.value, alt.kind);
       });
-      if (offered) loop.others.push(fit);
+      if (predicts) loop.others.push(fit);
     }
-    return out;
+    return { alternatives: out, repeats };
   }
 
   /**

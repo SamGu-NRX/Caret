@@ -57,8 +57,15 @@ interface LabelText {
  * Each window's label texts, built once per window state. The model replaces a window's state on every
  * snapshot, so a state never changes under its entry; the candidate generator asks for the nearest
  * label of many spans in one window, and scanning every node for each was most of its time.
+ *
+ * Queries scan this list in document order. An index sorted by row was tried in B8 (ead8b1a): it was
+ * faster on a synthetic scene with dozens of queries per window, but on real windows, which get a few
+ * queries each, sorting on every snapshot made the cold call slower (event-loop CPU p95 5.3 -> 7.4 ms
+ * over the same hour), so it was taken out.
  */
 const labelIndex = new WeakMap<WindowState, LabelText[]>();
+/** Whitespace that clean() would change: a run, a tab or line break, or space at either end. */
+const UNCLEAN = /\s\s|[^\S ]|^\s|\s$/;
 
 function labelTexts(w: WindowState): LabelText[] {
   let out = labelIndex.get(w);
@@ -66,7 +73,12 @@ function labelTexts(w: WindowState): LabelText[] {
   out = [];
   for (const n of w.nodes.values()) {
     if (n.role !== "AXStaticText" || n.frame === undefined) continue;
-    const t = clean(n.label ?? n.value);
+    const raw = n.label ?? n.value;
+    if (raw === undefined || raw.length === 0) continue;
+    // With nothing to collapse, cleaning leaves the text as it is, so a long one is over the cap without running the replace.
+    const unclean = UNCLEAN.test(raw);
+    if (!unclean && raw.length > MAX_LABEL_CHARS) continue;
+    const t = unclean ? clean(raw) : raw;
     if (t === null || t.length > MAX_LABEL_CHARS) continue;
     out.push({ key: n.key, frame: n.frame, t, labelLike: isLabelLike(t) });
   }

@@ -16,7 +16,7 @@ import type { ScreenModel, WindowState } from "./model.ts";
 import type { Focus, ReaderVerb, Snapshot, VerbResult } from "./protocol.ts";
 import { MARKER_RULE_IDS, MAX_WATCHES, markerRule, watchLines, windowMarkers, type Marker, type MarkerRule } from "./tasks/pending.ts";
 import { describeField } from "./fill/descriptor.ts";
-import { collectCandidates, countSpans, MAX_CANDIDATES } from "./fill/candidates.ts";
+import { collectCandidates, countSpans, MAX_CANDIDATES, type GeneratorProfile } from "./fill/candidates.ts";
 import { formFields } from "./fill/fill.ts";
 import { SeenSet } from "./leak-check.ts";
 import { Census, type CensusApp } from "./audit-census.ts";
@@ -82,6 +82,8 @@ export interface FillFocus {
   generatorMs: number;
   /** CPU time of the same call, user and system, all threads. Absent before B6's final run. */
   generatorCpuMs?: number;
+  /** CPU time of the event-loop thread alone (process.threadCpuUsage): the generator's own work, without V8's GC and compiler threads. From B8. */
+  generatorThreadCpuMs?: number;
   overBudget?: boolean;
 }
 
@@ -124,6 +126,7 @@ export interface AuditSummary {
     focusesList: FillFocus[];
     candidateCap: number;
   };
+  probes: GeneratorProbe[];
   seen: { units: number };
   /** Structure counts per app from every complete snapshot (src/audit-census.ts). */
   census: Record<string, CensusApp>;
@@ -297,7 +300,30 @@ export interface AuditOptions {
   reader?: (verb: ReaderVerb) => Promise<VerbResult>;
   salt?: Buffer;
   now?: () => number;
+  /**
+   * How often tick() times the generator against the real windows as a focus in the frontmost window
+   * would run it, whether or not the user focuses anything; 0 or absent for never.
+   */
+  probeEveryMs?: number;
 }
+
+/**
+ * One probe: the generator run twice back to back for the frontmost window, as a focus there would run
+ * it. The first call pays for any per-window indexes the snapshots since the last call made stale; the
+ * second finds them built. Counts and times only.
+ */
+export interface GeneratorProbe {
+  at: number;
+  bundleId: string;
+  windows: number;
+  nodes: number;
+  /** `cpuMs` counts every thread of the process; `threadCpuMs` the event-loop thread alone. */
+  first: { wallMs: number; cpuMs: number; threadCpuMs: number; overBudget: boolean; values: number; nodesRead: number; profile: GeneratorProfile };
+  second: { wallMs: number; cpuMs: number; threadCpuMs: number };
+}
+
+/** Probes kept in the summary; at one every 30 s this is over eight hours. */
+const MAX_PROBES = 1000;
 
 export class Audit {
   private readonly model: ScreenModel;
@@ -311,6 +337,8 @@ export class Audit {
   private readonly fields = new Set<string>();
   private readonly fillApps = new Map<string, FillAppCounts>();
   private readonly focusesList: FillFocus[] = [];
+  private readonly probes: GeneratorProbe[] = [];
+  private lastProbe = 0;
   private readonly startedAt: number;
 
   constructor(opts: AuditOptions) {
@@ -403,7 +431,9 @@ export class Audit {
     // The product's generator, capped and on its budget, as a live helper would run it on this focus.
     // CPU time beside wall time: on a loaded Mac, or with this audit's own hashing behind a GC pause, wall time alone cannot say what the generator cost.
     const c0 = process.cpuUsage();
+    const t0 = process.threadCpuUsage();
     const { stats } = collectCandidates(this.model, m.windowId, { now: m.at });
+    const thread = process.threadCpuUsage(t0);
     const cpu = process.cpuUsage(c0);
     const all = countSpans(this.model, m.windowId);
     this.focusesList.push({
@@ -415,7 +445,53 @@ export class Audit {
       formFields: formFields(w, m.key).length,
       generatorMs: Math.round(stats.ms * 10) / 10,
       generatorCpuMs: Math.round((cpu.user + cpu.system) / 100) / 10,
+      generatorThreadCpuMs: Math.round((thread.user + thread.system) / 100) / 10,
       overBudget: stats.overBudget,
+    });
+  }
+
+  /** Runs a probe when one is due. */
+  tick(now = this.now()): void {
+    const every = this.opts.probeEveryMs ?? 0;
+    if (every <= 0 || now - this.lastProbe < every || this.probes.length >= MAX_PROBES) return;
+    this.lastProbe = now;
+    // The frontmost app's focused window. Only before any app switch or focus has said which app that
+    // is, the window focused last; a frontmost app with no window in the model yet is skipped.
+    const all = [...this.model.windows.values()];
+    const front = this.model.frontmostPid;
+    const target = front !== null ? all.find((w) => w.focused && w.app.pid === front) : all.filter((w) => w.focused).sort((a, b) => b.lastFocusedAt - a.lastFocusedAt)[0];
+    if (target === undefined) return;
+    const time = (profile?: GeneratorProfile): { wallMs: number; cpuMs: number; threadCpuMs: number; stats: ReturnType<typeof collectCandidates>["stats"] } => {
+      const c0 = process.cpuUsage();
+      const t0c = process.threadCpuUsage();
+      const t0 = performance.now();
+      const { stats } = collectCandidates(this.model, target.window.windowId, { now, ...(profile === undefined ? {} : { profile }) });
+      const wallMs = performance.now() - t0;
+      const tc = process.threadCpuUsage(t0c);
+      const c = process.cpuUsage(c0);
+      return { wallMs, cpuMs: (c.user + c.system) / 1000, threadCpuMs: (tc.user + tc.system) / 1000, stats };
+    };
+    const profile: GeneratorProfile = { split: 0, context: 0, section: 0, blockHead: 0 };
+    const first = time(profile);
+    const second = time();
+    const r = (x: number): number => Math.round(x * 100) / 100;
+    let nodes = 0;
+    for (const w of this.model.windows.values()) nodes += w.nodes.size;
+    this.probes.push({
+      at: now,
+      bundleId: target.app.bundleId,
+      windows: this.model.windows.size,
+      nodes,
+      first: {
+        wallMs: r(first.wallMs),
+        cpuMs: r(first.cpuMs),
+        threadCpuMs: r(first.threadCpuMs),
+        overBudget: first.stats.overBudget,
+        values: first.stats.values,
+        nodesRead: first.stats.nodes,
+        profile: { split: r(profile.split), context: r(profile.context), section: r(profile.section), blockHead: r(profile.blockHead) },
+      },
+      second: { wallMs: r(second.wallMs), cpuMs: r(second.cpuMs), threadCpuMs: r(second.threadCpuMs) },
     });
   }
 
@@ -432,6 +508,7 @@ export class Audit {
       fill: { ...this.fill, distinctFields: this.fields.size, byApp: Object.fromEntries(this.fillApps), focusesList: [...this.focusesList], candidateCap: MAX_CANDIDATES },
       seen: { units: this.seen.size },
       census: this.census.summary(),
+      probes: [...this.probes],
     };
   }
 

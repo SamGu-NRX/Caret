@@ -98,6 +98,18 @@ public enum AX {
     public static func frame(of e: AXUIElement) -> Frame? {
         frame(copy(e, kAXPositionAttribute), copy(e, kAXSizeAttribute))
     }
+
+    /// The window server's number for a window element (its CGWindowID), or nil when the app does not
+    /// give one. There is no public call for this; `_AXUIElementGetWindow` is the private one window
+    /// managers use, and it only reads.
+    public static func windowNumber(of e: AXUIElement) -> Int? {
+        var id: CGWindowID = 0
+        guard _AXUIElementGetWindow(e, &id) == .success, id != 0 else { return nil }
+        return Int(id)
+    }
 }
+
+@_silgen_name("_AXUIElementGetWindow")
+private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
 public func nowMs() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }

@@ -43,23 +43,30 @@ public struct FillResult: Codable, Equatable, Sendable {
 public struct TaskControl: Codable, Equatable, Sendable {
     public static let type = "taskControl"
     public enum Action: String, Codable, Sendable { case pause, resume, stop, takeOver, undo }
+    /// Why the host paused. `input`: it saw the user's own input in the task's window; the run then keeps
+    /// the reader's wording for the pause ("typing in 'Claim form'") when the reader saw it too.
+    public enum Reason: String, Codable, Sendable { case input }
     public var taskId: String
     public var action: Action
-    public init(taskId: String, action: Action) { self.taskId = taskId; self.action = action }
-    enum CodingKeys: String, CodingKey { case taskId, action }
+    /// Only with `pause`; the helper refuses it with any other action.
+    public var reason: Reason?
+    public init(taskId: String, action: Action, reason: Reason? = nil) { self.taskId = taskId; self.action = action; self.reason = reason }
+    enum CodingKeys: String, CodingKey { case taskId, action, reason }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         taskId = try c.decode(String.self, forKey: .taskId); action = try c.decode(Action.self, forKey: .action)
+        reason = try c.decodeOptional(Reason.self, forKey: .reason)
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(taskId, forKey: .taskId); try c.encode(action, forKey: .action)
+        try c.encode(taskId, forKey: .taskId); try c.encode(action, forKey: .action); try c.encodeIfPresent(reason, forKey: .reason)
     }
 }
 
 /// `list` asks for every task record; `since` for the activity messages after sequence number `since`.
+/// `requestId` is 1 to 200 characters, since the size-capped reply echoes it.
 public struct ActivityRequest: Codable, Equatable, Sendable {
     public static let type = "activityRequest"
     public enum Op: String, Codable, Sendable { case list, since }
@@ -73,6 +80,8 @@ public struct ActivityRequest: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         requestId = try c.decode(String.self, forKey: .requestId); op = try c.decode(Op.self, forKey: .op)
         since = try c.decodeOptional(Int.self, forKey: .since)
+        // zod counts UTF-16 code units.
+        if requestId.isEmpty || requestId.utf16.count > 200 { throw ProtocolError("requestId must be 1 to 200 characters") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
@@ -124,6 +133,8 @@ public struct TaskRecord: Codable, Equatable, Sendable {
     public var app: AppRef?
     public var windowId: String?
     public var windowTitle: String?
+    /// The task window's frame when the record last changed state or step; nil before it has a window.
+    public var frame: Frame?
     /// Zero-based index of the step the run is at, or stopped or paused before.
     public var step: Int?
     public var steps: Int?
@@ -136,7 +147,7 @@ public struct TaskRecord: Codable, Equatable, Sendable {
     public var updatedAt: Int64
     public var pending: PendingInfo?
     enum CodingKeys: String, CodingKey {
-        case id, kind, state, cause, says, app, windowId, windowTitle, step, steps, stepSays, remaining, detail, undoable, startedAt, updatedAt, pending
+        case id, kind, state, cause, says, app, windowId, windowTitle, frame, step, steps, stepSays, remaining, detail, undoable, startedAt, updatedAt, pending
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -144,6 +155,7 @@ public struct TaskRecord: Codable, Equatable, Sendable {
         state = try c.decode(TaskState.self, forKey: .state); cause = try c.decodeNullable(TaskCause.self, forKey: .cause)
         says = try c.decode(String.self, forKey: .says); app = try c.decodeNullable(AppRef.self, forKey: .app)
         windowId = try c.decodeNullable(String.self, forKey: .windowId); windowTitle = try c.decodeNullable(String.self, forKey: .windowTitle)
+        frame = try c.decodeNullable(Frame.self, forKey: .frame)
         step = try c.decodeNullable(Int.self, forKey: .step); steps = try c.decodeNullable(Int.self, forKey: .steps)
         stepSays = try c.decodeNullable(String.self, forKey: .stepSays); remaining = try c.decode([String].self, forKey: .remaining)
         detail = try c.decodeNullable(String.self, forKey: .detail); undoable = try c.decode(Bool.self, forKey: .undoable)
@@ -154,7 +166,7 @@ public struct TaskRecord: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id); try c.encode(kind, forKey: .kind); try c.encode(state, forKey: .state)
         try c.encode(cause, forKey: .cause); try c.encode(says, forKey: .says); try c.encode(app, forKey: .app)
-        try c.encode(windowId, forKey: .windowId); try c.encode(windowTitle, forKey: .windowTitle)
+        try c.encode(windowId, forKey: .windowId); try c.encode(windowTitle, forKey: .windowTitle); try c.encode(frame, forKey: .frame)
         try c.encode(step, forKey: .step); try c.encode(steps, forKey: .steps); try c.encode(stepSays, forKey: .stepSays)
         try c.encode(remaining, forKey: .remaining); try c.encode(detail, forKey: .detail); try c.encode(undoable, forKey: .undoable)
         try c.encode(startedAt, forKey: .startedAt); try c.encode(updatedAt, forKey: .updatedAt); try c.encode(pending, forKey: .pending)
@@ -192,7 +204,8 @@ public struct ActivityReply: Codable, Equatable, Sendable {
     public var seq: Int
     public var tasks: [TaskRecord]
     public var events: [Activity]
-    /// Events after `since` were already dropped; list instead.
+    /// The reply is incomplete. For `list`, the oldest records were left out to stay under 1 MiB; for
+    /// `since`, events after `since` were dropped from the helper's buffer or left out, so list instead.
     public var truncated: Bool
     enum CodingKeys: String, CodingKey { case requestId, error, seq, tasks, events, truncated }
     public init(from decoder: Decoder) throws {

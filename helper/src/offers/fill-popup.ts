@@ -7,6 +7,7 @@ import { nodeText, type ScreenModel } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
+import { offerField } from "./field.ts";
 
 /** Rows the fields block lists before "and N more". Assumed, not measured. */
 export const MAX_FILL_ROWS = 5;
@@ -64,14 +65,16 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
     { type: "fields", rows, ...(more > 0 ? { more } : {}) },
     { type: "actions", items: [{ id: "fillAll", label: "Fill all", key: "tab" }] },
   ];
-  const trigger = model.windows.get(p.windowId)?.nodes.get(p.triggerKey);
+  const form = model.windows.get(p.windowId);
+  if (form === undefined) throw new Error(`the form's window ${p.windowId} is not in the model`);
   return {
     type: "popup",
     v: PROTOCOL_VERSION,
     offerKey: p.id,
     at: p.at,
-    field: { pid: p.pid, windowId: p.windowId, key: p.triggerKey, frame: trigger?.frame ?? null },
+    field: offerField(form, p.triggerKey),
     spec: { v: 1, id: p.id, figure: "offering", blocks },
+    sourceApps: [...new Set(fields.map((f) => f.source.appName))],
   };
 }
 

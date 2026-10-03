@@ -1,6 +1,7 @@
 // The host-offer registry: every alternatives, action and popup message the helper published, kept so
 // an offerAccept can be checked against what the host was shown and routed to the code that made the
-// offer. A record goes when its offer is withdrawn or after OFFER_KEEP_MS.
+// offer. A record goes only when its offer is withdrawn: each producer withdraws its offers when their
+// lifetime ends (lifetimes.ts), so the registry never refuses an offer the host still shows.
 import type { OfferAccept, OfferAction, OfferAlternatives, OfferField, OfferPopup } from "../protocol.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import { applyingReveal, specActions, specChoices, type PopupAction, type PopupBlock, type PopupSpecT } from "../popup.ts";
@@ -23,9 +24,6 @@ export interface OfferRecord {
   accepted: boolean;
 }
 
-/** How long an offer can be accepted after it was published. Assumed, not measured. */
-export const OFFER_KEEP_MS = 10 * 60 * 1000;
-
 export class HostOfferRegistry {
   private readonly records = new Map<string, OfferRecord>();
   private readonly now: () => number;
@@ -41,17 +39,11 @@ export class HostOfferRegistry {
     return r;
   }
 
-  /** The live record for a key; an expired one is dropped and reads as unknown. */
   get(offerKey: string): OfferRecord | undefined {
-    const r = this.records.get(offerKey);
-    if (r !== undefined && this.now() - r.createdAt > OFFER_KEEP_MS) {
-      this.records.delete(offerKey);
-      return undefined;
-    }
-    return r;
+    return this.records.get(offerKey);
   }
 
-  /** Every key recorded, expired or not. */
+  /** Every key recorded. */
   keys(): string[] {
     return [...this.records.keys()];
   }
@@ -62,11 +54,6 @@ export class HostOfferRegistry {
 
   get size(): number {
     return this.records.size;
-  }
-
-  prune(): void {
-    const now = this.now();
-    for (const [k, r] of this.records) if (now - r.createdAt > OFFER_KEEP_MS) this.records.delete(k);
   }
 }
 

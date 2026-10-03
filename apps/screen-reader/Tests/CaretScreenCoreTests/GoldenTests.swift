@@ -47,7 +47,8 @@ private func goldenLines() throws -> [Data] {
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
                           "readerCommand", "verbResult", "userInput", "taskProgress",
                           "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
-                          "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand"])
+                          "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
+                          "offerWithdrawn", "taskControl", "taskProgress", "taskProgress"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -101,6 +102,48 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
     }
 
+    @Test func readsExpiryPauseReasonAndTaskFrames() throws {
+        let lines = try goldenLines()
+        guard case .offerWithdrawn(let gone) = try JSONDecoder().decode(Message.self, from: lines[26]) else { Issue.record("line 27 is not an offerWithdrawn"); return }
+        #expect(gone.id == "offer-4" && gone.reason == .expired)
+        guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { Issue.record("line 28 is not a taskControl"); return }
+        #expect(pause == TaskControl(taskId: "task-1", action: .pause, reason: .input))
+        guard case .taskControl(let takeOver) = try JSONDecoder().decode(Message.self, from: lines[15]) else { Issue.record("line 16 is not a taskControl"); return }
+        #expect(takeOver.reason == nil)
+        let longId = Data(#"{"type":"activityRequest","v":1,"requestId":"\#(String(repeating: "r", count: 201))","op":"list"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: longId) }
+        let nullReason = Data(#"{"type":"taskControl","v":1,"taskId":"t","action":"pause","reason":null}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: nullReason) }
+        guard case .activity(let a) = try JSONDecoder().decode(Message.self, from: lines[17]) else { Issue.record("line 18 is not an activity"); return }
+        #expect(a.task.frame == Frame(x: 640, y: 120, width: 520, height: 380))
+        #expect(a.task.says == "'Upload' in Caret Fixture is waiting for you")
+        guard case .activityReply(let r) = try JSONDecoder().decode(Message.self, from: lines[18]) else { Issue.record("line 19 is not an activityReply"); return }
+        #expect(r.tasks.allSatisfy { $0.frame == Frame(x: 40, y: 60, width: 520, height: 420) })
+        let line = String(decoding: lines[17], as: UTF8.self).replacingOccurrences(of: #""frame":[640,120,520,380],"#, with: "")
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(line.utf8)) }
+    }
+
+    @Test func readsWindowIdentitySourceAppsAndCounts() throws {
+        let lines = try goldenLines()
+        guard case .snapshot(let s) = try JSONDecoder().decode(Message.self, from: lines[1]) else { Issue.record("line 2 is not a snapshot"); return }
+        #expect(s.window.number == 4417)
+        guard case .alternatives(let alt) = try JSONDecoder().decode(Message.self, from: lines[19]) else { Issue.record("line 20 is not alternatives"); return }
+        #expect(alt.field.window == OfferWindow(number: 4421, title: "Seating"))
+        guard case .popup(let popup) = try JSONDecoder().decode(Message.self, from: lines[21]) else { Issue.record("line 22 is not a popup"); return }
+        #expect(popup.field.window == OfferWindow(number: nil, title: "Checkout") && popup.sourceApps == ["Mail Fixture"])
+        guard case .taskProgress(let done) = try JSONDecoder().decode(Message.self, from: lines[28]),
+              case .taskProgress(let undone) = try JSONDecoder().decode(Message.self, from: lines[29]) else { Issue.record("lines 29 and 30 are not taskProgress"); return }
+        #expect(done.phase == .done && done.written == 3 && done.restored == nil)
+        #expect(undone.phase == .undone && undone.restored == 2 && undone.notRestored == 1 && undone.notUndoablePresses == 0)
+        let text = String(decoding: lines[21], as: UTF8.self)
+        for bad in [#""sourceApps":[]"#, #""sourceApps":["Mail Fixture","Mail Fixture"]"#] {
+            let line = text.replacingOccurrences(of: #""sourceApps":["Mail Fixture"]"#, with: bad)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(line.utf8)) }
+        }
+        let noWindow = String(decoding: lines[19], as: UTF8.self).replacingOccurrences(of: #","window":{"number":4421,"title":"Seating"}"#, with: "")
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(noWindow.utf8)) }
+    }
+
     @Test func readsTheOfferMessagesAndRaise() throws {
         let lines = try goldenLines()
         guard case .alternatives(let alt) = try JSONDecoder().decode(Message.self, from: lines[19]) else { Issue.record("line 20 is not alternatives"); return }
@@ -140,7 +183,7 @@ private func goldenLines() throws -> [Data] {
 
     /// Optional keys stay out of the encoding when absent, and a null where zod wants the key left out is refused.
     @Test func offerOptionalsAndNullables() throws {
-        let field = OfferField(pid: 1, windowId: "1-1", key: "k", frame: nil)
+        let field = OfferField(pid: 1, windowId: "1-1", key: "k", frame: nil, window: OfferWindow(number: nil, title: "T"))
         let line = OfferAction(offerKey: "o", at: 1, field: field, app: "App", endState: PopupSpec.Value("x", ref: .memory(id: "m")),
                                actions: [PopupSpec.Action(id: "go", label: "Go", key: .tab)])
         let obj = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(Message.action(line))) as! [String: Any]
@@ -150,7 +193,7 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: nullVariants) }
         let negativeRow = Data(#"{"type":"offerAccept","v":1,"offerId":"o","actionId":"a","overrides":{"choices":-1},"at":1}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: negativeRow) }
-        let badReason = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"expired"}"#.utf8)
+        let badReason = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"o","reason":"timedOut"}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badReason) }
     }
 

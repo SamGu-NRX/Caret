@@ -1,0 +1,1 @@
+Generator perf: judge changes by real-window audit probes (run-audit.sh PROBE_SECONDS, event-loop CPU via process.threadCpuUsage), not synthetic scenes; a row-sorted label index won 10x synthetically but slowed real cold calls (p95 5.3->7.4 ms) and was reverted (B8).

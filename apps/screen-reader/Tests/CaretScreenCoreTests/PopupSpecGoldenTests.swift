@@ -68,7 +68,7 @@ private func data(_ object: Any) throws -> Data {
 /// The offer messages run their values, bars and specs through the same parsers, and a refusal
 /// comes out as the PopupSpecError itself.
 @Suite struct OfferMessagesRefuse {
-    private let field = #""field":{"pid":1,"windowId":"1-1","key":"k","frame":null}"#
+    private let field = #""field":{"pid":1,"windowId":"1-1","key":"k","frame":null,"window":{"number":null,"title":"T"}}"#
 
     @Test func aCandidateWithoutARef() {
         let line = Data(#"{"type":"alternatives","v":1,"offerKey":"o","at":1,\#(field),"candidates":[{"text":"Cara Diaz"}],"quoted":false}"#.utf8)

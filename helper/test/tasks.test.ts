@@ -8,7 +8,8 @@ import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type Activity, type HelperMessage, type TaskRecord } from "../src/protocol.ts";
 import { PlanError, type Plan, type Step } from "../src/executor/schema.ts";
 import { TaskRegistry, TransitionError } from "../src/tasks/registry.ts";
-import { executorWindow, FakeApp, K, TITLE } from "./fake-app.ts";
+import { executorWindow, FakeApp, K, TITLE, WIN } from "./fake-app.ts";
+import { FIXTURE_APP } from "./builders.ts";
 
 const W = { titleStartsWith: TITLE };
 const FIELDS = ["name", "email", "reference", "message", "eventtitle", "group:billing/textfield:city"];
@@ -190,6 +191,72 @@ describe("task controls on a six-step run", () => {
     expect(records().at(-1)).toMatchObject({ state: "paused", cause: "you" });
   });
 
+  describe("a host pause for input", () => {
+    const clicking = (): void => void helper.handleReader({ type: "userInput", v: PROTOCOL_VERSION, at: 5, pid: FIXTURE_APP.pid, kind: "mouse", point: [50, 50] });
+    const hostPause = (reason?: "input"): void => void helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "t", action: "pause", ...(reason === undefined ? {} : { reason }) });
+    const readerDetail = `paused before step 3 of 6: a click in '${TITLE}'`;
+
+    it("keeps the reader's wording when the reader's input came first", async () => {
+      onWrite = (i) => {
+        if (i !== 1) return;
+        clicking();
+        hostPause("input");
+      };
+      expect(await helper.executor.run("t", SIX, {})).toMatchObject({ outcome: "paused", step: 2, detail: readerDetail });
+      expect(records().at(-1)).toMatchObject({ state: "paused", cause: "you", detail: readerDetail });
+    });
+
+    it("takes the reader's wording when the reader's input comes second", async () => {
+      onWrite = (i) => {
+        if (i !== 1) return;
+        hostPause("input");
+        clicking();
+      };
+      expect(await helper.executor.run("t", SIX, {})).toMatchObject({ outcome: "paused", detail: readerDetail });
+    });
+
+    it("says 'your input' when the reader saw none", async () => {
+      onWrite = (i) => {
+        if (i === 1) hostPause("input");
+      };
+      expect(await helper.executor.run("t", SIX, {})).toMatchObject({ outcome: "paused", detail: "paused before step 3 of 6: your input" });
+    });
+
+    it("lets a plain pause, the user's own control, replace the reader's wording as before", async () => {
+      onWrite = (i) => {
+        if (i !== 1) return;
+        clicking();
+        hostPause();
+      };
+      expect(await helper.executor.run("t", SIX, {})).toMatchObject({ outcome: "paused", detail: "paused before step 3 of 6: you paused it" });
+    });
+
+    it("refuses a reason on anything but pause", async () => {
+      await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "t", action: "stop", reason: "input" });
+      expect(published.find((m) => m.type === "error")).toMatchObject({ message: "task t: reason input goes only with pause, not stop" });
+    });
+  });
+
+  it("counts the fields a run wrote on done, and what undo restored on undone", async () => {
+    await helper.executor.run("t", SIX, {});
+    const progress = published.filter((m) => m.type === "taskProgress" && m.taskId === "t");
+    expect(progress.at(-1)).toMatchObject({ phase: "done", written: 6 });
+    expect(progress.filter((m) => m.type === "taskProgress" && m.phase !== "done").every((m) => !("written" in m))).toBe(true);
+    // The user changes one field after the run, so undo leaves that one as it is.
+    const changed = app.node(key(FIELDS[0]!))!;
+    changed.value = "edited by hand";
+    app.show();
+    await helper.executor.undo("t");
+    expect(published.filter((m) => m.type === "taskProgress" && m.taskId === "t").at(-1)).toMatchObject({ phase: "undone", restored: 5, notRestored: 1, notUndoablePresses: 0 });
+  });
+
+  it("puts the task window's frame on its records", async () => {
+    await helper.executor.run("t", SIX, {});
+    const frame = helper.model.windows.get(WIN)?.window.frame;
+    expect(frame).not.toBeNull();
+    expect(records().at(-1)?.frame).toEqual(frame);
+  });
+
   it("refuses a runPlan whose task id is already a record", async () => {
     await helper.executor.run("t", SIX, {});
     await helper.handleTask({ type: "runPlan", v: PROTOCOL_VERSION, taskId: "t", plan: SIX, slots: {} });
@@ -213,6 +280,7 @@ describe("task registry", () => {
     state: "running",
     cause: null,
     says: "Fill six fields",
+    frame: null,
     app: null,
     windowId: null,
     windowTitle: null,
@@ -274,6 +342,44 @@ describe("task registry", () => {
     const gap = reg.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "since", since: 1 });
     expect(gap.truncated).toBe(true);
     expect(gap.events).toHaveLength(1000);
+  });
+
+  it("stops a reply at its byte cap, envelope included, and flags it truncated", () => {
+    const bytes = (x: unknown): number => Buffer.byteLength(JSON.stringify(x));
+    const big = (id: string): Omit<TaskRecord, "startedAt" | "updatedAt"> => rec(id, { says: "x".repeat(400) });
+    const envelope = bytes({ type: "activityReply", v: PROTOCOL_VERSION, requestId: "r", error: null, seq: 5, tasks: [], events: [], truncated: false });
+    const one = bytes({ ...big("a0"), startedAt: 1000, updatedAt: 1000 });
+    const cap = envelope + 3 * one + 2;
+    const small = new TaskRegistry(() => {}, () => now, cap);
+    for (let i = 0; i < 5; i++) small.create(big(`a${i}`));
+    const list = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" });
+    expect(list.tasks).toHaveLength(3);
+    expect(list.truncated).toBe(true);
+    expect(bytes(list)).toBeLessThanOrEqual(cap);
+    const since = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "since", since: 0 });
+    expect(since.truncated).toBe(true);
+    expect(bytes(since)).toBeLessThanOrEqual(cap);
+    expect(since.events.map((e) => e.seq)).toEqual([1, 2]);
+    const whole = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "since", since: 4 });
+    expect(whole).toMatchObject({ truncated: false, events: [{ seq: 5 }] });
+  });
+
+  it("leaves out a record too big for the reply and still lists the older ones", () => {
+    const small = new TaskRegistry(() => {}, () => now, 4000);
+    small.create(rec("old"));
+    now = 2000;
+    small.create(rec("huge", { says: "x".repeat(5000) }));
+    const list = small.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" });
+    expect(list.tasks.map((t) => t.id)).toEqual(["old"]);
+    expect(list.truncated).toBe(true);
+  });
+
+  it("keeps the default cap under 1 MiB however many records there are", () => {
+    for (let i = 0; i < 1500; i++) reg.create(rec(`r${i}`, { says: "y".repeat(1000), remaining: ["z".repeat(500)] }));
+    const reply = reg.answer({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" });
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThan(1024 * 1024);
+    expect(reply.truncated).toBe(true);
+    expect(reply.tasks.length).toBeGreaterThan(0);
   });
 
   it("forgets finished records after a day and keeps unfinished ones", () => {

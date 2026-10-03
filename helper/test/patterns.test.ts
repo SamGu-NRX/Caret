@@ -233,6 +233,16 @@ describe("pattern engine in the helper", () => {
       expect(desk.verbs.slice(writes).filter((v) => v.kind === "write")).toEqual([]);
     });
 
+    it("keeps a loopNext open when its source list changes elsewhere, and withdraws it when the predicted line changes", () => {
+      const dst = grid();
+      startLoop(dst);
+      const [next] = offers("loopNext");
+      desk.showList(roster([...PEOPLE, "Zora Quill"]));
+      expect(helper.patterns.openOffers().map((o) => o.id)).toEqual([next!.id]);
+      desk.showList(roster(PEOPLE.map((p, i) => (i === 2 ? `${p} (away)` : p))));
+      expect(sent.filter((m) => m.type === "offerWithdrawn").at(-1)).toMatchObject({ id: next!.id, reason: "stale" });
+    });
+
     it("withdraws an open offer when a memory entry it used is paused", () => {
       const dst = grid();
       const dstShape = store.hash(`dst\u0000${MAIL_APP.bundleId}\u0000standard\u0000${MAIL_APP.bundleId}/standard/textfield:guest`);
