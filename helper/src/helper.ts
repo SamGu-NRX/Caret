@@ -29,7 +29,7 @@ import {
   type OfferControl,
   type OfferStop,
   type OfferWithdrawn,
-  type ReaderCommand,
+  type HelperToReader,
   type ReaderMessage,
   type ReaderVerb,
   type VerbResult,
@@ -69,8 +69,8 @@ export interface HelperOptions {
   allowBackgroundFocus: boolean;
   /** Overrides FILL_CUTOFF, for calibration runs that need every agreed choice. */
   fillCutoff?: number;
-  /** Sends a command to the connected reader; false when none is connected. Without it the executor cannot act. */
-  sendToReader?: (cmd: ReaderCommand) => boolean;
+  /** Sends a command, act grant or revoke to the connected reader; false when none is connected. Without it the executor cannot act. */
+  sendToReader?: (m: HelperToReader) => boolean;
   /** Replaces the socket link to the reader, for tests that simulate the reader in process. */
   readerLink?: ReaderLink;
   calendar?: CalendarPort | null;
@@ -230,7 +230,8 @@ export class Helper {
         this.publish(m, accept);
         this.onPatternMessage(m);
       },
-      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect),
+      // Every pattern run starts from an accepted offer: offerControl take or the host's offerAccept.
+      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
       shadow: () => this.mode === "shadow",
       gate: this.gate,
       enteredByUser: (id) => {
@@ -247,7 +248,8 @@ export class Helper {
       ...(opts.newId === undefined ? {} : { newId: opts.newId }),
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
-    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots), gate: this.gate, now: this.now });
+    // The open-app line runs only from the host's offerAccept.
+    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }), gate: this.gate, now: this.now });
     this.firstLookRunner = new FirstLookRunner({
       model: this.model,
       askJev: opts.askJev,
@@ -257,7 +259,8 @@ export class Helper {
       paused: () => this.gate.settings.paused,
       resolvedWatches: () => this.openApp.resolvedWindows(),
       patterns: this.patterns,
-      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect),
+      // A first look's offer runs only from the host's offerAccept.
+      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
       record: (msg, family, accept, underlying) => {
         this.offers.record(msg, accept);
         this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
@@ -605,6 +608,8 @@ export class Helper {
       if (m.type === "runPlan") {
         // A task id names one piece of work in the activity feed; a run may not take over another's record.
         if (this.tasks.get(m.taskId) !== undefined) throw new Error(`task id ${m.taskId} is already in use`);
+        // No act grant: a consumer's plan is not an offer the user accepted, so the reader acts for it
+        // only in --act-pids processes, which only tests start.
         return await this.executor.run(m.taskId, m.plan, m.slots);
       }
       if (m.reason !== undefined && m.action !== "pause") throw new Error(`reason ${m.reason} goes only with pause, not ${m.action}`);
@@ -814,7 +819,7 @@ export class Helper {
     const { plan, slots } = fillPlan(this.model, p);
     this.withdrawFill(p.id, "taken");
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.executor.run(p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+    return this.executor.run(p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, { grant: true });
   }
 
   /**

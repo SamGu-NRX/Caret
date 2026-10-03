@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AnyMessage, ConsumerMessage, HelperMessage, HelperToReader, Node, ReaderMessage, StopReason } from "../src/protocol.ts";
+import { AnyMessage, ConsumerMessage, GRANT_MAX_MS, HelperMessage, HelperToReader, Node, ReaderMessage, StopReason } from "../src/protocol.ts";
 import { PLAN_SCHEMA_PATH, renderPlanJsonSchema, renderProtocolJsonSchema, SCHEMA_PATH } from "../src/export-schema.ts";
 import { Plan } from "../src/executor/schema.ts";
 
@@ -18,7 +18,29 @@ describe("golden protocol fixture", () => {
       "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
       "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
       "settings", "settings", "offerWithdrawn",
+      "actGrant", "readerCommand", "verbResult", "actRevoke",
     ]);
+  });
+
+  it("carries B15's act grant: helper to reader only, capped, and a write that names its task", () => {
+    const [grant, write, refused, revoke] = lines.slice(34, 38).map((l) => JSON.parse(l) as Record<string, unknown>);
+    for (const m of [grant, write, revoke]) {
+      expect(HelperToReader.safeParse(m).success).toBe(true);
+      expect(ConsumerMessage.safeParse(m).success).toBe(false);
+      expect(ReaderMessage.safeParse(m).success).toBe(false);
+    }
+    expect(ReaderMessage.parse(refused)).toMatchObject({ outcome: "notAllowed" });
+    expect(HelperToReader.parse(write)).toMatchObject({ verb: { kind: "write", taskId: "offer-5" } });
+    const at = grant?.at as number;
+    expect(HelperToReader.safeParse({ ...grant, expires: at + GRANT_MAX_MS }).success).toBe(true);
+    expect(HelperToReader.safeParse({ ...grant, expires: at + GRANT_MAX_MS + 1 }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...grant, expires: at }).success).toBe(false);
+    for (const bad of [{ taskId: "" }, { windowId: "" }, { taskId: undefined }]) expect(HelperToReader.safeParse({ ...grant, ...bad }).success).toBe(false);
+    const verb = write?.verb as Record<string, unknown>;
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, taskId: null } }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, taskId: "" } }).success).toBe(false);
+    const { taskId: _, ...bare } = verb;
+    expect(HelperToReader.safeParse({ ...write, verb: bare }).success).toBe(true);
   });
 
   it("carries the host's window identity, a fill's source apps, and done and undo counts", () => {

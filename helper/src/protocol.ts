@@ -154,14 +154,17 @@ export type Pasteboard = z.infer<typeof Pasteboard>;
  * The helper asks the reader to act. `walk` re-reads one window and sends its snapshot. `write` and
  * `press` re-walk the window, find the element by key, check that it still has the expected role,
  * label and value, act, re-walk and send the new snapshot, then answer with a verbResult. They act
- * only on processes the reader was started with `--act-pids` for. `watchInput` names the processes
+ * only under a live act grant (ActGrant) for the command's `taskId`, process and window, or in a
+ * process the reader was started with `--act-pids` for (tests). `watchInput` names the processes
  * whose real key and mouse input the reader reports as userInput; an empty list stops reporting.
  * `watchWindows` replaces the set of windows under a pending-state watch: the reader re-reads each
  * when the app posts a notification about it and every 10 s, as `watch` walks that send a snapshot
  * only when something changed. An empty list ends every watch. It only reads, so it needs no `--act-pids`.
  * `raise` brings one window to the front and activates its app (AXRaise, then activation), re-walks it
- * and sends the snapshot; it writes nothing, but it moves focus, so it too needs `--act-pids`.
+ * and sends the snapshot; it writes nothing, but it moves focus, so it is gated like write and press.
  */
+/** The task whose act grant covers a write, press or raise. Without it only `--act-pids` processes are acted in. */
+const GrantTask = z.string().min(1).optional();
 export const ReaderCommand = z.object({
   type: z.literal("readerCommand"),
   v: z.literal(PROTOCOL_VERSION),
@@ -184,6 +187,7 @@ export const ReaderCommand = z.object({
       /** The value the field must hold right before the write; "" for empty. */
       expect: z.string(),
       value: z.string(),
+      taskId: GrantTask,
     }),
     z.object({
       kind: z.literal("press"),
@@ -193,18 +197,57 @@ export const ReaderCommand = z.object({
       role: z.string(),
       /** The label the element must still carry; the helper's risk check ran on this text. */
       label: z.string(),
+      taskId: GrantTask,
     }),
     z.object({ kind: z.literal("watchInput"), pids: z.array(z.number().int()) }),
     z.object({ kind: z.literal("watchWindows"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
-    z.object({ kind: z.literal("raise"), pid: z.number().int(), windowId: z.string() }),
+    z.object({ kind: z.literal("raise"), pid: z.number().int(), windowId: z.string(), taskId: GrantTask }),
   ]),
 });
 export type ReaderCommand = z.infer<typeof ReaderCommand>;
 export type ReaderVerb = ReaderCommand["verb"];
 
+/**
+ * Longest an act grant lasts after the reader receives it, whatever its `expires` says. Assumed, not
+ * tuned (brief B15). The slowest of B2's 100 fixture runs took 2.5 s (executor run-4), so 120 s leaves
+ * wide room on a loaded Mac, and a grant the helper never revokes still ends on its own.
+ */
+export const GRANT_MAX_MS = 120_000;
+
+/**
+ * Lets the reader act for one task in one window of one process until `expires`, at most GRANT_MAX_MS
+ * after `at`. The helper sends it when an accepted offer starts the task, and again when the user
+ * resumes or undoes that task; never for a consumer's runPlan. A later grant for the same task replaces
+ * the earlier one. The reader drops every grant when its connection to the helper closes.
+ */
+export const ActGrant = z
+  .object({
+    type: z.literal("actGrant"),
+    v: z.literal(PROTOCOL_VERSION),
+    taskId: z.string().min(1),
+    pid: z.number().int(),
+    windowId: z.string().min(1),
+    at: ms,
+    expires: ms,
+  })
+  .refine((g) => g.expires > g.at && g.expires - g.at <= GRANT_MAX_MS, {
+    message: `expires must be after at and at most ${GRANT_MAX_MS} ms after it`,
+    path: ["expires"],
+  });
+export type ActGrant = z.infer<typeof ActGrant>;
+
+/** Ends a task's act grant: the run finished, paused, was stopped or taken over, or its undo finished. */
+export const ActRevoke = z.object({
+  type: z.literal("actRevoke"),
+  v: z.literal(PROTOCOL_VERSION),
+  taskId: z.string().min(1),
+  at: ms,
+});
+export type ActRevoke = z.infer<typeof ActRevoke>;
+
 export const VerbOutcome = z.enum([
   "ok",
-  /** The process is not one the reader may act on. */
+  /** No live act grant covers this task, process and window, and the process is not in `--act-pids`; `detail` says which. */
   "notAllowed",
   "noWindow",
   "noElement",
@@ -919,8 +962,9 @@ export const HelperMessage = z.discriminatedUnion("type", [
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
-/** What the helper sends the reader. */
-export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand]);
+/** What the helper sends the reader. A consumer can send none of these: ConsumerMessage refuses them. */
+export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand, ActGrant, ActRevoke]);
+export type HelperToReader = z.infer<typeof HelperToReader>;
 export type HelperMessage = z.infer<typeof HelperMessage>;
 
 /** Every message that may appear on the socket in either direction. */

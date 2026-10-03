@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
+import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
 import { classifyLabel } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { quotedPart } from "../src/executor/target.ts";
-import { FIXTURE_APP, snap } from "./builders.ts";
+import { field, FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
 
 const W = { titleStartsWith: TITLE };
@@ -71,7 +71,7 @@ describe("executor", () => {
     const r = await helper.executor.run("t1", plan([front]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 0, detail: "the reader refused: notAllowed (the fake app does not raise its window)" });
     expect(stopReason("t1")).toBe("reader");
-    expect(app.verbs.filter((v) => v.kind === "raise")).toEqual([{ kind: "raise", pid: FIXTURE_APP.pid, windowId: WIN }]);
+    expect(app.verbs.filter((v) => v.kind === "raise")).toEqual([{ kind: "raise", pid: FIXTURE_APP.pid, windowId: WIN, taskId: "t1" }]);
     expect(helper.executor.ledger("t1")).toEqual([]);
 
     // Focused within its app is not enough: the app must also be the one the user is in.
@@ -391,6 +391,165 @@ describe("executor", () => {
     expect(r.detail).toMatch(/no window matches/);
     expect(stopReason(r.taskId)).toBe("windowGone");
     void WIN;
+  });
+
+  // B15: the four stop reasons no test reached before.
+  describe("stop reasons", () => {
+    it("ambiguous: two open windows match the plan's selector", async () => {
+      void helper.handleReader(snap([], { at: 2000, windowId: "5150-8", title: `${TITLE} (copy)`, reason: "request" }));
+      const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+      expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+      expect(r.detail).toMatch(/2 windows match/);
+      expect(stopReason("t1")).toBe("ambiguous");
+      expect(acts()).toHaveLength(0);
+    });
+
+    it("readerRestarted: a new reader sends a window under an id the task already bound", async () => {
+      app.afterVerb = (a, v) => {
+        if (v.kind !== "write" || v.key !== K("textfield:name~0")) return;
+        a.afterVerb = null;
+        void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "t" });
+        // The new reader numbers windows from scratch, so the same id may now name the same window or another.
+        a.show();
+      };
+      const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
+      expect(r).toMatchObject({ outcome: "stopped", step: 1 });
+      expect(stopReason("t1")).toBe("readerRestarted");
+      expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+    });
+
+    it("notConfigured: a step opens a URL and the helper has no URL opener", async () => {
+      const step: Step = { says: "the page is open", end: { kind: "exists", window: W, target: { label: "Status: Done", describe: "a done line" } }, via: { kind: "openUrl", url: "https://example.com/" } };
+      const r = await helper.executor.run("t1", plan([step]), {});
+      expect(r).toMatchObject({ outcome: "stopped", step: 0, detail: "no URL opener is configured" });
+      expect(stopReason("t1")).toBe("notConfigured");
+    });
+
+    it("error: anything else that ends the run, such as the calendar store failing", async () => {
+      calendar.add = () => Promise.reject(new Error("the calendar store is locked"));
+      const ev: Step = { says: "x", end: { kind: "calendarEvent", calendar: "Caret Test", title: "Coffee", start: "2026-10-08T15:00:00-05:00", end: "2026-10-08T15:30:00-05:00" } };
+      const r = await helper.executor.run("t1", plan([ev]), {});
+      expect(r).toMatchObject({ outcome: "stopped", step: 0, detail: "the calendar store is locked" });
+      expect(stopReason("t1")).toBe("error");
+    });
+  });
+
+  // B15: a task from an accepted offer holds an act grant for its one window; the fake refuses acts
+  // without one, as caret-screen started without --act-pids does.
+  describe("act grants", () => {
+    const two = (): Plan => plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]);
+    const kinds = (): string[] => app.grants.log.map((m) => m.type);
+    const taskIds = (): (string | undefined)[] => app.verbs.flatMap((v) => (v.kind === "write" || v.kind === "press" || v.kind === "raise" ? [v.taskId] : []));
+    beforeEach(() => {
+      app.enforceGrants = true;
+    });
+
+    it("grants the task's window before the first act, names the task on every act, and revokes when done", async () => {
+      const before = Date.now();
+      expect(await helper.executor.run("t1", two(), {}, undefined, { grant: true })).toMatchObject({ outcome: "done", acted: 2 });
+      expect(kinds()).toEqual(["actGrant", "actRevoke"]);
+      const g = app.grants.log[0];
+      expect(g).toMatchObject({ taskId: "t1", pid: FIXTURE_APP.pid, windowId: WIN });
+      if (g?.type !== "actGrant") throw new Error("no grant");
+      expect(g.at).toBeGreaterThanOrEqual(before);
+      expect(g.expires - g.at).toBe(GRANT_MAX_MS);
+      expect(taskIds()).toEqual(["t1", "t1"]);
+    });
+
+    it("a consumer's runPlan gets no grant, so the reader refuses its first act and nothing is written", async () => {
+      const r = await helper.handleTask({ type: "runPlan", v: PROTOCOL_VERSION, taskId: "t1", plan: two(), slots: {} });
+      expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+      expect(r !== null && "detail" in r ? r.detail : "").toMatch(/notAllowed \(no act grant for task t1/);
+      expect(stopReason("t1")).toBe("reader");
+      expect(app.node(K("textfield:name~0"))?.value).toBeUndefined();
+      expect(app.grants.log).toEqual([]);
+    });
+
+    it("a grant that expires mid-run stops it for reason reader, and the next field is left as it was", async () => {
+      let clock = Date.now();
+      app.grants.now = () => clock;
+      app.afterVerb = (_, v) => {
+        if (v.kind === "write" && v.key === K("textfield:name~0")) clock += GRANT_MAX_MS;
+      };
+      const r = await helper.executor.run("t1", two(), {}, undefined, { grant: true });
+      expect(r).toMatchObject({ outcome: "stopped", step: 1 });
+      expect(r.detail).toMatch(/the act grant for task t1 expired/);
+      expect(stopReason("t1")).toBe("reader");
+      expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+      expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+      expect(kinds()).toEqual(["actGrant", "actRevoke"]);
+    });
+
+    it("refuses an act in another window of the same app, or in another process, under the task's grant", async () => {
+      void helper.handleReader(snap([field(K("textfield:subject~0"), "")], { at: 2000, windowId: "5150-8", title: "Other window", reason: "request" }));
+      void helper.handleReader(snap([field(K("textfield:subject~0"), "")], { at: 2000, windowId: "6160-1", title: "Mail form", app: MAIL_APP, reason: "request" }));
+      app.readable.add("5150-8").add("6160-1");
+      const elsewhere = (title: string): Step => ({ says: "subject", end: { kind: "valueEquals", window: { title }, target: { key: K("textfield:subject~0"), describe: "subject" }, value: "Hi" } });
+      for (const [id, title, why] of [
+        ["t1", "Other window", `covers window ${WIN}, not 5150-8`],
+        ["t2", "Mail form", `covers process ${FIXTURE_APP.pid}, not ${MAIL_APP.pid}`],
+      ] as const) {
+        const r = await helper.executor.run(id, plan([write(K("textfield:name~0"), id), elsewhere(title)]), {}, undefined, { grant: true });
+        expect(r).toMatchObject({ outcome: "stopped", step: 1 });
+        expect(r.detail).toContain(why);
+        expect(stopReason(id)).toBe("reader");
+      }
+      expect(helper.model.windows.get("5150-8")?.nodes.get(K("textfield:subject~0"))?.value).toBeUndefined();
+      expect(helper.model.windows.get("6160-1")?.nodes.get(K("textfield:subject~0"))?.value).toBeUndefined();
+    });
+
+    it("a stop revokes the grant at once: an act already on its way is refused, and the run ends as stopped by you", async () => {
+      app.beforeVerb = (_, v) => {
+        if (v.kind === "write" && v.key === K("textfield:email~0")) helper.executor.stop("t1");
+      };
+      const r = await helper.executor.run("t1", two(), {}, undefined, { grant: true });
+      expect(r).toMatchObject({ outcome: "stopped", step: 1 });
+      expect(stopReason("t1")).toBe("you");
+      expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+      expect(kinds()).toEqual(["actGrant", "actRevoke"]);
+    });
+
+    it("a take-over revokes the grant at once and the run is handed back, not failed", async () => {
+      app.beforeVerb = (_, v) => {
+        if (v.kind === "write" && v.key === K("textfield:email~0")) helper.executor.pause("t1", true);
+      };
+      const r = await helper.executor.run("t1", two(), {}, undefined, { grant: true });
+      expect(r).toMatchObject({ outcome: "paused", step: 1 });
+      expect(r.detail).toMatch(/handed this back/);
+      expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+      expect(kinds()).toEqual(["actGrant", "actRevoke"]);
+    });
+
+    it("a pause keeps the grant to the step boundary, gives it back there, and resume grants again", async () => {
+      app.afterVerb = (a, v) => {
+        if (v.kind !== "write" || v.key !== K("textfield:name~0")) return;
+        a.afterVerb = null;
+        helper.executor.pause("t1", false);
+        expect(kinds()).toEqual(["actGrant"]);
+      };
+      expect(await helper.executor.run("t1", two(), {}, undefined, { grant: true })).toMatchObject({ outcome: "paused", step: 1 });
+      expect(kinds()).toEqual(["actGrant", "actRevoke"]);
+      expect(await helper.executor.resume("t1")).toMatchObject({ outcome: "done" });
+      expect(kinds()).toEqual(["actGrant", "actRevoke", "actGrant", "actRevoke"]);
+    });
+
+    it("undo of a granted run is granted the run's window for the restore, then revoked", async () => {
+      await helper.executor.run("t1", two(), {}, undefined, { grant: true });
+      expect(await helper.executor.undo("t1")).toMatchObject({ restored: 2 });
+      expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+      expect(kinds()).toEqual(["actGrant", "actRevoke", "actGrant", "actRevoke"]);
+      expect(app.grants.log[2]).toMatchObject({ taskId: "t1", windowId: WIN });
+    });
+
+    it("undo of an ungranted run is refused by the reader and restores nothing", async () => {
+      app.enforceGrants = false;
+      await helper.executor.run("t1", two(), {});
+      app.enforceGrants = true;
+      const u = await helper.executor.undo("t1");
+      expect(u.restored).toBe(0);
+      expect(u.notRestored[0]?.reason).toMatch(/notAllowed/);
+      expect(app.node(K("textfield:email~0"))?.value).toBe("d@example.com");
+    });
   });
 });
 

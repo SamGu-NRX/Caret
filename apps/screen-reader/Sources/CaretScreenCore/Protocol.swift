@@ -511,17 +511,33 @@ public struct HelperError: Codable, Equatable, Sendable {
 public enum ReaderVerb: Codable, Equatable, Sendable {
     case walk(pid: Int, windowId: String)
     /// `attribute` is "value" or "focused"; `expect` is the value the field must hold right before the write.
-    case write(pid: Int, windowId: String, key: String, role: String, attribute: String, expect: String, value: String)
+    /// `taskId` names the task whose act grant covers the write; nil acts only in --act-pids processes.
+    case write(pid: Int, windowId: String, key: String, role: String, attribute: String, expect: String, value: String, taskId: String?)
     /// `label` is the label the element must still carry.
-    case press(pid: Int, windowId: String, key: String, role: String, label: String)
+    case press(pid: Int, windowId: String, key: String, role: String, label: String, taskId: String?)
     case watchInput(pids: [Int])
     /// Replaces the set of windows under a pending-state watch; an empty list ends every watch.
     case watchWindows(windows: [WatchedWindow])
     /// Brings one window to the front and activates its app, then re-walks it. It writes nothing, but
-    /// it moves the user's focus, so it is gated by --act-pids like write and press.
-    case raise(pid: Int, windowId: String)
+    /// it moves the user's focus, so it is gated like write and press.
+    case raise(pid: Int, windowId: String, taskId: String?)
 
-    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows }
+    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows, taskId }
+
+    /// The task an acting verb names, checked against the reader's act grants.
+    public var taskId: String? {
+        switch self {
+        case let .write(_, _, _, _, _, _, _, t), let .press(_, _, _, _, _, t), let .raise(_, _, t): t
+        case .walk, .watchInput, .watchWindows: nil
+        }
+    }
+
+    /// An empty task id is refused, as zod's min(1) refuses it.
+    private static func grantTask(_ c: KeyedDecodingContainer<CodingKeys>) throws -> String? {
+        let t = try c.decodeOptional(String.self, forKey: .taskId)
+        if t == "" { throw ProtocolError("taskId is empty; omit it instead") }
+        return t
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -533,17 +549,18 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             guard attribute == "value" || attribute == "focused" else { throw ProtocolError("unknown write attribute \(attribute)") }
             self = .write(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId),
                           key: try c.decode(String.self, forKey: .key), role: try c.decode(String.self, forKey: .role),
-                          attribute: attribute, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
+                          attribute: attribute, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value),
+                          taskId: try Self.grantTask(c))
         case "press":
             self = .press(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId),
                           key: try c.decode(String.self, forKey: .key), role: try c.decode(String.self, forKey: .role),
-                          label: try c.decode(String.self, forKey: .label))
+                          label: try c.decode(String.self, forKey: .label), taskId: try Self.grantTask(c))
         case "watchInput":
             self = .watchInput(pids: try c.decode([Int].self, forKey: .pids))
         case "watchWindows":
             self = .watchWindows(windows: try c.decode([WatchedWindow].self, forKey: .windows))
         case "raise":
-            self = .raise(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId))
+            self = .raise(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId), taskId: try Self.grantTask(c))
         case let k:
             throw ProtocolError("unknown verb \(k)")
         }
@@ -554,19 +571,21 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
         switch self {
         case let .walk(pid, windowId):
             try c.encode("walk", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
-        case let .write(pid, windowId, key, role, attribute, expect, value):
+        case let .write(pid, windowId, key, role, attribute, expect, value, taskId):
             try c.encode("write", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
             try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(attribute, forKey: .attribute)
-            try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value)
-        case let .press(pid, windowId, key, role, label):
+            try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value); try c.encodeIfPresent(taskId, forKey: .taskId)
+        case let .press(pid, windowId, key, role, label, taskId):
             try c.encode("press", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
             try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(label, forKey: .label)
+            try c.encodeIfPresent(taskId, forKey: .taskId)
         case let .watchInput(pids):
             try c.encode("watchInput", forKey: .kind); try c.encode(pids, forKey: .pids)
         case let .watchWindows(windows):
             try c.encode("watchWindows", forKey: .kind); try c.encode(windows, forKey: .windows)
-        case let .raise(pid, windowId):
+        case let .raise(pid, windowId, taskId):
             try c.encode("raise", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
+            try c.encodeIfPresent(taskId, forKey: .taskId)
         }
     }
 }
@@ -595,6 +614,56 @@ public struct ReaderCommand: Codable, Equatable, Sendable {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id); try c.encode(expires, forKey: .expires); try c.encode(verb, forKey: .verb)
+    }
+}
+
+/// Lets the reader act for one task in one window of one process until `expires`. Mirrors ActGrant in protocol.ts;
+/// GrantTable caps it at Grants.maxMs after it arrives.
+public struct ActGrant: Codable, Equatable, Sendable {
+    public static let type = "actGrant"
+    public var taskId: String
+    public var pid: Int
+    public var windowId: String
+    public var at: Int64
+    public var expires: Int64
+    public init(taskId: String, pid: Int, windowId: String, at: Int64, expires: Int64) {
+        self.taskId = taskId; self.pid = pid; self.windowId = windowId; self.at = at; self.expires = expires
+    }
+    enum CodingKeys: String, CodingKey { case taskId, pid, windowId, at, expires }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        taskId = try c.decode(String.self, forKey: .taskId); pid = try c.decode(Int.self, forKey: .pid)
+        windowId = try c.decode(String.self, forKey: .windowId)
+        at = try c.decode(Int64.self, forKey: .at); expires = try c.decode(Int64.self, forKey: .expires)
+        if taskId.isEmpty || windowId.isEmpty { throw ProtocolError("an act grant names a task and a window") }
+        guard expires > at, expires - at <= GrantTable.maxMs else { throw ProtocolError("expires must be after at and at most \(GrantTable.maxMs) ms after it") }
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(taskId, forKey: .taskId); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
+        try c.encode(at, forKey: .at); try c.encode(expires, forKey: .expires)
+    }
+}
+
+/// Ends a task's act grant. Mirrors ActRevoke in protocol.ts.
+public struct ActRevoke: Codable, Equatable, Sendable {
+    public static let type = "actRevoke"
+    public var taskId: String
+    public var at: Int64
+    public init(taskId: String, at: Int64) { self.taskId = taskId; self.at = at }
+    enum CodingKeys: String, CodingKey { case taskId, at }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        taskId = try c.decode(String.self, forKey: .taskId); at = try c.decode(Int64.self, forKey: .at)
+        if taskId.isEmpty { throw ProtocolError("an act revoke names a task") }
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(taskId, forKey: .taskId); try c.encode(at, forKey: .at)
     }
 }
 
@@ -704,7 +773,7 @@ public enum Message: Codable, Equatable, Sendable {
     case readerCommand(ReaderCommand), verbResult(VerbResult), userInput(UserInput), taskProgress(TaskProgress)
     case fillResult(FillResult), taskControl(TaskControl), activityRequest(ActivityRequest), activity(Activity), activityReply(ActivityReply)
     case alternatives(OfferAlternatives), action(OfferAction), popup(OfferPopup), offerAccept(OfferAccept), offerStop(OfferStop)
-    case offerWithdrawn(OfferWithdrawn), settings(GateSettings)
+    case offerWithdrawn(OfferWithdrawn), settings(GateSettings), actGrant(ActGrant), actRevoke(ActRevoke)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -734,6 +803,8 @@ public enum Message: Codable, Equatable, Sendable {
         case OfferStop.type: self = .offerStop(try OfferStop(from: decoder))
         case OfferWithdrawn.type: self = .offerWithdrawn(try OfferWithdrawn(from: decoder))
         case GateSettings.type: self = .settings(try GateSettings(from: decoder))
+        case ActGrant.type: self = .actGrant(try ActGrant(from: decoder))
+        case ActRevoke.type: self = .actRevoke(try ActRevoke(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -765,6 +836,8 @@ public enum Message: Codable, Equatable, Sendable {
         case .offerStop(let m): try m.encode(to: encoder)
         case .offerWithdrawn(let m): try m.encode(to: encoder)
         case .settings(let m): try m.encode(to: encoder)
+        case .actGrant(let m): try m.encode(to: encoder)
+        case .actRevoke(let m): try m.encode(to: encoder)
         }
     }
 }

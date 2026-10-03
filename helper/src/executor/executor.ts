@@ -8,8 +8,10 @@
 // Real input in a window the task acts in, or a pause or take-over from a consumer, pauses it at the
 // next step boundary: before the next step starts, or before the current step acts if its reads are
 // still under way. A stop ends it there. Every write goes in an undo ledger with the value it replaced.
+// A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
+// reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt } from "node:crypto";
-import { PROTOCOL_VERSION, type AppRef, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
+import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppRef, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import type { CalendarPort, ReaderLink, UrlOpener } from "./means.ts";
@@ -39,6 +41,15 @@ export interface ExecutorDeps {
   beforeAct?: (taskId: string, step: number) => Promise<void>;
   /** Overrides TARGET_CUTOFF, for runs that measure the confidences of target questions. */
   targetCutoff?: number;
+}
+
+/** How a run was started. Only a run from an accepted offer may hold an act grant. */
+export interface RunOptions {
+  /**
+   * The user accepted an offer that starts this task, so the reader may act for it in the one window the
+   * task binds. Without it the reader acts only in `--act-pids` processes, which exist only in tests.
+   */
+  grant?: boolean;
 }
 
 export type Outcome = "done" | "stopped" | "handoff" | "paused";
@@ -125,6 +136,10 @@ interface Task {
    * the task found it: a target question charges that window for the value even after it has closed.
    */
   sourced: { text: string; windowId: string; window: WindowState | undefined }[];
+  /** Started from an accepted offer, so it may hold an act grant. */
+  granted: boolean;
+  /** The act grant the reader holds for this task now, or null. One window per task. */
+  grant: { pid: number; windowId: string } | null;
 }
 
 /**
@@ -179,6 +194,8 @@ export class Executor {
   /** A new reader numbers windows from scratch; every existing task's window ids now mean nothing. */
   readerRestarted(): void {
     this.session++;
+    // The reader dropped every grant with the old connection.
+    for (const t of this.tasks.values()) t.grant = null;
   }
 
   /** Whether a run with this id exists, running or finished. */
@@ -202,7 +219,7 @@ export class Executor {
    * its fields empty when the user took it, and a value typed while the first walk was under way must
    * stop the run, not become the value the write expects and replaces.
    */
-  async run(taskId: string, rawPlan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>): Promise<TaskResult> {
+  async run(taskId: string, rawPlan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, opts: RunOptions = {}): Promise<TaskResult> {
     if (this.tasks.has(taskId)) throw new PlanError(`task ${taskId} already exists`);
     const parsed = Plan.safeParse(rawPlan);
     if (!parsed.success) throw new PlanError(`invalid plan: ${parsed.error.message.slice(0, 400)}`);
@@ -226,6 +243,8 @@ export class Executor {
         const text = slots[slot];
         return text === undefined ? [] : [{ text, windowId, window: this.deps.model.windows.get(windowId) }];
       }),
+      granted: opts.grant === true,
+      grant: null,
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -274,6 +293,8 @@ export class Executor {
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
     if (task.interrupt?.kind === "stop" || (by === "input" && task.interrupt?.by === "input")) return;
     task.interrupt = { kind: "pause", by, why: takeOver ? "you took over" : by === "input" ? "your input" : "you paused it" };
+    // The user has the window now: an act already on its way to the reader is refused there.
+    if (takeOver) this.revokeGrant(task);
   }
 
   /** Ends a running task at its next step boundary, or a paused one now. What it wrote stays; undo restores it. */
@@ -287,6 +308,7 @@ export class Executor {
     }
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to stop`);
     task.interrupt = { kind: "stop", by: "control", why: "you stopped it" };
+    this.revokeGrant(task);
   }
 
   private need(taskId: string): Task {
@@ -323,6 +345,10 @@ export class Executor {
     task.undoing = true;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
+    // Undo is the user's own request about this task, so a task that held a grant gets one again, for
+    // the window its writes went to, until the restore ends.
+    const written = task.ledger.find((e) => e.kind === "write");
+    if (written !== undefined) this.issueGrant(task, written.pid, written.windowId);
     try {
       for (const e of [...task.ledger].reverse()) {
         if (e.kind === "press") {
@@ -330,7 +356,7 @@ export class Executor {
           remaining.push(e);
           continue;
         }
-        const reason = task.session !== this.session ? "the reader restarted during undo" : e.kind === "write" ? await this.undoWrite(e) : await this.undoCalendar(e);
+        const reason = task.session !== this.session ? "the reader restarted during undo" : e.kind === "write" ? await this.undoWrite(task, e) : await this.undoCalendar(e);
         if (reason === null) out.restored++;
         else {
           out.notRestored.push({ step: e.step, reason });
@@ -340,6 +366,7 @@ export class Executor {
       task.ledger = remaining.reverse();
     } finally {
       task.undoing = false;
+      this.revokeGrant(task);
     }
     const detail = `restored ${out.restored}; not restored ${out.notRestored.length}; presses not undoable ${out.notUndoable}`;
     this.progress(task, "undone", null, detail, null, { restored: out.restored, notRestored: out.notRestored.length, notUndoablePresses: out.notUndoable });
@@ -401,6 +428,8 @@ export class Executor {
       return this.result(task, outcome, i, detail);
     } finally {
       if (task.finished !== null && task.finished !== "paused") releaseSources(task);
+      // Done, handed off, stopped or paused: nothing more is done for the task until the user resumes it.
+      if (task.finished !== null) this.revokeGrant(task);
       await this.updateWatch();
     }
   }
@@ -453,7 +482,7 @@ export class Executor {
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `write ${attribute}; expect ${prediction}`);
-    const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value };
+    const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value, taskId: task.id };
     await this.deps.beforeAct?.(task.id, i);
     let seen: Change[];
     try {
@@ -496,7 +525,7 @@ export class Executor {
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
-    const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label }, w.window.windowId);
+    const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label, taskId: task.id }, w.window.windowId);
     task.ledger.push({ kind: "press", step: i, label });
     await this.awaitEffect(task, i, step, w.window.windowId, seen);
     this.checkUnexpected(seen, null);
@@ -508,7 +537,7 @@ export class Executor {
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `raise; expect '${clip(w.window.title)}' in ${w.app.name} to be the focused window`);
     await this.deps.beforeAct?.(task.id, i);
-    const seen = await this.act(task, { kind: "raise", pid: w.app.pid, windowId: w.window.windowId }, w.window.windowId);
+    const seen = await this.act(task, { kind: "raise", pid: w.app.pid, windowId: w.window.windowId, taskId: task.id }, w.window.windowId);
     await this.awaitEffect(task, i, step, w.window.windowId, seen);
     this.checkUnexpected(seen, null);
     await this.verified(task, i, step);
@@ -555,11 +584,34 @@ export class Executor {
     });
     try {
       const r = await this.deps.reader.run(verb);
+      // A stop or take-over revoked the grant while the verb was on its way; the reader refused for that
+      // reason, so the run ends as the user asked, not as a reader failure.
+      if (r.outcome === "notAllowed" && task.interrupt !== null) throw new Interrupted();
       if (r.outcome !== "ok") throw StepStop.stop("reader", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     } finally {
       off();
     }
     return seen;
+  }
+
+  // MARK: - act grants
+
+  /**
+   * Gives the reader a grant for this task's window, if the task may hold one and does not already hold
+   * one. The first window a task binds gets the grant; acts in any other window are refused by the reader.
+   * None is issued while a pause or stop is pending, so a stop's revoke is not undone by the next read.
+   */
+  private issueGrant(task: Task, pid: number, windowId: string): void {
+    if (!task.granted || task.grant !== null || task.interrupt !== null || this.deps.reader.grant === undefined) return;
+    const at = Date.now();
+    this.deps.reader.grant({ type: "actGrant", v: PROTOCOL_VERSION, taskId: task.id, pid, windowId, at, expires: at + GRANT_MAX_MS });
+    task.grant = { pid, windowId };
+  }
+
+  private revokeGrant(task: Task): void {
+    if (task.grant === null) return;
+    task.grant = null;
+    this.deps.reader.grant?.({ type: "actRevoke", v: PROTOCOL_VERSION, taskId: task.id, at: Date.now() });
   }
 
   /** Re-reads the window a few times until the end state holds, collecting changes into `seen`. */
@@ -594,6 +646,7 @@ export class Executor {
   private async refresh(task: Task, sel: WindowSel): Promise<WindowState> {
     const id = this.bind(task, sel);
     const w = this.window(id);
+    this.issueGrant(task, w.app.pid, id);
     await this.walk(w);
     // A pause or take-over that came in during the walk wins over anything the walk found: the user
     // may already be changing the window, and the run must pause, not fail.
@@ -721,13 +774,13 @@ export class Executor {
 
   // MARK: - undo
 
-  private async undoWrite(e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null> {
+  private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null> {
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined) return "the window closed";
     // The reader acts only on an element it saw in a walk the executor asked for, so undo reads first.
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
     if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
-    const r = await this.deps.reader.run({ kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before });
+    const r = await this.deps.reader.run({ kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id });
     if (r.outcome !== "ok") return r.outcome === "changed" ? `the field changed after Caret wrote it (${r.detail ?? "no detail"})` : `${r.outcome}: ${r.detail ?? ""}`;
     const now = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if ((now?.value ?? "") !== e.before) return `after the restore the field holds '${clip(now?.value ?? "(gone)")}'`;

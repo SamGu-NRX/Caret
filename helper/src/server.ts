@@ -5,7 +5,7 @@
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type HelperMessage, type ReaderCommand } from "./protocol.ts";
+import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type HelperMessage, type HelperToReader } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
@@ -27,9 +27,10 @@ export class HelperServer {
     this.warn = warn;
   }
 
-  sendToReader(cmd: ReaderCommand): boolean {
+  /** Commands, act grants and revokes go to the reader only; no consumer ever receives one. */
+  sendToReader(m: HelperToReader): boolean {
     if (this.reader === null || this.reader.destroyed) return false;
-    this.reader.write(JSON.stringify(cmd) + "\n");
+    this.reader.write(JSON.stringify(m) + "\n");
     return true;
   }
 
