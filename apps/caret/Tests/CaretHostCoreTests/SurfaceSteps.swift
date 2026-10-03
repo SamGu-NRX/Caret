@@ -100,7 +100,7 @@ extension XCTestCase {
             case .progress(let task, let phase, let detail, let written, let restored, let notRestored):
                 rig.machine.taskProgress(Fx.progress(task, phase, detail: detail, written: written, restored: restored, notRestored: notRestored))
             case .withdraw(let key, let reason): rig.machine.withdrawn(OfferWithdrawn(at: 1, id: key, reason: reason))
-            case .reoffer(let old, let new): rig.machine.reoffered(OfferReoffered(at: 1, id: old, replacedBy: new))
+            case .reoffer(let old, let new): rig.machine.withdrawn(OfferWithdrawn(at: 1, id: old, reason: .reoffered, replacedBy: new))
             case .linkLost: rig.machine.helperGone()
             case .focusMoved(let element):
                 rig.screen.focused[Fx.app] = Fx.field(element)

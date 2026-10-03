@@ -17,9 +17,8 @@ public enum HelperInbound: Equatable, Sendable {
     case alternatives(OfferAlternatives)
     case action(OfferAction)
     case popup(OfferPopup)
+    /// Reason `reoffered` carries `replacedBy`, the key of the offer that replaces it.
     case offerWithdrawn(OfferWithdrawn)
-    /// `offerWithdrawn` with reason `reoffered` (`OfferReoffered`).
-    case offerReoffered(OfferReoffered)
     case taskProgress(TaskProgress)
     /// The answer to this host's `firstLook` (`FirstLook.swift`), the host's own contract until
     /// the helper's schema has it.
@@ -40,7 +39,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .alternatives: return OfferAlternatives.type
         case .action: return OfferAction.type
         case .popup: return OfferPopup.type
-        case .offerWithdrawn, .offerReoffered: return OfferWithdrawn.type
+        case .offerWithdrawn: return OfferWithdrawn.type
         case .taskProgress: return TaskProgress.type
         case .firstLookReply: return FirstLookReply.type
         case .notForConsumer(let type), .unknown(let type): return type
@@ -51,9 +50,6 @@ public enum HelperInbound: Equatable, Sendable {
         let envelope = try JSONDecoder().decode(EnvelopeProbe.self, from: line)
         guard envelope.v == Proto.version else {
             throw ProtocolError("unsupported protocol version \(envelope.v) for \(envelope.type)")
-        }
-        if envelope.type == OfferWithdrawn.type, let reoffered = try OfferReoffered.decode(line) {
-            return .offerReoffered(reoffered)
         }
         switch envelope.type {
         case FillProposal.type, HelperError.type, Activity.type, ActivityReply.type, OfferAlternatives.type,
@@ -71,7 +67,7 @@ public enum HelperInbound: Equatable, Sendable {
             default: return .notForConsumer(type: envelope.type)
             }
         case Hello.type, FillRequest.type, "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard",
-             "readerCommand", "verbResult", "userInput", "taskControl", "activityRequest", OfferAccept.type, OfferStop.type:
+             "readerCommand", "verbResult", "userInput", "taskControl", "activityRequest", OfferAccept.type, OfferStop.type, GateSettings.type:
             // Validated, so a malformed line is still counted as undecodable.
             _ = try JSONDecoder().decode(Message.self, from: line)
             return .notForConsumer(type: envelope.type)

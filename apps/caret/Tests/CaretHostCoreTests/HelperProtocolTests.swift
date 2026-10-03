@@ -31,14 +31,13 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .action: return "action"
             case .popup: return "popup"
             case .offerWithdrawn: return "offerWithdrawn"
-            case .offerReoffered: return "offerReoffered"
             case .taskProgress: return "taskProgress"
             case .firstLookReply: return "firstLookReply"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
         }
-        var expected = [
+        let expected = [
             "skip:hello", "skip:snapshot", "skip:focus", "skip:appSwitch", "skip:windowClosed",
             "skip:pasteboard", "skip:fillRequest", "fillProposal", "error",
             "skip:readerCommand", "skip:verbResult", "skip:userInput", "taskProgress", "skip:readerCommand",
@@ -47,16 +46,17 @@ final class HelperProtocolGoldenTests: XCTestCase {
             "alternatives", "action", "popup", "skip:offerAccept", "skip:offerStop", "offerWithdrawn", "skip:readerCommand",
             // B8: expiry, the input pause, and the counts a run reports when done and undone.
             "offerWithdrawn", "skip:taskControl", "taskProgress", "taskProgress",
+            // B9: a reoffered withdrawal. B10: the host's settings, and the withdrawal they cause.
+            "offerWithdrawn", "skip:settings", "skip:settings", "offerWithdrawn",
         ]
-        // v2/screen 4a2a408 adds line 31, a reoffered withdrawal; this branch has it once merged.
-        if kinds.count == 31 { expected.append("offerReoffered") }
         XCTAssertEqual(kinds, expected)
     }
 
-    /// B8's lines, field by field: expiry, the pause's reason, and the run's counts.
+    /// B8 to B10 lines, field by field: expiry, the pause's reason, the run's counts, the reoffered
+    /// withdrawal with its replacement and the withdrawal settings cause.
     func testTheB8LinesDecodeExactly() throws {
         let lines = try goldenLines()
-        XCTAssertTrue([30, 31].contains(lines.count), "30 lines, or 31 with v2/screen's reoffered line")
+        XCTAssertEqual(lines.count, 34)
         XCTAssertEqual(try HelperInbound.decode(lines[26]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_122_500, id: "offer-4", reason: .expired)))
         guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { return XCTFail("line 28") }
         XCTAssertEqual(pause, TaskControl(taskId: "task-1", action: .pause, reason: .input))
@@ -69,9 +69,9 @@ final class HelperProtocolGoldenTests: XCTestCase {
         XCTAssertEqual(undone.phase, .undone)
         XCTAssertEqual([undone.restored, undone.notRestored, undone.notUndoablePresses], [2, 1, 0])
         XCTAssertNil(undone.written)
-        if lines.count == 31 {
-            XCTAssertEqual(try HelperInbound.decode(lines[30]), .offerReoffered(OfferReoffered(at: 1_790_000_124_000, id: "offer-5", replacedBy: "offer-6")))
-        }
+        let reoffered = OfferWithdrawn(at: 1_790_000_124_000, id: "offer-5", reason: .reoffered, replacedBy: "offer-6")
+        XCTAssertEqual(try HelperInbound.decode(lines[30]), .offerWithdrawn(reoffered), "line 31")
+        XCTAssertEqual(try HelperInbound.decode(lines[33]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_131_000, id: "fill-2", reason: .settings)), "line 34")
     }
 
     func testTheHostsPauseEncodesItsReason() throws {

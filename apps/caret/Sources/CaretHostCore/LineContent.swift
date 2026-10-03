@@ -141,6 +141,10 @@ public enum Captions {
     /// Tab on an offer while the helper is not connected: nothing ran.
     public static let acceptUnsent = "Caret's helper isn't running, so nothing was done."
 
+    /// The helper's connection dropped after the run had verified a step: something was done, so
+    /// `acceptUnsent` would not be true.
+    public static let helperStopped = "Caret's helper stopped, so the rest wasn't done."
+
     /// An undo that could not restore every field.
     public static func undoPartial(notRestored: Int) -> String {
         notRestored == 1
@@ -212,6 +216,8 @@ public enum WorkLines {
     public static let undoUnsent = WorkLine(LineContent(figure: .error, text: Captions.undoUnsent, emphasis: .plain), text: Captions.undoUnsent)
 
     public static let acceptUnsent = WorkLine(LineContent(figure: .error, text: Captions.acceptUnsent, emphasis: .plain), text: Captions.acceptUnsent)
+
+    public static let helperStopped = WorkLine(LineContent(figure: .error, text: Captions.helperStopped, emphasis: .plain), text: Captions.helperStopped)
 
     /// The undo's answer: what it cleared, or that some fields were left because they changed.
     public static func undone(_ count: OfferLifecycle.UndoCount?) -> WorkLine {

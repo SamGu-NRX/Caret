@@ -290,11 +290,8 @@ final class OfferLifecycleTests: XCTestCase {
     }
 
     func testAReofferedWithdrawalNamesItsReplacement() throws {
-        // helper/fixtures/golden/protocol.ndjson line 31 on v2/screen (4a2a408), verbatim; this
-        // branch's golden file gains it when v2/screen is merged.
-        let line = Data(#"{"type":"offerWithdrawn","v":1,"at":1790000124000,"id":"offer-5","reason":"reoffered","replacedBy":"offer-6"}"#.utf8)
-        XCTAssertEqual(try HelperInbound.decode(line), .offerReoffered(OfferReoffered(at: 1_790_000_124_000, id: "offer-5", replacedBy: "offer-6")))
-        XCTAssertEqual(try HelperInbound.decode(line).typeName, "offerWithdrawn")
+        // The golden line itself is read from the file in HelperProtocolGoldenTests; these are the
+        // lines CaretScreenCore must refuse, so the host never swaps toward an empty key.
         let missing = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"offer-5","reason":"reoffered"}"#.utf8)
         XCTAssertThrowsError(try HelperInbound.decode(missing), "reoffered needs replacedBy")
         let empty = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"offer-5","reason":"reoffered","replacedBy":""}"#.utf8)

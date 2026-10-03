@@ -212,10 +212,40 @@ final class SurfaceProtocolTests: XCTestCase {
                 .screen { $0.behind() }, .offer(Fx.action()), .linkLost,
                 .expect(.held(nil)), .screen { $0.front() }, .wait(1), .expect(.shown(nil)),
             ]),
-            Transition("accepted work keeps its line", [
+            Transition("accepted work that had done nothing says the helper isn't running", [
                 .screen { $0.front() }, .offer(Fx.action()), .press(Fx.tab()), .linkLost,
-                .expect(.workingOn("offer-5")),
+                .expect(.workingOn(nil)), .expect(.line(unsent)), .expect(.counted("surface.work.helperGone")),
+                .wait(6), .expect(.panelUp(false)),
+            ]),
+            Transition("accepted work that had done something says the rest wasn't done", [
+                .screen { $0.front() }, .offer(Fx.fillPopup()), .press(Fx.tab()), .progress("fill-2", .verified), .linkLost,
+                .expect(.workingOn(nil)), .expect(.line("Caret's helper stopped, so the rest wasn't done.")),
+            ]),
+        ])
+    }
+
+    /// A9: Tab on a helper's offer while the helper is down never leaves a working line waiting
+    /// for progress that cannot come. It says what onboarding's first look says.
+    func testTabWithTheHelperDownSaysSoAndNeverWorks() {
+        play([
+            Transition("drawn: the line becomes the helper-down line, then goes", [
+                .screen { $0.front() }, .offer(Fx.action()), .helperDown, .press(Fx.tab()),
+                .sent(["accept offer-5 finish"]),
+                .expect(.workingOn(nil)), .expect(.line(unsent)), .expect(.counted("surface.accept.unsent")),
+                .expect(.escOwned(true)),
+                .wait(6), .expect(.panelUp(false)), .expect(.escOwned(false)),
+            ]),
+            Transition("a fill pop-up: no toast, nothing to undo", [
+                .screen { $0.front() }, .offer(Fx.fillPopup()), .helperDown, .press(Fx.tab()),
+                .expect(.line(unsent)), .expect(.toast(nil)), .expect(.undoOwned(false)),
+            ]),
+            Transition("headless: the same line", headless: true, [
+                .offer(Fx.action()), .helperDown, .press(Fx.tab()),
+                .expect(.workingOn(nil)), .expect(.line(unsent)),
             ]),
         ])
     }
 }
+
+/// Onboarding's line for an accept that could not be written (`FirstLookRun.Phase.unsent`).
+private let unsent = WorkLines.acceptUnsent.text

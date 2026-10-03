@@ -107,6 +107,12 @@ extension SurfaceMachine {
             // The input pause stopped the run; the perch and the activity list carry it from here.
             takeLineDown(exit: 0.08)
             publish()
+        case .helperDown:
+            // No taskProgress will come, so the line says so rather than work on forever. The same
+            // line as onboarding's first look when nothing ran.
+            let wrote = work.written ?? work.verified
+            resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .error, offerKey: work.offerKey))
+            showResult(wrote == 0 ? WorkLines.acceptUnsent : WorkLines.helperStopped, lifetime: 6)
         }
     }
 

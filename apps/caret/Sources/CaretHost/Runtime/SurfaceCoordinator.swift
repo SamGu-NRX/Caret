@@ -87,7 +87,6 @@ final class SurfaceCoordinator {
 
     func receive(_ offer: HelperOffer) { machine.receive(offer) }
     func withdrawn(_ message: OfferWithdrawn) { machine.withdrawn(message) }
-    func reoffered(_ message: OfferReoffered) { machine.reoffered(message) }
     func helperGone() { machine.helperGone() }
 
     /// Publishes and draws an injected offer for the focused field of `pid`. Returns a JSON reply.
@@ -166,8 +165,8 @@ final class SurfaceCoordinator {
     private func send(_ message: SurfaceSend) -> Bool {
         guard let client else { return false }
         switch message {
-        case .accept(let accept): client.send(accept); return true
-        case .stop(let stop): client.send(stop); return true
+        case .accept(let accept): return client.send(accept)
+        case .stop(let stop): return client.send(stop)
         case .control(let control): return client.send(control)
         }
     }

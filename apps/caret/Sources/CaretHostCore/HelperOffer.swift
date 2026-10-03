@@ -148,6 +148,9 @@ public enum OfferLifecycle {
         case handoff
         /// Real input in the target window paused the run. The activity list carries it from here.
         case paused
+        /// No helper to run it: `offerAccept` could not be written, or the connection dropped
+        /// before the run reported an end. Never from `ending(of:workKey:)`.
+        case helperDown
     }
 
     /// The ending a task's progress brings to the working line for `workKey`, or nil while the run
@@ -188,48 +191,6 @@ public enum OfferLifecycle {
         guard let apps, let last = apps.last else { return nil }
         if apps.count == 1 { return last }
         return apps.dropLast().joined(separator: ", ") + " and " + last
-    }
-}
-
-/// `offerWithdrawn` with reason `reoffered`: the user entered some of a loopFinish's or routine's
-/// values by hand, and the helper offers the rest again under `replacedBy`, at once. The host swaps
-/// the line in place rather than dismissing it.
-///
-/// The host decodes this one reason itself because the CaretScreenCore in this branch predates it
-/// (v2/screen 4a2a408 adds `reoffered` and `replacedBy` to `OfferWithdrawn`). The rule is the
-/// helper's: `replacedBy` comes with `reoffered` and with no other reason. Once that commit is
-/// merged, this can read `OfferWithdrawn.replacedBy` instead.
-public struct OfferReoffered: Equatable, Sendable {
-    public var at: Int64
-    /// The key withdrawn.
-    public var id: String
-    /// The key of the offer that replaces it.
-    public var replacedBy: String
-
-    public init(at: Int64, id: String, replacedBy: String) {
-        self.at = at
-        self.id = id
-        self.replacedBy = replacedBy
-    }
-
-    struct Wire: Decodable {
-        let type: String
-        let v: Int
-        let at: Int64
-        let id: String
-        let reason: String
-        let replacedBy: String?
-    }
-
-    /// Nil for any other reason; throws for a reoffered line without `replacedBy`, or with an empty one.
-    static func decode(_ line: Data) throws -> OfferReoffered? {
-        let wire = try JSONDecoder().decode(Wire.self, from: line)
-        guard wire.type == OfferWithdrawn.type, wire.reason == "reoffered" else { return nil }
-        guard let replacedBy = wire.replacedBy, !replacedBy.isEmpty else {
-            throw ProtocolError("offerWithdrawn reoffered needs replacedBy")
-        }
-        guard wire.at >= 0 else { throw ProtocolError("offerWithdrawn at must not be negative") }
-        return OfferReoffered(at: wire.at, id: wire.id, replacedBy: replacedBy)
     }
 }
 

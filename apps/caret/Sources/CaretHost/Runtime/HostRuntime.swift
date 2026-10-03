@@ -168,7 +168,6 @@ public final class HostRuntime {
                     switch message {
                     case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
                     case .offerWithdrawn(let withdrawn): surface.withdrawn(withdrawn)
-                    case .offerReoffered(let reoffered): surface.reoffered(reoffered)
                     case .taskProgress(let progress):
                         surface.taskProgress(progress)
                         onboarding.receive(progress)

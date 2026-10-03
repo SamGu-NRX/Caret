@@ -187,17 +187,16 @@ public final class SurfaceMachine {
     /// The helper withdrew a loopFinish or routine as `reoffered` and sends its rest at once under
     /// `replacedBy`. Keys no longer take the old line, but it stays up so the new one is drawn over
     /// it in place rather than leaving and entering (`swapWait`).
-    public func reoffered(_ message: OfferReoffered) {
+    func reoffered(_ key: String, replacedBy newKey: String) {
         count("surface.withdrawn.helper.reoffered")
-        if displacedShown?.offerKey == message.id { displacedShown = nil }
-        if pending?.incoming.helperKey == message.id { cancelPending() }
-        guard let shown, shown.offer.source == .helper, shown.offerKey == message.id else { return publish() }
+        if displacedShown?.offerKey == key { displacedShown = nil }
+        if pending?.incoming.helperKey == key { cancelPending() }
+        guard let shown, shown.offer.source == .helper, shown.offerKey == key else { return publish() }
         arbiter.invalidate(offerID: shown.offerID)
         stopWatch()
         if !headless { emit(.clearCaret(offerID: shown.offerID)) }
         self.shown = nil
         endSwap(takeDown: false)
-        let newKey = message.replacedBy
         let timer = clock.schedule(after: Self.swapWait, repeats: false) { [weak self] in
             guard let self, self.swap?.newKey == newKey else { return }
             self.count("surface.reoffer.notReplaced")
@@ -217,9 +216,14 @@ public final class SurfaceMachine {
     }
 
     /// The helper's connection dropped. Nothing it offered can be taken now (`offerAccept` would
-    /// go nowhere) and it will withdraw nothing, so its shown and held offers go. Work already
-    /// accepted goes on unseen; the activity list starts again with the next helper.
+    /// go nowhere) and it will withdraw nothing, so its shown and held offers go. A run it was
+    /// doing will send no `taskProgress`, so its working line ends now; the activity list starts
+    /// again with the next helper.
     public func helperGone() {
+        if let work, work.source == .helper {
+            count("surface.work.helperGone")
+            end(with: .helperDown)
+        }
         if pending?.incoming.helperKey != nil { cancelPending() }
         endSwap(takeDown: true)
         if let displaced = displacedShown, displaced.offer.source == .helper { displacedShown = nil }
@@ -230,9 +234,12 @@ public final class SurfaceMachine {
         publish()
     }
 
-    /// The helper withdrew an offer: take it down if it is shown, forget it if it is held. Work
-    /// already accepted from it goes on.
+    /// The helper withdrew an offer: take it down if it is shown, forget it if it is held, or swap
+    /// it for its replacement if it was `reoffered`. Work already accepted from it goes on.
     public func withdrawn(_ message: OfferWithdrawn) {
+        // CaretScreenCore's decoder refuses `reoffered` without `replacedBy`, so a line off the
+        // wire always takes the swap; one built in code without it is an ordinary withdrawal.
+        if message.reason == .reoffered, let newKey = message.replacedBy { return reoffered(message.id, replacedBy: newKey) }
         let shownKey = shown.flatMap { $0.offer.source == .helper ? $0.offerKey : nil }
         let effect = OfferLifecycle.withdrawal(of: message.id, shownKey: shownKey, heldKey: pending?.incoming.helperKey)
         if effect.removeShown, let shown {
@@ -641,17 +648,24 @@ public final class SurfaceMachine {
             offerKey: accept?.offerId, actionId: accept?.actionId, row: claim.choice.row,
             overrides: accept?.overrides, source: claim.offer.source.rawValue, kind: claim.offer.kind.name
         )
-        if claim.offer.source == .helper, let accept { _ = sendToHelper(.accept(accept)) }
+        let unsent = claim.offer.source == .helper && accept.map { !sendToHelper(.accept($0)) } == true
         // The panel stays: the line, in place, becomes the working caption.
         if !headless { emit(.clearCaret(offerID: shown.offerID)) }
         stopWatch()
         self.shown = nil
         startWork(claim, offerKey: accept?.offerId ?? "?")
-        guard !headless else { return publish() }
+        guard !headless else { return unsent ? failUnsent() : publish() }
         // The working line and its result follow the same rule as the offer: the app in front and
         // the line's anchor uncovered. Focus may move; the line reports on work, not on a field.
         startWatch(.line, target: claim.offer.target, anchors: [CGPoint(x: shown.caret.midX, y: shown.caret.midY)], requireFocus: false)
+        if unsent { return failUnsent() }
         publish()
+    }
+
+    /// `offerAccept` was not written: the working line becomes the helper-down line at once.
+    private func failUnsent() {
+        count("surface.accept.unsent")
+        end(with: .helperDown)
     }
 
     /// A Tab that took another owner's offer (the fill line's) also cleared this machine's working

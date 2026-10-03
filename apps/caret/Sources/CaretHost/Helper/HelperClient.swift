@@ -209,7 +209,7 @@ final class HelperClient: @unchecked Sendable {
             case .fillProposal: s.proposals &+= 1
             case .activity, .activityReply: s.activity &+= 1
             case .alternatives, .action, .popup: s.offers &+= 1
-            case .offerWithdrawn, .offerReoffered: s.withdrawals &+= 1
+            case .offerWithdrawn: s.withdrawals &+= 1
             case .taskProgress: s.progress &+= 1
             case .firstLookReply: s.firstLookReplies &+= 1
             case .error(let e):
