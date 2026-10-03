@@ -493,27 +493,27 @@ public final class SurfaceMachine {
             )))
         case .action(let line):
             if ui.expanded, let variants = line.variants {
-                showOffer(.popup(variants, highlight: ui.highlight), text: variants.header?.title.text, figure: .needsYou, at: shown.caret, entering: entering)
+                showOffer(.popup(variants, highlight: ui.highlight), text: variants.header?.title.text, figure: .needsYou, at: shown, entering: entering)
             } else {
                 let content = LineContent(figure: .offering, app: line.app, text: line.endState.text, hints: Hint.hints(line.actions))
-                showOffer(.line(content), text: "\(line.app) \(line.endState.text)", figure: .offering, at: shown.caret, entering: entering)
+                showOffer(.line(content), text: "\(line.app) \(line.endState.text)", figure: .offering, at: shown, entering: entering)
             }
         case .popup:
             guard let spec = shown.offer.visibleSpec(ui: ui) else { return }
             showOffer(.popup(spec, highlight: ui.highlight), text: spec.header?.title.text,
-                      figure: spec.figure == .needsYou ? .needsYou : .offering, at: shown.caret, entering: entering)
+                      figure: spec.figure == .needsYou ? .needsYou : .offering, at: shown, entering: entering)
         case .fill:
             break
         }
         publish()
     }
 
-    /// The offer line or pop-up on the panel, at the caret.
-    func showOffer(_ content: PanelContent, text: String?, figure: FigureState, at caret: CGRect, entering: Bool) {
+    /// The offer line or pop-up on the panel, around the offer's field.
+    func showOffer(_ content: PanelContent, text: String?, figure: FigureState, at shown: Shown, entering: Bool) {
         lineText = text
         self.figure = figure
         guard !headless else { return }
-        showPanel(content, text: text ?? "", placement: .atCaret(caret, entering: entering))
+        showPanel(content, text: text ?? "", placement: .atField(field: shown.field, caret: shown.caret, pid: shown.offer.target.pid, entering: entering))
     }
 
     func showPanel(_ content: PanelContent, text: String, placement: PanelPlacementRequest) {

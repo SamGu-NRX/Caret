@@ -55,6 +55,32 @@ final class SnapshotTests: XCTestCase {
         }
     }
 
+    /// The A10 placement rule over the claim form: the card and the picker at Phone, with room
+    /// beside the window and without; every frame checked against the form's fields and labels.
+    func testPanelPlacementScenesCoverNoField() throws {
+        let cases: [(String, PopupSpec, Int?, CGFloat, FieldPanelPlacement.Spot)] = [
+            ("placement-card-beside", Gallery.eventCard.applyingReveal(of: "changeTime"), 1, 300, .right),
+            ("placement-picker-beside", Gallery.picker, 0, 300, .right),
+            ("placement-card-last-field", Gallery.eventCard, nil, 0, .below),
+        ]
+        for (name, spec, highlight, room, spot) in cases {
+            let row = spot == .below ? PanelPlacementScene.rows.count - 1 : 2
+            let scene = PanelPlacementScene(spec: spec, highlight: highlight, focusRow: row, room: room, roomBelow: spot == .below ? 220 : 0)
+            let choice = scene.choice
+            XCTAssertEqual(choice.spot, spot, name)
+            XCTAssertEqual(choice.overlap, 0, name)
+            for i in PanelPlacementScene.rows.indices {
+                XCTAssertFalse(PanelPlacementScene.field(i).intersects(choice.frame), "\(name) covers field \(i)")
+                if let label = PanelPlacementScene.label(i) { XCTAssertFalse(label.intersects(choice.frame), "\(name) covers label \(i)") }
+            }
+            guard let outDir else { continue }
+            for dark in [false, true] {
+                let data = try XCTUnwrap(Gallery.png(scene, dark: dark, padding: 0))
+                try write(data, to: outDir.appendingPathComponent("\(name)-\(dark ? "dark" : "light").png"))
+            }
+        }
+    }
+
     func testFigureGalleryRendersForEveryCharacterAndState() throws {
         for dark in [false, true] {
             let data = try XCTUnwrap(Gallery.png(FigureGalleryView(), dark: dark))

@@ -351,6 +351,69 @@ struct LayoutFixScene: View {
     }
 }
 
+/// A pop-up placed by `FieldPanelPlacement` over a synthetic form with the claim form's geometry
+/// (fields 320 x 24 every 52 pt, labels on the left), the field at `focusRow` focused and the
+/// screen's edge `room` points right of the window and `roomBelow` under it. Off screen, both
+/// themes on one Mac.
+struct PanelPlacementScene: View {
+    var spec: PopupSpec
+    var highlight: Int?
+    var focusRow: Int
+    var room: CGFloat
+    var roomBelow: CGFloat = 0
+    var character: FigureCharacter = .pebble
+    @Environment(\.colorScheme) private var scheme
+
+    static let rows = ["Full name", "Email", "Phone", "", "Order number", "Order total", "Shipping address", "", "Promo code"]
+    static let windowW: CGFloat = 520, titleBar: CGFloat = 28, fieldX: CGFloat = 170, fieldW: CGFloat = 320, fieldH: CGFloat = 24
+    static let top: CGFloat = 54, pitch: CGFloat = 52
+
+    static func field(_ i: Int) -> CGRect { CGRect(x: fieldX, y: top + CGFloat(i) * pitch, width: fieldW, height: fieldH) }
+    static func label(_ i: Int) -> CGRect? { rows[i].isEmpty ? nil : CGRect(x: 18, y: field(i).minY + 3, width: 140, height: 18) }
+    static var windowH: CGFloat { top + CGFloat(rows.count) * pitch }
+
+    /// Where the rule puts the pop-up, given every other field, label and the title bar.
+    var choice: FieldPanelPlacement.Choice {
+        let view = PopupView(spec: spec, highlight: highlight, character: character, animated: false)
+        let size = NSHostingView(rootView: view).fittingSize
+        let narrow = NSHostingView(rootView: PopupView(spec: spec, highlight: highlight, character: character, animated: false, width: PopupView.minWidth)).fittingSize
+        let focused = Self.field(focusRow)
+        let items = (0..<Self.rows.count).filter { $0 != focusRow }.flatMap { [Self.field($0)] + (Self.label($0).map { [$0] } ?? []) }
+            + (Self.label(focusRow).map { [$0] } ?? []) + [CGRect(x: 0, y: 0, width: Self.windowW, height: Self.titleBar)]
+        let caret = CGRect(x: focused.minX + 4, y: focused.minY + 3, width: 1, height: 18)
+        return FieldPanelPlacement.choose(
+            field: focused, caret: caret, size: size, narrow: narrow,
+            bounds: CGRect(x: -40, y: -40, width: Self.windowW + 40 + room, height: Self.windowH + 40 + roomBelow),
+            obstacles: { frame in items.filter { $0.intersects(frame) } }
+        )
+    }
+
+    var body: some View {
+        let choice = self.choice
+        let dark = scheme == .dark
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(Color(nsColor: Tokens.srgb(dark ? 0x323232 : 0xEEEFEE)))
+                .frame(width: Self.windowW, height: Self.windowH)
+            Rectangle().fill(Color(nsColor: Tokens.srgb(dark ? 0x3A3A3A : 0xE4E4E4)))
+                .frame(width: Self.windowW, height: Self.titleBar)
+            ForEach(Array(Self.rows.enumerated()), id: \.offset) { i, label in
+                if !label.isEmpty {
+                    Text(label + ":").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.ink))
+                        .offset(x: 18, y: Self.field(i).minY + 3)
+                }
+                LayoutFixScene.FieldBox(text: "", ghost: false, focused: i == focusRow)
+                    .frame(width: Self.fieldW, height: Self.fieldH)
+                    .offset(x: Self.field(i).minX, y: Self.field(i).minY)
+            }
+            PopupView(spec: spec, highlight: highlight, character: character, animated: false,
+                      width: choice.spot.isNarrow ? PopupView.minWidth : nil)
+                .offset(x: choice.frame.minX, y: choice.frame.minY)
+        }
+        .frame(width: Self.windowW + room, height: Self.windowH + roomBelow, alignment: .topLeading)
+        .background(Color(nsColor: Tokens.srgb(dark ? 0x1B1F2A : 0x9DB4CC)))
+    }
+}
+
 // MARK: - The perch and the activity list
 
 extension Gallery {

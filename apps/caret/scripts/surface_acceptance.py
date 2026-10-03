@@ -21,6 +21,14 @@ the field holds the chosen text; one typed character removes every panel by the 
 three pop-ups and an action line take their actions; the frontmost app and the fixture's focused
 element never change because of a panel, and no panel is ever key.
 
+Every pop-up and action line is checked against the form: the host's panel frame may cover no
+field but the focused one (the fixture's own frames, read through Accessibility), and the host's
+placement must report no overlap with any element it probed (A10, FieldPanelPlacement).
+
+CARET_SURFACE_FILLED=1 types nothing but gives Full name, Email and Phone some text first (an
+AXValue write), so every offer is shown in a field that already holds text; Tab must then add the
+chosen alternative to that text.
+
 fill: the toast and the next field's offer give way to each other, and in the tight form the line
 covers no neighbor. Screenshots in the given appearance (both host and fixture).
 """
@@ -71,6 +79,9 @@ RUN_START = None
 # the app that had it when it ends (`quit PID`), and stops (killing its own fixture and host) the
 # moment input arrives that is not the host's own pid-posted keys.
 IDLE_MIN = float(os.environ.get("CARET_SURFACE_IDLE_MIN", "300"))
+FILLED = os.environ.get("CARET_SURFACE_FILLED") == "1"
+# Text already in a field before its offer arrives (CARET_SURFACE_FILLED).
+PREFILL = {"Full name": "Dana ", "Email": "dana", "Phone": "+1 512 "}
 FOREGROUND = IDLE_MIN > 0
 
 
@@ -316,6 +327,31 @@ def rig(out_dir, appearance):
     return fx.pid, h.pid, gold
 
 
+def prefill(pid, field):
+    """In a filled run, writes the field's existing text and returns it; otherwise ''."""
+    text = PREFILL.get(field["label"], "") if FILLED else ""
+    if text:
+        r = ax(pid, "set-field", pid, frame_arg(field["frame"]), text)
+        check(f"{field['label']} holds text before its offer", r.get("ok") and r.get("value") == text, result=r)
+    return text
+
+
+def intersects(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def check_clear(name, gold, focused):
+    """The panel covers no field of the form but the focused one, and the host's own placement
+    found nothing under it."""
+    sf = host().get("surface") or {}
+    panel, placed = sf.get("panel"), sf.get("panelPlacement")
+    if not panel:
+        return check(f"{name}: covers no other field", False, panel=None)
+    covered = [g["label"] for g in gold if g["label"] != focused["label"] and intersects(panel["frame"], g["frame"])]
+    return check(f"{name}: covers no other field", not covered and bool(placed) and placed.get("overlap") == 0,
+                 frame=panel["frame"], placement=placed, covered=covered)
+
+
 def golden(name):
     with open(GOLDEN) as f:
         return json.load(f)["valid"][name]
@@ -331,10 +367,13 @@ def alternatives(out_dir, appearance):
 
     # --- Alternatives in the Full name field --------------------------------------------------
     field = by_label["Full name"]
+    existing = prefill(pid, field)
     ax(pid, "focus", pid, frame_arg(field["frame"]))
     time.sleep(0.3)
     before = watch(pid)
     candidates = ["Dana Whitfield", "Dana R. Whitfield", "D. Whitfield", "Dana Whitfield-Ames"]
+    if existing:
+        candidates = ["Whitfield", "R. Whitfield", "Whitfield-Ames", "W."]
     reply = inject({"kind": "alternatives", "pid": pid, "candidates": candidates})
     s = host()
     sf = s.get("surface") or {}
@@ -368,13 +407,16 @@ def alternatives(out_dir, appearance):
     ins = wait_for(lambda: (lambda st: st["lastInsertion"] if st.get("lastInsertion") and st["lastInsertion"]["claimID"] > last else None)(host()), 5)
     value = ax(pid, "value", pid, frame_arg(field["frame"]))["value"]
     s = host()
-    check("tab takes the selected alternative into the field", k.get("consumed") and value == candidates[1]
+    # With text already there, the chosen alternative is added to it at the caret.
+    expected = {existing + candidates[1], candidates[1] + existing} if existing else {candidates[1]}
+    check("tab takes the selected alternative into the field", k.get("consumed") and value in expected
           and (s.get("lastClaim") or {}).get("candidate") == 1 and (s.get("surface") or {}).get("lastAccepted", {}).get("candidate") == 1,
           key=k, value=value, lastClaim=s.get("lastClaim"), insertion=ins)
     step("taken", value=value, insertion=ins, lastClaim=s.get("lastClaim"))
 
     # --- One typed character removes everything ----------------------------------------------
     field = by_label["Email"]
+    prefill(pid, field)
     ax(pid, "focus", pid, frame_arg(field["frame"]))
     time.sleep(0.3)
     inject({"kind": "alternatives", "pid": pid, "candidates": ["dana@lumenlabs.example", "dana.whitfield@lumenlabs.example"]})
@@ -389,6 +431,7 @@ def alternatives(out_dir, appearance):
 
     # --- Pop-ups -------------------------------------------------------------------------------
     field = by_label["Phone"]
+    prefill(pid, field)
     ax(pid, "focus", pid, frame_arg(field["frame"]))
     time.sleep(0.3)
     before = watch(pid)
@@ -396,12 +439,14 @@ def alternatives(out_dir, appearance):
     time.sleep(0.3)
     s = host()
     check("event card appears", reply.get("ok") and (s.get("surface") or {}).get("panel"), reply=reply)
-    step("card", shot=shot(out_dir, pid, host_pid, "card-1-shown"))
+    check_clear("event card", gold, field)
+    step("card", shot=shot(out_dir, pid, host_pid, "card-1-shown"), placement=(host().get("surface") or {}).get("panelPlacement"))
     k = key("cmd-2", pid)
     s = host()
     check("command-2 reveals the times", k.get("consumed") and ((s.get("surface") or {}).get("ui") or {}).get("revealed") == "changeTime",
           ui=(s.get("surface") or {}).get("ui"))
-    step("card-time", shot=shot(out_dir, pid, host_pid, "card-2-change-time"))
+    check_clear("event card with the times revealed", gold, field)
+    step("card-time", shot=shot(out_dir, pid, host_pid, "card-2-change-time"), placement=(host().get("surface") or {}).get("panelPlacement"))
     key("down", pid)
     k = key("tab", pid)
     time.sleep(0.25)
@@ -426,7 +471,8 @@ def alternatives(out_dir, appearance):
 
     reply = inject({"kind": "popup", "pid": pid, "offerKey": "which-1", "spec": golden("picker")})
     time.sleep(0.3)
-    step("picker", shot=shot(out_dir, pid, host_pid, "picker-1-shown"))
+    check_clear("picker", gold, field)
+    step("picker", shot=shot(out_dir, pid, host_pid, "picker-1-shown"), placement=(host().get("surface") or {}).get("panelPlacement"))
     key("cmd-3", pid)
     step("picker-3", shot=shot(out_dir, pid, host_pid, "picker-2-cmd3"))
     k = key("tab", pid)
@@ -442,7 +488,8 @@ def alternatives(out_dir, appearance):
 
     reply = inject({"kind": "popup", "pid": pid, "offerKey": "fill-1", "spec": golden("fillPreview")})
     time.sleep(0.3)
-    step("fill-preview", shot=shot(out_dir, pid, host_pid, "fill-preview"))
+    check_clear("fill preview", gold, field)
+    step("fill-preview", shot=shot(out_dir, pid, host_pid, "fill-preview"), placement=(host().get("surface") or {}).get("panelPlacement"))
     k = key("esc", pid)
     s = host()
     check("esc closes a pop-up", k.get("consumed") and not s.get("offer"), key=k)
@@ -452,7 +499,8 @@ def alternatives(out_dir, appearance):
             "actions": [{"id": "add", "label": "Add", "key": "tab"}], "variants": golden("picker")}
     inject(line)
     time.sleep(0.3)
-    step("action-line", shot=shot(out_dir, pid, host_pid, "line-1-shown"))
+    check_clear("action line", gold, field)
+    step("action-line", shot=shot(out_dir, pid, host_pid, "line-1-shown"), placement=(host().get("surface") or {}).get("panelPlacement"))
     k1 = key("cmd-1", pid)
     s = host()
     check("command-1 on an action line with nothing numbered passes through and dismisses", not k1.get("consumed") and not s.get("offer"), key=k1)

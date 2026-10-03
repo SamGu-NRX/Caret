@@ -236,7 +236,7 @@ final class SurfaceRig {
         case .showPanel(let content, let text, let placement):
             panels.append(content)
             switch placement {
-            case .atCaret(_, let entering): log.append("panel \(entering ? "enter" : "redraw") \(text)")
+            case .atField(_, _, _, let entering): log.append("panel \(entering ? "enter" : "redraw") \(text)")
             case .inPlace: log.append("line \(text)")
             }
         case .hidePanel(let exit): log.append("hide \(exit)")

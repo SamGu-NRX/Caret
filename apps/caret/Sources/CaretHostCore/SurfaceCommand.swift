@@ -51,9 +51,10 @@ public enum PanelContent: Equatable, Sendable {
 }
 
 public enum PanelPlacementRequest: Equatable, Sendable {
-    /// Pinned at the caret (left edge 12 pt left of it, top 6 pt below, flipped above when there is
-    /// no room) when `entering` or when the panel is down; otherwise redrawn where it stands.
-    case atCaret(CGRect, entering: Bool)
+    /// Placed around the field by `FieldPanelPlacement` (below it, 12 pt left of the caret, unless
+    /// that covers another of the app's elements) when `entering` or when the panel is down;
+    /// otherwise redrawn where it stands. Frames are global, top-left; `pid` owns the field.
+    case atField(field: CGRect, caret: CGRect, pid: Int32, entering: Bool)
     /// Redrawn where it stands, entering only if it is down: the working line becoming its result.
     case inPlace
 }

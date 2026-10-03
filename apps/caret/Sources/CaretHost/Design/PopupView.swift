@@ -19,6 +19,11 @@ struct PopupView: View {
     var animated = true
     /// The Esc keycap that ends the bar. Off where Esc means something else (onboarding's Back).
     var showsEsc = true
+    /// A fixed width, for a pop-up narrowed to fit between the app's fields; nil sizes it to its
+    /// content within 240 to 360.
+    var width: CGFloat?
+
+    static let minWidth: CGFloat = 240
 
     static let figureHeight: CGFloat = 11
     /// Every character sits in a 14 pt slot, so body rows line up under the title whichever one
@@ -34,7 +39,7 @@ struct PopupView: View {
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
-        .frame(minWidth: 240, maxWidth: 360, alignment: .leading)
+        .frame(minWidth: width ?? Self.minWidth, maxWidth: width ?? 360, alignment: .leading)
         .fixedSize(horizontal: true, vertical: true)
         .panelChrome(radius: 10)
     }

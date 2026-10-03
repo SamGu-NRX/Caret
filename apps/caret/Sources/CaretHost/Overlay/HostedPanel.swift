@@ -225,36 +225,57 @@ final class HostedPanel {
     }
 }
 
-/// What a line would cover: the frames of the app's own elements under each candidate spot,
-/// found by Accessibility hit-testing a few points per candidate. Containers (groups, scroll
+/// What a panel would cover: the frames of the app's own elements under each candidate spot,
+/// found by Accessibility hit-testing a grid of points per candidate. Containers (groups, scroll
 /// areas) are empty space; anything else (a field, a label, a button) is in the way, and so is a
 /// window's title bar, which hit-tests as the window itself.
+///
+/// The grid has a row every `rowPitch` points and a column every `columnPitch`, at least two rows
+/// and four columns, so a 28 pt line is probed as before (two rows) and a 170 pt card has no gap
+/// a 16 pt label could hide in. A point inside an element already found is not asked again.
 enum ObstacleProbe {
+    static let rowPitch: CGFloat = 14
+    static let columnPitch: CGFloat = 64
+    /// Per hit-test: an app that does not answer in time is treated as empty there, so a hung app
+    /// cannot stall the main thread for AX's default six seconds.
+    static let messagingTimeout: Float = 0.05
+
     /// A standard macOS title bar. Assumed: Accessibility exposes no title bar frame, and windows
     /// with a toolbar or a hidden title bar differ.
     static let titleBarHeight: CGFloat = 28
 
     static let containerRoles: Set<String> = ["AXWindow", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXUnknown", "AXSheet"]
 
+    /// Fractions across a span of `length`: `count` evenly spaced, the outer two 4% in from each
+    /// edge for columns and 20% for rows of a two-row line, as the probe always sampled.
+    static func fractions(length: CGFloat, pitch: CGFloat, minimum: Int, edge: CGFloat) -> [CGFloat] {
+        let count = max(minimum, Int((length / pitch).rounded(.up)))
+        return (0..<count).map { edge + (1 - 2 * edge) * CGFloat($0) / CGFloat(count - 1) }
+    }
+
+    static func points(in rect: CGRect) -> [CGPoint] {
+        let columns = fractions(length: rect.width, pitch: columnPitch, minimum: 4, edge: 0.04)
+        let rows = fractions(length: rect.height, pitch: rowPitch, minimum: 2, edge: rect.height > 2 * rowPitch ? 0.04 : 0.2)
+        return rows.flatMap { fy in columns.map { fx in CGPoint(x: rect.minX + rect.width * fx, y: rect.minY + rect.height * fy) } }
+    }
+
     static func obstacles(pid: pid_t, under candidates: [CGRect]) -> [CGRect] {
         let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, messagingTimeout)
         var found: [CGRect] = []
         for rect in candidates {
-            for fx in [0.04, 0.35, 0.65, 0.96] as [CGFloat] {
-                for fy in [0.2, 0.8] as [CGFloat] {
-                    let point = CGPoint(x: rect.minX + rect.width * fx, y: rect.minY + rect.height * fy)
-                    var hit: AXUIElement?
-                    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
-                          let hit, AXRead.pid(of: hit) == pid else { continue }
-                    let role = AXRead.string(kAXRoleAttribute, on: hit) ?? "AXUnknown"
-                    if role == "AXWindow", let window = AXRead.frame(of: hit), point.y < window.minY + titleBarHeight {
-                        let bar = CGRect(x: window.minX, y: window.minY, width: window.width, height: titleBarHeight)
-                        if !found.contains(bar) { found.append(bar) }
-                        continue
-                    }
-                    guard !containerRoles.contains(role), let frame = AXRead.frame(of: hit) else { continue }
-                    if !found.contains(frame) { found.append(frame) }
+            for point in points(in: rect) where !found.contains(where: { $0.contains(point) }) {
+                var hit: AXUIElement?
+                guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
+                      let hit, AXRead.pid(of: hit) == pid else { continue }
+                let role = AXRead.string(kAXRoleAttribute, on: hit) ?? "AXUnknown"
+                if role == "AXWindow", let window = AXRead.frame(of: hit), point.y < window.minY + titleBarHeight {
+                    let bar = CGRect(x: window.minX, y: window.minY, width: window.width, height: titleBarHeight)
+                    if !found.contains(bar) { found.append(bar) }
+                    continue
                 }
+                guard !containerRoles.contains(role), let frame = AXRead.frame(of: hit) else { continue }
+                if !found.contains(frame) { found.append(frame) }
             }
         }
         return found

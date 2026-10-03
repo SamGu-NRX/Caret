@@ -51,6 +51,16 @@ final class SurfaceCoordinator {
     private var listAbove = false
     private let list = HostedPanel(radius: 8)
     private var panel = HostedPanel(radius: 10)
+    /// Where the panel was placed around its field, and with what it was measured, so a redraw
+    /// that grows it can check it still covers nothing.
+    private struct Placed {
+        var choice: FieldPanelPlacement.Choice
+        let field: CGRect
+        let caret: CGRect
+        let pid: Int32
+        var milliseconds: Double
+    }
+    private var placed: Placed?
     private var lastRead: FieldRead?
     private var nextReadID: UInt64 = 1
     private var drawn: Drawn?
@@ -179,9 +189,13 @@ final class SurfaceCoordinator {
         case .typedThrough(let offerID, let typed, let remainder, let caret): typedThrough(offerID: offerID, typed: typed, remainder: remainder, caret: caret)
         case .clearCaret: clearCaret()
         case .showPanel(let content, let text, let placement):
+            let character = character
             switch content {
-            case .line(let line): show(LineView(content: line, character: character), text: text, placement: placement)
-            case .popup(let spec, let highlight): show(PopupView(spec: spec, highlight: highlight, character: character), text: text, placement: placement)
+            case .line(let line):
+                show({ _ in AnyView(LineView(content: line, character: character)) }, narrows: false, text: text, placement: placement)
+            case .popup(let spec, let highlight):
+                show({ width in AnyView(PopupView(spec: spec, highlight: highlight, character: character, width: width)) },
+                     narrows: true, text: text, placement: placement)
             }
         case .hidePanel(let exit): panel.exit(duration: exit)
         case .workingChanged(let working): onWorkingChanged?(working)
@@ -304,32 +318,85 @@ final class SurfaceCoordinator {
         drawn = nil
     }
 
-    /// The offer line or pop-up at the caret: left edge 12 pt left of it, top 6 pt below, flipped
-    /// above when there is no room; the panel scales in from the corner at the caret. A working or
-    /// result line is redrawn where it stands.
-    private func show<V: View>(_ view: V, text: String, placement: PanelPlacementRequest) {
+    /// The offer line or pop-up around its field (`FieldPanelPlacement`): below it, 12 pt left of
+    /// the caret, unless that covers another of the app's fields or labels; then above, narrower,
+    /// or beside the field. The panel scales in from the corner nearest the field. A redraw keeps
+    /// the spot unless the panel grew onto something; a working or result line is redrawn where
+    /// it stands.
+    private func show(_ view: (CGFloat?) -> AnyView, narrows: Bool, text: String, placement: PanelPlacementRequest) {
         switch placement {
         case .inPlace:
-            panel.setContent(view)
+            panel.setContent(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil))
             panel.text = text
             if !panel.isVisible { panel.enter() }
-        case .atCaret(let caret, let entering):
-            let size = panel.measure(view)
-            let bounds = Screen.axVisibleFrame(around: caret)
-            var x = caret.minX - 12
-            x = min(max(x, bounds.minX + 8), bounds.maxX - 8 - size.width)
-            let below = caret.maxY + 6 + size.height <= bounds.maxY - 8
-            let anchor: HostedPanel.Anchor
-            if below {
-                anchor = HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: x, y: Screen.cocoa(CGRect(x: x, y: caret.maxY + 6, width: 0, height: 0)).maxY))
-            } else {
-                anchor = HostedPanel.Anchor(corner: .bottomLeft, point: NSPoint(x: x, y: Screen.cocoa(CGRect(x: x, y: caret.minY - 6, width: 0, height: 0)).minY))
+        case .atField(let field, let caret, let pid, let entering):
+            let enter = entering || !panel.isVisible || placed == nil
+            if enter {
+                placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
+            } else if var current = placed {
+                // Content grew or shrank about the pinned corner (a reveal, the highlight moving).
+                // If it now covers something the first choice did not, place it again.
+                let width: CGFloat? = current.choice.spot.isNarrow ? PopupView.minWidth : nil
+                let size = panel.measure(view(width))
+                let grown = Self.frame(pinnedAt: current.choice, size: size)
+                if grown.size != current.choice.frame.size {
+                    let under = ObstacleProbe.obstacles(pid: pid, under: [grown]).filter { !$0.insetBy(dx: -2, dy: -2).contains(field) }
+                    if under.contains(where: { $0.intersects(grown) }) {
+                        placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
+                    } else {
+                        current.choice.frame = grown
+                        placed = current
+                    }
+                }
             }
-            let enter = entering || !panel.isVisible
-            if enter { panel.pin(anchor) }
-            panel.setContent(view)
+            let chosen = placed!.choice
+            if enter || panel.anchor.point != Self.cocoaPoint(chosen) || panel.anchor.corner != Self.corner(chosen.spot.corner) {
+                panel.pin(HostedPanel.Anchor(corner: Self.corner(chosen.spot.corner), point: Self.cocoaPoint(chosen)))
+            }
+            panel.setContent(view(chosen.spot.isNarrow ? PopupView.minWidth : nil))
             panel.text = text
             if enter { panel.enter() }
+        }
+    }
+
+    private func place(_ view: (CGFloat?) -> AnyView, narrows: Bool, field: CGRect, caret: CGRect, pid: Int32) -> Placed {
+        let started = DispatchTime.now().uptimeNanoseconds
+        let size = panel.measure(view(nil))
+        let narrow = narrows && size.width > PopupView.minWidth ? panel.measure(view(PopupView.minWidth)) : nil
+        let choice = FieldPanelPlacement.choose(
+            field: field, caret: caret, size: size, narrow: narrow, bounds: Screen.axVisibleFrame(around: field),
+            obstacles: { ObstacleProbe.obstacles(pid: pid, under: [$0]) }
+        )
+        status.increment("surface.placed.\(choice.spot.rawValue)")
+        if choice.overlap ?? 0 > 0 { status.increment("surface.placed.covering") }
+        let ms = Double(DispatchTime.now().uptimeNanoseconds &- started) / 1_000_000
+        return Placed(choice: choice, field: field, caret: caret, pid: pid, milliseconds: ms)
+    }
+
+    /// The frame a panel of `size` takes when pinned at `choice`'s corner.
+    static func frame(pinnedAt choice: FieldPanelPlacement.Choice, size: CGSize) -> CGRect {
+        let p = choice.cornerPoint
+        switch choice.spot.corner {
+        case .topLeft: return CGRect(x: p.x, y: p.y, width: size.width, height: size.height)
+        case .topRight: return CGRect(x: p.x - size.width, y: p.y, width: size.width, height: size.height)
+        case .bottomLeft: return CGRect(x: p.x, y: p.y - size.height, width: size.width, height: size.height)
+        case .bottomRight: return CGRect(x: p.x - size.width, y: p.y - size.height, width: size.width, height: size.height)
+        }
+    }
+
+    /// The pinned corner in Cocoa coordinates: Accessibility's top edge is Cocoa's maxY.
+    private static func cocoaPoint(_ choice: FieldPanelPlacement.Choice) -> NSPoint {
+        let p = choice.cornerPoint
+        return NSPoint(x: p.x, y: Screen.cocoa(CGRect(x: p.x, y: p.y, width: 0, height: 0)).maxY)
+    }
+
+    /// Accessibility's top-left corner is Cocoa's top-left too; only the y axis flips.
+    private static func corner(_ corner: FieldPanelPlacement.Corner) -> HostedPanel.Corner {
+        switch corner {
+        case .topLeft: return .topLeft
+        case .topRight: return .topRight
+        case .bottomLeft: return .bottomLeft
+        case .bottomRight: return .bottomRight
         }
     }
 
@@ -357,6 +424,12 @@ final class SurfaceCoordinator {
         info.ghost = ghost.shownText ?? (ownGhost.isVisible ? ownGhost.text : nil)
         info.ghostPanel = ownGhost.debugInfo()
         info.panel = panel.debugInfo()
+        if info.panel != nil, let placed {
+            info.panelPlacement = DebugState.PanelPlacementInfo(
+                spot: placed.choice.spot.rawValue, overlap: placed.choice.overlap.map(Double.init), probed: placed.choice.probed,
+                milliseconds: placed.milliseconds, field: [placed.field.minX, placed.field.minY, placed.field.width, placed.field.height].map(Double.init)
+            )
+        }
         info.decor = decor.debugInfo()
         info.list = list.debugInfo()
         info.character = character.rawValue
