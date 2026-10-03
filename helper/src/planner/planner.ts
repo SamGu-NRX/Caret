@@ -84,6 +84,8 @@ interface Field {
   id: string;
   node: Node;
   name: string;
+  /** The section the field sits in ("Billing"), part of `name`; null when it has none. */
+  section: string | null;
   descriptor: string;
 }
 
@@ -120,7 +122,11 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   // When the instruction names any field, only the fields it names are asked about: the second live pass
   // (evidence/screen/b16/planner-live) wrote an order number into two fields "Put the order number ... in
   // Reference" never named. An instruction that names no field still has every field asked about.
-  const named = new Set(fields.filter((f) => relevance(instruction, f.name) > 0).map((f) => f.node.key));
+  // A field in a section is named by its own section once the instruction names any of the form's sections:
+  // "billing street and billing town" named Shipping Street too, by "street", and the held-out live pass
+  // wrote the address there as well (B17, evidence/screen/b17/planner-heldout-live; a fix tuned on that set).
+  const sectionsSaid = new Set(fields.flatMap((f) => (f.section !== null && relevance(instruction, f.section) > 0 ? [f.section] : [])));
+  const named = new Set(fields.filter((f) => relevance(instruction, f.name) > 0 && (sectionsSaid.size === 0 || f.section === null || sectionsSaid.has(f.section))).map((f) => f.node.key));
   const askedFields = fields.filter((f) => taken.has(f.node.key) && (named.size === 0 || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
   const values = valueOptions(instruction, model, w, memory.values(), ledger, o.now ?? Date.now());
@@ -238,7 +244,8 @@ function writableFields(w: WindowState): Field[] {
   for (const n of w.nodes.values()) {
     if (out.length >= MAX_PLAN_FIELDS) break;
     if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure")) continue;
-    out.push({ id: `f${out.length + 1}`, node: n, name: fieldName(w, n), descriptor: describeField(w, n).text });
+    const d = describeField(w, n);
+    out.push({ id: `f${out.length + 1}`, node: n, name: fieldName(w, n), section: d.section, descriptor: d.text });
   }
   return out;
 }

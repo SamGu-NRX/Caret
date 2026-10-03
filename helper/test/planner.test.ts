@@ -72,6 +72,12 @@ describe("instruction spans", () => {
     expect(instructionValues('Write "  indented" in Notes')).toEqual(["  indented"]);
   });
 
+  it("reads the object of 'X is Y', unless it describes a value (B17)", () => {
+    expect(instructionValues("Company is Lumen Labs")).toEqual(["Lumen Labs"]);
+    expect(instructionValues("Title is Design review, and the room is 4B")).toEqual(["Design review", "4B"]);
+    expect(instructionValues("Shipping city is my home town")).toEqual([]);
+  });
+
   it("offers no description as a value, and nothing from Dana's apostrophe", () => {
     expect(instructionValues("Put the tracking number in Notes")).toEqual([]);
     expect(instructionValues("Copy Dana's email address from her signature into Email")).toEqual([]);
@@ -239,6 +245,21 @@ describe("planTask", () => {
     const a = await planTask("Archive the order", desk(), mem(), opts(plannerJev({ press: "Archive" })));
     expect(a.plan.steps).toHaveLength(1);
     expect(a.checked.handoff).toMatchObject({ label: "Archive", why: "unverifiable" });
+  });
+
+  it("asks about a sectioned field only when its own section is named, once the instruction names a section (B17)", async () => {
+    const sectionsAsked = (r: JevRequest): string[] =>
+      Object.entries(r.questions)
+        .filter(([q]) => q !== "press")
+        .map(([, q]) => `${/Section: '([^']+)'/.exec(String(q.instructions))?.[1] ?? ""} ${/Label: '([^']+)'/.exec(String(q.instructions))?.[1] ?? ""}`.trim());
+    const jev = plannerJev({ fields: { "Billing City": "Lisbon" } });
+    const d = await planTask("Set the billing city to Lisbon", desk(), mem(), opts(jev));
+    expect(sectionsAsked(jev.requests[0] as JevRequest)).toEqual(["Billing City"]);
+    expect(d.slots).toEqual({ v1: "Lisbon" });
+    // With no section named, a city is a city in either.
+    const both = plannerJev({ fields: { "Shipping City": "Lisbon" } });
+    await planTask("Set the city to Lisbon", desk(), mem(), opts(both));
+    expect(sectionsAsked(both.requests[0] as JevRequest).sort()).toEqual(["Billing City", "Shipping City"]);
   });
 
   it("asks only about the fields an instruction names, or every field when it names none", async () => {

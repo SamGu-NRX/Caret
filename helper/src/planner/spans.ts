@@ -1,6 +1,7 @@
 // Values the user typed in their instruction, found by code so Jev can choose among them: quoted
-// text, typed values (emails, links, phones, amounts, times, IDs), and the object of "set X to Y" or
-// "put Y in X". Each is a whole-word span of the instruction, so it traces to it (trace.ts). A phrase
+// text, typed values (emails, links, phones, amounts, times, IDs), and the object of "set X to Y",
+// "X is Y" or "put Y in X". "X is Y" was added after B17's held-out set showed "Name is Sam Rivera"
+// offering no name (a fix tuned on that set). Each is a whole-word span of the instruction, so it traces to it (trace.ts). A phrase
 // that opens with a determiner ("the tracking number", "my email") describes a value rather than
 // quoting one, so it is not offered as text to write.
 
@@ -19,7 +20,7 @@ const TYPED: readonly RegExp[] = [
 const CLAUSE = /\s*(?:;|\.(?=\s|$)|,\s*(?:and\s+)?|\s+and\s+(?=(?:the|set|put|write|enter|type|change|make|fill|add|my)\b))\s*/i;
 /** "… to A and B to C": a clause that holds a second "X to Y" splits before its "and". */
 const AND_NEXT = /\s+and\s+(?=(?:\S+\s+){0,4}(?:to|as)\s)/i;
-const TO_TAIL = /\b(?:to|as)\s+(.+)$/i;
+const TO_TAIL = /\b(?:to|as|is)\s+(.+)$/i;
 const PUT_HEAD = /^(?:put|write|enter|type|add|paste|insert)\s+(.+?)\s+(?:in|into)\s+\S/i;
 const DESCRIBES = /^(?:the|my|his|her|their|our|your|its|a|an|this|that|these|those)\b/i;
 const QUOTED = /(?:^|[\s(])(?:"([^"]+)"|“([^”]+)”|'([^']+)')(?=$|[\s.,;:!?)])/g;
