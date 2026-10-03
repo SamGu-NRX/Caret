@@ -8,10 +8,13 @@
 //        fixture-ax value <pid> <x,y,w,h>     print {"value": ...} for that field
 //        fixture-ax focused <pid>             print the focused element's role and frame
 //        fixture-ax set-text <pid> <window title> <old> <new>   rewrite a label (AXValue) if settable
+//        fixture-ax set-field <pid> <x,y,w,h> <value>  write a text field's AXValue, as typing it would
 //        fixture-ax close <pid> <window title>                  press the window's close button
 //        fixture-ax frontmost                 print the frontmost pid (NSWorkspace and lsappinfo)
 //        fixture-ax activate <pid>            ask macOS to activate the fixture (may be refused)
-//        fixture-ax key-if-front <pid> tab|space|char <c>
+//        fixture-ax key-if-front <pid> tab|space|return|cmd-z|char <c>
+//        fixture-ax hand-back <pid>          activate <pid>, the app that was frontmost before the
+//            run; the one command that takes a pid outside CARET_TEST_PIDS, and it sends no input
 //            post ONE key at the HID level, only while both checks say <pid> is frontmost. The
 //            only global event this tool can send; callers hold gui.lock (long-run skill).
 
@@ -185,6 +188,11 @@ case "set-text" where args.count == 5:
     AXUIElementIsAttributeSettable(target, kAXValueAttribute as CFString, &settable)
     let result = settable.boolValue ? AXUIElementSetAttributeValue(target, kAXValueAttribute as CFString, args[4] as CFString) : .attributeUnsupported
     emit(["ok": result == .success, "settable": settable.boolValue, "axError": result.rawValue])
+case "set-field" where args.count == 4:
+    let pid = requirePID(args[1])
+    let field = textField(pid: pid, frame: parseFrame(args[2]))
+    let result = AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, args[3] as CFString)
+    emit(["ok": result == .success, "axError": result.rawValue, "value": string(field, kAXValueAttribute) ?? NSNull()])
 case "key-window" where args.count == 3:
     // Make one fixture window its app's key window by writing AXMain on it, the way a user
     // switching windows inside the app would. Reports the app's focused window before and after,
@@ -217,24 +225,30 @@ case "activate" where args.count == 2:
     let ok = NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows]) ?? false
     let front = waitFront(pid, seconds: 2)
     emit(["requested": ok, "front": front])
+case "hand-back" where args.count == 2:
+    // Only activation, with no options, so the app's own window order is left as it was.
+    guard let pid = Int32(args[1]), let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { fail("pid \(args[1]) is not running") }
+    let ok = app.activate(options: [])
+    emit(["requested": ok, "front": waitFront(pid, seconds: 2)])
 case "key-if-front" where args.count == 3 || args.count == 4:
     // One real HID key, posted only if LaunchServices says the fixture is frontmost, checked by
     // two independent routes immediately before the post.
     let pid = requirePID(args[1])
-    let codes: [String: (CGKeyCode, String?)] = ["tab": (48, "\t"), "space": (49, " ")]
+    let codes: [String: (CGKeyCode, String?)] = ["tab": (48, "\t"), "space": (49, " "), "cmd-z": (6, "z"), "return": (36, "\r")]
+    let flags: CGEventFlags = args[2] == "cmd-z" ? .maskCommand : []
     var key: (CGKeyCode, String?)
     if let known = codes[args[2]] {
         key = known
     } else if args[2] == "char", args.count == 4, args[3].count == 1 {
         key = (0, args[3])
     } else {
-        fail("key must be tab, space or char <c>")
+        fail("key must be tab, space, return, cmd-z or char <c>")
     }
     guard isFront(pid) else { emit(["posted": false, "reason": "notFrontmost"]); exit(3) }
     let source = CGEventSource(stateID: .hidSystemState)
     for down in [true, false] {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: key.0, keyDown: down) else { continue }
-        event.flags = []
+        event.flags = flags
         if let text = key.1 {
             let units = Array(text.utf16)
             event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)

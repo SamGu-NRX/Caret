@@ -2,7 +2,7 @@
 """Grounded-fill acceptance for the host, on caret-fixture's synthetic forms.
 
   fill_acceptance.py <evidence_dir>
-  lockf -k ~/.long-run/locks/gui.lock fill_acceptance.py realtab|realtab-ghost <evidence_dir>
+  lockf -k ~/.long-run/locks/gui.lock fill_acceptance.py realtab|realtab-ghost|popup <evidence_dir>
 
 Starts, and stops on exit, only processes it records: the helper (live Jev, its own socket and
 data dir), one caret-fixture (Reference, Claim form, Schedule follow-up), the reader limited to
@@ -13,6 +13,12 @@ AXMain writes and focus by AXFocused writes (fixture-ax refuses any pid it was n
 Command-1 and Command-Z go through the host's debug-socket test hook, which calls the event tap's
 own routing with a key headed for the fixture pid. Values are read back with fixture-ax and with
 cua-driver get_window_state.
+
+popup is the helper's fill pop-up end to end, in the foreground: Room number is filled by hand (an
+AXValue write) so the five Schedule fields left all have a source, the fixture takes the
+foreground, Meeting date is focused, live Jev grounds the form and the host draws "Fill 5 fields";
+one real Tab runs the fill, every field is read back from the fixture, then a real Command-Z
+undoes it and every field is read back empty.
 
 Cases: ten fields driven to an exact match with the source text; a field whose answer is "none";
 focus moved before Tab; Command-1 over a fill; undo; the source changing before Tab.
@@ -199,10 +205,11 @@ def shot(out_dir, pid, window_title, name):
     base = os.path.join(shots, f"{name}-window.png")
     subprocess.run(["screencapture", "-x", "-o", f"-l{win['window_id']}", base], check=True)
     layers.append(f"{base}:{b['x']},{b['y']},{b['width']},{b['height']}")
-    overlay = (host().get("fill") or {}).get("overlay") or {}
-    for kind in ("ghost", "line", "toast"):
-        panel = overlay.get(kind)
-        if not panel:
+    state = host()
+    overlay = (state.get("fill") or {}).get("overlay") or {}
+    surface = state.get("surface") or {}
+    for kind, panel in [(k, overlay.get(k)) for k in ("ghost", "line", "toast")] + [("surface-" + k, surface.get(k)) for k in ("panel", "decor", "list")]:
+        if not panel or (panel.get("text") or "").startswith("(exiting)"):
             continue
         if panel["isKey"]:
             PANELS_EVER_KEY.append((name, kind))
@@ -224,8 +231,10 @@ def fill_offer(pid, after_id):
     return None
 
 
-def rig(out_dir, ghost=False):
-    """Starts helper, fixtures, reader and host. Returns (fixture-claim, fixture-schedule, gold)."""
+def rig(out_dir, ghost=False, act=False):
+    """Starts helper, fixtures, reader and host. Returns (fixture-claim, fixture-schedule, gold).
+    `act`: the reader may write and press in the fixture (--act-pids), as the executor needs; the
+    per-field fill writes through the host and needs no such grant."""
     os.makedirs(out_dir, exist_ok=True)
     for path in (HELPER_SOCK, HOST_SOCK):
         if os.path.exists(path):
@@ -274,7 +283,7 @@ def rig(out_dir, ghost=False):
 
     pid_list = ",".join(map(str, pids))
     start("reader", [os.path.join(SCREEN_BIN, "caret-screen"), "--socket", HELPER_SOCK, "--only-pids", pid_list,
-                     "--event-pids", pid_list, "--record", record], out_dir)
+                     "--event-pids", pid_list, "--record", record] + (["--act-pids", pid_list] if act else []), out_dir)
     host_args = [CARET, "--socket", HOST_SOCK, "--helper-socket", HELPER_SOCK, "--allow-pids", pid_list]
     if not ghost:
         host_args.append("--no-ghost")
@@ -535,6 +544,97 @@ def realtab(out_dir, ghost):
     finish("done", **extra)
 
 
+def popup(out_dir):
+    """The helper's fill pop-up, drawn, taken with a real Tab and undone with a real Command-Z."""
+    result = {"status": None, "checks": []}
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "realtab.json")
+
+    def check(name, ok, **detail):
+        result["checks"].append({"check": name, "ok": bool(ok), **detail})
+        log("PASS" if ok else "FAIL", name, json.dumps(detail, default=str)[:300])
+        return ok
+
+    def finish(status, **extra):
+        result.update(status=status, **extra)
+        with open(path, "w") as f:
+            json.dump(result, f, indent=2, sort_keys=True, default=str)
+        log("popup", status)
+
+    why = fixture_app.why_not_foreground(IDLE_MIN)
+    if why:
+        return finish(why, idleSeconds=hid_idle_seconds())
+    # The pop-up's fill runs through the executor, which writes with the reader's verbs.
+    fx, _, gold = rig(out_dir, act=True)
+    pids = [fx.pid]
+    pid = fx.pid
+    env = dict(os.environ, CARET_TEST_PIDS=str(pid))
+    fields = gold[SCHEDULE]
+    filled, room = fields[:5], fields[5]
+    value = lambda f: ax(pids, "value", pid, frame_arg(f["frame"]))["value"]
+    by_hand = ax(pids, "set-field", pid, frame_arg(room["frame"]), "12")
+    if not check("Room number filled by hand, so every field left has a source", by_hand.get("ok") and value(room) == "12", write=by_hand):
+        return finish("failed: could not fill Room number")
+
+    previous = ax(pids, "frontmost").get("pid")
+    BEFORE_STOP.append(lambda: fixture_app.hand_back(fx, previous))
+    ok, front = fixture_app.activate(fx, lambda: ax(pids, "frontmost"))
+    if not ok:
+        return finish("deferred: foreground", step="activate legacy", frontmost=front)
+    visit(pids, pid, SCHEDULE)
+    focus_at = ax(pids, "focus", pid, frame_arg(filled[0]["frame"]))["atMs"] / 1000
+    shown = wait_for(lambda: (lambda sf: sf if sf.get("kind") == "popup" and sf.get("panel") else None)(host().get("surface") or {}), 25, 0.05)
+    shown_at = time.time()
+    if not check("the helper's fill pop-up is drawn at Meeting date", shown is not None,
+                 lastSkip=host()["fill"].get("lastSkip"), surface=(host().get("surface") or {})):
+        return finish("failed: no fill pop-up")
+    offer_key = shown["offerKey"]
+    result["focusToPopupMs"] = round((shown_at - focus_at) * 1000, 1)
+    time.sleep(0.25)  # the entrance
+    result["shotPopup"] = shot(out_dir, pid, SCHEDULE, "popup-1-shown")
+    check("it reads Fill 5 fields", "Fill 5 fields" in ((shown.get("panel") or {}).get("text") or shown.get("lineText") or ""),
+          text=(shown.get("panel") or {}).get("text"))
+
+    taps0 = host()["tap"]
+    expect_synthetic(3)
+    tab = subprocess.run([AX, "key-if-front", str(pid), "tab"], capture_output=True, text=True, env=env)
+    if tab.returncode != 0:
+        return finish("deferred: foreground", step="tab", output=tab.stdout + tab.stderr)
+    tab_at = time.time()
+    accepted = wait_for(lambda: (lambda a: a if a and a.get("offerKey") == offer_key else None)((host().get("surface") or {}).get("lastAccepted")), 3, 0.02)
+    check("a real Tab through the tap takes the pop-up: offerAccept fillAll", accepted is not None and accepted.get("actionId") == "fillAll"
+          and host()["tap"]["consumed"] - taps0["consumed"] == 1, accepted=accepted, tapConsumed=host()["tap"]["consumed"] - taps0["consumed"])
+    result["shotWorking"] = shot(out_dir, pid, SCHEDULE, "popup-2-working")
+    toast = wait_for(lambda: (lambda t: t if t and t.get("kind") in ("done", "error") else None)((host().get("surface") or {}).get("toast")), 40, 0.05)
+    done_at = time.time()
+    result["tabToToastMs"] = round((done_at - tab_at) * 1000, 1)
+    values = [value(f) for f in filled]
+    check("every field holds its source's value, read back from the fixture", values == [f["gold"] for f in filled],
+          values=values, gold=[f["gold"] for f in filled])
+    check("the toast reads Filled 5 fields from the fixture, with Command-Z", toast is not None and toast.get("kind") == "done"
+          and (toast.get("caption") or "").startswith("Filled 5 fields from ") and toast.get("grantID") is not None, toast=toast)
+    check("Room number, filled by hand, is untouched", value(room) == "12")
+    time.sleep(0.25)
+    result["shotToast"] = shot(out_dir, pid, SCHEDULE, "popup-3-toast")
+
+    expect_synthetic(3)
+    undo = subprocess.run([AX, "key-if-front", str(pid), "cmd-z"], capture_output=True, text=True, env=env)
+    if undo.returncode != 0:
+        return finish("deferred: foreground", step="cmd-z", output=undo.stdout + undo.stderr)
+    undo_at = time.time()
+    undone = wait_for(lambda: (lambda t: t if t and t.get("kind") in ("undone", "error") else None)((host().get("surface") or {}).get("toast")), 15, 0.05)
+    result["undoMs"] = round((time.time() - undo_at) * 1000, 1)
+    after = [value(f) for f in filled]
+    check("a real Command-Z undoes it: every filled field is empty again", after == [""] * 5 and undone is not None
+          and undone.get("kind") == "undone", values=after, toast=undone)
+    check("Room number still holds what was typed by hand", value(room) == "12")
+    result["shotUndone"] = shot(out_dir, pid, SCHEDULE, "popup-4-undone")
+    final = host()
+    result["host"] = {k: final.get(k) for k in ("tap", "counters", "lastUndo", "helper")}
+    failed = [c["check"] for c in result["checks"] if not c["ok"]]
+    finish("done" if not failed else f"failed: {failed[0]}", offerKey=offer_key)
+
+
 def keystroke_to_paint(pids, pid, gold):
     """Types a sentence into the Claim form's Promo code field (no fill offer there) one HID key
     at a time, each only while the fixture is frontmost, and reads the host's keystroke-to-paint
@@ -562,13 +662,14 @@ def keystroke_to_paint(pids, pid, gold):
     value = ax(pids, "value", pid, frame_arg(promo))["value"]
     return {"latency": s["latency"], "typed": text, "fieldValue": value, "landed": value == text,
             "tapKeyDowns": s["tap"]["keyDowns"] - keys_before, "keysSent": len(text),
-            "ghostCounters": {k: v for k, v in s["counters"].items() if k.startswith(("suppressed", "discarded", "offer"))}}
+            "ghostCounters": {k: v for k, v in s["counters"].items() if k.startswith(("suppressed", "discarded", "offer", "held", "withdrawn"))},
+            "counters": s["counters"], "engine": s.get("engine"), "focus": s.get("focus"), "presentation": s.get("presentation")}
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 2:
         mode, out = "fill", sys.argv[1]
-    elif len(sys.argv) == 3 and sys.argv[1] in ("realtab", "realtab-ghost"):
+    elif len(sys.argv) == 3 and sys.argv[1] in ("realtab", "realtab-ghost", "popup"):
         mode, out = sys.argv[1], sys.argv[2]
     else:
         raise SystemExit(__doc__)
@@ -584,6 +685,8 @@ if __name__ == "__main__":
             dog.__enter__()
         if mode == "fill":
             main(out)
+        elif mode == "popup":
+            popup(out)
         else:
             realtab(out, ghost=mode == "realtab-ghost")
     except KeyboardInterrupt:
