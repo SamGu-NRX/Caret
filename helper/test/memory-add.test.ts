@@ -43,7 +43,7 @@ describe("memoryRequest add", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "caret-memory-add-"));
     store = new Store(dir);
-    helper = new Helper({ store, askJev: null, shadow: false, publish: () => undefined });
+    helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: () => undefined });
   });
   afterEach(() => {
     helper.shutdown();

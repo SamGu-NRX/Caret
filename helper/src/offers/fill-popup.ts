@@ -1,8 +1,10 @@
 // A grounded fill as a pop-up: when every field of a proposal has a value copied from a source on
-// screen, the host shows "Fill N fields" with each destination and value, and Tab fills them all
-// through the executor. Pure: it reads the screen model and the proposal and builds the message, the
-// recheck and the plan; publishing and running are the helper's.
-import { PROTOCOL_VERSION, type FillField, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
+// screen or from what the user told Caret (fill/about.ts), the host shows "Fill N fields" with each
+// destination and value, and Tab fills them all through the executor. Pure: it reads the screen model,
+// memory and the proposal and builds the message, the recheck and the plan; publishing and running
+// are the helper's.
+import { ABOUT_SAYS } from "../fill/about.ts";
+import { PROTOCOL_VERSION, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
 import { nodeText, type ScreenModel } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
@@ -12,13 +14,21 @@ import { offerField } from "./field.ts";
 /** Rows the fields block lists before "and N more". Assumed, not measured. */
 export const MAX_FILL_ROWS = 5;
 
-type GroundedField = FillField & { value: string; source: FillSource };
-/** A proposal every field of which carries a value and its source. */
+type GroundedField = FillField & { value: string } & ({ source: FillSource; memory: null } | { source: null; memory: FillMemory });
+/** A proposal every field of which carries a value and where it came from: a window, or memory. */
 export type GroundedProposal = Omit<FillProposal, "fields"> & { fields: GroundedField[] };
 
-/** A pop-up is offered only for two or more fields, each with a value and the source it was copied from. */
+/** The value an About entry holds now, or null when it is gone, paused or no longer typed (the helper reads memory). */
+export type AboutNow = (id: string) => string | null;
+
+/** A pop-up is offered only for two or more fields, each with a value and the window or memory entry it came from. */
 export function fillPopupEligible(p: FillProposal): p is GroundedProposal {
-  return p.fields.length >= 2 && p.fields.every((f) => f.value !== null && f.source !== null);
+  return p.fields.length >= 2 && p.fields.every((f) => f.value !== null && (f.source !== null || f.memory !== null));
+}
+
+/** Where a field's value came from, as a pop-up ref. */
+function valueRef(f: GroundedField): PopupRef {
+  return f.source !== null ? { node: `${f.source.windowId}/${f.source.nodeKey}`, quote: f.value } : { memory: f.memory.id };
 }
 
 const nodeRef = (windowId: string, key: string): { node: string } => ({ node: `${windowId}/${key}` });
@@ -41,21 +51,18 @@ export function fieldLabel(model: ScreenModel, windowId: string, key: string): s
 /** The popup message for an eligible proposal. Its offerKey and spec id are the proposal id. */
 export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPopup {
   const fields = p.fields;
-  const first = fields[0] as GroundedField;
-  const sourceWindows = new Set(fields.map((f) => f.source.windowId));
-  let source: PopupRef;
-  let text: string;
-  if (sourceWindows.size === 1) {
-    source = nodeRef(first.source.windowId, first.source.nodeKey);
-    text = sourceText(first.source);
-  } else {
-    const refs = [...new Set(fields.map((f) => `${f.source.windowId}/${f.source.nodeKey}`))].map((node) => ({ node }));
-    source = { rule: "sources", derived: refs };
-    text = [...new Set(fields.map((f) => sourceText(f.source)))].join(" and ");
-  }
+  const windows = fields.flatMap((f) => (f.source === null ? [] : [f.source]));
+  const memories = [...new Set(fields.flatMap((f) => (f.memory === null ? [] : [f.memory.id])))];
+  // The source line names each window once, then what the user told Caret: "from Mail, Invoice 2041 and what you told Caret".
+  const refs: PopupRef[] = [...[...new Set(windows.map((s) => `${s.windowId}/${s.nodeKey}`))].map((node) => ({ node })), ...memories.map((memory) => ({ memory }))];
+  // One window and nothing from memory: the first field's source node stands for the window, as before B17.
+  const first = windows[0];
+  const oneWindow = memories.length === 0 && first !== undefined && windows.every((s) => s.windowId === first.windowId);
+  const source: PopupRef = oneWindow ? nodeRef(first.windowId, first.nodeKey) : refs.length === 1 ? (refs[0] as PopupRef) : { rule: "sources", derived: refs };
+  const text = [...new Set(windows.map(sourceText)), ...(memories.length > 0 ? [ABOUT_SAYS] : [])].join(" and ");
   const rows = fields.slice(0, MAX_FILL_ROWS).map((f) => ({
     destination: { text: fieldLabel(model, p.windowId, f.key), ref: { rule: "fieldLabel", derived: [nodeRef(p.windowId, f.key)] } },
-    value: { text: f.value, ref: { node: `${f.source.windowId}/${f.source.nodeKey}`, quote: f.value } },
+    value: { text: f.value, ref: valueRef(f) },
     state: "ready" as const,
   }));
   const more = fields.length - rows.length;
@@ -74,16 +81,18 @@ export function buildFillPopup(model: ScreenModel, p: GroundedProposal): OfferPo
     at: p.at,
     field: offerField(form, p.triggerKey),
     spec: { v: 1, id: p.id, figure: "offering", blocks },
-    sourceApps: [...new Set(fields.map((f) => f.source.appName))],
+    // Apps only: a pop-up filled from memory alone names none, and the key is left out.
+    ...(windows.length === 0 ? {} : { sourceApps: [...new Set(windows.map((s) => s.appName))] }),
   };
 }
 
 /**
  * Why the fill can no longer be done as shown, or null. Every destination must still be there, editable,
  * empty and described as it was when Jev was asked, and every source must still show the value: a fill
- * value is a span, so the source node's text must contain it, or one of its typed values must be it.
+ * value is a span, so the source node's text must contain it, or one of its typed values must be it. A
+ * value from memory must still be what that entry holds: forgetting, pausing or editing it ends the offer.
  */
-export function recheckFill(model: ScreenModel, p: GroundedProposal): string | null {
+export function recheckFill(model: ScreenModel, p: GroundedProposal, about: AboutNow): string | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined) return "the form's window closed";
   for (const f of p.fields) {
@@ -91,6 +100,10 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal): string | n
     if (node === undefined) return `the field ${f.key} is gone`;
     if (node.editable !== true || (node.value ?? "") !== "") return `the field ${f.key} is no longer empty`;
     if (describeField(w, node).text !== f.descriptor) return `the field ${f.key} now reads differently`;
+    if (f.source === null) {
+      if (about(f.memory.id) !== f.value) return `what you told Caret as ${f.memory.label} changed`;
+      continue;
+    }
     const sw = model.windows.get(f.source.windowId);
     const src = sw?.nodes.get(f.source.nodeKey);
     if (sw === undefined || src === undefined) return `the source ${f.source.nodeKey} is gone`;
@@ -113,7 +126,8 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
   const steps = p.fields.map((f, i) => {
     slots[`v${i}`] = f.value;
     slots[`l${i}`] = fieldLabel(model, p.windowId, f.key);
-    sources[`v${i}`] = f.source.windowId;
+    // A value from memory is no window's text, so no window is charged when a question quotes it.
+    if (f.source !== null) sources[`v${i}`] = f.source.windowId;
     sources[`l${i}`] = p.windowId;
     declared[`v${i}`] = `value ${i + 1}`;
     declared[`l${i}`] = `the name of field ${i + 1}`;

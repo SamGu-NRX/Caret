@@ -53,6 +53,7 @@ import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { aboutValues, type AboutValue } from "./fill/about.ts";
 import { describeField } from "./fill/descriptor.ts";
 import { OpenAppOffers } from "./offers/open-app.ts";
 import { EventCards } from "./offers/event-card.ts";
@@ -307,6 +308,8 @@ export class Helper {
         this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
       },
       withdraw: (offerKey, reason) => this.withdrawFirstLook(offerKey, reason),
+      about: () => this.aboutValues(),
+      aboutNow: this.aboutNow,
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
@@ -629,8 +632,26 @@ export class Helper {
 
   /** Answers a memory request; the server sends the reply to the asking consumer only, since entries hold personal values. */
   handleMemory(m: MemoryRequest): MemoryReply {
-    return this.patterns.memoryRequest(m);
+    const reply = this.patterns.memoryRequest(m);
+    // A fill pop-up that offers a value the user just edited, paused or forgot no longer holds.
+    if (reply.error === null && m.id !== undefined && m.op !== "list" && m.op !== "add") {
+      for (const [id, { p }] of this.fillPopups) {
+        if (p.fields.some((f) => f.memory?.id === m.id) && recheckFill(this.model, p, this.aboutNow) !== null) this.withdrawFill(id, "stale");
+      }
+    }
+    return reply;
   }
+
+  /** The values the user told Caret that fills may offer: active typed About entries (fill/about.ts). */
+  private aboutValues(): AboutValue[] {
+    return aboutValues(this.memory.active("about"));
+  }
+
+  /** What an About entry holds now, as aboutValues gives it, or null when it is gone, paused or not typed. */
+  private readonly aboutNow = (id: string): string | null => {
+    const a = this.memory.about(id);
+    return a === null || a.source !== "typed" ? null : a.value.trim();
+  };
 
   /** Answers an activity request; the server sends the reply to the asking consumer only. */
   handleActivity(m: ActivityRequest): ActivityReply {
@@ -877,6 +898,7 @@ export class Helper {
     this.pendingFills.add(focuses);
     try {
       const asked = await proposeFill(this.model, ask, windowId, key, now, {
+        about: this.aboutValues(),
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
         ...(this.opts.newId === undefined ? {} : { newId: this.opts.newId }),
       });
@@ -940,6 +962,7 @@ export class Helper {
     const fields = p.fields.filter((f) => {
       const n = w.nodes.get(f.key);
       if (n === undefined || (n.value ?? "") !== "" || describeField(w, n).text !== f.descriptor) return false;
+      if (f.memory !== null) return this.aboutNow(f.memory.id) === f.value;
       return f.source === null || this.model.windows.has(f.source.windowId);
     });
     return { ...p, fields };
@@ -950,7 +973,7 @@ export class Helper {
    * executor run under the proposal id. The pop-up is withdrawn either way.
    */
   private async acceptFill(p: GroundedProposal): Promise<AcceptResult> {
-    const stale = recheckFill(this.model, p);
+    const stale = recheckFill(this.model, p, this.aboutNow);
     if (stale !== null) {
       this.withdrawFill(p.id, "stale");
       return { refused: `${stale}; nothing was written` };
@@ -968,9 +991,9 @@ export class Helper {
    */
   private checkFills(windowId: string): void {
     for (const [id, { p, form }] of this.fillPopups) {
-      if (p.windowId !== windowId && !p.fields.some((f) => f.source.windowId === windowId)) continue;
+      if (p.windowId !== windowId && !p.fields.some((f) => f.source?.windowId === windowId)) continue;
       const w = this.model.windows.get(p.windowId);
-      let changed = recheckFill(this.model, p) !== null;
+      let changed = recheckFill(this.model, p, this.aboutNow) !== null;
       if (!changed && w !== undefined) {
         try {
           changed = `${p.windowId}|${formFields(w, p.triggerKey).map((n) => n.key).sort().join(",")}` !== form;
@@ -1000,7 +1023,7 @@ export class Helper {
    */
   private fillOverBeforeShown(p: GroundedProposal, form: string, focuses: readonly { windowId: string; key: string }[]): string | null {
     if (focuses.some((f) => !inFillForm(p, f.windowId, f.key))) return "focus left the form";
-    const stale = recheckFill(this.model, p);
+    const stale = recheckFill(this.model, p, this.aboutNow);
     if (stale !== null) return stale;
     const w = this.model.windows.get(p.windowId);
     try {

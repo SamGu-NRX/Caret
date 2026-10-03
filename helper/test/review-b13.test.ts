@@ -315,9 +315,9 @@ describe("B13 review: a field that changes meaning while Jev answers", () => {
       jev: { model: "t", latencyMs: 0, inputTokens: 0, costUsd: 0 },
       cutoff: 0.75,
     } as unknown as GroundedProposal;
-    expect(recheckFill(m, p)).toBeNull();
+    expect(recheckFill(m, p, () => null)).toBeNull();
     m.apply({ ...form, at: 3200, nodes: form.nodes.map((n) => (n.key === EMAIL ? { ...n, label: "Work phone" } : n)) });
-    expect(recheckFill(m, p)).toBe(`the field ${EMAIL} now reads differently`);
+    expect(recheckFill(m, p, () => null)).toBe(`the field ${EMAIL} now reads differently`);
   });
 });
 

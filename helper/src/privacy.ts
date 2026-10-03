@@ -38,6 +38,9 @@ export const CARD_LINE_CHARS = 80;
  */
 export const CONVERSATION_CHARS = 600;
 
+/** The window id under which a request declares values the user told Caret (SnippetLedger.memory). */
+export const MEMORY_SNIPPETS = "memory";
+
 export interface Snippet {
   windowId: string;
   /** A field descriptor (a label, placeholder, section or window title that says what something is) or a candidate value with its facts. */
@@ -448,6 +451,19 @@ export class SnippetLedger {
     const p = this.price(null, texts);
     if (p === null) return false;
     this.commit(p, "plan", "candidate", null);
+    return true;
+  }
+
+  /**
+   * Declares a value the user told Caret (a typed About entry, fill/about.ts) under window id "memory".
+   * No window shows it, so none is charged for it, except a window whose lines it holds or that shows it
+   * inside a line, as for `plan`: sending the value reveals that much of that window. False, declaring
+   * nothing, when such a window would go over its budget.
+   */
+  memory(texts: readonly string[]): boolean {
+    const p = this.price(null, texts);
+    if (p === null) return false;
+    this.commit(p, MEMORY_SNIPPETS, "candidate", null);
     return true;
   }
 

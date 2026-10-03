@@ -412,6 +412,19 @@ public struct FillAsk: Codable, Equatable, Sendable {
 /// cut a value of the field's kind, so the field was not asked or its pick not proposed.
 public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut }
 
+/// A value that came from memory rather than a window: an About entry the user typed into Caret (B17).
+/// `says` is the source line after "from": "what you told Caret".
+public struct FillMemory: Codable, Equatable, Sendable {
+    public var id: String
+    public var label: String
+    public var says: String
+    public init(id: String, label: String, says: String) {
+        self.id = id
+        self.label = label
+        self.says = says
+    }
+}
+
 public struct FillField: Codable, Equatable, Sendable {
     public var key: String
     public var frame: Frame?
@@ -421,26 +434,32 @@ public struct FillField: Codable, Equatable, Sendable {
     /// The chosen candidate's text, copied verbatim by the helper. Nil when the choice is "none".
     public var value: String?
     public var source: FillSource?
+    /// The memory entry the value came from, when it came from one. A value has exactly one of `source`
+    /// and `memory`. Read with decodeIfPresent, so a line from a helper before B17 still decodes.
+    public var memory: FillMemory?
     public var withheld: FillWithheld?
     /// Two: the first ask, and the second with candidates shuffled and the field reworded. None when the
-    /// field was not asked (withheld as sourceCut).
+    /// field was not asked (withheld as sourceCut, or nothing could be offered for it).
     public var asks: [FillAsk]
-    enum CodingKeys: String, CodingKey { case key, frame, descriptor, choice, confidence, value, source, withheld, asks }
+    enum CodingKeys: String, CodingKey { case key, frame, descriptor, choice, confidence, value, source, memory, withheld, asks }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key); frame = try c.decodeNullable(Frame.self, forKey: .frame)
         descriptor = try c.decode(String.self, forKey: .descriptor); choice = try c.decode(String.self, forKey: .choice)
         confidence = try c.decode(Double.self, forKey: .confidence)
         value = try c.decodeNullable(String.self, forKey: .value); source = try c.decodeNullable(FillSource.self, forKey: .source)
+        memory = try c.decodeIfPresent(FillMemory.self, forKey: .memory)
         withheld = try c.decodeNullable(FillWithheld.self, forKey: .withheld)
         asks = try c.decode([FillAsk].self, forKey: .asks)
         if asks.count != 2 && asks.count != 0 { throw ProtocolError("asks must hold two entries or none, got \(asks.count)") }
+        if source != nil && memory != nil { throw ProtocolError("a fill value comes from a window or from memory, not both") }
+        if (value == nil) != (source == nil && memory == nil) { throw ProtocolError("a fill value needs its source or memory entry, and neither comes without a value") }
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(key, forKey: .key); try c.encode(frame, forKey: .frame); try c.encode(descriptor, forKey: .descriptor)
         try c.encode(choice, forKey: .choice); try c.encode(confidence, forKey: .confidence)
-        try c.encode(value, forKey: .value); try c.encode(source, forKey: .source)
+        try c.encode(value, forKey: .value); try c.encode(source, forKey: .source); try c.encode(memory, forKey: .memory)
         try c.encode(withheld, forKey: .withheld); try c.encode(asks, forKey: .asks)
     }
 }

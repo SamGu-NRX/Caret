@@ -1406,6 +1406,34 @@
                       }
                     ]
                   },
+                  "memory": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "says": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "says"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "withheld": {
                     "anyOf": [
                       {
@@ -1494,6 +1522,7 @@
                   "confidence",
                   "value",
                   "source",
+                  "memory",
                   "withheld",
                   "asks"
                 ],

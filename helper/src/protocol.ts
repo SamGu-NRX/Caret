@@ -638,6 +638,13 @@ export const FillAsk = z.object({
 });
 export type FillAsk = z.infer<typeof FillAsk>;
 
+/**
+ * A value that came from memory rather than a window: an About entry the user typed into Caret (B17,
+ * fill/about.ts). `says` is the source line after "from": "what you told Caret".
+ */
+export const FillMemory = z.object({ id: z.string().min(1), label: z.string(), says: z.string() });
+export type FillMemory = z.infer<typeof FillMemory>;
+
 export const FillField = z.object({
   key: z.string(),
   /** Where the field is on screen, so a consumer can draw the proposed value in place. */
@@ -649,7 +656,14 @@ export const FillField = z.object({
   confidence: z.number(),
   /** The chosen candidate's text, copied verbatim by code. Null when the choice is "none". */
   value: z.string().nullable(),
+  /** The window the value was copied from. Null when there is no value, or when it came from memory. */
   source: FillSource.nullable(),
+  /**
+   * The memory entry the value came from, when it came from one; null otherwise. A value has exactly one
+   * of `source` and `memory`. A host that reads only `source` finds none here and offers nothing, which
+   * is safe; offering it needs the host to name "what you told Caret" and to skip its source-window check.
+   */
+  memory: FillMemory.nullable(),
   /**
    * Why no value was proposed although one might have been: the two asks picked different candidates,
    * they agreed below the confidence cutoff, or a window's privacy budget cut a value of the kind the
@@ -659,9 +673,13 @@ export const FillField = z.object({
   withheld: z.enum(["disagree", "lowConfidence", "sourceCut"]).nullable(),
   /**
    * The first ask, and the second with candidates shuffled and the field reworded. Empty when the field
-   * was not asked: withheld as "sourceCut" before any ask.
+   * was not asked: withheld as "sourceCut" before any ask, or, with `withheld` null, nothing could be
+   * offered for it (no window gave a candidate, and nothing the user told Caret fits it).
    */
   asks: z.union([z.tuple([FillAsk, FillAsk]), z.tuple([])]),
+}).refine((f) => (f.value === null ? f.source === null && f.memory === null : (f.source === null) !== (f.memory === null)), {
+  message: "a value comes with exactly one of source and memory, and no value with neither",
+  path: ["memory"],
 });
 export type FillField = z.infer<typeof FillField>;
 
