@@ -16,6 +16,11 @@ Runs only behind every gate of a foreground run (fixture_app.py): the gui lease,
 the caller, 300 s without input, no quiet window. It stops within 0.2 s of input that is not its
 own key, and gives the foreground back to the app that had it. Screenshots are of Caret's
 onboarding window alone (screencapture -l with its window id).
+
+CARET_WALK_WAITING=1 shows the permissions screen waiting first: before Return on work, the run's
+own host is told both grants are off (the `onboarding permissions off off` test hook; nothing in
+System Settings changes), the waiting screen is captured, then the grants are reported on and the
+screen must move on by itself.
 """
 import json
 import os
@@ -158,13 +163,27 @@ def walk(binary, out_dir, appearance, run_dir, result):
     time.sleep(0.4)
     result["shots"]["work"] = shot("2-work")
 
+    waiting = os.environ.get("CARET_WALK_WAITING") == "1"
+    if waiting:
+        host.ask("onboarding permissions off off")
     key("return")
     r = wait(lambda r: r.get("step") in ("permissions", "tryIt"), 2)
     check("Return on work goes to permissions", r is not None, state=ob())
     time.sleep(0.4)
-    result["shots"]["permissions"] = shot("3-permissions")
+    if waiting:
+        time.sleep(1.0)
+        r = ob()
+        check("with no grants the permissions screen waits", r.get("step") == "permissions"
+              and (r.get("permissions") or {}).get("accessibility") is False, state=r)
+        result["shots"]["permissionsWaiting"] = shot("3-permissions-waiting")
+        host.ask("onboarding permissions on on")
+        r = wait(lambda r: r.get("step") == "tryIt", 3)
+        check("the grant arriving moves the screen on by itself", r is not None, state=ob())
+    else:
+        result["shots"]["permissions"] = shot("3-permissions")
     r = ob()
-    check("permissions reads the real grants as on", (r.get("permissions") or {}).get("accessibility") is True, permissions=r.get("permissions"))
+    if not waiting:
+        check("permissions reads the real grants as on", (r.get("permissions") or {}).get("accessibility") is True, permissions=r.get("permissions"))
     if r.get("step") == "permissions":
         # The grants are already there; the screen may move on by itself (advancingAfterGrant).
         if not wait(lambda r: r.get("step") == "tryIt", 1.5):
