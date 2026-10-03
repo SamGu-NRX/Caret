@@ -22,10 +22,11 @@ final class FirstLookTests: XCTestCase {
 
     func testTheRequestRunsOnlyTheFamiliesTheSettingsEnable() {
         var s = CaretSettings()
-        XCTAssertEqual(FirstLookRequest.families(for: s), ["fill", "pending", "loop", "routine"])
+        XCTAssertEqual(FirstLookRequest.families(for: s), ["fill", "pending", "loop", "routine", "event"])
         s.roles.remove(.repeats)
-        XCTAssertEqual(FirstLookRequest.families(for: s), ["fill", "pending"])
+        XCTAssertEqual(FirstLookRequest.families(for: s), ["fill", "pending", "event"])
         s.level = .quiet
+        XCTAssertEqual(FirstLookRequest.families(for: s), ["fill", "pending"], "the event card is off at Quiet (B16)")
         s.roles = [.watch, .words]
         XCTAssertEqual(FirstLookRequest.families(for: s), ["pending"], "ghost text is never part of a first look")
     }

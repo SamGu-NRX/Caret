@@ -22,8 +22,20 @@ final class OverlayPanel: NSPanel {
         return panel
     }
 
-    override var canBecomeKey: Bool { false }
+    /// The activity list holds the ask field, so it may become key while that field is used. It
+    /// stays non-activating: the app the user was in keeps the foreground (`.nonactivatingPanel`).
+    var keyable = false
+    /// Keys the ask field's owner takes before the field editor does: Return, Tab and Esc inside a
+    /// text field are otherwise consumed by AppKit (Tab moves focus, Esc cancels). True: handled.
+    var interceptKey: ((NSEvent) -> Bool)?
+
+    override var canBecomeKey: Bool { keyable }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, isKeyWindow, let interceptKey, interceptKey(event) { return }
+        super.sendEvent(event)
+    }
 }
 
 /// Takes the first click in a window that is not key, so a button in a panel that never becomes

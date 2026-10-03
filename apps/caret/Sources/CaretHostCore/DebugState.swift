@@ -166,6 +166,9 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var firstLookReplies: UInt64 = 0
         /// `memoryReply` messages received.
         public var memoryReplies: UInt64 = 0
+        /// `planRequest` lines written from the ask field, and `planProposal` answers received.
+        public var planRequests: UInt64 = 0
+        public var planProposals: UInt64 = 0
         /// Lines written as `offerAccept` and `offerStop`, counted again in `resultsSent`.
         public var accepts: UInt64 = 0
         public var stops: UInt64 = 0

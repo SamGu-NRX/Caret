@@ -254,7 +254,7 @@ final class OfferLifecycleTests: XCTestCase {
     func testTheLastPhasesEndTheLineAndTheOthersDoNot() throws {
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.done), workKey: "fill-2"), .done)
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.stopped, detail: "why"), workKey: "fill-2"), .stopped(reason: .mismatch, step: nil, steps: 2, detail: "why"))
-        XCTAssertEqual(OfferLifecycle.ending(of: try progress(.handoff), workKey: "fill-2"), .handoff)
+        XCTAssertEqual(OfferLifecycle.ending(of: try progress(.handoff), workKey: "fill-2"), .handoff(blocked: nil))
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.paused), workKey: "fill-2"), .paused)
         for phase: TaskProgress.Phase in [.started, .skipped, .acting, .verified, .undone] {
             XCTAssertNil(OfferLifecycle.ending(of: try progress(phase), workKey: "fill-2"), phase.rawValue)

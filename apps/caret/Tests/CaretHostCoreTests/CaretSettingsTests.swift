@@ -26,16 +26,47 @@ final class CaretSettingsTests: XCTestCase {
     }
 
     func testAnUnknownRoleOrANewerFileIsAnErrorNotAGuess() {
-        let good = #"{"version":1,"roles":["fill"],"level":"quiet","character":"seed","paused":false,"onboarded":true,"memory":[]}"#
-        XCTAssertNoThrow(try JSONDecoder().decode(CaretSettings.self, from: Data(good.utf8)))
+        let good = #"{"version":2,"roles":["fill"],"level":"quiet","character":"seed","paused":false,"onboarded":true,"memory":[]}"#
+        XCTAssertEqual(try JSONDecoder().decode(CaretSettings.self, from: Data(good.utf8)).roles, [.fill], "version 2 reads its roles as written")
         for bad in [
             good.replacingOccurrences(of: #"["fill"]"#, with: #"["fly"]"#),
-            good.replacingOccurrences(of: #""version":1"#, with: #""version":2"#),
+            good.replacingOccurrences(of: #""version":2"#, with: #""version":3"#),
+            good.replacingOccurrences(of: #""version":2"#, with: #""version":0"#),
             good.replacingOccurrences(of: #""quiet""#, with: #""loud""#),
             good.replacingOccurrences(of: #","paused":false"#, with: ""),
         ] {
             XCTAssertThrowsError(try JSONDecoder().decode(CaretSettings.self, from: Data(bad.utf8)), bad)
         }
+    }
+
+    /// A version 1 file predates the calendar role: it had no way to turn it off, so it reads with
+    /// the role on, as a new setup starts, and saves as version 2. Every other choice is kept.
+    func testAVersionOneFileGainsTheCalendarRoleAndSavesAsVersionTwo() throws {
+        let v1 = #"{"version":1,"roles":["fill","watch"],"level":"quiet","character":"seed","paused":true,"onboarded":true,"memory":[]}"#
+        let s = try JSONDecoder().decode(CaretSettings.self, from: Data(v1.utf8))
+        XCTAssertEqual(s.roles, [.fill, .watch, .calendar])
+        XCTAssertEqual(s.level, .quiet, "the level as written")
+        XCTAssertTrue(s.paused, "the pause as written")
+        XCTAssertEqual(s.version, 2)
+        let saved = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(s)) as? [String: Any])
+        XCTAssertEqual(saved["version"] as? Int, 2)
+        XCTAssertEqual(saved["roles"] as? [String], ["fill", "watch", "calendar"])
+        let off = #"{"version":2,"roles":["fill","watch"],"level":"quiet","character":"seed","paused":true,"onboarded":true,"memory":[]}"#
+        XCTAssertFalse(try JSONDecoder().decode(CaretSettings.self, from: Data(off.utf8)).roles.contains(.calendar), "a version 2 file without it turned it off")
+    }
+
+    /// B16's helper turns the event card off at Quiet and on at Balanced and Eager; the host's gate
+    /// says the same, and the calendar role switches the event family alone.
+    func testTheCalendarRoleIsTheEventFamilyOffAtQuiet() {
+        var s = CaretSettings()
+        XCTAssertEqual(CaretRole.calendar.families, ["event"])
+        for (level, on) in [(CaretLevel.quiet, false), (.balanced, true), (.eager, true)] {
+            s.level = level
+            XCTAssertEqual(s.gate.allows(family: "event"), on, level.rawValue)
+        }
+        s.roles.remove(.calendar)
+        XCTAssertFalse(s.gate.allows(family: "event"), "the role off turns it off at every level")
+        XCTAssertTrue(s.gate.allows(family: "fill"))
     }
 
     func testBalancedShowsGroundedOffersFromDayOneAndNeedsHistoryOnlyForRoutines() {
@@ -55,7 +86,7 @@ final class CaretSettingsTests: XCTestCase {
         XCTAssertEqual(s.gate.rules.filter(\.on).map(\.family), ["ghost", "fill", "pending"])
         s.level = .eager
         XCTAssertEqual(s.gate.offersPerHour, 8)
-        XCTAssertEqual(s.gate.rules.filter(\.on).map(\.family), ["ghost", "fill", "pending", "loop", "routine", "rewrite"])
+        XCTAssertEqual(s.gate.rules.filter(\.on).map(\.family), ["ghost", "fill", "pending", "loop", "routine", "event", "rewrite"])
         XCTAssertEqual(rule(s.gate, "routine")?.seenBefore, 2)
     }
 
@@ -90,7 +121,7 @@ final class CaretSettingsTests: XCTestCase {
         var s = CaretSettings()
         s.roles.remove(.watch)
         s.recordPreferences(source: .onboarding, at: 100)
-        XCTAssertEqual(s.memory.map(\.key), ["role.fill", "role.repeat", "role.watch", "role.words", "level"])
+        XCTAssertEqual(s.memory.map(\.key), ["role.fill", "role.repeat", "role.watch", "role.calendar", "role.words", "level"])
         XCTAssertEqual(s.memory.first { $0.key == "role.watch" }?.says, "No help with: Watch agent threads")
         XCTAssertEqual(s.memory.first { $0.key == "level" }?.says, "How often Caret speaks up: Balanced")
         s.level = .quiet
@@ -98,7 +129,7 @@ final class CaretSettingsTests: XCTestCase {
         XCTAssertEqual(s.memory.first { $0.key == "role.fill" }?.at, 100, "unchanged keeps when it was chosen")
         XCTAssertEqual(s.memory.first { $0.key == "level" }?.at, 200)
         XCTAssertEqual(s.memory.first { $0.key == "level" }?.source, .menu)
-        XCTAssertEqual(s.memory.count, 5)
+        XCTAssertEqual(s.memory.count, 6)
     }
 
     func testTheHostRefusesWhatTheSettingsSwitchOff() throws {
@@ -120,7 +151,7 @@ final class CaretSettingsTests: XCTestCase {
 
     func testEveryRoleStartsOnWatchIncluded() {
         // Watch is the most used role on a real day (A8 brief), so a new setup has it on.
-        XCTAssertEqual(CaretSettings().roles, [.fill, .repeats, .watch, .words])
+        XCTAssertEqual(CaretSettings().roles, [.fill, .repeats, .watch, .calendar, .words])
         XCTAssertTrue(CaretSettings().gate.allows(family: "pending"))
         let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: true, inputMonitoring: true), clock: ManualClock())
         XCTAssertTrue(flow.state.roles.contains(.watch), "the work screen opens with Watch agent threads checked")

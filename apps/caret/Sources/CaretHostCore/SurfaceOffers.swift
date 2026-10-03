@@ -52,6 +52,10 @@ public struct OfferUI: Equatable, Codable, Sendable {
     public var revealed: String?
     /// An action line opened into its variants picker.
     public var expanded = false
+    /// No spot around the field showed the panel without covering one of the app's fields or
+    /// labels, so the offer is drawn as the compact line (`CompactOffer`). For a pop-up, ↓ opens
+    /// the full card and clears this; an action line's ↓ opens its variants as before.
+    public var compact = false
 
     public init() {}
 

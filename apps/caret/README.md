@@ -100,6 +100,16 @@ CARET_ALLOW_BUNDLES=com.apple.TextEdit .build/Caret.app/Contents/MacOS/Caret
   screen.
 - SIGTERM and SIGINT shut down cleanly, freeing llama/Metal before exit.
 
+## Asking Caret
+
+The activity list opens with a field at its top, "Ask Caret to do something"; the menu bar's Ask
+Caret… opens the list with that field focused. Nothing else needs a shortcut. Return sends the text
+as `planRequest`; the helper's `planProposal` is drawn as a card listing each step, with the presses
+it leaves to the user marked "You do this". Tab sends `offerAccept` and the helper runs the plan
+under an act grant; its `taskProgress` marks the steps and ends the card with a line saying how it
+ended and who stopped it. Esc stops a run, puts a card away, empties the field, then closes the
+list. The list panel becomes key only for this field and never activates Caret.
+
 ## Offers from the helper
 
 The helper sends `alternatives`, `action` and `popup` for one field each (`HelperOffer`, types
@@ -131,9 +141,17 @@ command per connection with JSON: `state` (default), `latency-reset`, `ping`, an
   Injected offers are never reported to the helper.
 - `progress done|error` ends the work an accepted action line or pop-up started.
 - `settings` reads the settings file, the choices and the gate they make; `settings set role
-  fill|repeat|watch|words on|off`, `level quiet|balanced|eager`, `character pebble|seed|wren` and
+  fill|repeat|watch|calendar|words on|off`, `level quiet|balanced|eager`, `character pebble|seed|wren` and
   `paused on|off` change one as the menu bar does.
 - `activity open|close|more` opens or closes the activity list, or shows the next five Done rows.
+- `ask` reads the ask field at the top of the activity list (`AskCaret`): its text, phase, card and
+  line. With `--test-hooks`, `ask type <text>`, `ask submit` (Return), `ask key tab|esc` and `ask open`
+  (the menu's Ask Caret) drive it as the field does: Return sends `planRequest`, Tab on the card sends
+  `offerAccept`, Esc stops a run or puts the card away.
+- `placement-bounds x y w h | clear` (test hooks): panels are placed within that rect, global top-left,
+  instead of the screen's visible frame, to stand in for a small screen. An action line or pop-up
+  with no spot that covers none of the app's fields or labels is drawn as its 20 pt compact line
+  (`CompactOffer`, ↓ opens the card), and is not drawn at all when the compact line has none either.
 - `onboarding` reads the onboarding flow. With `--test-hooks`, `onboarding open|close|next|back`,
   `role <r> on|off`, `level <l>`, `key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>`, `permissions on|off
   on|off` (stands in for the Accessibility and Input Monitoring grants), `reply <firstLookReply>`

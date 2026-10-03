@@ -309,7 +309,7 @@ final class OnboardingController {
 
     /// `onboarding` reads the flow. With test hooks, the rest drive it as the window would:
     ///   onboarding open | close | next | back
-    ///   onboarding role fill|repeat|watch|words on|off      onboarding level quiet|balanced|eager
+    ///   onboarding role fill|repeat|watch|calendar|words on|off      onboarding level quiet|balanced|eager
     ///   onboarding key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>
     ///   onboarding permissions on|off on|off   (Accessibility, Input Monitoring: the run's own grants)
     ///   onboarding reply <firstLookReply json>              onboarding look-again
@@ -341,7 +341,7 @@ final class OnboardingController {
             guard let field = AboutField(rawValue: rest[1]) else { return #"{"error":"usage: onboarding about name|email <text>"}"# }
             flow.send(.setAbout(field, rest.dropFirst(2).joined(separator: " ")))
         case ("role", 3):
-            guard let role = CaretRole(rawValue: rest[1]), let on = onOff(rest[2]) else { return #"{"error":"usage: onboarding role fill|repeat|watch|words on|off"}"# }
+            guard let role = CaretRole(rawValue: rest[1]), let on = onOff(rest[2]) else { return #"{"error":"usage: onboarding role fill|repeat|watch|calendar|words on|off"}"# }
             flow.send(.setRole(role, on))
         case ("level", 2):
             guard let level = CaretLevel(rawValue: rest[1]) else { return #"{"error":"usage: onboarding level quiet|balanced|eager"}"# }

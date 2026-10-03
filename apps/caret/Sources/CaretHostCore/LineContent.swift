@@ -110,46 +110,54 @@ public enum Captions {
         }
     }
 
-    public static let stopped = "Stopped"
-
-    /// What stopped a run, as the end of "Stopped because …", one clause per helper reason
-    /// (protocol.ts StopReason). Says what happened, in the user's terms, without blame.
+    /// What stopped a run, as the clause after "Stopped …:", one per helper reason (protocol.ts
+    /// StopReason). It names who or what stopped it, in the user's terms, without blame. A stop the
+    /// user made has its own sentence (`stoppedByYou`), so `.you` is only here for completeness.
     public static func stopCause(_ reason: TaskProgress.StopReason, app: String) -> String {
         switch reason {
         case .you: return "you stopped it"
-        case .changed: return "\(app) changed while Caret was working"
+        case .changed: return "\(app) changed while Caret worked"
         case .sheet: return "a dialog opened in \(app)"
-        // The helper's windowGone covers a window that closed and one that never matched.
-        case .windowGone: return "Caret couldn't find the \(app) window"
+        // The helper's windowGone covers a window that closed and one that never matched, so the
+        // line claims neither alone. No app name: with one ("Google Chrome") the line ran past
+        // the offer line's 520 pt and was cut.
+        case .windowGone: return "the window closed or wasn't found"
         case .ambiguous: return "more than one \(app) window matched"
         case .readerRestarted: return "Caret lost its view of the screen"
         case .reader: return "Caret couldn't read or change \(app)"
         case .mismatch: return "\(app) didn't take the change"
-        case .unreachable: return "Caret couldn't find the spot in \(app)"
+        case .unreachable: return "Caret couldn't reach the spot in \(app)"
         case .notConfigured: return "Caret isn't set up for this yet"
         case .refused: return "Caret couldn't run that offer"
         case .error: return "something unexpected happened"
         }
     }
 
-    /// The run stopped where the user stopped it: "Stopped before step 2 of 3". `next` is the
-    /// zero-based step not yet done; a one-step run, or one with no step known, just stopped.
-    public static func stoppedByYou(next: Int?, of steps: Int) -> String {
-        guard let next, steps > 1, next < steps else { return stopped }
-        return "Stopped before step \(next + 1) of \(steps)"
+    /// Where a run stopped: "before step 2 of 3". Nil for a one-step run or one with no step known,
+    /// where a step number says nothing. `next` is the zero-based step not yet done.
+    static func place(next: Int?, of steps: Int) -> String? {
+        guard let next, steps > 1, next >= 0, next < steps else { return nil }
+        return "before step \(next + 1) of \(steps)"
     }
 
-    /// A run the helper stopped for `reason`. A fill says what it filled first.
+    /// The user stopped the run, with Esc or Take over: "You stopped it before step 2 of 3", or
+    /// "You stopped it" when no step says more. Brief A13: the line says who stopped it.
+    public static func stoppedByYou(next: Int?, of steps: Int) -> String {
+        place(next: next, of: steps).map { "You stopped it \($0)" } ?? "You stopped it"
+    }
+
+    /// A run the helper stopped for `reason`: "Stopped before step 2 of 3: a dialog opened in
+    /// Mail", or "Stopped: …" with no step. A fill says what it filled first.
     public static func stopped(_ reason: TaskProgress.StopReason, app: String, next: Int?, steps: Int, fillFilled: Int?) -> String {
         if reason == .you { return stoppedByYou(next: next, of: steps) }
         // The helper refuses an accept for an offer that closed, ran already, or asked for an
         // action it does not have; in every case nothing ran.
-        if reason == .refused { return "Caret couldn't run that offer, so nothing changed." }
+        if reason == .refused { return "Caret couldn't run that offer, so nothing changed" }
         let cause = stopCause(reason, app: app)
         switch fillFilled {
-        case .some(0): return "Filled nothing, because \(cause)."
-        case .some(let n): return "Filled \(fields(n)), then stopped because \(cause)."
-        case .none: return "Stopped because \(cause)."
+        case .some(0): return "Stopped before filling anything: \(cause)"
+        case .some(let n): return "Filled \(fields(n)), then stopped: \(cause)"
+        case .none: return place(next: next, of: steps).map { "Stopped \($0): \(cause)" } ?? "Stopped: \(cause)"
         }
     }
 
@@ -161,6 +169,16 @@ public enum Captions {
 
     /// The run reached a send, submit, delete or pay step and left the press to the user.
     public static func handoff(app: String) -> String { "Your turn in \(app)" }
+
+    /// A calendar step the user must enable first (B16 `blocked`). Names what is missing; Caret
+    /// never asks for Calendar access itself, so the line says where the user can give it.
+    public static func blocked(_ reason: CalendarBlock) -> String {
+        switch reason {
+        // One line of at most about 68 characters: the A13 render of a longer one was cut at 520 pt.
+        case .tcc: return "Nothing was added: Caret needs Calendar access in Privacy & Security."
+        case .noLocalSource: return "Nothing was added: Caret adds events only to an On My Mac calendar."
+        }
+    }
 
     /// ⌘Z on the fill toast while the helper is not connected.
     public static let undoUnsent = "Caret's helper isn't running, so nothing was undone."
@@ -236,6 +254,12 @@ public enum WorkLines {
     /// The next step reads as send, submit, delete or pay; the press is left to the user.
     public static func handoff(app: String) -> WorkLine {
         let caption = Captions.handoff(app: app)
+        return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
+    }
+
+    /// A calendar step that needs Calendar access or a local calendar from the user.
+    public static func blocked(_ reason: CalendarBlock) -> WorkLine {
+        let caption = Captions.blocked(reason)
         return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
     }
 

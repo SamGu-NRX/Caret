@@ -114,9 +114,10 @@ struct CountBadge: View {
 
 // MARK: - The activity list
 
-/// The activity list (plan section 3, "Reporting"): Needs you, In progress, Done today. Each row
-/// is the end state as a sentence, its app and where the run is, and its buttons. Opened from the
-/// perch or the menu bar; never takes focus.
+/// The activity list (plan section 3, "Reporting"): the ask field, then Needs you, In progress,
+/// Done today. Each row is the end state as a sentence, its app and where the run is, and its
+/// buttons. Opened from the perch or the menu bar. It takes keyboard focus only for the ask field,
+/// and never activates Caret: the app the user was in stays in front.
 struct ActivityListView: View {
     static let width: CGFloat = 320
 
@@ -135,13 +136,20 @@ struct ActivityListView: View {
     /// "What Caret knows" at the foot of the list: the memory window.
     var onKnows: () -> Void = {}
     var onAction: (String, RowAction) -> Void = { _, _ in }
+    /// The ask field and what came of it (`AskSection`), under the header.
+    var ask: AnyView? = nil
+    /// The ask field shows an answer or a card: the empty list's sentence would read as part of it.
+    var askActive = false
 
     static let knowsLink = "What Caret knows"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if rows.isEmpty {
+            if let ask {
+                ask.padding(.top, 8).padding(.bottom, rows.isEmpty ? 4 : 0)
+            }
+            if rows.isEmpty, !askActive {
                 Text("What Caret does or watches for you shows up here.")
                     .font(Tokens.Font.body)
                     .foregroundStyle(Color(token: Tokens.secondary))

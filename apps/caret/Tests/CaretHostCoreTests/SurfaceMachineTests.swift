@@ -268,7 +268,7 @@ final class SurfaceMachineTests: XCTestCase {
                 .wait(3),
                 .press(Fx.esc()),
                 .sent(["accept fill-2 fillAll", "stop fill-2"]),
-                .expect(.workingOn(nil)), .expect(.line("Stopped")),
+                .expect(.workingOn(nil)), .expect(.line("You stopped it")),
                 .wait(3), .expect(.line(nil)), .expect(.escOwned(false)),
             ]),
         ])
@@ -313,7 +313,7 @@ final class SurfaceMachineTests: XCTestCase {
             ]),
             Transition("stopped: the reason in words for 6 s", actionWorking + [
                 .taskLine(Fx.progress("offer-5", .stopped, detail: "mismatch", reason: .mismatch)),
-                .expect(.line("Stopped because Sheet Fixture didn't take the change.")),
+                .expect(.line("Stopped: Sheet Fixture didn't take the change")),
                 .wait(6), .expect(.line(nil)),
             ]),
             Transition("handoff: your turn, for 6 s", actionWorking + [
@@ -343,7 +343,7 @@ final class SurfaceMachineTests: XCTestCase {
             ]),
             Transition("a fill stopped after one field", working + [
                 .progress("fill-2", .verified), .taskLine(Fx.progress("fill-2", .stopped, reason: .changed)),
-                .expect(.line("Filled 1 field, then stopped because Caret Fixture changed while Caret was working.")),
+                .expect(.line("Filled 1 field, then stopped: Caret Fixture changed while Caret worked")),
             ]),
             Transition("Esc closes the result", actionWorking + [
                 .progress("offer-5", .done), .did(["working off", "line Done, in Sheet Fixture"]),

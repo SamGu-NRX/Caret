@@ -91,6 +91,10 @@ public protocol SurfaceWorld: AnyObject {
     func textWidth(_ text: String, readID: UInt64) -> CGFloat
     /// The app's name for a line ("the app" when nil).
     func appName(pid: Int32) -> String?
+    /// Whether `content`, drawn around the field at `field` with its caret at `caret`, has a spot
+    /// that covers none of the app's own elements (`FieldPanelPlacement`, hit-tested by the host).
+    /// Asked before an action line or pop-up is published, and again for its compact line.
+    func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool
     var character: FigureCharacter { get }
     var reduceMotion: Bool { get }
 }

@@ -175,7 +175,7 @@ final class OnboardingHostTests: XCTestCase {
         _ = try run("onboarding role repeat off")
         XCTAssertEqual(try run("onboarding level quiet").level, "quiet")
         XCTAssertEqual(try run("onboarding next").step, "know")
-        XCTAssertEqual(store.settings.roles, [.fill, .watch, .words], "the choices are saved on leaving the screen")
+        XCTAssertEqual(store.settings.roles, [.fill, .watch, .calendar, .words], "the choices are saved on leaving the screen")
         XCTAssertEqual(store.settings.level, .quiet)
         XCTAssertEqual(try run("onboarding about name Dana Whitfield").about?["name"], 14)
         XCTAssertEqual(try run("onboarding next").step, "permissions")

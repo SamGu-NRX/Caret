@@ -87,7 +87,7 @@ final class OnboardingFlowTests: XCTestCase {
         let rig = Rig()
         rig.send(.next, .setRole(.repeats, false), .setLevel(.quiet), .next)
         XCTAssertEqual(rig.step, .know)
-        XCTAssertEqual(rig.take(), [.saveChoices(roles: [.fill, .watch, .words], level: .quiet, onboarded: false)])
+        XCTAssertEqual(rig.take(), [.saveChoices(roles: [.fill, .watch, .calendar, .words], level: .quiet, onboarded: false)])
     }
 
     func testWithNoRoleChosenTheWorkScreenWaits() {
@@ -535,11 +535,11 @@ final class OnboardingFlowTests: XCTestCase {
         let asked = try XCTUnwrap(rig.request)
         rig.send(.firstLookReply(try reply(asked.requestId, .nothing)), .next)
         XCTAssertEqual(rig.take(), [
-            .saveChoices(roles: [.fill, .repeats, .words], level: .eager, onboarded: false),
+            .saveChoices(roles: [.fill, .repeats, .calendar, .words], level: .eager, onboarded: false),
             .remember([TypedAbout(label: "Name", value: "Dana Whitfield")]),
             .filled,
-            .askFirstLook(FirstLookRequest(requestId: asked.requestId, at: asked.at, families: ["fill", "loop", "routine"], level: .eager)),
-            .saveChoices(roles: [.fill, .repeats, .words], level: .eager, onboarded: true),
+            .askFirstLook(FirstLookRequest(requestId: asked.requestId, at: asked.at, families: ["fill", "loop", "routine", "event"], level: .eager)),
+            .saveChoices(roles: [.fill, .repeats, .calendar, .words], level: .eager, onboarded: true),
             .close,
         ])
     }

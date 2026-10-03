@@ -113,8 +113,56 @@ extension ActionLine {
     public init(_ message: OfferAction) {
         self.init(
             offerKey: message.offerKey, app: message.app, endState: message.endState,
-            actions: message.actions, variants: message.variants
+            actions: message.actions, variants: message.variants.map { EventCardCopy.isEvent(message) ? EventCardCopy.card($0) : $0 }
         )
+    }
+}
+
+/// The host's words on the helper's event card (B16, `helper/src/offers/event-card.ts`).
+///
+/// Where accepted events go is still Sam's decision (brief A13). Until he decides, accepting writes
+/// only through the helper's test calendar path, so the card must not promise a calendar: its Tab
+/// action says "Add to calendar" and the row naming the helper's calendar is dropped. The helper's
+/// source block holds the sentence itself, which the generic source line would draw as "from I'll
+/// grab coffee…", so it becomes a quoted Secondary row with the same ref. Every other block is
+/// drawn as the helper sent it. An event offer is told by its end state's ref, the helper's
+/// `eventCard` rule, not by the app name.
+public enum EventCardCopy {
+    public static let addLabel = "Add to calendar"
+    /// The helper's facts row that names where the event would go.
+    static let calendarRowLabel = "Calendar"
+
+    public static func isEvent(_ message: OfferAction) -> Bool {
+        if case .derived(let rule, _) = message.endState.ref { return rule == "eventCard" }
+        return false
+    }
+
+    /// The card with no calendar named and its Tab action labelled "Add to calendar".
+    public static func card(_ spec: PopupSpec) -> PopupSpec {
+        var out = spec
+        out.blocks = spec.blocks.compactMap { block in
+            var block = block
+            switch block.content {
+            case .facts(var facts):
+                facts.rows.removeAll { $0.label == calendarRowLabel }
+                if facts.rows.isEmpty { return nil }
+                block.content = .facts(facts)
+            case .source(let source):
+                let quoted = PopupSpec.Value("\u{201C}\(source.value.text)\u{201D}", ref: source.value.ref)
+                block.content = .facts(PopupSpec.Facts(rows: [PopupSpec.Facts.Row(value: quoted, secondary: true)]))
+            case .actions(var actions):
+                actions.items = actions.items.map { item in
+                    var item = item
+                    if item.key == .tab { item.label = addLabel }
+                    return item
+                }
+                block.content = .actions(actions)
+            default:
+                break
+            }
+            return block
+        }
+        return out
     }
 }
 
@@ -145,8 +193,10 @@ public enum OfferLifecycle {
         /// The run stopped. `reason` is the helper's (`TaskProgress.StopReason`), which the line
         /// names in plain words; `step` and `steps` place the stop, and `detail` is for the log only.
         case stopped(reason: TaskProgress.StopReason, step: Int?, steps: Int, detail: String?)
-        /// The next step reads as send, submit, delete or pay; the press is left to the user.
-        case handoff
+        /// The next step reads as send, submit, delete or pay; the press is left to the user. Or a
+        /// calendar step needs what only the user can give (`blocked`, B16): Calendar access, or an
+        /// On My Mac calendar account.
+        case handoff(blocked: CalendarBlock? = nil)
         /// Real input in the target window paused the run. The activity list carries it from here.
         case paused
         /// No helper to run it: `offerAccept` could not be written, or the connection dropped
@@ -163,7 +213,7 @@ public enum OfferLifecycle {
         // The decoder refuses a stopped progress without a reason; `.error` only guards a helper
         // that skipped the decoder's check.
         case .stopped: return .stopped(reason: progress.stopReason ?? .error, step: progress.step, steps: progress.steps, detail: progress.detail)
-        case .handoff: return .handoff
+        case .handoff: return .handoff(blocked: progress.blocked)
         case .paused: return .paused
         case .started, .skipped, .acting, .verified, .undone: return nil
         }

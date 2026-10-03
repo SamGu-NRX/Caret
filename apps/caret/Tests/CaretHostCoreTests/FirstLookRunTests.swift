@@ -146,7 +146,7 @@ final class FirstLookRunTests: XCTestCase {
         XCTAssertEqual(try ended(.done, verified: 2), "Filled 2 fields from Mail", "no written count: the verified steps stand in")
         XCTAssertEqual(try ended(.done, verified: 0), "Done, in Safari", "nothing written: nothing to undo")
         XCTAssertEqual(try ended(.done, verified: 1, apps: nil), "Filled 1 field")
-        XCTAssertEqual(try ended(.stopped, verified: 1), "Filled 1 field, then stopped because Safari changed while Caret was working.")
+        XCTAssertEqual(try ended(.stopped, verified: 1), "Filled 1 field, then stopped: Safari changed while Caret worked")
         XCTAssertEqual(try ended(.handoff), "Your turn in Safari")
         XCTAssertNil(try ended(.paused), "paused: the line goes, as at the caret")
     }
@@ -201,9 +201,9 @@ final class FirstLookRunTests: XCTestCase {
         rig.send(.key(.tab), .taskProgress(progress(.verified, step: 0, steps: 3)))
         rig.clock.advance(by: 3)
         rig.send(.key(.escape))
-        XCTAssertEqual(line(rig), "Stopped before step 2 of 3")
+        XCTAssertEqual(line(rig), "You stopped it before step 2 of 3")
         rig.send(.taskProgress(progress(.verified, step: 1, steps: 3)), .taskProgress(progress(.stopped, reason: .you, step: 2, steps: 3)))
-        XCTAssertEqual(line(rig), "Stopped before step 3 of 3", "step 2 finished before the stop reached the helper")
+        XCTAssertEqual(line(rig), "You stopped it before step 3 of 3", "step 2 finished before the stop reached the helper")
 
         let finished = shown(try found())
         finished.send(.key(.tab))
@@ -215,7 +215,7 @@ final class FirstLookRunTests: XCTestCase {
         failed.send(.key(.tab), .taskProgress(progress(.verified, step: 0, steps: 3)))
         failed.clock.advance(by: 3)
         failed.send(.key(.escape), .taskProgress(progress(.stopped, reason: .mismatch, step: 1, steps: 3)))
-        XCTAssertEqual(line(failed), "Filled 1 field, then stopped because Safari didn't take the change.", "the helper's failure is the true reason")
+        XCTAssertEqual(line(failed), "Filled 1 field, then stopped: Safari didn't take the change", "the helper's failure is the true reason")
     }
 
     func testEscStopsOnlyAfterThreeSecondsOtherwiseGoesBack() throws {
@@ -225,7 +225,7 @@ final class FirstLookRunTests: XCTestCase {
         rig.clock.advance(by: 3)
         rig.send(.key(.escape))
         XCTAssertEqual(rig.take(), [.stop(OfferStop(offerId: "first-look-1.0", at: 1_790_000_003_000))])
-        XCTAssertEqual(line(rig), "Stopped", "no progress yet, so no step to name")
+        XCTAssertEqual(line(rig), "You stopped it", "no progress yet, so no step to name")
         XCTAssertEqual(rig.flow.state.step, .firstLook)
         rig.send(.key(.escape))
         XCTAssertEqual(rig.flow.state.step, .tryIt, "with nothing to stop, Esc is Back")

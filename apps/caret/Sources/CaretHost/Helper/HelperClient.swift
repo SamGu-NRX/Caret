@@ -114,6 +114,15 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? request.line())
     }
 
+    /// `planRequest`: what the user asked Caret to do. The proposal comes back to this connection
+    /// only. False when the helper is not connected; the ask field then says so.
+    @discardableResult
+    func send(_ request: PlanRequest) -> Bool {
+        let sent = sendLine(try? NDJSON.line(request))
+        if sent { stats.withLock { $0.planRequests &+= 1 } }
+        return sent
+    }
+
     /// `memoryRequest`; the reply comes back to this connection only. False when the helper is not
     /// connected: the memory window then shows what it knew last, read only.
     @discardableResult
@@ -255,6 +264,7 @@ final class HelperClient: @unchecked Sendable {
             case .taskProgress: s.progress &+= 1
             case .firstLookReply: s.firstLookReplies &+= 1
             case .memoryReply: s.memoryReplies &+= 1
+            case .planProposal: s.planProposals &+= 1
             case .error(let e):
                 s.errors &+= 1
                 // The helper answers a message it cannot parse with this error; until its schema

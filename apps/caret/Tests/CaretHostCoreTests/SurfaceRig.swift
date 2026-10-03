@@ -59,6 +59,11 @@ final class FakeScreen: SurfaceWorld {
     var reduceMotion = false
     /// Every Accessibility read of a focused field, by pid: a background app must never be read.
     var fieldReads: [Int32] = []
+    /// Whether a panel has a spot covering nothing of the app's (`SurfaceWorld.panelIsClear`): every
+    /// panel by default; a test of a crowded form says which do not.
+    var clearPanel: (PanelContent) -> Bool = { _ in true }
+    /// The panels asked about, in order.
+    var clearAsked: [PanelContent] = []
 
     func allows(pid: Int32) -> Bool { allowed?.contains(pid) ?? true }
 
@@ -79,6 +84,10 @@ final class FakeScreen: SurfaceWorld {
     /// 7 pt a character.
     func textWidth(_ text: String, readID: UInt64) -> CGFloat { CGFloat(text.count) * 7 }
     func appName(pid: Int32) -> String? { names[pid] }
+    func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool {
+        clearAsked.append(content)
+        return clearPanel(content)
+    }
 
     /// The fixture app in front with `element` focused, its window over everything else.
     func front(_ element: Fx.Element = .email, window: WindowIdentity? = Fx.formWindow) {
@@ -240,7 +249,9 @@ final class SurfaceRig {
         case .showPanel(let content, let text, let placement):
             panels.append(content)
             switch placement {
-            case .atField(_, _, _, let entering): log.append("panel \(entering ? "enter" : "redraw") \(text)")
+            case .atField(_, _, _, let entering):
+                let compact = { if case .compactLine = content { return " compact" } else { return "" } }()
+                log.append("panel \(entering ? "enter" : "redraw")\(compact) \(text)")
             case .inPlace: log.append("line \(text)")
             }
         case .hidePanel(let exit): log.append("hide \(exit)")

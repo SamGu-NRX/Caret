@@ -30,6 +30,8 @@ struct EntryField: View {
     var showsFocus = false
     /// Becoming true moves focus here: the field a problem is about.
     var focusNow = false
+    /// Each change moves focus here (the menu's Ask Caret opens the list with the field focused).
+    var focusToken = 0
     /// False while what it holds is being saved: later typing would be lost.
     var enabled = true
     var onChange: (String) -> Void
@@ -78,6 +80,7 @@ struct EntryField: View {
                 .onSubmit(onSubmit)
                 .accessibilityLabel(title)
                 .onChange(of: focusNow) { _, now in if now { focused = true } }
+                .onChange(of: focusToken) { _, _ in focused = true }
                 .onAppear {
                     guard autofocus else { return }
                     // After the window has made the hosting view first responder.

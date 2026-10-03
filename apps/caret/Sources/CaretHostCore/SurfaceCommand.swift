@@ -48,6 +48,8 @@ public struct AlternativesDraw: Equatable, Sendable {
 public enum PanelContent: Equatable, Sendable {
     case line(LineContent)
     case popup(PopupSpec, highlight: Int?)
+    /// The 20 pt line an offer falls back to when its panel has no clear spot (`CompactOffer`).
+    case compactLine(LineContent)
 }
 
 public enum PanelPlacementRequest: Equatable, Sendable {

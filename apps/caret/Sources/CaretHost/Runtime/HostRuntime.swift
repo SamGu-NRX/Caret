@@ -186,6 +186,8 @@ public final class HostRuntime {
             case .taskProgress(let progress):
                 surface.taskProgress(progress)
                 onboarding.receive(progress)
+                perch.ask.receive(progress)
+            case .planProposal(let proposal): perch.ask.receive(proposal)
             case .firstLookReply(let reply): onboarding.receive(reply)
             default: break
             }
@@ -200,6 +202,7 @@ public final class HostRuntime {
                 MainActor.assumeIsolated {
                     activity.linkChanged(up)
                     memory.linkChanged(up)
+                    perch.ask.linkChanged(up)
                     if !up { surface.helperGone() }
                 }
             }
@@ -217,6 +220,15 @@ public final class HostRuntime {
         onboarding.onForgetTyped = { [weak memory] in memory?.forgetTyped(labels: $0) }
         onboarding.knowAvailable = { [weak memory] in memory?.book.state.acceptsAdd ?? false }
         perch.onOpenMemory = { [weak memory] in memory?.open() }
+        let askClient = helper
+        perch.ask.send = { [weak askClient] message in
+            guard let askClient else { return false }
+            switch message {
+            case .plan(let request): return askClient.send(request)
+            case .accept(let accept): return askClient.send(accept)
+            case .stop(let stop): return askClient.send(stop)
+            }
+        }
         // The helper's gate holds the same roles, level and pause: sent after every hello and on
         // every change (B10). The client drops a change that leaves all three as they were.
         let gateClient = helper
@@ -314,6 +326,20 @@ public final class HostRuntime {
             },
             surface: { MainActor.assumeIsolated { surface.debugInfo() } },
             perch: { words in MainActor.assumeIsolated { Self.perchCommand(words, perch: perch, activity: activity, pauser: pauser) } },
+            ask: { words in MainActor.assumeIsolated { Self.askCommand(words, ask: perch.ask, perch: perch, testHooks: testHooks) } },
+            placementBounds: { words in
+                MainActor.assumeIsolated {
+                    guard testHooks else { return #"{"error":"placement-bounds is a test hook: start the host with --test-hooks"}"# }
+                    if words.count == 2, words[1] == "clear" {
+                        surface.placementBounds = nil
+                        return #"{"ok":true}"#
+                    }
+                    let n = words.dropFirst().compactMap(Double.init)
+                    guard n.count == 4 else { return #"{"error":"usage: placement-bounds x y w h | clear"}"# }
+                    surface.placementBounds = CGRect(x: n[0], y: n[1], width: n[2], height: n[3])
+                    return #"{"ok":true}"#
+                }
+            },
             settings: { words in MainActor.assumeIsolated { Self.settingsCommand(words) } },
             onboarding: { words in MainActor.assumeIsolated { onboarding.command(words) } },
             memory: { words in MainActor.assumeIsolated { memory.command(words) } }
@@ -338,6 +364,9 @@ public final class HostRuntime {
     }
 
     public func toggleActivityList() { perch.toggleList() }
+
+    /// The menu's Ask Caret: the activity list, its ask field focused.
+    public func askCaret() { perch.openAsk() }
 
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
@@ -422,12 +451,53 @@ public final class HostRuntime {
         let surface: @Sendable () -> DebugState.SurfaceInfo
         /// `perch`, `activity`, `control`, `click` and `perch-avoid` (`perchCommand`).
         let perch: @Sendable ([String]) -> String
+        /// `ask ...` (`askCommand`).
+        let ask: @Sendable ([String]) -> String
+        /// `placement-bounds x y w h | clear`: places panels as on a screen that small (test hooks).
+        let placementBounds: @Sendable ([String]) -> String
         /// `settings` and `settings set ...` (`settingsCommand`).
         let settings: @Sendable ([String]) -> String
         /// `onboarding ...` (`OnboardingController.command`).
         let onboarding: @Sendable ([String]) -> String
         /// `memory ...` (`MemoryController.command`).
         let memory: @Sendable ([String]) -> String
+    }
+
+    /// The ask field, over the debug socket. Main thread.
+    ///
+    ///   ask                       the field, the phase, the card and its line
+    ///   ask type <text>           sets the field's text, as typing does (test hooks)
+    ///   ask submit                Return (test hooks)
+    ///   ask key tab|esc           Tab or Esc in the field (test hooks)
+    ///   ask open                  the list with the field focused, as the menu's Ask Caret (test hooks)
+    static func askCommand(_ words: [String], ask: AskCaret, perch: PerchController, testHooks: Bool) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        func state(_ extra: [String: Bool] = [:]) -> String {
+            var reply = (try? String(decoding: encoder.encode(ask.debugInfo), as: UTF8.self)) ?? "{}"
+            if let (k, v) = extra.first { reply = "{\"\(k)\":\(v)," + reply.dropFirst() }
+            return reply
+        }
+        guard words.count > 1 else { return state() }
+        guard testHooks else { return #"{"error":"ask \#(words[1]) is a test hook: start the host with --test-hooks"}"# }
+        switch words[1] {
+        case "type":
+            ask.edit(words.count > 2 ? words[2] : "")
+            return state()
+        case "submit":
+            return state(["sent": ask.submit()])
+        case "key":
+            switch words.count > 2 ? words[2] : "" {
+            case "tab": return state(["consumed": ask.tab()])
+            case "esc": return state(["consumed": ask.escape()])
+            default: return #"{"error":"usage: ask key tab|esc"}"#
+            }
+        case "open":
+            perch.openAsk()
+            return state()
+        default:
+            return #"{"error":"usage: ask | ask type <text> | ask submit | ask key tab|esc | ask open"}"#
+        }
     }
 
     /// `settings` reads the settings file, the choices and the gate they make; `settings set
@@ -543,6 +613,14 @@ public final class HostRuntime {
         case "memory":
             // `memory draft <key> <text>` and `memory remember <label> <value>` keep their spaces.
             let reply = DispatchQueue.main.sync { hooks.memory(words) }
+            return Data((reply + "\n").utf8)
+        case "ask":
+            // `ask type <text>` keeps the text's spaces.
+            let parts = command.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true).map(String.init)
+            let reply = DispatchQueue.main.sync { hooks.ask(parts.count == 3 && parts[1] == "type" ? parts : words) }
+            return Data((reply + "\n").utf8)
+        case "placement-bounds":
+            let reply = DispatchQueue.main.sync { hooks.placementBounds(words) }
             return Data((reply + "\n").utf8)
         case "perch", "activity", "control", "click", "perch-avoid":
             let reply = DispatchQueue.main.sync { hooks.perch(words) }

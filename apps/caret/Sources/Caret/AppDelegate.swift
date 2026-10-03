@@ -122,6 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runtime.toggleActivityList()
     }
 
+    @objc private func askCaret(_ sender: NSMenuItem) {
+        runtime.askCaret()
+    }
+
     @objc private func showMemory(_ sender: NSMenuItem) {
         runtime.openMemory()
     }
@@ -143,6 +147,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseItem.target = self
         menu.addItem(pauseItem)
         menu.addItem(.separator())
+        // Asking needs no shortcut to remember: it is here and at the top of the perch's list.
+        let askItem = NSMenuItem(title: "Ask Caret…", action: #selector(askCaret(_:)), keyEquivalent: "")
+        askItem.target = self
+        menu.addItem(askItem)
         let setUpItem = NSMenuItem(title: "Set Up Caret…", action: #selector(setUp(_:)), keyEquivalent: "")
         setUpItem.target = self
         menu.addItem(setUpItem)

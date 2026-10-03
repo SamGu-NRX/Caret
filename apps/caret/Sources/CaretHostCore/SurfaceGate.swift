@@ -21,6 +21,9 @@ public enum SurfaceGate {
         case notOnScreen
         /// The surface would leave the field and overlap the app's own text.
         case wouldOverlapText
+        /// Neither the offer's panel nor its compact line has a spot around the field that covers
+        /// none of the app's own fields or labels (brief A13: never cover a label).
+        case noClearSpot
     }
 
     /// One on-screen window, front to back as the window server lists them.

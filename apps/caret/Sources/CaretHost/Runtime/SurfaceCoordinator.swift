@@ -60,6 +60,12 @@ final class SurfaceCoordinator {
         var milliseconds: Double
     }
     private var placed: Placed?
+    /// The placement `panelIsClear` just measured, so the draw that follows does not probe the same
+    /// ground twice. Used once, and only for the same content around the same field.
+    private var fitted: (content: PanelContent, field: CGRect, caret: CGRect, pid: Int32, placed: Placed)?
+    /// The debug socket's stand-in for a small screen (`placement-bounds`, test hooks only): panels
+    /// are placed within it instead of the screen's visible frame. Global, top-left origin.
+    var placementBounds: CGRect?
     private var lastRead: FieldRead?
     private var nextReadID: UInt64 = 1
     private var drawn: Drawn?
@@ -188,14 +194,7 @@ final class SurfaceCoordinator {
         case .typedThrough(let offerID, let typed, let remainder, let caret): typedThrough(offerID: offerID, typed: typed, remainder: remainder, caret: caret)
         case .clearCaret: clearCaret()
         case .showPanel(let content, let text, let placement):
-            let character = character
-            switch content {
-            case .line(let line):
-                show({ _ in AnyView(LineView(content: line, character: character)) }, narrows: false, text: text, placement: placement)
-            case .popup(let spec, let highlight):
-                show({ width in AnyView(PopupView(spec: spec, highlight: highlight, character: character, width: width)) },
-                     narrows: true, text: text, placement: placement)
-            }
+            show(Self.view(content, character: character), narrows: Self.narrows(content), text: text, placement: placement, content: content)
         case .hidePanel(let exit): panel.exit(duration: exit)
         case .workingChanged(let working): onWorkingChanged?(working)
         case .toastSlotTaken: onToastChanged?()
@@ -322,7 +321,37 @@ final class SurfaceCoordinator {
     /// or beside the field. The panel scales in from the corner nearest the field. A redraw keeps
     /// the spot unless the panel grew onto something; a working or result line is redrawn where
     /// it stands.
-    private func show(_ view: (CGFloat?) -> AnyView, narrows: Bool, text: String, placement: PanelPlacementRequest) {
+    /// How `content` is drawn, at an optional narrow width (pop-ups only).
+    static func view(_ content: PanelContent, character: FigureCharacter) -> (CGFloat?) -> AnyView {
+        switch content {
+        case .line(let line): return { _ in AnyView(LineView(content: line, character: character)) }
+        case .compactLine(let line): return { _ in AnyView(LineView(content: line, character: character, compact: true)) }
+        case .popup(let spec, let highlight): return { width in AnyView(PopupView(spec: spec, highlight: highlight, character: character, width: width)) }
+        }
+    }
+
+    static func narrows(_ content: PanelContent) -> Bool {
+        if case .popup = content { return true }
+        return false
+    }
+
+    /// Where panels around `field` may go: the screen's visible frame, or the test hook's bounds.
+    private func bounds(around field: CGRect) -> CGRect {
+        placementBounds ?? Screen.axVisibleFrame(around: field)
+    }
+
+    /// The machine asks before it publishes an action line or pop-up: does `content` have a spot
+    /// around the field that covers none of the app's own elements? The probe is the one the draw
+    /// would make, and its answer is kept for that draw.
+    fileprivate func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool {
+        let placed = place(Self.view(content, character: character), narrows: Self.narrows(content), field: field, caret: caret, pid: pid, counts: false)
+        fitted = (content, field, caret, pid, placed)
+        return placed.choice.overlap == 0
+    }
+
+    private func show(_ view: (CGFloat?) -> AnyView, narrows: Bool, text: String, placement: PanelPlacementRequest, content: PanelContent? = nil) {
+        let fit = fitted
+        fitted = nil
         switch placement {
         case .inPlace:
             panel.setContent(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil))
@@ -331,7 +360,12 @@ final class SurfaceCoordinator {
         case .atField(let field, let caret, let pid, let entering):
             let enter = entering || !panel.isVisible || placed == nil
             if enter {
-                placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
+                if let fit, fit.content == content, fit.field == field, fit.caret == caret, fit.pid == pid {
+                    placed = fit.placed
+                    countPlacement(fit.placed.choice)
+                } else {
+                    placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
+                }
             } else if var current = placed {
                 // Content grew or shrank about the pinned corner (a reveal, the highlight moving).
                 // Only the area it grew into is probed; if that covers something, runs off the
@@ -341,7 +375,7 @@ final class SurfaceCoordinator {
                 let size = panel.measure(view(width))
                 let grown = Self.frame(pinnedAt: current.choice, size: size)
                 if grown.size != current.choice.frame.size {
-                    let usable = Screen.axVisibleFrame(around: field).insetBy(dx: FieldPanelPlacement.margin, dy: FieldPanelPlacement.margin)
+                    let usable = bounds(around: field).insetBy(dx: FieldPanelPlacement.margin, dy: FieldPanelPlacement.margin)
                     let added = FieldPanelPlacement.added(grown, beyond: current.choice.frame)
                     let under = added.isEmpty ? [] : ObstacleProbe.Session(pid: pid, until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)
                         .under(added)?.filter { !$0.insetBy(dx: -2, dy: -2).contains(field) }
@@ -363,19 +397,25 @@ final class SurfaceCoordinator {
         }
     }
 
-    private func place(_ view: (CGFloat?) -> AnyView, narrows: Bool, field: CGRect, caret: CGRect, pid: Int32) -> Placed {
+    private func place(_ view: (CGFloat?) -> AnyView, narrows: Bool, field: CGRect, caret: CGRect, pid: Int32, counts: Bool = true) -> Placed {
         let started = DispatchTime.now().uptimeNanoseconds
         let size = panel.measure(view(nil))
         let narrow = narrows && size.width > PopupView.minWidth ? panel.measure(view(PopupView.minWidth)) : nil
         let probe = ObstacleProbe.Session(pid: pid, until: started + Self.probeBudget)
         let choice = FieldPanelPlacement.choose(
-            field: field, caret: caret, size: size, narrow: narrow, bounds: Screen.axVisibleFrame(around: field),
+            field: field, caret: caret, size: size, narrow: narrow, bounds: bounds(around: field),
             obstacles: { probe.under([$0]) }
         )
-        status.increment("surface.placed.\(choice.spot.rawValue)")
-        if choice.overlap ?? 0 > 0 { status.increment("surface.placed.covering") }
+        if counts { countPlacement(choice) }
         let ms = Double(DispatchTime.now().uptimeNanoseconds &- started) / 1_000_000
         return Placed(choice: choice, field: field, caret: caret, pid: pid, milliseconds: ms)
+    }
+
+    /// A placement that is drawn, counted by spot; one covering something is counted apart (after
+    /// A13 only the full card a user opened with ↓ can be, and only on a screen with no clear spot).
+    private func countPlacement(_ choice: FieldPanelPlacement.Choice) {
+        status.increment("surface.placed.\(choice.spot.rawValue)")
+        if choice.overlap ?? 0 > 0 { status.increment("surface.placed.covering") }
     }
 
     /// Hit-testing for one placement stops after this long on the main thread; a spot not fully
@@ -480,6 +520,9 @@ private final class World: SurfaceWorld {
     }
 
     func appName(pid: Int32) -> String? { NSRunningApplication(processIdentifier: pid)?.localizedName }
+    func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool {
+        MainActor.assumeIsolated { owner?.panelIsClear(content, field: field, caret: caret, pid: pid) ?? false }
+    }
     var character: FigureCharacter { MainActor.assumeIsolated { FigureSettings.shared.character } }
     var reduceMotion: Bool { MainActor.assumeIsolated { Motion.reduceMotion } }
 }

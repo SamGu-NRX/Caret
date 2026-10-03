@@ -12,16 +12,19 @@ public enum CaretRole: String, Codable, CaseIterable, Sendable {
     case repeats = "repeat"
     /// Pending-state watch: a job or agent thread that finishes or needs you.
     case watch
+    /// The event card: a sentence you write with a time in it, offered as an event to add (B16).
+    case calendar
     /// Ghost text: the next few words at the caret.
     case words
 
     /// The generator families this role switches, as the helper names them (`fill`, `loop`,
-    /// `routine`, `pending`) plus the host's own ghost-text engine (`ghost`).
+    /// `routine`, `pending`, `event`) plus the host's own ghost-text engine (`ghost`).
     public var families: [String] {
         switch self {
         case .fill: return ["fill"]
         case .repeats: return ["loop", "routine"]
         case .watch: return ["pending"]
+        case .calendar: return ["event"]
         case .words: return ["ghost"]
         }
     }
@@ -32,6 +35,8 @@ public enum CaretRole: String, Codable, CaseIterable, Sendable {
         case .fill: return "Fill from other windows"
         case .repeats: return "Finish what you repeat"
         case .watch: return "Watch agent threads"
+        // No calendar is named: where events go is still Sam's decision (brief A13).
+        case .calendar: return "Add events to a calendar"
         case .words: return "Complete words"
         }
     }
@@ -42,6 +47,7 @@ public enum CaretRole: String, Codable, CaseIterable, Sendable {
         case .fill: return "A value you'd copy from one window into another."
         case .repeats: return "After you do the same steps twice, Caret offers the rest."
         case .watch: return "Tells you when an agent or a job finishes or needs you."
+        case .calendar: return "When you write a plan with a time, Caret offers to add it."
         case .words: return "The next few words, faint, for Tab to take."
         }
     }
@@ -69,13 +75,15 @@ public enum CaretLevel: String, Codable, CaseIterable, Sendable {
 /// Everything the user chose: in onboarding, then in the menu bar. Persisted as JSON by the host
 /// (`SettingsStore`) and readable over the debug socket (`settings`).
 public struct CaretSettings: Codable, Equatable, Sendable {
-    public static let version = 1
+    /// 2 added the calendar role. A version 1 file was written before that role existed, so it
+    /// reads with the role on, as a new user starts; any other version is refused.
+    public static let version = 2
 
     public var version = CaretSettings.version
     /// Every role starts on. Watch in particular: on a real day, Sam went back to unfinished agent
     /// windows 14 times in half an active hour, the most of any role (lead's real-day data, A8
     /// brief; the data itself is not in this repository).
-    public var roles: Set<CaretRole> = [.fill, .repeats, .watch, .words]
+    public var roles: Set<CaretRole> = [.fill, .repeats, .watch, .calendar, .words]
     public var level: CaretLevel = .balanced
     /// The pebble is the default (Sam, 2026-10-02); seed and wren stay as choices in settings.
     public var character: FigureCharacter = .pebble
@@ -94,11 +102,14 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// error the caller reports, not a guess.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        version = try c.decode(Int.self, forKey: .version)
-        guard version == Self.version else {
-            throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "settings version \(version); this host reads \(Self.version)")
+        let written = try c.decode(Int.self, forKey: .version)
+        guard written == 1 || written == Self.version else {
+            throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "settings version \(written); this host reads 1 and \(Self.version)")
         }
+        version = Self.version
         roles = Set(try c.decode([CaretRole].self, forKey: .roles))
+        // Version 1 had no calendar role to turn off, so its absence there is not a choice.
+        if written == 1 { roles.insert(.calendar) }
         level = try c.decode(CaretLevel.self, forKey: .level)
         character = try c.decode(FigureCharacter.self, forKey: .character)
         paused = try c.decode(Bool.self, forKey: .paused)
@@ -181,7 +192,7 @@ public struct MemoryEntry: Codable, Equatable, Sendable {
 /// Quiet and Eager are a quarter and double of it.
 public struct GatePolicy: Codable, Equatable, Sendable {
     public struct Rule: Codable, Equatable, Sendable {
-        /// `ghost`, `fill`, `pending`, `loop`, `routine` or `rewrite`.
+        /// `ghost`, `fill`, `pending`, `loop`, `routine`, `event` or `rewrite`.
         public var family: String
         public var on: Bool
         /// How many times Caret must have seen the pattern before it may offer it. Zero for offers
@@ -230,6 +241,9 @@ public struct GatePolicy: Codable, Equatable, Sendable {
                 Rule(family: "pending", on: true, seenBefore: 0),
                 Rule(family: "loop", on: false, seenBefore: 0),
                 Rule(family: "routine", on: false, seenBefore: 0),
+                // Off at Quiet, as the helper's LEVELS has it (B16): Quiet keeps to what is on
+                // screen and asks nothing to be written elsewhere. Assumed, like the helper's.
+                Rule(family: "event", on: false, seenBefore: 0),
                 Rule(family: "rewrite", on: false, seenBefore: 0),
             ])
         case .balanced:
@@ -241,6 +255,7 @@ public struct GatePolicy: Codable, Equatable, Sendable {
                 // days, and needs history before it is offered.
                 Rule(family: "loop", on: true, seenBefore: 2),
                 Rule(family: "routine", on: true, seenBefore: 3),
+                Rule(family: "event", on: true, seenBefore: 0),
                 Rule(family: "rewrite", on: false, seenBefore: 0),
             ])
         case .eager:
@@ -250,6 +265,7 @@ public struct GatePolicy: Codable, Equatable, Sendable {
                 Rule(family: "pending", on: true, seenBefore: 0),
                 Rule(family: "loop", on: true, seenBefore: 2),
                 Rule(family: "routine", on: true, seenBefore: 2),
+                Rule(family: "event", on: true, seenBefore: 0),
                 Rule(family: "rewrite", on: true, seenBefore: 0),
             ])
         }
@@ -285,6 +301,7 @@ extension GateSettings {
             case .fill: return .fill
             case .repeats: return .repeat
             case .watch: return .watch
+            case .calendar: return .calendar
             case .words: return .words
             }
         }

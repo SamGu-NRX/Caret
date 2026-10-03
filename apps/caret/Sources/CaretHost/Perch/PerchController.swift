@@ -40,6 +40,11 @@ final class PerchController {
     private let panel = PerchPanel.make()
     private let list = HostedPanel(radius: 12, interactive: true)
     private let locator = WindowLocator()
+    /// The ask field at the top of the list (brief A13): its decisions, and what the view draws.
+    let ask = AskCaret(clock: RunLoopClock(), character: { MainActor.assumeIsolated { FigureSettings.shared.character } })
+    private let askModel = AskModel()
+    /// The ask phase last drawn into the list, so a change of phase resizes it and typing does not.
+    private var drawnAsk: AskCaret.Phase = .idle
     /// "What Caret knows" at the foot of the list.
     var onOpenMemory: (() -> Void)?
 
@@ -93,6 +98,52 @@ final class PerchController {
         model.character = FigureSettings.shared.character
         model.animated = !Motion.reduceMotion
         model.onTap = { [weak self] in self?.toggleList() }
+        list.panel.keyable = true
+        list.panel.interceptKey = { [weak self] event in
+            MainActor.assumeIsolated { self?.listKey(event) ?? false }
+        }
+        askModel.edit = { [weak self] text in self?.ask.edit(text) }
+        askModel.submit = { [weak self] in self?.ask.submit() }
+        ask.onChange = { [weak self] in self?.askChanged() }
+    }
+
+    // MARK: - The ask field
+
+    private func askChanged() {
+        if askModel.text != ask.text { askModel.text = ask.text }
+        if askModel.phase != ask.phase { askModel.phase = ask.phase }
+        // A new phase can change the list's height; typing alone does not, and redrawing the panel
+        // on each key would cost a measure per keystroke.
+        if listOpen, drawnAsk != ask.phase { renderList() }
+    }
+
+    /// Return, Tab and Esc while the list is key, before the field editor sees them. Return plans
+    /// what the field holds; Tab takes a plan; Esc stops a run, puts away a card or an answer, then
+    /// empties the field, then closes the list. True when the key was used.
+    private func listKey(_ event: NSEvent) -> Bool {
+        let plain = event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
+        guard plain else { return false }
+        let editing = list.panel.firstResponder is NSTextView
+        switch Int64(event.keyCode) {
+        case KeyStroke.returnKeyCode, 76:
+            return editing && ask.submit()
+        case KeyStroke.tabKeyCode:
+            return ask.tab()
+        case KeyStroke.escapeKeyCode:
+            if !ask.escape() { closeList() }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The menu's Ask Caret: the list opens with the field focused, Caret still behind the app the
+    /// user is in.
+    func openAsk() {
+        if !listOpen { openList() }
+        guard drawsOnScreen else { return }
+        list.panel.makeKey()
+        askModel.focusToken &+= 1
     }
 
     // MARK: - Inputs
@@ -326,6 +377,12 @@ final class PerchController {
     func closeList() {
         guard listOpen else { return }
         listOpen = false
+        // A card nobody can see takes no Tab, so it goes; a run goes on and the list still reports
+        // it, and a half-typed request stays for the next opening.
+        switch ask.phase {
+        case .running, .idle: break
+        case .asking, .proposed, .failed, .ended: ask.escape()
+        }
         donePages = 1
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
@@ -334,17 +391,20 @@ final class PerchController {
 
     private func renderList() {
         let page = center.page(pages: donePages)
+        drawnAsk = ask.phase
+        let character = FigureSettings.shared.character
         let view = ActivityListView(
             rows: page.rows, more: page.more, incomplete: center.feed.incomplete, mood: subject?.mood,
-            character: FigureSettings.shared.character, busy: center.busy, animated: !Motion.reduceMotion,
+            character: character, busy: center.busy, animated: !Motion.reduceMotion,
             onMore: { [weak self] in self?.showMore() },
             onKnows: { [weak self] in
                 self?.closeList()
                 self?.onOpenMemory?()
-            }
-        ) { [weak self] taskId, action in
-            self?.center.control(taskId, action)
-        }
+            },
+            onAction: { [weak self] taskId, action in self?.center.control(taskId, action) },
+            ask: AnyView(AskLiveSection(model: askModel, character: character, animated: !Motion.reduceMotion)),
+            askActive: ask.phase != .idle
+        )
         list.text = view.title
         list.setContent(view)
     }

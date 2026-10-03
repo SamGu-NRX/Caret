@@ -133,7 +133,9 @@ public final class OfferArbiter: @unchecked Sendable {
     /// Makes `offer` the current one. Returns its id, or nil when refused because a claim is being
     /// inserted or the offer is for the field revision an insertion just consumed.
     @discardableResult
-    public func publish(_ offer: Offer) -> UInt64? {
+    /// `compact`: the offer starts as its compact line (`OfferUI.compact`), decided before publishing
+    /// so the tap never sees a pop-up's keys on a line that shows none of its rows.
+    public func publish(_ offer: Offer, compact: Bool = false) -> UInt64? {
         let (id, displaced): (UInt64?, Offer?) = state.withLock { s in
             guard s.insertingClaimID == nil, offer.target != s.consumedTarget else {
                 s.refusedPublishCount &+= 1
@@ -147,6 +149,7 @@ public final class OfferArbiter: @unchecked Sendable {
             s.nextOfferID &+= 1
             s.current = stamped
             s.ui = OfferUI(initialFor: stamped)
+            s.ui.compact = compact
             s.typedSinceOffer = ""
             s.publishedCount &+= 1
             return (stamped.id, displaced)
@@ -342,6 +345,8 @@ public final class OfferArbiter: @unchecked Sendable {
         case (.up, .alternatives(let count)):
             return navigate { $0.candidate = ($0.candidate + count - 1) % count }
         case (.down, .actionLine):
+            // A pop-up drawn as its compact line: ↓ opens the full card, highlight as it was.
+            if case .popup = offer.kind { return navigate { $0.compact = false } }
             return navigate { ui in
                 ui.expanded = true
                 ui.highlight = offer.kind.actionLine?.variants?.choices?.selected ?? 0
@@ -430,6 +435,9 @@ public final class OfferArbiter: @unchecked Sendable {
             }
             return .actionLine(numbered: Set(line.actions.compactMap(\.key.digit)), hasVariants: line.variants != nil)
         case .popup:
+            // As its compact line it keys as an action line whose ↓ opens the card: Tab takes the
+            // primary action, and no row or Command-digit is owned while none is visible.
+            if ui.compact { return .actionLine(numbered: [], hasVariants: true) }
             let spec = offer.visibleSpec(ui: ui) ?? PopupSpec(id: "", figure: .offering, blocks: [])
             return .popup(rows: spec.rowCount, numbered: spec.numberedDigits, hasDown: spec.hasDownAction)
         }

@@ -123,9 +123,9 @@ extension SurfaceMachine {
             )
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: reason == .you ? .result : .error, offerKey: work.offerKey))
             showResult(line, lifetime: reason == .you ? 3 : 6)
-        case .handoff:
+        case .handoff(let blocked):
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
-            showResult(WorkLines.handoff(app: work.app), lifetime: 6)
+            showResult(blocked.map(WorkLines.blocked) ?? WorkLines.handoff(app: work.app), lifetime: 6)
         case .paused:
             // The input pause stopped the run; the perch and the activity list carry it from here.
             takeLineDown(exit: 0.08)

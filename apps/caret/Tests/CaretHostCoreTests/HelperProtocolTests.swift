@@ -34,6 +34,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .taskProgress: return "taskProgress"
             case .firstLookReply: return "firstLookReply"
             case .memoryReply: return "memoryReply"
+            case .planProposal: return "planProposal"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
@@ -51,6 +52,9 @@ final class HelperProtocolGoldenTests: XCTestCase {
             "offerWithdrawn", "skip:settings", "skip:settings", "offerWithdrawn",
             // B15: an act grant, a write it refuses, and the revoke, all between helper and reader.
             "skip:actGrant", "skip:readerCommand", "skip:verbResult", "skip:actRevoke",
+            // B16: a plan asked for, proposed and refused; the calendar adapter's add, refusal and grant.
+            "skip:planRequest", "planProposal", "planProposal",
+            "skip:readerCommand", "skip:verbResult", "skip:verbResult", "taskProgress", "skip:calendarGrant",
         ]
         XCTAssertEqual(kinds, expected)
     }
@@ -59,7 +63,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
     /// withdrawal with its replacement and the withdrawal settings cause.
     func testTheB8LinesDecodeExactly() throws {
         let lines = try goldenLines()
-        XCTAssertEqual(lines.count, 38)
+        XCTAssertEqual(lines.count, 46)
         XCTAssertEqual(try HelperInbound.decode(lines[26]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_122_500, id: "offer-4", reason: .expired)))
         guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { return XCTFail("line 28") }
         XCTAssertEqual(pause, TaskControl(taskId: "task-1", action: .pause, reason: .input))
@@ -81,8 +85,12 @@ final class HelperProtocolGoldenTests: XCTestCase {
     func testTheHostsSettingsEncodeToTheGoldenLines() throws {
         let lines = try goldenLines()
         func object(_ data: Data) throws -> NSDictionary { try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary) }
-        let defaults = GateSettings(CaretSettings(), at: 1_790_000_130_000)
-        XCTAssertEqual(try object(NDJSON.line(defaults)), try object(lines[31]), "line 32")
+        // Line 32 is the host's defaults from before the calendar role (B16 did not rewrite it); the
+        // defaults now are the same roles with calendar in its CaretRole place.
+        var before = CaretSettings()
+        before.roles.remove(.calendar)
+        XCTAssertEqual(try object(NDJSON.line(GateSettings(before, at: 1_790_000_130_000))), try object(lines[31]), "line 32")
+        XCTAssertEqual(GateSettings(CaretSettings(), at: 1).roles, [.fill, .repeat, .watch, .calendar, .words], "every role starts on, calendar included")
         var quiet = CaretSettings()
         quiet.roles = [.watch]
         quiet.level = .quiet

@@ -25,6 +25,8 @@ public enum HelperInbound: Equatable, Sendable {
     case firstLookReply(FirstLookReply)
     /// The answer to this host's `memoryRequest` (`HelperMemory`), to this connection only.
     case memoryReply(HelperMemory.Reply)
+    /// The answer to this host's `planRequest` (`AskCaret`), to this connection only.
+    case planProposal(PlanProposal)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -45,6 +47,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .taskProgress: return TaskProgress.type
         case .firstLookReply: return FirstLookReply.type
         case .memoryReply: return HelperMemory.Reply.type
+        case .planProposal: return PlanProposal.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -71,8 +74,8 @@ public enum HelperInbound: Equatable, Sendable {
             }
         case Hello.type, FillRequest.type, "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard",
              "readerCommand", "verbResult", "userInput", "taskControl", "activityRequest", OfferAccept.type, OfferStop.type, GateSettings.type,
-             // The helper's act grants go to the reader only (B15); a consumer never acts on one.
-             ActGrant.type, ActRevoke.type:
+             // The helper's act and calendar grants go to the reader only (B15, B16); a consumer never acts on one.
+             ActGrant.type, ActRevoke.type, CalendarGrant.type, PlanRequest.type:
             // Validated, so a malformed line is still counted as undecodable.
             _ = try JSONDecoder().decode(Message.self, from: line)
             return .notForConsumer(type: envelope.type)
@@ -82,6 +85,8 @@ public enum HelperInbound: Equatable, Sendable {
             return .firstLookReply(try FirstLookReply.decode(line))
         case HelperMemory.Reply.type:
             return .memoryReply(try HelperMemory.Reply.decode(line))
+        case PlanProposal.type:
+            return .planProposal(try JSONDecoder().decode(PlanProposal.self, from: line))
         default:
             return .unknown(type: envelope.type)
         }

@@ -19,7 +19,7 @@ public struct FirstLookRequest: Codable, Equatable, Sendable {
     public var requestId: String
     /// Milliseconds since the epoch.
     public var at: Int64
-    /// The generator families to run (`fill`, `pending`, `loop`, `routine`), from the roles chosen
+    /// The generator families to run (`fill`, `pending`, `loop`, `routine`, `event`), from the roles chosen
     /// in onboarding. Ghost text is the host's and never part of a first look.
     public var families: [String]
     /// `quiet`, `balanced` or `eager`, for the helper's gate.
@@ -37,7 +37,7 @@ public struct FirstLookRequest: Codable, Equatable, Sendable {
 
     /// The families the settings enable, in the helper's order.
     public static func families(for settings: CaretSettings) -> [String] {
-        ["fill", "pending", "loop", "routine"].filter { settings.gate.allows(family: $0) }
+        ["fill", "pending", "loop", "routine", "event"].filter { settings.gate.allows(family: $0) }
     }
 
     enum CodingKeys: String, CodingKey { case type, v, requestId, at, families, level, deadlineMs }

@@ -312,12 +312,28 @@ public final class SurfaceMachine {
             startWatch(.offer(shown!.offerID), target: field.identity, anchors: anchors, requireFocus: true)
             return reply
         }
+        // An action line or pop-up needs a spot that covers none of the app's fields or labels: its
+        // full panel, else its compact line, else it is not drawn at all (brief A13, part 3).
+        var compact = false
+        if let full = Self.panelContent(for: offer) {
+            let frame = field.frame ?? caret
+            if !world.panelIsClear(full, field: frame, caret: caret, pid: pid) {
+                guard let small = Self.compactContent(for: offer, ui: OfferUI(initialFor: offer)),
+                      world.panelIsClear(small, field: frame, caret: caret, pid: pid) else {
+                    // Only the screen around the field could change the answer, and probing it again
+                    // every half second costs main-thread hit-tests; the helper offers again on change.
+                    return hold(incoming, .noClearSpot, retry: false)
+                }
+                compact = true
+                count("surface.compact.\(offer.kind.name)")
+            }
+        }
         let swapping = incoming.helperKey != nil && swap?.newKey == incoming.helperKey
         cancelPending()
         // Another offer takes the panel from a reoffered line as from any line: at once.
         endSwap(takeDown: !swapping, exit: 0)
         makeRoom(for: offer)
-        guard let offerID = arbiter.publish(offer) else {
+        guard let offerID = arbiter.publish(offer, compact: compact) else {
             if swapping { takeLineDown(exit: 0.10) }
             return #"{"error":"arbiter refused (an insertion is running)"}"#
         }
@@ -507,17 +523,45 @@ public final class SurfaceMachine {
             if ui.expanded, let variants = line.variants {
                 showOffer(.popup(variants, highlight: ui.highlight), text: variants.header?.title.text, figure: .needsYou, at: shown, entering: entering)
             } else {
-                let content = LineContent(figure: .offering, app: line.app, text: line.endState.text, hints: Hint.hints(line.actions))
-                showOffer(.line(content), text: "\(line.app) \(line.endState.text)", figure: .offering, at: shown, entering: entering)
+                let content: PanelContent = ui.compact ? .compactLine(CompactOffer.line(line)) : .line(Self.lineContent(line))
+                showOffer(content, text: "\(line.app) \(line.endState.text)", figure: .offering, at: shown, entering: entering)
             }
         case .popup:
             guard let spec = shown.offer.visibleSpec(ui: ui) else { return }
-            showOffer(.popup(spec, highlight: ui.highlight), text: spec.header?.title.text,
-                      figure: spec.figure == .needsYou ? .needsYou : .offering, at: shown, entering: entering)
+            if ui.compact {
+                let line = CompactOffer.line(spec, highlight: ui.highlight)
+                showOffer(.compactLine(line), text: line.text, figure: line.figure, at: shown, entering: entering)
+            } else {
+                showOffer(.popup(spec, highlight: ui.highlight), text: spec.header?.title.text,
+                          figure: spec.figure == .needsYou ? .needsYou : .offering, at: shown, entering: entering)
+            }
         case .fill:
             break
         }
         publish()
+    }
+
+    /// An action line as the panel draws it.
+    static func lineContent(_ line: ActionLine) -> LineContent {
+        LineContent(figure: .offering, app: line.app, text: line.endState.text, hints: Hint.hints(line.actions))
+    }
+
+    /// What an action line or pop-up first draws on the panel; nil for what is drawn at the caret.
+    static func panelContent(for offer: Offer) -> PanelContent? {
+        switch offer.kind {
+        case .action(let line): return .line(lineContent(line))
+        case .popup(let popup): return .popup(popup.spec, highlight: OfferUI(initialFor: offer).highlight)
+        case .ghost, .fill: return nil
+        }
+    }
+
+    /// The same offer as its compact line.
+    static func compactContent(for offer: Offer, ui: OfferUI) -> PanelContent? {
+        switch offer.kind {
+        case .action(let line): return .compactLine(CompactOffer.line(line))
+        case .popup(let popup): return .compactLine(CompactOffer.line(popup.spec, highlight: ui.highlight))
+        case .ghost, .fill: return nil
+        }
     }
 
     /// The offer line or pop-up on the panel, around the offer's field.
