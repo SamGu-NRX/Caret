@@ -38,6 +38,9 @@ final class FillCoordinator {
     private let policy: TargetPolicy
     var executor: InsertionExecutor?
     var client: HelperClient?
+    /// Called when this coordinator's toast took the arbiter's one toast slot, so another toast
+    /// drawn for the slot (a fill pop-up's) can take itself down.
+    var onToastShown: (() -> Void)?
 
     private var held: [String: Held] = [:]
     private var shownOfferID: UInt64?
@@ -256,6 +259,11 @@ final class FillCoordinator {
         status.update { $0.fill.toast?.grantID = nil }
     }
 
+    /// Another coordinator's toast took the arbiter's toast slot: this one's toast, if any, is gone.
+    func toastChanged() {
+        syncToast(arbiter.snapshot(), byTyping: false)
+    }
+
     private func syncToast(_ snapshot: OfferArbiter.Snapshot, byTyping: Bool) {
         guard let toastGrantID, snapshot.toast?.id != toastGrantID else { return }
         self.toastGrantID = nil
@@ -286,6 +294,7 @@ final class FillCoordinator {
             }
             let id = arbiter.showToast(grant)
             toastGrantID = id
+            onToastShown?()
             // The toast names the app only ("Filled 4 fields from Mail", SURFACES.md section 6); the
             // offer line already named the window.
             let caption = "1 field from \(origin.sourceAppName)"

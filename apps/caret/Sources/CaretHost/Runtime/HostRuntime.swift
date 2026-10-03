@@ -164,6 +164,9 @@ public final class HostRuntime {
         })
         fill.client = helper
         surface.client = helper
+        // The fill line and the fill pop-up share the arbiter's one toast slot.
+        surface.onToastChanged = { fill.toastChanged() }
+        fill.onToastShown = { surface.toastChanged() }
         activity.client = helper
         let pauseClient = helper
         let writesNothing = configuration.surfacesHeadless
@@ -195,9 +198,9 @@ public final class HostRuntime {
                 }
             },
             undo: { grant in
-                if let taskID = grant.taskID {
+                if grant.taskID != nil {
                     // The helper's executor made these writes and keeps their ledger; it undoes them.
-                    pauseClient.send(TaskControl(taskId: taskID, action: .undo))
+                    // The request goes from main, never from the tap thread, which only enqueues.
                     DispatchQueue.main.async { MainActor.assumeIsolated { surface.undoStarted(grant) } }
                 } else {
                     executor.submitUndo(grant)

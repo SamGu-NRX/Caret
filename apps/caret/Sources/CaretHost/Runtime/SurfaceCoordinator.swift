@@ -152,6 +152,12 @@ final class SurfaceCoordinator {
     var onWorkingChanged: ((Bool) -> Void)?
 
     private var shown: Shown?
+    /// The offer a newer one replaced on the panel, kept until the next replacement: a Tab the tap
+    /// took on it may reach main after the newer offer was drawn (`claimed`).
+    private var displacedShown: Shown?
+    /// Called when this coordinator's toast took or gave up the arbiter's one toast slot, so the
+    /// fill line's own toast can take itself down (they share the slot).
+    var onToastChanged: (() -> Void)?
     /// An offer held by `SurfaceGate`, retried until it may be drawn, it is withdrawn, or 30 s pass.
     private var pending: (incoming: Incoming, since: Date, hold: SurfaceGate.Hold)?
     private var pendingTimer: Timer?
@@ -202,6 +208,8 @@ final class SurfaceCoordinator {
             status.increment("surface.withdrawn.helper.\(message.reason.rawValue)")
         }
         if effect.dropHeld { cancelPending() }
+        // A late Tab on a replaced offer the helper has since withdrawn is not honored.
+        if displacedShown?.offerKey == message.id { displacedShown = nil }
         publish()
     }
 
@@ -301,6 +309,7 @@ final class SurfaceCoordinator {
     /// A new offer takes the one panel: whatever offer, work line, result or toast was on it ends.
     /// Work goes on unseen and its progress is ignored; the activity list still reports it.
     private func makeRoom(for offer: Offer) {
+        displacedShown = shown
         clear(exit: 0)
         endWork()
         endResult()
@@ -312,7 +321,13 @@ final class SurfaceCoordinator {
     /// all when only the field's own content could change the answer).
     private func hold(_ incoming: Incoming, _ reason: SurfaceGate.Hold, retry: Bool = true) -> String {
         status.increment("surface.held.\(reason.rawValue)")
-        if retry {
+        if !retry {
+            // Only the field's own content could change the answer; an older held offer is
+            // superseded too, so nothing is retried.
+            pendingTimer?.invalidate()
+            pendingTimer = nil
+            pending = nil
+        } else {
             // The same offer keeps its first hold time; a different one starts over.
             let since = pending.flatMap { $0.incoming.offerKey == incoming.offerKey ? $0.since : nil } ?? Date()
             pending = (incoming, since, reason)
@@ -573,7 +588,22 @@ final class SurfaceCoordinator {
     }
 
     func claimed(_ claim: Claim) {
-        guard let shown, claim.offer.id == shown.offerID else { return }
+        let shown: Shown
+        if let current = self.shown, current.offerID == claim.offer.id {
+            shown = current
+        } else if !claim.insertsText, let earlier = displacedShown, earlier.offerID == claim.offer.id {
+            // The tap took this offer's action, and a newer offer was drawn before this ran. The
+            // key was pressed on the offer the user saw, so that one is taken and the newer gives way.
+            if let newer = self.shown {
+                arbiter.invalidate(offerID: newer.offerID)
+                clear(exit: 0)
+            }
+            shown = earlier
+            status.increment("surface.claimAfterReplace")
+        } else {
+            return
+        }
+        displacedShown = nil
         // An action is about the field it was offered in. Revalidate that field before handing
         // the action on: focus may have moved in an app that posts no focus notification. A
         // headless host reads no field; its offers are bound to the field the helper named.
@@ -617,7 +647,11 @@ final class SurfaceCoordinator {
         let anchor = CGPoint(x: shown.caret.midX, y: shown.caret.midY)
         watch.start(check: { Visibility.hold(for: target, anchors: [anchor], requireFocus: false) }, onLost: { [weak self] hold in
             guard let self else { return }
+            // A line nobody can see owns no key: Esc and ⌘Z are the app's again. The work goes on,
+            // and the activity list reports it.
             self.lineSuppressed = true
+            if let work = self.work { self.arbiter.clearStatus(id: work.statusID) }
+            self.endResult()
             self.panel.exit(duration: 0)
             self.status.increment("surface.lineHidden.\(hold.rawValue)")
             self.publish()
@@ -722,6 +756,12 @@ final class SurfaceCoordinator {
     private func end(with ending: OfferLifecycle.Ending) {
         guard let work else { return }
         endWork()
+        guard headless || !lineSuppressed else {
+            // The line went down when its app went behind; its result is not drawn, so it takes no
+            // key either.
+            takeLineDown(duration: 0)
+            return publish()
+        }
         switch ending {
         case .done:
             if let fill = work.fill, work.verified > 0 { return showFillToast(work, fill) }
@@ -749,6 +789,7 @@ final class SurfaceCoordinator {
         let grant = UndoGrant.task(work.offerKey, target: work.target)
         let id = arbiter.showToast(grant)
         toastGrantID = id
+        onToastChanged?()
         let rest = Captions.fields(work.verified) + (fill.source.map { " from \($0)" } ?? "")
         toastInfo = DebugState.Toast(kind: "done", caption: "Filled \(rest)", grantID: id)
         status.increment("surface.toast.fill")
@@ -758,19 +799,43 @@ final class SurfaceCoordinator {
         )
     }
 
-    /// ⌘Z took the fill toast; the runtime has sent `taskControl undo`. The line says so until the
-    /// helper reports the undo, or for 10 s.
+    /// ⌘Z took the fill toast. The undo is tracked before it is requested, so the helper's answer
+    /// always finds it; the line says so until the answer comes, or for 10 s.
     func undoStarted(_ grant: UndoGrant) {
         guard let taskID = grant.taskID else { return }
-        toastGrantID = nil
+        if toastGrantID == grant.id { toastGrantID = nil }
         undoing = taskID
+        let sent = client?.send(TaskControl(taskId: taskID, action: .undo)) ?? false
+        status.increment(sent ? "surface.undo.sent" : "surface.undo.unsent")
+        // A newer offer or run may have taken the panel since the key; the undo then reports nowhere.
+        guard shown == nil, work == nil else {
+            toastInfo = nil
+            return publish()
+        }
+        guard sent else {
+            undoing = nil
+            let caption = Captions.undoUnsent
+            toastInfo = DebugState.Toast(kind: "error", caption: caption, grantID: nil)
+            return showResult(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption, lifetime: 6)
+        }
         toastInfo = DebugState.Toast(kind: "undoing", caption: "Undoing", grantID: nil)
-        status.increment("surface.undo.sent")
         showResult(LineContent(figure: .working, text: "Undoing", emphasis: .plain), text: "Undoing", lifetime: 10)
+    }
+
+    /// The fill line's toast took the arbiter's toast slot: this coordinator's toast, if any, is gone.
+    func toastChanged() {
+        guard let toastGrantID, arbiter.snapshot().toast?.id != toastGrantID else { return }
+        self.toastGrantID = nil
+        toastInfo = nil
+        resultTimer?.invalidate()
+        resultTimer = nil
+        takeLineDown(duration: 0.08)
+        publish()
     }
 
     private func finishUndo(_ progress: TaskProgress) {
         undoing = nil
+        guard shown == nil, work == nil else { return publish() }
         let count = OfferLifecycle.undoCount(progress.detail)
         let caption: String
         let figure: FigureState

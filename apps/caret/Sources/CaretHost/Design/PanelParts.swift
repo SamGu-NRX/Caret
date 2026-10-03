@@ -281,6 +281,9 @@ enum Captions {
     /// The run reached a send, submit, delete or pay step and left the press to the user.
     static func handoff(app: String) -> String { "Your turn in \(app)" }
 
+    /// ⌘Z on the fill toast while the helper is not connected.
+    static let undoUnsent = "Caret's helper isn't running, so nothing was undone."
+
     /// An undo that could not restore every field.
     static func undoPartial(notRestored: Int) -> String {
         notRestored == 1
