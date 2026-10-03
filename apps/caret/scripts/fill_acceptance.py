@@ -17,10 +17,11 @@ cua-driver get_window_state.
 Cases: ten fields driven to an exact match with the source text; a field whose answer is "none";
 focus moved before Tab; Command-1 over a fill; undo; the source changing before Tab.
 
-realtab presses one real Tab through the event tap. It runs only while gui.lock is held and the
-Mac has had no input for CARET_REALTAB_IDLE_MIN seconds (default 300), activates only the fixture,
-and posts the key only while NSWorkspace and lsappinfo both report the fixture frontmost; any
-failed check ends the run as "deferred: foreground".
+realtab presses one real Tab through the event tap. It runs only with the gui lease, while
+gui.lock is held, outside a quiet window and after CARET_REALTAB_IDLE_MIN seconds without input
+(default 300). It starts by asking the fixture for the foreground (`activate legacy`, fixture_app.py),
+posts the key only while NSWorkspace and lsappinfo both report the fixture frontmost, and hands the
+foreground back when it ends (`quit PID`); any failed check ends the run as "deferred: foreground".
 """
 import json
 import os
@@ -31,6 +32,8 @@ import subprocess
 import sys
 import threading
 import time
+
+import fixture_app
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -49,15 +52,16 @@ SCHEDULE = "Caret Fixture — Schedule follow-up"
 REFERENCE = "Caret Fixture — Reference"
 
 STARTED = []  # (name, Popen), stopped in reverse order on exit
+BEFORE_STOP = []  # run first: the fixture hands the foreground back while it still can
 
 
 def log(*parts):
     print(time.strftime("%H:%M:%S"), *parts, flush=True)
 
 
-def start(name, args, out_dir, env=None, cwd=None):
+def start(name, args, out_dir, env=None, cwd=None, stdin=None):
     out = open(os.path.join(out_dir, f"{name}.log"), "w")
-    proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, cwd=cwd)
+    proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, cwd=cwd, stdin=stdin)
     STARTED.append((name, proc))
     log("started", name, proc.pid)
     return proc
@@ -233,8 +237,11 @@ def rig(out_dir, ghost=False):
     # One fixture process with the Reference window and both forms, as the screen track's fill
     # evaluation runs it. The driver switches the fixture's key window with AXMain (no activation),
     # so Reference is the window the user just left when a form is focused.
-    fx = start("fixture", [os.path.join(SCREEN_BIN, "caret-fixture"), "--windows", "reference,claim,schedule",
-                           "--gold", os.path.join(out_dir, "gold.json"), "--duration", "1200"], out_dir)
+    # CaretFixture.app with --foreground, so AXMain can make its windows key (fixture_app.py); stdin
+    # stays open for `activate` and `quit` in realtab.
+    fx = start("fixture", fixture_app.args("--windows", "reference,claim,schedule",
+                                           "--gold", os.path.join(out_dir, "gold.json"), "--duration", "1200"),
+               out_dir, stdin=subprocess.PIPE)
     fx_a = fx_b = fx
     pids = [fx.pid]
     wait_for(lambda: os.path.exists(os.path.join(out_dir, "gold.json")), 10, 0.1)
@@ -470,11 +477,9 @@ def realtab(out_dir, ghost):
             json.dump(result, f, indent=2, sort_keys=True)
         log("realtab", status, json.dumps(extra)[:400])
 
-    if not gui_lock_held():
-        return finish("refused: gui.lock not held")
-    idle = hid_idle_seconds()
-    if idle < IDLE_MIN:
-        return finish("deferred: user active", idleSeconds=idle)
+    why = fixture_app.why_not_foreground(IDLE_MIN)
+    if why:
+        return finish(why, idleSeconds=hid_idle_seconds())
     fx_a, fx_b, gold = rig(out_dir, ghost=ghost)
     pids = [fx_a.pid]
     pid = fx_a.pid
@@ -490,12 +495,15 @@ def realtab(out_dir, ghost):
     # seconds the keys need.
     if ghost and not wait_for(lambda: host()["engine"]["state"] == "ready", 120, 0.5):
         return finish("failed: model did not load", engine=host()["engine"])
-    if hid_idle_seconds() < IDLE_MIN:
-        return finish("deferred: user active", idleSeconds=hid_idle_seconds())
+    why = fixture_app.why_not_foreground(IDLE_MIN)
+    if why:
+        return finish(why, idleSeconds=hid_idle_seconds())
     before = host()["tap"]
-    act = ax(pids, "activate", pid)
-    if not act.get("front"):
-        return finish("deferred: foreground", step="activate", activate=act, frontmost=ax(pids, "frontmost"))
+    previous = ax(pids, "frontmost").get("pid")
+    BEFORE_STOP.append(lambda: fixture_app.hand_back(fx_a, previous))
+    ok, front = fixture_app.activate(fx_a, lambda: ax(pids, "frontmost"))
+    if not ok:
+        return finish("deferred: foreground", step="activate legacy", frontmost=front)
     offer = wait_for(lambda: fill_offer(pid, 0), 3)
     if not offer:
         return finish("failed: offer gone after activation", lastSkip=host()["fill"].get("lastSkip"))
@@ -556,10 +564,17 @@ if __name__ == "__main__":
         mode, out = sys.argv[1], sys.argv[2]
     else:
         raise SystemExit(__doc__)
+    lease = None if mode == "fill" else fixture_app.GuiLease()
     try:
+        if lease:
+            lease.__enter__()
         if mode == "fill":
             main(out)
         else:
             realtab(out, ghost=mode == "realtab-ghost")
     finally:
+        for hand_back in BEFORE_STOP:
+            hand_back()
         stop_all()
+        if lease:
+            lease.__exit__()

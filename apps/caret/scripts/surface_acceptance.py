@@ -32,13 +32,12 @@ import subprocess
 import sys
 import time
 
+import fixture_app
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-# The screen track's fixture build, which has --background-only (activation policy .prohibited);
-# this worktree's copy predates the flag. Executed only, never rebuilt or edited from here.
-FIXTURE = os.environ.get("CARET_FIXTURE_BIN") or os.path.join(
-    os.path.dirname(ROOT), "caret-v2-screen", "apps", "screen-reader", ".build", "debug", "caret-fixture")
-GUI_LOCK = os.path.expanduser("~/.long-run/locks/gui.lock")
+# CaretFixture.app, exec'd with --foreground (fixture_app.py). Executed only, never rebuilt or
+# edited from here; CARET_FIXTURE_BIN_DIR names the build.
 CARET = os.path.join(ROOT, "apps", "caret", ".build", "Caret.app", "Contents", "MacOS", "Caret")
 AX = os.path.join(ROOT, "apps", "caret", ".build", "fixture-ax")
 COMPOSE = os.path.join(ROOT, "apps", "caret", ".build", "compose-shot")
@@ -51,6 +50,8 @@ CLAIM = "Caret Fixture — Claim form"
 REFERENCE = "Caret Fixture — Reference"
 
 STARTED = []
+# Run before the processes stop: the fixture hands the foreground back while it still can.
+BEFORE_STOP = []
 CLEANUP = []
 CHECKS = []
 KEY_PANELS = []
@@ -62,9 +63,11 @@ RUN_START = None
 #
 # Since the host draws only in the frontmost app's focused field (SurfaceGate), a run that checks
 # what is drawn needs the fixture in front, and so needs the Mac to itself: the lead's rule after
-# a test panel appeared over Sam's Messages window. The run starts only after 300 s without input,
-# under gui.lock, activates the fixture normally and confirms it is frontmost, and stops (killing
-# its own fixture and host) the moment input arrives that is not the host's own pid-posted keys.
+# a test panel appeared over Sam's Messages window. The run starts only with the gui lease, under
+# gui.lock, after 300 s without input and outside a quiet window. It starts by asking the fixture
+# for the foreground (`activate legacy`), confirms it is frontmost, hands the foreground back to
+# the app that had it when it ends (`quit PID`), and stops (killing its own fixture and host) the
+# moment input arrives that is not the host's own pid-posted keys.
 IDLE_MIN = float(os.environ.get("CARET_SURFACE_IDLE_MIN", "300"))
 FOREGROUND = IDLE_MIN > 0
 
@@ -117,9 +120,9 @@ def check(name, ok, **detail):
     return ok
 
 
-def start(name, args, out_dir, env=None):
+def start(name, args, out_dir, env=None, stdin=None):
     out = open(os.path.join(out_dir, f"{name}.log"), "w")
-    proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env)
+    proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, stdin=stdin)
     STARTED.append((name, proc))
     log("started", name, proc.pid)
     return proc
@@ -239,34 +242,29 @@ def shot(out_dir, fixture_pid, host_pid, name):
     return out
 
 
-def gui_lock_held():
-    """True when some process holds gui.lock: a zero-wait lockf fails. The caller is expected to be
-    that process (`lockf -k ~/.long-run/locks/gui.lock surface_acceptance.py ...`)."""
-    return subprocess.run(["/usr/bin/lockf", "-t", "0", GUI_LOCK, "true"], capture_output=True).returncode != 0
-
-
 def front_pid():
     """NSWorkspace's and LaunchServices' frontmost pids, from fixture-ax (no pid needed)."""
     out = subprocess.run([AX, "frontmost"], capture_output=True, text=True, env=dict(os.environ, CARET_TEST_PIDS="1"))
     return json.loads(out.stdout) if out.returncode == 0 else {}
 
 
-def launch_fixture(out_dir):
+def launch_fixture(out_dir, appearance):
     before = front_pid()
     if FOREGROUND:
-        # The Mac is idle and gui.lock is held: the fixture is brought to the front on purpose, by
-        # a normal activation request, and must actually be frontmost before any check runs.
-        fx = start("fixture", [FIXTURE, "--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
-                               "--duration", "900"], out_dir)
+        # The Mac is idle, the lease granted and gui.lock held: the fixture asks for the front on
+        # purpose and must actually be frontmost before any check runs.
+        fx = start("fixture", fixture_app.args("--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
+                                               "--duration", "900", "--appearance", appearance), out_dir, stdin=subprocess.PIPE)
+        BEFORE_STOP.append(lambda: fixture_app.hand_back(fx, before.get("pid")))
         time.sleep(1)
-        act = ax(fx.pid, "activate", fx.pid)
-        now = front_pid()
-        if not (now.get("pid") == fx.pid and now.get("lsappinfo") == fx.pid):
-            raise SystemExit(f"deferred: foreground (activate={act}, front={now})")
+        ok, now = fixture_app.activate(fx, front_pid)
+        if not ok:
+            raise SystemExit(f"deferred: foreground (activate legacy, front={now})")
         check("fixture activated and frontmost (NSWorkspace and lsappinfo)", True, before=before, after=now)
         return fx
-    fx = start("fixture", [FIXTURE, "--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
-                           "--duration", "900", "--background-only"], out_dir)
+    # --foreground lets windows be key; the fixture still hands back any activation it gets.
+    fx = start("fixture", fixture_app.args("--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
+                                           "--duration", "900", "--appearance", appearance), out_dir)
     # Watch the first two seconds: the fixture must never be frontmost.
     deadline = time.time() + 2
     while time.time() < deadline:
@@ -285,25 +283,16 @@ def launch_fixture(out_dir):
 def rig(out_dir, appearance):
     global RUN_START
     os.makedirs(out_dir, exist_ok=True)
-    if not gui_lock_held():
-        raise SystemExit("refused: run under lockf -k ~/.long-run/locks/gui.lock")
-    idle = hid_idle_seconds()
-    if idle < IDLE_MIN:
-        raise SystemExit(f"deferred: user active (idle {idle:.0f} s < {IDLE_MIN:.0f} s)")
+    why = fixture_app.why_not_foreground(IDLE_MIN) if FOREGROUND else (
+        None if fixture_app.gui_lock_held() else "refused: run under lockf -k ~/.long-run/locks/gui.lock")
+    if why:
+        raise SystemExit(why)
     RUN_START = time.time()
-    # The fixture has no appearance flag; its own defaults domain (created here, removed on exit)
-    # sets it for this run only.
-    prefs = os.path.expanduser("~/Library/Preferences/caret-fixture.plist")
-    if appearance == "dark" and not os.path.exists(prefs):
-        subprocess.run(["defaults", "write", "caret-fixture", "AppleInterfaceStyle", "Dark"], check=True)
-        CLEANUP.append(lambda: subprocess.run(["defaults", "delete", "caret-fixture"]))
-        # `defaults delete` leaves an empty plist behind; it is this run's file.
-        CLEANUP.append(lambda: os.path.exists(prefs) and os.remove(prefs))
     CHECKS.append({"check": "front app before launch", "ok": True,
                    "front": subprocess.run(["lsappinfo", "front"], capture_output=True, text=True).stdout.strip()})
     if os.path.exists(HOST_SOCK):
         raise SystemExit(f"{HOST_SOCK} exists; another run may be live")
-    fx = launch_fixture(out_dir)
+    fx = launch_fixture(out_dir, appearance)
     wait_for(lambda: os.path.exists(os.path.join(out_dir, "gold.json")), 10, 0.1)
     time.sleep(1)
     fields = [f for f in ax(fx.pid, "fields", fx.pid) if f["window"] == CLAIM]
@@ -610,10 +599,17 @@ if __name__ == "__main__":
     mode, out = sys.argv[1], sys.argv[2]
     appearance = sys.argv[3] if len(sys.argv) == 4 else "light"
     results = {}
+    lease = fixture_app.GuiLease() if FOREGROUND else None
     try:
+        if lease:
+            lease.__enter__()
         results = {"alternatives": alternatives, "fill": fill, "realkeys": realkeys}[mode](out, appearance)
     finally:
+        for hand_back in BEFORE_STOP:
+            hand_back()
         stop_all()
+        if lease:
+            lease.__exit__()
         for undo in CLEANUP:
             undo()
         os.makedirs(out, exist_ok=True)

@@ -7,7 +7,10 @@ Starts the host with --onboarding hidden, --surfaces headless, --perch hidden, -
 and --no-ghost, on sockets and a settings file of its own under a temporary directory, so it
 reads and writes none of the user's state. A fake helper on the run's own socket answers
 `firstLook` with the contract's fixture lines (Tests/CaretHostCoreTests/Fixtures/
-first-look.ndjson): found, nothing, error, or silence. The script drives every screen with the
+first-look.ndjson): found, nothing, error, or silence. Until the helper speaks `firstLook`, it
+also runs the found offer when the host takes it: `offerAccept` gets `taskProgress` started,
+verified per field and done with `written`, and `taskControl undo` gets `undone` with its counts,
+as the executor sends them (helper/src/executor/executor.ts). The script drives every screen with the
 `onboarding` test hooks, reads back each setting with `settings`, checks after every step that
 the host owns no window (cua-driver list_windows, read only), restarts the host to read the
 settings back from the file, and writes walk.json and a summary to <out_dir>.
@@ -39,12 +42,17 @@ PROPOSAL = {
 
 
 class FakeHelper:
-    """A consumer-facing helper that only speaks firstLook."""
+    """A consumer-facing helper that speaks firstLook and runs the found offer."""
+
+    # The executor's pace is not modeled; a short pause per step keeps the working line visible.
+    STEP_S = 0.15
 
     def __init__(self, path):
         self.path = path
         self.mode = "found"
         self.requests = []
+        self.accepts = []
+        self.controls = []
         self.conn = None
         self.lock = threading.Lock()
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -75,7 +83,18 @@ class FakeHelper:
                         self._handle(json.loads(line))
 
     def _handle(self, message):
-        if message.get("type") != "firstLook":
+        kind = message.get("type")
+        if kind == "offerAccept":
+            self.accepts.append({"at": time.monotonic(), "message": message})
+            threading.Thread(target=self._run, args=(message["offerId"],), daemon=True).start()
+            return
+        if kind == "taskControl":
+            self.controls.append({"at": time.monotonic(), "message": message})
+            if message.get("action") == "undo":
+                self.send(self._progress(message["taskId"], "undone", restored=4, notRestored=0,
+                                         notUndoablePresses=0, detail="restored 4; not restored 0; presses not undoable 0"))
+            return
+        if kind != "firstLook":
             return
         self.requests.append({"at": time.monotonic(), "request": message, "mode": self.mode})
         reply = {"found": FOUND, "nothing": NOTHING, "error": ERROR}.get(self.mode)
@@ -83,6 +102,18 @@ class FakeHelper:
             return  # silence: the host's deadline decides
         reply = dict(reply, requestId=message["requestId"])
         self.send(reply)
+
+    @staticmethod
+    def _progress(task, phase, step=None, **extra):
+        return dict({"type": "taskProgress", "v": 1, "at": int(time.time() * 1000), "taskId": task, "planId": task,
+                     "phase": phase, "step": step, "steps": 4, "says": None, "detail": None}, **extra)
+
+    def _run(self, task):
+        self.send(self._progress(task, "started"))
+        for i in range(4):
+            time.sleep(self.STEP_S)
+            self.send(self._progress(task, "verified", step=i))
+        self.send(self._progress(task, "done", written=4, detail="4 acted, 0 already true"))
 
     def send(self, message):
         with self.lock:
@@ -241,6 +272,27 @@ def main():
         check("no window on the first look", host.windows() == [])
         check("first look: the helper's offer is shown", r.get("firstLook") == "found" and r.get("firstLookTitle") == "Fill 4 fields", r)
         steps.append({"measure": "Continue to found shown, through the socket and the fake helper, s", "value": waited})
+        check("the found offer shows the key that takes it", r.get("firstLookKeys") == ["tab"], r.get("firstLookKeys"))
+        pressed = time.monotonic()
+        r = ob("key tab")
+        check("Tab starts the run: the working line", r.get("firstLookRun") == "working" and r.get("firstLookLine") == "Filling 4 fields", r)
+        check("Tab sent offerAccept with the offer's key",
+              [a["message"].get("offerId") for a in helper.accepts] == ["first-look-1.0"]
+              and helper.accepts[0]["message"].get("actionId") == "fillAll", [a["message"] for a in helper.accepts])
+        steps.append({"measure": "Tab to offerAccept at the fake helper, ms",
+                      "value": round((helper.accepts[0]["at"] - pressed) * 1000, 1) if helper.accepts else None})
+        r, waited = wait(lambda x: x.get("firstLookRun") == "done", 5)
+        check("the run's done progress ends the line as at the caret",
+              r.get("firstLookLine") == "Filled 4 fields from Mail" and r.get("firstLookKeys") == ["cmd-z"], r)
+        steps.append({"measure": "Tab to the done line (4 fake steps of 0.15 s), s", "value": waited})
+        r = ob("key tab")
+        check("a second Tab takes nothing", len(helper.accepts) == 1 and r.get("firstLookRun") == "done", r)
+        ob("key cmd-z")
+        r, _ = wait(lambda x: x.get("firstLookRun") == "undone", 5)
+        check("⌘Z undoes it and the line reads the counts",
+              r.get("firstLookLine") == "Cleared 4 fields"
+              and [c["message"] for c in helper.controls] == [{"type": "taskControl", "v": 1, "taskId": "first-look-1.0", "action": "undo"}], r)
+        check("no window after the run", host.windows() == [])
         check("the request named the families the choices enable",
               helper.requests and helper.requests[-1]["request"]["families"] == ["fill", "pending"]
               and helper.requests[-1]["request"]["level"] == "eager", helper.requests[-1:] and helper.requests[-1]["request"])

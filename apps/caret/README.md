@@ -23,9 +23,11 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
   `SurfaceCommand`, so `SurfaceRig` tests every transition without a screen. `FillMachine` does
   the same for grounded fill (`FillRig`; `SharedToastSlotTests` runs both machines on one
   arbiter, as they share its one toast slot). `CaretSettings` holds what Caret helps with, how
-  forward it is, the character and pause, and `GatePolicy` the rules they make. `OnboardingFlow`
-  is onboarding's five screens as a state machine, and `FirstLook` the `firstLook` request and
-  reply (contract fixture: `Tests/CaretHostCoreTests/Fixtures/first-look.ndjson`).
+  often it speaks up, the character and pause, and `GatePolicy` the rules they make. `OnboardingFlow`
+  is onboarding's five screens as a state machine, `FirstLook` the `firstLook` request and
+  reply (contract fixture: `Tests/CaretHostCoreTests/Fixtures/first-look.ndjson`), and
+  `FirstLookRun` the found offer taken from onboarding. `WorkLines` are the working, result and
+  undo lines both draw.
 - `Sources/CaretHost`: everything that touches the system.
   - `Input/TapThread`: the only key tap, on its own thread.
   - `Accessibility/FocusObserver`: AX notifications in, KeyType snapshots out.
@@ -102,13 +104,18 @@ CARET_ALLOW_BUNDLES=com.apple.TextEdit .build/Caret.app/Contents/MacOS/Caret
 
 The helper sends `alternatives`, `action` and `popup` for one field each (`HelperOffer`, types
 from `CaretScreenCore`). The host shows an offer only when its app is frontmost and the focused
-element's frame matches the field's to within a point; otherwise it holds the offer and retries
-for 30 s. `offerWithdrawn` takes a shown or held offer away. Alternatives are inserted by the host
-as ghost text is. Tab, the arrows and ⌘1 to ⌘3 on an action line or pop-up send `offerAccept`,
+element's frame matches the field's to within a point, in the same window: by the reader's window
+number when both sides have one, else by title (`OfferField.window`, `FieldMatch`). Otherwise it
+holds the offer and retries for 30 s. `offerWithdrawn` takes a shown or held offer away; the
+helper ends every offer it makes (`expired` for timed ones), so the host sets no age limit of its
+own and drops the helper's offers when the connection goes. Alternatives sent again under the
+shown key redraw in place, and a loopFinish or routine withdrawn as `reoffered` is swapped in
+place for its replacement. Alternatives are inserted by the host as ghost text is. Tab, the arrows and ⌘1 to ⌘3 on an action line or pop-up send `offerAccept`,
 and the work runs as the helper task whose id is the offer's key: its `taskProgress` ends the
 working line (done, stopped, handoff, paused). Esc on the working line after 3 s sends
 `offerStop`. A pop-up with a fields block is a fill: when its run is done the line becomes
-"Filled N fields from <source>" with ⌘Z, which sends `taskControl undo` for the task.
+"Filled N fields from <app>" with ⌘Z, counting `taskProgress.written` and naming the pop-up's
+`sourceApps`; ⌘Z sends `taskControl undo`, and the answer reads `restored` and `notRestored`.
 
 ## Debug socket
 
@@ -126,8 +133,9 @@ command per connection with JSON: `state` (default), `latency-reset`, `ping`, an
 - `settings` reads the settings file, the choices and the gate they make; `settings set role
   fill|repeat|watch|words on|off`, `level quiet|balanced|eager`, `character pebble|seed|wren` and
   `paused on|off` change one as the menu bar does.
+- `activity open|close|more` opens or closes the activity list, or shows the next five Done rows.
 - `onboarding` reads the onboarding flow. With `--test-hooks`, `onboarding open|close|next|back`,
-  `role <r> on|off`, `level <l>`, `key tab|delete|return|esc|other|char:<c>`, `permissions on|off
+  `role <r> on|off`, `level <l>`, `key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>`, `permissions on|off
   on|off` (stands in for the Accessibility and Input Monitoring grants), `reply <firstLookReply>`
   and `look-again` drive it as the window would. The socket never opens the window.
 `scripts/host-state.py` wraps it and can wait for an offer or an insertion. The state carries
@@ -157,15 +165,22 @@ latency. Field text never appears; only digests and lengths, plus the model's ow
   `--surfaces headless` host, with B7's simulated reader replaying the recorded sessions. Opens
   no window and posts no event.
 - `scripts/surface_acceptance.py alternatives|fill <dir> [light|dark]`: alternatives, pop-ups and
-  the fill line on caret-fixture through `inject` and `key`, with composed screenshots. It needs
-  the Mac idle (`CARET_SURFACE_IDLE_MIN`, default 120 s), because caret-fixture takes the
-  foreground when it launches, and stops on any input that is not the host's own.
+  the fill line on caret-fixture through `inject` and `key`, with composed screenshots. The host
+  draws only in the frontmost app, so the run asks the fixture for the foreground and keeps every
+  gate in `fixture_app.py` (`CARET_SURFACE_IDLE_MIN`, default 300 s), and stops on any input that
+  is not the host's own.
 - `CARET_RECORD_SNAPSHOTS=1 swift test --filter SnapshotTests` rewrites the reference images in
   `Tests/CaretHostTests/References`; `CARET_SNAPSHOT_OUT=<dir>` also writes every render there.
 - `--appearance light|dark` (`CARET_APPEARANCE`) pins the overlays' theme for screenshots.
 - `scripts/onboarding_socket_walk.py <Caret binary> <dir>`: onboarding walked over the debug
-  socket with `--onboarding hidden` and a fake helper that answers `firstLook`, every setting
-  read back, and a relaunch reading the settings file. Opens no window and posts no event.
+  socket with `--onboarding hidden` and a fake helper that answers `firstLook` and runs the found
+  offer when Tab takes it, every setting read back, and a relaunch reading the settings file.
+  Opens no window and posts no event.
+- `scripts/fixture_app.py`: CaretFixture.app for the on-screen scripts, exec'd with `--foreground`
+  (`CARET_FIXTURE_BIN_DIR` names the build), and the gates a foreground run keeps: the gui lease,
+  gui.lock, 300 s idle and no quiet window. A foreground run starts with the fixture's own
+  `activate legacy` and ends with `quit <previous pid>`. `python3 scripts/fixture_app.py` prints
+  what a run would decide now, without starting one.
 
 ## Which apps take a pid-posted paste
 

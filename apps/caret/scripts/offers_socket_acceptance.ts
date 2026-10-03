@@ -286,8 +286,9 @@ try {
           && JSON.stringify(phases) === JSON.stringify(["started", "acting", "verified", "acting", "verified", "acting", "verified", "done"])
           && JSON.stringify(values) === JSON.stringify(["Dana Whitfield", "dana.whitfield@example.com", "+1 (512) 555-0142"]),
         { consumed, accept: accepted.m, phases, values });
-      check(`run ${run} fill: the toast names the count and the source, with undo`,
-        toast.sf.toast?.caption === "Filled 3 fields from Mail Fixture, Order confirmation" && typeof toast.sf.toast?.grantID === "number" && toast.sf.lineText === toast.sf.toast?.caption,
+      // B8: the toast names the popup's sourceApps, not the source block's "App, Title".
+      check(`run ${run} fill: the toast names the count and the source app, with undo`,
+        toast.sf.toast?.caption === "Filled 3 fields from Mail Fixture" && typeof toast.sf.toast?.grantID === "number" && toast.sf.lineText === toast.sf.toast?.caption,
         { toast: toast.sf.toast, lineText: toast.sf.lineText, figure: toast.sf.figure });
       const undoConsumed = await key("cmd-z", 5150);
       const control = await until("taskControl undo at the helper", async () => s.fromHost.find((x) => x.m.type === "taskControl") ?? null, 5000);

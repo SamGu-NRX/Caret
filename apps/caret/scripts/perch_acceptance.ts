@@ -19,8 +19,8 @@
 //
 //   /usr/bin/lockf -k ~/.long-run/locks/gui.lock env CARET_GUI_LOCK=held CARET_ENV_FILE=/path/to/.env \
 //     node apps/caret/scripts/perch_acceptance.ts --out DIR [--runs 3] [--perch shown|hidden]
-import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createConnection, type Socket } from "node:net";
@@ -134,7 +134,12 @@ function stopAll(why: string): void {
 }
 process.on("exit", () => stopAll("exit"));
 
-const fixture = spawn(join(SCREEN_BIN, "caret-fixture"), ["--windows", "jobs,executor", "--duration", "1500", "--background-only"]);
+// CaretFixture.app, exec'd directly with --foreground so its windows can be key (fixture_app.py says
+// why). It still hands back any activation it gets; this run never asks for the foreground.
+const FIXTURE_BIN = process.env.CARET_FIXTURE_BIN_DIR ?? SCREEN_BIN;
+const FIXTURE_EXE = join(FIXTURE_BIN, "CaretFixture.app", "Contents", "MacOS", "caret-fixture");
+if (!existsSync(FIXTURE_EXE)) execFileSync(resolve(ROOT, "apps", "screen-reader", "scripts", "bundle-fixture.sh"), [FIXTURE_BIN]);
+const fixture = spawn(FIXTURE_EXE, ["--foreground", "--windows", "jobs,executor", "--duration", "1500"]);
 started.push(fixture);
 let fixturePid = 0;
 const replies: ((o: Record<string, unknown>) => void)[] = [];
@@ -277,7 +282,7 @@ const step = (i: number): Step => {
   const f = FIELDS[i]!;
   return {
     says: `The ${f.label} field holds '${VALUES[i]}'`,
-    end: { kind: "valueEquals", window: { titleStartsWith: EXECUTOR }, target: { key: `unbundled.caret-fixture/standard/${f.key}`, label: f.label, role: f.role, describe: `the ${f.label} field` }, value: VALUES[i]! },
+    end: { kind: "valueEquals", window: { titleStartsWith: EXECUTOR }, target: { key: `dev.caret.fixture/standard/${f.key}`, label: f.label, role: f.role, describe: `the ${f.label} field` }, value: VALUES[i]! },
   };
 };
 const PLAN: Plan = { id: "six-fields", title: "Fill the six fields", slots: {}, steps: FIELDS.map((_, i) => step(i)) };

@@ -35,6 +35,8 @@ final class FirstLookTests: XCTestCase {
         XCTAssertEqual(replies.map(\.outcome), [.found, .found, .nothing, .error])
         XCTAssertEqual(replies[0].found?.kind, .fill)
         XCTAssertEqual(replies[0].found?.title, "Fill 4 fields")
+        XCTAssertEqual(replies[0].found?.sourceApps, ["Mail"], "a fill names its source apps, as OfferPopup does")
+        XCTAssertNil(replies[1].found?.sourceApps, "optional: a report has none")
         XCTAssertEqual(replies[1].found?.kind, .report)
         XCTAssertEqual(replies[1].found?.window.appName, "Terminal")
         XCTAssertEqual(replies[3].error, "reader not connected")
