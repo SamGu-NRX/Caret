@@ -4,7 +4,7 @@ import CaretHostCore
 
 /// A minimal menu-bar shell: the figure as the status item (Carrot while work runs), the engine
 /// state, pause, the activity list, the perch toggle, the settings (what Caret helps with, how
-/// forward it is, the character), and Quit.
+/// often it speaks up, the character), and Quit.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let runtime: HostRuntime
@@ -180,7 +180,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             levelMenu.addItem(item)
             levelItems.append(item)
         }
-        let levelItem = NSMenuItem(title: "How Forward", action: nil, keyEquivalent: "")
+        // Title case, as every item in this menu.
+        let levelItem = NSMenuItem(title: CaretLevel.question.capitalized, action: nil, keyEquivalent: "")
         levelItem.submenu = levelMenu
         menu.addItem(levelItem)
         let characterItem = NSMenuItem(title: "Character", action: nil, keyEquivalent: "")

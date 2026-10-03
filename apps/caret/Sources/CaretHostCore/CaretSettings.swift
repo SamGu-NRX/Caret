@@ -40,23 +40,27 @@ public enum CaretRole: String, Codable, CaseIterable, Sendable {
         switch self {
         case .fill: return "A value you'd copy from one window into another."
         case .repeats: return "After you do the same steps twice, Caret offers the rest."
-        case .watch: return "Tells you when a job or an agent finishes, or needs you."
+        case .watch: return "Tells you when an agent or a job finishes or needs you."
         case .words: return "The next few words, faint, for Tab to take."
         }
     }
 }
 
-/// How forward Caret is. Sets the gate's starting rules per offer kind (`GatePolicy`).
+/// How often Caret speaks up. Sets the gate's starting rules per offer kind (`GatePolicy`).
 public enum CaretLevel: String, Codable, CaseIterable, Sendable {
     case quiet, balanced, eager
 
+    /// What onboarding and the menu call this choice. "How forward" read as unclear (Sam, A8 brief).
+    public static let question = "How often Caret speaks up"
+
     public var title: String { rawValue.capitalized }
 
+    /// Each level in words, without numbers: the per-hour budgets in `GatePolicy` are assumed.
     public var detail: String {
         switch self {
-        case .quiet: return "Next words, and now and then something it can point to on screen."
-        case .balanced: return "Offers it can point to on screen, from today. Routines once it has seen them."
-        case .eager: return "More often and sooner, and other ways to say a sentence."
+        case .quiet: return "Rarely, and only with something on screen to point to."
+        case .balanced: return "A few times an hour. Routines wait until Caret has seen them."
+        case .eager: return "Whenever it can help, with other ways to say a sentence too."
         }
     }
 }
@@ -67,7 +71,10 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     public static let version = 1
 
     public var version = CaretSettings.version
-    public var roles: Set<CaretRole> = Set(CaretRole.allCases)
+    /// Every role starts on. Watch in particular: on a real day, Sam went back to unfinished agent
+    /// windows 14 times in half an active hour, the most of any role (lead's real-day data, A8
+    /// brief; the data itself is not in this repository).
+    public var roles: Set<CaretRole> = [.fill, .repeats, .watch, .words]
     public var level: CaretLevel = .balanced
     /// The pebble is the default (Sam, 2026-10-02); seed and wren stay as choices in settings.
     public var character: FigureCharacter = .pebble
@@ -158,7 +165,7 @@ public struct MemoryEntry: Codable, Equatable, Sendable {
         }
         entries.append(MemoryEntry(
             kind: .preference, key: "level", value: settings.level.rawValue,
-            says: "How forward: \(settings.level.title)", source: source, at: ms
+            says: "\(CaretLevel.question): \(settings.level.title)", source: source, at: ms
         ))
         return entries
     }

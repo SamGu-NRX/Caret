@@ -233,7 +233,7 @@ struct WorkScreen: View {
                 }
             }
             .padding(.top, 6)
-            SectionLabel(text: "How forward").padding(.top, 16)
+            SectionLabel(text: CaretLevel.question).padding(.top, 16)
             LevelPicker(level: state.level) { send(.setLevel($0)) }.padding(.top, 8)
             Text(state.roles.isEmpty ? "Choose at least one kind of help to continue." : state.level.detail)
                 .font(.system(size: 12))
@@ -383,7 +383,7 @@ struct PermissionsScreen: View {
                         Rectangle().fill(Color(token: Tokens.border)).frame(height: 1).padding(.leading, 40)
                         PermissionRow(
                             title: "Input Monitoring", optional: true,
-                            detail: "So a click anywhere pauses work Caret is doing for you.",
+                            detail: "Lets a click anywhere pause work Caret is doing for you.",
                             granted: state.permissions.inputMonitoring, animated: animated
                         ) { send(.openSystemSettings(.inputMonitoring)) }
                     }

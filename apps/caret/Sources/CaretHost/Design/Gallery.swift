@@ -168,7 +168,8 @@ extension Gallery {
         let nothing = FirstLookReply(requestId: "first-look-1-1", at: 0, outcome: .nothing)
         let screens: [(String, OnboardingFlow.State)] = [
             ("welcome", flow([])),
-            ("work", flow([.next, .setRole(.watch, false)])),
+            // The screen as it opens: every role on, watch included, and Balanced.
+            ("work", flow([.next])),
             ("permissions-waiting", flow(ax: false, input: false, [.next, .next])),
             ("permissions-on", flow(ax: false, input: false, [.next, .next, .permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true))])),
             ("try-it", flow(toTryIt)),

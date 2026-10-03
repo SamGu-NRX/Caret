@@ -92,7 +92,7 @@ final class CaretSettingsTests: XCTestCase {
         s.recordPreferences(source: .onboarding, at: 100)
         XCTAssertEqual(s.memory.map(\.key), ["role.fill", "role.repeat", "role.watch", "role.words", "level"])
         XCTAssertEqual(s.memory.first { $0.key == "role.watch" }?.says, "No help with: Watch agent threads")
-        XCTAssertEqual(s.memory.first { $0.key == "level" }?.says, "How forward: Balanced")
+        XCTAssertEqual(s.memory.first { $0.key == "level" }?.says, "How often Caret speaks up: Balanced")
         s.level = .quiet
         s.recordPreferences(source: .menu, at: 200)
         XCTAssertEqual(s.memory.first { $0.key == "role.fill" }?.at, 100, "unchanged keeps when it was chosen")
@@ -116,6 +116,14 @@ final class CaretSettingsTests: XCTestCase {
         s.paused = false
         s.roles.remove(.words)
         XCTAssertFalse(HostGate.allowsGhostText(s))
+    }
+
+    func testEveryRoleStartsOnWatchIncluded() {
+        // Watch is the most used role on a real day (A8 brief), so a new setup has it on.
+        XCTAssertEqual(CaretSettings().roles, [.fill, .repeats, .watch, .words])
+        XCTAssertTrue(CaretSettings().gate.allows(family: "pending"))
+        let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: true, inputMonitoring: true), clock: ManualClock())
+        XCTAssertTrue(flow.state.roles.contains(.watch), "the work screen opens with Watch agent threads checked")
     }
 
     func testRoleCopyHasNoDashesOrShouting() {

@@ -138,7 +138,7 @@ struct ActivityListView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if rows.isEmpty {
-                Text("Work Caret starts or watches shows up here.")
+                Text("What Caret does or watches for you shows up here.")
                     .font(Tokens.Font.body)
                     .foregroundStyle(Color(token: Tokens.secondary))
                     .padding(.leading, PopupView.figureSlot + 8)
