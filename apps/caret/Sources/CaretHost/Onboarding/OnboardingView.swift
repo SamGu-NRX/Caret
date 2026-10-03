@@ -669,9 +669,8 @@ struct FirstLookScreen: View {
                 ScreenTitle(title: "Looking at your open windows…", detail: "Caret runs what you turned on, once, over the windows already open.")
             case .found(let found):
                 ScreenTitle(title: "Caret found something.", detail: "In \(found.window.appName), \(found.window.title).")
-                PopupView(spec: Self.withoutActions(found.spec), character: character, animated: animated)
+                FoundOffer(found: found, run: state.firstLookRun, character: character, animated: animated)
                     .padding(.top, 16)
-                    .accessibilityElement(children: .combine)
             case .nothing:
                 figure(.noticed)
                 ScreenTitle(title: "Nothing yet.", detail: "Caret will show up where you type when it has something.")
@@ -697,8 +696,61 @@ struct FirstLookScreen: View {
             .padding(.bottom, 14)
     }
 
-    /// What the first look shows is a preview: its keys would do nothing here, so its action bar
-    /// is not drawn. Taking it from onboarding is a later batch (`offerKey` is in the reply).
+}
+
+/// The first look's offer, ready to take: the card with the keys that take it from here (an
+/// action on the down arrow or one that changes the card needs the real surface and is left
+/// off). Once
+/// taken, the action bar gives way to the work line under the card, the same line the real
+/// surfaces draw (`WorkLines`): working, then its result. The line enters at 160 ms ease-out with a
+/// 2 pt rise (state indication); under Reduce Motion it fades only. Its words change in place.
+struct FoundOffer: View {
+    var found: FirstLookReply.Found
+    var run: FirstLookRun?
+    var character: FigureCharacter
+    var animated: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let line = run?.line(character: character)
+        VStack(alignment: .leading, spacing: 10) {
+            // Esc is Back in this window, so the card shows only the keys that take it. Once taken,
+            // the figure leaves the card for the line: one figure, where the work is.
+            PopupView(
+                spec: run == nil ? Self.takeable(found.spec) : Self.withoutActions(found.spec), character: character,
+                figure: run == nil ? nil : .absent, animated: animated, showsEsc: false
+            )
+                .accessibilityElement(children: .combine)
+            if let line {
+                LineView(content: line.content, character: character, animated: animated)
+                    .transition(animated && !reduceMotion ? .opacity.combined(with: .offset(y: 2)) : .opacity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(line.text)
+            }
+        }
+        .animation(animated ? Motion.curve(Motion.easeOut, 0.16) : nil, value: line == nil)
+        .onChange(of: line?.text) { _, text in
+            // The line reports work the user cannot see: VoiceOver hears each change once.
+            guard animated, let text else { return }
+            AccessibilityNotification.Announcement(text).post()
+        }
+    }
+
+    /// The card with only the actions Tab and Command-digits take here.
+    static func takeable(_ spec: PopupSpec) -> PopupSpec {
+        var copy = spec
+        copy.blocks = copy.blocks.compactMap { block in
+            guard case .actions(var actions) = block.content else { return block }
+            actions.items.removeAll { !$0.takenDirectly }
+            guard !actions.items.isEmpty else { return nil }
+            var kept = block
+            kept.content = .actions(actions)
+            return kept
+        }
+        return copy
+    }
+
+    /// The card once taken: its keys did their work, so its action bar goes.
     static func withoutActions(_ spec: PopupSpec) -> PopupSpec {
         var copy = spec
         copy.blocks.removeAll { if case .actions = $0.content { return true } else { return false } }

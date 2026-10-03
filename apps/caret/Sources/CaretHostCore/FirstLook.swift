@@ -104,6 +104,9 @@ public struct FirstLookReply: Codable, Equatable, Sendable {
         /// Where it was found: the window, as the reader names it, and its app and title.
         public var window: WindowRef
         public var spec: PopupSpec
+        /// A fill's source apps, each once, in field order, as `OfferPopup.sourceApps`: the done
+        /// line names them ("Filled 4 fields from Mail"). Optional, absent for other kinds.
+        public var sourceApps: [String]?
 
         public struct WindowRef: Codable, Equatable, Sendable {
             public var pid: Int
@@ -119,16 +122,49 @@ public struct FirstLookReply: Codable, Equatable, Sendable {
             }
         }
 
-        public init(kind: Kind, family: String, offerKey: String, window: WindowRef, spec: PopupSpec) {
+        public init(kind: Kind, family: String, offerKey: String, window: WindowRef, spec: PopupSpec, sourceApps: [String]? = nil) {
             self.kind = kind
             self.family = family
             self.offerKey = offerKey
             self.window = window
             self.spec = spec
+            self.sourceApps = sourceApps
+        }
+
+        enum CodingKeys: String, CodingKey { case kind, family, offerKey, window, spec, sourceApps }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = try c.decode(Kind.self, forKey: .kind)
+            family = try c.decode(String.self, forKey: .family)
+            offerKey = try c.decode(String.self, forKey: .offerKey)
+            window = try c.decode(WindowRef.self, forKey: .window)
+            spec = try c.decode(PopupSpec.self, forKey: .spec)
+            sourceApps = try c.decodeIfPresent([String].self, forKey: .sourceApps)
+            if let apps = sourceApps, apps.isEmpty || apps.contains(where: \.isEmpty) || Set(apps).count != apps.count {
+                throw ProtocolError("found.sourceApps holds one or more distinct, non-empty app names")
+            }
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(kind, forKey: .kind)
+            try c.encode(family, forKey: .family)
+            try c.encode(offerKey, forKey: .offerKey)
+            try c.encode(window, forKey: .window)
+            try c.encode(spec, forKey: .spec)
+            try c.encodeIfPresent(sourceApps, forKey: .sourceApps)
         }
 
         /// The title the first look shows: the spec's header, which a found offer must have.
         public var title: String { spec.header?.title.text ?? "" }
+
+        /// The actions onboarding can take: those on Tab or a Command-digit that do not change the
+        /// pop-up first (`takenDirectly`).
+        public var takeable: [PopupSpec.Action] { spec.actions.filter(\.takenDirectly) }
+
+        /// A fill: its done line counts fields and offers ⌘Z.
+        public var fillRows: Int? { spec.fillRows }
     }
 
     /// What the look covered, for the debug state and the report.
@@ -207,6 +243,12 @@ public struct FirstLookReply: Codable, Equatable, Sendable {
     public static func decode(_ line: Data) throws -> FirstLookReply {
         try JSONDecoder().decode(FirstLookReply.self, from: line)
     }
+}
+
+extension PopupSpec.Action {
+    /// Taken by Tab or a Command-digit as it stands. An action on the down arrow, or one that
+    /// changes the pop-up (`reveal`), needs the full surface to show what it opens.
+    public var takenDirectly: Bool { reveal == nil && (key == .tab || key.digit != nil) }
 }
 
 enum FirstLookWire {

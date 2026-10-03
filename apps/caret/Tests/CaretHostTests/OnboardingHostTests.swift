@@ -70,6 +70,23 @@ final class OnboardingHostTests: XCTestCase {
         XCTAssertEqual(map(key(123, "\u{F702}"), .tryIt), .key(.other), "an arrow is not typing")
     }
 
+    func testTheFirstLooksKeysGoToItsOfferOnlyWhileItTakesThem() {
+        func map(_ e: NSEvent, _ keys: FirstLookKeys) -> OnboardingFlow.Event? {
+            OnboardingController.event(for: e, step: .firstLook, offerVisible: false, firstLook: keys)
+        }
+        let offered = FirstLookKeys(tab: true, digits: [2])
+        XCTAssertEqual(map(key(48, "\t"), offered), .key(.tab))
+        XCTAssertNil(map(key(48, "\t"), .none), "nothing to take: Tab moves focus between the buttons")
+        XCTAssertNil(map(key(48, "\t", mods: .shift), offered), "Shift-Tab moves focus back")
+        XCTAssertEqual(map(key(19, "2", mods: .command), offered), .key(.commandDigit(2)))
+        XCTAssertNil(map(key(20, "3", mods: .command), offered), "nothing on ⌘3")
+        XCTAssertEqual(map(key(6, "z", mods: .command), FirstLookKeys(undo: true)), .key(.undo))
+        XCTAssertNil(map(key(6, "z", mods: .command), offered), "⌘Z only on a fill's result")
+        XCTAssertEqual(map(key(53, "\u{1b}"), FirstLookKeys(stop: true)), .key(.escape))
+        XCTAssertEqual(map(key(53, "\u{1b}"), offered), .back, "Esc is Back unless there is work to stop")
+        XCTAssertEqual(map(key(36, "\r"), offered), .next)
+    }
+
     func testClosingAnUnfinishedFlowLetsTheNextOpenStartAgain() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("caret-onboarding-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -72,13 +72,20 @@ final class HelperClient: @unchecked Sendable {
     }
 
     /// `offerAccept` for an action line or pop-up the helper offered. Counted with the results.
-    func send(_ accept: OfferAccept) {
-        if sendLine(try? NDJSON.line(accept)) { stats.withLock { $0.accepts &+= 1 } }
+    /// True when written.
+    @discardableResult
+    func send(_ accept: OfferAccept) -> Bool {
+        let sent = sendLine(try? NDJSON.line(accept))
+        if sent { stats.withLock { $0.accepts &+= 1 } }
+        return sent
     }
 
-    /// `offerStop`: Esc on the working line of an offer the helper offered.
-    func send(_ stop: OfferStop) {
-        if sendLine(try? NDJSON.line(stop)) { stats.withLock { $0.stops &+= 1 } }
+    /// `offerStop`: Esc on the working line of an offer the helper offered. True when written.
+    @discardableResult
+    func send(_ stop: OfferStop) -> Bool {
+        let sent = sendLine(try? NDJSON.line(stop))
+        if sent { stats.withLock { $0.stops &+= 1 } }
+        return sent
     }
 
     /// `taskControl` from the activity list or the input pause. True when written; a control for

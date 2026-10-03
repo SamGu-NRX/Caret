@@ -351,6 +351,11 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var firstLookKind: String?
         public var firstLookTitle: String?
         public var firstLookError: String?
+        /// The keys the found offer or its line take now: `tab`, `cmd-1`, `cmd-z`, `esc`.
+        public var firstLookKeys: [String]?
+        /// The taken offer's phase (`FirstLookRun.Phase.name`) and its line, as the pebble says it.
+        public var firstLookRun: String?
+        public var firstLookLine: String?
         /// The window is on screen. False on a run with `--onboarding hidden`.
         public var windowShown: Bool?
         /// What a flow without a window did not do (`openSystemSettings.accessibility`).

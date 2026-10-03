@@ -43,20 +43,16 @@ extension SurfaceMachine {
 
     func renderWorking() {
         guard let work else { return }
-        let seconds = Int(clock.now.timeIntervalSince(work.startedAt))
-        let stoppable = Double(seconds) >= StatusLine.stoppableAfter
-        var caption = work.fill.map { Captions.filling($0.rows) } ?? Captions.working(world.character, app: work.app)
-        if stoppable { caption += ", \(seconds) s" }
-        let content = LineContent(
-            figure: work.figureLeft ? .absent : .working, app: work.app, text: caption, emphasis: .plain,
-            hints: stoppable ? [Hint(key: "Esc", label: "Stop")] : [], appGlyphOnly: true
+        let line = WorkLines.working(
+            app: work.app, fillRows: work.fill?.rows, character: world.character,
+            seconds: Int(clock.now.timeIntervalSince(work.startedAt)), figureLeft: work.figureLeft
         )
         // A key dismissed the line, or its app went behind: the work goes on unseen.
         guard arbiter.snapshot().statusLine?.id == work.statusID, !lineSuppressed else { return }
-        lineText = caption
+        lineText = line.text
         figure = .working
         if !headless {
-            showPanel(.line(content), text: caption, placement: .inPlace)
+            showPanel(.line(line.content), text: line.text, placement: .inPlace)
         }
         publish()
     }
@@ -99,17 +95,14 @@ extension SurfaceMachine {
             // `written` counts each field once; an older helper sends none, and the verified steps stand in.
             let filled = work.written ?? work.verified
             if let fill = work.fill, filled > 0 { return showFillToast(work, fill, filled: filled) }
-            let done = Captions.done(world.character, app: work.app)
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
-            showResult(LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain), text: "\(done.lead) \(done.rest)", lifetime: 5)
+            showResult(WorkLines.done(app: work.app, character: world.character), lifetime: 5)
         case .stopped:
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .error, offerKey: work.offerKey))
-            let caption = work.fill.map { _ in Captions.fillStopped(filled: work.verified) } ?? Captions.error(world.character, app: work.app)
-            showResult(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption, lifetime: 6)
+            showResult(WorkLines.stopped(app: work.app, character: world.character, fillFilled: work.fill.map { _ in work.verified }), lifetime: 6)
         case .handoff:
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
-            let caption = Captions.handoff(app: work.app)
-            showResult(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption, lifetime: 6)
+            showResult(WorkLines.handoff(app: work.app), lifetime: 6)
         case .paused:
             // The input pause stopped the run; the perch and the activity list carry it from here.
             takeLineDown(exit: 0.08)
@@ -124,13 +117,10 @@ extension SurfaceMachine {
         let id = arbiter.showToast(grant)
         toastGrantID = id
         emit(.toastSlotTaken)
-        let rest = Captions.fields(filled) + (fill.source.map { " from \($0)" } ?? "")
-        toastInfo = DebugState.Toast(kind: "done", caption: "Filled \(rest)", grantID: id)
+        let line = WorkLines.filled(filled, from: fill.source)
+        toastInfo = DebugState.Toast(kind: "done", caption: line.text, grantID: id)
         count("surface.toast.fill")
-        showResult(
-            LineContent(figure: .done, lead: "Filled", text: rest, emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")]),
-            text: "Filled \(rest)", lifetime: grant.lifetimeSeconds
-        )
+        showResult(line, lifetime: grant.lifetimeSeconds)
     }
 
     /// ⌘Z took the fill toast. The undo is tracked before it is requested, so the helper's answer
@@ -148,12 +138,11 @@ extension SurfaceMachine {
         }
         guard sent else {
             undoing = nil
-            let caption = Captions.undoUnsent
-            toastInfo = DebugState.Toast(kind: "error", caption: caption, grantID: nil)
-            return showResult(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption, lifetime: 6)
+            toastInfo = DebugState.Toast(kind: "error", caption: WorkLines.undoUnsent.text, grantID: nil)
+            return showResult(WorkLines.undoUnsent, lifetime: 6)
         }
-        toastInfo = DebugState.Toast(kind: "undoing", caption: "Undoing", grantID: nil)
-        showResult(LineContent(figure: .working, text: "Undoing", emphasis: .plain), text: "Undoing", lifetime: 10)
+        toastInfo = DebugState.Toast(kind: "undoing", caption: WorkLines.undoing.text, grantID: nil)
+        showResult(WorkLines.undoing, lifetime: 10)
     }
 
     /// The fill line's toast took the arbiter's toast slot: this machine's toast, if any, is gone.
@@ -169,20 +158,11 @@ extension SurfaceMachine {
     func finishUndo(_ progress: TaskProgress) {
         undoing = nil
         guard shown == nil, work == nil else { return publish() }
-        let undone = OfferLifecycle.undoCount(progress)
-        let caption: String
-        let figure: FigureState
-        if let undone, undone.notRestored > 0 {
-            caption = Captions.undoPartial(notRestored: undone.notRestored)
-            figure = .error
-            toastInfo = DebugState.Toast(kind: "error", caption: caption, grantID: nil)
-        } else {
-            caption = undone.map { "Cleared \(Captions.fields($0.restored))" } ?? "Undone"
-            figure = .done
-            toastInfo = DebugState.Toast(kind: "undone", caption: caption, grantID: nil)
-        }
-        count("surface.undo.\(figure == .error ? "partial" : "done")")
-        showResult(LineContent(figure: figure, text: caption, emphasis: .plain), text: caption, lifetime: figure == .error ? 6 : 2)
+        let line = WorkLines.undone(OfferLifecycle.undoCount(progress))
+        let partial = line.content.figure == .error
+        toastInfo = DebugState.Toast(kind: partial ? "error" : "undone", caption: line.text, grantID: nil)
+        count("surface.undo.\(partial ? "partial" : "done")")
+        showResult(line, lifetime: partial ? 6 : 2)
     }
 
     /// Esc on a working line after 3 s: stop, and say so for 2 s. Work the helper runs is stopped
@@ -199,7 +179,7 @@ extension SurfaceMachine {
             return publish()
         }
         resultStatusID = arbiter.showStatus(StatusLine(pid: line.pid, kind: .result, offerKey: line.offerKey))
-        showResult(LineContent(figure: .done, text: Captions.stopped, emphasis: .plain), text: Captions.stopped, lifetime: 2)
+        showResult(WorkLines.stoppedByYou, lifetime: 2)
     }
 
     func endResult() {
@@ -227,7 +207,9 @@ extension SurfaceMachine {
     }
 
     /// The working line becomes the result where it stands, and leaves after `lifetime`.
-    func showResult(_ content: LineContent, text: String, lifetime: TimeInterval) {
+    func showResult(_ line: WorkLine, lifetime: TimeInterval) {
+        let content = line.content
+        let text = line.text
         lineText = text
         figure = content.figure
         if !headless, !lineSuppressed {

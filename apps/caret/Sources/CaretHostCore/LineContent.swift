@@ -138,10 +138,88 @@ public enum Captions {
     /// ⌘Z on the fill toast while the helper is not connected.
     public static let undoUnsent = "Caret's helper isn't running, so nothing was undone."
 
+    /// Tab on an offer while the helper is not connected: nothing ran.
+    public static let acceptUnsent = "Caret's helper isn't running, so nothing was done."
+
     /// An undo that could not restore every field.
     public static func undoPartial(notRestored: Int) -> String {
         notRestored == 1
             ? "1 field changed after the fill, so it was left as it is."
             : "\(notRestored) fields changed after the fill, so they were left as they are."
+    }
+}
+
+/// A line that reports on accepted work, and what the panel says for it (its accessibility text
+/// and the debug state's `lineText`).
+public struct WorkLine: Equatable, Sendable {
+    public var content: LineContent
+    public var text: String
+
+    public init(_ content: LineContent, text: String) {
+        self.content = content
+        self.text = text
+    }
+}
+
+/// The working, result and undo lines after Tab, in one place so every surface that runs work
+/// draws the same ones: the action lines and pop-ups at the caret (`SurfaceMachine`) and the first
+/// look in onboarding (`OnboardingFlow`).
+public enum WorkLines {
+    /// While the run works. The figure looks away and leaves (`figureLeft`); once it has run
+    /// `StatusLine.stoppableAfter`, the seconds and "Esc Stop" join it.
+    public static func working(app: String, fillRows: Int?, character: FigureCharacter, seconds: Int, figureLeft: Bool) -> WorkLine {
+        let stoppable = Double(seconds) >= StatusLine.stoppableAfter
+        var caption = fillRows.map { Captions.filling($0) } ?? Captions.working(character, app: app)
+        if stoppable { caption += ", \(seconds) s" }
+        return WorkLine(LineContent(
+            figure: figureLeft ? .absent : .working, app: app, text: caption, emphasis: .plain,
+            hints: stoppable ? [Hint(key: "Esc", label: "Stop")] : [], appGlyphOnly: true
+        ), text: caption)
+    }
+
+    /// Done, with nothing to undo here.
+    public static func done(app: String, character: FigureCharacter) -> WorkLine {
+        let done = Captions.done(character, app: app)
+        return WorkLine(LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain), text: "\(done.lead) \(done.rest)")
+    }
+
+    /// "Filled 3 fields from Mail  ⌘Z Undo": a fill that wrote something.
+    public static func filled(_ count: Int, from source: String?) -> WorkLine {
+        let rest = Captions.fields(count) + (source.map { " from \($0)" } ?? "")
+        return WorkLine(
+            LineContent(figure: .done, lead: "Filled", text: rest, emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")]),
+            text: "Filled \(rest)"
+        )
+    }
+
+    /// A recheck, mismatch or failure stopped the run. A fill says what it filled first.
+    public static func stopped(app: String, character: FigureCharacter, fillFilled: Int?) -> WorkLine {
+        let caption = fillFilled.map { Captions.fillStopped(filled: $0) } ?? Captions.error(character, app: app)
+        return WorkLine(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption)
+    }
+
+    /// The next step reads as send, submit, delete or pay; the press is left to the user.
+    public static func handoff(app: String) -> WorkLine {
+        let caption = Captions.handoff(app: app)
+        return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
+    }
+
+    /// Esc stopped it.
+    public static let stoppedByYou = WorkLine(LineContent(figure: .done, text: Captions.stopped, emphasis: .plain), text: Captions.stopped)
+
+    public static let undoing = WorkLine(LineContent(figure: .working, text: "Undoing", emphasis: .plain), text: "Undoing")
+
+    public static let undoUnsent = WorkLine(LineContent(figure: .error, text: Captions.undoUnsent, emphasis: .plain), text: Captions.undoUnsent)
+
+    public static let acceptUnsent = WorkLine(LineContent(figure: .error, text: Captions.acceptUnsent, emphasis: .plain), text: Captions.acceptUnsent)
+
+    /// The undo's answer: what it cleared, or that some fields were left because they changed.
+    public static func undone(_ count: OfferLifecycle.UndoCount?) -> WorkLine {
+        if let count, count.notRestored > 0 {
+            let caption = Captions.undoPartial(notRestored: count.notRestored)
+            return WorkLine(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption)
+        }
+        let caption = count.map { "Cleared \(Captions.fields($0.restored))" } ?? "Undone"
+        return WorkLine(LineContent(figure: .done, text: caption, emphasis: .plain), text: caption)
     }
 }

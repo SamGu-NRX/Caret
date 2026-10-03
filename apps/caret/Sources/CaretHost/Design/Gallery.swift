@@ -150,8 +150,17 @@ extension Gallery {
     /// The first look's found offer: the fill preview, from a synthetic Safari form.
     static let firstLookFound = FirstLookReply.Found(
         kind: .fill, family: "fill", offerKey: "first-look-1.0",
-        window: .init(pid: 5151, windowId: "5151-2", appName: "Safari", title: "Payment"), spec: fillPreview
+        window: .init(pid: 5151, windowId: "5151-2", appName: "Safari", title: "Payment"), spec: fillPreview,
+        sourceApps: ["Mail"]
     )
+
+    /// The first look's run, as the helper reports it.
+    static func firstLookProgress(_ phase: TaskProgress.Phase, written: Int? = nil) -> TaskProgress {
+        let counts = written.map { #","written":\#($0)"# } ?? ""
+        let line = #"{"type":"taskProgress","v":1,"at":1790000001000,"taskId":"first-look-1.0","planId":"first-look-1.0","phase":"\#(phase.rawValue)","step":null,"steps":4,"says":null,"detail":null\#(counts)}"#
+        // A fixed literal of the protocol's own shape; it cannot fail to decode.
+        return try! JSONDecoder().decode(TaskProgress.self, from: Data(line.utf8))
+    }
 
     /// Every onboarding screen, and each state of the ones that change, reached by sending the
     /// flow the events the window would.
@@ -177,6 +186,14 @@ extension Gallery {
             ("try-it-filled", flow(toTryIt + [.key(.tab)])),
             ("first-look-asking", flow(toFirstLook)),
             ("first-look-found", flow(toFirstLook + [.firstLookReply(found)])),
+            // Tab taken: the line under the card at four seconds, the figure gone, Esc offered.
+            ("first-look-working", {
+                var state = flow(toFirstLook + [.firstLookReply(found), .key(.tab)])
+                state.firstLookRun?.seconds = 4
+                state.firstLookRun?.figureLeft = true
+                return state
+            }()),
+            ("first-look-done", flow(toFirstLook + [.firstLookReply(found), .key(.tab), .taskProgress(firstLookProgress(.done, written: 4))])),
             ("first-look-nothing", flow(toFirstLook + [.firstLookReply(nothing)])),
             ("first-look-error", flow(toFirstLook + [.firstLookUnsent])),
         ]

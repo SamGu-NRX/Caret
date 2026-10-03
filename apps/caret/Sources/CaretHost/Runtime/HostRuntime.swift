@@ -169,7 +169,9 @@ public final class HostRuntime {
                     case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
                     case .offerWithdrawn(let withdrawn): surface.withdrawn(withdrawn)
                     case .offerReoffered(let reoffered): surface.reoffered(reoffered)
-                    case .taskProgress(let progress): surface.taskProgress(progress)
+                    case .taskProgress(let progress):
+                        surface.taskProgress(progress)
+                        onboarding.receive(progress)
                     case .firstLookReply(let reply): onboarding.receive(reply)
                     default: break
                     }
@@ -186,6 +188,9 @@ public final class HostRuntime {
         fill.client = helper
         let firstLookClient = helper
         onboarding.sendFirstLook = { firstLookClient.send($0) }
+        onboarding.sendAccept = { firstLookClient.send($0) }
+        onboarding.sendStop = { firstLookClient.send($0) }
+        onboarding.sendControl = { firstLookClient.send($0) }
         // A setting that closes the gate takes down what it no longer allows at once, not only
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in

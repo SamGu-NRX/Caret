@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CaretHostCore
+import CaretScreenCore
 import CoreGraphics
 import SwiftUI
 
@@ -45,6 +46,10 @@ final class OnboardingController {
     private var permissionsOverride: OnboardingPermissions?
     /// Sends a request to the helper; false when it is not connected.
     var sendFirstLook: (FirstLookRequest) -> Bool = { _ in false }
+    /// Take, stop and undo the first look's offer; each false when the helper is not connected.
+    var sendAccept: (OfferAccept) -> Bool = { _ in false }
+    var sendStop: (OfferStop) -> Bool = { _ in false }
+    var sendControl: (TaskControl) -> Bool = { _ in false }
     /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
     var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
     /// What the window refused to do because it is hidden, for the debug state.
@@ -112,6 +117,12 @@ final class OnboardingController {
         flow?.send(.firstLookReply(reply))
     }
 
+    /// Progress of every task; the flow keeps the one it took (the first look's offer).
+    func receive(_ progress: TaskProgress) {
+        guard flow?.state.firstLookRun != nil else { return }
+        flow?.send(.taskProgress(progress))
+    }
+
     // MARK: - The flow's commands
 
     private func perform(_ command: OnboardingFlow.Command) {
@@ -128,6 +139,13 @@ final class OnboardingController {
             Self.openSettings(pane)
         case .askFirstLook(let request):
             if !sendFirstLook(request) { flow?.send(.firstLookUnsent) }
+        case .accept(let accept):
+            if !sendAccept(accept) { flow?.send(.sendFailed(.accept)) }
+        case .stop(let stop):
+            // A stop that cannot be written leaves nothing to stop: the helper and its run are gone.
+            _ = sendStop(stop)
+        case .undo(let control):
+            if !sendControl(control) { flow?.send(.sendFailed(.undo)) }
         case .filled: break
         case .close: close()
         }
@@ -207,20 +225,33 @@ final class OnboardingController {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self, let flow = self.flow, event.window === self.window else { return event }
-                guard let mapped = Self.event(for: event, step: flow.state.step, offerVisible: flow.state.tryIt.offerVisible) else { return event }
+                let state = flow.state
+                guard let mapped = Self.event(for: event, step: state.step, offerVisible: state.tryIt.offerVisible, firstLook: state.firstLookKeys) else { return event }
                 flow.send(mapped)
                 return nil
             }
         }
     }
 
-    /// Tab is the staged field's only while its offer shows; otherwise it moves focus as usual.
-    static func event(for event: NSEvent, step: OnboardingStep, offerVisible: Bool) -> OnboardingFlow.Event? {
-        let mods = event.modifierFlags.intersection([.command, .control, .option])
-        guard mods.isEmpty else { return nil }
+    /// Tab is the staged field's only while its offer shows; otherwise it moves focus as usual. On
+    /// the first look, Tab, ⌘1 to ⌘3, ⌘Z and Esc go to the offer and its line only while they
+    /// take them (`FirstLookKeys`); otherwise they keep the window's meaning.
+    static func event(for event: NSEvent, step: OnboardingStep, offerVisible: Bool, firstLook: FirstLookKeys = .none) -> OnboardingFlow.Event? {
+        let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if step == .firstLook, mods == .command {
+            switch event.keyCode {
+            case 6 where firstLook.undo: return .key(.undo)
+            case 18, 19, 20:
+                let digit = Int(event.keyCode) - 17
+                return firstLook.digits.contains(digit) ? .key(.commandDigit(digit)) : nil
+            default: return nil
+            }
+        }
+        guard mods.subtracting(.shift).isEmpty else { return nil }
         switch event.keyCode {
         case 36, 76: return .next
-        case 53: return .back
+        case 53: return step == .firstLook && firstLook.stop ? .key(.escape) : .back
+        case 48 where step == .firstLook: return firstLook.tab && !mods.contains(.shift) ? .key(.tab) : nil
         default: break
         }
         guard step == .tryIt else { return nil }
@@ -249,7 +280,7 @@ final class OnboardingController {
     /// `onboarding` reads the flow. With test hooks, the rest drive it as the window would:
     ///   onboarding open | close | next | back
     ///   onboarding role fill|repeat|watch|words on|off      onboarding level quiet|balanced|eager
-    ///   onboarding key tab|delete|return|esc|other|char:<c>
+    ///   onboarding key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>
     ///   onboarding permissions on|off on|off   (Accessibility, Input Monitoring: the run's own grants)
     ///   onboarding reply <firstLookReply json>              onboarding look-again
     func command(_ words: [String]) -> String {
@@ -287,9 +318,11 @@ final class OnboardingController {
             case "delete": key = .delete
             case "return": key = .returnKey
             case "esc": key = .escape
+            case "cmd-z": key = .undo
+            case "cmd-1", "cmd-2", "cmd-3": key = .commandDigit(Int(String(rest[1].last!))!)
             case "other": key = .other
             case let k where k.hasPrefix("char:") && k.count == 6: key = .character(String(k.suffix(1)))
-            default: return #"{"error":"usage: onboarding key tab|delete|return|esc|other|char:<c>"}"#
+            default: return #"{"error":"usage: onboarding key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>"}"#
             }
             flow.send(.key(key))
         case ("permissions", 3):

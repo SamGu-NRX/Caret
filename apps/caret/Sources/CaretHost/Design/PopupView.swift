@@ -17,6 +17,8 @@ struct PopupView: View {
     /// Overrides the spec's figure while work runs or after it ends.
     var figure: FigureState?
     var animated = true
+    /// The Esc keycap that ends the bar. Off where Esc means something else (onboarding's Back).
+    var showsEsc = true
 
     static let figureHeight: CGFloat = 11
     /// Every character sits in a 14 pt slot, so body rows line up under the title whichever one
@@ -88,7 +90,7 @@ struct PopupView: View {
                 ForEach(actions.items, id: \.id) { action in
                     HintView(hint: Hint(key: Hint.key(action.key), label: action.label))
                 }
-                HintView(hint: Hint(key: "Esc", label: nil))
+                if showsEsc { HintView(hint: Hint(key: "Esc", label: nil)) }
             }
         }
     }
