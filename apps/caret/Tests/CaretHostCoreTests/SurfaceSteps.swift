@@ -8,15 +8,19 @@ import XCTest
 /// pressed, time passes. A transition is a list of steps with checks between them.
 enum Step {
     case screen((FakeScreen) -> Void)
-    /// A helper offer, optionally naming its field's window.
-    case offer(HelperOffer, window: WindowIdentity? = nil)
+    /// A helper offer; its field names its window (`OfferField.window`).
+    case offer(HelperOffer)
     case press(KeyStroke)
     /// The tap decides the key now; main handles the decision at `deliver`.
     case pressLate(KeyStroke)
     case deliver
     case wait(TimeInterval)
-    case progress(String, TaskProgress.Phase, detail: String? = nil)
+    case progress(String, TaskProgress.Phase, detail: String? = nil, written: Int? = nil, restored: Int? = nil, notRestored: Int? = nil)
     case withdraw(String, OfferWithdrawn.Reason)
+    /// `offerWithdrawn reoffered`: the first key replaced by the second.
+    case reoffer(String, by: String)
+    /// The helper's connection dropped (`helperGone`).
+    case linkLost
     /// The focus observer reports a new focused element in the fixture app.
     case focusMoved(Fx.Element)
     /// Another app activated: the shown surface is rechecked at once.
@@ -29,6 +33,8 @@ enum Step {
     case expect(Expect)
     /// Checks the commands issued since the last `did`, in order.
     case did([String])
+    /// Drops the commands issued so far, unchecked.
+    case forgetLog
     /// Checks every message sent to the helper so far, in order.
     case sent([String])
 }
@@ -86,13 +92,16 @@ extension XCTestCase {
             let at = "\(t.name), step \(index + 1)"
             switch step {
             case .screen(let change): change(rig.screen)
-            case .offer(let offer, let window): rig.machine.receive(offer, window: window)
+            case .offer(let offer): rig.machine.receive(offer)
             case .press(let key): rig.press(key)
             case .pressLate(let key): rig.pressLate(key)
             case .deliver: rig.deliver()
             case .wait(let seconds): rig.clock.advance(by: seconds)
-            case .progress(let task, let phase, let detail): rig.machine.taskProgress(Fx.progress(task, phase, detail: detail))
+            case .progress(let task, let phase, let detail, let written, let restored, let notRestored):
+                rig.machine.taskProgress(Fx.progress(task, phase, detail: detail, written: written, restored: restored, notRestored: notRestored))
             case .withdraw(let key, let reason): rig.machine.withdrawn(OfferWithdrawn(at: 1, id: key, reason: reason))
+            case .reoffer(let old, let new): rig.machine.reoffered(OfferReoffered(at: 1, id: old, replacedBy: new))
+            case .linkLost: rig.machine.helperGone()
             case .focusMoved(let element):
                 rig.screen.focused[Fx.app] = Fx.field(element)
                 rig.machine.focusChanged(Fx.identity(element))
@@ -100,6 +109,7 @@ extension XCTestCase {
             case .fillLineToast: rig.fillLineToast()
             case .inserted: rig.inserted()
             case .helperDown: rig.helperConnected = false
+            case .forgetLog: rig.takeLog()
             case .did(let expected):
                 XCTAssertEqual(rig.takeLog(), expected, at, file: t.file, line: t.line)
             case .sent(let expected):

@@ -17,7 +17,7 @@ extension SurfaceMachine {
         case .popup(let popup):
             app = world.appName(pid: pid) ?? "the app"
             let spec = claim.choice.revealed.map { popup.spec.applyingReveal(of: $0) } ?? popup.spec
-            if let rows = spec.fillRows { fill = FillWork(rows: rows, source: spec.sourceText) }
+            if let rows = spec.fillRows { fill = FillWork(rows: rows, source: OfferLifecycle.sourcePhrase(popup.sourceApps)) }
         case .ghost, .fill:
             app = world.appName(pid: pid) ?? "the app"
         }
@@ -68,6 +68,7 @@ extension SurfaceMachine {
             return finishUndo(progress)
         }
         if progress.phase == .verified, work?.offerKey == progress.taskId { work?.verified += 1 }
+        if progress.phase == .done, work?.offerKey == progress.taskId { work?.written = progress.written }
         guard let ending = OfferLifecycle.ending(of: progress, workKey: work?.offerKey) else { return publish() }
         count("surface.progress.\(progress.phase.rawValue)")
         end(with: ending)
@@ -95,7 +96,9 @@ extension SurfaceMachine {
         }
         switch ending {
         case .done:
-            if let fill = work.fill, work.verified > 0 { return showFillToast(work, fill) }
+            // `written` counts each field once; an older helper sends none, and the verified steps stand in.
+            let filled = work.written ?? work.verified
+            if let fill = work.fill, filled > 0 { return showFillToast(work, fill, filled: filled) }
             let done = Captions.done(world.character, app: work.app)
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
             showResult(LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain), text: "\(done.lead) \(done.rest)", lifetime: 5)
@@ -116,12 +119,12 @@ extension SurfaceMachine {
 
     /// "Filled 3 fields from Mail  ⌘Z Undo": ⌘Z belongs to Caret while it shows, and asks the
     /// helper to undo the task (`SURFACES.md` section 6).
-    func showFillToast(_ work: Work, _ fill: FillWork) {
+    func showFillToast(_ work: Work, _ fill: FillWork, filled: Int) {
         let grant = UndoGrant.task(work.offerKey, target: work.target, createdAt: clock.now)
         let id = arbiter.showToast(grant)
         toastGrantID = id
         emit(.toastSlotTaken)
-        let rest = Captions.fields(work.verified) + (fill.source.map { " from \($0)" } ?? "")
+        let rest = Captions.fields(filled) + (fill.source.map { " from \($0)" } ?? "")
         toastInfo = DebugState.Toast(kind: "done", caption: "Filled \(rest)", grantID: id)
         count("surface.toast.fill")
         showResult(
@@ -166,7 +169,7 @@ extension SurfaceMachine {
     func finishUndo(_ progress: TaskProgress) {
         undoing = nil
         guard shown == nil, work == nil else { return publish() }
-        let undone = OfferLifecycle.undoCount(progress.detail)
+        let undone = OfferLifecycle.undoCount(progress)
         let caption: String
         let figure: FigureState
         if let undone, undone.notRestored > 0 {

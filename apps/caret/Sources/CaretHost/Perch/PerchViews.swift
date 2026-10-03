@@ -121,12 +121,17 @@ struct ActivityListView: View {
     static let width: CGFloat = 320
 
     var rows: [ActivityRow]
+    /// Done rows from today behind "and N more" (`ActivityList.page`).
+    var more = 0
+    /// The helper's last list was cut at its size cap, so older tasks may be missing.
+    var incomplete = false
     var mood: Perch.Mood?
     var character: FigureCharacter
     /// Rows whose control is in flight: their buttons are disabled until the next record arrives.
     var busy: Set<String> = []
     var animated = true
     var now = Date()
+    var onMore: () -> Void = {}
     var onAction: (String, RowAction) -> Void = { _, _ in }
 
     var body: some View {
@@ -156,6 +161,21 @@ struct ActivityListView: View {
                         }
                     }
                 }
+            }
+            if more > 0 {
+                // Under Done, aligned with the rows' text: the next five, in place.
+                Button("and \(more) more", action: onMore)
+                    .buttonStyle(MoreButtonStyle())
+                    .padding(.leading, 10)
+                    .padding(.top, 4)
+                    .accessibilityLabel("Show \(min(more, ActivityList.maxDone)) more done today")
+            }
+            if incomplete {
+                Text("Some older tasks didn't load.")
+                    .font(Tokens.Font.hint)
+                    .foregroundStyle(Color(token: Tokens.secondary))
+                    .padding(.leading, 10)
+                    .padding(.top, 6)
             }
         }
         .padding(.horizontal, 12)
@@ -252,6 +272,20 @@ struct ActivityRowView: View {
             parts.append(f.string(from: Date(timeIntervalSince1970: Double(row.updatedAt) / 1000)))
         }
         return parts.isEmpty ? " " : parts.joined(separator: " · ")
+    }
+}
+
+/// "and 3 more": a quiet text button in Secondary that turns Ink while pressed. It reads as the
+/// end of the list, not as an action competing with the rows' buttons.
+struct MoreButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Tokens.Font.hint)
+            .foregroundStyle(Color(token: configuration.isPressed ? Tokens.ink : Tokens.secondary))
+            .underline(configuration.isPressed)
+            .frame(minHeight: 20)
+            .contentShape(Rectangle())
+            .fixedSize()
     }
 }
 

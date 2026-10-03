@@ -71,6 +71,8 @@ final class PerchController {
     private var relocating = false
     private var clickMonitor: Any?
     private(set) var listOpen = false
+    /// Pages of Done rows the open list shows; "and N more" adds one, closing the list resets it.
+    private(set) var donePages = 1
     private var stats = Stats()
 
     struct Stats: Codable, Equatable {
@@ -188,7 +190,7 @@ final class PerchController {
         if changed { target = (subject.taskId, nil) }
         if locate || changed, let pid = subject.pid {
             let taskId = subject.taskId
-            locator.locate(pid: pid, title: subject.windowTitle) { [weak self] found in
+            locator.locate(pid: pid, title: subject.windowTitle, frame: subject.windowFrame) { [weak self] found in
                 guard let self, self.subject?.taskId == taskId else { return }
                 let screenWas = self.screenFrame()
                 self.target = (taskId, found)
@@ -312,19 +314,28 @@ final class PerchController {
         }
     }
 
+    /// "and N more" under Done: the next page of rows.
+    func showMore() {
+        guard listOpen else { return }
+        donePages += 1
+        renderList()
+    }
+
     func closeList() {
         guard listOpen else { return }
         listOpen = false
+        donePages = 1
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
         list.exit(duration: 0.1)
     }
 
     private func renderList() {
-        let rows = center.rows()
+        let page = center.page(pages: donePages)
         let view = ActivityListView(
-            rows: rows, mood: subject?.mood, character: FigureSettings.shared.character,
-            busy: center.busy, animated: !Motion.reduceMotion
+            rows: page.rows, more: page.more, incomplete: center.feed.incomplete, mood: subject?.mood,
+            character: FigureSettings.shared.character, busy: center.busy, animated: !Motion.reduceMotion,
+            onMore: { [weak self] in self?.showMore() }
         ) { [weak self] taskId, action in
             self?.center.control(taskId, action)
         }
@@ -382,6 +393,11 @@ final class PerchController {
         var listOpen: Bool
         var listOnScreen: Bool
         var rows: [ActivityRow]
+        /// Done rows behind "and N more", and the pages shown.
+        var more: Int
+        var donePages: Int
+        /// The last list reply was truncated at the helper's cap.
+        var incomplete: Bool
         var feedSeq: Int
         var listed: Bool
         var pausable: [String: [String]]
@@ -403,7 +419,8 @@ final class PerchController {
             overlapsField: choice?.overlapsField, overlapsCaret: choice?.overlapsCaret,
             isKey: panel.isKeyWindow || list.panel.isKeyWindow,
             windowNumber: panel.windowNumber, listWindowNumber: list.panel.windowNumber, listOpen: listOpen, listOnScreen: list.panel.isVisible,
-            rows: center.rows(), feedSeq: center.feed.seq, listed: center.feed.listed,
+            rows: center.page(pages: donePages).rows, more: center.page(pages: donePages).more, donePages: donePages,
+            incomplete: center.feed.incomplete, feedSeq: center.feed.seq, listed: center.feed.listed,
             pausable: Dictionary(uniqueKeysWithValues: pause.running.map { (String($0.key), $0.value.sorted()) }),
             activity: center.stats, stats: stats
         )
@@ -421,24 +438,26 @@ final class PerchController {
     }
 }
 
-/// Finds the screen frame of the window a task acts in, by the app's pid and the window's title
-/// (the helper's window ids are its own, so they do not name a window-server window). Falls back
-/// to the app's main window, then its first. One Accessibility read per call, off the main thread.
+/// Finds the screen frame of the window a task acts in, among the app's windows: by the frame the
+/// helper recorded, then by title (`TaskWindow`; the helper's window ids are its own, so they do
+/// not name a window-server window). Falls back to the app's main window, then its first. One
+/// Accessibility read per call, off the main thread.
 final class WindowLocator: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.caret.host.window-locator", qos: .utility)
 
-    func locate(pid: Int32, title: String?, completion: @escaping @MainActor (CGRect?) -> Void) {
+    func locate(pid: Int32, title: String?, frame: CGRect?, completion: @escaping @MainActor (CGRect?) -> Void) {
         queue.async {
-            let frame = Self.frame(pid: pid, title: title)
-            DispatchQueue.main.async { MainActor.assumeIsolated { completion(frame) } }
+            let found = Self.frame(pid: pid, title: title, recorded: frame)
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(found) } }
         }
     }
 
-    static func frame(pid: Int32, title: String?) -> CGRect? {
+    static func frame(pid: Int32, title: String?, recorded: CGRect?) -> CGRect? {
         let app = AXUIElementCreateApplication(pid)
         let windows = AXRead.elements(kAXWindowsAttribute, on: app)
-        if let title, let match = windows.first(where: { AXRead.string(kAXTitleAttribute, on: $0) == title }) {
-            return AXRead.frame(of: match)
+        let candidates = windows.map { TaskWindow.Candidate(frame: AXRead.frame(of: $0), title: AXRead.string(kAXTitleAttribute, on: $0)) }
+        if let i = TaskWindow.pick(frame: recorded, title: title, among: candidates) {
+            return candidates[i].frame
         }
         if let main = AXRead.element(kAXMainWindowAttribute, on: app) { return AXRead.frame(of: main) }
         return windows.first.flatMap { AXRead.frame(of: $0) }

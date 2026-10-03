@@ -155,6 +155,25 @@ public final class OfferArbiter: @unchecked Sendable {
         return id
     }
 
+    /// Swaps the current offer's content for `offer` and keeps its id, so an offer the helper sent
+    /// again under the same key redraws in place. The user's place stays: the alternative they
+    /// moved to, clamped to the new count, and the list open while two or more remain. Nil when
+    /// `offerID` is no longer current (a key took it), an insertion is running, or the text typed
+    /// since the offer no longer leads the new top candidate; the caller then shows it afresh.
+    public func replace(offerID: UInt64, with offer: Offer) -> OfferUI? {
+        state.withLock { s in
+            guard let current = s.current, current.id == offerID, s.insertingClaimID == nil,
+                  offer.text.hasPrefix(s.typedSinceOffer) else { return nil }
+            var stamped = offer
+            stamped.id = offerID
+            s.current = stamped
+            let count = stamped.candidates.count
+            s.ui.candidate = min(s.ui.candidate, max(count - 1, 0))
+            if count < 2 { s.ui.open = false }
+            return s.ui
+        }
+    }
+
     /// Removes the current offer. With `offerID`, only that offer; a newer one survives.
     public func invalidate(offerID: UInt64? = nil) {
         state.withLock { s in

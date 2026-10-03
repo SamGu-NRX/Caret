@@ -5,7 +5,7 @@ import XCTest
 
 private let popupTitle = "Fill 2 fields"
 private let filling = "Filling 2 fields"
-private let toast = "Filled 2 fields from Mail Fixture, Order ORD-2026-48213"
+private let toast = "Filled 2 fields from Mail Fixture"
 private let actionLine = "Sheet Fixture Finish the rest: 2 more values"
 private let restored = "restored 2; not restored 0; presses not undoable 0"
 
@@ -153,21 +153,28 @@ final class SurfaceMachineTests: XCTestCase {
 
     func testTwoIdenticalFramesInDifferentWindows() {
         play([
-            Transition("the offer names its window: the twin window's field waits", [
+            Transition("the reader's window number decides: the twin window's field waits", [
                 .screen { $0.front(.email, window: Fx.twinWindow) },
-                .offer(Fx.fillPopup(), window: Fx.formWindow),
+                .offer(Fx.fillPopup(window: Fx.formWindow)),
                 .expect(.held(.fieldNotFocused)),
                 .screen { $0.focused[Fx.app] = Fx.field(.email, window: Fx.formWindow) },
                 .wait(0.5), .expect(.shown("fill-2")),
             ]),
-            Transition("titles decide when no number is known on one side", [
-                .screen { $0.front(.email, window: WindowIdentity(number: nil, title: "Invoice 2041")) },
-                .offer(Fx.fillPopup(), window: Fx.formWindow),
-                .expect(.held(.fieldNotFocused)),
+            Transition("the number decides over a title that changed as the document was edited", [
+                .screen { $0.front(.email, window: WindowIdentity(number: 41, title: "Contact details, edited")) },
+                .offer(Fx.fillPopup(window: Fx.formWindow)),
+                .expect(.shown("fill-2")),
             ]),
-            Transition("no window named (OfferField today): the frame decides alone", [
+            Transition("no number on the host's side: the title decides", [
+                .screen { $0.front(.email, window: WindowIdentity(number: nil, title: "Invoice 2041")) },
+                .offer(Fx.fillPopup(window: Fx.formWindow)),
+                .expect(.held(.fieldNotFocused)),
+                .screen { $0.focused[Fx.app] = Fx.field(.email, window: WindowIdentity(number: nil, title: "Contact details")) },
+                .wait(0.5), .expect(.shown("fill-2")),
+            ]),
+            Transition("the reader read no number and no title: the frame decides alone", [
                 .screen { $0.front(.email, window: Fx.twinWindow) },
-                .offer(Fx.fillPopup()),
+                .offer(Fx.fillPopup(window: WindowIdentity(number: nil, title: nil))),
                 .expect(.shown("fill-2")),
             ]),
         ])
@@ -215,7 +222,7 @@ final class SurfaceMachineTests: XCTestCase {
             ]),
             Transition("taking the slot tells the fill line", working + [
                 .progress("fill-2", .verified), .progress("fill-2", .done),
-                .did(["working off", "toast slot", "line Filled 1 field from Mail Fixture, Order ORD-2026-48213"]),
+                .did(["working off", "toast slot", "line Filled 1 field from Mail Fixture"]),
             ]),
             Transition("a new offer ends the toast and its undo", toastUp + [
                 .offer(Fx.action()),
@@ -227,7 +234,7 @@ final class SurfaceMachineTests: XCTestCase {
                 .offer(Fx.fillPopup(key: "fill-3")),
                 .press(Fx.tab()),
                 .progress("fill-3", .verified), .progress("fill-3", .done),
-                .expect(.toast("Filled 1 field from Mail Fixture, Order ORD-2026-48213")),
+                .expect(.toast("Filled 1 field from Mail Fixture")),
                 .press(Fx.cmdZ()),
                 .sent(["accept fill-2 fillAll", "accept fill-3 fillAll", "undo fill-3"]),
             ]),
@@ -390,14 +397,14 @@ final class SurfaceMachineTests: XCTestCase {
         play([
             Transition("⌘Z within the lifetime: undo is asked for and reported", toastUp + [
                 .expect(.lastLine(LineContent(
-                    figure: .done, lead: "Filled", text: "2 fields from Mail Fixture, Order ORD-2026-48213", emphasis: .plain,
+                    figure: .done, lead: "Filled", text: "2 fields from Mail Fixture", emphasis: .plain,
                     hints: [Hint(key: "⌘Z", label: "Undo")]
                 ))),
                 .wait(4.9),
                 .press(Fx.cmdZ()),
                 .sent(["accept fill-2 fillAll", "undo fill-2"]),
                 .expect(.toast("Undoing")), .did(["line Undoing"]),
-                .progress("fill-2", .undone, detail: restored),
+                .progress("fill-2", .undone, detail: restored, restored: 2, notRestored: 0),
                 .expect(.toast("Cleared 2 fields")), .did(["line Cleared 2 fields"]),
                 .wait(2), .expect(.line(nil)), .did(["hide 0.2"]),
             ]),
@@ -409,7 +416,7 @@ final class SurfaceMachineTests: XCTestCase {
             ]),
             Transition("an undo that could not restore every field", toastUp + [
                 .press(Fx.cmdZ()),
-                .progress("fill-2", .undone, detail: "restored 1; not restored 1; presses not undoable 0"),
+                .progress("fill-2", .undone, detail: "restored 1; not restored 1; presses not undoable 0", restored: 1, notRestored: 1),
                 .expect(.toast("1 field changed after the fill, so it was left as it is.")),
             ]),
             Transition("the helper never answers: Undoing for 10 s", toastUp + [

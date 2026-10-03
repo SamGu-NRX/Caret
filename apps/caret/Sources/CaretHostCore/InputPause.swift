@@ -33,6 +33,13 @@ public struct InputPause: Equatable, Sendable {
         sent.formIntersection(live)
     }
 
+    /// The messages that pause `taskIds`. Each says the host saw the user's own input
+    /// (`reason: input`), so the helper keeps the reader's wording for the pause when the reader
+    /// saw the input too ("typing in 'Claim form'").
+    public static func controls(for taskIds: [String]) -> [TaskControl] {
+        taskIds.map { TaskControl(taskId: $0, action: .pause, reason: .input) }
+    }
+
     /// One real key or click in `pid`. Returns the runs to pause now, sorted, and marks them sent.
     public mutating func input(pid: Int32) -> [String] {
         guard let ids = running[pid] else { return [] }

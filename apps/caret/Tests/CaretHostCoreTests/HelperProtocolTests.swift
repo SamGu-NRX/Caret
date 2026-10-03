@@ -31,31 +31,74 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .action: return "action"
             case .popup: return "popup"
             case .offerWithdrawn: return "offerWithdrawn"
+            case .offerReoffered: return "offerReoffered"
             case .taskProgress: return "taskProgress"
             case .firstLookReply: return "firstLookReply"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
         }
-        XCTAssertEqual(kinds, [
+        var expected = [
             "skip:hello", "skip:snapshot", "skip:focus", "skip:appSwitch", "skip:windowClosed",
             "skip:pasteboard", "skip:fillRequest", "fillProposal", "error",
             "skip:readerCommand", "skip:verbResult", "skip:userInput", "taskProgress", "skip:readerCommand",
             "skip:fillResult", "skip:taskControl", "skip:activityRequest", "activity", "activityReply",
             // B7: the offers, the host's own answers to them, their withdrawal, and the reader's raise.
             "alternatives", "action", "popup", "skip:offerAccept", "skip:offerStop", "offerWithdrawn", "skip:readerCommand",
-        ])
+            // B8: expiry, the input pause, and the counts a run reports when done and undone.
+            "offerWithdrawn", "skip:taskControl", "taskProgress", "taskProgress",
+        ]
+        // v2/screen 4a2a408 adds line 31, a reoffered withdrawal; this branch has it once merged.
+        if kinds.count == 31 { expected.append("offerReoffered") }
+        XCTAssertEqual(kinds, expected)
+    }
+
+    /// B8's lines, field by field: expiry, the pause's reason, and the run's counts.
+    func testTheB8LinesDecodeExactly() throws {
+        let lines = try goldenLines()
+        XCTAssertTrue([30, 31].contains(lines.count), "30 lines, or 31 with v2/screen's reoffered line")
+        XCTAssertEqual(try HelperInbound.decode(lines[26]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_122_500, id: "offer-4", reason: .expired)))
+        guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { return XCTFail("line 28") }
+        XCTAssertEqual(pause, TaskControl(taskId: "task-1", action: .pause, reason: .input))
+        XCTAssertEqual(InputPause.controls(for: ["task-1"]), [pause], "the host's pause is the golden line")
+        guard case .taskProgress(let done) = try HelperInbound.decode(lines[28]) else { return XCTFail("line 29") }
+        XCTAssertEqual(done.phase, .done)
+        XCTAssertEqual(done.written, 3)
+        XCTAssertNil(done.restored)
+        guard case .taskProgress(let undone) = try HelperInbound.decode(lines[29]) else { return XCTFail("line 30") }
+        XCTAssertEqual(undone.phase, .undone)
+        XCTAssertEqual([undone.restored, undone.notRestored, undone.notUndoablePresses], [2, 1, 0])
+        XCTAssertNil(undone.written)
+        if lines.count == 31 {
+            XCTAssertEqual(try HelperInbound.decode(lines[30]), .offerReoffered(OfferReoffered(at: 1_790_000_124_000, id: "offer-5", replacedBy: "offer-6")))
+        }
+    }
+
+    func testTheHostsPauseEncodesItsReason() throws {
+        let data = try NDJSON.encoder().encode(InputPause.controls(for: ["run-7"])[0])
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["action"] as? String, "pause")
+        XCTAssertEqual(object["reason"] as? String, "input")
+    }
+
+    func testTaskRecordsCarryTheirWindowsFrame() throws {
+        let lines = try goldenLines()
+        guard case .activity(let activity) = try HelperInbound.decode(lines[17]) else { return XCTFail("line 18") }
+        XCTAssertEqual(activity.task.frame, Frame(x: 640, y: 120, width: 520, height: 380))
+        guard case .activityReply(let reply) = try HelperInbound.decode(lines[18]) else { return XCTFail("line 19") }
+        XCTAssertEqual(reply.tasks.map(\.frame), [Frame(x: 40, y: 60, width: 520, height: 420), Frame(x: 40, y: 60, width: 520, height: 420)])
+        XCTAssertFalse(reply.truncated)
     }
 
     func testTheSevenOfferLinesDecodeExactly() throws {
         let lines = try goldenLines()
-        XCTAssertEqual(lines.count, 26)
+        XCTAssertGreaterThanOrEqual(lines.count, 26)
         guard case .alternatives(let alternatives) = try HelperInbound.decode(lines[19]) else { return XCTFail("line 20") }
         XCTAssertEqual(alternatives.offerKey, "offer-4.0")
         XCTAssertEqual(alternatives.at, 1_790_000_002_000)
         XCTAssertEqual(alternatives.field, OfferField(
             pid: 7170, windowId: "7170-1", key: "dev.caret.sheet/standard/table:guests/textfield:guest~2",
-            frame: Frame(x: 120, y: 288, width: 180, height: 22)
+            frame: Frame(x: 120, y: 288, width: 180, height: 22), window: OfferWindow(number: 4421, title: "Seating")
         ))
         XCTAssertEqual(alternatives.candidates.map(\.text), ["Cara Diaz", "Cal Duarte"])
         XCTAssertEqual(alternatives.candidates[0].ref, .node(key: "5150-1/dev.caret.fixture/standard/statictext:cara diaz~0", quote: "Cara Diaz"))
@@ -76,6 +119,9 @@ final class HelperProtocolGoldenTests: XCTestCase {
         guard case .popup(let popup) = try HelperInbound.decode(lines[21]) else { return XCTFail("line 22") }
         XCTAssertEqual(popup.offerKey, "fill-2")
         XCTAssertEqual(popup.field.frame, Frame(x: 200, y: 140, width: 260, height: 22))
+        XCTAssertEqual(popup.field.window, OfferWindow(number: nil, title: "Checkout"))
+        XCTAssertEqual(popup.sourceApps, ["Mail Fixture"])
+        XCTAssertEqual(action.field.window, OfferWindow(number: 4421, title: "Seating"))
         XCTAssertEqual(popup.spec.id, "fill-2")
         XCTAssertEqual(popup.spec.blocks.count, 4)
         guard case .fields(let fields) = popup.spec.blocks[2].content else { return XCTFail("third block is not fields") }
@@ -91,7 +137,13 @@ final class HelperProtocolGoldenTests: XCTestCase {
 
     func testAnOfferWithAValueWithoutARefIsRejected() {
         // The helper never sends one (B7 acceptance 3); the host refuses it all the same.
-        let line = Data(#"{"type":"alternatives","v":1,"offerKey":"k","at":1,"field":{"pid":1,"windowId":"1-1","key":"k","frame":null},"candidates":[{"text":"x"}],"quoted":false}"#.utf8)
+        let line = Data(#"{"type":"alternatives","v":1,"offerKey":"k","at":1,"field":{"pid":1,"windowId":"1-1","key":"k","frame":null,"window":{"number":null,"title":""}},"candidates":[{"text":"x"}],"quoted":false}"#.utf8)
+        XCTAssertThrowsError(try HelperInbound.decode(line))
+    }
+
+    func testAnOfferWithoutItsWindowIsRejected() {
+        // B8 made OfferField.window required; a field without it cannot be told from its twin.
+        let line = Data(#"{"type":"alternatives","v":1,"offerKey":"k","at":1,"field":{"pid":1,"windowId":"1-1","key":"k","frame":null},"candidates":[{"text":"x","ref":{"node":"n","quote":"x"}}],"quoted":true}"#.utf8)
         XCTAssertThrowsError(try HelperInbound.decode(line))
     }
 

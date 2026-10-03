@@ -178,7 +178,7 @@ async function runUntil(taskId: string, after: number, act: () => Promise<void>)
 function watchRecord(id: string, title: string): void {
   helper.tasks.create({
     id, kind: "watch", state: "running", cause: null, says: `Watching '${title}' in ${FIXTURE_APP.name}`, app: FIXTURE_APP,
-    windowId: `${FIXTURE_APP.pid}-${id}`, windowTitle: title, step: null, steps: null, stepSays: null, remaining: [], detail: null,
+    windowId: `${FIXTURE_APP.pid}-${id}`, windowTitle: title, frame: null, step: null, steps: null, stepSays: null, remaining: [], detail: null,
     undoable: false, pending: null,
   });
 }
@@ -222,7 +222,7 @@ try {
 
     watchRecord(upload, "Caret Fixture — Upload");
     // A newer running task, so needs you has to outrank it.
-    helper.tasks.create({ id: `plan-newer-${i}`, kind: "plan", state: "running", cause: null, says: "Fill the claim form", app: FIXTURE_APP, windowId: `${FIXTURE_APP.pid}-claim`, windowTitle: "Caret Fixture — Claim form", step: 0, steps: 4, stepSays: null, remaining: [], detail: null, undoable: false, pending: null });
+    helper.tasks.create({ id: `plan-newer-${i}`, kind: "plan", state: "running", cause: null, says: "Fill the claim form", app: FIXTURE_APP, windowId: `${FIXTURE_APP.pid}-claim`, windowTitle: "Caret Fixture — Claim form", frame: null, step: 0, steps: 4, stepSays: null, remaining: [], detail: null, undoable: false, pending: null });
     const t1 = Date.now();
     helper.tasks.update(upload, { state: "needsYou", cause: "screen", detail: "The window is waiting for you." });
     helper.tasks.update(`plan-newer-${i}`, { step: 1 });

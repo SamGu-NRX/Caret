@@ -26,7 +26,10 @@ private func fixtureSpec(_ name: String) throws -> PopupSpec {
     return try PopupSpec.decode(JSONSerialization.data(withJSONObject: try XCTUnwrap(valid[name])))
 }
 
-private let field = OfferField(pid: 7170, windowId: "7170-1", key: "dev.caret.sheet/standard/textfield:guest~0", frame: Frame(x: 120, y: 288, width: 180, height: 22))
+private let field = OfferField(
+    pid: 7170, windowId: "7170-1", key: "dev.caret.sheet/standard/textfield:guest~0", frame: Frame(x: 120, y: 288, width: 180, height: 22),
+    window: OfferWindow(number: 4421, title: "Seating")
+)
 
 /// Routing: each offer message becomes the offer the arbiter holds, bound to its field.
 final class HelperOfferRoutingTests: XCTestCase {
@@ -41,7 +44,14 @@ final class HelperOfferRoutingTests: XCTestCase {
         XCTAssertEqual(held.source, .helper)
         XCTAssertEqual(held.text, "Cara Diaz")
         XCTAssertEqual(held.moreCandidates, ["Cal Duarte"])
-        XCTAssertEqual(held.maxAgeSeconds, HelperOffer.maxAgeSeconds)
+        XCTAssertEqual(held.maxAgeSeconds, .infinity, "the helper ends its own offers")
+        XCTAssertFalse(held.isExpired(at: Date().addingTimeInterval(10 * 60 + 1)), "a routine is offered for 10 min (lifetimes.ts)")
+    }
+
+    func testTheFieldsWindowIsTheReaders() throws {
+        XCTAssertEqual(try goldenOffer("alternatives").window, WindowIdentity(number: 4421, title: "Seating"))
+        XCTAssertEqual(try goldenOffer("popup").window, WindowIdentity(number: nil, title: "Checkout"), "the reader read no number")
+        XCTAssertEqual(WindowIdentity(OfferWindow(number: nil, title: "")), WindowIdentity(), "an empty title is no title")
     }
 
     func testAnActionBecomesItsLineWithVariants() throws {
@@ -66,6 +76,7 @@ final class HelperOfferRoutingTests: XCTestCase {
         XCTAssertEqual(popup.spec.header?.title.text, "Fill 2 fields")
         XCTAssertEqual(popup.spec.fillRows, 2)
         XCTAssertEqual(popup.spec.sourceText, "Mail Fixture, Order ORD-2026-48213")
+        XCTAssertEqual(popup.sourceApps, ["Mail Fixture"], "the toast names the apps, not the source block")
         XCTAssertEqual(popup.spec.actions.map(\.id), ["fillAll"])
         XCTAssertNil(try fixtureSpec("eventCard").fillRows, "a pop-up without a fields block is not a fill")
     }
@@ -256,13 +267,40 @@ final class OfferLifecycleTests: XCTestCase {
         XCTAssertEqual(OfferLifecycle.ending(of: golden, workKey: "task-1"), .stopped(detail: golden.detail))
     }
 
-    func testTheUndoDetailIsReadOnlyInItsExactForm() {
-        XCTAssertEqual(OfferLifecycle.undoCount("restored 3; not restored 0; presses not undoable 0"), .init(restored: 3, notRestored: 0))
-        XCTAssertEqual(OfferLifecycle.undoCount("restored 1; not restored 2; presses not undoable 1"), .init(restored: 1, notRestored: 2))
-        XCTAssertNil(OfferLifecycle.undoCount(nil))
-        XCTAssertNil(OfferLifecycle.undoCount("restored three; not restored 0; presses not undoable 0"))
-        XCTAssertNil(OfferLifecycle.undoCount("restored 3; not restored 0"))
-        XCTAssertNil(OfferLifecycle.undoCount("undid everything"))
+    func testTheUndoCountComesFromTheCountsNeverTheText() throws {
+        let lines = try String(contentsOf: goldenURL, encoding: .utf8).split(separator: "\n")
+        let line = try XCTUnwrap(lines.first { $0.contains(#""phase":"undone""#) })
+        guard case .taskProgress(let undone) = try HelperInbound.decode(Data(line.utf8)) else { return XCTFail() }
+        XCTAssertEqual(OfferLifecycle.undoCount(undone), .init(restored: 2, notRestored: 1))
+        var textOnly = undone
+        textOnly.restored = nil
+        textOnly.notRestored = nil
+        XCTAssertNil(OfferLifecycle.undoCount(textOnly), "the detail says the same in words and is not parsed")
+        var done = undone
+        done.phase = .done
+        XCTAssertNil(OfferLifecycle.undoCount(done), "only an undone progress counts an undo")
+    }
+
+    func testTheToastNamesTheSourceApps() {
+        XCTAssertNil(OfferLifecycle.sourcePhrase(nil))
+        XCTAssertNil(OfferLifecycle.sourcePhrase([]))
+        XCTAssertEqual(OfferLifecycle.sourcePhrase(["Mail"]), "Mail")
+        XCTAssertEqual(OfferLifecycle.sourcePhrase(["Mail", "Notes"]), "Mail and Notes")
+        XCTAssertEqual(OfferLifecycle.sourcePhrase(["Mail", "Notes", "Safari"]), "Mail, Notes and Safari")
+    }
+
+    func testAReofferedWithdrawalNamesItsReplacement() throws {
+        // helper/fixtures/golden/protocol.ndjson line 31 on v2/screen (4a2a408), verbatim; this
+        // branch's golden file gains it when v2/screen is merged.
+        let line = Data(#"{"type":"offerWithdrawn","v":1,"at":1790000124000,"id":"offer-5","reason":"reoffered","replacedBy":"offer-6"}"#.utf8)
+        XCTAssertEqual(try HelperInbound.decode(line), .offerReoffered(OfferReoffered(at: 1_790_000_124_000, id: "offer-5", replacedBy: "offer-6")))
+        XCTAssertEqual(try HelperInbound.decode(line).typeName, "offerWithdrawn")
+        let missing = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"offer-5","reason":"reoffered"}"#.utf8)
+        XCTAssertThrowsError(try HelperInbound.decode(missing), "reoffered needs replacedBy")
+        let empty = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"offer-5","reason":"reoffered","replacedBy":""}"#.utf8)
+        XCTAssertThrowsError(try HelperInbound.decode(empty))
+        let expired = Data(#"{"type":"offerWithdrawn","v":1,"at":1,"id":"offer-4","reason":"expired"}"#.utf8)
+        XCTAssertEqual(try HelperInbound.decode(expired), .offerWithdrawn(OfferWithdrawn(at: 1, id: "offer-4", reason: .expired)))
     }
 
     func testATaskGrantTakesCommandZOnlyInItsApp() {

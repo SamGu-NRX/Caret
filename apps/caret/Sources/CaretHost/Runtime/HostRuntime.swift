@@ -168,6 +168,7 @@ public final class HostRuntime {
                     switch message {
                     case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
                     case .offerWithdrawn(let withdrawn): surface.withdrawn(withdrawn)
+                    case .offerReoffered(let reoffered): surface.reoffered(reoffered)
                     case .taskProgress(let progress): surface.taskProgress(progress)
                     case .firstLookReply(let reply): onboarding.receive(reply)
                     default: break
@@ -175,7 +176,12 @@ public final class HostRuntime {
                 }
             }
         }, onLink: { up in
-            DispatchQueue.main.async { MainActor.assumeIsolated { activity.linkChanged(up) } }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    activity.linkChanged(up)
+                    if !up { surface.helperGone() }
+                }
+            }
         })
         fill.client = helper
         let firstLookClient = helper
@@ -195,7 +201,7 @@ public final class HostRuntime {
         let pauseClient = helper
         let writesNothing = configuration.surfacesHeadless
         let pauser = InputPauser(gate: activity.pauseGate) { taskIds, kind in
-            for id in taskIds { pauseClient.send(TaskControl(taskId: id, action: .pause)) }
+            for control in InputPause.controls(for: taskIds) { pauseClient.send(control) }
             activity.notePause(taskIds, kind: kind)
         }
         tap = TapThread(arbiter: arbiter, callbacks: TapThread.Callbacks(
@@ -399,6 +405,7 @@ public final class HostRuntime {
     ///
     ///   perch                          the perch's state, the rows, the pause table
     ///   activity open|close            opens or closes the list, as a click on the perch does
+    ///   activity more                  presses "and N more" under Done
     ///   control <taskId> <action>      presses a row's button (takeOver, resume, undo)
     ///   click <pid>                    a real click in <pid>, through the input pause
     ///   perch-avoid x y w h | clear    stands in for a focused field there (global, top-left)
@@ -413,7 +420,8 @@ public final class HostRuntime {
             switch words.dropFirst().first {
             case "open": perch.openList()
             case "close": perch.closeList()
-            default: return #"{"error":"usage: activity open|close"}"#
+            case "more": perch.showMore()
+            default: return #"{"error":"usage: activity open|close|more"}"#
             }
             return ok()
         case "control":

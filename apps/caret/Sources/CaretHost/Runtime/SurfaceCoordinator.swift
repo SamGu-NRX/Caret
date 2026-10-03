@@ -85,13 +85,10 @@ final class SurfaceCoordinator {
 
     // MARK: - Events in, forwarded to the machine
 
-    func receive(_ offer: HelperOffer) {
-        // `OfferField` names no window yet (B8 adds the reader's number and title); pass it here
-        // when it does, and `FieldMatch` already compares it.
-        machine.receive(offer, window: nil)
-    }
-
+    func receive(_ offer: HelperOffer) { machine.receive(offer) }
     func withdrawn(_ message: OfferWithdrawn) { machine.withdrawn(message) }
+    func reoffered(_ message: OfferReoffered) { machine.reoffered(message) }
+    func helperGone() { machine.helperGone() }
 
     /// Publishes and draws an injected offer for the focused field of `pid`. Returns a JSON reply.
     func inject(_ injection: SurfaceInjection) -> String { machine.inject(injection) }

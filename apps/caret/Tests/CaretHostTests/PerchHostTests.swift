@@ -30,7 +30,7 @@ private func task(_ id: String, _ state: TaskState, pid: Int = 4242, updatedAt: 
     let json: [String: Any] = [
         "id": id, "kind": "plan", "state": state.rawValue, "cause": NSNull(), "says": "Fill the six fields",
         "app": ["pid": pid, "bundleId": "dev.caret.fixture", "name": "Caret Fixture"], "windowId": "\(pid)-1",
-        "windowTitle": "Caret Fixture — Executor", "step": 2, "steps": 6, "stepSays": NSNull(), "remaining": [String](),
+        "windowTitle": "Caret Fixture — Executor", "frame": [40, 60, 520, 420], "step": 2, "steps": 6, "stepSays": NSNull(), "remaining": [String](),
         "detail": NSNull(), "undoable": undoable, "startedAt": 500, "updatedAt": updatedAt, "pending": NSNull(),
     ]
     return try! JSONDecoder().decode(TaskRecord.self, from: JSONSerialization.data(withJSONObject: json))

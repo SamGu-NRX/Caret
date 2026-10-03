@@ -48,6 +48,9 @@ final class ActivityCenter {
 
     func rows(now: Date = Date()) -> [ActivityRow] { ActivityList.rows(feed.records, now: now) }
 
+    /// `pages` pages of Done rows and how many wait behind "and N more".
+    func page(pages: Int, now: Date = Date()) -> ActivityList.Page { ActivityList.page(feed.records, now: now, pages: pages) }
+
     func subject(now: Date = Date()) -> Perch.Subject? {
         Perch.subject(feed.records, now: now, acknowledgedAt: acknowledgedAt)
     }
@@ -84,7 +87,7 @@ final class ActivityCenter {
                 inFlight = inFlight.filter { id, sent in (feed.tasks[id]?.updatedAt ?? .max) <= sent.updatedAt }
                 changed()
             }
-        case .fillProposal, .error, .alternatives, .action, .popup, .offerWithdrawn, .taskProgress, .firstLookReply, .notForConsumer, .unknown:
+        case .fillProposal, .error, .alternatives, .action, .popup, .offerWithdrawn, .offerReoffered, .taskProgress, .firstLookReply, .notForConsumer, .unknown:
             return
         }
     }

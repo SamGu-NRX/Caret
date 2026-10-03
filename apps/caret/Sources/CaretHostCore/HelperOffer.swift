@@ -4,7 +4,8 @@ import Foundation
 
 /// An offer the helper sent for one field: alternatives, an action line or a pop-up
 /// (helper/src/protocol.ts, "offers to the host"). The host shows it only while that field has
-/// focus, matched by frame because the host cannot recompute the reader's element keys.
+/// focus, matched by frame because the host cannot recompute the reader's element keys, and by the
+/// window the reader names (`FieldMatch`).
 public enum HelperOffer: Equatable, Sendable {
     case alternatives(OfferAlternatives)
     case action(OfferAction)
@@ -34,6 +35,9 @@ public enum HelperOffer: Equatable, Sendable {
         case .popup(let m): return m.field
         }
     }
+
+    /// The field's window as the reader read it: the window server's number and the title.
+    public var window: WindowIdentity { WindowIdentity(field.window) }
 
     /// Nil when the helper named a pid that is not a process id.
     public var pid: Int32? { Int32(exactly: field.pid).flatMap { $0 > 0 ? $0 : nil } }
@@ -66,9 +70,12 @@ public enum HelperOffer: Equatable, Sendable {
         FieldMatch.matches(declaredFrame: field.frame, declaredWindow: declaredWindow, focusedFrame: focusedFrame, focusedWindow: focusedWindow)
     }
 
-    /// How long the host keeps an offer the helper has not withdrawn. Assumed, not measured: the
-    /// helper withdraws an offer whose window or values change, so this is only a backstop.
-    public static let maxAgeSeconds: Double = 120
+    /// The host puts no age limit of its own on a helper offer. The helper ends every offer it
+    /// makes: a timed one with `offerWithdrawn expired` (2 to 10 min, helper/src/offers/lifetimes.ts)
+    /// and the others on an event (Open when the user visits the window, a fill pop-up when focus
+    /// leaves the form). The 120 s backstop this replaced made Tab pass through a routine the helper
+    /// still offered. An offer whose helper goes away is taken down instead (`helperGone`).
+    public static let maxAgeSeconds: Double = .infinity
 
     /// What the arbiter holds for this offer, bound to the field as the host read it.
     public func offer(target: TargetIdentity, fieldValue: String, caretUTF16: Int, createdAt: Date = Date()) -> Offer {
@@ -84,7 +91,7 @@ public enum HelperOffer: Equatable, Sendable {
         case .action(let m):
             kind = .action(ActionLine(m))
         case .popup(let m):
-            kind = .popup(PopupOffer(offerKey: m.offerKey, spec: m.spec))
+            kind = .popup(PopupOffer(offerKey: m.offerKey, spec: m.spec, sourceApps: m.sourceApps))
         }
         return Offer(
             text: text, moreCandidates: more, source: .helper, kind: kind, target: target,
@@ -156,7 +163,7 @@ public enum OfferLifecycle {
         }
     }
 
-    /// What an undo restored, from an `undone` progress's detail.
+    /// What an undo restored, from an `undone` progress's counts.
     public struct UndoCount: Equatable, Sendable {
         public var restored: Int
         public var notRestored: Int
@@ -167,18 +174,62 @@ public enum OfferLifecycle {
         }
     }
 
-    /// Reads `restored N; not restored M; presses not undoable P`, the executor's undo detail
-    /// (helper/src/executor/executor.ts, `undo`). Nil for any other text: the caption then says
-    /// only that the undo finished. The protocol has no structured count yet (A5 report).
-    public static func undoCount(_ detail: String?) -> UndoCount? {
-        guard let detail else { return nil }
-        let parts = detail.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 3,
-              parts[0].hasPrefix("restored "), let restored = Int(parts[0].dropFirst("restored ".count)),
-              parts[1].hasPrefix("not restored "), let notRestored = Int(parts[1].dropFirst("not restored ".count)),
-              parts[2].hasPrefix("presses not undoable "), Int(parts[2].dropFirst("presses not undoable ".count)) != nil
-        else { return nil }
+    /// The counts an `undone` progress carries (`restored`, `notRestored`). Nil when it carries
+    /// none: the caption then says only that the undo finished. The detail text is for people and
+    /// is never parsed.
+    public static func undoCount(_ progress: TaskProgress) -> UndoCount? {
+        guard progress.phase == .undone, let restored = progress.restored, let notRestored = progress.notRestored else { return nil }
         return UndoCount(restored: restored, notRestored: notRestored)
+    }
+
+    /// The source apps as a toast names them: "Mail", "Mail and Notes", "Mail, Notes and Safari".
+    /// Nil without any.
+    public static func sourcePhrase(_ apps: [String]?) -> String? {
+        guard let apps, let last = apps.last else { return nil }
+        if apps.count == 1 { return last }
+        return apps.dropLast().joined(separator: ", ") + " and " + last
+    }
+}
+
+/// `offerWithdrawn` with reason `reoffered`: the user entered some of a loopFinish's or routine's
+/// values by hand, and the helper offers the rest again under `replacedBy`, at once. The host swaps
+/// the line in place rather than dismissing it.
+///
+/// The host decodes this one reason itself because the CaretScreenCore in this branch predates it
+/// (v2/screen 4a2a408 adds `reoffered` and `replacedBy` to `OfferWithdrawn`). The rule is the
+/// helper's: `replacedBy` comes with `reoffered` and with no other reason. Once that commit is
+/// merged, this can read `OfferWithdrawn.replacedBy` instead.
+public struct OfferReoffered: Equatable, Sendable {
+    public var at: Int64
+    /// The key withdrawn.
+    public var id: String
+    /// The key of the offer that replaces it.
+    public var replacedBy: String
+
+    public init(at: Int64, id: String, replacedBy: String) {
+        self.at = at
+        self.id = id
+        self.replacedBy = replacedBy
+    }
+
+    struct Wire: Decodable {
+        let type: String
+        let v: Int
+        let at: Int64
+        let id: String
+        let reason: String
+        let replacedBy: String?
+    }
+
+    /// Nil for any other reason; throws for a reoffered line without `replacedBy`, or with an empty one.
+    static func decode(_ line: Data) throws -> OfferReoffered? {
+        let wire = try JSONDecoder().decode(Wire.self, from: line)
+        guard wire.type == OfferWithdrawn.type, wire.reason == "reoffered" else { return nil }
+        guard let replacedBy = wire.replacedBy, !replacedBy.isEmpty else {
+            throw ProtocolError("offerWithdrawn reoffered needs replacedBy")
+        }
+        guard wire.at >= 0 else { throw ProtocolError("offerWithdrawn at must not be negative") }
+        return OfferReoffered(at: wire.at, id: wire.id, replacedBy: replacedBy)
     }
 }
 

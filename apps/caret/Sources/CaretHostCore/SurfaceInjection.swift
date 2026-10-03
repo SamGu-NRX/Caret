@@ -70,7 +70,16 @@ public enum SurfaceInjection: Equatable, Sendable {
                 throw Invalid(error.description)
             }
         case "popup":
-            return .popup(pid: try pid(), PopupOffer(offerKey: try string("offerKey"), spec: try spec(o["spec"])))
+            var sourceApps: [String]?
+            if let raw = o["sourceApps"] {
+                guard case .array(let items) = raw else { throw Invalid("sourceApps must be an array of app names") }
+                let apps = items.compactMap { if case .string(let s) = $0 { return s } else { return nil } }
+                guard !apps.isEmpty, apps.count == items.count, apps.allSatisfy({ !$0.isEmpty }), Set(apps).count == apps.count else {
+                    throw Invalid("sourceApps holds one or more distinct, non-empty app names")
+                }
+                sourceApps = apps
+            }
+            return .popup(pid: try pid(), PopupOffer(offerKey: try string("offerKey"), spec: try spec(o["spec"]), sourceApps: sourceApps))
         case "helperLine":
             guard let line = o["line"] else { throw Invalid("needs line") }
             return .helperLine(try JSONEncoder().encode(line))

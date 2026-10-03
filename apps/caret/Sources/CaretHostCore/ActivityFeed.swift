@@ -13,6 +13,9 @@ public struct ActivityFeed: Equatable, Sendable {
     public private(set) var seq = 0
     /// A list reply has been applied since the last reset, so a skipped sequence number is a real gap.
     public private(set) var listed = false
+    /// The last list reply was cut at the helper's 1 MiB cap (`truncated`): records it left out,
+    /// the oldest, may exist that this copy has never seen.
+    public private(set) var incomplete = false
 
     public init() {}
 
@@ -36,12 +39,22 @@ public struct ActivityFeed: Equatable, Sendable {
     /// requests, so the caller passes only replies to its own list requests). A reply older than
     /// what is already applied is ignored; an error reply changes nothing. Returns whether the
     /// reply was applied.
+    ///
+    /// A truncated reply left out records that would not fit; they are not gone. Records this copy
+    /// already holds and the reply did not carry are kept when they are no newer than the oldest
+    /// the reply carried, since those are the ones the cap drops (registry.ts `list`, newest first).
     @discardableResult
     public mutating func applyList(_ reply: ActivityReply) -> Bool {
         guard reply.error == nil, !listed || reply.seq >= seq else { return false }
-        tasks = Dictionary(reply.tasks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        var next = Dictionary(reply.tasks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        if reply.truncated {
+            let oldest = reply.tasks.map(\.updatedAt).min() ?? .max
+            for (id, record) in tasks where next[id] == nil && record.updatedAt <= oldest { next[id] = record }
+        }
+        tasks = next
         seq = reply.seq
         listed = true
+        incomplete = reply.truncated
         return true
     }
 
@@ -50,6 +63,7 @@ public struct ActivityFeed: Equatable, Sendable {
         tasks = [:]
         seq = 0
         listed = false
+        incomplete = false
     }
 
     public var records: [TaskRecord] { Array(tasks.values) }
@@ -116,12 +130,35 @@ public struct ActivityRow: Equatable, Sendable, Codable, Identifiable {
 }
 
 public enum ActivityList {
-    /// Done rows shown at most. The list is a glance, not a log. No measurement behind the number.
+    /// Done rows shown at most, per page. The list is a glance, not a log. No measurement behind
+    /// the number.
     public static let maxDone = 5
+
+    /// The rows one look at the list shows, and how many Done rows from today wait behind
+    /// "and N more".
+    public struct Page: Equatable, Sendable {
+        public var rows: [ActivityRow]
+        public var more: Int
+    }
+
+    /// `pages` pages of Done rows (5 each); every Needs you and In progress row is always listed,
+    /// so no Continue or Undo is out of reach.
+    public static func page(_ records: [TaskRecord], now: Date, pages: Int = 1, calendar: Calendar = .current) -> Page {
+        let all = rows(records, now: now, calendar: calendar, maxDone: .max)
+        let limit = maxDone * max(pages, 1)
+        let done = all.filter { $0.section == .done }.count
+        var shown = 0
+        let kept = all.filter { row in
+            guard row.section == .done else { return true }
+            shown += 1
+            return shown <= limit
+        }
+        return Page(rows: kept, more: max(done - limit, 0))
+    }
 
     /// The rows in list order: Needs you, In progress, Done today, each newest first. A prepared
     /// offer (`ready`) is not listed: it is still an offer at the caret, not work.
-    public static func rows(_ records: [TaskRecord], now: Date, calendar: Calendar = .current) -> [ActivityRow] {
+    public static func rows(_ records: [TaskRecord], now: Date, calendar: Calendar = .current, maxDone: Int = ActivityList.maxDone) -> [ActivityRow] {
         let startOfDay = Int64(calendar.startOfDay(for: now).timeIntervalSince1970 * 1000)
         var rows = records.compactMap { row(for: $0) }
         rows.removeAll { $0.section == .done && $0.updatedAt < startOfDay }
@@ -164,6 +201,8 @@ public enum ActivityList {
             progress = r.kind == .watch ? "Waiting for you" : stepText(r, prefix: "Handed back at step")
             if r.undoable { actions = [.undo] }
         case .done:
+            // A prepared offer the user typed out by hand ends without a row: Caret did not do it.
+            if r.cause == .you, r.kind == .loopFinish || r.kind == .routine { return nil }
             section = .done
             if r.undoable { actions = [.undo] }
         case .failed:

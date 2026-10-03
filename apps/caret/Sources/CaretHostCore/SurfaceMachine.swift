@@ -66,8 +66,10 @@ public final class SurfaceMachine {
         let target: TargetIdentity
         /// A fill pop-up: the fields its Tab writes and where the values came from.
         let fill: FillWork?
-        /// Steps the helper verified so far, for the fill toast's count.
+        /// Steps the helper verified so far: the fill toast's count when `done` carries none.
         var verified = 0
+        /// The fields the run wrote, from its `done` progress (`TaskProgress.written`).
+        var written: Int?
         /// The figure has looked away and left the working line.
         var figureLeft = false
     }
@@ -87,6 +89,17 @@ public final class SurfaceMachine {
         let requireFocus: Bool
         let timer: SurfaceTimer
     }
+
+    /// A line withdrawn as `reoffered`, waiting for the offer that replaces it.
+    struct Swap {
+        let newKey: String
+        let timer: SurfaceTimer
+    }
+
+    /// How long a reoffered line waits for its replacement before it goes. Assumed, not measured:
+    /// the helper sends the new offer in the same turn as the withdrawal (engine.ts), so it should
+    /// arrive within milliseconds; a second covers a busy main thread.
+    public static let swapWait: TimeInterval = 1
 
     /// Half a second, assumed: fast enough that a surface over someone else's window does not
     /// linger, and a window-list read costs about a millisecond.
@@ -112,6 +125,9 @@ public final class SurfaceMachine {
     var pendingTimer: SurfaceTimer?
     var watch: Watch?
     var work: Work?
+    var swap: Swap?
+    /// Set by `present` when it redrew a re-sent offer in place; read by `receive`.
+    var replacedInPlace = false
     var workTimers: [SurfaceTimer] = []
     var resultTimer: SurfaceTimer?
     var resultStatusID: UInt64?
@@ -148,12 +164,70 @@ public final class SurfaceMachine {
     // MARK: - Offers in
 
     /// An offer from the helper: shown in its field if that field is where the user is looking,
-    /// otherwise held and retried. `window` is the window the helper names for the field, when it
-    /// names one (`SurfaceIncoming.helper`).
+    /// otherwise held and retried. The field is matched by frame and by the window the reader
+    /// names for it (`FieldMatch`).
     @discardableResult
-    public func receive(_ offer: HelperOffer, window: WindowIdentity? = nil) -> String {
+    public func receive(_ offer: HelperOffer) -> String {
         count("surface.helper.\(offer.kindName)")
-        return present(.helper(offer, window: window))
+        let before = shown
+        replacedInPlace = false
+        let reply = present(.helper(offer, window: offer.window))
+        // Sent again under the shown key but held or refused: what is on screen under that key is
+        // what the helper no longer offers (a candidate whose source closed), so it goes.
+        if let before, before.offer.source == .helper, before.offerKey == offer.offerKey, !replacedInPlace,
+           let shown, shown.offerID == before.offerID {
+            arbiter.invalidate(offerID: shown.offerID)
+            clear(exit: 0.10)
+            count("surface.withdrawn.resentNotShown")
+            publish()
+        }
+        return reply
+    }
+
+    /// The helper withdrew a loopFinish or routine as `reoffered` and sends its rest at once under
+    /// `replacedBy`. Keys no longer take the old line, but it stays up so the new one is drawn over
+    /// it in place rather than leaving and entering (`swapWait`).
+    public func reoffered(_ message: OfferReoffered) {
+        count("surface.withdrawn.helper.reoffered")
+        if displacedShown?.offerKey == message.id { displacedShown = nil }
+        if pending?.incoming.helperKey == message.id { cancelPending() }
+        guard let shown, shown.offer.source == .helper, shown.offerKey == message.id else { return publish() }
+        arbiter.invalidate(offerID: shown.offerID)
+        stopWatch()
+        if !headless { emit(.clearCaret(offerID: shown.offerID)) }
+        self.shown = nil
+        endSwap(takeDown: false)
+        let newKey = message.replacedBy
+        let timer = clock.schedule(after: Self.swapWait, repeats: false) { [weak self] in
+            guard let self, self.swap?.newKey == newKey else { return }
+            self.count("surface.reoffer.notReplaced")
+            self.endSwap(takeDown: true)
+            self.publish()
+        }
+        swap = Swap(newKey: newKey, timer: timer)
+        publish()
+    }
+
+    /// Ends a swap. `takeDown`: its replacement will not be drawn, so the old line goes now.
+    func endSwap(takeDown: Bool, exit: TimeInterval = 0.10) {
+        guard let swap else { return }
+        swap.timer.cancel()
+        self.swap = nil
+        if takeDown, shown == nil, work == nil, resultTimer == nil { takeLineDown(exit: exit) }
+    }
+
+    /// The helper's connection dropped. Nothing it offered can be taken now (`offerAccept` would
+    /// go nowhere) and it will withdraw nothing, so its shown and held offers go. Work already
+    /// accepted goes on unseen; the activity list starts again with the next helper.
+    public func helperGone() {
+        if pending?.incoming.helperKey != nil { cancelPending() }
+        endSwap(takeDown: true)
+        if let displaced = displacedShown, displaced.offer.source == .helper { displacedShown = nil }
+        guard let shown, shown.offer.source == .helper else { return publish() }
+        arbiter.invalidate(offerID: shown.offerID)
+        clear(exit: 0.10)
+        count("surface.withdrawn.helperGone")
+        publish()
     }
 
     /// The helper withdrew an offer: take it down if it is shown, forget it if it is held. Work
@@ -167,6 +241,8 @@ public final class SurfaceMachine {
             count("surface.withdrawn.helper.\(message.reason.rawValue)")
         }
         if effect.dropHeld { cancelPending() }
+        // The replacement of a reoffered line was withdrawn before it was drawn.
+        if swap?.newKey == message.id { endSwap(takeDown: true) }
         // A late Tab on a replaced offer the helper has since withdrawn is not honored.
         if displacedShown?.offerKey == message.id { displacedShown = nil }
         publish()
@@ -215,15 +291,27 @@ public final class SurfaceMachine {
             }
         }
         guard let offer = incoming.offer(for: field, createdAt: clock.now) else { return #"{"error":"nothing to show"}"# }
+        if let reply = replaceInPlace(incoming, with: offer, caret: caret, field: field.frame ?? caret, readID: field.readID) {
+            startWatch(.offer(shown!.offerID), target: field.identity, anchors: anchors, requireFocus: true)
+            return reply
+        }
+        let swapping = incoming.helperKey != nil && swap?.newKey == incoming.helperKey
         cancelPending()
+        // Another offer takes the panel from a reoffered line as from any line: at once.
+        endSwap(takeDown: !swapping, exit: 0)
         makeRoom(for: offer)
-        guard let offerID = arbiter.publish(offer) else { return #"{"error":"arbiter refused (an insertion is running)"}"# }
+        guard let offerID = arbiter.publish(offer) else {
+            if swapping { takeLineDown(exit: 0.10) }
+            return #"{"error":"arbiter refused (an insertion is running)"}"#
+        }
         let stamped = arbiter.snapshot().current.flatMap { $0.id == offerID ? $0 : nil } ?? offer
         shown = Shown(
             offerID: offerID, offer: stamped, offerKey: incoming.offerKey, caret: caret, field: field.frame ?? caret,
             quoted: incoming.quoted, readID: field.readID
         )
-        draw(ui: arbiter.snapshot().ui, entering: true)
+        // A reoffered line's replacement is drawn over it where it stands, without an exit and entry.
+        draw(ui: arbiter.snapshot().ui, entering: !swapping)
+        if swapping { count("surface.reoffer.swapped") }
         startWatch(.offer(offerID), target: field.identity, anchors: anchors, requireFocus: true)
         count("surface.shown.\(offer.source.rawValue).\(offer.kind.name)")
         return #"{"ok":true,"offerId":\#(offerID)}"#
@@ -232,19 +320,49 @@ public final class SurfaceMachine {
     /// The headless path: the offer is bound to the field the helper names and published, and
     /// nothing is read or drawn.
     func presentHeadless(_ helperOffer: HelperOffer) -> String {
-        cancelPending()
         let offer = helperOffer.offer(target: helperOffer.declaredTarget, fieldValue: "", caretUTF16: 0, createdAt: clock.now)
+        let declared = helperOffer.field.frame.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } ?? .zero
+        if let reply = replaceInPlace(.helper(helperOffer, window: helperOffer.window), with: offer, caret: declared, field: declared, readID: nil) {
+            return reply
+        }
+        let swapping = swap?.newKey == helperOffer.offerKey
+        cancelPending()
+        // Another offer takes the panel from a reoffered line as from any line: at once.
+        endSwap(takeDown: !swapping, exit: 0)
         makeRoom(for: offer)
-        guard let offerID = arbiter.publish(offer) else { return #"{"error":"arbiter refused (an insertion is running)"}"# }
+        guard let offerID = arbiter.publish(offer) else {
+            if swapping { takeLineDown(exit: 0.10) }
+            return #"{"error":"arbiter refused (an insertion is running)"}"#
+        }
         let stamped = arbiter.snapshot().current.flatMap { $0.id == offerID ? $0 : nil } ?? offer
-        let frame = helperOffer.field.frame.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) } ?? .zero
         shown = Shown(
-            offerID: offerID, offer: stamped, offerKey: helperOffer.offerKey, caret: frame, field: frame,
+            offerID: offerID, offer: stamped, offerKey: helperOffer.offerKey, caret: declared, field: declared,
             quoted: helperOffer.quoted, readID: nil
         )
-        draw(ui: arbiter.snapshot().ui, entering: true)
+        draw(ui: arbiter.snapshot().ui, entering: !swapping)
+        if swapping { count("surface.reoffer.swapped") }
         count("surface.shown.headless.\(offer.kind.name)")
         return #"{"ok":true,"offerId":\#(offerID)}"#
+    }
+
+    /// Alternatives the helper sent again under the key already shown: fewer candidates, or a
+    /// changed spelling or ref. The ghost text is redrawn where it stands, with no exit and entry,
+    /// and the user keeps their place in the list (`OfferArbiter.replace`). Nil when it cannot be
+    /// replaced in place; the caller shows it as a new offer.
+    func replaceInPlace(_ incoming: SurfaceIncoming, with offer: Offer, caret: CGRect, field: CGRect, readID: UInt64?) -> String? {
+        guard let shown, shown.offer.source == .helper, let key = incoming.helperKey, shown.offerKey == key,
+              case .ghost = offer.kind, case .ghost = shown.offer.kind,
+              let ui = arbiter.replace(offerID: shown.offerID, with: offer) else { return nil }
+        cancelPending()
+        let stamped = arbiter.snapshot().current.flatMap { $0.id == shown.offerID ? $0 : nil } ?? offer
+        self.shown = Shown(
+            offerID: shown.offerID, offer: stamped, offerKey: key, caret: caret, field: field,
+            quoted: incoming.quoted, readID: readID ?? shown.readID
+        )
+        replacedInPlace = true
+        draw(ui: ui, entering: false)
+        count("surface.replaced.helper.ghost")
+        return #"{"ok":true,"offerId":\#(shown.offerID),"replaced":true}"#
     }
 
     /// A new offer takes the one panel: whatever offer, work line, result or toast was on it ends.
@@ -262,6 +380,8 @@ public final class SurfaceMachine {
     /// all when only the field's own content could change the answer).
     func hold(_ incoming: SurfaceIncoming, _ reason: SurfaceGate.Hold, retry: Bool = true) -> String {
         count("surface.held.\(reason.rawValue)")
+        // A reoffered line whose replacement cannot be drawn now goes, rather than sit with no key.
+        if let key = incoming.helperKey, swap?.newKey == key { endSwap(takeDown: true) }
         if !retry {
             // Only the field's own content could change the answer; an older held offer is
             // superseded too, so nothing is retried.
@@ -566,6 +686,7 @@ public final class SurfaceMachine {
 
     public func shutdown() {
         cancelPending()
+        endSwap(takeDown: false)
         stopWatch()
         endWork()
         endResult()

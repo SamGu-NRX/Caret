@@ -12,6 +12,13 @@ public struct WindowIdentity: Equatable, Sendable {
         self.number = number
         self.title = title
     }
+
+    /// The window an offer's field is in, as the reader names it (`OfferField.window`). An empty
+    /// title is no title: it would match every untitled window.
+    public init(_ window: OfferWindow) {
+        number = window.number.flatMap { UInt32(exactly: $0) }
+        title = window.title.isEmpty ? nil : window.title
+    }
 }
 
 /// The focused field of an app, read through Accessibility and reduced to plain values.
@@ -110,9 +117,8 @@ public enum FieldMatch {
 
 /// An offer to show: one the helper sent, or one the debug socket injected.
 public enum SurfaceIncoming: Equatable, Sendable {
-    /// `window`: the window the helper names for the field. `OfferField` carries no window yet
-    /// (B8 adds the reader's window number and title); until it does this is nil and the frame
-    /// decides alone.
+    /// `window`: the window the helper names for the field, from the reader's window number and
+    /// title (`OfferField.window`).
     case helper(HelperOffer, window: WindowIdentity?)
     case injected(SurfaceInjection)
 

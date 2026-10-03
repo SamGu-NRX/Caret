@@ -29,10 +29,14 @@ public struct ActionLine: Equatable, Sendable {
 public struct PopupOffer: Equatable, Sendable {
     public var offerKey: String
     public var spec: PopupSpec
+    /// A grounded fill's source apps, each once, in field order (`OfferPopup.sourceApps`). The
+    /// toast names these ("Filled 3 fields from Mail"), never the source block's "App, Title".
+    public var sourceApps: [String]?
 
-    public init(offerKey: String, spec: PopupSpec) {
+    public init(offerKey: String, spec: PopupSpec, sourceApps: [String]? = nil) {
         self.offerKey = offerKey
         self.spec = spec
+        self.sourceApps = sourceApps
     }
 }
 

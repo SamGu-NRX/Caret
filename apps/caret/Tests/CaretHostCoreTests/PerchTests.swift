@@ -8,12 +8,12 @@ import XCTest
 func taskRecord(
     _ id: String, _ state: TaskState, kind: TaskKind = .plan, pid: Int? = 4242, updatedAt: Int64 = 1_000,
     step: Int? = nil, steps: Int? = nil, undoable: Bool = false, title: String? = "Caret Fixture — Executor",
-    says: String = "Fill the six fields"
+    says: String = "Fill the six fields", cause: TaskCause? = nil, frame: [Double]? = nil
 ) -> TaskRecord {
     var json: [String: Any] = [
-        "id": id, "kind": kind.rawValue, "state": state.rawValue, "cause": NSNull(), "says": says,
+        "id": id, "kind": kind.rawValue, "state": state.rawValue, "cause": cause?.rawValue ?? NSNull(), "says": says,
         "app": pid.map { ["pid": $0, "bundleId": "dev.caret.fixture", "name": "Caret Fixture"] as [String: Any] } ?? NSNull(),
-        "windowId": pid.map { "\($0)-1" } ?? NSNull(), "windowTitle": title ?? NSNull(),
+        "windowId": pid.map { "\($0)-1" } ?? NSNull(), "windowTitle": title ?? NSNull(), "frame": frame ?? NSNull(),
         "step": step ?? NSNull(), "steps": steps ?? NSNull(), "stepSays": NSNull(), "remaining": [String](),
         "detail": NSNull(), "undoable": undoable, "startedAt": 500, "updatedAt": updatedAt, "pending": NSNull(),
     ]
@@ -28,11 +28,11 @@ func activity(_ seq: Int, _ task: TaskRecord, from: TaskState? = nil) -> Activit
     return try! JSONDecoder().decode(Activity.self, from: JSONSerialization.data(withJSONObject: json))
 }
 
-func listReply(_ id: String, seq: Int, _ tasks: [TaskRecord], error: String? = nil) -> ActivityReply {
+func listReply(_ id: String, seq: Int, _ tasks: [TaskRecord], error: String? = nil, truncated: Bool = false) -> ActivityReply {
     let tasksJSON = try! tasks.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
     let json: [String: Any] = [
         "type": "activityReply", "v": Proto.version, "requestId": id, "error": error ?? NSNull(), "seq": seq,
-        "tasks": tasksJSON, "events": [Any](), "truncated": false,
+        "tasks": tasksJSON, "events": [Any](), "truncated": truncated,
     ]
     return try! JSONDecoder().decode(ActivityReply.self, from: JSONSerialization.data(withJSONObject: json))
 }

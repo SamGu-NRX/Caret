@@ -140,7 +140,7 @@ final class SurfaceRegressionTests: XCTestCase {
             .deliver,
             .sent(["accept fill-2 fillAll", "undo fill-2"]),
             .expect(.toast(nil)), .expect(.line(actionLine)),
-            .progress("fill-2", .undone, detail: "restored 2; not restored 0; presses not undoable 0"),
+            .progress("fill-2", .undone, detail: "restored 2; not restored 0; presses not undoable 0", restored: 2, notRestored: 0),
             .expect(.toast(nil)), .expect(.line(actionLine)), .expect(.shown("offer-5")),
         ]))
     }
@@ -153,7 +153,7 @@ final class SurfaceRegressionTests: XCTestCase {
             .deliver,
             .sent(["accept fill-2 fillAll", "accept offer-5 finish", "undo fill-2"]),
             .expect(.toast(nil)), .expect(.line("On it, Sheet Fixture")),
-            .progress("fill-2", .undone, detail: "restored 2; not restored 0; presses not undoable 0"),
+            .progress("fill-2", .undone, detail: "restored 2; not restored 0; presses not undoable 0", restored: 2, notRestored: 0),
             .expect(.toast(nil)), .expect(.line("On it, Sheet Fixture")), .expect(.workingOn("offer-5")),
         ]))
     }

@@ -131,34 +131,42 @@ enum Fx {
 
     static func frameJSON(_ frame: CGRect) -> String { "[\(frame.minX),\(frame.minY),\(frame.width),\(frame.height)]" }
 
+    /// `OfferField.window` as the reader sends it: a null number when it read none.
+    static func windowJSON(_ window: WindowIdentity) -> String {
+        #"{"number":\#(window.number.map(String.init) ?? "null"),"title":"\#(window.title ?? "")"}"#
+    }
+
     static func decode(_ json: String) -> HelperOffer {
         HelperOffer(try! HelperInbound.decode(Data(json.utf8)))!
     }
 
     /// Two values from a mail for the email and phone fields (the golden `popup` line).
-    static func fillPopup(key: String = "fill-2", at element: Element = .email) -> HelperOffer {
-        decode("""
-        {"type":"popup","v":1,"offerKey":"\(key)","at":1,"field":{"pid":\(app),"windowId":"\(app)-1","key":"k:\(element.rawValue)","frame":\(frameJSON(element.frame))},"spec":{"v":1,"id":"\(key)","figure":"offering","blocks":[{"type":"header","title":{"text":"Fill 2 fields","ref":{"rule":"count","derived":[{"node":"n"}]}}},{"type":"source","value":{"text":"Mail Fixture, Order ORD-2026-48213","ref":{"node":"m"}}},{"type":"fields","rows":[{"destination":{"text":"Email","ref":{"node":"e"}},"value":{"text":"dana.whitfield@example.com","ref":{"node":"m","quote":"dana.whitfield@example.com"}},"state":"ready"},{"destination":{"text":"Phone","ref":{"node":"p"}},"value":{"text":"+1 512 555 0142","ref":{"node":"m","quote":"+1 512 555 0142"}},"state":"ready"}]},{"type":"actions","items":[{"id":"fillAll","label":"Fill all","key":"tab"}]}]}}
+    static func fillPopup(key: String = "fill-2", at element: Element = .email, window: WindowIdentity = formWindow, sourceApps: [String]? = ["Mail Fixture"]) -> HelperOffer {
+        let apps = sourceApps.map { ",\"sourceApps\":[" + $0.map { "\"\($0)\"" }.joined(separator: ",") + "]" } ?? ""
+        return decode("""
+        {"type":"popup","v":1,"offerKey":"\(key)","at":1,"field":{"pid":\(app),"windowId":"\(app)-1","key":"k:\(element.rawValue)","frame":\(frameJSON(element.frame)),"window":\(windowJSON(window))},"spec":{"v":1,"id":"\(key)","figure":"offering","blocks":[{"type":"header","title":{"text":"Fill 2 fields","ref":{"rule":"count","derived":[{"node":"n"}]}}},{"type":"source","value":{"text":"Mail Fixture, Order ORD-2026-48213","ref":{"node":"m"}}},{"type":"fields","rows":[{"destination":{"text":"Email","ref":{"node":"e"}},"value":{"text":"dana.whitfield@example.com","ref":{"node":"m","quote":"dana.whitfield@example.com"}},"state":"ready"},{"destination":{"text":"Phone","ref":{"node":"p"}},"value":{"text":"+1 512 555 0142","ref":{"node":"m","quote":"+1 512 555 0142"}},"state":"ready"}]},{"type":"actions","items":[{"id":"fillAll","label":"Fill all","key":"tab"}]}]}\(apps)}
         """)
     }
 
     /// "Finish the rest" in another app (the golden `action` line, without variants).
-    static func action(key: String = "offer-5", at element: Element = .email) -> HelperOffer {
+    static func action(key: String = "offer-5", at element: Element = .email, window: WindowIdentity = formWindow, text: String = "Finish the rest: 2 more values") -> HelperOffer {
         decode("""
-        {"type":"action","v":1,"offerKey":"\(key)","at":1,"field":{"pid":\(app),"windowId":"\(app)-1","key":"k:\(element.rawValue)","frame":\(frameJSON(element.frame))},"app":"Sheet Fixture","endState":{"text":"Finish the rest: 2 more values","ref":{"rule":"loopFinish","derived":[{"node":"n","quote":"Dev Patel"}]}},"actions":[{"id":"finish","label":"Finish","key":"tab"}]}
+        {"type":"action","v":1,"offerKey":"\(key)","at":1,"field":{"pid":\(app),"windowId":"\(app)-1","key":"k:\(element.rawValue)","frame":\(frameJSON(element.frame)),"window":\(windowJSON(window))},"app":"Sheet Fixture","endState":{"text":"\(text)","ref":{"rule":"loopFinish","derived":[{"node":"n","quote":"Dev Patel"}]}},"actions":[{"id":"finish","label":"Finish","key":"tab"}]}
         """)
     }
 
-    static func alternatives(key: String = "offer-4.0", at element: Element = .email, candidates: [String] = ["Cara Diaz", "Cal Duarte"], quoted: Bool = true) -> HelperOffer {
+    static func alternatives(key: String = "offer-4.0", at element: Element = .email, window: WindowIdentity = formWindow, candidates: [String] = ["Cara Diaz", "Cal Duarte"], quoted: Bool = true) -> HelperOffer {
         let values = candidates.map { #"{"text":"\#($0)","ref":{"node":"n","quote":"\#($0)"}}"# }.joined(separator: ",")
         return decode("""
-        {"type":"alternatives","v":1,"offerKey":"\(key)","at":1,"field":{"pid":\(app),"windowId":"\(app)-1","key":"k:\(element.rawValue)","frame":\(frameJSON(element.frame))},"candidates":[\(values)],"quoted":\(quoted)}
+        {"type":"alternatives","v":1,"offerKey":"\(key)","at":1,"field":{"pid":\(app),"windowId":"\(app)-1","key":"k:\(element.rawValue)","frame":\(frameJSON(element.frame)),"window":\(windowJSON(window))},"candidates":[\(values)],"quoted":\(quoted)}
         """)
     }
 
-    static func progress(_ task: String, _ phase: TaskProgress.Phase, detail: String? = nil) -> TaskProgress {
+    static func progress(_ task: String, _ phase: TaskProgress.Phase, detail: String? = nil, written: Int? = nil, restored: Int? = nil, notRestored: Int? = nil) -> TaskProgress {
+        let counts = [("written", written), ("restored", restored), ("notRestored", notRestored)]
+            .compactMap { name, n in n.map { ",\"\(name)\":\($0)" } }.joined()
         let json = """
-        {"type":"taskProgress","v":1,"at":1,"taskId":"\(task)","planId":"p","phase":"\(phase.rawValue)","step":null,"steps":2,"says":null,"detail":\(detail.map { "\"\($0)\"" } ?? "null")}
+        {"type":"taskProgress","v":1,"at":1,"taskId":"\(task)","planId":"p","phase":"\(phase.rawValue)","step":null,"steps":2,"says":null,"detail":\(detail.map { "\"\($0)\"" } ?? "null")\(counts)}
         """
         return try! JSONDecoder().decode(TaskProgress.self, from: Data(json.utf8))
     }

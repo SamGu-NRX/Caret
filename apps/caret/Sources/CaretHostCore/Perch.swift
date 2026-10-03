@@ -35,16 +35,20 @@ public enum Perch {
         public var pid: Int32?
         public var windowId: String?
         public var windowTitle: String?
+        /// The window's frame when the task last changed (`TaskRecord.frame`), global top-left
+        /// points: how the host finds the window first (`TaskWindow`).
+        public var windowFrame: CGRect?
         public var app: String?
         /// Rows in the list's Needs you section, including this one.
         public var needsYou: Int
 
-        public init(taskId: String, mood: Mood, pid: Int32?, windowId: String?, windowTitle: String?, app: String?, needsYou: Int) {
+        public init(taskId: String, mood: Mood, pid: Int32?, windowId: String?, windowTitle: String?, windowFrame: CGRect? = nil, app: String?, needsYou: Int) {
             self.taskId = taskId
             self.mood = mood
             self.pid = pid
             self.windowId = windowId
             self.windowTitle = windowTitle
+            self.windowFrame = windowFrame
             self.app = app
             self.needsYou = needsYou
         }
@@ -71,6 +75,9 @@ public enum Perch {
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
         let candidates = records.compactMap { r -> (TaskRecord, Mood)? in
             guard let mood = mood(for: r.state) else { return nil }
+            // Done by the user's own hand (a prepared offer they typed out, a watched window they
+            // closed): no gesture of relief for work Caret did not do.
+            if r.state == .done, r.cause == .you { return nil }
             switch mood {
             case .done:
                 guard nowMs - r.updatedAt < Int64(doneHold * 1000) else { return nil }
@@ -89,7 +96,8 @@ public enum Perch {
         let (record, mood) = pick
         return Subject(
             taskId: record.id, mood: mood, pid: record.app.map { Int32(truncatingIfNeeded: $0.pid) },
-            windowId: record.windowId, windowTitle: record.windowTitle, app: record.app?.name,
+            windowId: record.windowId, windowTitle: record.windowTitle,
+            windowFrame: record.frame.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }, app: record.app?.name,
             needsYou: ActivityList.needsYouCount(records)
         )
     }
@@ -106,6 +114,41 @@ public enum Perch {
             }
         }.filter { $0 > nowMs }
         return ends.min().map { Date(timeIntervalSince1970: Double($0) / 1000) }
+    }
+}
+
+// MARK: - The task's window
+
+/// Finds a task's window among its app's windows. By frame first (`TaskRecord.frame`): a title
+/// changes as a document is edited, and two windows can share one. Then by title. Nil when neither
+/// matches; the caller falls back to the app's main window.
+public enum TaskWindow {
+    public struct Candidate: Equatable, Sendable {
+        public var frame: CGRect?
+        public var title: String?
+
+        public init(frame: CGRect?, title: String?) {
+            self.frame = frame
+            self.title = title
+        }
+    }
+
+    /// The index of the task's window in `windows`, or nil. A frame matches within a point, as a
+    /// fill's field does (`FillSelection.matches`); a frame shared by two windows decides nothing,
+    /// and the title breaks the tie.
+    public static func pick(frame: CGRect?, title: String?, among windows: [Candidate]) -> Int? {
+        if let frame {
+            let want = Frame(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
+            let byFrame = windows.indices.filter { i in
+                guard let f = windows[i].frame else { return false }
+                return FillSelection.matches(want, Frame(x: f.minX, y: f.minY, width: f.width, height: f.height))
+            }
+            if byFrame.count == 1 { return byFrame[0] }
+            if byFrame.count > 1, let title, let i = byFrame.first(where: { windows[$0].title == title }) { return i }
+            if let first = byFrame.first { return first }
+        }
+        if let title, !title.isEmpty { return windows.firstIndex { $0.title == title } }
+        return nil
     }
 }
 
