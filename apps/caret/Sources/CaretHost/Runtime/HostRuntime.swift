@@ -316,7 +316,7 @@ public final class HostRuntime {
         if !tap.start() { status.increment("tap.createFailed") }
         focus.onChange = { [coordinator, perch] change in
             coordinator.handle(change)
-            perch.focusChanged(caret: change.snapshot?.caretRect, element: change.element)
+            perch.focusChanged(caret: change.snapshot?.caretRectAX, element: change.element)
         }
         focus.start()
         helper.start()

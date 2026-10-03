@@ -143,7 +143,7 @@ final class SurfaceCoordinator {
         read.style = style
         read.font = font
         lastRead = read
-        guard let caret = snapshot.caretRect ?? Self.derivedCaret(field: read.field, frame: read.frame, font: font) else { return .noCaret }
+        guard let caret = snapshot.caretRectAX ?? Self.derivedCaret(field: read.field, frame: read.frame, font: font) else { return .noCaret }
         return .at(caret)
     }
 

@@ -13,6 +13,8 @@
 //        fixture-ax frontmost                 print the frontmost pid (NSWorkspace and lsappinfo)
 //        fixture-ax activate <pid>            ask macOS to activate the fixture (may be refused)
 //        fixture-ax key-if-front <pid> tab|space|return|cmd-z|char <c>
+//        fixture-ax windows-at <x> <y>       the on-screen windows over a global point, front to
+//            back (owner, pid, layer, alpha, bounds), as the host's visibility gate reads them
 //        fixture-ax hand-back <pid>          activate <pid>, the app that was frontmost before the
 //            run; the one command that takes a pid outside CARET_TEST_PIDS, and it sends no input
 //            post ONE key at the HID level, only while both checks say <pid> is frontmost. The
@@ -225,6 +227,18 @@ case "activate" where args.count == 2:
     let ok = NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows]) ?? false
     let front = waitFront(pid, seconds: 2)
     emit(["requested": ok, "front": front])
+case "windows-at" where args.count == 3:
+    guard let x = Double(args[1]), let y = Double(args[2]) else { fail("x and y must be numbers") }
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    let over: [[String: Any]] = list.compactMap { info in
+        guard let raw = info[kCGWindowBounds as String], let b = CGRect(dictionaryRepresentation: raw as! CFDictionary),
+              b.contains(CGPoint(x: x, y: y)) else { return nil }
+        return ["owner": info[kCGWindowOwnerName as String] as? String ?? "?", "pid": info[kCGWindowOwnerPID as String] as? Int32 ?? -1,
+                "layer": info[kCGWindowLayer as String] as? Int ?? 0, "alpha": info[kCGWindowAlpha as String] as? Double ?? 1,
+                "bounds": [b.minX, b.minY, b.width, b.height]]
+    }
+    let data = try! JSONSerialization.data(withJSONObject: over, options: [.sortedKeys])
+    print(String(decoding: data, as: UTF8.self))
 case "hand-back" where args.count == 2:
     // Only activation, with no options, so the app's own window order is left as it was.
     guard let pid = Int32(args[1]), let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { fail("pid \(args[1]) is not running") }

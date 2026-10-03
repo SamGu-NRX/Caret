@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CaretHostCore
+import MacContextCapture
 import SwiftUI
 
 /// A borderless, non-activating, click-through panel that never becomes key or main, so the app
@@ -27,6 +28,16 @@ final class OverlayPanel: NSPanel {
 
 /// Takes the first click in a window that is not key, so a button in a panel that never becomes
 /// key works on the first press.
+extension FocusedFieldSnapshot {
+    /// The caret in Accessibility coordinates (global, top-left origin), the space the visibility
+    /// gate, the surfaces and the perch work in. KeyType's resolver returns `caretRect` in AppKit
+    /// coordinates (bottom-left; AXCaretGeometryResolver converts with `cocoaRect`), which only
+    /// its own ghost renderer should read. A9: passed unconverted, the gate tested a point mirrored
+    /// across the main display, found another app's window there, and held every ghost offer in a
+    /// field with text as `covered`.
+    var caretRectAX: CGRect? { caretRect.map { Screen.ax($0) } }
+}
+
 final class FirstMouseHostingView: NSHostingView<AnyView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
@@ -40,8 +51,11 @@ enum Screen {
     }
 
     static func ax(_ cocoa: NSRect) -> CGRect {
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        return CGRect(x: cocoa.minX, y: primaryHeight - cocoa.maxY, width: cocoa.width, height: cocoa.height)
+        ax(cocoa, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+    }
+
+    static func ax(_ cocoa: NSRect, primaryHeight: CGFloat) -> CGRect {
+        CGRect(x: cocoa.minX, y: primaryHeight - cocoa.maxY, width: cocoa.width, height: cocoa.height)
     }
 
     static func containing(_ rect: NSRect) -> NSScreen? {

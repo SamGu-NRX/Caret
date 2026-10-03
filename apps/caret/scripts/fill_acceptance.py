@@ -535,12 +535,14 @@ def realtab(out_dir, ghost):
         "offer": offer["text"], "gold": field["gold"], "value": value, "exact": value == field["gold"],
         "insertion": ins, "tapBefore": before, "tapAfter": after,
         "consumedDelta": after["consumed"] - before["consumed"],
-        "cua": cua_read(pid, CLAIM, field["frame"]),
     }
     if ghost:
+        # Before cua_read: in A9 a cua-driver window (layer 0, opaque by its alpha) was over the
+        # Promo code field after it, and the gate held all 79 ghost offers as covered.
         extra["paint"] = keystroke_to_paint(pids, pid, gold)
         if isinstance(extra["paint"], str):
             return finish(extra["paint"], **extra)
+    extra["cua"] = cua_read(pid, CLAIM, field["frame"])
     finish("done", **extra)
 
 
@@ -645,6 +647,8 @@ def keystroke_to_paint(pids, pid, gold):
         return "failed: model did not load"
     promo = gold[CLAIM][8]["frame"]
     ax(pids, "focus", pid, frame_arg(promo))
+    caret_point = (promo[0] + 4, promo[1] + promo[3] / 2)
+    windows_before = json.loads(subprocess.run([AX, "windows-at", *map(str, caret_point)], capture_output=True, text=True).stdout or "[]")
     host("latency-reset")
     keys_before = host()["tap"]["keyDowns"]
     text = "Please send the meeting notes to the team before lunch"
@@ -660,7 +664,9 @@ def keystroke_to_paint(pids, pid, gold):
     # Read back that every key landed in the fixture's field and nowhere else: the field holds
     # exactly the typed text, and the tap saw exactly that many key-downs.
     value = ax(pids, "value", pid, frame_arg(promo))["value"]
+    windows_after = json.loads(subprocess.run([AX, "windows-at", *map(str, caret_point)], capture_output=True, text=True).stdout or "[]")
     return {"latency": s["latency"], "typed": text, "fieldValue": value, "landed": value == text,
+            "windowsAtCaret": {"before": windows_before, "after": windows_after},
             "tapKeyDowns": s["tap"]["keyDowns"] - keys_before, "keysSent": len(text),
             "ghostCounters": {k: v for k, v in s["counters"].items() if k.startswith(("suppressed", "discarded", "offer", "held", "withdrawn"))},
             "counters": s["counters"], "engine": s.get("engine"), "focus": s.get("focus"), "presentation": s.get("presentation")}

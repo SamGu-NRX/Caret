@@ -239,7 +239,7 @@ final class HostCoordinator {
         let style = FieldStyleProbe.style(of: element)
         // Drawn only where the user is looking (SurfaceGate); otherwise held, which for ghost text
         // means dropped: the next keystroke generates again.
-        let anchors = snapshot.caretRect.map { [CGPoint(x: $0.midX, y: $0.midY)] } ?? []
+        let anchors = snapshot.caretRectAX.map { [CGPoint(x: $0.midX, y: $0.midY)] } ?? []
         if let hold = Visibility.hold(for: field.identity, anchors: anchors) {
             status.increment("held.ghost.\(hold.rawValue)")
             overlay.hide()
