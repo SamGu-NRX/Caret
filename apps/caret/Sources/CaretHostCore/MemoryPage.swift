@@ -2,8 +2,9 @@ import Foundation
 
 /// What the memory window shows, computed from `MemoryBook.State`: the four kinds of memory as
 /// sections of rows, and the permissions as one row per action type. The window only draws these.
-/// Every sentence about an entry is the helper's (`says`); the host adds the evidence line, the
-/// status and the controls.
+/// Each row's title and secondary line are composed here from the entry's structured fields, in
+/// plain words: the title says what Caret remembers, the secondary line says where it came from
+/// and how sure Caret is. The helper's own sentence (`says`) is left to the debug state.
 public enum MemoryPage {
     public enum Control: String, Codable, Sendable { case edit, pause, resume, forget }
 
@@ -18,9 +19,10 @@ public enum MemoryPage {
 
         public var id: String
         public var kind: HelperMemory.Kind
-        public var says: String
-        /// "Last seen today, 2:14 PM, in Mail". Nil when there is nothing to add.
-        public var detail: String?
+        /// "Your guest is Marcus Lowe (ops)".
+        public var title: String
+        /// "You set this · today 9:14 AM · Mail": status, provenance, counts.
+        public var secondary: String
         public var status: Status
         public var controls: [Control]
         public var busy: Bool
@@ -105,8 +107,9 @@ public enum MemoryPage {
         if !MemoryBook.editable(e).isEmpty { controls.append(.edit) }
         controls.append(e.status == .paused ? .resume : .pause)
         controls.append(.forget)
+        let words = wording(e, entries: s.entries, now: now, calendar: calendar, locale: locale)
         return Row(
-            id: e.id, kind: e.kind, says: e.says, detail: evidence(e.evidence, now: now, calendar: calendar, locale: locale),
+            id: e.id, kind: e.kind, title: words.title, secondary: words.secondary,
             status: status, controls: controls, busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id], typed: false
         )
     }
@@ -123,34 +126,133 @@ public enum MemoryPage {
             problem = "Caret couldn't keep this: \(reason)"
         }
         return Row(
-            id: t.id, kind: .about, says: "\(t.label): \(t.value)", detail: "You typed this during setup.",
+            id: t.id, kind: .about, title: aboutTitle(label: t.label, value: t.value),
+            secondary: joined(["you typed this during setup", statusText(status)?.lowercased()]),
             status: status, controls: [.forget], busy: false, problem: problem, typed: true
         )
     }
 
-    /// "Last seen today, 2:14 PM, in Mail"; "Last seen Oct 1, in Mail" before yesterday.
-    public static func evidence(_ e: HelperMemory.Evidence, now: Date, calendar: Calendar, locale: Locale) -> String? {
-        guard e.lastSeen > 0 else { return e.app.map { "In \($0)" } }
-        let date = Date(timeIntervalSince1970: Double(e.lastSeen) / 1000)
+    // MARK: - Wording
+
+    /// A row's title and secondary line, from the entry's fields. `entries` resolves a use-instead
+    /// preference's About-you value.
+    public static func wording(_ e: HelperMemory.Entry, entries: [HelperMemory.Entry], now: Date, calendar: Calendar, locale: Locale) -> (title: String, secondary: String) {
+        let paused = e.status == .paused ? "paused" : nil
+        let seen = e.evidence.lastSeen > 0 ? when(e.evidence.lastSeen, now: now, calendar: calendar, locale: locale) : nil
+        switch e.fields {
+        case .about(let f):
+            let source: String
+            switch f.source {
+            case .edit: source = "you set this"
+            case .typed: source = "you typed this"
+            case .contacts: source = "from your Contacts card"
+            }
+            return (aboutTitle(label: f.label, value: f.value), joined([paused, source, seen, e.evidence.app]))
+        case .people(let f):
+            let title = e.evidence.app.map { "\(f.alias) in \($0) means \(f.name)" } ?? "\(f.alias) means \(f.name)"
+            return (title, joined([paused, "picked \(times(e.evidence.count))"]))
+        case .preference(let p):
+            let title: String
+            let how: String
+            switch p {
+            case .format(let template):
+                title = "Phone numbers go in as \(sampleNumber(template))"
+                how = "you changed it \(times(e.evidence.count))"
+            case .useInstead(let field, let aboutId):
+                let value = entries.first { $0.id == aboutId }?.about?.value
+                title = value.map { "\(field) fields get \($0)" } ?? "\(field) fields get a value Caret no longer has"
+                how = "you changed it \(times(e.evidence.count))"
+            case .dontOffer(let offerKind, let appName):
+                title = "No \(offerWords(offerKind)) in \(appName)"
+                how = "you turned this off"
+            }
+            return (title, joined([paused, how, seen]))
+        case .routine(let r):
+            let copies = "Copies \(r.steps == 1 ? "1 value" : "\(r.steps) values") from \(list(r.srcApps)) into \(r.dstApp)"
+            let state: String
+            switch e.status {
+            case .learning: state = "still learning"
+            case .active: state = "learned"
+            case .paused: state = "paused"
+            }
+            let tries = r.silent.hits + r.silent.misses
+            let record: String
+            switch tries {
+            case 0: record = "seen \(times(e.evidence.count))"
+            case 1: record = r.silent.hits == 1 ? "right the one time so far" : "wrong the one time so far"
+            default: record = "right \(r.silent.hits) of \(tries) times"
+            }
+            if let name = r.name, !name.isEmpty { return (name, joined([copies, state, record])) }
+            return (copies, joined([state, record]))
+        case .permission(let p):
+            return (actionTitle(p.action), ruleTitle(p.rule))
+        }
+    }
+
+    /// "Your guest is Marcus Lowe (ops)". The label keeps its capitals when it is an initialism
+    /// ("URL", "ZIP code").
+    static func aboutTitle(label: String, value: String) -> String {
+        let chars = Array(label)
+        let initialism = chars.count > 1 && chars[0].isUppercase && chars[1].isUppercase
+        let lowered = initialism || chars.isEmpty ? label : String(chars[0]).lowercased() + String(chars.dropFirst())
+        return "Your \(lowered) is \(value)"
+    }
+
+    /// The parts that are there, joined by middle dots, the first one capitalized.
+    static func joined(_ parts: [String?]) -> String {
+        let text = parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        guard let first = text.first else { return text }
+        return first.uppercased() + text.dropFirst()
+    }
+
+    /// "once", "twice", "3 times".
+    static func times(_ n: Int) -> String {
+        switch n {
+        case 1: return "once"
+        case 2: return "twice"
+        default: return "\(n) times"
+        }
+    }
+
+    /// "Mail", "Mail and Notes", "Mail, Notes and Safari".
+    static func list(_ names: [String]) -> String {
+        guard names.count > 1 else { return names.first ?? "another app" }
+        return names.dropLast().joined(separator: ", ") + " and " + names.last!
+    }
+
+    /// The format shown with sample digits, never anyone's number: "###-###-####" as 512-555-0100.
+    static func sampleNumber(_ template: String) -> String {
+        var digits = Array("512555010012345")
+        return String(template.map { c in c == "#" && !digits.isEmpty ? digits.removeFirst() : c })
+    }
+
+    /// What a don't-offer rule stops, by the helper's offer kind (protocol.ts OfferKind).
+    static func offerWords(_ kind: String) -> String {
+        switch kind {
+        case "loopNext": return "next-row suggestions"
+        case "loopFinish": return "offers to finish the rest"
+        case "routine": return "routine offers"
+        default: return "offers of this kind"
+        }
+    }
+
+    /// "today 9:14 AM", "yesterday 9:14 AM", "Oct 1" before that.
+    public static func when(_ ms: Int64, now: Date, calendar: Calendar, locale: Locale) -> String {
+        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
         let time = DateFormatter()
         time.locale = locale
         time.timeZone = calendar.timeZone
         time.dateStyle = .none
         time.timeStyle = .short
-        var when: String
-        if calendar.isDate(date, inSameDayAs: now) {
-            when = "today, \(time.string(from: date))"
-        } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
-            when = "yesterday, \(time.string(from: date))"
-        } else {
-            let day = DateFormatter()
-            day.locale = locale
-            day.timeZone = calendar.timeZone
-            day.setLocalizedDateFormatFromTemplate("MMMd")
-            when = day.string(from: date)
+        if calendar.isDate(date, inSameDayAs: now) { return "today \(time.string(from: date))" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
+            return "yesterday \(time.string(from: date))"
         }
-        if let app = e.app { when += ", in \(app)" }
-        return "Last seen \(when)"
+        let day = DateFormatter()
+        day.locale = locale
+        day.timeZone = calendar.timeZone
+        day.setLocalizedDateFormatFromTemplate("MMMd")
+        return day.string(from: date)
     }
 
     /// Plain words for a row's status; nil for active, which needs none.
@@ -184,10 +286,8 @@ public enum MemoryPage {
         HelperMemory.ActionType.allCases.compactMap { action in
             guard let e = s.entries.first(where: { $0.permission?.action == action }), let p = e.permission else { return nil }
             let choices = p.fixed ? [] : PermissionPolicy.allowed(action)
-            let uses = (e.uses ?? []).prefix(5).map { use -> RuleRow.UseLine in
-                let ev = HelperMemory.Evidence(count: 1, lastSeen: use.at, app: nil)
-                let when = evidence(ev, now: now, calendar: calendar, locale: locale)?.replacingOccurrences(of: "Last seen ", with: "") ?? ""
-                return RuleRow.UseLine(says: use.says, when: when)
+            let uses = (e.uses ?? []).prefix(5).map { use in
+                RuleRow.UseLine(says: use.says, when: when(use.at, now: now, calendar: calendar, locale: locale))
             }
             return RuleRow(
                 id: e.id, action: action, title: actionTitle(action), example: actionExample(action), rule: p.rule,

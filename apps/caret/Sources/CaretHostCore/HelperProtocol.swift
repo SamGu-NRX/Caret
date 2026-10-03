@@ -70,7 +70,9 @@ public enum HelperInbound: Equatable, Sendable {
             default: return .notForConsumer(type: envelope.type)
             }
         case Hello.type, FillRequest.type, "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard",
-             "readerCommand", "verbResult", "userInput", "taskControl", "activityRequest", OfferAccept.type, OfferStop.type, GateSettings.type:
+             "readerCommand", "verbResult", "userInput", "taskControl", "activityRequest", OfferAccept.type, OfferStop.type, GateSettings.type,
+             // The helper's act grants go to the reader only (B15); a consumer never acts on one.
+             ActGrant.type, ActRevoke.type:
             // Validated, so a malformed line is still counted as undecodable.
             _ = try JSONDecoder().decode(Message.self, from: line)
             return .notForConsumer(type: envelope.type)

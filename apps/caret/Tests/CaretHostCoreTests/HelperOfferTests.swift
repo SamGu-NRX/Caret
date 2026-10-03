@@ -243,16 +243,17 @@ final class OfferLifecycleTests: XCTestCase {
         XCTAssertEqual(w, OfferWithdrawn(at: 1_790_000_002_500, id: "offer-4.0", reason: .taken))
     }
 
-    private func progress(_ phase: TaskProgress.Phase, task: String = "fill-2", detail: String? = nil) throws -> TaskProgress {
+    private func progress(_ phase: TaskProgress.Phase, task: String = "fill-2", detail: String? = nil, reason: TaskProgress.StopReason = .mismatch) throws -> TaskProgress {
+        let why = phase == .stopped ? ",\"stopReason\":\"\(reason.rawValue)\"" : ""
         let json = """
-        {"type":"taskProgress","v":1,"at":1,"taskId":"\(task)","planId":"p","phase":"\(phase.rawValue)","step":null,"steps":2,"says":null,"detail":\(detail.map { "\"\($0)\"" } ?? "null")}
+        {"type":"taskProgress","v":1,"at":1,"taskId":"\(task)","planId":"p","phase":"\(phase.rawValue)","step":null,"steps":2,"says":null,"detail":\(detail.map { "\"\($0)\"" } ?? "null")\(why)}
         """
         return try JSONDecoder().decode(TaskProgress.self, from: Data(json.utf8))
     }
 
     func testTheLastPhasesEndTheLineAndTheOthersDoNot() throws {
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.done), workKey: "fill-2"), .done)
-        XCTAssertEqual(OfferLifecycle.ending(of: try progress(.stopped, detail: "why"), workKey: "fill-2"), .stopped(detail: "why"))
+        XCTAssertEqual(OfferLifecycle.ending(of: try progress(.stopped, detail: "why"), workKey: "fill-2"), .stopped(reason: .mismatch, step: nil, steps: 2, detail: "why"))
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.handoff), workKey: "fill-2"), .handoff)
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.paused), workKey: "fill-2"), .paused)
         for phase: TaskProgress.Phase in [.started, .skipped, .acting, .verified, .undone] {
@@ -264,7 +265,8 @@ final class OfferLifecycleTests: XCTestCase {
         XCTAssertNil(OfferLifecycle.ending(of: try progress(.done, task: "other"), workKey: "fill-2"))
         XCTAssertNil(OfferLifecycle.ending(of: try progress(.done), workKey: nil), "no work, nothing to end")
         guard case .taskProgress(let golden) = try golden("taskProgress") else { return XCTFail("taskProgress is for the host now") }
-        XCTAssertEqual(OfferLifecycle.ending(of: golden, workKey: "task-1"), .stopped(detail: golden.detail))
+        let reason = try XCTUnwrap(golden.stopReason, "a stopped progress says why")
+        XCTAssertEqual(OfferLifecycle.ending(of: golden, workKey: "task-1"), .stopped(reason: reason, step: golden.step, steps: golden.steps, detail: golden.detail))
     }
 
     func testTheUndoCountComesFromTheCountsNeverTheText() throws {

@@ -23,15 +23,20 @@ enum MemoryAction: Equatable {
 ///
 /// Motion, all of it state indication: an edit opens with a 160 ms ease-out height and fade and
 /// closes at once (Return and Esc close it), a confirmed change washes its row in Carrot once
-/// (400 ms, the try-it field's wash), a forgotten row fades out in 120 ms. Switching tabs and
-/// picking a rule do not animate: they are choices, not journeys. Reduce Motion keeps the fades
-/// and the wash and drops the height change.
+/// (400 ms, the try-it field's wash), a forgotten row fades out in 120 ms, and a row's controls
+/// fade in over 120 ms when the pointer or keyboard focus reaches it. Switching tabs and picking a
+/// rule do not animate: they are choices, not journeys. Reduce Motion keeps the fades and the
+/// wash and drops the height change.
 struct MemoryView: View {
     enum Tab: String, CaseIterable, Codable { case memory, permissions }
 
-    static let size = CGSize(width: 600, height: 720)
+    /// Tall enough for the permissions table and its footer without scrolling, as the gallery's
+    /// entries have them (`MemoryHostTests` checks the footer and the table against this size).
+    static let size = CGSize(width: 600, height: 780)
     static let title = "What Caret knows"
-    static let subtitle = "Everything here stays on this Mac. Caret reads it each time it offers something, so a change counts at once."
+    /// True today: entries sit in the helper's store on this Mac, and a fill's candidate values go
+    /// to the cloud model that picks them (the onboarding privacy line says the same).
+    static let subtitle = "Saved on this Mac. When Caret works out what to fill, the values it might use go to its cloud model."
     static let offline = "Caret can't reach its memory right now. This is what it knew last, and nothing here can change until it's back."
     static let reading = "Reading Caret's memory"
     static let permissionsIntro = "What Caret may do on its own, by kind of action."
@@ -41,6 +46,8 @@ struct MemoryView: View {
     var character: FigureCharacter
     var animated = true
     var now = Date()
+    /// A row drawn as if the pointer were on it, for renders (hover does not exist off screen).
+    var revealedRow: String?
     var send: (MemoryAction) -> Void = { _ in }
 
     @Environment(\.timeZone) private var timeZone
@@ -74,10 +81,29 @@ struct MemoryView: View {
                 .padding(.top, 14)
                 .padding(.bottom, 24)
             }
+            .probed("scroll")
+            if tab == .permissions { permissionsFooter }
         }
         .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
         .background(Color(token: Tokens.window))
         .clipped()
+        .coordinateSpace(.named(LayoutProbe.space))
+    }
+
+    /// The limit no setting moves, under the table and outside the scroll, so it is always in the
+    /// window however long the table grows.
+    private var permissionsFooter: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(Color(token: Tokens.border)).frame(height: 1)
+            Text(MemoryPage.ceiling)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(token: Tokens.secondary))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 12)
+                .probed("footer")
+        }
     }
 
     private var header: some View {
@@ -132,7 +158,7 @@ struct MemoryView: View {
                             MemoryRowView(
                                 row: row, editor: state.editor?.entryId == row.id ? state.editor : nil,
                                 confirming: state.confirmingForget == row.id, washed: state.changed == row.id,
-                                animated: animated, send: send
+                                animated: animated, forceReveal: revealedRow == row.id, send: send
                             )
                             .transition(.opacity.animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil))
                         }
@@ -164,11 +190,8 @@ struct MemoryView: View {
                     }
                 }
             }
+            .probed("table")
             .padding(.top, 10)
-            Text(MemoryPage.ceiling)
-                .font(.system(size: 12))
-                .foregroundStyle(Color(token: Tokens.secondary))
-                .padding(.top, 10)
         }
     }
 }
@@ -245,16 +268,26 @@ struct MemoryRowView: View {
     var confirming: Bool
     var washed: Bool
     var animated: Bool
+    var forceReveal = false
     var send: (MemoryAction) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var wash: Double = 0
+    @State private var hovering = false
+    @FocusState private var focused: MemoryPage.Control?
+
+    /// Edit, Pause and Forget show on the row under the pointer or holding keyboard focus, and on a
+    /// row that waits for the user (a Forget to confirm, a refusal to retry). Hidden, they stay in
+    /// the accessibility tree and the key loop, so VoiceOver and Tab still reach them, and reaching
+    /// one shows them. A trailing menu was the other choice; it puts every action two clicks away,
+    /// and Pause is the one people use most.
+    private var revealed: Bool { forceReveal || hovering || focused != nil || confirming || row.problem != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(row.says)
+                    Text(row.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color(token: row.status == .paused ? Tokens.secondary : Tokens.ink))
                         .fixedSize(horizontal: false, vertical: true)
@@ -263,8 +296,8 @@ struct MemoryRowView: View {
                             .font(.system(size: 12))
                             .foregroundStyle(Color(token: Tokens.ink))
                             .fixedSize(horizontal: false, vertical: true)
-                    } else if let meta {
-                        Text(meta)
+                    } else if !row.secondary.isEmpty {
+                        Text(row.secondary)
                             .font(.system(size: 11))
                             .foregroundStyle(Color(token: Tokens.secondary))
                             .fixedSize(horizontal: false, vertical: true)
@@ -290,6 +323,10 @@ struct MemoryRowView: View {
         .padding(.vertical, 10)
         .background(alignment: .leading) {
             ZStack(alignment: .leading) {
+                // The row the controls belong to: a faint fill (the hairline's own tone), so the
+                // buttons never seem to float free of their row.
+                Rectangle().fill(Color(token: Tokens.border)).opacity(revealed && !confirming ? 0.6 : 0)
+                    .animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil, value: revealed)
                 if confirming {
                     // Waiting for the user: the Carrot wash and 2 pt edge (SURFACES.md 4).
                     Rectangle().fill(Color(token: Tokens.carrotWash))
@@ -301,6 +338,8 @@ struct MemoryRowView: View {
         // Opening animates (a click on Edit); closing is instant, since Return and Esc close it and
         // a key's result should not wait on motion. Reduce Motion drops the height change too.
         .animation(animated && !reduceMotion && editor != nil ? Motion.curve(Motion.easeOut, 0.16) : nil, value: editor == nil)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
         .onChange(of: washed) { _, now in
             guard now else { return }
@@ -311,12 +350,6 @@ struct MemoryRowView: View {
             }
             send(.washed)
         }
-    }
-
-    /// "Paused · Last seen today, 2:14 PM, in Mail".
-    private var meta: String? {
-        let parts = [MemoryPage.statusText(row.status), row.detail].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -332,9 +365,13 @@ struct MemoryRowView: View {
                     }
                     .buttonStyle(RowButtonStyle(primary: false))
                     .disabled(row.busy)
+                    .focused($focused, equals: control)
                 }
             }
         }
+        // Opacity only, so it plays under Reduce Motion too; leaving is as quick as arriving.
+        .opacity(revealed ? 1 : 0)
+        .animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil, value: revealed)
     }
 }
 

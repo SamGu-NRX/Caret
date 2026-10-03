@@ -162,31 +162,38 @@ public final class HostRuntime {
         let perch = PerchController(center: activity, drawsOnScreen: configuration.perchDrawsOnScreen)
         self.perch = perch
         activity.onChange = { perch.refresh() }
+        // Every helper message takes this route, on main: a line from the helper's socket, and one the
+        // debug socket injects (`inject helperLine`), so an injected offer is taken, accepted and
+        // reported exactly as a real one.
+        let route: @MainActor (HelperInbound, UInt64) -> Void = { message, at in
+            activity.receive(message)
+            // Memory is the user's to see and change whatever the gate holds.
+            if case .memoryReply(let reply) = message {
+                memory.receive(reply)
+                return onboarding.knowAvailableChanged(memory.book.state.acceptsAdd)
+            }
+            // Pause and the roles the host can tell apart (`HostGate`); the perch still
+            // hears about work, which the user asked to see.
+            guard HostGate.allows(message, SettingsStore.shared.settings) else {
+                return status.increment("gate.refused.\(message.typeName)")
+            }
+            fill.receive(message, at: at)
+            switch message {
+            case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
+            case .offerWithdrawn(let withdrawn):
+                surface.withdrawn(withdrawn)
+                onboarding.receive(withdrawn)
+            case .taskProgress(let progress):
+                surface.taskProgress(progress)
+                onboarding.receive(progress)
+            case .firstLookReply(let reply): onboarding.receive(reply)
+            default: break
+            }
+        }
         helper = HelperClient(path: configuration.helperSocketPath, onMessage: { message in
             let at = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    activity.receive(message)
-                    // Memory is the user's to see and change whatever the gate holds.
-                    if case .memoryReply(let reply) = message { return memory.receive(reply) }
-                    // Pause and the roles the host can tell apart (`HostGate`); the perch still
-                    // hears about work, which the user asked to see.
-                    guard HostGate.allows(message, SettingsStore.shared.settings) else {
-                        return status.increment("gate.refused.\(message.typeName)")
-                    }
-                    fill.receive(message, at: at)
-                    switch message {
-                    case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
-                    case .offerWithdrawn(let withdrawn):
-                        surface.withdrawn(withdrawn)
-                        onboarding.receive(withdrawn)
-                    case .taskProgress(let progress):
-                        surface.taskProgress(progress)
-                        onboarding.receive(progress)
-                    case .firstLookReply(let reply): onboarding.receive(reply)
-                    default: break
-                    }
-                }
+                MainActor.assumeIsolated { route(message, at) }
             }
         }, onLink: { up in
             DispatchQueue.main.async {
@@ -208,6 +215,7 @@ public final class HostRuntime {
         memory.send = { [weak memoryClient] in memoryClient?.send($0) ?? false }
         onboarding.onRemember = { [weak memory] in memory?.remember($0) }
         onboarding.onForgetTyped = { [weak memory] in memory?.forgetTyped(labels: $0) }
+        onboarding.knowAvailable = { [weak memory] in memory?.book.state.acceptsAdd ?? false }
         perch.onOpenMemory = { [weak memory] in memory?.open() }
         // The helper's gate holds the same roles, level and pause: sent after every hello and on
         // every change (B10). The client drops a change that leaves all three as they were.
@@ -290,8 +298,7 @@ public final class HostRuntime {
                     do {
                         let injection = try SurfaceInjection.decode(data)
                         if case .helperLine(let line) = injection {
-                            let message = try HelperInbound.decode(line)
-                            fill.receive(message, at: DispatchTime.now().uptimeNanoseconds)
+                            route(try HelperInbound.decode(line), DispatchTime.now().uptimeNanoseconds)
                             return #"{"ok":true}"#
                         }
                         return surface.inject(injection)

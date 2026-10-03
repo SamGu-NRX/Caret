@@ -63,8 +63,16 @@ extension SurfaceMachine {
         if progress.phase == .undone, undoing == progress.taskId {
             return finishUndo(progress)
         }
-        if progress.phase == .verified, work?.offerKey == progress.taskId { work?.verified += 1 }
-        if progress.phase == .done, work?.offerKey == progress.taskId { work?.written = progress.written }
+        if work?.offerKey == progress.taskId {
+            if progress.steps > 0 { work?.steps = progress.steps }
+            switch progress.phase {
+            case .verified, .skipped: if let step = progress.step { work?.nextStep = step + 1 }
+            case .acting: if let step = progress.step { work?.nextStep = step }
+            default: break
+            }
+            if progress.phase == .verified { work?.verified += 1 }
+            if progress.phase == .done { work?.written = progress.written }
+        }
         guard let ending = OfferLifecycle.ending(of: progress, workKey: work?.offerKey) else { return publish() }
         count("surface.progress.\(progress.phase.rawValue)")
         end(with: ending)
@@ -75,7 +83,7 @@ extension SurfaceMachine {
         guard work != nil else { return #"{"error":"no work running"}"# }
         switch phase {
         case "done": end(with: .done)
-        case "error": end(with: .stopped(detail: "debug socket"))
+        case "error": end(with: .stopped(reason: .error, step: nil, steps: 0, detail: "debug socket"))
         default: return #"{"error":"phase is done or error"}"#
         }
         return #"{"ok":true}"#
@@ -94,12 +102,24 @@ extension SurfaceMachine {
         case .done:
             // `written` counts each field once; an older helper sends none, and the verified steps stand in.
             let filled = work.written ?? work.verified
-            if let fill = work.fill, filled > 0 { return showFillToast(work, fill, filled: filled) }
+            if let fill = work.fill, filled > 0 {
+                return showUndoToast(work, WorkLines.filled(filled, from: fill.source), kind: "surface.toast.fill")
+            }
+            // An action that wrote something: its task's ledger can restore it, so ⌘Z takes the
+            // line as it takes a fill's. Only the helper's own count says it wrote; presses alone
+            // have nothing to undo.
+            if work.fill == nil, work.source == .helper, (work.written ?? 0) > 0 {
+                return showUndoToast(work, WorkLines.done(app: work.app, character: world.character, undo: true), kind: "surface.toast.action")
+            }
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
             showResult(WorkLines.done(app: work.app, character: world.character), lifetime: 5)
-        case .stopped:
-            resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .error, offerKey: work.offerKey))
-            showResult(WorkLines.stopped(app: work.app, character: world.character, fillFilled: work.fill.map { _ in work.verified }), lifetime: 6)
+        case .stopped(let reason, let step, let steps, _):
+            let line = WorkLines.stopped(
+                app: work.app, reason: reason, next: step ?? work.nextStep, steps: steps > 0 ? steps : (work.steps ?? 0),
+                fillFilled: work.fill.map { _ in work.verified }
+            )
+            resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: reason == .you ? .result : .error, offerKey: work.offerKey))
+            showResult(line, lifetime: reason == .you ? 3 : 6)
         case .handoff:
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
             showResult(WorkLines.handoff(app: work.app), lifetime: 6)
@@ -116,16 +136,15 @@ extension SurfaceMachine {
         }
     }
 
-    /// "Filled 3 fields from Mail  ⌘Z Undo": ⌘Z belongs to Caret while it shows, and asks the
-    /// helper to undo the task (`SURFACES.md` section 6).
-    func showFillToast(_ work: Work, _ fill: FillWork, filled: Int) {
+    /// "Filled 3 fields from Mail  ⌘Z Undo", or "Done, in TextEdit  ⌘Z Undo": ⌘Z belongs to
+    /// Caret while it shows, and asks the helper to undo the task (`SURFACES.md` section 6).
+    func showUndoToast(_ work: Work, _ line: WorkLine, kind: String) {
         let grant = UndoGrant.task(work.offerKey, target: work.target, createdAt: clock.now)
         let id = arbiter.showToast(grant)
         toastGrantID = id
         emit(.toastSlotTaken)
-        let line = WorkLines.filled(filled, from: fill.source)
         toastInfo = DebugState.Toast(kind: "done", caption: line.text, grantID: id)
-        count("surface.toast.fill")
+        count(kind)
         showResult(line, lifetime: grant.lifetimeSeconds)
     }
 
@@ -185,7 +204,10 @@ extension SurfaceMachine {
             return publish()
         }
         resultStatusID = arbiter.showStatus(StatusLine(pid: line.pid, kind: .result, offerKey: line.offerKey))
-        showResult(WorkLines.stoppedByYou, lifetime: 2)
+        // Where it stopped: the helper stops before the step it has not finished, as the activity
+        // list says it.
+        let steps = work.steps ?? 0
+        showResult(WorkLines.stoppedByYou(next: work.nextStep ?? (steps > 0 ? 0 : nil), of: steps), lifetime: 3)
     }
 
     func endResult() {

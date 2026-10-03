@@ -58,7 +58,8 @@ final class OnboardingHostTests: XCTestCase {
     func testTheKnowScreensWordingIsPinned() {
         XCTAssertEqual(KnowScreen.title, "What Caret knows so far.")
         XCTAssertEqual(KnowScreen.detail, "Type your name and email, and Caret can fill them in for you.")
-        XCTAssertEqual(KnowScreen.footnote, "Caret keeps these on this Mac. Change or remove them any time in What Caret Knows, in the menu bar.")
+        XCTAssertEqual(KnowScreen.footnote, "Saved on this Mac. When Caret works out what to fill, these may go to its cloud model. Change or remove them any time in What Caret Knows, in the menu bar.")
+        XCTAssertFalse(KnowScreen.footnote.contains("keeps these"), "nothing keeps them until the helper accepts add")
         XCTAssertEqual(AboutField.allCases.map(\.label), ["Name", "Email"])
         var draft = AboutDraft()
         draft.email = "dana@"
@@ -131,6 +132,23 @@ final class OnboardingHostTests: XCTestCase {
         XCTAssertEqual(controller.debugInfo()?.windowShown, false)
     }
 
+    /// Today's helper keeps no typed values, so the flow skips the know step; once the helper's
+    /// memory list says it does, the step joins a flow already open.
+    func testTheKnowStepFollowsWhatTheHelperSays() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("caret-onboarding-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let controller = OnboardingController(mode: .hidden, testHooks: true, store: SettingsStore(path: dir.appendingPathComponent("s.json").path))
+        _ = controller.command(["onboarding", "open"])
+        _ = controller.command(["onboarding", "next"])
+        XCTAssertEqual(controller.debugInfo()?.showsKnow, false)
+        _ = controller.command(["onboarding", "next"])
+        XCTAssertEqual(controller.debugInfo()?.step, "permissions", "nothing would keep what is typed, so the step is skipped")
+        controller.knowAvailableChanged(true)
+        _ = controller.command(["onboarding", "back"])
+        XCTAssertEqual(controller.debugInfo()?.step, "know")
+        XCTAssertEqual(controller.debugInfo()?.stepCount, 6)
+    }
+
     // MARK: - The hidden flow over the socket's commands
 
     func testAHiddenFlowWalksOverTheSocketAndWritesTheChoices() throws {
@@ -142,6 +160,8 @@ final class OnboardingHostTests: XCTestCase {
         controller.sendFirstLook = { asked.append($0); return true }
         var kept: [[TypedAbout]] = []
         controller.onRemember = { kept.append($0) }
+        // A helper that keeps typed values: the know step is in the flow.
+        controller.knowAvailable = { true }
         XCTAssertEqual(controller.command(["onboarding"]), #"{"open":false}"#)
         func run(_ line: String) throws -> DebugState.OnboardingInfo {
             let words = line.split(separator: " ", maxSplits: line.hasPrefix("onboarding reply") ? 2 : Int.max).map(String.init)

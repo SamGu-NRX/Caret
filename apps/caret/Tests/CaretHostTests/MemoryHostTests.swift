@@ -50,6 +50,37 @@ final class MemoryHostTests: XCTestCase {
         XCTAssertFalse(info.windowShown, "the socket never puts the window up")
     }
 
+    /// Every sentence must be true today: values do go to the cloud model when Caret works out a
+    /// fill, so the window may not say everything stays on this Mac.
+    func testTheSubtitleSaysWhereValuesGo() {
+        XCTAssertEqual(MemoryView.subtitle, "Saved on this Mac. When Caret works out what to fill, the values it might use go to its cloud model.")
+        XCTAssertFalse(MemoryView.subtitle.contains("stays on this Mac"))
+    }
+
+    /// A11's render cut "Sending, deleting, money and passwords never go past Ask first." off at
+    /// the window's bottom. The footer's whole text must sit inside the window, in both
+    /// appearances, and the table above it must fit without scrolling for the gallery's entries.
+    func testThePermissionsFooterSitsInsideTheWindow() throws {
+        for dark in [false, true] {
+            let probe = LayoutProbe()
+            let view = MemoryView(state: Gallery.memoryState(), tab: .permissions, character: .pebble, animated: false, now: Gallery.memoryNow)
+                .environment(\.layoutProbe, probe)
+            XCTAssertNotNil(Gallery.png(view, dark: dark))
+            let window = CGRect(origin: .zero, size: MemoryView.size)
+            let footer = try XCTUnwrap(probe.frame("footer"), "the permissions tab draws its footer")
+            XCTAssertTrue(window.contains(footer), "footer \(footer) inside \(window), dark \(dark)")
+            XCTAssertGreaterThan(footer.height, 12, "the line is drawn, not squeezed to nothing")
+            let table = try XCTUnwrap(probe.frame("table"))
+            let scroll = try XCTUnwrap(probe.frame("scroll"))
+            XCTAssertLessThanOrEqual(table.maxY, scroll.maxY, "the table fits above the footer without scrolling, dark \(dark)")
+            XCTAssertLessThanOrEqual(scroll.maxY, footer.minY + 0.5, "the footer is below the scroll, never over it")
+        }
+        let memoryTab = LayoutProbe()
+        _ = Gallery.png(MemoryView(state: Gallery.memoryState(), tab: .memory, character: .pebble, animated: false, now: Gallery.memoryNow)
+            .environment(\.layoutProbe, memoryTab), dark: false)
+        XCTAssertNil(memoryTab.frame("footer"), "the memory tab has no permissions footer")
+    }
+
     func testWithoutTestHooksTheSocketOnlyReads() {
         let (c, sent) = controller(testHooks: false)
         let before = sent().count

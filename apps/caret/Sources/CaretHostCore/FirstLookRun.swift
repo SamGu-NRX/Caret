@@ -10,7 +10,8 @@ public struct FirstLookRun: Equatable, Sendable {
         case working
         /// `written` from the `done` progress; nil from a helper that sends none.
         case done(written: Int?)
-        case stopped
+        /// The helper stopped it, and why (`TaskProgress.StopReason`).
+        case stopped(TaskProgress.StopReason)
         case handoff
         /// Real input in the target window paused it. As on the real surfaces the line goes; the
         /// activity list carries the run from here.
@@ -56,6 +57,9 @@ public struct FirstLookRun: Equatable, Sendable {
     public var figureLeft = false
     /// Steps the helper verified: the count when `done` carries none.
     public var verified = 0
+    /// The plan's steps and the first one not yet done, from the run's progress.
+    public var steps = 0
+    public var nextStep: Int?
 
     public init(offerKey: String, actionId: String, app: String, fillRows: Int?, source: String?, startedAt: Date) {
         self.offerKey = offerKey
@@ -86,10 +90,10 @@ public struct FirstLookRun: Equatable, Sendable {
             let filled = written ?? verified
             if fillRows != nil, filled > 0 { return WorkLines.filled(filled, from: source) }
             return WorkLines.done(app: app, character: character)
-        case .stopped: return WorkLines.stopped(app: app, character: character, fillFilled: fillRows.map { _ in verified })
+        case .stopped(let reason): return WorkLines.stopped(app: app, reason: reason, next: nextStep, steps: steps, fillFilled: fillRows.map { _ in verified })
         case .handoff: return WorkLines.handoff(app: app)
         case .paused: return nil
-        case .stoppedByYou: return WorkLines.stoppedByYou
+        case .stoppedByYou: return WorkLines.stoppedByYou(next: nextStep ?? (steps > 0 ? 0 : nil), of: steps)
         case .unsent: return WorkLines.acceptUnsent
         case .undoing: return WorkLines.undoing
         case .undoUnsent: return WorkLines.undoUnsent
@@ -178,6 +182,14 @@ extension OnboardingFlow {
     /// The run's progress, by its task id (the offer's key). A later phase replaces an earlier one.
     func firstLookProgress(_ progress: TaskProgress) {
         guard let run = state.firstLookRun, progress.taskId == run.offerKey else { return }
+        if run.working {
+            if progress.steps > 0 { state.firstLookRun?.steps = progress.steps }
+            switch progress.phase {
+            case .verified, .skipped: if let step = progress.step { state.firstLookRun?.nextStep = step + 1 }
+            case .acting, .stopped: if let step = progress.step { state.firstLookRun?.nextStep = step }
+            default: break
+            }
+        }
         switch progress.phase {
         case .verified where run.working:
             state.firstLookRun?.verified += 1
@@ -186,7 +198,7 @@ extension OnboardingFlow {
             state.firstLookRun?.phase = .done(written: progress.written)
         case .stopped where run.working:
             endRunTimers()
-            state.firstLookRun?.phase = .stopped
+            state.firstLookRun?.phase = .stopped(progress.stopReason ?? .error)
         case .handoff where run.working:
             endRunTimers()
             state.firstLookRun?.phase = .handoff

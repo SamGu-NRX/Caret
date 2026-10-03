@@ -63,7 +63,7 @@ struct OnboardingView: View {
     /// Return and Esc are the window's (`OnboardingController`), so they work from anywhere.
     private var bar: some View {
         ZStack {
-            StepDots(current: state.step.index, count: OnboardingStep.allCases.count)
+            StepDots(current: state.stepIndex, count: state.steps.count)
             HStack {
                 if state.canGoBack {
                     Button("Back") { send(.back) }.buttonStyle(OnboardingButtonStyle(kind: .secondary))
@@ -373,7 +373,9 @@ struct LevelPicker: View {
 struct KnowScreen: View {
     static let title = "What Caret knows so far."
     static let detail = "Type your name and email, and Caret can fill them in for you."
-    static let footnote = "Caret keeps these on this Mac. Change or remove them any time in What Caret Knows, in the menu bar."
+    /// Shown only when the helper keeps typed values (`OnboardingFlow.State.showsKnow`), so
+    /// "saved" is true whenever anyone reads it.
+    static let footnote = "Saved on this Mac. When Caret works out what to fill, these may go to its cloud model. Change or remove them any time in What Caret Knows, in the menu bar."
     static let namePlaceholder = "Your name"
     static let emailPlaceholder = "you@example.com"
 

@@ -16,6 +16,8 @@ enum Step {
     case deliver
     case wait(TimeInterval)
     case progress(String, TaskProgress.Phase, detail: String? = nil, written: Int? = nil, restored: Int? = nil, notRestored: Int? = nil)
+    /// Any progress, built with `Fx.progress` (a stop's reason, a step and the step count).
+    case taskLine(TaskProgress)
     case withdraw(String, OfferWithdrawn.Reason)
     /// `offerWithdrawn reoffered`: the first key replaced by the second.
     case reoffer(String, by: String)
@@ -99,6 +101,7 @@ extension XCTestCase {
             case .wait(let seconds): rig.clock.advance(by: seconds)
             case .progress(let task, let phase, let detail, let written, let restored, let notRestored):
                 rig.machine.taskProgress(Fx.progress(task, phase, detail: detail, written: written, restored: restored, notRestored: notRestored))
+            case .taskLine(let progress): rig.machine.taskProgress(progress)
             case .withdraw(let key, let reason): rig.machine.withdrawn(OfferWithdrawn(at: 1, id: key, reason: reason))
             case .reoffer(let old, let new): rig.machine.withdrawn(OfferWithdrawn(at: 1, id: old, reason: .reoffered, replacedBy: new))
             case .linkLost: rig.machine.helperGone()

@@ -360,7 +360,8 @@ final class MemoryBookTests: XCTestCase {
         rig.book.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])
         XCTAssertEqual(rig.sent, [])
         let section = MemoryPage.sections(rig.state, now: Date())[0]
-        XCTAssertEqual(section.rows.map(\.says), ["Name: Dana Whitfield"])
+        XCTAssertEqual(section.rows.map(\.title), ["Your name is Dana Whitfield"])
+        XCTAssertEqual(section.rows.map(\.secondary), ["You typed this during setup · not saved yet"])
         XCTAssertEqual(section.rows[0].status, .notSaved)
         XCTAssertEqual(section.rows[0].controls, [.forget])
         rig.book.linkChanged(true)
@@ -430,7 +431,7 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertTrue(sections.allSatisfy { $0.rows.isEmpty && !$0.empty.isEmpty })
     }
 
-    func testStatusAndEvidenceLines() throws {
+    func testStatusAndWhenLines() throws {
         let rig = try Rig()
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/Chicago")!
@@ -445,20 +446,18 @@ final class MemoryBookTests: XCTestCase {
         let sameDay = seen.addingTimeInterval(60)
         let sections = MemoryPage.sections(rig.state, now: sameDay, calendar: calendar, locale: locale)
         let about = sections[0].rows[0]
-        XCTAssertEqual(about.detail, "Last seen today, \(clock), in Mail Fixture")
+        XCTAssertEqual(about.secondary, "You set this · today \(clock) · Mail Fixture")
         XCTAssertEqual(about.status, .active)
-        XCTAssertNil(MemoryPage.statusText(about.status))
-        XCTAssertEqual(MemoryPage.statusText(sections[1].rows[0].status), "Paused")
+        XCTAssertTrue(sections[1].rows[0].secondary.hasPrefix("Paused · "))
         XCTAssertEqual(sections[1].rows[0].controls, [.edit, .resume, .forget])
-        XCTAssertEqual(MemoryPage.statusText(sections[3].rows[0].status), "Learning")
-        let nextDay = seen.addingTimeInterval(86_400)
-        XCTAssertEqual(MemoryPage.evidence(rig.state.entries[0].evidence, now: nextDay, calendar: calendar, locale: locale), "Last seen yesterday, \(clock), in Mail Fixture")
+        XCTAssertTrue(sections[3].rows[0].secondary.hasPrefix("Still learning · "))
+        let ms = Int64(seen.timeIntervalSince1970 * 1000)
+        XCTAssertEqual(MemoryPage.when(ms, now: seen.addingTimeInterval(86_400), calendar: calendar, locale: locale), "yesterday \(clock)")
         let day = DateFormatter()
         day.locale = locale
         day.timeZone = calendar.timeZone
         day.setLocalizedDateFormatFromTemplate("MMMd")
-        let later = seen.addingTimeInterval(3 * 86_400)
-        XCTAssertEqual(MemoryPage.evidence(rig.state.entries[0].evidence, now: later, calendar: calendar, locale: locale), "Last seen \(day.string(from: seen)), in Mail Fixture")
+        XCTAssertEqual(MemoryPage.when(ms, now: seen.addingTimeInterval(3 * 86_400), calendar: calendar, locale: locale), day.string(from: seen))
     }
 
     func testTheDebugStateNamesWhatIsInFlightAndTypedValuesByLength() throws {

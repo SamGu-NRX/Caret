@@ -4,7 +4,8 @@ import Foundation
 /// An offer handed to the host through the debug socket's `inject` command, for tests and
 /// screenshots only: the socket accepts it when the host runs with `CARET_TEST_HOOKS=1`. Real
 /// offers arrive from the helper as `alternatives`, `action` and `popup` messages (`HelperOffer`).
-/// An injected offer's claims are never reported to the helper (`OfferSource.debug`).
+/// An offer injected by kind is the host's own (`OfferSource.debug`): its claims are never
+/// reported to the helper. A `helperLine` is the helper's, as if it came over the socket.
 ///
 /// ```
 /// {"kind":"alternatives","pid":123,"candidates":["…","…"],"quoted":false}
@@ -19,7 +20,8 @@ public enum SurfaceInjection: Equatable, Sendable {
     case alternatives(pid: Int32, candidates: [String], quoted: Bool)
     case action(pid: Int32, ActionLine)
     case popup(pid: Int32, PopupOffer)
-    /// A raw helper message (a `fillProposal`), delivered as if the helper had sent it.
+    /// A raw helper message, delivered as if the helper had sent it: it takes the helper socket's
+    /// route, so an injected `action` or `popup` is a helper offer whose Tab sends `offerAccept`.
     case helperLine(Data)
 
     public struct Invalid: Error, Equatable, CustomStringConvertible {

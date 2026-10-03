@@ -364,7 +364,11 @@ public struct DebugState: Codable, Equatable, Sendable {
         }
 
         public var step: String
+        /// The step's place among the steps this flow shows (`stepCount` of them).
         public var stepIndex: Int
+        public var stepCount: Int?
+        /// The `know` step is in the flow (the helper keeps typed values).
+        public var showsKnow: Bool?
         public var roles: [String]
         public var level: String
         public var canContinue: Bool

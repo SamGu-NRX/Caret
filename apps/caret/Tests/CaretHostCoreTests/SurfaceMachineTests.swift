@@ -269,7 +269,7 @@ final class SurfaceMachineTests: XCTestCase {
                 .press(Fx.esc()),
                 .sent(["accept fill-2 fillAll", "stop fill-2"]),
                 .expect(.workingOn(nil)), .expect(.line("Stopped")),
-                .wait(2), .expect(.line(nil)), .expect(.escOwned(false)),
+                .wait(3), .expect(.line(nil)), .expect(.escOwned(false)),
             ]),
         ])
     }
@@ -311,9 +311,9 @@ final class SurfaceMachineTests: XCTestCase {
                 .wait(4.9), .expect(.line("Done, in Sheet Fixture")),
                 .wait(0.1), .expect(.line(nil)), .expect(.escOwned(false)), .did(["hide 0.2"]),
             ]),
-            Transition("stopped: the error caption for 6 s", actionWorking + [
-                .progress("offer-5", .stopped, detail: "mismatch"),
-                .expect(.line("Sheet Fixture wouldn't take it. Open Sheet Fixture to add it.")),
+            Transition("stopped: the reason in words for 6 s", actionWorking + [
+                .taskLine(Fx.progress("offer-5", .stopped, detail: "mismatch", reason: .mismatch)),
+                .expect(.line("Stopped because Sheet Fixture didn't take the change.")),
                 .wait(6), .expect(.line(nil)),
             ]),
             Transition("handoff: your turn, for 6 s", actionWorking + [
@@ -342,8 +342,8 @@ final class SurfaceMachineTests: XCTestCase {
                 .expect(.toast(nil)), .expect(.undoOwned(false)), .expect(.line("Done, in Caret Fixture")),
             ]),
             Transition("a fill stopped after one field", working + [
-                .progress("fill-2", .verified), .progress("fill-2", .stopped),
-                .expect(.line("Filled 1 field. The form changed, so the rest was left as it is.")),
+                .progress("fill-2", .verified), .taskLine(Fx.progress("fill-2", .stopped, reason: .changed)),
+                .expect(.line("Filled 1 field, then stopped because Caret Fixture changed while Caret was working.")),
             ]),
             Transition("Esc closes the result", actionWorking + [
                 .progress("offer-5", .done), .did(["working off", "line Done, in Sheet Fixture"]),

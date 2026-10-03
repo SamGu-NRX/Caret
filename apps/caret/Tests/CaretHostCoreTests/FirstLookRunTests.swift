@@ -22,8 +22,9 @@ final class FirstLookRunTests: XCTestCase {
         return rig
     }
 
-    private func progress(_ phase: TaskProgress.Phase, task: String = "first-look-1.0", written: Int? = nil, restored: Int? = nil, notRestored: Int? = nil) -> TaskProgress {
-        Fx.progress(task, phase, written: written, restored: restored, notRestored: notRestored)
+    private func progress(_ phase: TaskProgress.Phase, task: String = "first-look-1.0", written: Int? = nil, restored: Int? = nil, notRestored: Int? = nil,
+                          reason: TaskProgress.StopReason = .changed, step: Int? = nil, steps: Int = 2) -> TaskProgress {
+        Fx.progress(task, phase, written: written, restored: restored, notRestored: notRestored, reason: reason, step: step, steps: steps)
     }
 
     private func line(_ rig: Rig) -> String? { rig.flow.state.firstLookRun?.line(character: .pebble)?.text }
@@ -145,7 +146,7 @@ final class FirstLookRunTests: XCTestCase {
         XCTAssertEqual(try ended(.done, verified: 2), "Filled 2 fields from Mail", "no written count: the verified steps stand in")
         XCTAssertEqual(try ended(.done, verified: 0), "Done, in Safari", "nothing written: nothing to undo")
         XCTAssertEqual(try ended(.done, verified: 1, apps: nil), "Filled 1 field")
-        XCTAssertEqual(try ended(.stopped, verified: 1), "Filled 1 field. The form changed, so the rest was left as it is.")
+        XCTAssertEqual(try ended(.stopped, verified: 1), "Filled 1 field, then stopped because Safari changed while Caret was working.")
         XCTAssertEqual(try ended(.handoff), "Your turn in Safari")
         XCTAssertNil(try ended(.paused), "paused: the line goes, as at the caret")
     }
@@ -178,7 +179,7 @@ final class FirstLookRunTests: XCTestCase {
         rig.clock.advance(by: 3)
         rig.send(.key(.escape))
         XCTAssertEqual(rig.take(), [.stop(OfferStop(offerId: "first-look-1.0", at: 1_790_000_003_000))])
-        XCTAssertEqual(line(rig), "Stopped")
+        XCTAssertEqual(line(rig), "Stopped", "no progress yet, so no step to name")
         XCTAssertEqual(rig.flow.state.step, .firstLook)
         rig.send(.key(.escape))
         XCTAssertEqual(rig.flow.state.step, .tryIt, "with nothing to stop, Esc is Back")

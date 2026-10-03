@@ -49,6 +49,8 @@ final class HelperProtocolGoldenTests: XCTestCase {
             "offerWithdrawn", "skip:taskControl", "taskProgress", "taskProgress",
             // B9: a reoffered withdrawal. B10: the host's settings, and the withdrawal they cause.
             "offerWithdrawn", "skip:settings", "skip:settings", "offerWithdrawn",
+            // B15: an act grant, a write it refuses, and the revoke, all between helper and reader.
+            "skip:actGrant", "skip:readerCommand", "skip:verbResult", "skip:actRevoke",
         ]
         XCTAssertEqual(kinds, expected)
     }
@@ -57,7 +59,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
     /// withdrawal with its replacement and the withdrawal settings cause.
     func testTheB8LinesDecodeExactly() throws {
         let lines = try goldenLines()
-        XCTAssertEqual(lines.count, 34)
+        XCTAssertEqual(lines.count, 38)
         XCTAssertEqual(try HelperInbound.decode(lines[26]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_122_500, id: "offer-4", reason: .expired)))
         guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { return XCTFail("line 28") }
         XCTAssertEqual(pause, TaskControl(taskId: "task-1", action: .pause, reason: .input))
@@ -169,7 +171,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(OfferStop.self, from: lines[23]), OfferStop(offerId: "offer-5", at: 1_790_000_002_400))
         XCTAssertEqual(try HelperInbound.decode(lines[24]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_002_500, id: "offer-4.0", reason: .taken)))
         guard case .readerCommand(let raise) = try JSONDecoder().decode(Message.self, from: lines[25]) else { return XCTFail("line 26") }
-        XCTAssertEqual(raise.verb, .raise(pid: 5150, windowId: "5150-4"))
+        XCTAssertEqual(raise.verb, .raise(pid: 5150, windowId: "5150-4", taskId: nil), "no grant named: the reader acts only in --act-pids processes")
     }
 
     func testAnOfferWithAValueWithoutARefIsRejected() {

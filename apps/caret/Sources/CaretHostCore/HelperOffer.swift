@@ -142,8 +142,9 @@ public enum OfferLifecycle {
     /// How the working line for an accepted offer ends.
     public enum Ending: Equatable, Sendable {
         case done
-        /// A recheck, mismatch or failure stopped the run; `detail` says why, for the log only.
-        case stopped(detail: String?)
+        /// The run stopped. `reason` is the helper's (`TaskProgress.StopReason`), which the line
+        /// names in plain words; `step` and `steps` place the stop, and `detail` is for the log only.
+        case stopped(reason: TaskProgress.StopReason, step: Int?, steps: Int, detail: String?)
         /// The next step reads as send, submit, delete or pay; the press is left to the user.
         case handoff
         /// Real input in the target window paused the run. The activity list carries it from here.
@@ -159,7 +160,9 @@ public enum OfferLifecycle {
         guard let workKey, progress.taskId == workKey else { return nil }
         switch progress.phase {
         case .done: return .done
-        case .stopped: return .stopped(detail: progress.detail)
+        // The decoder refuses a stopped progress without a reason; `.error` only guards a helper
+        // that skipped the decoder's check.
+        case .stopped: return .stopped(reason: progress.stopReason ?? .error, step: progress.step, steps: progress.steps, detail: progress.detail)
         case .handoff: return .handoff
         case .paused: return .paused
         case .started, .skipped, .acting, .verified, .undone: return nil

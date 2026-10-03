@@ -128,7 +128,12 @@ enum Gallery {
             line("line-action", LineContent(figure: .offering, app: "Calendar", text: "Coffee with Dana, Thu 3:00 to 3:30", hints: [Hint(key: "Tab")])),
             line("line-working", LineContent(figure: .absent, app: "Calendar", text: Captions.working(character, app: "Calendar") + ", 4 s", emphasis: .plain, hints: [Hint(key: "Esc", label: "Stop")], appGlyphOnly: true)),
             line("line-done", LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])),
-            line("line-error", LineContent(figure: .error, text: Captions.error(character, app: "Calendar"), emphasis: .plain)),
+            line("line-error", WorkLines.stopped(app: "Calendar", reason: .mismatch, next: 0, steps: 1, fillFilled: nil).content),
+            // The stopped line names the helper's reason: Esc mid-run, a window that closed, and a
+            // fill cut short by a change.
+            line("line-stopped-you", WorkLines.stoppedByYou(next: 1, of: 3).content),
+            line("line-stopped-window-gone", WorkLines.stopped(app: "TextEdit", reason: .windowGone, next: 0, steps: 1, fillFilled: nil).content),
+            line("line-stopped-fill-changed", WorkLines.stopped(app: "Safari", reason: .changed, next: 2, steps: 3, fillFilled: 2).content),
             line("line-fill-source", LineContent(figure: .offering, text: "from Mail, Invoice 2041", emphasis: .secondary, hints: [Hint(key: "Tab")])),
             line("line-fill-source-compact", LineContent(figure: .offering, text: "from Mail, Invoice 2041", emphasis: .secondary, hints: [Hint(key: "Tab")]), compact: true),
             line("line-fill-toast", LineContent(figure: .done, lead: "Filled", text: "1 field from Mail", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])),
@@ -158,7 +163,8 @@ extension Gallery {
     /// The first look's run, as the helper reports it.
     static func firstLookProgress(_ phase: TaskProgress.Phase, written: Int? = nil) -> TaskProgress {
         let counts = written.map { #","written":\#($0)"# } ?? ""
-        let line = #"{"type":"taskProgress","v":1,"at":1790000001000,"taskId":"first-look-1.0","planId":"first-look-1.0","phase":"\#(phase.rawValue)","step":null,"steps":4,"says":null,"detail":null\#(counts)}"#
+        let why = phase == .stopped ? #","stopReason":"changed""# : ""
+        let line = #"{"type":"taskProgress","v":1,"at":1790000001000,"taskId":"first-look-1.0","planId":"first-look-1.0","phase":"\#(phase.rawValue)","step":null,"steps":4,"says":null,"detail":null\#(counts)\#(why)}"#
         // A fixed literal of the protocol's own shape; it cannot fail to decode.
         return try! JSONDecoder().decode(TaskProgress.self, from: Data(line.utf8))
     }
@@ -166,12 +172,14 @@ extension Gallery {
     /// Every onboarding screen, and each state of the ones that change, reached by sending the
     /// flow the events the window would.
     static func onboarding(_ character: FigureCharacter = .pebble) -> [Item] {
-        func flow(ax: Bool = true, input: Bool = true, _ events: [OnboardingFlow.Event]) -> OnboardingFlow.State {
-            let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: input), clock: StillClock())
+        // Today's helper keeps no typed values, so the flow skips the know step and shows five
+        // dots; the know screens are drawn as a helper that keeps them would show them.
+        func flow(ax: Bool = true, input: Bool = true, know: Bool = false, _ events: [OnboardingFlow.Event]) -> OnboardingFlow.State {
+            let flow = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: input), clock: StillClock(), showsKnow: know)
             for event in events { flow.send(event) }
             return flow.state
         }
-        let toTryIt: [OnboardingFlow.Event] = [.next, .next, .next, .next]
+        let toTryIt: [OnboardingFlow.Event] = [.next, .next, .next]
         let toFirstLook = toTryIt + [.key(.tab), .next]
         // The flow's first request, with its default token.
         let found = FirstLookReply(requestId: "first-look-1-1", at: 0, outcome: .found, found: firstLookFound)
@@ -181,11 +189,11 @@ extension Gallery {
             // The screen as it opens: every role on, watch included, and Balanced.
             ("work", flow([.next])),
             // What Caret knows so far: as it opens, typed in, and an email Continue would not keep.
-            ("know", flow([.next, .next])),
-            ("know-typed", flow([.next, .next, .setAbout(.name, "Dana Whitfield"), .setAbout(.email, "dana.whitfield@example.com")])),
-            ("know-problem", flow([.next, .next, .setAbout(.name, "Dana Whitfield"), .setAbout(.email, "dana.whitfield@example"), .next])),
-            ("permissions-waiting", flow(ax: false, input: false, [.next, .next, .next])),
-            ("permissions-on", flow(ax: false, input: false, [.next, .next, .next, .permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true))])),
+            ("know", flow(know: true, [.next, .next])),
+            ("know-typed", flow(know: true, [.next, .next, .setAbout(.name, "Dana Whitfield"), .setAbout(.email, "dana.whitfield@example.com")])),
+            ("know-problem", flow(know: true, [.next, .next, .setAbout(.name, "Dana Whitfield"), .setAbout(.email, "dana.whitfield@example"), .next])),
+            ("permissions-waiting", flow(ax: false, input: false, [.next, .next])),
+            ("permissions-on", flow(ax: false, input: false, [.next, .next, .permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true))])),
             ("try-it", flow(toTryIt)),
             ("try-it-declined", flow(toTryIt + [.key(.character("9"))])),
             ("try-it-filled", flow(toTryIt + [.key(.tab)])),
@@ -591,13 +599,15 @@ extension Gallery {
     }
 
     static func memory(_ character: FigureCharacter = .pebble) -> [Item] {
-        func window(_ state: MemoryBook.State, _ tab: MemoryView.Tab = .memory) -> AnyView {
-            AnyView(MemoryView(state: state, tab: tab, character: character, animated: false, now: memoryNow)
+        func window(_ state: MemoryBook.State, _ tab: MemoryView.Tab = .memory, pointerOn row: String? = nil) -> AnyView {
+            AnyView(MemoryView(state: state, tab: tab, character: character, animated: false, now: memoryNow, revealedRow: row)
                 .environment(\.timeZone, TimeZone(identifier: "America/Chicago")!)
                 .environment(\.locale, Locale(identifier: "en_US")))
         }
         return [
             Item(name: "memory-list", view: window(memoryState())),
+            // The pointer on the people row: its controls show, every other row's stay hidden.
+            Item(name: "memory-list-hover", view: window(memoryState(), pointerOn: "people-1")),
             Item(name: "memory-edit", view: window(memoryState { book in
                 book.beginEdit("about-1")
                 book.updateDraft("value", "Marcus Lowe, Operations")

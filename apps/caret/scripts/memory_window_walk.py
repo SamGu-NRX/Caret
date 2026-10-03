@@ -63,11 +63,13 @@ class MemoryHelper(FakeHelper):
         self.memory.append(message)
         op, rid = message["op"], message["requestId"]
 
-        def reply(entries, error=None):
-            self.send({"type": "memoryReply", "v": 1, "requestId": rid, "error": error, "entries": entries})
+        def reply(entries, error=None, **extra):
+            self.send({"type": "memoryReply", "v": 1, "requestId": rid, "error": error, "entries": entries, **extra})
 
         if op == "list":
-            return reply([e for e in self.entries if message.get("kind") in (None, e["kind"])])
+            # This helper keeps typed values, and says so, so onboarding shows the know step (A12).
+            return reply([e for e in self.entries if message.get("kind") in (None, e["kind"])],
+                         ops=["list", "edit", "pause", "resume", "forget", "add"])
         if op == "add":
             self.added += 1
             f = dict(message["fields"])

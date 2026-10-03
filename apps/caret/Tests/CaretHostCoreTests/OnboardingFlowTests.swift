@@ -9,8 +9,10 @@ final class OnboardingFlowTests: XCTestCase {
         let flow: OnboardingFlow
         private(set) var commands: [OnboardingFlow.Command] = []
 
-        init(settings: CaretSettings = CaretSettings(), ax: Bool = false, input: Bool = true) {
-            flow = OnboardingFlow(settings: settings, permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: input), clock: clock)
+        /// `showsKnow` on: most tests here walk the know step, as a helper that keeps typed values
+        /// has it. `testWithoutAddTheKnowStepIsSkipped` covers today's helper.
+        init(settings: CaretSettings = CaretSettings(), ax: Bool = false, input: Bool = true, showsKnow: Bool = true) {
+            flow = OnboardingFlow(settings: settings, permissions: OnboardingPermissions(accessibility: ax, inputMonitoring: input), clock: clock, showsKnow: showsKnow)
             flow.output = { [unowned self] in if $0 != .changed { self.commands.append($0) } }
         }
 
@@ -370,6 +372,41 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.step, .know)
         rig.take()
         return rig
+    }
+
+    func testWithoutAddTheKnowStepIsSkipped() {
+        // Today's helper keeps no typed values, so nothing would keep a name typed here.
+        let rig = Rig(ax: true, showsKnow: false)
+        XCTAssertEqual(rig.flow.state.steps, [.welcome, .work, .permissions, .tryIt, .firstLook])
+        rig.send(.next, .next)
+        XCTAssertEqual(rig.step, .permissions)
+        XCTAssertEqual(rig.flow.state.stepIndex, 2)
+        XCTAssertEqual(rig.flow.debugInfo().stepCount, 5)
+        XCTAssertEqual(rig.flow.debugInfo().showsKnow, false)
+        rig.send(.back)
+        XCTAssertEqual(rig.step, .work, "Back skips it too")
+        rig.send(.setAbout(.name, "Dana"))
+        XCTAssertEqual(rig.flow.state.about.name, "", "the step's events do nothing off the step")
+    }
+
+    func testTheKnowStepJoinsWhenTheHelperSaysItKeepsTypedValues() {
+        let rig = Rig(ax: true, showsKnow: false)
+        rig.send(.next, .knowAvailable(true), .next)
+        XCTAssertEqual(rig.step, .know)
+        XCTAssertEqual(rig.flow.state.stepIndex, 2)
+        XCTAssertEqual(rig.flow.state.steps.count, 6)
+    }
+
+    func testAUserOnTheKnowStepStaysWhenTheHelperStopsSayingSo() {
+        let rig = atKnow()
+        rig.send(.knowAvailable(false))
+        XCTAssertEqual(rig.step, .know, "the screen does not vanish under the user")
+        XCTAssertEqual(rig.flow.state.steps.count, 6, "its dot stays while the user is on it")
+        rig.send(.next)
+        XCTAssertEqual(rig.step, .permissions)
+        XCTAssertEqual(rig.flow.state.steps.count, 5)
+        rig.send(.back)
+        XCTAssertEqual(rig.step, .work)
     }
 
     func testTheKnowScreenSitsBetweenWorkAndPermissions() {

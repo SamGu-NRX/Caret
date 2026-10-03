@@ -103,6 +103,12 @@ class FakeHelper:
             self.accepts.append({"at": time.monotonic(), "message": message})
             threading.Thread(target=self._run, args=(message["offerId"],), daemon=True).start()
             return
+        if kind == "memoryRequest" and message.get("op") == "list":
+            # A helper that keeps typed values says so (the host's contract, memory.ndjson), so the
+            # know step is in the flow. Adds are left unanswered, as before.
+            self.send({"type": "memoryReply", "v": 1, "requestId": message["requestId"], "error": None, "entries": [],
+                       "ops": ["list", "edit", "pause", "resume", "forget", "add"]})
+            return
         if kind == "taskControl":
             self.controls.append({"at": time.monotonic(), "message": message})
             if message.get("action") == "undo":
@@ -261,8 +267,10 @@ def main():
         check("work screen holds the choices", r["roles"] == ["fill", "watch", "words"] and r["level"] == "eager", r)
         # The run's own grants: both off, so the permission screen asks for both.
         ob("permissions off off")
-        # What Caret knows so far (A11): typed by hand, an incomplete email held, then kept.
+        # What Caret knows so far (A11): typed by hand, an incomplete email held, then kept. Shown
+        # because this helper's memory list names the add op (A12).
         r = ob("next", "know")
+        check("a helper that keeps typed values puts the know step in the flow", r.get("showsKnow") is True and r.get("stepCount") == 6, r)
         check("the know screen opens empty", r.get("about") == {"name": 0, "email": 0}, r.get("about"))
         ob("about email dana.whitfield@example")
         r = ob("next", "know")
@@ -436,6 +444,8 @@ def main():
         for c in ["permissions on on", "next", "next", "next", "next", "key tab", "next"]:
             lone.ask("onboarding " + c)
         r = lone.ask("onboarding")
+        check("no helper says it keeps typed values: the know step is not in the flow, and the walk skips it",
+              r.get("showsKnow") is False and r.get("stepCount") == 5 and r.get("step") == "firstLook", r)
         check("paused: the first look asks for nothing", r.get("firstLook") == "nothing" and "firstLookRequest" not in r, r)
         lone.ask("settings set paused off")
         lone.ask("onboarding back")

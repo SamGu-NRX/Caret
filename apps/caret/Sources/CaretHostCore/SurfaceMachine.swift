@@ -70,6 +70,10 @@ public final class SurfaceMachine {
         var verified = 0
         /// The fields the run wrote, from its `done` progress (`TaskProgress.written`).
         var written: Int?
+        /// The plan's step count and the first step not yet done, from the run's progress, so a
+        /// stop can say where it stopped.
+        var steps: Int?
+        var nextStep: Int?
         /// The figure has looked away and left the working line.
         var figureLeft = false
     }

@@ -4,7 +4,8 @@ import Foundation
 /// The six screens of onboarding, in order (`SURFACES.md` section 7, reordered by the A7 brief:
 /// how you want to work comes before permissions, so the permission screen can say what the
 /// chosen help needs). `know` is the Fable plan's minute two, "What I know so far" (A11): the
-/// first view of memory, typed by hand.
+/// first view of memory, typed by hand. It is shown only when the helper says it keeps typed
+/// values (`State.showsKnow`); until then nothing would keep them, so the step is skipped.
 public enum OnboardingStep: String, CaseIterable, Codable, Sendable {
     case welcome, work, know, permissions, tryIt, firstLook
 
@@ -165,6 +166,9 @@ public final class OnboardingFlow {
         /// A grant appeared and every shown row is on: the screen moves on by itself shortly.
         public var advancingAfterGrant = false
         public var about = AboutDraft()
+        /// The `know` step is in the flow: the helper said it accepts `memoryRequest` op `add`
+        /// (`MemoryBook.State.acceptsAdd`). Without that, what is typed there would be kept by nothing.
+        public var showsKnow = false
         public var tryIt = TryIt()
         public var firstLook: FirstLookState = .idle
         /// The first look's offer, taken: its work and result (`FirstLookRun`).
@@ -185,6 +189,15 @@ public final class OnboardingFlow {
         }
 
         public var canGoBack: Bool { step != .welcome }
+
+        /// The steps this flow shows, in order: every step but `know` while the helper keeps no
+        /// typed values. The step dots count these.
+        public var steps: [OnboardingStep] {
+            OnboardingStep.allCases.filter { $0 != .know || showsKnow || step == .know }
+        }
+
+        /// The current step's place among `steps`.
+        public var stepIndex: Int { steps.firstIndex(of: step) ?? step.index }
     }
 
     public enum Event: Equatable, Sendable {
@@ -216,6 +229,9 @@ public final class OnboardingFlow {
         /// The settings changed outside the flow (the menu's Pause). Roles and level stay the
         /// flow's own; the rest applies to what it asks for next.
         case settingsChanged(CaretSettings)
+        /// What the helper's last memory list said about keeping typed values. The `know` step
+        /// joins or leaves the flow; a user already on it stays there.
+        case knowAvailable(Bool)
     }
 
     public enum Pane: String, Codable, Sendable { case accessibility, inputMonitoring }
@@ -267,11 +283,12 @@ public final class OnboardingFlow {
     private var requests = 0
     private var asked: FirstLookRequest?
 
-    public init(settings: CaretSettings, permissions: OnboardingPermissions, clock: SurfaceClock, token: String = "1") {
+    public init(settings: CaretSettings, permissions: OnboardingPermissions, clock: SurfaceClock, token: String = "1", showsKnow: Bool = false) {
         self.clock = clock
         base = settings
         self.token = token
         state = State(roles: settings.roles, level: settings.level, permissions: permissions)
+        state.showsKnow = showsKnow
     }
 
     var nowMs: Int64 { Int64((clock.now.timeIntervalSince1970 * 1000).rounded()) }
@@ -339,6 +356,8 @@ public final class OnboardingFlow {
         case .offerWithdrawn(let withdrawn): firstLookWithdrawn(withdrawn)
         case .settingsChanged(let settings):
             base = settings
+        case .knowAvailable(let available):
+            state.showsKnow = available
         }
         output(.changed)
     }
@@ -350,7 +369,7 @@ public final class OnboardingFlow {
         case .work:
             // The choices count from here, even if onboarding stops before its end.
             output(.saveChoices(roles: state.roles, level: state.level, onboarded: false))
-            go(to: .know, .forward)
+            go(to: state.showsKnow ? .know : .permissions, .forward)
         case .know:
             guard state.about.problem == nil else {
                 state.about.showsProblem = true
@@ -373,7 +392,7 @@ public final class OnboardingFlow {
         case .welcome: return
         case .work: go(to: .welcome, .back)
         case .know: go(to: .work, .back)
-        case .permissions: go(to: .know, .back)
+        case .permissions: go(to: state.showsKnow ? .know : .work, .back)
         case .tryIt: go(to: .permissions, .back)
         case .firstLook: go(to: .tryIt, .back)
         }
@@ -533,10 +552,12 @@ public final class OnboardingFlow {
 
     public func debugInfo() -> DebugState.OnboardingInfo {
         var info = DebugState.OnboardingInfo(
-            step: state.step.rawValue, stepIndex: state.step.index, roles: CaretRole.allCases.filter(state.roles.contains).map(\.rawValue),
+            step: state.step.rawValue, stepIndex: state.stepIndex, roles: CaretRole.allCases.filter(state.roles.contains).map(\.rawValue),
             level: state.level.rawValue, canContinue: state.canContinue, finished: state.finished
         )
         info.permissions = state.permissions
+        info.showsKnow = state.showsKnow
+        info.stepCount = state.steps.count
         info.about = Dictionary(uniqueKeysWithValues: AboutField.allCases.map { ($0.rawValue, state.about[$0].utf16.count) })
         info.aboutProblem = state.about.showsProblem ? state.about.problem : nil
         info.showsInputMonitoring = state.showsInputMonitoring

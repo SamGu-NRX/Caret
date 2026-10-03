@@ -8,10 +8,13 @@ import Foundation
 // here, under `HelperMemory` because `MemoryEntry` already names the host's record of onboarding
 // choices (CaretSettings.swift).
 //
-// Two parts of this file are the host's contract, not yet the helper's
+// Three parts of this file are the host's contract, not yet the helper's
 // (`Tests/CaretHostCoreTests/Fixtures/memory.ndjson` has a line of each):
 //   - `op: "add"` with `kind: "about"` and `fields: {label, value, source: "typed"}`: a value the user
 //     typed in onboarding. The helper's schema refuses the op today ("invalid consumer message").
+//   - `ops` on a list reply: the memoryRequest ops this helper accepts. Onboarding shows its "What I
+//     know so far" step only when `ops` names `add`, because nothing else keeps what is typed there.
+//     Today's helper sends no `ops`, so the step stays hidden.
 //   - `uses` on a permission entry: its last five uses, newest first. No helper records uses yet; an
 //     entry without the key decodes with `uses == nil`, which the list shows as none recorded.
 
@@ -281,13 +284,20 @@ public enum HelperMemory {
         /// Entries this host could not read (a kind or rule from a newer helper), with why. Counted
         /// and reported, never guessed at; the rest of the reply still applies.
         public var unreadable: [String]
+        /// The ops the helper says it accepts (host contract, see the file header); nil when it
+        /// does not say, as today's helper. Op names this host does not know are left out.
+        public var ops: Set<Request.Op>?
 
-        public init(requestId: String, error: String?, entries: [Entry], unreadable: [String] = []) {
+        public init(requestId: String, error: String?, entries: [Entry], unreadable: [String] = [], ops: Set<Request.Op>? = nil) {
             self.requestId = requestId
             self.error = error
             self.entries = entries
             self.unreadable = unreadable
+            self.ops = ops
         }
+
+        /// The helper said it keeps typed values (`ops` names `add`).
+        public var acceptsAdd: Bool { ops?.contains(.add) == true }
 
         public static func decode(_ line: Data) throws -> Reply {
             try JSONDecoder().decode(Wire.self, from: line).reply
@@ -296,17 +306,19 @@ public enum HelperMemory {
         private struct Wire: Decodable {
             let reply: Reply
 
-            enum CodingKeys: String, CodingKey { case type, v, requestId, error, entries }
+            enum CodingKeys: String, CodingKey { case type, v, requestId, error, entries, ops }
 
             init(from decoder: Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 try FirstLookWire.checkEnvelope(c, Reply.type)
                 let lossy = try c.decode([Lossy].self, forKey: .entries)
+                let ops = try c.decodeIfPresent([String].self, forKey: .ops)
                 reply = Reply(
                     requestId: try c.decode(String.self, forKey: .requestId),
                     error: try FirstLookWire.nullable(c, String.self, .error),
                     entries: lossy.compactMap(\.entry),
-                    unreadable: lossy.compactMap(\.problem)
+                    unreadable: lossy.compactMap(\.problem),
+                    ops: ops.map { Set($0.compactMap(Request.Op.init(rawValue:))) }
                 )
             }
         }

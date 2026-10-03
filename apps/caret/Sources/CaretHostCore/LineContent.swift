@@ -110,27 +110,51 @@ public enum Captions {
         }
     }
 
-    public static func error(_ character: FigureCharacter, app: String) -> String {
-        switch character {
-        case .seed: return "\(app) didn't accept it. Open \(app) to add it."
-        case .pebble, .wren: return "\(app) wouldn't take it. Open \(app) to add it."
+    public static let stopped = "Stopped"
+
+    /// What stopped a run, as the end of "Stopped because …", one clause per helper reason
+    /// (protocol.ts StopReason). Says what happened, in the user's terms, without blame.
+    public static func stopCause(_ reason: TaskProgress.StopReason, app: String) -> String {
+        switch reason {
+        case .you: return "you stopped it"
+        case .changed: return "\(app) changed while Caret was working"
+        case .sheet: return "a dialog opened in \(app)"
+        case .windowGone: return "the \(app) window closed"
+        case .ambiguous: return "more than one \(app) window matched"
+        case .readerRestarted: return "Caret lost its view of the screen"
+        case .reader: return "Caret couldn't read or change \(app)"
+        case .mismatch: return "\(app) didn't take the change"
+        case .unreachable: return "Caret couldn't find the spot in \(app)"
+        case .notConfigured: return "Caret isn't set up for this yet"
+        case .refused: return "the offer had already closed"
+        case .error: return "something unexpected happened"
         }
     }
 
-    public static let stopped = "Stopped"
+    /// The run stopped where the user stopped it: "Stopped before step 2 of 3". `next` is the
+    /// zero-based step not yet done; a one-step run, or one with no step known, just stopped.
+    public static func stoppedByYou(next: Int?, of steps: Int) -> String {
+        guard let next, steps > 1, next < steps else { return stopped }
+        return "Stopped before step \(next + 1) of \(steps)"
+    }
+
+    /// A run the helper stopped for `reason`. A fill says what it filled first.
+    public static func stopped(_ reason: TaskProgress.StopReason, app: String, next: Int?, steps: Int, fillFilled: Int?) -> String {
+        if reason == .you { return stoppedByYou(next: next, of: steps) }
+        if reason == .refused { return "That offer had already closed, so nothing ran." }
+        let cause = stopCause(reason, app: app)
+        switch fillFilled {
+        case .some(0): return "Filled nothing, because \(cause)."
+        case .some(let n): return "Filled \(fields(n)), then stopped because \(cause)."
+        case .none: return "Stopped because \(cause)."
+        }
+    }
 
     /// "1 field", "3 fields".
     public static func fields(_ count: Int) -> String { count == 1 ? "1 field" : "\(count) fields" }
 
     /// The working line of a fill pop-up.
     public static func filling(_ count: Int) -> String { "Filling \(fields(count))" }
-
-    /// A fill run that stopped: what happened and what was left, without blame.
-    public static func fillStopped(filled: Int) -> String {
-        filled == 0
-            ? "The form changed, so nothing was filled."
-            : "Filled \(fields(filled)). The form changed, so the rest was left as it is."
-    }
 
     /// The run reached a send, submit, delete or pay step and left the press to the user.
     public static func handoff(app: String) -> String { "Your turn in \(app)" }
@@ -181,10 +205,13 @@ public enum WorkLines {
         ), text: caption)
     }
 
-    /// Done, with nothing to undo here.
-    public static func done(app: String, character: FigureCharacter) -> WorkLine {
+    /// Done. `undo`: the run wrote something its task can restore, so ⌘Z takes it while it shows.
+    public static func done(app: String, character: FigureCharacter, undo: Bool = false) -> WorkLine {
         let done = Captions.done(character, app: app)
-        return WorkLine(LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain), text: "\(done.lead) \(done.rest)")
+        return WorkLine(
+            LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain, hints: undo ? [Hint(key: "⌘Z", label: "Undo")] : []),
+            text: "\(done.lead) \(done.rest)"
+        )
     }
 
     /// "Filled 3 fields from Mail  ⌘Z Undo": a fill that wrote something.
@@ -196,10 +223,11 @@ public enum WorkLines {
         )
     }
 
-    /// A recheck, mismatch or failure stopped the run. A fill says what it filled first.
-    public static func stopped(app: String, character: FigureCharacter, fillFilled: Int?) -> WorkLine {
-        let caption = fillFilled.map { Captions.fillStopped(filled: $0) } ?? Captions.error(character, app: app)
-        return WorkLine(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption)
+    /// The helper stopped the run, and why in plain words. A fill says what it filled first. A stop
+    /// the user asked for is not an error, so its figure is calm.
+    public static func stopped(app: String, reason: TaskProgress.StopReason, next: Int?, steps: Int, fillFilled: Int?) -> WorkLine {
+        let caption = Captions.stopped(reason, app: app, next: next, steps: steps, fillFilled: fillFilled)
+        return WorkLine(LineContent(figure: reason == .you ? .done : .error, text: caption, emphasis: .plain), text: caption)
     }
 
     /// The next step reads as send, submit, delete or pay; the press is left to the user.
@@ -208,8 +236,11 @@ public enum WorkLines {
         return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
     }
 
-    /// Esc stopped it.
-    public static let stoppedByYou = WorkLine(LineContent(figure: .done, text: Captions.stopped, emphasis: .plain), text: Captions.stopped)
+    /// Esc stopped it: the line names the step it stopped before.
+    public static func stoppedByYou(next: Int?, of steps: Int) -> WorkLine {
+        let caption = Captions.stoppedByYou(next: next, of: steps)
+        return WorkLine(LineContent(figure: .done, text: caption, emphasis: .plain), text: caption)
+    }
 
     public static let undoing = WorkLine(LineContent(figure: .working, text: "Undoing", emphasis: .plain), text: "Undoing")
 

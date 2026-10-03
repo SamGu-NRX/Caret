@@ -71,6 +71,9 @@ public final class MemoryBook {
         public var typed: [Typed] = []
         /// The entry the helper just confirmed a change to: its row flashes once.
         public var changed: String?
+        /// The last list reply said the helper keeps typed values (`HelperMemory.Reply.acceptsAdd`).
+        /// Kept across a dropped connection: the helper that comes back is the same build.
+        public var acceptsAdd = false
 
         public init() {}
     }
@@ -136,6 +139,7 @@ public final class MemoryBook {
         case .list:
             state.entries = reply.entries
             state.unreadable = reply.unreadable.count
+            state.acceptsAdd = reply.acceptsAdd
             state.loaded = true
             state.listProblem = nil
             let ids = Set(reply.entries.map(\.id))
@@ -449,6 +453,8 @@ public final class MemoryBook {
 
         public var connected: Bool
         public var loaded: Bool
+        /// The helper keeps typed values, so onboarding shows its "What I know so far" step.
+        public var acceptsAdd: Bool
         public var entries: [EntryInfo]
         public var unreadable: Int
         public var busy: [String: String]
@@ -464,7 +470,7 @@ public final class MemoryBook {
 
     public func debugInfo() -> DebugInfo {
         DebugInfo(
-            connected: state.connected, loaded: state.loaded,
+            connected: state.connected, loaded: state.loaded, acceptsAdd: state.acceptsAdd,
             entries: state.entries.map { e in
                 DebugInfo.EntryInfo(id: e.id, kind: e.kind.rawValue, status: e.status.rawValue, says: e.says,
                                     rule: e.permission?.rule.rawValue, uses: e.uses?.count)

@@ -55,6 +55,37 @@ final class HelperMemoryTests: XCTestCase {
         }
     }
 
+    /// The host's contract for showing onboarding's know step: a list reply names the ops the
+    /// helper accepts. Today's helper names none, and a name this host does not know is left out.
+    func testOpsSayWhetherTheHelperKeepsTypedValues() throws {
+        let contract = try Self.reply(1)
+        XCTAssertEqual(contract.ops, [.list, .edit, .pause, .resume, .forget, .add])
+        XCTAssertTrue(contract.acceptsAdd)
+        let today = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[]}"#.utf8))
+        XCTAssertNil(today.ops)
+        XCTAssertFalse(today.acceptsAdd)
+        let newer = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[],"ops":["list","merge"]}"#.utf8))
+        XCTAssertEqual(newer.ops, [.list])
+        XCTAssertFalse(newer.acceptsAdd)
+
+        let book = MemoryBook(clock: ManualClock())
+        var sent: [HelperMemory.Request] = []
+        book.send = { sent.append($0); return true }
+        book.linkChanged(true)
+        var r = contract
+        r.requestId = sent.last!.requestId
+        book.receive(r)
+        XCTAssertTrue(book.state.acceptsAdd)
+        XCTAssertTrue(book.debugInfo().acceptsAdd)
+        book.linkChanged(false)
+        XCTAssertTrue(book.state.acceptsAdd, "kept across a dropped connection")
+        book.linkChanged(true)
+        var plain = today
+        plain.requestId = sent.last!.requestId
+        book.receive(plain)
+        XCTAssertFalse(book.state.acceptsAdd, "a helper that stops saying so hides the step again")
+    }
+
     func testAClearedRoutineNameIsSentAsNull() throws {
         let r = HelperMemory.Request(requestId: "r", op: .edit, id: "routine-1", fields: ["name": .null])
         let fields = try XCTUnwrap(try json(r.line())["fields"] as? NSDictionary)

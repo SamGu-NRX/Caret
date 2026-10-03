@@ -56,6 +56,8 @@ final class OnboardingController {
     var onForgetTyped: ([String]) -> Void = { _ in }
     /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
     var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
+    /// Whether the helper keeps typed values (`MemoryBook.State.acceptsAdd`), read when a flow opens.
+    var knowAvailable: () -> Bool = { false }
     /// What the window refused to do because it is hidden, for the debug state.
     private var suppressed: [String] = []
 
@@ -92,7 +94,10 @@ final class OnboardingController {
             return
         }
         drawsWindow = drawing && mode != .hidden
-        let flow = OnboardingFlow(settings: store.settings, permissions: readPermissions(), clock: RunLoopClock(), token: String(UUID().uuidString.prefix(8)).lowercased())
+        let flow = OnboardingFlow(
+            settings: store.settings, permissions: readPermissions(), clock: RunLoopClock(),
+            token: String(UUID().uuidString.prefix(8)).lowercased(), showsKnow: knowAvailable()
+        )
         flow.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
         self.flow = flow
         model.state = flow.state
@@ -118,6 +123,12 @@ final class OnboardingController {
             flow = nil
         }
         model.state = flow?.state
+    }
+
+    /// The helper's memory list said, again or anew, whether it keeps typed values.
+    func knowAvailableChanged(_ available: Bool) {
+        guard let flow, flow.state.showsKnow != available else { return }
+        flow.send(.knowAvailable(available))
     }
 
     func receive(_ reply: FirstLookReply) {

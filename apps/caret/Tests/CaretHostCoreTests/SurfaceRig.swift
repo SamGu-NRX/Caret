@@ -162,11 +162,14 @@ enum Fx {
         """)
     }
 
-    static func progress(_ task: String, _ phase: TaskProgress.Phase, detail: String? = nil, written: Int? = nil, restored: Int? = nil, notRestored: Int? = nil) -> TaskProgress {
+    /// A stopped progress carries `reason` (the protocol requires one); other phases carry none.
+    static func progress(_ task: String, _ phase: TaskProgress.Phase, detail: String? = nil, written: Int? = nil, restored: Int? = nil, notRestored: Int? = nil,
+                         reason: TaskProgress.StopReason = .error, step: Int? = nil, steps: Int = 2) -> TaskProgress {
         let counts = [("written", written), ("restored", restored), ("notRestored", notRestored)]
             .compactMap { name, n in n.map { ",\"\(name)\":\($0)" } }.joined()
+        let why = phase == .stopped ? ",\"stopReason\":\"\(reason.rawValue)\"" : ""
         let json = """
-        {"type":"taskProgress","v":1,"at":1,"taskId":"\(task)","planId":"p","phase":"\(phase.rawValue)","step":null,"steps":2,"says":null,"detail":\(detail.map { "\"\($0)\"" } ?? "null")\(counts)}
+        {"type":"taskProgress","v":1,"at":1,"taskId":"\(task)","planId":"p","phase":"\(phase.rawValue)","step":\(step.map(String.init) ?? "null"),"steps":\(steps),"says":null,"detail":\(detail.map { "\"\($0)\"" } ?? "null")\(counts)\(why)}
         """
         return try! JSONDecoder().decode(TaskProgress.self, from: Data(json.utf8))
     }
