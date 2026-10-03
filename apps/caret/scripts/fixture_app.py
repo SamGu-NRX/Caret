@@ -71,9 +71,11 @@ def quiet_now():
 
 
 def gui_lock_held():
-    """True when some process holds gui.lock: a zero-wait lockf fails. The caller is expected to
-    be that process (`lockf -k ~/.long-run/locks/gui.lock <script> ...`)."""
-    return subprocess.run(["/usr/bin/lockf", "-t", "0", GUI_LOCK, "true"], capture_output=True).returncode != 0
+    """True when some process holds gui.lock: a zero-wait lockf finds it locked (EX_TEMPFAIL, 75).
+    Any other failure, such as a lock file it cannot create, is not proof of a holder and counts
+    as not held. The caller is expected to be the holder (`lockf -k ~/.long-run/locks/gui.lock
+    <script> ...`)."""
+    return subprocess.run(["/usr/bin/lockf", "-t", "0", GUI_LOCK, "true"], capture_output=True).returncode == 75
 
 
 def why_not_foreground(idle_min=IDLE_MIN):

@@ -144,6 +144,14 @@ final class FirstLookRunTests: XCTestCase {
         XCTAssertNil(rig.flow.state.firstLookRun, "the run goes on in the helper; the activity list reports it")
     }
 
+    func testADroppedFlowLeavesNoTimerRunning() throws {
+        let rig = shown(try found())
+        rig.send(.key(.tab))
+        XCTAssertGreaterThan(rig.clock.live, 0)
+        rig.flow.cancelTimers()
+        XCTAssertEqual(rig.clock.live, 0, "closing the window mid-run stops the run's timers")
+    }
+
     func testReturnFinishesEvenWhileItWorks() throws {
         let rig = shown(try found())
         rig.send(.key(.tab), .key(.returnKey))

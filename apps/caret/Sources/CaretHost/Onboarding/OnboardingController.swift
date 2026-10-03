@@ -109,7 +109,10 @@ final class OnboardingController {
         let closing = window
         window = nil
         closing?.orderOut(nil)
-        if flow?.state.finished == false { flow = nil }
+        if flow?.state.finished == false {
+            flow?.cancelTimers()
+            flow = nil
+        }
         model.state = flow?.state
     }
 

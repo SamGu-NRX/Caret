@@ -195,6 +195,16 @@ public final class OnboardingFlow {
 
     var nowMs: Int64 { Int64((clock.now.timeIntervalSince1970 * 1000).rounded()) }
 
+    /// Cancels every timer the flow has scheduled. The window calls it when it drops an unfinished
+    /// flow, whose repeating timers would otherwise outlive it.
+    public func cancelTimers() {
+        advanceTimer?.cancel()
+        advanceTimer = nil
+        firstLookTimer?.cancel()
+        firstLookTimer = nil
+        endRunTimers()
+    }
+
     // MARK: - Events
 
     public func send(_ event: Event) {

@@ -157,7 +157,9 @@ public final class OfferArbiter: @unchecked Sendable {
 
     /// Swaps the current offer's content for `offer` and keeps its id, so an offer the helper sent
     /// again under the same key redraws in place. The user's place stays: the alternative they
-    /// moved to, clamped to the new count, and the list open while two or more remain. Nil when
+    /// moved to, clamped to the new count, and the list open while two or more remain. So does the
+    /// field as the offer first read it: what was typed since is counted from there
+    /// (`typedSinceOffer`), and a baseline read after the typing would count it twice. Nil when
     /// `offerID` is no longer current (a key took it), an insertion is running, or the text typed
     /// since the offer no longer leads the new top candidate; the caller then shows it afresh.
     public func replace(offerID: UInt64, with offer: Offer) -> OfferUI? {
@@ -166,6 +168,9 @@ public final class OfferArbiter: @unchecked Sendable {
                   offer.text.hasPrefix(s.typedSinceOffer) else { return nil }
             var stamped = offer
             stamped.id = offerID
+            stamped.target = current.target
+            stamped.fieldValue = current.fieldValue
+            stamped.caretUTF16 = current.caretUTF16
             s.current = stamped
             let count = stamped.candidates.count
             s.ui.candidate = min(s.ui.candidate, max(count - 1, 0))

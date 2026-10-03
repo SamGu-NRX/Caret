@@ -68,12 +68,13 @@ final class ActivityProtocolTests: XCTestCase {
         XCTAssertEqual(feed.tasks["new"]?.updatedAt, 950)
     }
 
-    func testATruncatedListDropsWhatItShouldHaveCarried() {
+    func testATruncatedListKeepsANewerRecordTheCapSkippedForItsSize() {
         var feed = ActivityFeed()
-        feed.applyList(listReply("l1", seq: 3, [taskRecord("gone", .running, updatedAt: 990), taskRecord("kept", .running, updatedAt: 900)]))
-        // "gone" is newer than the oldest record the reply carries, so the cap did not leave it out: it is gone.
-        feed.applyList(listReply("l2", seq: 5, [taskRecord("kept", .running, updatedAt: 900)], truncated: true))
-        XCTAssertEqual(Set(feed.tasks.keys), ["kept"])
+        feed.applyList(listReply("l1", seq: 3, [taskRecord("large", .running, updatedAt: 990), taskRecord("small", .running, updatedAt: 900)]))
+        // The cap skips a record too large for the room left and goes on with smaller, older ones
+        // (registry.ts fit), so a skipped record can be newer than every record carried.
+        feed.applyList(listReply("l2", seq: 5, [taskRecord("small", .running, updatedAt: 900)], truncated: true))
+        XCTAssertEqual(Set(feed.tasks.keys), ["large", "small"])
     }
 
     func testACompleteListClearsTheFlagAndReplacesEverything() {

@@ -40,16 +40,17 @@ public struct ActivityFeed: Equatable, Sendable {
     /// what is already applied is ignored; an error reply changes nothing. Returns whether the
     /// reply was applied.
     ///
-    /// A truncated reply left out records that would not fit; they are not gone. Records this copy
-    /// already holds and the reply did not carry are kept when they are no newer than the oldest
-    /// the reply carried, since those are the ones the cap drops (registry.ts `list`, newest first).
+    /// A truncated reply left out records that would not fit; they are not gone. The cap skips any
+    /// record too large for the room left and goes on with smaller, older ones (registry.ts `fit`),
+    /// so which were left out cannot be told from their age: every record this copy holds that the
+    /// reply did not carry is kept. The helper deletes only finished records a day old, which the
+    /// list no longer shows anyway.
     @discardableResult
     public mutating func applyList(_ reply: ActivityReply) -> Bool {
         guard reply.error == nil, !listed || reply.seq >= seq else { return false }
         var next = Dictionary(reply.tasks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         if reply.truncated {
-            let oldest = reply.tasks.map(\.updatedAt).min() ?? .max
-            for (id, record) in tasks where next[id] == nil && record.updatedAt <= oldest { next[id] = record }
+            for (id, record) in tasks where next[id] == nil { next[id] = record }
         }
         tasks = next
         seq = reply.seq

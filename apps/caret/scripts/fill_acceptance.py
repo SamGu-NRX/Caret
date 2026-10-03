@@ -448,14 +448,7 @@ def main(out_dir):
     log("summary", json.dumps(results["summary"]))
 
 
-GUI_LOCK = os.path.expanduser("~/.long-run/locks/gui.lock")
 IDLE_MIN = float(os.environ.get("CARET_REALTAB_IDLE_MIN", "300"))
-
-
-def gui_lock_held():
-    """True when some process holds gui.lock: a zero-wait lockf fails. The caller is expected to
-    be that process (`lockf -k gui.lock fill_acceptance.py realtab DIR`)."""
-    return subprocess.run(["/usr/bin/lockf", "-t", "0", GUI_LOCK, "true"], capture_output=True).returncode != 0
 
 
 def hid_idle_seconds():
@@ -469,6 +462,7 @@ def hid_idle_seconds():
 def realtab(out_dir, ghost):
     """The real Tab path through the event tap, under the shared-Mac global-event exception."""
     result = {"status": None}
+    os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "realtab.json")
 
     def finish(status, **extra):

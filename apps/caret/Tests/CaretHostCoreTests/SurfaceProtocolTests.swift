@@ -56,6 +56,21 @@ final class SurfaceProtocolTests: XCTestCase {
         ])
     }
 
+    func testAReplacementKeepsTheFieldAsTheOfferFirstReadIt() throws {
+        let arbiter = OfferArbiter()
+        let first = Offer(text: "Cara Diaz", moreCandidates: ["Cal Duarte"], source: .helper, target: Fx.identity(.email), fieldValue: "", caretUTF16: 0)
+        let id = try XCTUnwrap(arbiter.publish(first))
+        XCTAssertEqual(arbiter.handleKeyDown(Fx.type("C")), .pass(.typedThrough))
+        // The re-send is built from a field read after the typing: "C", caret 1.
+        let resent = Offer(text: "Cara Díaz", moreCandidates: ["Cal Duarte"], source: .helper, target: Fx.identity(.email, value: "C"), fieldValue: "C", caretUTF16: 1)
+        XCTAssertNotNil(arbiter.replace(offerID: id, with: resent))
+        guard case .consume(let claim) = arbiter.handleKeyDown(Fx.tab()) else { return XCTFail("Tab did not take it") }
+        let edit = try XCTUnwrap(claim.edit())
+        XCTAssertEqual(claim.insertionText, "ara Díaz", "the rest of the new spelling after what was typed")
+        XCTAssertEqual(edit.replaceStart, 1, "the typed C counted once")
+        XCTAssertEqual(edit.target.elementRevision, UTF16Text.digest("C"), "the field the guard expects holds C, not CC")
+    }
+
     func testOpenReKeyedWhenItsFieldsWindowCloses() {
         play([
             Transition("the old key is withdrawn as stale and the new one takes Tab", [
