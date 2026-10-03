@@ -176,10 +176,17 @@ latency. Field text never appears; only digests and lengths, plus the model's ow
   socket with `--onboarding hidden` and a fake helper that answers `firstLook` and runs the found
   offer when Tab takes it, every setting read back, and a relaunch reading the settings file.
   Opens no window and posts no event.
+- `scripts/onboarding_window_walk.py <Caret binary> <dir> [light|dark]`: onboarding in its real
+  window, moved through only with real keys pressed in it (Return, Tab on try-it and on the first
+  look's offer, ⌘Z), answered by the socket walk's fake helper, with a screenshot of each screen.
+  A foreground run: every gate in `fixture_app.py`.
+- `scripts/fill_acceptance.py popup <dir>`: the helper's fill pop-up with live Jev on the Schedule
+  form, a real Tab, every value read back, the toast, and a real ⌘Z. A foreground run.
 - `scripts/fixture_app.py`: CaretFixture.app for the on-screen scripts, exec'd with `--foreground`
   (`CARET_FIXTURE_BIN_DIR` names the build), and the gates a foreground run keeps: the gui lease,
   gui.lock, 300 s idle and no quiet window. A foreground run starts with the fixture's own
-  `activate legacy` and ends with `quit <previous pid>`. `python3 scripts/fixture_app.py` prints
+  `activate legacy` and ends with `quit <previous pid>`. `Watchdog` reads HIDIdleTime every 0.2 s and stops
+  the run on any input that is not the run's own key, and records the frontmost app over the run. `python3 scripts/fixture_app.py` prints
   what a run would decide now, without starting one.
 
 ## Which apps take a pid-posted paste
