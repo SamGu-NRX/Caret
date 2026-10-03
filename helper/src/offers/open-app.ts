@@ -37,6 +37,8 @@ export function statusNode(w: WindowState, status: string): string | null {
 
 export class OpenAppOffers {
   private readonly entries = new Map<string, Entry>();
+  /** The latest editable field the user focused in the app they are in, to bind an offer held again after its field's window closed. */
+  private lastField: OfferField | null = null;
   /** Numbers each offer of a watch: a watch can resolve twice (needsYou, then done), and each offer runs as its own task. */
   private seq = 0;
   private readonly deps: OpenAppDeps;
@@ -71,6 +73,9 @@ export class OpenAppOffers {
    * window, in the frontmost app, binds a held offer to that field.
    */
   onFocus(m: Focus): void {
+    if (m.frontmost && m.editable && m.key !== null) {
+      this.lastField = { pid: m.app.pid, windowId: m.windowId, key: m.key, frame: this.deps.model.windows.get(m.windowId)?.nodes.get(m.key)?.frame ?? null };
+    }
     for (const e of [...this.entries.values()]) {
       if (m.windowId === e.windowId) {
         if (m.frontmost) this.drop(e.offerKey, "taken");
@@ -98,8 +103,12 @@ export class OpenAppOffers {
         this.drop(e.offerKey, "stale");
         const held: Entry = { ...e, offerKey: `open-${e.watchId}.${++this.seq}`, boundTo: null };
         this.entries.set(held.offerKey, held);
+        // The user may already be in another field: its focus came while the offer was still bound here.
+        const f = this.lastField;
+        if (f !== null && f.windowId !== windowId && f.windowId !== e.windowId && this.deps.model.windows.has(f.windowId)) this.show(held, f);
       }
     }
+    if (this.lastField?.windowId === windowId) this.lastField = null;
   }
 
   /** Window ids start over with a new reader, so every offer names a window that no longer exists. */

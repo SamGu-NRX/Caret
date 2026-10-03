@@ -52,6 +52,8 @@ export interface EngineDeps {
   /** Runs a plan through the executor; `expect` holds field values, by window and key, that must still hold at its first read. */
   run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>) => Promise<TaskResult>;
   shadow: () => boolean;
+  /** A loopFinish or routine offer whose every value the user entered themselves, withdrawn as taken with no run to follow. */
+  enteredByUser?: (offerId: string) => void;
 }
 
 type Cell = LoopCell | RoutineCell;
@@ -71,7 +73,7 @@ interface OfferState {
    * each candidate it supports, which then quotes its next source or, with none left, goes; a changed
    * message is sent again, one left with no candidate is withdrawn, and the offer with the last of them.
    */
-  alts: { msg: OfferAlternatives; candidates: AltCandidate[] }[];
+  alts: { cell: number; msg: OfferAlternatives; candidates: AltCandidate[] }[];
   /** Memory entries that only the alternatives read; the offer is withdrawn when one goes, as for its own cells. */
   altMemory: Set<string>;
 }
@@ -200,23 +202,62 @@ export class PatternEngine {
 
   /**
    * An open offer that a change in one of its windows made impossible to take as shown is withdrawn
-   * now, rather than refused when the host accepts it: `taken` when every destination already holds a
-   * value the offer showed for it, `stale` otherwise. A loopNext whose loop is live is left to the loop,
-   * which hears the same edit as a transfer once it settles and confirms or ends the loop.
+   * now, rather than refused when the host accepts it. A loopFinish or routine is checked as its take
+   * would check it (recheck), and is `taken` when every destination already holds what it would have
+   * written, `stale` otherwise. A loopNext is judged by what its alternatives show now (recheckShown).
    */
   private recheckOpen(windowIds: ReadonlySet<string>): void {
     for (const o of this.offers.values()) {
       if (o.state !== "open") continue;
-      if (o.msg.kind === "loopNext" && o.loopId !== null && this.loops.active?.id === o.loopId) continue;
-      if (!o.cells.some((c) => windowIds.has(c.dstWindowId) || windowIds.has(c.srcWindowId))) continue;
-      if (this.recheck(o) === null) continue;
-      const shown = (c: OfferState["cells"][number], i: number): string[] => [c.written, ...(o.alts[i]?.candidates.map((x) => x.written) ?? [])];
-      const filled = o.cells.every((c, i) => {
-        const v = this.deps.model.windows.get(c.dstWindowId)?.nodes.get(c.dstKey)?.value ?? "";
-        return v !== "" && shown(c, i).includes(v);
-      });
-      this.withdraw(o, filled ? "taken" : "stale");
+      const sources = o.alts.length > 0 ? o.alts.flatMap((a) => a.candidates.map((x) => x.sources[0]?.srcWindowId)) : o.cells.map((c) => c.srcWindowId);
+      if (!o.cells.some((c) => windowIds.has(c.dstWindowId)) && !sources.some((id) => id !== undefined && windowIds.has(id))) continue;
+      const live = o.msg.kind === "loopNext" && o.loopId !== null && this.loops.active?.id === o.loopId;
+      const verdict = o.alts.length > 0 ? this.recheckShown(o, live) : this.recheck(o) === null ? null : this.allEntered(o) ? "taken" : "stale";
+      if (verdict === null) continue;
+      this.withdraw(o, verdict);
+      // The user entered every value themselves: no run follows, so the prepared work is over.
+      if (verdict === "taken" && o.msg.kind !== "loopNext") this.deps.enteredByUser?.(o.msg.id);
     }
+  }
+
+  /** Every destination holds the value the offer would have written there. */
+  private allEntered(o: OfferState): boolean {
+    return o.cells.every((c) => {
+      const v = this.deps.model.windows.get(c.dstWindowId)?.nodes.get(c.dstKey)?.value ?? "";
+      return v !== "" && v === c.written;
+    });
+  }
+
+  /**
+   * A loopNext judged by what its alternatives show now, since partial withdrawal may have dropped its
+   * own cells' list: null while it still holds; `stale` when a destination is gone or a shown candidate's
+   * source no longer shows its text; once every destination is filled (only when the loop is not live,
+   * which settles that itself), `taken` if each holds a value shown for it, `stale` if not.
+   */
+  private recheckShown(o: OfferState, live: boolean): "taken" | "stale" | null {
+    const model = this.deps.model;
+    for (const a of o.alts) {
+      for (const x of a.candidates) {
+        const s = x.sources[0];
+        const sw = s === undefined ? undefined : model.windows.get(s.srcWindowId);
+        const src = s === undefined ? undefined : sw?.nodes.get(s.srcKey);
+        // As recheck: the node's text, or one of its typed values when the cell is a part of the line, such as an email.
+        if (s === undefined || sw === undefined || src === undefined) return "stale";
+        if (nodeText(src) !== s.value && !sw.values.some((v) => v.nodeKey === s.srcKey && v.text === s.value)) return "stale";
+      }
+    }
+    let filled = 0;
+    let matched = 0;
+    for (const [i, c] of o.cells.entries()) {
+      const node = model.windows.get(c.dstWindowId)?.nodes.get(c.dstKey);
+      if (node === undefined || node.editable !== true) return "stale";
+      const v = node.value ?? "";
+      if (v === "") continue;
+      filled++;
+      if (o.alts.find((a) => a.cell === i)?.candidates.some((x) => x.written === v) === true) matched++;
+    }
+    if (live || filled < o.cells.length) return null;
+    return matched === o.cells.length ? "taken" : "stale";
   }
 
   /** Called before the window leaves the model. */
@@ -249,13 +290,19 @@ export class PatternEngine {
         kept.push(a);
         continue;
       }
-      const candidates = a.candidates.map((x) => ({ ...x, sources: x.sources.filter((s) => s.srcWindowId !== windowId) })).filter((x) => x.sources.length > 0);
+      const candidates = a.candidates.flatMap((x): AltCandidate[] => {
+        const sources = x.sources.filter((s) => s.srcWindowId !== windowId);
+        const first = sources[0];
+        if (first === undefined) return [];
+        // With no memory rule behind it, the value is the text Caret copies, so it becomes the remaining list's own spelling.
+        return [{ ...x, sources, written: x.memory.length === 0 ? first.value : x.written }];
+      });
       if (candidates.length === 0) {
         this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: a.msg.offerKey, reason: "stale" });
         continue;
       }
       const msg: OfferAlternatives = { ...a.msg, at: this.clock, ...this.altValues(candidates) };
-      kept.push({ msg, candidates });
+      kept.push({ cell: a.cell, msg, candidates });
       this.deps.publish(msg);
     }
     o.alts = kept;
@@ -326,7 +373,9 @@ export class PatternEngine {
     }
     if (r.outcome !== "done") return r;
     for (const c of o.cells) this.watch(c);
-    if (o.loopId !== null) {
+    // The round Caret wrote came from the offer's own list; if that list closed during the run and the
+    // loop moved to another, the round does not confirm the other list's loop.
+    if (o.loopId !== null && this.loops.active?.srcWindowId === o.cells[0]?.srcWindowId) {
       const ev = this.loops.taken(o.loopId);
       if (ev !== null) this.onLoop(ev);
     }
@@ -531,7 +580,13 @@ export class PatternEngine {
         for (const id of m.used) o.altMemory.add(id);
         candidates.push({ written: m.value, memory: m.used, sources: [source(alt)], norm: normalizeValue(alt.value, alt.kind) });
       }
-      for (const r of repeats[i] ?? []) candidates.find((x) => x.norm === normalizeValue(r.value, r.kind))?.sources.push(source(r));
+      for (const r of repeats[i] ?? []) {
+        const x = candidates.find((y) => y.norm === normalizeValue(r.value, r.kind));
+        if (x === undefined) continue;
+        x.sources.push(source(r));
+        // What Caret would write for this value, memory rules applied, is accepted from this list too.
+        if (o.loopId !== null && x.written !== r.value) this.loops.expect(o.loopId, r.dstKey, x.written, r.kind, r.srcWindowId);
+      }
       const msg: OfferAlternatives = {
         type: "alternatives",
         v: PROTOCOL_VERSION,
@@ -540,7 +595,7 @@ export class PatternEngine {
         field: { pid: w.app.pid, windowId: c.dstWindowId, key: c.dstKey, frame: w.nodes.get(c.dstKey)?.frame ?? null },
         ...this.altValues(candidates),
       };
-      o.alts.push({ msg, candidates: candidates.map(({ norm: _, ...rest }) => rest) });
+      o.alts.push({ cell: i, msg, candidates: candidates.map(({ norm: _, ...rest }) => rest) });
       this.deps.publish(msg);
     });
   }

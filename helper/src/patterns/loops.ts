@@ -201,7 +201,7 @@ export class LoopRecognizer {
    */
   sourceClosed(windowId: string): void {
     const loop = this.loop;
-    if (loop === null) return;
+    if (loop === null || loop.prediction === null) return;
     if (loop.srcWindowId === windowId) {
       // Only a fit whose whole round is on offer: one whose values were never shown would fill cells the user did not see.
       const shown = (f: LoopFit): boolean => f.prediction.every((c) => loop.expected.get(c.dstKey)?.has(normalizeValue(c.value, c.kind)) === true);
@@ -210,6 +210,11 @@ export class LoopRecognizer {
       switchFit(loop, j);
     }
     loop.others = loop.others.filter((f) => f.srcWindowId !== windowId);
+    // The round's cells now expect only what a remaining fit predicts or would write, so the closed list's value no longer counts as the round.
+    for (const c of loop.prediction) {
+      const keep = new Set([...(loop.mainAccepts.get(c.dstKey) ?? []), ...loop.others.flatMap((f) => [...(f.accepts.get(c.dstKey) ?? [])])]);
+      loop.expected.set(c.dstKey, keep);
+    }
   }
 
   /** Ends a loop whose last transfer is older than the gap. */

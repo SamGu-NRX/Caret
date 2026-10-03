@@ -455,9 +455,11 @@ export class Audit {
     const every = this.opts.probeEveryMs ?? 0;
     if (every <= 0 || now - this.lastProbe < every || this.probes.length >= MAX_PROBES) return;
     this.lastProbe = now;
-    // The frontmost app's focused window; before any app switch or focus says which app that is, the window focused last.
+    // The frontmost app's focused window. Only before any app switch or focus has said which app that
+    // is, the window focused last; a frontmost app with no window in the model yet is skipped.
     const all = [...this.model.windows.values()];
-    const target = all.find((w) => w.focused && w.app.pid === this.model.frontmostPid) ?? all.filter((w) => w.focused).sort((a, b) => b.lastFocusedAt - a.lastFocusedAt)[0];
+    const front = this.model.frontmostPid;
+    const target = front !== null ? all.find((w) => w.focused && w.app.pid === front) : all.filter((w) => w.focused).sort((a, b) => b.lastFocusedAt - a.lastFocusedAt)[0];
     if (target === undefined) return;
     const time = (profile?: GeneratorProfile): { wallMs: number; cpuMs: number; threadCpuMs: number; stats: ReturnType<typeof collectCandidates>["stats"] } => {
       const c0 = process.cpuUsage();

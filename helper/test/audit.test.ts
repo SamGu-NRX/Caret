@@ -93,6 +93,10 @@ describe("audit", () => {
     expect(p.first.values + p.first.nodesRead).toBeGreaterThan(0);
     for (const x of [p.first.wallMs, p.first.cpuMs, p.first.threadCpuMs, p.second.wallMs, p.second.cpuMs, p.second.threadCpuMs, ...Object.values(p.first.profile)]) expect(x).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify(probes)).not.toMatch(/Export|venue|priya/i);
+    // An app switch to an app with no window in the model yet: nothing is probed, rather than a background window.
+    void probing.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: 62_000, from: MAIL_APP, to: { pid: 999, bundleId: "dev.caret.other", name: "Other" } });
+    probing.tick(91_000);
+    expect(probing.audit?.summary().probes).toHaveLength(2);
     probing.memory.close();
   });
 

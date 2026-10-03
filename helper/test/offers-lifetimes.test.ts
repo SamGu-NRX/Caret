@@ -194,6 +194,22 @@ describe("offer lifetimes over the socket", () => {
       expect(store.counts()["fill.popup_stale"]).toBe(1);
     });
 
+    it("is not shown when focus left the form and came back while Jev answered", async () => {
+      let release = (): void => {};
+      jevGate = new Promise((r) => (release = r));
+      await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+      const search = snap([{ key: M("textfield:search~0"), parent: null, role: "AXTextField", label: "Search", editable: true }], { at: reader.clock + 10, windowId: "6160-9", title: "Search", app: MAIL_APP, focused: true, reason: "focus" });
+      reader.send(search);
+      await until(() => hooks.applied("6160-9", search.at));
+      reader.send(focus("6160-9", M("textfield:search~0"), reader.clock + 10, { app: MAIL_APP }));
+      await until(() => helper.model.frontmostPid === MAIL_APP.pid);
+      reader.send(focus(FORM, F("textfield:name~0"), reader.clock + 20));
+      await until(() => helper.model.frontmostPid === FIXTURE_APP.pid);
+      release();
+      await new Promise((r) => setTimeout(r, 100));
+      expect(host.received.filter((m) => (m as Sent).type === "popup")).toEqual([]);
+    });
+
     it("is withdrawn as stale when its source window closes", async () => {
       await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
       await host.waitFor((m) => m.type === "popup");
@@ -254,6 +270,34 @@ describe("offer lifetimes over the socket", () => {
     expect(helper.offers.get("offer-2")).toBeUndefined();
   });
 
+  it("loopFinish the user completes by hand is withdrawn as taken, and its task is done by the user", async () => {
+    await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
+    await host.waitFor((m) => m.type === "alternatives");
+    const typed = reader.setValue(SEATING, guest(2), "Lena Hartmann");
+    await until(() => hooks.applied(SEATING, typed.at));
+    helper.tick(typed.at + 2000);
+    await host.waitFor((m) => m.type === "action");
+    // All three remaining rows arrive in one snapshot, as a paste of the block would.
+    const seating = reader.windows.get(SEATING)!;
+    ["Oskar Lindqvist", "Yusuf Demir", "Mila Novak"].forEach((name, i) => (seating.nodes.find((n) => n.key === guest(3 + i))!.value = name));
+    const shown = reader.show(SEATING);
+    await until(() => hooks.applied(SEATING, shown.at));
+    expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-2")).toMatchObject({ reason: "taken" });
+    const rows = host.received.filter((m): m is Activity => (m as Sent).type === "activity" && (m as Activity).task.id === "offer-2");
+    expect(rows.at(-1)?.task).toMatchObject({ state: "done", cause: "you", detail: "you entered the values yourself" });
+    expect(reader.verbs.filter((v) => v.kind === "write")).toEqual([]);
+  });
+
+  it("loopNext is withdrawn at once when its source line changes, though its loop is live", async () => {
+    await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
+    await host.waitFor((m) => m.type === "alternatives");
+    const roster = reader.windows.get(ROSTER)!;
+    roster.nodes.find((n) => n.key === attendee("Marcus Lowe"))!.label = "Marcus Lowe (left the team)";
+    const shown = reader.show(ROSTER);
+    await until(() => hooks.applied(ROSTER, shown.at));
+    expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-1")).toMatchObject({ reason: "stale" });
+  });
+
   it("routine: expires ten minutes after its window opened", async () => {
     const calendar = (day: number): ListWindow => ({
       windowId: "5150-20",
@@ -312,6 +356,19 @@ describe("offer lifetimes over the socket", () => {
     expect(again.offerKey).toBe("open-watch-id-1.2");
     expect(again.field).toMatchObject({ windowId: "6160-9", key: M("textfield:search~0") });
     expect(helper.offers.get(action.offerKey)).toBeUndefined();
+  });
+
+  it("open: a field focused just before its bound window closed gets the offer at once", async () => {
+    await reader.replay(loadRecording("offers-pending.ndjson"), hooks);
+    await helper.pending.whenIdle();
+    const action = await host.waitFor<{ offerKey: string }>((m) => m.type === "action");
+    const search = snap([{ key: M("textfield:search~0"), parent: null, role: "AXTextField", label: "Search", editable: true }], { at: reader.clock + 10, windowId: "6160-9", title: "Search", app: MAIL_APP, focused: true, reason: "focus" });
+    reader.send(search);
+    await until(() => hooks.applied("6160-9", search.at));
+    reader.send(focus("6160-9", M("textfield:search~0"), reader.clock + 10, { app: MAIL_APP }));
+    reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 20, windowId: "6160-4" });
+    const again = await host.waitFor<{ offerKey: string; field: { windowId: string } }>((m) => m.type === "action" && m.offerKey !== action.offerKey);
+    expect(again).toMatchObject({ offerKey: "open-watch-id-1.2", field: { windowId: "6160-9" } });
   });
 
   describe("partial withdrawal of alternatives", () => {
@@ -380,6 +437,19 @@ describe("offer lifetimes over the socket", () => {
       expect(quoted(again)).toBe(other);
       expect(again.quoted).toBe(true);
       expect(withdrawals()).toEqual([]);
+    });
+
+    it("does not take the closed list's value as the round once that list is gone", async () => {
+      await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
+      await host.waitFor((m) => m.type === "alternatives");
+      reader.send({ type: "windowClosed", v: PROTOCOL_VERSION, at: reader.clock + 10, windowId: ROSTER });
+      await until(() => !helper.model.windows.has(ROSTER));
+      const typed = reader.setValue(SEATING, guest(2), "Marcus Lowe");
+      await until(() => hooks.applied(SEATING, typed.at));
+      helper.tick(typed.at + 2000);
+      await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-1");
+      expect(withdrawals().filter(([id]) => id === "offer-1")).toEqual([["offer-1", "diverged"]]);
+      expect(host.received.some((m) => (m as Sent).type === "action")).toBe(false);
     });
 
     it("keeps the other list's candidate when the main list closes, and inserting it still switches the loop", async () => {

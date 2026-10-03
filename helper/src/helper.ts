@@ -122,6 +122,8 @@ function fillMatches(f: CaretFill, t: Transfer): boolean {
   return Math.abs(t.at - f.at) <= CARET_FILL_MATCH_MS && (f.value.includes(t.value) || t.value.includes(f.value));
 }
 
+/** Editable focuses remembered for fill pop-ups whose answer is late; far more than happen while Jev answers. */
+const MAX_FOCUS_LOG = 100;
 /** Re-asking Jev for the same form inside this window returns nothing new. Assumed. */
 const FILL_REPEAT_MS = 30_000;
 const PRUNE_EVERY_MS = 10_000;
@@ -164,8 +166,12 @@ export class Helper {
    * or a source; see checkFills and onFillFocus.
    */
   private readonly fillPopups = new Map<string, { p: GroundedProposal; form: string }>();
-  /** The latest focus in an editable field of the app the user is in, for a pop-up whose Jev answer arrives after the user moved on. */
-  private lastEditableFocus: { windowId: string; key: string } | null = null;
+  /**
+   * Recent focuses in editable fields of the app the user is in, numbered, so a pop-up whose Jev answer
+   * arrives late can see whether any of them, since its request began, left the form.
+   */
+  private readonly editableFocuses: { seq: number; windowId: string; key: string }[] = [];
+  private editableFocusSeq = 0;
   private readonly now: () => number;
   /** "Open <app>" action lines for watched windows that finished or need the user. */
   readonly openApp: OpenAppOffers;
@@ -207,6 +213,9 @@ export class Helper {
       },
       run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect),
       shadow: () => this.mode === "shadow",
+      enteredByUser: (id) => {
+        if (this.tasks.get(id)?.state === "ready") this.tasks.update(id, { state: "done", cause: "you", detail: "you entered the values yourself" });
+      },
     });
     this.pending = new PendingWatcher({
       model: this.model,
@@ -619,6 +628,7 @@ export class Helper {
     if (!explicit && [...this.fillPopups.values()].some((f) => f.form === formKey)) return null;
     this.inflight.add(formKey);
     const session = this.readerSession;
+    const focusSeq = this.editableFocusSeq;
     try {
       const asked = await proposeFill(this.model, ask, windowId, key, now, {
         ...(this.opts.fillCutoff === undefined ? {} : { cutoff: this.opts.fillCutoff }),
@@ -638,7 +648,7 @@ export class Helper {
       // explicit fillRequest asks for the proposal itself (scripts/fill-eval.ts reads its fields), so it
       // always gets one.
       if (!explicit && fillPopupEligible(p)) {
-        if (this.fillOverBeforeShown(p, formKey) !== null) {
+        if (this.fillOverBeforeShown(p, formKey, focusSeq) !== null) {
           store.count("fill.popup_stale", 1, now);
           return p;
         }
@@ -720,7 +730,8 @@ export class Helper {
    */
   private onFillFocus(m: Focus): void {
     if (!m.editable || m.key === null || !(m.frontmost || this.opts.allowBackgroundFocus)) return;
-    this.lastEditableFocus = { windowId: m.windowId, key: m.key };
+    this.editableFocuses.push({ seq: ++this.editableFocusSeq, windowId: m.windowId, key: m.key });
+    if (this.editableFocuses.length > MAX_FOCUS_LOG) this.editableFocuses.shift();
     for (const [id, { p }] of this.fillPopups) if (!inFillForm(p, m.windowId, m.key)) this.withdrawFill(id, "expired");
   }
 
@@ -729,9 +740,8 @@ export class Helper {
    * the form while Jev answered, a source stopped showing its value, or the form's fields changed. The
    * events that would have ended it came before it existed.
    */
-  private fillOverBeforeShown(p: GroundedProposal, form: string): string | null {
-    const f = this.lastEditableFocus;
-    if (f !== null && !inFillForm(p, f.windowId, f.key)) return "focus left the form";
+  private fillOverBeforeShown(p: GroundedProposal, form: string, sinceSeq: number): string | null {
+    if (this.editableFocuses.some((f) => f.seq > sinceSeq && !inFillForm(p, f.windowId, f.key))) return "focus left the form";
     const stale = recheckFill(this.model, p);
     if (stale !== null) return stale;
     const w = this.model.windows.get(p.windowId);
