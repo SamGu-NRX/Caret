@@ -70,8 +70,15 @@ export class RoutineRecognizer {
     this.hash = hash;
   }
 
-  /** A window appeared. Predicts every unpaused routine whose destination fields it holds, empty. */
+  /** A window appeared. Predicts every unpaused routine whose destination fields it holds, empty, and keeps each prediction to score when its bundle closes. */
   onWindowOpened(windowId: string, at: number): SilentPrediction[] {
+    const out = this.predict(windowId, at);
+    for (const p of out) this.bundle(windowId, at).predictions.push(p);
+    return out;
+  }
+
+  /** The predictions onWindowOpened makes for this window now, without keeping them: the first look asks this of windows already open. */
+  predict(windowId: string, at: number): SilentPrediction[] {
     const w = this.model.windows.get(windowId);
     if (w === undefined) return [];
     const routines = this.memory.routinesInto(w.app.bundleId, w.window.kind).filter((r) => !r.paused);
@@ -107,9 +114,7 @@ export class RoutineRecognizer {
         );
       }
       if (!applies) continue;
-      const p: SilentPrediction = { routine, dstWindowId: windowId, at, cells, grounded: cells.every((c) => c !== null) };
-      this.bundle(windowId, at).predictions.push(p);
-      out.push(p);
+      out.push({ routine, dstWindowId: windowId, at, cells, grounded: cells.every((c) => c !== null) });
     }
     return out;
   }

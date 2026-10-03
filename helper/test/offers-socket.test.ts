@@ -47,7 +47,7 @@ const FILL_VALUES: Record<string, string> = { Name: "Dana Whitfield", Email: "da
 /** Fill questions are answered by field label; the two pending questions by whether the window now reads as finished. */
 const askJev: AskJev = async (req) => {
   if (req.questions.finished !== undefined) {
-    const done = /done|passed/i.test(String((req.state as Record<string, unknown>).now));
+    const done = /done|passed/i.test(String((req.state as Record<string, unknown>).lines_that_changed));
     return { model: "jev-test", answers: { finished: { choice: done ? "yes" : "no", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
   }
   return jevPickingText((_, instructions) => FILL_VALUES[/Label: '([^']+)'/.exec(instructions)?.[1] ?? ""] ?? null)(req);

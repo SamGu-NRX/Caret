@@ -5,6 +5,7 @@
 import type { Node } from "../protocol.ts";
 import { nodeText, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
+import { SnippetLedger, type Snippet } from "../privacy.ts";
 import { shuffled } from "../fill/fill.ts";
 import type { Target } from "./schema.ts";
 
@@ -57,23 +58,52 @@ export function resolveLocally(w: WindowState, t: Target): { node: Node; how: "k
   return { ambiguous: m.slice(0, MAX_TARGET_CANDIDATES) };
 }
 
-/** One line per candidate element: label, role, value, the named container it sits in, and the nearest text. */
-export function describeElement(w: WindowState, n: Node): string {
-  const facts: string[] = [n.role.replace(/^AX/, "")];
+/** The screen text describeElement quotes for an element: its label, value, container and placeholder, each clipped. */
+function elementTexts(w: WindowState, n: Node): { label: string | null; value: string | null; inside: string | null; placeholder: string | null } {
   const v = nodeText(n);
-  if (n.editable === true) facts.push(v === "" ? "empty" : `holds '${clip(v)}'`);
-  let p = n.parent;
-  while (p !== null) {
+  let inside: string | null = null;
+  for (let p = n.parent; p !== null; ) {
     const a = w.nodes.get(p);
     if (a === undefined) break;
     if (a.label !== undefined && a.role !== "AXWebArea") {
-      facts.push(`inside '${clip(a.label)}'`);
+      inside = clip(a.label);
       break;
     }
     p = a.parent;
   }
-  if (n.placeholder !== undefined) facts.push(`placeholder '${clip(n.placeholder)}'`);
-  return `${n.label === undefined ? "(no label)" : `'${clip(n.label)}'`} (${facts.join("; ")})`;
+  return {
+    label: n.label === undefined ? null : clip(n.label),
+    value: n.editable === true && v !== "" ? clip(v) : null,
+    inside,
+    placeholder: n.placeholder === undefined ? null : clip(n.placeholder),
+  };
+}
+
+/** One line per candidate element: label, role, value, the named container it sits in, and the nearest text. */
+export function describeElement(w: WindowState, n: Node): string {
+  const t = elementTexts(w, n);
+  const facts: string[] = [n.role.replace(/^AX/, "")];
+  if (n.editable === true) facts.push(t.value === null ? "empty" : `holds '${t.value}'`);
+  if (t.inside !== null) facts.push(`inside '${t.inside}'`);
+  if (t.placeholder !== null) facts.push(`placeholder '${t.placeholder}'`);
+  return `${t.label === null ? "(no label)" : `'${t.label}'`} (${facts.join("; ")})`;
+}
+
+/**
+ * The screen text of a target question: the window's title and every candidate element, held to the
+ * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan). Null
+ * when the candidates do not all fit: the question is then not asked, since leaving one out could leave
+ * out the right one.
+ */
+export function targetSnippets(w: WindowState, goal: string, t: Target, cands: readonly { node: Node }[]): Snippet[] | null {
+  const ledger = new SnippetLedger();
+  ledger.plan([goal, t.describe]);
+  if (!ledger.take(w, "descriptor", [w.window.title])) return null;
+  for (const c of cands) {
+    const e = elementTexts(w, c.node);
+    if (!ledger.take(w, "candidate", [e.label, e.value, e.inside, e.placeholder])) return null;
+  }
+  return ledger.snippets;
 }
 
 function clip(s: string): string {
@@ -86,13 +116,14 @@ const WORDINGS = [
   (goal: string, what: string) => `To reach this end state: ${goal} the executor must act on ${what}. Pick that element, or none if it is not listed.`,
 ] as const;
 
-export function buildTargetRequest(w: WindowState, goal: string, t: Target, cands: { id: string; node: Node }[], wording: 0 | 1): JevRequest {
+export function buildTargetRequest(w: WindowState, goal: string, t: Target, cands: { id: string; node: Node }[], wording: 0 | 1, snippets: readonly Snippet[] = []): JevRequest {
   const criteria: Record<string, string> = {};
   for (const c of cands) criteria[c.id] = describeElement(w, c.node);
   criteria[NONE] = "None of these elements.";
   return {
     state: { window: `${w.app.name} window '${w.window.title}'`, task: "Choose the element an automated step should act on." },
     questions: { target: { type: "choice", instructions: WORDINGS[wording](goal, t.describe), criteria } },
+    snippets,
   };
 }
 
@@ -111,8 +142,10 @@ export async function resolveTarget(
   if (askJev === null) return { ok: false, reason: `${local.ambiguous.length} elements match and Jev is off`, jev: null };
 
   const first = local.ambiguous.map((node, i) => ({ id: `e${i + 1}`, node }));
+  const snippets = targetSnippets(w, goal, t, first);
+  if (snippets === null) return { ok: false, reason: `${first.length} elements match, more than one question may describe from this window`, jev: null };
   const second = shuffled(first, rand).map((c, i) => ({ id: `k${i + 1}`, node: c.node }));
-  const [r1, r2] = await Promise.all([askJev(buildTargetRequest(w, goal, t, first, 0)), askJev(buildTargetRequest(w, goal, t, second, 1))]);
+  const [r1, r2] = await Promise.all([askJev(buildTargetRequest(w, goal, t, first, 0, snippets)), askJev(buildTargetRequest(w, goal, t, second, 1, snippets))]);
   const pick = (r: typeof r1, list: typeof first): { key: string | null; confidence: number } => {
     const a = r.answers.target;
     if (a === undefined) throw new Error("Jev returned no answer for the target question");

@@ -14,22 +14,29 @@ import { FIXTURE_APP, MAIL_APP } from "./builders.ts";
 const DAY = 24 * 60 * 60 * 1000;
 
 describe("speak-now gate", () => {
-  const ok: GateContext = { shadow: false, permission: "ask", dontOfferHere: false, ignoredToday: 0, spokenLastHour: 0 };
+  const ok: GateContext = { shadow: false, permission: "ask", dontOfferHere: false, ignoredToday: 0, settings: [], routineSightings: 2 };
   const loop: GateInput = { offerKind: "loopNext", hits: 1, misses: 0, paused: false, grounded: true };
   const routine = (hits: number, misses: number): GateInput => ({ offerKind: "routine", hits, misses, paused: false, grounded: true });
 
   it("lets a loop prediction speak at round two", () => {
     expect(decide(loop, ok)).toEqual({ speak: true, reasons: [], showProbability: 2 / 3 });
   });
-  it("holds a routine until two silent predictions matched, at 80% or better", () => {
+  it("holds a routine until the level's sightings matched, at 80% or better", () => {
     expect(decide(routine(1, 0), ok).reasons).toEqual(["unproven"]);
     expect(decide(routine(2, 0), ok).speak).toBe(true);
     expect(decide(routine(2, 1), ok).reasons).toEqual(["unproven"]);
     expect(decide(routine(4, 1), ok).speak).toBe(true);
+    // Balanced asks for three; a level with routines off never proves one.
+    expect(decide(routine(2, 0), { ...ok, routineSightings: 3 }).reasons).toEqual(["unproven"]);
+    expect(decide(routine(3, 0), { ...ok, routineSightings: 3 }).speak).toBe(true);
+    expect(decide(routine(9, 0), { ...ok, routineSightings: null }).reasons).toEqual(["unproven"]);
   });
   it("lists every rule that holds an offer", () => {
-    const d = decide({ ...loop, grounded: false, paused: true }, { shadow: true, permission: "handoff", dontOfferHere: true, ignoredToday: 2, spokenLastHour: 20 });
-    expect(d.reasons).toEqual(["shadowMode", "paused", "permissionHandoff", "dontOfferHere", "ignoredToday", "hourlyBudget", "ungrounded"]);
+    const d = decide(
+      { ...loop, grounded: false, paused: true },
+      { shadow: true, permission: "handoff", dontOfferHere: true, ignoredToday: 2, settings: ["caretPaused", "roleOff", "levelOff", "hourlyBudget"], routineSightings: 2 },
+    );
+    expect(d.reasons).toEqual(["shadowMode", "caretPaused", "roleOff", "levelOff", "paused", "permissionHandoff", "dontOfferHere", "ignoredToday", "hourlyBudget", "ungrounded"]);
   });
 });
 
@@ -315,27 +322,40 @@ describe("pattern engine in the helper", () => {
       return opened;
     };
 
-    it("offers a routine only after two silent predictions matched, and stops after forget", () => {
+    it("offers a routine at Balanced only after three silent predictions matched, and stops after forget", () => {
       expect(occurrence(1)).toEqual([]);
       const [routine] = ask("list", { kind: "routine" }).entries;
-      expect(routine?.says).toBe("3 values from Caret Fixture to Mail Fixture (seen once; learning, 0 of 2 silent predictions right)");
+      expect(routine?.says).toBe("3 values from Caret Fixture to Mail Fixture (seen once; learning, 0 of 3 silent predictions right)");
       expect(occurrence(2)).toEqual([]);
       expect(occurrence(3)).toEqual([]);
+      expect(ask("list", { kind: "routine" }).entries[0]?.status).toBe("learning");
+      expect(occurrence(4)).toEqual([]);
       const ready = ask("list", { kind: "routine" }).entries[0]!;
-      expect(ready.fields).toMatchObject({ silent: { hits: 2, misses: 0 } });
+      expect(ready.fields).toMatchObject({ silent: { hits: 3, misses: 0 } });
       expect(ready.status).toBe("active");
 
-      const [offer] = occurrence(4);
-      expect(offer?.cells.map((c) => c.value)).toEqual(calendar(4).lines);
-      expect(offer?.showProbability).toBe(0.75);
+      const [offer] = occurrence(5);
+      expect(offer?.cells.map((c) => c.value)).toEqual(calendar(5).lines);
+      expect(offer?.showProbability).toBe(0.8);
       const routineDecisions = helper.memory.decisions().filter((d) => d.offerKind === "routine");
-      expect(routineDecisions.map((d) => d.speak)).toEqual([false, false, true]);
+      expect(routineDecisions.map((d) => d.speak)).toEqual([false, false, false, true]);
       expect(routineDecisions[0]?.reasons).toEqual(["unproven"]);
 
       expect(ask("forget", { id: ready.id }).error).toBeNull();
-      expect(occurrence(5)).toEqual([]);
       expect(occurrence(6)).toEqual([]);
+      expect(occurrence(7)).toEqual([]);
       expect(ask("list", { kind: "routine" }).entries).toEqual([]);
+    });
+
+    it("takes the level from the next settings message: Eager offers after two, Quiet never", () => {
+      const settings = (level: "quiet" | "balanced" | "eager") => helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "words"], level, paused: false });
+      for (let d = 1; d <= 3; d++) expect(occurrence(d)).toEqual([]);
+      settings("quiet");
+      expect(occurrence(4)).toEqual([]);
+      expect(helper.memory.decisions().filter((d) => d.offerKind === "routine").at(-1)?.reasons).toEqual(["levelOff", "unproven"]);
+      settings("eager");
+      expect(ask("list", { kind: "routine" }).entries[0]?.says).toContain("asks first");
+      expect(occurrence(5)).toHaveLength(1);
     });
 
     it("scores a prediction as a miss when the user does something else, and never offers", () => {
@@ -375,13 +395,40 @@ describe("pattern engine in the helper", () => {
       expect(r?.fields).toMatchObject({ silent: { hits: 0 } });
     });
 
+    it("a first look finds a proven routine for a window that was already open, and its key runs it", async () => {
+      for (let d = 1; d <= 4; d++) occurrence(d);
+      // Caret was paused when day 5's compose window opened, so the window-open path offered nothing.
+      helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: true });
+      desk.at += DAY;
+      const cal = calendar(5);
+      desk.showList(cal);
+      desk.advance(1000);
+      const c = compose(5);
+      desk.showGrid(c);
+      expect(offers("routine")).toEqual([]);
+      helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: false });
+
+      // Eager or Balanced, the routine is proven (3 hits); at Quiet it is not looked for.
+      const quiet = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "q", at: desk.at, families: ["routine"], level: "quiet", deadlineMs: 2000 });
+      expect(quiet.outcome).toBe("nothing");
+      const r = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "look", at: desk.at, families: ["routine"], level: "balanced", deadlineMs: 2000 });
+      expect(r).toMatchObject({ outcome: "found", found: { kind: "fill", family: "routine", offerKey: "look.0", window: { windowId: c.windowId } } });
+      const fields = r.found?.spec.blocks.find((b) => b.type === "fields");
+      expect(fields?.type === "fields" ? fields.rows.map((x) => x.value?.text) : []).toEqual(cal.lines);
+      expect(offers("routine")).toEqual([]);
+
+      const done = await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "look.0", actionId: "fill", overrides: {}, at: desk.at });
+      expect(done).toMatchObject({ taskId: "look.0", outcome: "done" });
+      expect([0, 1, 2].map((i) => c.values.get(cellKey(c, 0, i)))).toEqual(cal.lines);
+    });
+
     it("pausing a routine stops its predictions and offers until it is resumed", () => {
-      for (let d = 1; d <= 3; d++) occurrence(d);
+      for (let d = 1; d <= 4; d++) occurrence(d);
       const id = ask("list", { kind: "routine" }).entries[0]!.id;
       expect(ask("pause", { id }).entries[0]?.status).toBe("paused");
-      expect(occurrence(4)).toEqual([]);
+      expect(occurrence(5)).toEqual([]);
       expect(ask("resume", { id }).entries[0]?.status).toBe("active");
-      expect(occurrence(5)).toHaveLength(1);
+      expect(occurrence(6)).toHaveLength(1);
     });
   });
 });

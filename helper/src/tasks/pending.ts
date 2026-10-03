@@ -11,6 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PendingInfo, ReaderVerb, TaskCause, TaskState, VerbResult } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
+import { SnippetLedger, cut, flat } from "../privacy.ts";
 import { FINISHED, type TaskRegistry } from "./registry.ts";
 
 /**
@@ -73,11 +74,6 @@ export const ASK_MAX_WAIT_MS = 400;
  */
 const BACKOFF_START_MS = 1000;
 const BACKOFF_MAX_MS = 20_000;
-/** Lines of window text sent to Jev, the "few dozen lines" rule of deep plan section 5. */
-const MAX_NOW_LINES = 30;
-const MAX_THEN_LINES = 20;
-/** Distinct marker lines named in a question, so a window full of statuses cannot outgrow the text limits. */
-const MAX_MARKER_LINES = 10;
 const MAX_LINE = 200;
 /** Lines of one window kept for the signature and the question, so a huge window costs a bounded pass. */
 const MAX_READ_LINES = 400;
@@ -301,9 +297,11 @@ const WAITING_CRITERIA: Record<Waiting, string> = {
 };
 
 /**
- * One request, two choice questions about one window. The window's text goes in the state as data:
- * what it showed when the user left, and what it shows now, with changed lines and markers kept
- * first when a large window has to be cut.
+ * One request, two choice questions about one window. The question carries snippets, never the window's
+ * text (privacy.ts): the window's name, the signs of running work when the user left and now, and the
+ * lines that changed since, the first of them (a job's new status) and the last ones (where an agent's
+ * turn ends), each cut to SNIPPET_CHARS and all within the window's budget. B6 sent up to 20 lines from
+ * when the user left and 30 from now, which for a small window was all of it, twice.
  */
 export function buildPendingRequest(
   w: WindowState,
@@ -312,26 +310,25 @@ export function buildPendingRequest(
   thenMarkers: readonly Marker[] = [],
   nowMarkers: readonly Marker[] = [],
 ): JevRequest {
+  const ledger = new SnippetLedger();
+  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const before = new Set(then.map(mask));
-  const markerLines = new Set(nowMarkers.map((m) => m.line));
-  const keep = new Set<string>([...now.slice(0, 3), ...now.filter((l) => !before.has(mask(l))), ...now.filter((l) => markerLines.has(l))]);
-  for (const l of now) {
-    if (keep.size >= MAX_NOW_LINES) break;
-    keep.add(l);
-  }
-  // A long window's changed lines can all be in its tail; the last ones are where an agent thread's turn ends.
-  const kept = now.filter((l) => keep.has(l));
-  const nowText = kept.length <= MAX_NOW_LINES ? kept : [...kept.slice(0, 3), ...kept.slice(-(MAX_NOW_LINES - 3))];
-  const thenText = then.length <= MAX_THEN_LINES ? then : [...then.slice(0, 3), ...then.slice(-(MAX_THEN_LINES - 3))];
-  const list = (ms: readonly Marker[]): string => (ms.length === 0 ? "none" : [...new Set(ms.map((m) => m.line))].slice(0, MAX_MARKER_LINES).join("\n"));
+  const changed = now.filter((l) => !before.has(mask(l)));
+  const picked = changed.length <= CHANGED_LINES ? changed : [changed[0] as string, ...changed.slice(-(CHANGED_LINES - 1))];
+  // The news first: what changed, then the signs now, both on screen; the signs from when the user left
+  // may be gone from the window and take what budget is left.
+  const lines = takeLines(ledger, w, picked, CHANGED_LINES);
+  const signsNow = takeLines(ledger, w, markerLines(nowMarkers), SIGN_LINES);
+  const signsThen = takeLines(ledger, w, markerLines(thenMarkers), SIGN_LINES);
   return {
     state: {
-      window: `${w.app.name} window '${w.window.title}'`,
-      situation: "The user left this window while it showed unfinished work. Caret watches it so it can tell the user when the work is done or needs them.",
-      when_the_user_left: thenText.join("\n"),
-      now: nowText.join("\n"),
-      signs_of_running_work_when_the_user_left: list(thenMarkers),
-      signs_of_running_work_now: list(nowMarkers),
+      window: windowName(w, title),
+      situation:
+        "The user left this window while it showed unfinished work. Caret watches it so it can tell the user when the work is done or needs them. " +
+        "It shows the signs of running work when the user left and now, and the lines that have changed since.",
+      signs_of_running_work_when_the_user_left: orNone(signsThen),
+      signs_of_running_work_now: orNone(signsNow),
+      lines_that_changed: orNone(lines),
     },
     questions: {
       finished: {
@@ -345,6 +342,64 @@ export function buildPendingRequest(
           "Is the window now waiting for the user to do something, such as approve, confirm, answer a question, choose an option or sign in, before the work can go on?",
         criteria: WAITING_CRITERIA,
       },
+    },
+    snippets: ledger.snippets,
+  };
+}
+
+/** Marker lines and changed lines a question names, at most; assumed. Four and six lines of SNIPPET_CHARS are WINDOW_CHARS. */
+const SIGN_LINES = 4;
+const CHANGED_LINES = 6;
+
+const markerLines = (ms: readonly Marker[]): string[] => [...new Set(ms.map((m) => m.line))];
+const orNone = (lines: readonly string[]): string => (lines.length === 0 ? "none" : lines.join("\n"));
+const windowName = (w: WindowState, title: string | null): string => (title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`);
+
+/**
+ * Up to `max` of the lines, each cut to SNIPPET_CHARS, that fit the window's budget in the ledger. An
+ * indicator's line ("[progress bar]") names a role, not text on screen, so it costs nothing.
+ */
+function takeLines(ledger: SnippetLedger, w: WindowState, lines: readonly string[], max: number): string[] {
+  const out: string[] = [];
+  for (const l of lines) {
+    if (out.length >= max) break;
+    const t = cut(flat(l));
+    if (t === "" || out.includes(t)) continue;
+    if (INDICATOR_RULES.has(t) || ledger.take(w, "candidate", [t])) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * The first look's question about a window that shows running work, asked once with no "before" to
+ * compare: does it show the work finished, and is it waiting on the user. Jev sees the window's name, its
+ * markers and its last few lines, as snippets within the window's budget; `lines` is that tail, so the
+ * caller can quote it.
+ */
+export function buildLookRequest(w: WindowState, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
+  const ledger = new SnippetLedger();
+  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
+  const signs = takeLines(ledger, w, markerLines(markers), SIGN_LINES);
+  const tail = takeLines(ledger, w, allWatchLines(w).slice(-CHANGED_LINES), CHANGED_LINES);
+  return {
+    lines: tail,
+    req: {
+      state: {
+        window: windowName(w, title),
+        situation: "The window shows signs of running work. Caret looks at it once to tell the user whether the work is done or needs them.",
+        signs_of_running_work: orNone(signs),
+        last_lines: orNone(tail),
+      },
+      questions: {
+        finished: { type: "choice", instructions: "Look at what the window shows. Has the work it was doing finished?", criteria: FINISHED_CRITERIA },
+        waiting: {
+          type: "choice",
+          instructions:
+            "Is the window waiting for the user to do something, such as approve, confirm, answer a question, choose an option or sign in, before the work can go on?",
+          criteria: WAITING_CRITERIA,
+        },
+      },
+      snippets: ledger.snippets,
     },
   };
 }
@@ -408,7 +463,7 @@ export interface PendingDeps {
   tasks: TaskRegistry;
   /** Sends a verb to the reader: here, only watchWindows. */
   reader: (verb: ReaderVerb) => Promise<VerbResult>;
-  /** False in shadow mode: no watches, no questions. */
+  /** False in shadow mode, while Caret is paused, or with the watch role off: no new watches. */
   live: () => boolean;
   warn?: (line: string) => void;
   debounceMs?: number;
@@ -566,6 +621,11 @@ export class PendingWatcher {
   readerRestarted(): void {
     for (const watch of [...this.watches.values()]) this.end(watch, "failed", "screen", "Caret's reader restarted and lost track of the window");
     this.resolved.clear();
+  }
+
+  /** The user turned the watch role off: every watch ends as a stop by the user would end it. */
+  stopAll(detail: string): void {
+    for (const watch of [...this.watches.values()]) this.end(watch, "failed", "you", detail);
   }
 
   /** pause, resume and stop from a taskControl. Throws with the reason for anything else. */

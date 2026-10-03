@@ -14,6 +14,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import * as z from "zod";
+import { LEVELS } from "../offers/settings.ts";
 import {
   AboutFields,
   PeopleFields,
@@ -30,8 +31,6 @@ import {
 
 /** A routine forgotten by the user is not relearned for this long (plan section 4, assumed). */
 export const FORGET_BLOCK_MS = 30 * 24 * 60 * 60 * 1000;
-/** Silent hits a routine needs before it may be offered (plan section 4, assumed). */
-export const ROUTINE_MIN_HITS = 2;
 /** Share of silent predictions that must have matched. No measurement behind the number. */
 export const ROUTINE_MIN_PRECISION = 0.8;
 
@@ -173,6 +172,12 @@ export class MemoryStore {
   private pendingDecisions: DecisionRow[] = [];
   /** Every routine with its steps, read once per change: window openings consult it on the event path. */
   private routineCache: RoutineRecord[] | null = null;
+  /**
+   * Silent hits a routine needs before it is active, at the user's level (offers/settings.ts LEVELS).
+   * The helper sets it from each settings message; at a level with routines off the memory view still
+   * describes proof by the Balanced number.
+   */
+  routineSightings: number = LEVELS.balanced.routineSightings ?? 3;
 
   constructor(dir: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -401,10 +406,6 @@ export class MemoryStore {
     }));
   }
 
-  spokenSince(at: number): number {
-    return this.pendingDecisions.filter((d) => d.speak && d.at >= at).length + Number((this.stmt("SELECT COUNT(*) AS n FROM decisions WHERE speak = 1 AND at >= ?").get(at) as { n: number }).n);
-  }
-
   /** A dismissal, a "Don't offer this here", or an offer withdrawn because the user did something else. */
   recordReaction(offerKind: OfferKind, bundleId: string, action: "dismiss" | "dontOfferHere" | "ignored" | "take", at: number): void {
     this.stmt("INSERT INTO reactions (at, day, offer_kind, bundle_id, action) VALUES (?, ?, ?, ?, ?)").run(at, localDay(at), offerKind, bundleId, action);
@@ -485,12 +486,12 @@ export class MemoryStore {
       }
       case "routine": {
         const rec = toRoutine(r);
-        const status: MemoryStatus = paused ? "paused" : offerable(rec) ? "active" : "learning";
+        const status: MemoryStatus = paused ? "paused" : offerable(rec, this.routineSightings) ? "active" : "learning";
         const srcApps = [...new Set(rec.steps.map((s) => s.srcApp))];
         const dstApp = rec.steps[0]?.dstApp ?? "";
         const f = { srcApps, dstApp, steps: Math.max(1, rec.steps.length), name: rec.name, silent: { hits: rec.hits, misses: rec.misses } };
         const what = rec.name ?? `${rec.steps.length} values from ${srcApps.join(" and ")} to ${dstApp}`;
-        const how = status === "active" ? "asks first" : status === "paused" ? "paused" : `learning, ${rec.hits} of ${ROUTINE_MIN_HITS} silent predictions right`;
+        const how = status === "active" ? "asks first" : status === "paused" ? "paused" : `learning, ${rec.hits} of ${this.routineSightings} silent predictions right`;
         return { kind: "routine", id: r.id, status, evidence, fields: f, says: `${what} (seen ${times(r.count)}; ${how})` };
       }
       case "permission": {
@@ -516,14 +517,14 @@ export class MemoryStore {
 
 const ABOUT_SOURCE: Record<AboutFields["source"], string> = { contacts: "from your Contacts card", typed: "you typed this", edit: "from your edit" };
 
-/** A routine's silent predictions have matched often enough for it to be offered. */
-export function routineProven(hits: number, misses: number): boolean {
+/** A routine's silent predictions have matched often enough for it to be offered: `sightings` hits at ROUTINE_MIN_PRECISION or better. */
+export function routineProven(hits: number, misses: number, sightings: number): boolean {
   const n = hits + misses;
-  return hits >= ROUTINE_MIN_HITS && n > 0 && hits / n >= ROUTINE_MIN_PRECISION;
+  return hits >= sightings && n > 0 && hits / n >= ROUTINE_MIN_PRECISION;
 }
 
-export function offerable(r: RoutineRecord): boolean {
-  return !r.paused && routineProven(r.hits, r.misses);
+export function offerable(r: RoutineRecord, sightings: number): boolean {
+  return !r.paused && routineProven(r.hits, r.misses, sightings);
 }
 
 /** Writes the last digits of `value` into the "#" slots of `template`; null when there are too few digits. */

@@ -12,11 +12,12 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type Node } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { describeCandidate, generateCandidates, type Candidate } from "./candidates.ts";
+import { SnippetLedger, type Snippet } from "../privacy.ts";
 import { describeField } from "./descriptor.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 
 export const NONE = "none";
-const FILLABLE_ROLES = new Set(["AXTextField", "AXTextArea", "AXComboBox"]);
+export const FILLABLE_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "AXComboBox"]);
 /** A form question beyond this many fields is cut to the fields nearest the trigger. Assumed. */
 export const MAX_FIELDS = 20;
 /**
@@ -64,11 +65,22 @@ const WORDINGS = [
     `Field to fill: ${d} It is in a form in the ${where}. Which value below should the user type into this field? Values usually come from the window the user just left. Answer none if no value below belongs in it.`,
 ] as const;
 
-export function buildFillRequest(w: WindowState, fields: AskField[], candidates: Candidate[], wording: 0 | 1 = 0): JevRequest {
+/**
+ * One ask. `snippets` declares the screen text in it (privacy.ts); `title` is the form window's title as
+ * declared there, or null when it did not fit the window's budget and the question names the app alone.
+ */
+export function buildFillRequest(
+  w: WindowState,
+  fields: AskField[],
+  candidates: Candidate[],
+  wording: 0 | 1 = 0,
+  snippets: readonly Snippet[] = [],
+  title: string | null = w.window.title,
+): JevRequest {
   const criteria: Record<string, string> = {};
   for (const c of candidates) criteria[c.id] = describeCandidate(c);
   criteria[NONE] = "No candidate is the value this field asks for.";
-  const where = `${w.app.name} window '${w.window.title}'`;
+  const where = title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`;
   const questions: JevRequest["questions"] = {};
   for (const f of fields) {
     questions[f.id] = { type: "choice", instructions: WORDINGS[wording](where, f.descriptor), criteria };
@@ -82,6 +94,7 @@ export function buildFillRequest(w: WindowState, fields: AskField[], candidates:
         "Users most often copy from the window they were in just before the form.",
     },
     questions,
+    snippets,
   };
 }
 
@@ -125,12 +138,21 @@ export async function proposeFill(
   const cutoff = opts.cutoff ?? FILL_CUTOFF;
   const w = model.windows.get(windowId);
   if (w === undefined) throw new FillError(`unknown window ${windowId}`);
-  const nodes = formFields(w, triggerKey);
-  const fields = nodes.map((n, i) => {
+  // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
+  // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
+  // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
+  const ledger = new SnippetLedger();
+  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
+  const fields: { id: string; node: Node; descriptor: string; name: string }[] = [];
+  for (const n of formFields(w, triggerKey)) {
     const d = describeField(w, n);
-    return { id: `f${i + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field" };
-  });
-  const candidates = generateCandidates(model, windowId, undefined, now);
+    if (!ledger.take(w, "descriptor", [d.label, d.nearest, d.placeholder, d.section])) {
+      if (n.key === triggerKey) throw new FillError(`the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
+      continue;
+    }
+    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field" });
+  }
+  const candidates = generateCandidates(model, windowId, undefined, now, ledger);
   if (candidates.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
 
   // The second ask sees the same candidates in another order under other ids, so neither position
@@ -142,8 +164,8 @@ export async function proposeFill(
   const second = order.map((c, i) => ({ ...c, id: `v${i + 1}` }));
   const back = new Map(second.map((c, i) => [c.id, order[i]?.id ?? ""]));
   const [r1, r2] = await Promise.all([
-    askJev(buildFillRequest(w, fields, candidates, 0)),
-    askJev(buildFillRequest(w, fields, second, 1)),
+    askJev(buildFillRequest(w, fields, candidates, 0, ledger.snippets, title)),
+    askJev(buildFillRequest(w, fields, second, 1, ledger.snippets, title)),
   ]);
 
   const byId = new Map(candidates.map((c) => [c.id, c]));

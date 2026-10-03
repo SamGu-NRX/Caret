@@ -7,14 +7,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
+import { DEFAULT_SETTINGS } from "../src/offers/settings.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
-import { PROTOCOL_VERSION, type Activity, type OfferAlternatives, type ReaderMessage } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type Activity, type OfferAction, type OfferAlternatives, type PatternOffer, type ReaderMessage, type TaskProgress } from "../src/protocol.ts";
 import { OFFER_LIFETIMES } from "../src/offers/lifetimes.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { MAIL_APP, focus, jevPickingText, snap } from "./builders.ts";
 import { Desk, PEOPLE, grid, roster, type GridWindow, type ListWindow } from "./scene.ts";
 import { captureEdit } from "../src/patterns/preferences.ts";
+import { EDIT_SETTLE_MS } from "../src/patterns/engine.ts";
 import { FIXTURE_APP } from "./builders.ts";
 import { LineClient, SocketReader, loadRecording, until } from "./socket-reader.ts";
 
@@ -38,7 +40,7 @@ const FILL_VALUES: Record<string, string> = { Name: "Dana Whitfield", Email: "da
 let jevGate: Promise<void> | null = null;
 const askJev: AskJev = async (req) => {
   if (req.questions.finished !== undefined) {
-    const done = /done|passed/i.test(String((req.state as Record<string, unknown>).now));
+    const done = /done|passed/i.test(String((req.state as Record<string, unknown>).lines_that_changed));
     return { model: "jev-test", answers: { finished: { choice: done ? "yes" : "no", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
   }
   if (jevGate !== null) await jevGate;
@@ -118,6 +120,8 @@ describe("offer lifetimes over the socket", () => {
       shadow: false,
       allowBackgroundFocus: false,
       newId: () => `id-${++n}`,
+      // Eager, whose routines need two silent hits, so a routine is offered on its fourth day as these tests expect.
+      settings: { ...DEFAULT_SETTINGS, level: "eager" },
       now: () => reader?.clock ?? 0,
       publish: (m) => server.publish(m),
       sendToReader: (cmd) => server.sendToReader(cmd),
@@ -141,7 +145,7 @@ describe("offer lifetimes over the socket", () => {
   });
 
   it("keeps the lifetimes in one table", () => {
-    expect(Object.fromEntries(Object.entries(OFFER_LIFETIMES).map(([k, v]) => [k, v.ms]))).toEqual({ fill: null, loopNext: 2 * MIN, loopFinish: 5 * MIN, routine: 10 * MIN, open: null });
+    expect(Object.fromEntries(Object.entries(OFFER_LIFETIMES).map(([k, v]) => [k, v.ms]))).toEqual({ fill: null, loopNext: 2 * MIN, loopFinish: 5 * MIN, routine: 10 * MIN, open: null, firstLook: 5 * MIN });
   });
 
   describe("fill pop-up: until the field or the form changes", () => {
@@ -255,7 +259,7 @@ describe("offer lifetimes over the socket", () => {
     });
   });
 
-  it("loopFinish outliving its quiet loop is withdrawn when the user fills one of its rows", async () => {
+  it("loopFinish outliving its quiet loop is withdrawn once the user's own value in one of its rows settles", async () => {
     await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
     await host.waitFor((m) => m.type === "alternatives");
     const typed = reader.setValue(SEATING, guest(2), "Lena Hartmann");
@@ -268,6 +272,10 @@ describe("offer lifetimes over the socket", () => {
     reader.clock = action.at + 3 * MIN + 10;
     const own = reader.setValue(SEATING, guest(4), "Somebody Else");
     await until(() => hooks.applied(SEATING, own.at));
+    // A value typed by hand is judged once it is still, as a re-offer is.
+    await tickAt(own.at + EDIT_SETTLE_MS - 1);
+    expect(withdrawals().filter(([id]) => id === "offer-2")).toEqual([]);
+    await tickAt(own.at + EDIT_SETTLE_MS);
     expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-2")).toMatchObject({ reason: "stale" });
     expect(helper.offers.get("offer-2")).toBeUndefined();
   });
@@ -396,6 +404,151 @@ describe("offer lifetimes over the socket", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(host.received.filter((m) => (m as Sent).type === "action")).toHaveLength(1);
     expect(helper.openApp.pending()).toEqual([{ offerKey: "open-watch-id-1.2", published: false }]);
+  });
+
+  describe("re-offer what the user left", () => {
+    /** offer-2: the loopFinish for guest rows 3 to 5 (Oskar Lindqvist, Yusuf Demir, Mila Novak), after Lena Hartmann is typed in row 2. */
+    const finishOffer = async (): Promise<OfferAction> => {
+      await reader.replay(loadRecording("offers-loop.ndjson"), hooks);
+      await host.waitFor((m) => m.type === "alternatives");
+      const typed = reader.setValue(SEATING, guest(2), "Lena Hartmann");
+      await until(() => hooks.applied(SEATING, typed.at));
+      // The stream clock moves with the tick, so what the user types next comes after it.
+      await tickAt(typed.at + 2000);
+      return host.waitFor<OfferAction>((m) => m.type === "action" && m.offerKey === "offer-2");
+    };
+    /** Types `value` into a field one prefix at a time, 150 ms apart, as the reader sees a person type; returns the last snapshot's time. */
+    const typeByHand = async (windowId: string, key: string, value: string): Promise<number> => {
+      let at = 0;
+      for (let i = 1; i <= value.length; i += 3) {
+        reader.clock += 150;
+        const s = reader.setValue(windowId, key, value.slice(0, Math.min(value.length, i + 2)));
+        await until(() => hooks.applied(windowId, s.at));
+        at = s.at;
+      }
+      return at;
+    };
+    const task = (id: string): Activity["task"] | undefined =>
+      host.received.filter((m): m is Activity => (m as Sent).type === "activity" && (m as Activity).task.id === id).at(-1)?.task;
+    const phases = async (taskId: string): Promise<string[]> => {
+      await host.waitFor((m) => m.type === "taskProgress" && m.taskId === taskId && ["done", "failed"].includes(String(m.phase)));
+      return host.received.filter((m): m is TaskProgress => (m as Sent).type === "taskProgress" && (m as TaskProgress).taskId === taskId).map((m) => m.phase);
+    };
+
+    it("loopFinish: one row typed by hand re-offers the other two under a new key once the typing settles, and taking it writes only those", async () => {
+      await finishOffer();
+      const last = await typeByHand(SEATING, guest(3), "Oskar Lindqvist");
+      // Every prefix of the name passed through the field; none withdrew the offer.
+      await tickAt(last + EDIT_SETTLE_MS - 1);
+      expect(withdrawals().filter(([id]) => id === "offer-2")).toEqual([]);
+      await tickAt(last + EDIT_SETTLE_MS);
+      const gone = host.received.find((m) => (m as Sent).type === "offerWithdrawn" && (m as Sent).id === "offer-2");
+      expect(gone).toMatchObject({ reason: "reoffered", replacedBy: "offer-3" });
+      const again = await host.waitFor<OfferAction>((m) => m.type === "action" && m.offerKey === "offer-3");
+      expect(again.field.key).toBe(guest(4));
+      expect(again.endState).toEqual({
+        text: "Finish the rest: 2 more values from Directory Fixture",
+        ref: { rule: "loopFinish", derived: ["Yusuf Demir", "Mila Novak"].map((name) => ({ node: `${DIRECTORY}/${person(name)}`, quote: name })) },
+      });
+      const offer = host.received.find((m): m is PatternOffer => (m as Sent).type === "patternOffer" && (m as PatternOffer).id === "offer-3");
+      expect(offer?.cells.map((c) => [c.key, c.value])).toEqual([
+        [guest(4), "Yusuf Demir"],
+        [guest(5), "Mila Novak"],
+      ]);
+      expect(task("offer-2")).toMatchObject({ state: "undone", cause: "you", detail: "you entered some values; the rest are offered as offer-3" });
+      expect(task("offer-3")).toMatchObject({ state: "ready" });
+      expect(helper.offers.get("offer-2")).toBeUndefined();
+
+      host.send(accept("offer-3", "finish"));
+      expect(await phases("offer-3")).toEqual(["started", "acting", "verified", "acting", "verified", "done"]);
+      expect(reader.verbs.filter((v) => v.kind === "write" && v.attribute !== "focused").map((v) => (v as { key: string }).key)).toEqual([guest(4), guest(5)]);
+      expect([2, 3, 4, 5].map((r) => reader.value(SEATING, guest(r)))).toEqual(["Lena Hartmann", "Oskar Lindqvist", "Yusuf Demir", "Mila Novak"]);
+    });
+
+    it("loopFinish: the re-offer's own five minutes start when it is made", async () => {
+      await finishOffer();
+      reader.clock += 60 * 1000;
+      const typed = reader.setValue(SEATING, guest(3), "Oskar Lindqvist");
+      await until(() => hooks.applied(SEATING, typed.at));
+      await tickAt(typed.at + EDIT_SETTLE_MS);
+      const again = await host.waitFor<OfferAction>((m) => m.type === "action" && m.offerKey === "offer-3");
+      await tickAt(again.at + 5 * MIN - 1);
+      expect(withdrawals().filter(([id]) => id === "offer-3")).toEqual([]);
+      await tickAt(again.at + 5 * MIN);
+      expect(withdrawals().filter(([id]) => id === "offer-3")).toEqual([["offer-3", "expired"]]);
+    });
+
+    it("loopFinish: a second row by hand re-offers the last one, and the last by hand ends it as taken by the user", async () => {
+      await finishOffer();
+      for (const [row, name, next] of [[3, "Oskar Lindqvist", "offer-3"], [4, "Yusuf Demir", "offer-4"]] as const) {
+        const typed = reader.setValue(SEATING, guest(row), name);
+        await until(() => hooks.applied(SEATING, typed.at));
+        await tickAt(typed.at + EDIT_SETTLE_MS);
+        await host.waitFor((m) => m.type === "action" && m.offerKey === next);
+      }
+      const last = host.received.find((m): m is PatternOffer => (m as Sent).type === "patternOffer" && (m as PatternOffer).id === "offer-4");
+      expect(last?.says).toBe("Finish the rest: 1 more value from Directory Fixture");
+      const typed = reader.setValue(SEATING, guest(5), "Mila Novak");
+      await until(() => hooks.applied(SEATING, typed.at));
+      expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "offer-4")).toMatchObject({ reason: "taken" });
+      expect(task("offer-4")).toMatchObject({ state: "done", cause: "you" });
+      expect(withdrawals()).toContainEqual(["offer-2", "reoffered"]);
+      expect(withdrawals()).toContainEqual(["offer-3", "reoffered"]);
+      expect(reader.verbs.filter((v) => v.kind === "write")).toEqual([]);
+    });
+
+    it("routine: one end state reached by hand re-offers the other two", async () => {
+      const calendar = (day: number): ListWindow => ({
+        windowId: "5150-20",
+        app: FIXTURE_APP,
+        title: "Calendar",
+        group: "Event",
+        lines: [`Design review ${day}`, `priya.raman+${day}@northwind.example`, `https://meet.example.com/day-${day}`],
+      });
+      const compose = (day: number): GridWindow => ({ windowId: `6160-${100 + day}`, app: MAIL_APP, title: `New message ${day}`, columns: ["Subject", "To", "Link"], rows: 1, values: new Map() });
+      const events = recordDesk((desk) => {
+        for (let day = 1; day <= 4; day++) {
+          desk.at += DAY;
+          const cal = calendar(day);
+          desk.showList(cal);
+          desk.advance(1000);
+          const c = compose(day);
+          desk.showGrid(c);
+          if (day === 4) return;
+          for (let i = 0; i < 3; i++) desk.fill(c, 0, i, cal.lines[i] as string);
+          desk.close(c.windowId);
+        }
+      });
+      await replayDesk(events);
+      const action = await host.waitFor<OfferAction>((m) => m.type === "action");
+      const offer = host.received.find((m): m is PatternOffer => (m as Sent).type === "patternOffer" && (m as PatternOffer).id === action.offerKey);
+      expect(offer?.cells).toHaveLength(3);
+      const [first, ...rest] = offer?.cells ?? [];
+      const last = await typeByHand(first!.windowId, first!.key, first!.value);
+      await tickAt(last + EDIT_SETTLE_MS);
+      const gone = host.received.find((m) => (m as Sent).type === "offerWithdrawn" && (m as Sent).id === action.offerKey) as { reason: string; replacedBy: string } | undefined;
+      expect(gone?.reason).toBe("reoffered");
+      const again = await host.waitFor<OfferAction>((m) => m.type === "action" && m.offerKey === gone?.replacedBy);
+      expect(again.actions.map((a) => a.id)).toEqual(["run"]);
+      expect(again.field.key).toBe(rest[0]?.key);
+      const reoffer = host.received.find((m): m is PatternOffer => (m as Sent).type === "patternOffer" && (m as PatternOffer).id === again.offerKey);
+      expect(reoffer).toMatchObject({ kind: "routine", patternId: offer?.patternId, says: "Fill 2 values from Caret Fixture" });
+      expect(reoffer?.cells.map((c) => [c.key, c.value])).toEqual(rest.map((c) => [c.key, c.value]));
+      host.send(accept(again.offerKey, "run"));
+      expect((await phases(again.offerKey)).at(-1)).toBe("done");
+      expect(rest.map((c) => reader.value(c.windowId, c.key))).toEqual(rest.map((c) => c.value));
+    });
+
+    it("loopFinish: a row the user fills with a value the offer did not predict, beside one it did, is stale, not re-offered", async () => {
+      await finishOffer();
+      const ok = reader.setValue(SEATING, guest(3), "Oskar Lindqvist");
+      await until(() => hooks.applied(SEATING, ok.at));
+      const own = reader.setValue(SEATING, guest(4), "Somebody Else");
+      await until(() => hooks.applied(SEATING, own.at));
+      await tickAt(own.at + EDIT_SETTLE_MS);
+      expect(withdrawals().filter(([id]) => id === "offer-2")).toEqual([["offer-2", "stale"]]);
+      expect(host.received.some((m) => (m as Sent).type === "action" && (m as Sent).offerKey === "offer-3")).toBe(false);
+    });
   });
 
   describe("partial withdrawal of alternatives", () => {

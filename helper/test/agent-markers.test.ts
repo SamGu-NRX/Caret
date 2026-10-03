@@ -158,11 +158,11 @@ describe("the watch's text for a long agent thread", () => {
     expect(signature(a, allWatchLines(a), windowMarkers(a))).not.toBe(signature(b, allWatchLines(b), windowMarkers(b)));
   });
 
-  it("names at most ten marker lines in a question", () => {
+  it("names at most four marker lines in a question, within the window's budget", () => {
     const many = Array.from({ length: 50 }, (_, i) => text(`s/statictext:${i}~0`, `Exporting part ${i} of 50`, [600, 20 * i, 300, 18]));
     const w = windowOf(BROWSER, many);
     const req = buildPendingRequest(w, watchLines(w), watchLines(w), windowMarkers(w), windowMarkers(w));
-    expect(String((req.state as Record<string, string>).signs_of_running_work_now).split("\n")).toHaveLength(10);
+    expect(String((req.state as Record<string, string>).signs_of_running_work_now).split("\n")).toHaveLength(4);
   });
 
   it("tells Jev the signs of running work then and now", () => {
@@ -172,7 +172,7 @@ describe("the watch's text for a long agent thread", () => {
     const state = req.state as Record<string, string>;
     expect(state.signs_of_running_work_when_the_user_left).toBe("[button] Stop generation");
     expect(state.signs_of_running_work_now).toBe("none");
-    expect(state.now).toContain("All four seating files are updated.");
+    expect(state.lines_that_changed).toContain("All four seating files are updated.");
   });
 });
 

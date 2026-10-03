@@ -3,6 +3,7 @@
 // CARET_ENV_FILE. It is never logged; errors name the variable, not the value.
 import { readFileSync } from "node:fs";
 import * as z from "zod";
+import type { Snippet } from "../privacy.ts";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -18,6 +19,11 @@ export interface ChoiceQuestion {
 export interface JevRequest {
   state: string | Record<string, unknown>;
   questions: Record<string, ChoiceQuestion>;
+  /**
+   * Every piece of screen text in `state` and `questions`, with its window, as the builder took it through
+   * a SnippetLedger (privacy.ts). Never sent: the client posts `state` and `questions` only.
+   */
+  snippets: readonly Snippet[];
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number() }).loose();

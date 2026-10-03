@@ -119,6 +119,20 @@ export class HelperServer {
           else if (m.data.type === "offerAccept") void this.helper().handleOfferAccept(m.data);
           else if (m.data.type === "offerStop") void this.helper().handleOfferStop(m.data);
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
+          else if (m.data.type === "settings") this.helper().handleSettings(m.data);
+          // The reply names windows and quotes values, so it goes to the asker only, as memory does.
+          else if (m.data.type === "firstLook") {
+            const requestId = m.data.requestId;
+            void this.helper()
+              .handleFirstLook(m.data)
+              .catch((e: unknown) => {
+                this.warn(`first look ${requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
+                return { type: "firstLookReply", v: PROTOCOL_VERSION, requestId, at: Date.now(), outcome: "error", found: null, scanned: null, error: "the look failed" } as const;
+              })
+              .then((r) => {
+                if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+              });
+          }
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
           else if (m.data.type === "activityRequest") s.write(JSON.stringify(this.helper().handleActivity(m.data)) + "\n");
           else if (m.data.type === "memoryRequest") {
@@ -134,7 +148,10 @@ export class HelperServer {
     });
     s.on("close", () => {
       this.consumers.delete(s);
-      if (this.reader === s) this.reader = null;
+      if (this.reader === s) {
+        this.reader = null;
+        this.helper().readerClosed();
+      }
       this.sockets.delete(s);
     });
     s.on("error", (e) => this.warn(`socket error: ${e.message}`));

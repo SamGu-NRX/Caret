@@ -20,7 +20,11 @@
 //   and a notes window; stdin `jobs reset | finish N | ask N | dump` drives them.
 //   stdin `focus NAME` makes one of the fixture's own windows key without activating the app, which
 //   moves AX focus inside the fixture only (it works in the background-only default too: AppKit
-//   reports no key window, yet the reader sees the focus move). Each command answers one JSON line on stdout.
+//   reports no key window, yet the reader sees the focus move).
+//   stdin `activate legacy|cooperative` (with --foreground only) lets the app become active and asks
+//   AppKit for it, through activate(ignoringOtherApps:) or macOS 14's activate(). `quit PID` hands
+//   activation to that process if the fixture holds it, then exits. They exist for the activation
+//   proof (experiments/run-activation-proof.sh). Each command answers one JSON line on stdout.
 import AppKit
 import WebKit
 
@@ -178,7 +182,10 @@ if let appearance { app.appearance = appearance }
 // at launch and held the foreground for a whole evaluation run (executor run-3). It never needs to
 // be active: windows are made key without activation. So it hands activation back whenever it gets it.
 var activationsRefused = 0
+/// Set only by the stdin `activate` command: the one time the fixture keeps activation it gets.
+var activationAllowed = false
 let refuseActivation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+    if activationAllowed { return }
     activationsRefused += 1
     FileHandle.standardError.write(Data("caret-fixture: became active; deactivating (\(activationsRefused))\n".utf8))
     NSApp.deactivate()
@@ -829,6 +836,30 @@ func firstTextField(in v: NSView) -> NSTextField? {
     return nil
 }
 
+/// Asks AppKit to make the fixture the active app. Whether it became frontmost is for the caller to
+/// read from NSWorkspace; this only reports what AppKit said at once.
+func activateCommand(_ how: String) -> [String: Any] {
+    guard foreground else { return ["ok": false, "error": "a background-only fixture cannot be activated; pass --foreground"] }
+    guard how == "legacy" || how == "cooperative" else { return ["ok": false, "error": "activate takes legacy or cooperative, not \(how)"] }
+    activationAllowed = true
+    if how == "legacy" { NSApp.activate(ignoringOtherApps: true) } else { NSApp.activate() }
+    return ["ok": true, "at": ms(), "how": how, "isActive": NSApp.isActive]
+}
+
+/// Gives activation back to `pid` (macOS 14's cooperative hand-off) when the fixture holds it, then exits.
+func quitCommand(_ pidText: String) -> [String: Any] {
+    guard let pid = pid_t(pidText), let prev = NSRunningApplication(processIdentifier: pid) else { return ["ok": false, "error": "no running process \(pidText)"] }
+    activationAllowed = false
+    let wasActive = NSApp.isActive
+    var handedBack = false
+    if wasActive {
+        NSApp.yieldActivation(to: prev)
+        handedBack = prev.activate(from: .current, options: [])
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(0) }
+    return ["ok": true, "at": ms(), "wasActive": wasActive, "handedBack": handedBack]
+}
+
 // Stdin commands, one per line, each answered with one JSON line: `focus NAME`, `jobs ...` for the
 // job windows, and anything else for the executor or seating window.
 if executorWindow != nil && seatingWindow != nil { die("the executor and seating windows both read stdin; open one of them") }
@@ -837,6 +868,8 @@ let stdinCommand: ((String) -> [String: Any])? = { line in
     let parts = line.split(separator: " ").map(String.init)
     switch parts.first {
     case "focus" where parts.count == 2: return focusCommand(parts[1])
+    case "activate" where parts.count == 2: return activateCommand(parts[1])
+    case "quit" where parts.count == 2: return quitCommand(parts[1])
     case "jobs":
         guard let j = jobWindows else { return ["ok": false, "error": "no job windows; pass --windows jobs"] }
         return j.command(Array(parts.dropFirst()))

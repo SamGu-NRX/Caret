@@ -219,22 +219,74 @@ public struct OfferWithdrawn: Codable, Equatable, Sendable {
     /// `taken`: its values were entered, by Caret or by the user, or the user went to the window it
     /// offered to open. `diverged`: the user entered something else. `idle`: no longer sent. `stale`: a
     /// window it reads or writes closed or changed, the reader restarted, or its memory entry was paused
-    /// or forgotten. `expired`: its lifetime ended (helper/src/offers/lifetimes.ts).
-    public enum Reason: String, Codable, Sendable { case taken, dismissed, diverged, idle, stale, expired }
+    /// or forgotten. `expired`: its lifetime ended (helper/src/offers/lifetimes.ts). `reoffered`: the
+    /// user entered some of a loopFinish's or routine's values by hand, and the rest are offered again
+    /// under `replacedBy`. `settings`: the user paused Caret, or turned off the role or level that
+    /// allows this kind of offer.
+    public enum Reason: String, Codable, Sendable { case taken, dismissed, diverged, idle, stale, expired, reoffered, settings }
     public var at: Int64
     public var id: String
     public var reason: Reason
-    public init(at: Int64, id: String, reason: Reason) { self.at = at; self.id = id; self.reason = reason }
-    enum CodingKeys: String, CodingKey { case at, id, reason }
+    /// The new offer's key; present with `reoffered` and with no other reason.
+    public var replacedBy: String?
+    public init(at: Int64, id: String, reason: Reason, replacedBy: String? = nil) {
+        self.at = at; self.id = id; self.reason = reason; self.replacedBy = replacedBy
+    }
+    enum CodingKeys: String, CodingKey { case at, id, reason, replacedBy }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         at = try c.decode(Int64.self, forKey: .at); id = try c.decode(String.self, forKey: .id)
         reason = try c.decode(Reason.self, forKey: .reason)
+        replacedBy = try c.decodeOptional(String.self, forKey: .replacedBy)
+        if replacedBy?.isEmpty == true { throw ProtocolError("replacedBy is empty") }
+        if (reason == .reoffered) != (replacedBy != nil) { throw ProtocolError("replacedBy comes with reason reoffered, and reoffered needs it") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(at, forKey: .at); try c.encode(id, forKey: .id); try c.encode(reason, forKey: .reason)
+        try c.encodeIfPresent(replacedBy, forKey: .replacedBy)
+    }
+}
+
+/// Host to helper: the user's settings, sent on connect and on every change (helper/src/protocol.ts
+/// `Settings`). The helper's gate applies them to its next decision: paused holds every offer and
+/// withdraws those shown, a role left out disables its producers, and the level sets the hourly budget
+/// (helper/src/offers/settings.ts LEVELS). Named apart from the host's own `CaretSettings`, which holds
+/// more than the helper needs.
+public struct GateSettings: Codable, Equatable, Sendable {
+    public static let type = "settings"
+    /// The host's roles by their raw values. `words` is the host's ghost text; the helper ignores it.
+    public enum Role: String, Codable, CaseIterable, Sendable { case fill, `repeat` = "repeat", watch, words }
+    public enum Level: String, Codable, CaseIterable, Sendable { case quiet, balanced, eager }
+
+    public var at: Int64
+    /// Each role at most once.
+    public var roles: [Role]
+    public var level: Level
+    public var paused: Bool
+
+    public init(at: Int64, roles: [Role], level: Level, paused: Bool) {
+        self.at = at; self.roles = roles; self.level = level; self.paused = paused
+    }
+
+    enum CodingKeys: String, CodingKey { case at, roles, level, paused }
+
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Int64.self, forKey: .at)
+        roles = try c.decode([Role].self, forKey: .roles)
+        if Set(roles).count != roles.count { throw ProtocolError("roles lists a role twice") }
+        level = try c.decode(Level.self, forKey: .level)
+        paused = try c.decode(Bool.self, forKey: .paused)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(at, forKey: .at); try c.encode(roles, forKey: .roles)
+        try c.encode(level, forKey: .level); try c.encode(paused, forKey: .paused)
     }
 }

@@ -9,14 +9,19 @@ import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
 import type { AcceptHandler, AcceptResult } from "./registry.ts";
 import { offerField } from "./field.ts";
+import type { OfferGate } from "./settings.ts";
 
 interface Entry {
   offerKey: string;
   watchId: string;
   windowId: string;
   status: string;
+  /** What the watch's answer was: the work finished, or the window waits on the user. */
+  state: "done" | "needsYou";
   /** The field the offer is shown in; null while it waits for one. */
   boundTo: OfferField | null;
+  /** Shown once already, so it has counted against the hourly budget; showing it again in another field does not count again. */
+  counted: boolean;
 }
 
 export interface OpenAppDeps {
@@ -24,6 +29,8 @@ export interface OpenAppDeps {
   /** The helper's publish gate; false when it refused the message. */
   publish: (m: HelperMessage, accept?: AcceptHandler) => boolean;
   run: (taskId: string, plan: Plan, slots: Record<string, string>) => Promise<TaskResult>;
+  /** The user's settings: an offer the watch role, pause or the hourly budget holds is never shown. */
+  gate: OfferGate;
   now?: () => number;
 }
 
@@ -55,14 +62,20 @@ export class OpenAppOffers {
     return [...this.entries.values()].map((e) => ({ offerKey: e.offerKey, published: e.boundTo !== null }));
   }
 
+  /** The watched windows that finished or need the user and still have an offer, held or shown, with the status line it quotes. For the first look. */
+  resolvedWindows(): { windowId: string; status: string; state: "done" | "needsYou" }[] {
+    return [...this.entries.values()].map((e) => ({ windowId: e.windowId, status: e.status, state: e.state }));
+  }
+
   /** A watch ended as done or became needsYou. A newer resolution of the same watch replaces an older offer. */
-  resolved(e: { watchId: string; windowId: string; status: string | null }): void {
+  resolved(e: { watchId: string; windowId: string; state: "done" | "needsYou"; status: string | null }): void {
     for (const old of [...this.entries.values()]) if (old.watchId === e.watchId) this.drop(old.offerKey, "stale");
     const offerKey = `open-${e.watchId}.${++this.seq}`;
     if (e.status === null) return;
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined || statusNode(w, e.status) === null) return;
-    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, boundTo: null };
+    if (!this.deps.gate.enabled("pending")) return;
+    const entry: Entry = { offerKey, watchId: e.watchId, windowId: e.windowId, status: e.status, state: e.state, boundTo: null, counted: false };
     this.entries.set(offerKey, entry);
     const field = this.fieldNow(e.windowId);
     if (field !== null) this.show(entry, field);
@@ -125,6 +138,11 @@ export class OpenAppOffers {
     for (const e of [...this.entries.values()]) this.drop(e.offerKey, "stale");
   }
 
+  /** The user's settings no longer allow pending offers: every one shown is withdrawn as `settings`, and held ones are dropped. */
+  withdrawAll(): void {
+    for (const e of [...this.entries.values()]) this.drop(e.offerKey, "settings");
+  }
+
   /** The focused editable field of the model's focused window, unless that window is the watched one. */
   private fieldNow(watched: string): OfferField | null {
     const id = this.deps.model.focusedWindowId;
@@ -143,6 +161,11 @@ export class OpenAppOffers {
       this.entries.delete(e.offerKey);
       return;
     }
+    // The settings decide when the offer would first be shown, which may be long after the watch resolved.
+    if (!e.counted && this.deps.gate.holds("pending", this.now()).length > 0) {
+      this.entries.delete(e.offerKey);
+      return;
+    }
     const msg: OfferAction = {
       type: "action",
       v: PROTOCOL_VERSION,
@@ -153,8 +176,11 @@ export class OpenAppOffers {
       endState: { text: e.status, ref: { node: `${e.windowId}/${node}`, quote: e.status } },
       actions: [{ id: "open", label: `Open ${w.app.name}`, key: "tab" }],
     };
-    if (this.deps.publish(msg, () => this.accept(e.offerKey))) e.boundTo = field;
-    else this.entries.delete(e.offerKey);
+    if (this.deps.publish(msg, () => this.accept(e.offerKey))) {
+      e.boundTo = field;
+      if (!e.counted) this.deps.gate.spoke(this.now());
+      e.counted = true;
+    } else this.entries.delete(e.offerKey);
   }
 
   private drop(offerKey: string, reason: OfferWithdrawn["reason"]): void {

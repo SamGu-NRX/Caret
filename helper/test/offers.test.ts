@@ -13,6 +13,7 @@ import { parsePopupSpec } from "../src/popup.ts";
 import { HostOfferRegistry, acceptRefusal } from "../src/offers/registry.ts";
 import { buildFillPopup, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
 import { OpenAppOffers } from "../src/offers/open-app.ts";
+import { OfferGate } from "../src/offers/settings.ts";
 import { offerField } from "../src/offers/field.ts";
 import { fillSlots, Plan } from "../src/executor/schema.ts";
 import { FIXTURE_APP, MAIL_APP, field, focus, snap, text, value } from "./builders.ts";
@@ -295,7 +296,7 @@ describe("Open <app> for a watched window", () => {
   function setup(composeFocused: boolean) {
     const model = new ScreenModel();
     const sent: HelperMessage[] = [];
-    const offers = new OpenAppOffers({ model, publish: (m) => (sent.push(m), true), run: async () => ({ taskId: "", outcome: "done", step: null, detail: null, acted: 1, skipped: 0, jevCalls: 0 }) });
+    const offers = new OpenAppOffers({ model, gate: new OfferGate(), publish: (m) => (sent.push(m), true), run: async () => ({ taskId: "", outcome: "done", step: null, detail: null, acted: 1, skipped: 0, jevCalls: 0 }) });
     model.apply(snap([text(FK("statictext:test suite~0"), "Test suite"), text(STATUS, "Done. 48 of 48 tests passed.")], { at: 1000, windowId: JOB, title: "Test run" }));
     model.apply(snap([field(TO, "", { frame: [100, 40, 300, 24] })], { at: 1100, windowId: COMPOSE, title: "New message", app: MAIL_APP, focused: composeFocused, focusedKey: composeFocused ? TO : null }));
     return { model, sent, offers };
@@ -303,7 +304,7 @@ describe("Open <app> for a watched window", () => {
 
   it("binds to the field the user is in and quotes the node that shows the status", () => {
     const { sent, offers } = setup(true);
-    offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    offers.resolved({ state: "done", watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
     expect(sent).toEqual([
       {
         type: "action",
@@ -320,15 +321,15 @@ describe("Open <app> for a watched window", () => {
 
   it("offers nothing without a status line, or when no node on screen holds it", () => {
     const { sent, offers } = setup(true);
-    offers.resolved({ watchId: "watch-1", windowId: JOB, status: null });
-    offers.resolved({ watchId: "watch-2", windowId: JOB, status: "[button] Approve" });
+    offers.resolved({ state: "done", watchId: "watch-1", windowId: JOB, status: null });
+    offers.resolved({ state: "done", watchId: "watch-2", windowId: JOB, status: "[button] Approve" });
     expect(sent).toEqual([]);
     expect(offers.pending()).toEqual([]);
   });
 
   it("holds the offer until focus lands in an editable field of another window", () => {
     const { sent, offers } = setup(false);
-    offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    offers.resolved({ state: "done", watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
     expect(offers.pending()).toEqual([{ offerKey: "open-watch-1.1", published: false }]);
     offers.onFocus(focus(COMPOSE, TO, 2000, { app: MAIL_APP, editable: false }));
     expect(sent).toEqual([]);
@@ -338,8 +339,8 @@ describe("Open <app> for a watched window", () => {
 
   it("gives each resolution of a watch its own key, so each can run as its own task", () => {
     const { sent, offers } = setup(true);
-    offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
-    offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    offers.resolved({ state: "done", watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    offers.resolved({ state: "done", watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
     expect(sent.map((m) => [m.type, "offerKey" in m ? m.offerKey : (m as { id: string }).id])).toEqual([
       ["action", "open-watch-1.1"],
       ["offerWithdrawn", "open-watch-1.1"],
@@ -349,20 +350,20 @@ describe("Open <app> for a watched window", () => {
 
   it("ignores focus in the watched window while its app is in the background", () => {
     const { sent, offers } = setup(true);
-    offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    offers.resolved({ state: "done", watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
     offers.onFocus({ ...focus(JOB, null, 2000, { editable: false }), frontmost: false });
     expect(sent.map((m) => m.type)).toEqual(["action"]);
   });
 
   it("drops a held offer, and withdraws a shown one as taken, when the user goes to the watched window first", () => {
     const held = setup(false);
-    held.offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    held.offers.resolved({ state: "done", watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
     held.offers.onFocus(focus(JOB, null, 2000, { editable: false }));
     held.offers.onFocus(focus(COMPOSE, TO, 2100, { app: MAIL_APP }));
     expect(held.sent).toEqual([]);
 
     const shown = setup(true);
-    shown.offers.resolved({ watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
+    shown.offers.resolved({ state: "done", watchId: "watch-1", windowId: JOB, status: "Done. 48 of 48 tests passed." });
     shown.offers.onFocusedWindow(JOB);
     expect(shown.sent.map((m) => m.type)).toEqual(["action", "offerWithdrawn"]);
     expect(shown.sent[1]).toMatchObject({ id: "open-watch-1.1", reason: "taken" });

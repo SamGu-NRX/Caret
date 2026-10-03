@@ -8,10 +8,14 @@ import { cpus, loadavg, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Helper } from "../src/helper.ts";
+import { DEFAULT_SETTINGS } from "../src/offers/settings.ts";
 import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type PatternOffer } from "../src/protocol.ts";
 import { checkStream, distractorStream, plantedStream, replay, rerunStream, type Stream } from "../test/stream.ts";
 import { Desk, grid, roster } from "../test/scene.ts";
+
+/** Eager: routines need two silent hits there, the rule this evaluation's planted streams and earlier results were built on. */
+const EVAL_SETTINGS = { ...DEFAULT_SETTINGS, level: "eager" } as const;
 
 const { values: a } = parseArgs({ options: { out: { type: "string" }, "pace-ms": { type: "string", default: "20" } } });
 if (a.out === undefined) throw new Error("--out is required");
@@ -29,7 +33,7 @@ function fresh(): { helper: Helper; sent: HelperMessage[]; done: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "caret-patterns-eval-"));
   const store = new Store(dir);
   const sent: HelperMessage[] = [];
-  const helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => sent.push(m) });
+  const helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, settings: EVAL_SETTINGS, publish: (m) => sent.push(m) });
   return {
     helper,
     sent,
@@ -103,7 +107,7 @@ async function editScenario(): Promise<Record<string, unknown>> {
   const store = new Store(dir);
   const sent: HelperMessage[] = [];
   const desk = new Desk();
-  const helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => sent.push(m), readerLink: desk });
+  const helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, settings: EVAL_SETTINGS, publish: (m) => sent.push(m), readerLink: desk });
   desk.attach(helper);
   const offers = (): PatternOffer[] => sent.filter((m): m is PatternOffer => m.type === "patternOffer");
   const sitting = (id: string) => {

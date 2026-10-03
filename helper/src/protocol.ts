@@ -447,7 +447,55 @@ export const OfferStop = z.object({
 });
 export type OfferStop = z.infer<typeof OfferStop>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop]);
+// MARK: - the user's settings (host to helper)
+
+/**
+ * What Caret helps with, as the host's onboarding and menu bar name it (CaretRole on v2/host). `fill` is
+ * grounded fill, `repeat` loops and routines, `watch` the pending-state watch, `words` the host's own
+ * ghost text, which the helper accepts and ignores.
+ */
+export const SettingsRole = z.enum(["fill", "repeat", "watch", "words"]);
+export type SettingsRole = z.infer<typeof SettingsRole>;
+/** How often Caret speaks up. The helper's gate reads it from offers/settings.ts LEVELS. */
+export const SettingsLevel = z.enum(["quiet", "balanced", "eager"]);
+export type SettingsLevel = z.infer<typeof SettingsLevel>;
+
+/**
+ * The user's settings, sent by the host on connect and on every change. The helper's gate applies them
+ * to its next decision: paused holds every offer and withdraws those shown (reason `settings`), a role
+ * left out disables its producers and withdraws their offers, and the level sets the hourly budget and
+ * which families may speak. Roles are listed once each.
+ */
+export const Settings = z.object({
+  type: z.literal("settings"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  roles: z.array(SettingsRole).refine((r) => new Set(r).size === r.length, "roles lists a role twice"),
+  level: SettingsLevel,
+  paused: z.boolean(),
+});
+export type Settings = z.infer<typeof Settings>;
+
+// MARK: - the first look (host's contract: CaretHostCore/FirstLook.swift and first-look.ndjson on v2/host)
+
+/**
+ * At the end of onboarding the host asks for the best real offer across the windows already open. The
+ * helper walks every window once, runs each named family's generator once, and answers within
+ * `deadlineMs` with `firstLookReply`, to the asker only. `families` is checked by the helper rather than
+ * here, so an unknown name is answered as an error reply the host is waiting for, not a bare error.
+ */
+export const FirstLook = z.object({
+  type: z.literal("firstLook"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1),
+  at: ms,
+  families: z.array(z.string()),
+  level: SettingsLevel,
+  deadlineMs: z.number().int().positive(),
+});
+export type FirstLook = z.infer<typeof FirstLook>;
+
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -605,16 +653,25 @@ export type PatternOffer = z.infer<typeof PatternOffer>;
  * the user typing them, or the user went to the window it offered to open. `diverged`: the user entered
  * something else. `idle`: no longer sent; lifetimes replaced it. `stale`: a window it reads or writes
  * closed or changed, the reader restarted, or its memory entry was paused or forgotten. `expired`: its
- * lifetime ended (offers/lifetimes.ts). `id` is a patternOffer's id, or the offerKey of an
- * alternatives, action or popup message.
+ * lifetime ended (offers/lifetimes.ts). `reoffered`: the user entered some of a loopFinish's or
+ * routine's values by hand, and the rest are offered again under the key in `replacedBy`, which comes
+ * with this reason and no other. `settings`: the user paused Caret, or turned off the role or level
+ * that allows this kind of offer. `id` is a patternOffer's id, or the offerKey of an alternatives,
+ * action or popup message.
  */
-export const OfferWithdrawn = z.object({
-  type: z.literal("offerWithdrawn"),
-  v: z.literal(PROTOCOL_VERSION),
-  at: ms,
-  id: z.string(),
-  reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "expired"]),
-});
+export const OfferWithdrawn = z
+  .object({
+    type: z.literal("offerWithdrawn"),
+    v: z.literal(PROTOCOL_VERSION),
+    at: ms,
+    id: z.string(),
+    reason: z.enum(["taken", "dismissed", "diverged", "idle", "stale", "expired", "reoffered", "settings"]),
+    replacedBy: z.string().min(1).optional(),
+  })
+  .refine((m) => (m.reason === "reoffered") === (m.replacedBy !== undefined), {
+    message: "replacedBy comes with reason reoffered, and reoffered needs it",
+    path: ["replacedBy"],
+  });
 export type OfferWithdrawn = z.infer<typeof OfferWithdrawn>;
 
 export const MemoryStatus = z.enum(["learning", "active", "paused"]);
@@ -777,8 +834,58 @@ export const ActivityReply = z.object({
 });
 export type ActivityReply = z.infer<typeof ActivityReply>;
 
+/** The best offer a first look found: a pop-up spec, so every value on it points back to the screen. */
+export const FirstLookFound = z.object({
+  /** `action`: something Caret can do; `fill`: values to copy into a form; `report`: work that finished or needs the user. */
+  kind: z.enum(["action", "fill", "report"]),
+  /** The family that produced it; one of the request's families. */
+  family: z.string().min(1),
+  /** The helper's key: offerAccept with it runs the offer as the task with this id. */
+  offerKey: z.string().min(1),
+  window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }),
+  spec: PopupSpec,
+});
+export type FirstLookFound = z.infer<typeof FirstLookFound>;
+
+/**
+ * The first look's answer. Every key is present, null where it does not apply, and the host refuses a
+ * reply whose fields contradict its outcome: `found` exactly with an offer, `error` exactly with a
+ * non-empty reason (window ids and reasons, never screen text), `nothing` with neither.
+ */
+export const FirstLookReply = z
+  .object({
+    type: z.literal("firstLookReply"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string(),
+    at: ms,
+    outcome: z.enum(["found", "nothing", "error"]),
+    found: FirstLookFound.nullable(),
+    scanned: z.object({ windows: z.number().int().nonnegative(), apps: z.number().int().nonnegative(), ms: z.number().int().nonnegative() }).nullable(),
+    error: z.string().nullable(),
+  })
+  .superRefine((m, ctx) => {
+    const problem = firstLookProblem(m);
+    if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["outcome"] });
+  });
+export type FirstLookReply = z.infer<typeof FirstLookReply>;
+
+/** The host's FirstLookReply.problem, rule for rule: what makes a reply contradict its outcome, or null. */
+export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "error">): string | null {
+  switch (m.outcome) {
+    case "found":
+      if (m.found === null) return "outcome found needs found";
+      if (m.error !== null) return "outcome found carries no error";
+      return null;
+    case "nothing":
+      return m.found !== null || m.error !== null ? "outcome nothing carries neither found nor error" : null;
+    case "error":
+      if (m.found !== null) return "outcome error carries no found";
+      return (m.error ?? "") === "" ? "outcome error needs error" : null;
+  }
+}
+
 export const HelperMessage = z.discriminatedUnion("type", [
-  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup,
+  FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);

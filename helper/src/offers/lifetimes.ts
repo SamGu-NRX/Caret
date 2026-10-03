@@ -23,6 +23,11 @@ export const OFFER_LIFETIMES = {
   routine: { ms: 10 * 60 * 1000, until: null },
   /** "Open <app>" for a watched window that finished or needs the user; visiting the window is `taken`. */
   open: { ms: null, until: "the user visits the watched window" },
+  /**
+   * The offer a first look found, shown on the host's last onboarding screen rather than at a field. It
+   * is rechecked when taken, so the timer only keeps an offer nobody took from lingering in the registry.
+   */
+  firstLook: { ms: 5 * 60 * 1000, until: null },
 } as const satisfies Record<string, OfferLifetime>;
 
 export type OfferProducer = keyof typeof OFFER_LIFETIMES;

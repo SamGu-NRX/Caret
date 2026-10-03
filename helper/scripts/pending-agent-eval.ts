@@ -2,9 +2,9 @@
 // test/agent-fixtures.ts (no real window text goes to Jev). Each window is left mid-turn behind a
 // 450-line transcript, so its composer and its newest lines are past the first 400 lines, and then
 // shows one of four outcomes: the turn finished, it is still running, it waits for an approval, or
-// it failed. Each case is asked in B6's form (first 100 and last 300 lines, the markers then and now)
-// and in B5's (the first 400 lines, no markers), REPS times each. B4's fixture job windows follow, in
-// B6's form only, to check the B6 change to the waiting criteria on the texts B4 was measured on.
+// it failed. Each case is asked in B10's form (snippets only: the lines that changed and the markers,
+// within the window's budget) and in B6's (up to 50 lines of the window's text), REPS times each. B4's
+// fixture job windows follow, in both forms.
 //
 //   CARET_ENV_FILE=/path/to/.env node scripts/pending-agent-eval.ts --out DIR [--reps N]
 //
@@ -15,7 +15,7 @@ import { parseArgs } from "node:util";
 import { loadJevKey, makeJevClient, type JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef, Node, TaskState } from "../src/protocol.ts";
-import { buildPendingRequest, mask, pendingMarkers, readPendingAnswer, stateFor, watchLines, windowMarkers } from "../src/tasks/pending.ts";
+import { buildPendingRequest, mask, readPendingAnswer, stateFor, watchLines, windowMarkers, type Marker } from "../src/tasks/pending.ts";
 import { agentSnap, BROWSER, browserChat, CODEX, codexWindow, T3, t3Window, type AgentWindow } from "../test/agent-fixtures.ts";
 
 const { values: a } = parseArgs({ options: { out: { type: "string" }, reps: { type: "string", default: "2" } } });
@@ -53,33 +53,47 @@ function windowOf(app: AppRef, nodes: Node[]): WindowState {
   return m.windows.get(`${app.pid}-1`) as WindowState;
 }
 
-/** B5's request: the first 400 lines then and now, changed lines and word markers kept first, no markers named. */
-function b5Request(w: WindowState, then: WindowState): JevRequest {
-  const thenLines = watchLines(then, "head");
-  const now = watchLines(w, "head");
-  const before = new Set(thenLines.map(mask));
-  const keep = new Set<string>([...now.slice(0, 3), ...now.filter((l) => !before.has(mask(l))), ...pendingMarkers(now)]);
+/**
+ * B6's request, as the watch asked before B10: up to 20 lines from when the user left and 30 from now
+ * (changed lines and marker lines kept first), each up to 200 characters, and the markers then and now.
+ * B10 replaced it with snippets only (privacy.ts); this keeps it to compare answers on the same windows.
+ */
+function b6Request(w: WindowState, then: readonly string[], now: readonly string[], thenMarkers: readonly Marker[], nowMarkers: readonly Marker[]): JevRequest {
+  const before = new Set(then.map(mask));
+  const markerSet = new Set(nowMarkers.map((m) => m.line));
+  const keep = new Set<string>([...now.slice(0, 3), ...now.filter((l) => !before.has(mask(l))), ...now.filter((l) => markerSet.has(l))]);
   for (const l of now) {
     if (keep.size >= 30) break;
     keep.add(l);
   }
-  const req = buildPendingRequest(w, thenLines, now);
-  const state = req.state as Record<string, string>;
+  const kept = now.filter((l) => keep.has(l));
+  const nowText = kept.length <= 30 ? kept : [...kept.slice(0, 3), ...kept.slice(-27)];
+  const thenText = then.length <= 20 ? then : [...then.slice(0, 3), ...then.slice(-17)];
+  const list = (ms: readonly Marker[]): string => (ms.length === 0 ? "none" : [...new Set(ms.map((m) => m.line))].slice(0, 10).join("\n"));
+  const current = buildPendingRequest(w, then, now, thenMarkers, nowMarkers);
   return {
-    ...req,
     state: {
-      window: state.window,
-      situation: state.situation,
-      when_the_user_left: thenLines.slice(0, 20).join("\n"),
-      now: now.filter((l) => keep.has(l)).slice(0, 30).join("\n"),
+      window: `${w.app.name} window '${w.window.title}'`,
+      situation: "The user left this window while it showed unfinished work. Caret watches it so it can tell the user when the work is done or needs them.",
+      when_the_user_left: thenText.join("\n"),
+      now: nowText.join("\n"),
+      signs_of_running_work_when_the_user_left: list(thenMarkers),
+      signs_of_running_work_now: list(nowMarkers),
     },
+    questions: current.questions,
+    snippets: [],
   };
 }
+
+/** Characters of window text in a request's state and questions, for the summary. */
+const sentChars = (req: JevRequest): number => JSON.stringify({ state: req.state, questions: req.questions }).length;
 
 interface Row {
   app: string;
   case: string;
-  form: "b6" | "b5";
+  form: "b10" | "b6";
+  /** Characters of the request's state and questions, as JSON. */
+  chars: number;
   expect: TaskState;
   got: TaskState | "error";
   finished: string;
@@ -92,9 +106,10 @@ for (const { name, app, build } of APPS) {
   const then = windowOf(app, build({ running: true, threads: THREADS, transcriptLines: LINES }));
   for (const c of CASES) {
     const now = windowOf(app, build(c.now));
-    const forms: { form: "b6" | "b5"; req: JevRequest }[] = [
-      { form: "b6", req: buildPendingRequest(now, watchLines(then), watchLines(now), windowMarkers(then), windowMarkers(now)) },
-      { form: "b5", req: b5Request(now, then) },
+    const args = [now, watchLines(then), watchLines(now), windowMarkers(then), windowMarkers(now)] as const;
+    const forms: { form: "b10" | "b6"; req: JevRequest }[] = [
+      { form: "b10", req: buildPendingRequest(...args) },
+      { form: "b6", req: b6Request(...args) },
     ];
     for (const { form, req } of forms) {
       for (let r = 0; r < REPS; r++) {
@@ -102,9 +117,9 @@ for (const { name, app, build } of APPS) {
           const res = await ask(req);
           const ans = readPendingAnswer(res);
           const got = stateFor(ans.finished.choice, ans.waiting.choice);
-          rows.push({ app: name, case: c.id, form, expect: c.expect, got, finished: ans.finished.choice, waiting: ans.waiting.choice, confidence: Math.min(ans.finished.confidence, ans.waiting.confidence), latencyMs: Math.round(res.latencyMs) });
+          rows.push({ app: name, case: c.id, form, chars: sentChars(req), expect: c.expect, got, finished: ans.finished.choice, waiting: ans.waiting.choice, confidence: Math.min(ans.finished.confidence, ans.waiting.confidence), latencyMs: Math.round(res.latencyMs) });
         } catch (e) {
-          rows.push({ app: name, case: c.id, form, expect: c.expect, got: "error", finished: "", waiting: "", confidence: 0, latencyMs: 0 });
+          rows.push({ app: name, case: c.id, form, chars: sentChars(req), expect: c.expect, got: "error", finished: "", waiting: "", confidence: 0, latencyMs: 0 });
           process.stderr.write(`${name} ${c.id} ${form}: ${e instanceof Error ? e.message : String(e)}\n`);
         }
       }
@@ -148,23 +163,25 @@ const JOB_CASES: { id: string; expect: TaskState; then: WindowState; now: Window
   })),
 ];
 for (const c of JOB_CASES) {
-  const req = buildPendingRequest(c.now, watchLines(c.then), watchLines(c.now), windowMarkers(c.then), windowMarkers(c.now));
-  for (let r = 0; r < REPS; r++) {
-    try {
-      const res = await ask(req);
-      const ans = readPendingAnswer(res);
-      const got = stateFor(ans.finished.choice, ans.waiting.choice);
-      rows.push({ app: "Fixture job window", case: c.id, form: "b6", expect: c.expect, got, finished: ans.finished.choice, waiting: ans.waiting.choice, confidence: Math.min(ans.finished.confidence, ans.waiting.confidence), latencyMs: Math.round(res.latencyMs) });
-    } catch (e) {
-      rows.push({ app: "Fixture job window", case: c.id, form: "b6", expect: c.expect, got: "error", finished: "", waiting: "", confidence: 0, latencyMs: 0 });
-      process.stderr.write(`job ${c.id}: ${e instanceof Error ? e.message : String(e)}\n`);
+  const args = [c.now, watchLines(c.then), watchLines(c.now), windowMarkers(c.then), windowMarkers(c.now)] as const;
+  for (const { form, req } of [{ form: "b10" as const, req: buildPendingRequest(...args) }, { form: "b6" as const, req: b6Request(...args) }]) {
+    for (let r = 0; r < REPS; r++) {
+      try {
+        const res = await ask(req);
+        const ans = readPendingAnswer(res);
+        const got = stateFor(ans.finished.choice, ans.waiting.choice);
+        rows.push({ app: "Fixture job window", case: c.id, form, chars: sentChars(req), expect: c.expect, got, finished: ans.finished.choice, waiting: ans.waiting.choice, confidence: Math.min(ans.finished.confidence, ans.waiting.confidence), latencyMs: Math.round(res.latencyMs) });
+      } catch (e) {
+        rows.push({ app: "Fixture job window", case: c.id, form, chars: sentChars(req), expect: c.expect, got: "error", finished: "", waiting: "", confidence: 0, latencyMs: 0 });
+        process.stderr.write(`job ${c.id} ${form}: ${e instanceof Error ? e.message : String(e)}\n`);
+      }
     }
+    process.stdout.write(`job ${c.id} ${form}: expect ${c.expect}, got ${rows.at(-1)?.got}\n`);
   }
-  process.stdout.write(`job ${c.id}: expect ${c.expect}, got ${rows.at(-1)?.got}\n`);
 }
 
 writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), reps: REPS, rows }, null, 2)}\n`);
-const right = (form: "b6" | "b5", id?: string): string => {
+const right = (form: "b10" | "b6", id?: string): string => {
   const rs = rows.filter((r) => r.form === form && (id === undefined || r.case === id || (id === "agent" && r.app !== "Fixture job window")));
   return `${rs.filter((r) => r.got === r.expect).length} of ${rs.length}`;
 };
@@ -174,25 +191,26 @@ const md = [
   "",
   `\`node scripts/pending-agent-eval.ts --reps ${REPS}\`, ${new Date().toISOString().slice(0, 16)}Z. Synthetic trees from test/agent-fixtures.ts for ${APPS.map((x) => x.name).join(", ")}, each left mid-turn behind a ${LINES}-line transcript, so the composer and the newest lines are past the first 400 lines. Every case was asked ${REPS} times in each form. Latency p50 ${lat[Math.floor(lat.length / 2)] ?? "-"} ms, max ${lat.at(-1) ?? "-"} ms.`,
   "",
-  "- *B6 form*: the first 100 and last 300 lines, and the markers when the user left and now.",
-  "- *B5 form*: the first 400 lines and no markers, as B4's watch asked.",
+  "- *B10 form*: snippets only: the window's name, at most 6 changed lines and 4 marker lines then and now, each cut to 120 characters, within the window's budget (src/privacy.ts).",
+  "- *B6 form*: up to 20 lines from when the user left and 30 from now, and the markers then and now.",
+  `- Request size, state and questions as JSON: B10 max ${Math.max(...rows.filter((r) => r.form === "b10").map((r) => r.chars))}, B6 max ${Math.max(...rows.filter((r) => r.form === "b6").map((r) => r.chars))} characters.`,
   "",
-  "| Case | Expected state | B6 form right | B5 form right |",
+  "| Case | Expected state | B10 form right | B6 form right |",
   "|---|---|---:|---:|",
-  ...CASES.map((c) => `| ${c.id} | ${c.expect} | ${right("b6", c.id)} | ${right("b5", c.id)} |`),
-  `| all agent cases | | ${right("b6", "agent")} | ${right("b5", "agent")} |`,
+  ...CASES.map((c) => `| ${c.id} | ${c.expect} | ${right("b10", c.id)} | ${right("b6", c.id)} |`),
+  `| all agent cases | | ${right("b10", "agent")} | ${right("b6", "agent")} |`,
   "",
-  "B4's fixture job windows (a test run finishing, an upload asking for approval, as caret-fixture shows them), asked in the B6 form only, since the waiting criteria changed in B6:",
+  "B4's fixture job windows (a test run finishing, an upload asking for approval, as caret-fixture shows them):",
   "",
-  "| Case | Expected state | Right |",
-  "|---|---|---:|",
-  ...JOB_CASES.map((c) => `| ${c.id} | ${c.expect} | ${right("b6", c.id)} |`),
+  "| Case | Expected state | B10 form right | B6 form right |",
+  "|---|---|---:|---:|",
+  ...JOB_CASES.map((c) => `| ${c.id} | ${c.expect} | ${right("b10", c.id)} | ${right("b6", c.id)} |`),
   "",
   "## Every answer",
   "",
-  "| App | Case | Form | Expected | Got | Finished | Waiting | Lower confidence |",
-  "|---|---|---|---|---|---|---|---:|",
-  ...rows.map((r) => `| ${r.app} | ${r.case} | ${r.form} | ${r.expect} | ${r.got} | ${r.finished} | ${r.waiting} | ${r.confidence.toFixed(2)} |`),
+  "| App | Case | Form | Characters | Expected | Got | Finished | Waiting | Lower confidence |",
+  "|---|---|---|---:|---|---|---|---|---:|",
+  ...rows.map((r) => `| ${r.app} | ${r.case} | ${r.form} | ${r.chars} | ${r.expect} | ${r.got} | ${r.finished} | ${r.waiting} | ${r.confidence.toFixed(2)} |`),
   "",
 ];
 writeFileSync(join(OUT, "summary.md"), md.join("\n"));

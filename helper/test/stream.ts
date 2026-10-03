@@ -401,6 +401,8 @@ export function distractorStream(seed = 11): Stream {
 export interface Replayed {
   /** Every offer, with the index of the message whose handling published it. */
   offers: { index: number; offer: PatternOffer }[];
+  /** Ids of offers that re-offer what the user left of an earlier one (offerWithdrawn `reoffered`'s replacedBy). */
+  reoffers: Set<string>;
   /** Wall time to handle each message, including the ticks before it, in milliseconds. */
   eventMs: number[];
   /** The same, as process CPU time. */
@@ -412,7 +414,7 @@ export interface Replayed {
  * messages are released at that wall-clock spacing (20 ms is 50 events a second).
  */
 export async function replay(helper: Helper, sent: HelperMessage[], stream: Stream, paceMs = 0): Promise<Replayed> {
-  const out: Replayed = { offers: [], eventMs: [], eventCpuMs: [] };
+  const out: Replayed = { offers: [], reoffers: new Set(), eventMs: [], eventCpuMs: [] };
   let last: number | null = null;
   /** Ticks fall on a fixed 250 ms grid of stream time, as main.ts's interval does, however dense the messages. */
   let nextTick: number | null = null;
@@ -441,7 +443,10 @@ export async function replay(helper: Helper, sent: HelperMessage[], stream: Stre
     out.eventMs.push(performance.now() - s);
     const c = process.cpuUsage(c0);
     out.eventCpuMs.push((c.user + c.system) / 1000);
-    for (const x of sent.slice(before)) if (x.type === "patternOffer") out.offers.push({ index: i, offer: x });
+    for (const x of sent.slice(before)) {
+      if (x.type === "patternOffer") out.offers.push({ index: i, offer: x });
+      else if (x.type === "offerWithdrawn" && x.replacedBy !== undefined) out.reoffers.add(x.replacedBy);
+    }
   }
   helper.tick((last ?? 0) + 5000);
   return out;
@@ -457,6 +462,8 @@ export interface StreamCheck {
     foundAtRoundTwo: boolean;
     predictionRight: boolean;
     finishRight: boolean;
+    /** Re-offers of the finish after the user entered some of its rows by hand; each holds only cells of the finish. */
+    finishReoffers: number;
     offerIndex: number | null;
     predicted: { key: string; value: string }[];
   }[];
@@ -464,7 +471,9 @@ export interface StreamCheck {
     name: string;
     /** Occurrence numbers whose opening got an offer. */
     offeredAt: number[];
-    /** Every offer's values equal what the user then copied that day. */
+    /** Occurrence numbers of each re-offer of what the user left after entering some values by hand. */
+    reofferedAt: number[];
+    /** Every offer's values equal what the user then copied that day, and every re-offer's are among them. */
     offersRight: boolean;
     /** The gate's decision at each occurrence's opening. */
     decisions: { occurrence: number; speak: boolean; reasons: string[]; showProbability: number }[];
@@ -485,11 +494,19 @@ export function checkStream(s: Stream, r: Replayed, helper: Helper): StreamCheck
     if (i >= 0) accounted.add(i);
     const fi = r.offers.findIndex((x) => x.offer.kind === "loopFinish" && same(cellsOf(x.offer), l.finish));
     if (fi >= 0) accounted.add(fi);
+    let finishReoffers = 0;
+    r.offers.forEach((x, j) => {
+      if (x.offer.kind !== "loopFinish" || !r.reoffers.has(x.offer.id)) return;
+      if (!cellsOf(x.offer).every((c) => l.finish.some((f) => f.key === c.key && f.value === c.value))) return;
+      accounted.add(j);
+      finishReoffers++;
+    });
     return {
       name: l.name,
       foundAtRoundTwo: hit !== undefined && hit.index > l.round2End && hit.index < l.round3Start,
       predictionRight: hit !== undefined && same(cellsOf(hit.offer), l.expect),
       finishRight: fi >= 0,
+      finishReoffers,
       offerIndex: hit?.index ?? null,
       predicted: hit === undefined ? [] : cellsOf(hit.offer),
     };
@@ -498,6 +515,7 @@ export function checkStream(s: Stream, r: Replayed, helper: Helper): StreamCheck
   const decisions = helper.memory.decisions().filter((d) => d.offerKind === "routine");
   const routines = s.routines.map((rt) => {
     const offeredAt: number[] = [];
+    const reofferedAt: number[] = [];
     let offersRight = true;
     const ds: StreamCheck["routines"][number]["decisions"] = [];
     for (const occ of rt.opens) {
@@ -508,11 +526,16 @@ export function checkStream(s: Stream, r: Replayed, helper: Helper): StreamCheck
       r.offers.forEach((x, i) => {
         if (x.offer.kind !== "routine" || x.offer.windowId !== occ.windowId) return;
         accounted.add(i);
+        if (r.reoffers.has(x.offer.id)) {
+          reofferedAt.push(occ.occurrence);
+          if (!x.offer.cells.every((c) => occ.values.includes(c.value))) offersRight = false;
+          return;
+        }
         offeredAt.push(occ.occurrence);
         if (x.offer.cells.map((c) => c.value).join("|") !== occ.values.join("|")) offersRight = false;
       });
     }
-    return { name: rt.name, offeredAt, offersRight, decisions: ds };
+    return { name: rt.name, offeredAt, reofferedAt, offersRight, decisions: ds };
   });
 
   const unexpectedOffers = r.offers.filter((_, i) => !accounted.has(i)).map((x) => ({ index: x.index, kind: x.offer.kind, says: x.offer.says }));
