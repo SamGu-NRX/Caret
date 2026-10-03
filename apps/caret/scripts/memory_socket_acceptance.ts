@@ -16,8 +16,8 @@
 //      then the confirmation); the next two days offer nothing.
 //   3. Permissions: a change reads back on the host and in the helper's store; outbound to Act is
 //      refused by the host and never reaches the helper.
-//   4. A typed value (onboarding's) is sent as the host's `add` contract; today's helper refuses
-//      the op, and the value waits.
+//   4. A typed value (onboarding's) is sent as the host's `add` contract and kept by the helper
+//      (B17); Forget on the host removes it from the helper.
 //
 //   node apps/caret/scripts/memory_socket_acceptance.ts --out DIR [--runs 3]
 import { spawn, type ChildProcess } from "node:child_process";
@@ -331,19 +331,19 @@ try {
     await hostEntry("outbound at ask", (e) => e.id === "permission-outbound" && e.rule === "ask");
     check(`run ${run}: outbound can go as far as Ask first`, r4.sent === true && s.helper.memory.permission("outbound") === "ask", {});
 
-    // 4. The add contract against today's helper.
-    const errorsBefore = (await state()).helper?.errors ?? 0;
+    // 4. A typed value (onboarding's) is kept by the helper's add (B17), and Forget on the host removes it.
     await memory("remember Name Dana Whitfield");
-    const refused = await until("the helper's refusal of add", async () => {
-      const st = await state();
-      return (st.helper?.errors ?? 0) > errorsBefore ? st.helper!.lastError ?? "" : null;
-    });
-    await sleep(3300);
+    const kept = await hostEntry("the typed Name kept as an About entry", (e) => e.kind === "about" && e.says.includes("Dana Whitfield"));
     const typed = (await memory()).book.typed;
-    check(`run ${run}: a typed value is sent as add; today's helper refuses the op, and the value waits on the host`,
-      refused.startsWith("invalid consumer message") && typed.length === 1 && typed[0]!.phase === "waiting", { refused: refused.slice(0, 120), typed });
-    // Cleared, so the next run's helper starts without this run's waiting value.
-    for (const t of typed) await memory(`remove ${t.id}`);
+    const helperAbout = () =>
+      s.helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "check", op: "list", kind: "about" }).entries
+        .filter((e) => e.kind === "about" && e.fields.value === "Dana Whitfield");
+    check(`run ${run}: a typed value is sent as add, kept by the helper, and no longer waits on the host`,
+      typed.length === 0 && helperAbout().length === 1 && s.asked.some((m) => m.op === "add"), { says: kept.says, typed });
+    await memory(`forget ${kept.id}`);
+    const gone = await memory("confirm");
+    await until("the typed Name gone from the host", async () => ((await memory()).book.entries.some((e) => e.id === kept.id) ? null : true));
+    check(`run ${run}: Forget on the host removes the typed value from the helper`, gone.sent === true && helperAbout().length === 0, {});
 
     await closeSession(s);
   }
