@@ -163,8 +163,9 @@ extension Gallery {
         }
         let toTryIt: [OnboardingFlow.Event] = [.next, .next, .next]
         let toFirstLook = toTryIt + [.key(.tab), .next]
-        let found = FirstLookReply(requestId: "first-look-1", at: 0, outcome: .found, found: firstLookFound)
-        let nothing = FirstLookReply(requestId: "first-look-1", at: 0, outcome: .nothing)
+        // The flow's first request, with its default token.
+        let found = FirstLookReply(requestId: "first-look-1-1", at: 0, outcome: .found, found: firstLookFound)
+        let nothing = FirstLookReply(requestId: "first-look-1-1", at: 0, outcome: .nothing)
         let screens: [(String, OnboardingFlow.State)] = [
             ("welcome", flow([])),
             ("work", flow([.next, .setRole(.watch, false)])),

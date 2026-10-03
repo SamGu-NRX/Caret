@@ -302,6 +302,10 @@ final class HostCoordinator {
         status.update { $0.presentation = nil }
     }
 
+    /// The settings stopped ghost text (pause, or the words role off): what is shown goes now,
+    /// and a generation in flight is cancelled rather than drawn.
+    func gateClosed() { reset() }
+
     private func reset() {
         cancelGeneration()
         clearOffer()

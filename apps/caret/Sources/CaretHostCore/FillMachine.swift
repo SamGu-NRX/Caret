@@ -534,6 +534,16 @@ public final class FillMachine {
         if let byTyping { emit(.hideToast(byTyping: byTyping)) }
     }
 
+    /// The settings closed the gate (pause, or the fill role off): the offer goes and every held
+    /// proposal is dropped, so no later focus change can bring one back. The helper proposes again
+    /// once the gate opens. A toast already up stays: it reports a write that happened.
+    public func gateClosed() {
+        for pid in Set(held.values.compactMap { FillSelection.pid(fromWindowID: $0.proposal.windowId) }) { emit(.unwatchApp(pid)) }
+        held = [:]
+        status.cachedProposals = 0
+        withdraw("gateClosed")
+    }
+
     public func shutdown() {
         stopWatch()
         for timer in rereads.values { timer.cancel() }

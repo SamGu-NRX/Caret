@@ -125,6 +125,9 @@ public final class OnboardingFlow {
         /// The request could not be written: the helper is not connected.
         case firstLookUnsent
         case lookAgain
+        /// The settings changed outside the flow (the menu's Pause). Roles and level stay the
+        /// flow's own; the rest applies to what it asks for next.
+        case settingsChanged(CaretSettings)
     }
 
     public enum Pane: String, Codable, Sendable { case accessibility, inputMonitoring }
@@ -149,6 +152,12 @@ public final class OnboardingFlow {
     public static let firstLookGrace: TimeInterval = 1
 
     let clock: SurfaceClock
+    /// The settings the flow started from: pause and anything else it does not ask about still
+    /// apply to what it requests (the first look's families).
+    private(set) var base: CaretSettings
+    /// Names this flow in its first-look request ids, so a late reply to an earlier flow (closed
+    /// and opened again) never matches a request of this one.
+    let token: String
     public private(set) var state: State
     public var output: (Command) -> Void = { _ in }
     private var advanceTimer: SurfaceTimer?
@@ -156,8 +165,10 @@ public final class OnboardingFlow {
     private var requests = 0
     private var asked: FirstLookRequest?
 
-    public init(settings: CaretSettings, permissions: OnboardingPermissions, clock: SurfaceClock) {
+    public init(settings: CaretSettings, permissions: OnboardingPermissions, clock: SurfaceClock, token: String = "1") {
         self.clock = clock
+        base = settings
+        self.token = token
         state = State(roles: settings.roles, level: settings.level, permissions: permissions)
     }
 
@@ -191,6 +202,8 @@ public final class OnboardingFlow {
         case .lookAgain:
             guard state.step == .firstLook, case .failed = state.firstLook else { return }
             askFirstLook()
+        case .settingsChanged(let settings):
+            base = settings
         }
         output(.changed)
     }
@@ -265,7 +278,8 @@ public final class OnboardingFlow {
         guard state.step == .permissions else { return }
         let appeared = (p.accessibility && !before.accessibility) || (p.inputMonitoring && !before.inputMonitoring)
         let allShownOn = p.accessibility && (!state.showsInputMonitoring || p.inputMonitoring)
-        if !p.accessibility {
+        let revoked = (!p.accessibility && before.accessibility) || (!p.inputMonitoring && before.inputMonitoring && state.showsInputMonitoring)
+        if !p.accessibility || (revoked && !allShownOn) {
             // A grant taken back while the screen is up: stay.
             advanceTimer?.cancel()
             advanceTimer = nil
@@ -275,10 +289,13 @@ public final class OnboardingFlow {
         guard appeared, allShownOn, advanceTimer == nil else { return }
         state.advancingAfterGrant = true
         advanceTimer = clock.schedule(after: Self.advanceAfterGrant, repeats: false) { [weak self] in
-            guard let self, self.state.step == .permissions, self.state.permissions.accessibility else { return }
+            guard let self else { return }
             self.advanceTimer = nil
             self.state.advancingAfterGrant = false
-            self.go(to: .tryIt, .forward)
+            let now = self.state.permissions
+            if self.state.step == .permissions, now.accessibility, !self.state.showsInputMonitoring || now.inputMonitoring {
+                self.go(to: .tryIt, .forward)
+            }
             self.output(.changed)
         }
     }
@@ -312,17 +329,17 @@ public final class OnboardingFlow {
     func askFirstLook() {
         firstLookTimer?.cancel()
         requests += 1
-        var settings = CaretSettings()
+        var settings = base
         settings.roles = state.roles
         settings.level = state.level
         let request = FirstLookRequest(
-            requestId: "first-look-\(requests)", at: nowMs,
+            requestId: "first-look-\(token)-\(requests)", at: nowMs,
             families: FirstLookRequest.families(for: settings), level: state.level
         )
         asked = request
         state.firstLook = .asking(requestId: request.requestId)
         guard !request.families.isEmpty else {
-            // Words only: there is nothing for the helper to run.
+            // Words only, or paused: there is nothing for the helper to run.
             asked = nil
             state.firstLook = .nothing
             return

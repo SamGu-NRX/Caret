@@ -45,6 +45,8 @@ final class OnboardingController {
     private var permissionsOverride: OnboardingPermissions?
     /// Sends a request to the helper; false when it is not connected.
     var sendFirstLook: (FirstLookRequest) -> Bool = { _ in false }
+    /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
+    var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
     /// What the window refused to do because it is hidden, for the debug state.
     private var suppressed: [String] = []
 
@@ -52,6 +54,7 @@ final class OnboardingController {
         self.mode = mode
         self.testHooks = testHooks
         self.store = store
+        store.observe { [weak self] settings in self?.flow?.send(.settingsChanged(settings)) }
     }
 
     /// The open flow has a window. False for a hidden run, and for a flow the debug socket opened.
@@ -72,14 +75,15 @@ final class OnboardingController {
     /// restarted.
     func open(drawing: Bool) {
         if let flow, !flow.state.finished {
-            if drawsWindow, let window {
+            // Only the menu brings a window forward; the socket never shows one.
+            if drawing, drawsWindow, let window {
                 NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
             }
             return
         }
         drawsWindow = drawing && mode != .hidden
-        let flow = OnboardingFlow(settings: store.settings, permissions: readPermissions(), clock: RunLoopClock())
+        let flow = OnboardingFlow(settings: store.settings, permissions: readPermissions(), clock: RunLoopClock(), token: String(UUID().uuidString.prefix(8)).lowercased())
         flow.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
         self.flow = flow
         model.state = flow.state
@@ -88,14 +92,20 @@ final class OnboardingController {
         showWindow()
     }
 
+    /// Ends the flow's window and polling. A finished flow is kept for the debug state; an
+    /// unfinished one is dropped, so the next open starts it again (the choices already made are
+    /// saved). The window's close button ends up here too.
     func close() {
         stopPolling()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
         closeObserver = nil
-        window?.orderOut(nil)
+        let closing = window
         window = nil
+        closing?.orderOut(nil)
+        if flow?.state.finished == false { flow = nil }
+        model.state = flow?.state
     }
 
     func receive(_ reply: FirstLookReply) {
@@ -159,7 +169,9 @@ final class OnboardingController {
     private func poll() {
         guard let flow, !flow.state.finished else { return stopPolling() }
         let now = readPermissions()
-        if now != flow.state.permissions { flow.send(.permissions(now)) }
+        guard now != flow.state.permissions else { return }
+        flow.send(.permissions(now))
+        onPermissionsChanged(now)
     }
 
     // MARK: - The window
@@ -181,11 +193,7 @@ final class OnboardingController {
         closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
             // Closed with the window button: the choices made so far are already saved; the flow
             // is left unfinished, and Set Up Caret starts it again.
-            MainActor.assumeIsolated {
-                self?.stopPolling()
-                self?.flow = nil
-                self?.window = nil
-            }
+            MainActor.assumeIsolated { self?.close() }
         }
         installKeys()
         NSApp.activate(ignoringOtherApps: true)
@@ -199,14 +207,15 @@ final class OnboardingController {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self, let flow = self.flow, event.window === self.window else { return event }
-                guard let mapped = Self.event(for: event, step: flow.state.step) else { return event }
+                guard let mapped = Self.event(for: event, step: flow.state.step, offerVisible: flow.state.tryIt.offerVisible) else { return event }
                 flow.send(mapped)
                 return nil
             }
         }
     }
 
-    static func event(for event: NSEvent, step: OnboardingStep) -> OnboardingFlow.Event? {
+    /// Tab is the staged field's only while its offer shows; otherwise it moves focus as usual.
+    static func event(for event: NSEvent, step: OnboardingStep, offerVisible: Bool) -> OnboardingFlow.Event? {
         let mods = event.modifierFlags.intersection([.command, .control, .option])
         guard mods.isEmpty else { return nil }
         switch event.keyCode {
@@ -216,7 +225,7 @@ final class OnboardingController {
         }
         guard step == .tryIt else { return nil }
         switch event.keyCode {
-        case 48: return event.modifierFlags.contains(.shift) ? nil : .key(.tab)
+        case 48: return event.modifierFlags.contains(.shift) || !offerVisible ? nil : .key(.tab)
         case 51, 117: return .key(.delete)
         default:
             // Arrows and other function keys arrive as private-use characters (U+F700 to U+F8FF).

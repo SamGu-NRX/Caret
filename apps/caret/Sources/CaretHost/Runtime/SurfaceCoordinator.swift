@@ -105,6 +105,7 @@ final class SurfaceCoordinator {
     func progress(_ phase: String) -> String { machine.progress(phase) }
     func undoStarted(_ grant: UndoGrant) { machine.undoStarted(grant) }
     func toastChanged() { machine.toastChanged() }
+    func gateClosed() { machine.gateClosed() }
     func stopWork(_ line: StatusLine) { machine.stopWork(line) }
 
     func insertionFinished(_ result: InsertionExecutor.Result) {

@@ -307,8 +307,13 @@ def main():
     # No helper at all: the request cannot be written, and the look says so at once.
     lone = Host(binary, run_dir, os.path.join(run_dir, "absent.sock"), "nohelper")
     try:
-        for c in ["permissions on on", "next", "next", "next", "key tab"]:
+        # Still paused from the walk: the first look has nothing it may run, and asks nothing.
+        for c in ["permissions on on", "next", "next", "next", "key tab", "next"]:
             lone.ask("onboarding " + c)
+        r = lone.ask("onboarding")
+        check("paused: the first look asks for nothing", r.get("firstLook") == "nothing" and "firstLookRequest" not in r, r)
+        lone.ask("settings set paused off")
+        lone.ask("onboarding back")
         lone.ask("onboarding next")
         r = lone.ask("onboarding")
         check("no helper: the first look fails at once", r.get("firstLook") == "failed" and r.get("firstLookError") == "helperNotConnected", r)

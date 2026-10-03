@@ -314,6 +314,53 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.flow.state.firstLook, .failed("timedOut"), "only the new look's deadline counts")
     }
 
+    func testRequestIdsNameTheFlowSoALateReplyToAnEarlierFlowNeverMatches() throws {
+        let clock = ManualClock()
+        func flow(_ token: String) -> (OnboardingFlow, () -> FirstLookRequest?) {
+            let f = OnboardingFlow(settings: CaretSettings(), permissions: OnboardingPermissions(accessibility: true, inputMonitoring: true), clock: clock, token: token)
+            var asked: FirstLookRequest?
+            f.output = { if case .askFirstLook(let r) = $0 { asked = r } }
+            for e: OnboardingFlow.Event in [.next, .next, .next, .key(.tab), .next] { f.send(e) }
+            return (f, { asked })
+        }
+        let (first, firstAsked) = flow("a")
+        let (second, secondAsked) = flow("b")
+        XCTAssertNotEqual(firstAsked()?.requestId, secondAsked()?.requestId)
+        second.send(.firstLookReply(try reply(firstAsked()!.requestId, .found)))
+        XCTAssertEqual(second.debugInfo().firstLook, "asking", "the earlier flow's answer is not this flow's")
+        XCTAssertEqual(first.debugInfo().firstLook, "asking")
+    }
+
+    func testWhilePausedTheFirstLookAsksForNothing() {
+        var s = CaretSettings()
+        s.paused = true
+        let rig = Rig.atFirstLook(settings: s)
+        XCTAssertNil(rig.request)
+        XCTAssertEqual(rig.flow.state.firstLook, .nothing)
+    }
+
+    func testUnpausingFromTheMenuLetsTheNextLookAsk() {
+        var s = CaretSettings()
+        s.paused = true
+        let rig = Rig.atFirstLook(settings: s)
+        s.paused = false
+        rig.send(.settingsChanged(s), .back, .next)
+        XCTAssertNotNil(rig.request)
+        XCTAssertEqual(rig.flow.debugInfo().firstLook, "asking")
+    }
+
+    func testTakingInputMonitoringBackDuringTheMoveStops() {
+        let rig = Rig(ax: false, input: false)
+        rig.send(.next, .next)
+        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: true)))
+        XCTAssertTrue(rig.flow.state.advancingAfterGrant)
+        rig.send(.permissions(OnboardingPermissions(accessibility: true, inputMonitoring: false)))
+        XCTAssertFalse(rig.flow.state.advancingAfterGrant)
+        rig.clock.advance(by: 2)
+        XCTAssertEqual(rig.step, .permissions)
+        XCTAssertTrue(rig.flow.state.canContinue, "Input Monitoring is optional; Continue still works")
+    }
+
     // MARK: - The end
 
     func testStartFinishesWritesTheChoicesAndClosesEvenWhileTheLookRuns() {

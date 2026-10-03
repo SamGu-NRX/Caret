@@ -60,6 +60,7 @@ final class FillCoordinator {
     func claimed(_ claim: Claim) { machine.claimed(claim) }
     func undoStarted(_ grant: UndoGrant) { machine.undoStarted(grant) }
     func toastChanged() { machine.toastChanged() }
+    func gateClosed() { machine.gateClosed() }
 
     func insertionFinished(_ result: InsertionExecutor.Result) {
         machine.insertionFinished(FillInsertion(

@@ -242,6 +242,17 @@ final class FillMachineTests: XCTestCase {
         XCTAssertNil(rig.machine.shownOfferID)
     }
 
+    func testClosingTheGateDropsTheOfferAndEveryHeldProposal() {
+        let rig = shown()
+        rig.machine.gateClosed()
+        XCTAssertEqual(rig.takeLog(), ["unwatch 5150", "hide offer"])
+        XCTAssertNil(rig.arbiter.snapshot().current)
+        XCTAssertEqual(rig.machine.status.cachedProposals, 0)
+        rig.world.focus(.phone)
+        rig.machine.fieldChanged(pid: Fx.app, at: 9)
+        XCTAssertNil(rig.arbiter.snapshot().current, "a held proposal cannot come back after pause")
+    }
+
     func testShutdownTakesTheFillOfferOutOfTheArbiter() {
         let rig = shown()
         rig.machine.shutdown()
@@ -379,6 +390,39 @@ final class SharedToastSlotTests: XCTestCase {
         XCTAssertNil(rig.surface.machine.toastInfo)
         XCTAssertEqual(rig.surface.takeLog(), ["hide 0.08"])
         XCTAssertNil(rig.arbiter.snapshot().toast, "a failed fill leaves ⌘Z to the app")
+    }
+
+    func testATabOnTheFillLineTakesAnActionsResultLineDown() {
+        // Review finding: a plain result line (no undo) stayed up after another owner's Tab
+        // cleared its status in the arbiter.
+        let rig = TwoOwners()
+        rig.surface.screen.front(.email)
+        rig.surface.machine.receive(Fx.action())
+        rig.press(Fx.tab())
+        rig.surface.machine.taskProgress(Fx.progress("offer-5", .done))
+        XCTAssertNotNil(rig.surface.machine.lineText)
+        rig.fillLineOffered()
+        rig.surface.takeLog()
+        rig.fillLineTaken()
+        XCTAssertNil(rig.surface.machine.lineText)
+        XCTAssertEqual(rig.surface.takeLog(), ["hide 0.08"])
+    }
+
+    func testPauseWithdrawsAShownOfferAndStopsAHeldOnesRetries() {
+        let rig = TwoOwners()
+        rig.surface.screen.behind()
+        rig.surface.machine.receive(Fx.action())
+        XCTAssertEqual(rig.surface.machine.held, .appNotFront)
+        rig.surface.machine.gateClosed()
+        XCTAssertNil(rig.surface.machine.held)
+        rig.surface.screen.front(.email)
+        rig.clock.advance(by: 2)
+        XCTAssertNil(rig.surface.machine.shown, "nothing held is retried once paused")
+        rig.surface.machine.receive(Fx.action())
+        XCTAssertNotNil(rig.surface.machine.shown)
+        rig.surface.machine.gateClosed()
+        XCTAssertNil(rig.surface.machine.shown)
+        XCTAssertNil(rig.arbiter.snapshot().current)
     }
 
     func testEscClosesTheToastOnScreenAndNothingElse() {

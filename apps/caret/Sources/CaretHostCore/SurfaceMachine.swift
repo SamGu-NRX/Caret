@@ -546,7 +546,22 @@ public final class SurfaceMachine {
             toastInfo = nil
             cancelResultTimer()
             takeLineDown(exit: 0.08)
+        } else if resultTimer != nil, undoing == nil, snapshot.statusLine?.id != resultStatusID {
+            // A result or error line the key dismissed, as `offerChanged` takes it down.
+            cancelResultTimer()
+            takeLineDown(exit: 0.08)
         }
+    }
+
+    /// The settings closed the gate (pause): the offer shown or held goes, and nothing held is
+    /// retried. Work already accepted goes on; its line and toast stay.
+    public func gateClosed() {
+        cancelPending()
+        guard let shown else { return publish() }
+        arbiter.invalidate(offerID: shown.offerID)
+        clear(exit: 0.10)
+        count("surface.withdrawn.gateClosed")
+        publish()
     }
 
     public func shutdown() {

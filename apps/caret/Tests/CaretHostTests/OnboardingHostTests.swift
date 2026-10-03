@@ -54,17 +54,34 @@ final class OnboardingHostTests: XCTestCase {
     }
 
     func testTheWindowsKeysMapToTheFlowsEvents() {
-        typealias C = OnboardingController
-        XCTAssertEqual(C.event(for: key(36, "\r"), step: .work), .next)
-        XCTAssertEqual(C.event(for: key(53, "\u{1b}"), step: .permissions), .back)
-        XCTAssertEqual(C.event(for: key(48, "\t"), step: .tryIt), .key(.tab))
-        XCTAssertNil(C.event(for: key(48, "\t"), step: .work), "Tab moves focus on the other screens")
-        XCTAssertNil(C.event(for: key(48, "\t", mods: .shift), step: .tryIt), "Shift-Tab is not the offer's key")
-        XCTAssertNil(C.event(for: key(48, "\t", mods: .command), step: .tryIt))
-        XCTAssertEqual(C.event(for: key(51, "\u{7f}"), step: .tryIt), .key(.delete))
-        XCTAssertEqual(C.event(for: key(18, "1"), step: .tryIt), .key(.character("1")))
-        XCTAssertNil(C.event(for: key(18, "1"), step: .work))
-        XCTAssertEqual(C.event(for: key(123, "\u{F702}"), step: .tryIt), .key(.other))
+        func map(_ e: NSEvent, _ step: OnboardingStep, offer: Bool = true) -> OnboardingFlow.Event? {
+            OnboardingController.event(for: e, step: step, offerVisible: offer)
+        }
+        XCTAssertEqual(map(key(36, "\r"), .work), .next)
+        XCTAssertEqual(map(key(53, "\u{1b}"), .permissions), .back)
+        XCTAssertEqual(map(key(48, "\t"), .tryIt), .key(.tab))
+        XCTAssertNil(map(key(48, "\t"), .tryIt, offer: false), "with no offer showing, Tab moves focus as usual")
+        XCTAssertNil(map(key(48, "\t"), .work), "Tab moves focus on the other screens")
+        XCTAssertNil(map(key(48, "\t", mods: .shift), .tryIt), "Shift-Tab is not the offer's key")
+        XCTAssertNil(map(key(48, "\t", mods: .command), .tryIt))
+        XCTAssertEqual(map(key(51, "\u{7f}"), .tryIt), .key(.delete))
+        XCTAssertEqual(map(key(18, "1"), .tryIt), .key(.character("1")))
+        XCTAssertNil(map(key(18, "1"), .work))
+        XCTAssertEqual(map(key(123, "\u{F702}"), .tryIt), .key(.other), "an arrow is not typing")
+    }
+
+    func testClosingAnUnfinishedFlowLetsTheNextOpenStartAgain() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("caret-onboarding-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let controller = OnboardingController(mode: .hidden, testHooks: true, store: SettingsStore(path: dir.appendingPathComponent("s.json").path))
+        _ = controller.command(["onboarding", "open"])
+        _ = controller.command(["onboarding", "next"])
+        XCTAssertEqual(controller.debugInfo()?.step, "work")
+        _ = controller.command(["onboarding", "close"])
+        XCTAssertNil(controller.debugInfo())
+        _ = controller.command(["onboarding", "open"])
+        XCTAssertEqual(controller.debugInfo()?.step, "welcome")
+        XCTAssertEqual(controller.debugInfo()?.windowShown, false)
     }
 
     // MARK: - The hidden flow over the socket's commands

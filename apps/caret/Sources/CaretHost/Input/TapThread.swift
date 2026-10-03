@@ -99,6 +99,19 @@ public final class TapThread: @unchecked Sendable {
         return tap != nil
     }
 
+    /// Creates the taps again when the system refused one at launch: a grant given later (in
+    /// onboarding) does nothing for a tap that was never made. True when the key tap exists.
+    @discardableResult
+    public func restartIfRefused() -> Bool {
+        let hasKey = tap != nil
+        let hasMouse = mousePort.withLockUnchecked { $0 } != nil
+        guard !(hasKey && hasMouse) else { return true }
+        if thread != nil { stop() }
+        port.withLockUnchecked { $0 = nil }
+        mousePort.withLockUnchecked { $0 = nil }
+        return start()
+    }
+
     public func stop() {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let mouse = mousePort.withLockUnchecked({ $0 }) { CGEvent.tapEnable(tap: mouse, enable: false) }

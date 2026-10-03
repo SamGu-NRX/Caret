@@ -180,6 +180,13 @@ public final class HostRuntime {
         fill.client = helper
         let firstLookClient = helper
         onboarding.sendFirstLook = { firstLookClient.send($0) }
+        // A setting that closes the gate takes down what it no longer allows at once, not only
+        // what arrives next (A7 review).
+        SettingsStore.shared.observe { settings in
+            if !HostGate.allowsGhostText(settings) { coordinator.gateClosed() }
+            if !settings.gate.allows(family: "fill") { fill.gateClosed() }
+            if settings.paused { surface.gateClosed() }
+        }
         surface.client = helper
         // The fill line and the fill pop-up share the arbiter's one toast slot.
         surface.onToastChanged = { fill.toastChanged() }
@@ -235,6 +242,10 @@ public final class HostRuntime {
             mouseDown: { point in pauser.click(at: point) }
         ))
         let tap = self.tap
+        // Accessibility granted in onboarding: a key tap the system refused at launch is made now.
+        onboarding.onPermissionsChanged = { granted in
+            if granted.accessibility, !tap.restartIfRefused() { status.increment("tap.createFailed") }
+        }
         let helper = self.helper
         let writeMethods = executor.writeMethods
         let testHooks = configuration.testHooks
