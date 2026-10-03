@@ -1,1 +1,0 @@
-AX/shared-Mac: keep Chrome AXGroup/AXWebArea titles out of keys; DOM edits post no AX notice; fixtures makeKey(); Gemma needs <bos>; synthetic keys hit the LaunchServices front app (poll lsappinfo); caret-screen acts only in --act-pids; fill recency = window left before the form.

@@ -1,0 +1,1 @@
+With reader --calendar-test on a Mac without Calendar access, the event run ends as handoff blocked tcc at the first calendarFind, before any calendarGrant: no grant is issued, so don't assert a revoke there (A13).
