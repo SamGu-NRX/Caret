@@ -1,1 +1,0 @@
-Offer expiry lives only in helper/src/offers/lifetimes.ts: the host-offer registry keeps a record until its offerWithdrawn, and a loop going idle no longer withdraws its offers (B8).

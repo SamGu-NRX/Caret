@@ -1,1 +1,0 @@
-Hand entry into a loopFinish/routine is judged after EDIT_SETTLE_MS of stillness (typing passes through prefixes): partial matches re-offer the rest under a new key (offerWithdrawn reoffered + replacedBy); a mismatch is stale; all entered is taken at once (B9).

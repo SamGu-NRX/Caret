@@ -1,1 +1,0 @@
-Helper traps: leak-check.ts is quadratic per line (check one string per line); never edit a running bash script, mv a new one over it; never mutate w.nodes (WeakMap caches per state); focused:true from a request walk needs model.frontmostPid too.
