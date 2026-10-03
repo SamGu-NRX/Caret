@@ -5,11 +5,11 @@ import CaretHost
 // app's Accessibility grant. Flags: --socket <path>, --model <path>, --allow <bundle,ids>,
 // --allow-pids <pid,pid>, --helper-socket <path>, --no-ghost, --no-fill-advance,
 // --appearance light|dark, --perch hidden|shown, --surfaces headless|shown, --test-hooks,
-// --settings <path>, --onboarding auto|show|hidden|off, --status-item off.
+// --settings <path>, --onboarding auto|show|hidden|off, --status-item off, --ghost-overflow capsule|drop.
 // Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES,
 // CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off, CARET_PERCH=hidden,
 // CARET_SURFACES=headless, CARET_TEST_HOOKS=1, CARET_SETTINGS_PATH,
-// CARET_ONBOARDING, CARET_STATUS_ITEM=off.
+// CARET_ONBOARDING, CARET_STATUS_ITEM=off, CARET_GHOST_OVERFLOW=drop.
 
 var configuration = HostRuntime.Configuration()
 
@@ -74,6 +74,14 @@ while let argument = arguments.next() {
         case "headless": configuration.surfacesHeadless = true
         case "shown": configuration.surfacesHeadless = false
         default: FileHandle.standardError.write(Data("caret: --surfaces takes headless or shown\n".utf8)); exit(2)
+        }
+    case "--ghost-overflow":
+        // `drop` keeps KeyType's rule (a completion too wide for its line is not drawn), to
+        // measure the before row of A10's placement table on the same build.
+        switch arguments.next() {
+        case "capsule": configuration.ghostOverflow = .capsule
+        case "drop": configuration.ghostOverflow = .drop
+        default: FileHandle.standardError.write(Data("caret: --ghost-overflow takes capsule or drop\n".utf8)); exit(2)
         }
     case "--test-hooks":
         // The debug socket's `inject` and `progress`, which fake helper offers and their results.

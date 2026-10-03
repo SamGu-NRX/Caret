@@ -85,9 +85,9 @@ final class HostCoordinator {
             // Same field and text, possibly scrolled: re-pin what is shown to the new caret.
             if let shown = overlay.shownText, let rect = snapshot.caretRect, rect != lastCaretRect {
                 lastCaretRect = rect
-                if overlay.show(shown, at: snapshot, style: FieldStyleProbe.style(of: element)) == nil {
-                    clearOffer()
-                }
+                let drawn = overlay.show(shown, at: snapshot, style: FieldStyleProbe.style(of: element))
+                noteFit()
+                if drawn == nil { clearOffer() }
             }
             return
         }
@@ -257,11 +257,15 @@ final class HostCoordinator {
             status.increment("discarded.keyDuringPublish")
             return false
         }
-        guard let presentation = overlay.show(text, at: snapshot, style: style) else {
+        let drawn = overlay.show(text, at: snapshot, style: style)
+        noteFit()
+        guard let presentation = drawn else {
             arbiter.invalidate(offerID: offerID)
             status.increment("offer.noPlacement")
+            if let cause = overlay.lastFit?.cause { status.increment("offer.noPlacement.\(cause.rawValue)") }
             return false
         }
+        if overlay.lastFit?.outcome == .overflowCapsule { status.increment("ghost.overflowCapsule") }
         executor?.remember(offerID: offerID, context: snapshot.context)
         status.update { $0.presentation = presentation.rawValue }
         let target = field.identity
@@ -270,6 +274,15 @@ final class HostCoordinator {
             self?.clearOffer()
         })
         return true
+    }
+
+    /// Keeps the overlay's last attempt, drawn or not, in the debug state's recent fits.
+    private func noteFit() {
+        guard let fit = overlay.lastFit else { return }
+        status.update { fields in
+            fields.ghostFits.append(fit)
+            if fields.ghostFits.count > GhostFit.keptRecords { fields.ghostFits.removeFirst(fields.ghostFits.count - GhostFit.keptRecords) }
+        }
     }
 
     private func recordPaintLatency(_ keyStamp: HostStatus.KeyStamp) {

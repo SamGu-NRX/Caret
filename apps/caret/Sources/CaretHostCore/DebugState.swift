@@ -271,6 +271,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// The ghost text's own panel, when Caret drew it (KeyType's renderer had no placement).
         public var ghostPanel: Panel?
         public var panel: Panel?
+        /// How the panel was placed around its field (`FieldPanelPlacement`).
+        public var panelPlacement: PanelPlacementInfo?
         public var decor: Panel?
         public var list: Panel?
         public var figure: String?
@@ -288,6 +290,28 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var lastAccepted: AcceptInfo?
 
         public init() {}
+    }
+
+    public struct PanelPlacementInfo: Codable, Equatable, Sendable {
+        /// below, above, belowNarrow, aboveNarrow, right or left.
+        public var spot: String
+        /// Square points of the app's elements under the panel when placed; nil when no spot fit
+        /// on screen.
+        public var overlap: Double?
+        /// Candidate frames hit-tested before one was chosen.
+        public var probed: Int
+        /// Measuring and hit-testing, on the main thread.
+        public var milliseconds: Double
+        /// The field it was placed around, global top-left.
+        public var field: [Double]
+
+        public init(spot: String, overlap: Double?, probed: Int, milliseconds: Double, field: [Double]) {
+            self.spot = spot
+            self.overlap = overlap
+            self.probed = probed
+            self.milliseconds = milliseconds
+            self.field = field
+        }
     }
 
     public struct AcceptInfo: Codable, Equatable, Sendable {
@@ -439,6 +463,9 @@ public struct DebugState: Codable, Equatable, Sendable {
     public var surface: SurfaceInfo?
     /// Apps that ignored a pid-posted paste and now take AX writes, by bundle id or `exe:` name.
     public var writeMethods: [String: String]?
+    /// The ghost overlay's recent attempts to draw a completion, oldest first: how each fit, or
+    /// why it was not drawn, with the room it had. Geometry only, never text.
+    public var ghostFits: [GhostFit.Record]?
 
     public init(
         pid: Int32, uptimeSeconds: Double, trust: Trust, engine: Engine, focus: Focus?, offer: OfferInfo?,

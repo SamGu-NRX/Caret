@@ -31,6 +31,9 @@ public final class HostRuntime {
         /// The debug socket accepts `inject` and `progress`, which fake offers and their results
         /// (`--test-hooks`, `CARET_TEST_HOOKS=1`). Off in normal use: real offers come from the helper.
         public var testHooks: Bool
+        /// What a ghost completion too wide for its line does (`--ghost-overflow`,
+        /// `CARET_GHOST_OVERFLOW`): `capsule`, or `drop` to measure KeyType's behavior.
+        public var ghostOverflow: GhostFit.OverflowRule
         /// When onboarding opens (`--onboarding`, `CARET_ONBOARDING`): `off` (the menu opens it),
         /// `auto` (at launch until finished once), `show`, or `hidden` (no window; socket only).
         public var onboarding: String
@@ -46,8 +49,10 @@ public final class HostRuntime {
             perchDrawsOnScreen: Bool = ProcessInfo.processInfo.environment["CARET_PERCH"] != "hidden",
             surfacesHeadless: Bool = ProcessInfo.processInfo.environment["CARET_SURFACES"] == "headless",
             testHooks: Bool = ProcessInfo.processInfo.environment["CARET_TEST_HOOKS"] == "1",
-            onboarding: String = ProcessInfo.processInfo.environment["CARET_ONBOARDING"] ?? "off"
+            onboarding: String = ProcessInfo.processInfo.environment["CARET_ONBOARDING"] ?? "off",
+            ghostOverflow: GhostFit.OverflowRule = ProcessInfo.processInfo.environment["CARET_GHOST_OVERFLOW"] == "drop" ? .drop : .capsule
         ) {
+            self.ghostOverflow = ghostOverflow
             self.onboarding = onboarding
             self.perchDrawsOnScreen = perchDrawsOnScreen
             self.surfacesHeadless = surfacesHeadless
@@ -107,7 +112,7 @@ public final class HostRuntime {
         let status = self.status
         let policy = TargetPolicy(allowedBundleIDs: configuration.allowedBundleIDs, allowedPIDs: configuration.allowedPIDs)
         engine = GhostTextEngine(compatibilityStore: compatibilityStore)
-        overlay = GhostOverlay(compatibilityStore: compatibilityStore)
+        overlay = GhostOverlay(compatibilityStore: compatibilityStore, overflow: configuration.ghostOverflow)
         let coordinator = HostCoordinator(arbiter: arbiter, status: status, engine: engine, overlay: overlay, policy: policy)
         self.coordinator = coordinator
         let fill = FillCoordinator(arbiter: arbiter, status: status, overlay: FillOverlay(), watcher: FillTargetWatcher(), policy: policy)
@@ -569,6 +574,7 @@ public final class HostRuntime {
         state.helper = helper.snapshot()
         state.lastUndo = fields.lastUndo
         state.writeMethods = writeMethods.snapshot()
+        state.ghostFits = fields.ghostFits
         return state
     }
 }

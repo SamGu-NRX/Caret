@@ -16,6 +16,8 @@ final class HostStatus: @unchecked Sendable {
         var fill = DebugState.FillStatus()
         var surface: DebugState.SurfaceInfo?
         var counters: [String: UInt64] = [:]
+        /// The ghost overlay's recent attempts, oldest first, at most `GhostFit.keptRecords`.
+        var ghostFits: [GhostFit.Record] = []
     }
 
     struct KeyStamp: Equatable {

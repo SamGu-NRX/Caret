@@ -23,6 +23,10 @@ undoes it and every field is read back empty.
 Cases: ten fields driven to an exact match with the source text; a field whose answer is "none";
 focus moved before Tab; Command-1 over a fill; undo; the source changing before Tab.
 
+realtab-ghost also types a sentence into Promo code and reports keystroke-to-paint and how each
+completion fit (`ghostFits`). CARET_GHOST_OVERFLOW=drop runs the host with KeyType's rule for a
+completion too wide for its line, for the before row of A10's table.
+
 realtab presses one real Tab through the event tap. It runs only with the gui lease, while
 gui.lock is held, outside a quiet window and after CARET_REALTAB_IDLE_MIN seconds without input
 (default 300). It starts by asking the fixture for the foreground (`activate legacy`, fixture_app.py),
@@ -668,7 +672,9 @@ def keystroke_to_paint(pids, pid, gold):
     return {"latency": s["latency"], "typed": text, "fieldValue": value, "landed": value == text,
             "windowsAtCaret": {"before": windows_before, "after": windows_after},
             "tapKeyDowns": s["tap"]["keyDowns"] - keys_before, "keysSent": len(text),
-            "ghostCounters": {k: v for k, v in s["counters"].items() if k.startswith(("suppressed", "discarded", "offer", "held", "withdrawn"))},
+            "ghostCounters": {k: v for k, v in s["counters"].items() if k.startswith(("suppressed", "discarded", "offer", "held", "withdrawn", "ghost"))},
+            # Each attempt to draw a completion: how it fit, or why not, with the room it had (A10).
+            "ghostOverflow": os.environ.get("CARET_GHOST_OVERFLOW", "capsule"), "ghostFits": s.get("ghostFits"),
             "counters": s["counters"], "engine": s.get("engine"), "focus": s.get("focus"), "presentation": s.get("presentation")}
 
 
