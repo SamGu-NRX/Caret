@@ -425,6 +425,10 @@ export class SnippetLedger {
       const e = this.entries.get(wid) as Entry;
       for (const l of a.covered) e.covered.add(l);
       e.chars += a.cost;
+      // Text no window gave (a plan's or an instruction's, or what the user told Caret) declares each line it
+      // reveals under the window that shows it, so the request names every window whose text it carries:
+      // an instruction that quotes a line of private notes names the notes (B17 privacy test, planner desk).
+      if (own === null) for (const l of a.covered) this.snippets.push({ windowId: wid, kind: "candidate", text: l });
     }
   }
 

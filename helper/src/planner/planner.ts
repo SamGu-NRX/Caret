@@ -128,9 +128,14 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
     throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret could fill from what is on screen, in memory or in your instruction, and no button`);
   }
 
-  const declared = ledger.declared();
-  const second = { values: shuffled(values, rand).map((v, i) => ({ ...v, id: `k${i + 1}` })), buttons: shuffled(askedButtons, rand).map((b, i) => ({ ...b, id: `d${i + 1}` })) };
+  // The ledger took every field's and button's descriptor that fit, but the questions carry only the asked
+  // ones, so the rest are not declared; their window was still charged for them, which errs on the side of
+  // saying less, as fill.ts does (B17: the privacy test's planner session caught the over-declaration).
   const questioned = values.length === 0 ? [] : askedFields;
+  const sent = new Set<string | null>([title, ...questioned.map((f) => f.descriptor), ...askedButtons.map((b) => b.label)]);
+  const all = ledger.declared();
+  const declared: Declared = { snippets: all.snippets.filter((x) => !(x.kind === "descriptor" && x.windowId === w.window.windowId && !sent.has(x.text))), charged: all.charged };
+  const second = { values: shuffled(values, rand).map((v, i) => ({ ...v, id: `k${i + 1}` })), buttons: shuffled(askedButtons, rand).map((b, i) => ({ ...b, id: `d${i + 1}` })) };
   const [r1, r2] = await ask(
     fieldRequest(instruction, w, title, questioned, values, askedButtons, 0, declared),
     fieldRequest(instruction, w, title, questioned, second.values, second.buttons, 1, declared),

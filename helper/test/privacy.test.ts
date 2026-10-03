@@ -204,12 +204,15 @@ const fakeJev: AskJev = async (req) => {
     };
   }
   if (q.target !== undefined) return { model: "jev-test", answers: { target: answer(Object.keys(q.target.criteria)[0] ?? "none") }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+  // An event card asks whether the user will attend; say yes, so the card goes on to be offered.
+  if (q.attend !== undefined) return { model: "jev-test", answers: { attend: answer("yes") }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
   const answers = Object.fromEntries(
     Object.entries(q).map(([id, question]) => {
       const label = /Label: '([^']+)'|Nearest label: '([^']+)'/.exec(String(question.instructions));
       const want = FILL_VALUES[label?.[1] ?? label?.[2] ?? ""];
       const hit = want === undefined ? undefined : Object.entries(question.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
-      return [id, answer(hit?.[0] ?? "none")];
+      // A planner field question says "keep" where a fill question says "none".
+      return [id, answer(hit?.[0] ?? ("keep" in question.criteria ? "keep" : "none"))];
     }),
   );
   return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
@@ -228,7 +231,7 @@ class Session {
 
   readonly name: string;
 
-  constructor(name: string) {
+  constructor(name: string, now?: () => number) {
     this.name = name;
     this.dir = mkdtempSync(join(tmpdir(), "caret-privacy-"));
     this.store = new Store(this.dir);
@@ -236,7 +239,7 @@ class Session {
       this.recorded.push({ session: this.name, producer: this.producer, req, windows: [...this.helper.model.windows.values()].map(textOf) });
       return fakeJev(req);
     };
-    this.helper = new Helper({ store: this.store, askJev: this.ask, shadow: false, allowBackgroundFocus: true, readerLink: okReader, publish: () => undefined });
+    this.helper = new Helper({ store: this.store, askJev: this.ask, shadow: false, allowBackgroundFocus: true, readerLink: okReader, publish: () => undefined, ...(now === undefined ? {} : { now }) });
   }
 
   async replay(messages: readonly ReaderMessage[], producer: string): Promise<void> {
@@ -248,9 +251,15 @@ class Session {
     await this.helper.pending.whenIdle();
   }
 
-  async firstLook(): Promise<void> {
+  async firstLook(families: string[] = ["fill", "pending", "loop", "routine"]): Promise<void> {
     this.producer = "first look";
-    await this.helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: `${this.name}-look`, at: 1, families: ["fill", "pending", "loop", "routine"], level: "eager", deadlineMs: 8000 });
+    await this.helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: `${this.name}-look`, at: 1, families, level: "eager", deadlineMs: 8000 });
+  }
+
+  /** Plans an instruction as the host's "do this" asks (B16), recorded as the planner's requests. */
+  async plan(instruction: string): Promise<void> {
+    this.producer = "planner";
+    await this.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: `${this.name}-plan-${instruction.length}`, at: 1, instruction });
   }
 
   close(): void {
@@ -266,8 +275,8 @@ const BYSTANDERS = new Set([NOTES]);
 /** The sessions' conversation windows, named here rather than found by conversation.ts. */
 const CONVERSATIONS = new Set([CHAT, SHORT_CHAT, MESSAGES_CHAT, COMPOSER_CHAT, MAIL_THREAD, "8101-1", "8202-1", REF, LONG_THREAD]);
 
-async function run(name: string, body: (s: Session) => Promise<void>, keep = true): Promise<Recorded[]> {
-  const s = new Session(name);
+async function run(name: string, body: (s: Session) => Promise<void>, keep = true, now?: () => number): Promise<Recorded[]> {
+  const s = new Session(name, now);
   try {
     await body(s);
   } finally {
@@ -387,6 +396,63 @@ describe("the privacy line on every Jev request", () => {
     // Both threads gave something, under half and under 600 characters (violations checks both).
     const took = new Set(rec.flatMap(measure).filter((m) => m.covered > 0).map((m) => m.windowId));
     for (const id of [REF, LONG_THREAD]) expect(took, id).toContain(id);
+  });
+
+  it("planner: instructions planned against the fill desk, one quoting a line of the private notes", async () => {
+    const rec = await run("planner desk", async (s) => {
+      await s.replay([notesWindow(500), chatWindow(600), ...loadRecording("offers-fill.ndjson")], "fill on focus");
+      await s.plan("Copy Dana's email into Email and her phone into Phone");
+      // An instruction may quote any window; the ledger holds the quoted window to its budget.
+      const line = [...(s.helper.model.windows.get(NOTES)?.nodes.values() ?? [])].map((n) => n.label ?? "").find((l) => l.length > 40) ?? "";
+      await s.plan(`Write '${line}' in Name`);
+    });
+    expect(rec.filter((r) => r.producer === "planner").length).toBeGreaterThanOrEqual(2);
+    expect(rec.flatMap((r) => violations(r, new Set()))).toEqual([]);
+    // Every planner request declares the instruction as plan text.
+    expect(rec.filter((r) => r.producer === "planner").every((r) => r.req.snippets.some((x) => x.windowId === "plan"))).toBe(true);
+  });
+
+  it("event card: a sentence typed into a mail beside a chat and private notes, then a first look over events", async () => {
+    const MAIL = { pid: 6160, bundleId: "dev.caret.mail", name: "Mail Fixture" };
+    const BODY = "dev.caret.mail/standard/textarea:body~0";
+    // Typing is judged on its last finished sentence.
+    const body = "Hi Priya, the draft is attached. Coffee with Dana Thu 3:00?";
+    const rec = await run(
+      "event desk",
+      async (s) => {
+        await s.replay(
+          [
+            notesWindow(500),
+            chatWindow(600),
+            { type: "appSwitch", v: PROTOCOL_VERSION, at: 900, from: null, to: MAIL },
+            // The card follows what the user types: an empty body, then the sentence.
+            snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true }], { at: 950, windowId: "6160-4", app: MAIL, title: "New message", focused: true, focusedKey: BODY }),
+            snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true, value: body }], { at: 1000, windowId: "6160-4", app: MAIL, title: "New message", focused: true, focusedKey: BODY, values: [{ kind: "date", text: "Thu 3:00", nodeKey: BODY }] }),
+          ],
+          "event card",
+        );
+        await s.helper.eventsSettled;
+        await s.firstLook(["event"]);
+      },
+      true,
+      () => Date.parse("2026-10-05T10:00:00-05:00"),
+    );
+    expect(rec.filter((r) => r.producer === "event card").length).toBeGreaterThan(0);
+    expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
+  });
+
+  it("fill from memory: the user's typed name and email beside a chat that quotes the name", async () => {
+    const rec = await run("about desk", async (s) => {
+      const add = (label: string, value: string) => s.helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: label, op: "add", kind: "about", fields: { label, value, source: "typed" } });
+      add("Name", "Dana Whitfield");
+      add("Email", "dana.whitfield@example.com");
+      // No window shows either value, so they can only come from memory (about-fill.test.ts covers a window that does).
+      await s.replay([notesWindow(500), chatWindow(600), ...shortChats().slice(-2)], "fill on focus");
+    });
+    const fills = rec.filter((r) => r.producer === "fill on focus");
+    expect(fills.length).toBeGreaterThan(0);
+    expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
+    expect(fills.some((r) => r.req.snippets.some((x) => x.windowId === "memory"))).toBe(true);
   });
 
   it("the same short chats went out whole with the conversation rule off, and the check catches that", async () => {

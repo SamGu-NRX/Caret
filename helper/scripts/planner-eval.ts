@@ -1,6 +1,9 @@
 // Planner evaluation (brief B16) on caret-fixture's executor window, with the real reader and act grants.
 //
-//   node scripts/planner-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR --jev fake|live [--compare FAKE.json] [--max-usd 0.10]
+//   node scripts/planner-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR --jev fake|live [--compare FAKE.json] [--max-usd 0.10] [--cases FILE]
+//
+// --cases reads the cases from a JSON file in the same shape, in place of the fifteen below: B17's held-out
+// set, written by an agent that saw only a description of the fixture, never the planner.
 //
 // Fifteen synthetic instructions: ten the fixture can carry out, three that end in a press left to the
 // user (Send, Delete draft, Pay invoice), and two whose plan breaks while Jev answers (a field removed,
@@ -31,6 +34,7 @@ const { values: a } = parseArgs({
     jev: { type: "string", default: "fake" },
     compare: { type: "string" },
     "max-usd": { type: "string", default: "0.10" },
+    cases: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "planner-eval.sock") },
   },
 });
@@ -62,7 +66,7 @@ interface Case {
   id: string;
   instruction: string;
   writes: Partial<Record<DumpField, string>>;
-  press?: { label: string; why: "outbound" | "destructive" | "money" };
+  press?: { label: string; why: "outbound" | "destructive" | "money" | "unverifiable" };
   /** The error the proposal must fail with instead. */
   error?: "unknownTarget" | "untracedValue";
   /** What changes while Jev answers, for the error cases. */
@@ -71,7 +75,7 @@ interface Case {
 
 const WORK_EMAIL = "sam.rivera@example.com";
 const HOME_CITY = "Porto";
-const CASES: Case[] = [
+const BUILT_IN: Case[] = [
   { id: "p01", instruction: "Set Name to Priya Raman", writes: { name: "Priya Raman" } },
   { id: "p02", instruction: "Copy Dana's email address from her signature into Email", writes: { email: "dana.whitfield@lumenlabs.example" } },
   { id: "p03", instruction: "Put the order number from the order confirmation in Reference", writes: { reference: "ORD-2026-48213" } },
@@ -88,6 +92,13 @@ const CASES: Case[] = [
   { id: "e14", instruction: "Put the order total in Reference", writes: { reference: "$1,315.50" }, error: "unknownTarget", race: "removeReference" },
   { id: "e15", instruction: "Put my home city in the billing city", writes: { billingCity: HOME_CITY }, error: "untracedValue", race: "forgetHomeCity" },
 ];
+/** Ids say the kind of case: p achievable, h ending in a hand-off, e failing on a race. */
+const CASES: Case[] = a.cases === undefined ? BUILT_IN : (JSON.parse(readFileSync(a.cases, "utf8")) as Case[]);
+for (const c of CASES) {
+  if (!/^[phe]\d+$/.test(c.id)) throw new Error(`case id ${c.id} does not start with p, h or e`);
+  for (const k of Object.keys(c.writes)) if (!(k in FIELD_NAME)) throw new Error(`case ${c.id} writes ${k}, which the fixture does not have`);
+  if (c.id.startsWith("h") !== (c.press !== undefined) || c.id.startsWith("e") !== (c.error !== undefined && c.race !== undefined)) throw new Error(`case ${c.id}: its kind and its press, error and race disagree`);
+}
 
 // MARK: - Jev
 
@@ -329,11 +340,11 @@ store.close();
 const achievable = rows.filter((r) => r.id.startsWith("p"));
 const presses = rows.filter((r) => r.pressed.sent || r.pressed.deleted || r.pressed.paid).length;
 const grants = published.filter((m): m is TaskProgress => m.type === "taskProgress");
-const md: string[] = [`# Planner on caret-fixture, Jev ${a.jev}`, ""];
+const md: string[] = [`# Planner on caret-fixture, Jev ${a.jev}, ${a.cases === undefined ? "the built-in B16 cases" : `cases from ${a.cases.split("/").at(-1)}`}`, ""];
 md.push("Reader started without --act-pids: every write went through the act grant the accepted offer issued. Fields are read from the fixture's own dump.", "");
 md.push(`- Proposals as expected (validated, or failed with the expected code): ${rows.filter((r) => r.proposalOk).length} of ${rows.length}`);
 md.push(`- Achievable plans verified through the executor: ${achievable.filter((r) => r.verified === true).length} of ${achievable.length}`);
-md.push(`- Hand-off plans that ended in a hand-off with their writes verified: ${rows.filter((r) => r.id.startsWith("h") && r.verified === true).length} of 3`);
+md.push(`- Hand-off plans that ended in a hand-off with their writes verified: ${rows.filter((r) => r.id.startsWith("h") && r.verified === true).length} of ${rows.filter((r) => r.id.startsWith("h")).length}`);
 md.push(`- Send, Delete or Pay presses the fixture saw: ${presses}`);
 md.push(`- Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}${a.jev === "live" ? ` (budget $${MAX_USD})` : " (fake)"}; helper errors: ${errors.length}; taskProgress messages: ${grants.length}`, "");
 md.push("| Case | Instruction | Expected | Proposal | As expected | Run | Verified by the fixture | Jev calls |", "| --- | --- | --- | --- | --- | --- | --- | --- |");
