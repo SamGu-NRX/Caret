@@ -7,7 +7,7 @@
 // with an earlier run's (--compare, B12's by default).
 //
 //   node scripts/live-replay.ts --out DIR [--fill-dir DIR] [--sets cal-1,cal-2,...] [--compare FILE]
-//     [--variants "sources in Messages,..."] [--rules on|off|on,off] [--no-look]
+//     [--variants "sources in Messages,..."] [--rules on|off|on,off] [--no-look] [--spend-limit USD]
 //
 // --variants, --rules and --no-look run part of it again, to see how much of a difference is Jev
 // answering differently on a second ask.
@@ -51,10 +51,12 @@ const { values: a } = parseArgs({
     variants: { type: "string" },
     rules: { type: "string", default: "on,off" },
     "no-look": { type: "boolean", default: false },
+    "spend-limit": { type: "string", default: "0.29" },
   },
 });
-/** The run stops before spending more than this on Jev. B13's brief allows $0.30. */
-const SPEND_LIMIT_USD = 0.29;
+/** The run stops before spending more than this on Jev (--spend-limit). B13's brief allows $0.30 across its runs. */
+const SPEND_LIMIT_USD = Number(a["spend-limit"]);
+if (!(SPEND_LIMIT_USD > 0)) throw new Error(`--spend-limit must be a positive number of dollars, not ${a["spend-limit"]}`);
 
 /**
  * The earlier run to compare with, read before any request so a bad file costs nothing; a file that is
