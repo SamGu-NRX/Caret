@@ -57,7 +57,9 @@ case "windows":
     out(["ok": true, "titles": windows.map { str($0, kAXTitleAttribute) ?? "" }, "numbers": windows.map { number($0) ?? 0 }])
 case "text" where a.count == 3:
     guard let area = find(window(a[2]), role: kAXTextAreaRole) else { out(["ok": false, "error": "no text area"]) }
-    out(["ok": true, "value": str(area, kAXValueAttribute) ?? NSNull()])
+    // A value that cannot be read, or is not text, is a failed check, never an empty document.
+    guard let v = str(area, kAXValueAttribute) else { out(["ok": false, "error": "the text area's value is unreadable or not text"]) }
+    out(["ok": true, "value": v])
 case "focused" where a.count == 3:
     guard let area = find(window(a[2]), role: kAXTextAreaRole) else { out(["ok": false, "error": "no text area"]) }
     out(["ok": true, "focused": (attr(area, kAXFocusedAttribute) as? Bool) ?? false])

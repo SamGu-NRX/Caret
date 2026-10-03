@@ -603,6 +603,37 @@ describe("executor", () => {
       expect(kinds()).toEqual(["actGrant", "actRevoke", "actGrant", "actRevoke"]);
     });
 
+    it("undo after a stop whose write ended in axError still gets a grant and restores the write", async () => {
+      app.timeoutAfterWrite = true;
+      app.beforeVerb = (a, v) => {
+        if (v.kind === "write" && v.attribute === "value") helper.executor.stop("t1");
+        a.beforeVerb = null;
+      };
+      // The stop revokes the grant before the write is judged, so let this one write through as a reader
+      // that had already passed its last check would, then answer axError.
+      app.enforceGrants = false;
+      const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {}, undefined, { grant: true });
+      expect(r.outcome).toBe("stopped");
+      expect(helper.executor.ledger("t1")).toHaveLength(1);
+      app.timeoutAfterWrite = false;
+      app.enforceGrants = true;
+      expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+      expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+    });
+
+    it("undo does not count a field that is gone after the restore as restored", async () => {
+      await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {}, undefined, { grant: true });
+      app.afterVerb = (a, v) => {
+        if (v.kind !== "write") return;
+        // The app's input handler removes the field as the restore clears it.
+        a.nodes = a.nodes.filter((n) => n.key !== K("textfield:name~0"));
+        a.show();
+      };
+      const u = await helper.executor.undo("t1");
+      expect(u.restored).toBe(0);
+      expect(u.notRestored[0]?.reason).toBe("after the restore the field is gone");
+    });
+
     it("undo of an ungranted run is refused by the reader and restores nothing", async () => {
       app.enforceGrants = false;
       await helper.executor.run("t1", two(), {});

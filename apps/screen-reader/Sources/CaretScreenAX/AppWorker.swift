@@ -603,23 +603,35 @@ public final class AppWorker: @unchecked Sendable {
     /// Focus and insert: focus the field, select all of its text and replace the selection, as typing over
     /// it would. Some apps answer an AXValue write with success and change nothing (B15: a web view whose
     /// window is not key); a selection replacement goes through the editor instead. `check` is asked before
-    /// each step. Focus can run the app's own handlers, so the field must still hold `expect` before its
-    /// text is selected. The executor's walk afterwards checks what the field holds. Nil when every step went through.
+    /// each step. Focus can run the app's own handlers, and an editor may clamp or ignore a selection, so
+    /// before the replacement the field must still hold `expect` and the selection must be all of it. The
+    /// executor's walk afterwards checks what the field holds. Nil when every step went through.
     private func insert(_ value: String, into el: AXUIElement, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+        func holdsExpect(_ when: String) -> (VerbOutcome, String?)? {
+            switch AX.read(el, kAXValueAttribute) {
+            case .failed(let e): return (.axError, "insert: cannot read the value \(when) (\(e.rawValue))")
+            case .absent: return expect.isEmpty ? nil : (.changed, "\(when) the field is empty")
+            case .value(let v):
+                guard let now = v as? String else { return (.changed, "\(when) the value is not text") }
+                return now == expect ? nil : (.changed, "\(when) the value is '\(now.prefix(80))'")
+            }
+        }
         let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         guard f == .success else { return (.axError, "insert: focus failed with \(f.rawValue)") }
-        switch AX.read(el, kAXValueAttribute) {
-        case .failed(let e): return (.axError, "insert: cannot read the value after focus (\(e.rawValue))")
-        case .absent: if !expect.isEmpty { return (.changed, "after focus the field is empty") }
-        case .value(let v):
-            guard let now = v as? String else { return (.changed, "after focus the value is not text") }
-            guard now == expect else { return (.changed, "after focus the value is '\(now.prefix(80))'") }
-        }
+        if let no = holdsExpect("after focus") { return no }
         if let no = check() { return no }
         var range = CFRange(location: 0, length: (expect as NSString).length)
         guard let all = AXValueCreate(.cfRange, &range) else { return (.axError, "insert: cannot make the selection range") }
         let r = AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, all)
         guard r == .success else { return (.axError, "insert: select failed with \(r.rawValue)") }
+        if let no = holdsExpect("after selecting") { return no }
+        guard case .value(let sel) = AX.read(el, kAXSelectedTextRangeAttribute), CFGetTypeID(sel) == AXValueGetTypeID() else {
+            return (.axError, "insert: cannot read the selection")
+        }
+        var got = CFRange()
+        guard AXValueGetValue(sel as! AXValue, .cfRange, &got), got.location == 0, got.length == range.length else {
+            return (.changed, "the selection is \(got.location)+\(got.length), not the whole field")
+        }
         if let no = check() { return no }
         let w = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, value as CFString)
         guard w == .success else { return (.axError, "insert: replace failed with \(w.rawValue)") }

@@ -49,7 +49,6 @@ const { values: a } = parseArgs({
     background: { type: "boolean", default: false },
     front: { type: "boolean", default: false },
     plans: { type: "string" },
-    socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "real-eval.sock") },
   },
 });
 const TARGET = a.target;
@@ -111,20 +110,38 @@ function alive(pid: number): boolean {
 function finalCleanup(): void {
   stopAll();
   const deadline = Date.now() + 10_000;
-  for (const pid of own.keys()) {
+  for (const [pid, { proc }] of own) {
+    // A child Node has already reaped may have handed its pid to another process: never signal it again.
+    if (proc.exitCode !== null || proc.signalCode !== null) continue;
     while (alive(pid) && Date.now() < deadline) spawnSync("/bin/sleep", ["0.2"]);
-    if (alive(pid)) process.kill(pid, "SIGKILL");
+    if (alive(pid)) signal(pid, "SIGKILL");
   }
   own.clear();
   for (const d of tempDirs.splice(0)) {
-    const left = spawnSync("/usr/bin/pgrep", ["-f", d], { encoding: "utf8" }).stdout.split("\n").filter(Boolean).map(Number);
-    for (const p of left) process.kill(p, "SIGTERM");
+    // Chrome's helpers name the profile as --user-data-dir=<d>; compared as text, not as a pattern.
+    const left = spawnSync("/bin/ps", ["-axo", "pid=,args="], { encoding: "utf8" })
+      .stdout.split("\n")
+      .filter((l) => l.includes(`--user-data-dir=${d}`))
+      .map((l) => Number(l.trim().split(/\s+/)[0]))
+      .filter((p) => p > 1);
+    for (const p of left) signal(p, "SIGTERM");
     leftoverHelpers += left.length;
     rmSync(d, { recursive: true, force: true });
   }
 }
+/** A process that has exited meanwhile is not an error during cleanup. */
+function signal(pid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(pid, sig);
+  } catch {
+    // ESRCH: already gone.
+  }
+}
 let leftoverHelpers = 0;
 process.on("exit", finalCleanup);
+// Ctrl-C or a kill from the wrapper: leave through exit, so the cleanup above runs.
+process.on("SIGINT", () => process.exit(130));
+process.on("SIGTERM", () => process.exit(143));
 process.on("uncaughtException", (e) => {
   if (e instanceof Aborted) {
     // Someone used the Mac before the runs began: nothing was measured.
@@ -178,7 +195,14 @@ const progress: TaskProgress[] = [];
 const errors: string[] = [];
 const switches: AppSwitch[] = [];
 let server: HelperServer | null = null;
-const store = new Store(mkdtempSync(join(tmpdir(), "caret-real-eval-")));
+const storeDir = mkdtempSync(join(tmpdir(), "caret-real-eval-"));
+tempDirs.push(storeDir);
+const store = new Store(storeDir);
+// The socket lives in a directory of this run's own, so the server's removal of a stale socket file can
+// only ever remove its own.
+const sockDir = mkdtempSync(join(tmpdir(), "caret-real-eval-sock-"));
+tempDirs.push(sockDir);
+const SOCKET = join(sockDir, "s.sock");
 const helper = new Helper({
   store,
   askJev,
@@ -196,7 +220,7 @@ helper.handleReader = (m) => {
   if (m.type === "appSwitch") switches.push(m);
   return origHandle(m);
 };
-server = new HelperServer(a.socket, () => helper, (l) => errors.push(l));
+server = new HelperServer(SOCKET, () => helper, (l) => errors.push(l));
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -349,6 +373,7 @@ function webTarget(pid: number, win: WindowSel, js: (expr: string) => Promise<un
 }
 
 async function webkitTarget(): Promise<Target> {
+  checkAbort();
   const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(BIN), ["--windows", "executor", "--webkit", pathToFileURL(FORM).href, "--duration", "3600", ...(FRONT ? ["--foreground"] : [])]);
   started("webkit fixture", fixture);
   const lines = lineReader(fixture, "the webkit fixture");
@@ -378,6 +403,7 @@ async function webkitTarget(): Promise<Target> {
 async function chromiumTarget(): Promise<Target> {
   const profile = mkdtempSync(join(tmpdir(), "caret-chromium-profile-"));
   tempDirs.push(profile);
+  checkAbort();
   const chrome = spawn(CHROME, [
     `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-sync", "--remote-debugging-port=0",
     "--disable-extensions", "--disable-background-networking", "--new-window", pathToFileURL(FORM).href,
@@ -425,6 +451,7 @@ async function chromiumTarget(): Promise<Target> {
 
 async function texteditTarget(): Promise<Target> {
   // Untitled document at launch, no restored windows, nothing kept for the next launch.
+  checkAbort();
   const te = spawn(TEXTEDIT, ["-NSShowAppCentricOpenPanelInsteadOfUntitledFile", "NO", "-ApplePersistenceIgnoreState", "YES", "-NSQuitAlwaysKeepsWindows", "NO"], { stdio: "ignore" });
   const pid = started("textedit", te);
   const probe = async (...args: string[]): Promise<Record<string, unknown>> => {
@@ -584,8 +611,12 @@ class Cdp {
   static connect(url: string): Promise<Cdp> {
     return new Promise((res, rej) => {
       const ws = new WebSocket(url);
-      ws.addEventListener("open", () => res(new Cdp(ws)));
-      ws.addEventListener("error", () => rej(new Error(`cannot reach ${url}`)));
+      const t = setTimeout(() => {
+        ws.close();
+        rej(new Error(`no DevTools connection to ${url} within 15 s`));
+      }, 15_000);
+      ws.addEventListener("open", () => (clearTimeout(t), res(new Cdp(ws))));
+      ws.addEventListener("error", () => (clearTimeout(t), rej(new Error(`cannot reach ${url}`))));
     });
   }
   send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<unknown> {
@@ -610,6 +641,7 @@ class Cdp {
 // MARK: - reader, bystander and target
 
 /** A second process the reader reads, for the "pid outside the grant" case: a fixture with its executor window. */
+checkAbort();
 const bystander: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(BIN), ["--windows", "executor", "--duration", "3600", ...(BACKGROUND ? ["--foreground"] : [])]);
 started("bystander fixture", bystander);
 const bystanderLines = lineReader(bystander, "the bystander fixture");
@@ -621,7 +653,8 @@ checkAbort();
 const target = TARGET === "textedit" ? await texteditTarget() : TARGET === "webkit" ? await webkitTarget() : await chromiumTarget();
 await sleep(1000);
 checkAbort();
-const reader = spawn(join(BIN, "caret-screen"), ["--socket", a.socket, "--only-pids", `${target.pid},${bystanderPid}`, "--event-pids", `${target.pid},${bystanderPid}`]);
+checkAbort();
+const reader = spawn(join(BIN, "caret-screen"), ["--socket", SOCKET, "--only-pids", `${target.pid},${bystanderPid}`, "--event-pids", `${target.pid},${bystanderPid}`]);
 started("reader", reader);
 let readerLog = "";
 reader.stderr.setEncoding("utf8");
@@ -726,7 +759,8 @@ try {
 
   await safetyCases();
 } catch (e) {
-  if (!(e instanceof Aborted)) throw e;
+  // An abort stops this script's processes, so whatever was waiting on them fails with its own error.
+  if (!(e instanceof Aborted) && aborted === null) throw e;
 }
 
 interface MeansRow {
@@ -849,9 +883,9 @@ async function safetyCases(): Promise<void> {
 clearInterval(tick);
 clearInterval(idleWatch);
 await target.stop().catch(() => undefined);
-finalCleanup();
 await server.close();
 store.close();
+finalCleanup();
 const textEditAfter = await pgrep("-x", "TextEdit");
 // Reported, never deleted: whether an entry is this run's or the user's cannot be told from here.
 const autosave = TARGET === "textedit" ? textEditLeftovers().filter((x) => !autosaveBefore.has(x)) : [];

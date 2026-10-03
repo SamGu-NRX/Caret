@@ -355,6 +355,8 @@ export class Executor {
     releaseSources(task);
     task.undoing = true;
     task.undoStopped = false;
+    // The run is over; a stop or pause still pending from it (a write that ended in axError) is not this undo's.
+    task.interrupt = null;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
     // Undo is the user's own request about this task, so a task that held a grant gets one again, for
@@ -817,6 +819,7 @@ export class Executor {
     // The reader acts only on an element it saw in a walk the executor asked for, so undo reads first.
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
     if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
+    if (task.undoStopped) return "you stopped the undo";
     const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
@@ -825,14 +828,21 @@ export class Executor {
     let r: VerbResult;
     try {
       r = await this.deps.reader.run(restore);
-      // The same fallback as the run's own writes, for an app that drops value writes.
-      if (r.outcome === "ok" && this.dropped(e.windowId, e.key, e.after, seen)) r = await this.deps.reader.run({ ...restore, attribute: "insert" });
+      // The same fallback as the run's own writes, for an app that drops value writes, and with the same
+      // conditions: the user has not stopped the undo, and no other field changed meanwhile.
+      if (r.outcome === "ok" && this.dropped(e.windowId, e.key, e.after, seen)) {
+        if (task.undoStopped) return "you stopped the undo";
+        const other = seen.find((c) => c.editable && c.key !== e.key && (c.kind === "value" || c.kind === "removed"));
+        if (other !== undefined) return `${other.key} changed while the field was restored, so the restore was not tried again`;
+        r = await this.deps.reader.run({ ...restore, attribute: "insert" });
+      }
     } finally {
       off();
     }
     if (r.outcome !== "ok") return r.outcome === "changed" ? `the field changed after Caret wrote it (${r.detail ?? "no detail"})` : `${r.outcome}: ${r.detail ?? ""}`;
     const now = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
-    if ((now?.value ?? "") !== e.before) return `after the restore the field holds '${clip(now?.value ?? "(gone)")}'`;
+    if (now === undefined) return "after the restore the field is gone";
+    if ((now.value ?? "") !== e.before) return `after the restore the field holds '${clip(now.value ?? "")}'`;
     return null;
   }
 

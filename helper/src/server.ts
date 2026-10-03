@@ -80,6 +80,7 @@ export class HelperServer {
   private accept(s: Socket): void {
     this.sockets.add(s);
     let role: "reader" | "consumer" | null = null;
+    let replaced = false;
     let buf = "";
     s.setEncoding("utf8");
     s.on("data", (chunk: string) => {
@@ -118,6 +119,13 @@ export class HelperServer {
           continue;
         }
         if (role === "reader") {
+          // A reader another reader replaced numbers windows from its own session: its snapshots and
+          // answers would describe windows under ids the current reader may give to others.
+          if (s !== this.reader) {
+            if (!replaced) this.reject(s, "another reader has connected since; this connection's messages are ignored");
+            replaced = true;
+            continue;
+          }
           const m = ReaderMessage.safeParse(json);
           if (!m.success) {
             this.reject(s, `invalid reader message: ${m.error.message.slice(0, 500)}`);

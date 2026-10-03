@@ -45,6 +45,7 @@ describe("helper socket", () => {
   let dir: string;
   let store: Store;
   let server: HelperServer;
+  let helper: Helper;
   let path: string;
   let jevCalls = 0;
 
@@ -64,7 +65,7 @@ describe("helper socket", () => {
       };
     };
     let s: HelperServer | null = null;
-    const helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, publish: (m: HelperMessage) => s?.publish(m) });
+    helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, publish: (m: HelperMessage) => s?.publish(m) });
     server = new HelperServer(path, () => helper, () => {});
     s = server;
     await server.listen();
@@ -170,6 +171,13 @@ describe("helper socket", () => {
     expect(await b.next()).toMatchObject({ type: "actGrant", taskId: "t3" });
     await new Promise((r) => setTimeout(r, 50));
     expect(a.lines).toEqual([]);
+    // The replaced reader is told once that it is ignored, and its snapshots never reach the model.
+    send(a.s, snap([field(EMAIL, "stale@example.com")], { at: 9000, windowId: "1-1", title: "Old session" }));
+    send(a.s, snap([field(EMAIL, "stale@example.com")], { at: 9001, windowId: "1-1", title: "Old session" }));
+    expect(await a.next()).toMatchObject({ type: "error", message: expect.stringMatching(/another reader has connected/) });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(a.lines).toEqual([]);
+    expect(helper.model.windows.has("1-1")).toBe(false);
     a.s.destroy();
     b.s.destroy();
   });
