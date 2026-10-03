@@ -6,7 +6,8 @@ import { ScreenModel } from "../src/model.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
-import { SnippetLedger } from "../src/privacy.ts";
+import { SnippetLedger, windowBudget } from "../src/privacy.ts";
+import { targetSnippets } from "../src/executor/target.ts";
 import type { AppRef, FillProposal } from "../src/protocol.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { field, snap, text, value } from "./builders.ts";
@@ -128,5 +129,22 @@ describe("B13 review: no wrong fill from a partial set", () => {
     // B12 asked it, and the untyped pick went through.
     const b12 = await proposeFill(m, jev, FORM, FORM_KEY("When"), 3000, { unknownKindRule: false });
     expect(fieldOf(b12, "When")?.value).toBe("Design review");
+  });
+});
+
+describe("B13 review: executor plan text", () => {
+  it("F8: a goal cut one or two characters into a sourced value charges them", () => {
+    const m = new ScreenModel();
+    m.apply(snap([text(`${CHAT}/a`, "abcd")], { at: 1000, windowId: CHAT, title: "", app: MESSAGES }));
+    m.apply(scheduleForm(2000, ["Notes"]));
+    const chat = m.windows.get(CHAT)!;
+    expect(windowBudget(chat)).toBe(1);
+    // 117 characters, then the value: cut to 120, the goal ends "ab…".
+    const goal = `${"The Notes field of the follow-up form holds the code that the chat gave for the meeting room, which is ".padEnd(117, ".")}abcd`;
+    const form = m.windows.get(FORM)!;
+    const t = { role: "AXTextField", label: "Notes", describe: "the Notes field" };
+    expect(targetSnippets(form, m.windows.values(), goal, t, [], [{ text: "abcd", window: chat }])).toBeNull();
+    // A goal that does not quote the value asks.
+    expect(targetSnippets(form, m.windows.values(), "The Notes field holds the room code", t, [], [{ text: "abcd", window: chat }])).not.toBeNull();
   });
 });

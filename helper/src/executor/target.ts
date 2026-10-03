@@ -89,43 +89,46 @@ export function describeElement(w: WindowState, n: Node): string {
   return `${t.label === null ? "(no label)" : `'${t.label}'`} (${facts.join("; ")})`;
 }
 
-/** A slot value a plan copied from a window, with that window as it is now; undefined once it has closed. */
+/** A slot value a plan copied from a window, with that window as it is now or as the task found it; undefined when no state of it is known. */
 export interface SourcedValue {
   text: string;
   window: WindowState | undefined;
 }
 
 /**
- * The screen text of a target question: the window's title and every candidate element, held to the
- * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan),
- * each cut to SNIPPET_CHARS since a plan's values were copied from windows the question does not name.
- * A value the plan says it copied from a window still open (Plan.sources), and that the cut goal or
- * target quotes, is charged to that window first. Null when a quoted value or the candidates do not all
- * fit: the question is then not asked, since leaving one out could leave out the right one.
- */
-/**
  * How much of `value` a sent text shows: all of it, or, when the text was cut (privacy.ts cut) partway
- * through the value, the start of it before the ellipsis, if that is 3 or more characters. Null when it
- * shows none.
+ * through the value, the start of it before the ellipsis, however short. Null when it shows none. B12
+ * ignored a start under 3 characters, which a conversation with a budget of one or two then gave
+ * uncharged (B13 review).
  */
 export function quotedPart(sent: string, value: string): string | null {
   if (value === "") return null;
   if (sent.includes(value)) return value;
   if (!sent.endsWith("…")) return null;
   const kept = sent.slice(0, -1);
-  for (let k = Math.min(value.length - 1, kept.length); k >= 3; k--) if (kept.endsWith(value.slice(0, k))) return value.slice(0, k);
+  for (let k = Math.min(value.length - 1, kept.length); k >= 1; k--) if (kept.endsWith(value.slice(0, k))) return value.slice(0, k);
   return null;
 }
 
+/**
+ * The screen text of a target question: the window's title and every candidate element, held to the
+ * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan),
+ * each cut to SNIPPET_CHARS since a plan's values were copied from windows the question does not name.
+ * A value the plan says it copied from a window (Plan.sources), and that the cut goal or target quotes,
+ * is charged to that window first, as it is now or as the task found it; plan text also pays for any
+ * window line it holds. Null when a quoted value's window is unknown, or a quoted value or the candidates
+ * do not all fit: the question is then not asked, since leaving one out could leave out the right one.
+ */
 export function targetSnippets(w: WindowState, screen: Iterable<WindowState>, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): Declared | null {
   const ledger = new SnippetLedger(screen);
   const sent = [cut(goal), cut(t.describe)];
   for (const v of sourced) {
-    if (v.window === undefined) continue;
     const shown = sent.map((s) => quotedPart(s, v.text)).filter((p): p is string => p !== null);
-    if (shown.length > 0 && !ledger.take(v.window, "candidate", shown)) return null;
+    if (shown.length === 0) continue;
+    // A value whose window is not known cannot be held to that window's budget, so it is not sent.
+    if (v.window === undefined || !ledger.take(v.window, "candidate", shown)) return null;
   }
-  ledger.plan(sent);
+  if (!ledger.plan(sent)) return null;
   if (!ledger.take(w, "descriptor", [w.window.title])) return null;
   for (const c of cands) {
     const e = elementTexts(w, c.node);

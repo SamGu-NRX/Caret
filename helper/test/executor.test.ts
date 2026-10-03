@@ -301,6 +301,31 @@ describe("executor", () => {
         for (const req of asked) expect(req.snippets).toContainEqual({ windowId: SRC, kind: "candidate", text: "Austin" });
       });
 
+      it("charges the window as the task found it once it has closed", async () => {
+        showSource(["Ship to Austin", "Order ORD-2026-48213", "Placed September 28, 2026", "Total $1,315.50"]);
+        const asked: Parameters<AskJev>[0][] = [];
+        const pick = jev("shipping");
+        askJev = (req) => (asked.push(req), pick(req));
+        // run() records the task before its first await, so the source closes after the task found it
+        // and before the target question.
+        const running = helper.executor.run("t1", sourced, { city: "Austin" });
+        expect(helper.model.close(SRC, 150)).not.toBeNull();
+        expect(await running).toMatchObject({ outcome: "done", jevCalls: 2 });
+        expect(asked).toHaveLength(2);
+        for (const req of asked) {
+          expect(req.snippets).toContainEqual({ windowId: SRC, kind: "candidate", text: "Austin" });
+          expect(req.charged[SRC]).toBeGreaterThanOrEqual("Austin".length);
+        }
+      });
+
+      it("does not ask when the value's window was never seen", async () => {
+        let calls = 0;
+        askJev = async (req) => (calls++, jev("shipping")(req));
+        const r = await helper.executor.run("t1", { ...sourced, sources: { city: "9999-1" } }, { city: "Austin" });
+        expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+        expect(calls).toBe(0);
+      });
+
       it("does not ask when the value is more of its window than one question may carry", async () => {
         // Under half of a two-line chat is a few characters, and the city alone is more.
         showSource(["Austin, TX 78704", "ok"]);
@@ -391,7 +416,9 @@ describe("quotedPart", () => {
   it("finds a whole value, the start of one a cut ends inside, or none", () => {
     expect(quotedPart("Ship to Austin, TX", "Austin")).toBe("Austin");
     expect(quotedPart("City holds 1200 Barton Spr…", "1200 Barton Springs Rd")).toBe("1200 Barton Spr");
-    expect(quotedPart("City holds 12…", "1200 Barton Springs Rd")).toBeNull();
+    // However short: B12 let a start under 3 characters go uncharged (B13 review).
+    expect(quotedPart("City holds 12…", "1200 Barton Springs Rd")).toBe("12");
+    expect(quotedPart("City holds 1…", "1200 Barton Springs Rd")).toBe("1");
     expect(quotedPart("City holds Austin", "Dallas")).toBeNull();
     expect(quotedPart("City holds Aus", "Austin")).toBeNull();
     expect(quotedPart("anything", "")).toBeNull();

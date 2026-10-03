@@ -120,8 +120,11 @@ interface Task {
   session: number;
   /** True while undo is restoring this task's writes. */
   undoing: boolean;
-  /** Slot values the plan copied from windows, by the window's id (Plan.sources). */
-  sourced: { text: string; windowId: string }[];
+  /**
+   * Slot values the plan copied from windows, by the window's id (Plan.sources), each with its window as
+   * the task found it: a target question charges that window for the value even after it has closed.
+   */
+  sourced: { text: string; windowId: string; window: WindowState | undefined }[];
 }
 
 class StepStop extends Error {
@@ -202,7 +205,7 @@ export class Executor {
       undoing: false,
       sourced: Object.entries(parsed.data.sources ?? {}).flatMap(([slot, windowId]) => {
         const text = slots[slot];
-        return text === undefined ? [] : [{ text, windowId }];
+        return text === undefined ? [] : [{ text, windowId, window: this.deps.model.windows.get(windowId) }];
       }),
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
@@ -653,7 +656,9 @@ export class Executor {
       // A cached choice still has to fit the locator in the current tree.
       if (n !== undefined && (t.role === undefined || n.role === t.role) && (t.label === undefined || norm(n.label) === norm(t.label))) return n;
     }
-    const sourced = task.sourced.map((v) => ({ text: v.text, window: this.deps.model.windows.get(v.windowId) }));
+    // The window as it is now, or as the task found it once it has closed (B13 review: a closed source's
+    // value went out as uncharged plan text).
+    const sourced = task.sourced.map((v) => ({ text: v.text, window: this.deps.model.windows.get(v.windowId) ?? v.window }));
     const r = await resolveTarget(w, this.deps.model.windows.values(), t, goal, this.deps.askJev, this.deps.rand ?? randomInt, this.deps.targetCutoff, sourced);
     if (r.jev !== null) {
       task.jevCalls += 2;
