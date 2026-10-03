@@ -808,9 +808,13 @@ export class PatternEngine {
   private plan(id: string, kind: OfferKind, title: string, bundleId: string, cells: (Cell & { written: string })[]): { plan: Plan; slots: Record<string, string> } {
     const slots: Record<string, string> = { title };
     const declared: Record<string, string> = { title: "the destination window's title" };
+    // A written value is the source cell's value, maybe reshaped by memory; it is charged to the source window (Plan.sources).
+    const sources: Record<string, string> = {};
     const steps = cells.map((c, i) => {
       slots[`v${i}`] = c.written;
       declared[`v${i}`] = `value ${i + 1}`;
+      sources[`v${i}`] = c.srcWindowId;
+      sources.title ??= c.dstWindowId;
       const label = (c.dstLabel ?? "").replace(/[{}]/g, "");
       return {
         says: `${label === "" ? "The field" : label} holds {{v${i}}}`,
@@ -823,7 +827,7 @@ export class PatternEngine {
         },
       };
     });
-    return { plan: { id, title: kind === "loopFinish" ? "Finish the rest" : kind === "loopNext" ? "Fill the next row" : "Run the routine", slots: declared, steps }, slots };
+    return { plan: { id, title: kind === "loopFinish" ? "Finish the rest" : kind === "loopNext" ? "Fill the next row" : "Run the routine", slots: declared, sources, steps }, slots };
   }
 
   /** `replacedBy` is the new offer's id, and only for `reoffered`. */

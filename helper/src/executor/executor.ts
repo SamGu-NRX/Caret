@@ -120,6 +120,8 @@ interface Task {
   session: number;
   /** True while undo is restoring this task's writes. */
   undoing: boolean;
+  /** Slot values the plan copied from windows, by the window's id (Plan.sources). */
+  sourced: { text: string; windowId: string }[];
 }
 
 class StepStop extends Error {
@@ -198,6 +200,10 @@ export class Executor {
       resolved: new Map(),
       session: this.session,
       undoing: false,
+      sourced: Object.entries(parsed.data.sources ?? {}).flatMap(([slot, windowId]) => {
+        const text = slots[slot];
+        return text === undefined ? [] : [{ text, windowId }];
+      }),
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -647,7 +653,8 @@ export class Executor {
       // A cached choice still has to fit the locator in the current tree.
       if (n !== undefined && (t.role === undefined || n.role === t.role) && (t.label === undefined || norm(n.label) === norm(t.label))) return n;
     }
-    const r = await resolveTarget(w, t, goal, this.deps.askJev, this.deps.rand ?? randomInt, this.deps.targetCutoff);
+    const sourced = task.sourced.map((v) => ({ text: v.text, window: this.deps.model.windows.get(v.windowId) }));
+    const r = await resolveTarget(w, t, goal, this.deps.askJev, this.deps.rand ?? randomInt, this.deps.targetCutoff, sourced);
     if (r.jev !== null) {
       task.jevCalls += 2;
       this.targetChoices.push({ taskId: task.id, step: i, chose: r.ok ? r.node.key : null, jev: r.jev });

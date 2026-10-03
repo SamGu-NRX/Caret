@@ -9,6 +9,7 @@ import { FakeCalendar } from "../src/executor/means.ts";
 import { classifyLabel } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
 import type { AskJev } from "../src/fill/jev.ts";
+import { quotedPart } from "../src/executor/target.ts";
 import { FIXTURE_APP, snap } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
 
@@ -282,6 +283,37 @@ describe("executor", () => {
       expect(app.node(K("group:billing/textfield:city~0"))?.value).toBeUndefined();
     });
 
+    describe("with the value copied from another window", () => {
+      const SRC = "6262-1";
+      const city: Step = { ...shippingCity, says: "the shipping city is {{city}}", end: { ...shippingCity.end, value: "{{city}}" } as Step["end"] };
+      const sourced: Plan = { id: "src", title: "src", slots: { city: "the city" }, sources: { city: SRC }, steps: [city] };
+      /** A Messages thread, which gives a question under half its text however short it is. */
+      const showSource = (lines: string[]): void => {
+        void helper.handleReader(snap(lines.map((l, i) => ({ key: `dev.caret.messages/standard/statictext:${i}~0`, parent: null, role: "AXStaticText", label: l })), { at: 100, windowId: SRC, title: "Dana", app: { pid: 6262, bundleId: "com.apple.MobileSMS", name: "Messages" } }));
+      };
+
+      it("charges the quoted value to the window it came from", async () => {
+        showSource(["Ship to Austin", "Order ORD-2026-48213", "Placed September 28, 2026", "Total $1,315.50"]);
+        const asked: Parameters<AskJev>[0][] = [];
+        const pick = jev("shipping");
+        askJev = (req) => (asked.push(req), pick(req));
+        expect(await helper.executor.run("t1", sourced, { city: "Austin" })).toMatchObject({ outcome: "done", jevCalls: 2 });
+        for (const req of asked) expect(req.snippets).toContainEqual({ windowId: SRC, kind: "candidate", text: "Austin" });
+      });
+
+      it("does not ask when the value is more of its window than one question may carry", async () => {
+        // Under half of a two-line chat is a few characters, and the city alone is more.
+        showSource(["Austin, TX 78704", "ok"]);
+        let calls = 0;
+        askJev = async (req) => (calls++, jev("shipping")(req));
+        const r = await helper.executor.run("t1", sourced, { city: "Austin, TX 78704" });
+        expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+        expect(r.detail).toMatch(/more of a window than one question may/);
+        expect(calls).toBe(0);
+        expect(acts()).toHaveLength(0);
+      });
+    });
+
     it("stops without acting when the asks disagree", async () => {
       askJev = jev("billing");
       const r = await helper.executor.run("t1", plan([shippingCity]), {});
@@ -352,5 +384,16 @@ describe("plan slots", () => {
     expect(() => fillSlots(p, {})).toThrow(/slot name has no value/);
     const bad: Plan = { ...p, steps: [write(K("textfield:name~0"), "{{other}}")] };
     expect(() => fillSlots(bad, { name: "Dana" })).toThrow(/not a declared slot/);
+  });
+});
+
+describe("quotedPart", () => {
+  it("finds a whole value, the start of one a cut ends inside, or none", () => {
+    expect(quotedPart("Ship to Austin, TX", "Austin")).toBe("Austin");
+    expect(quotedPart("City holds 1200 Barton Spr…", "1200 Barton Springs Rd")).toBe("1200 Barton Spr");
+    expect(quotedPart("City holds 12…", "1200 Barton Springs Rd")).toBeNull();
+    expect(quotedPart("City holds Austin", "Dallas")).toBeNull();
+    expect(quotedPart("City holds Aus", "Austin")).toBeNull();
+    expect(quotedPart("anything", "")).toBeNull();
   });
 });

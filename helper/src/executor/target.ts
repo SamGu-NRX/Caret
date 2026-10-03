@@ -89,16 +89,43 @@ export function describeElement(w: WindowState, n: Node): string {
   return `${t.label === null ? "(no label)" : `'${t.label}'`} (${facts.join("; ")})`;
 }
 
+/** A slot value a plan copied from a window, with that window as it is now; undefined once it has closed. */
+export interface SourcedValue {
+  text: string;
+  window: WindowState | undefined;
+}
+
 /**
  * The screen text of a target question: the window's title and every candidate element, held to the
  * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan),
- * each cut to SNIPPET_CHARS since a plan's values were copied from windows the question does not name. Null
- * when the candidates do not all fit: the question is then not asked, since leaving one out could leave
- * out the right one.
+ * each cut to SNIPPET_CHARS since a plan's values were copied from windows the question does not name.
+ * A value the plan says it copied from a window still open (Plan.sources), and that the cut goal or
+ * target quotes, is charged to that window first. Null when a quoted value or the candidates do not all
+ * fit: the question is then not asked, since leaving one out could leave out the right one.
  */
-export function targetSnippets(w: WindowState, goal: string, t: Target, cands: readonly { node: Node }[]): Snippet[] | null {
+/**
+ * How much of `value` a sent text shows: all of it, or, when the text was cut (privacy.ts cut) partway
+ * through the value, the start of it before the ellipsis, if that is 3 or more characters. Null when it
+ * shows none.
+ */
+export function quotedPart(sent: string, value: string): string | null {
+  if (value === "") return null;
+  if (sent.includes(value)) return value;
+  if (!sent.endsWith("…")) return null;
+  const kept = sent.slice(0, -1);
+  for (let k = Math.min(value.length - 1, kept.length); k >= 3; k--) if (kept.endsWith(value.slice(0, k))) return value.slice(0, k);
+  return null;
+}
+
+export function targetSnippets(w: WindowState, goal: string, t: Target, cands: readonly { node: Node }[], sourced: readonly SourcedValue[] = []): Snippet[] | null {
   const ledger = new SnippetLedger();
-  ledger.plan([cut(goal), cut(t.describe)]);
+  const sent = [cut(goal), cut(t.describe)];
+  for (const v of sourced) {
+    if (v.window === undefined) continue;
+    const shown = sent.map((s) => quotedPart(s, v.text)).filter((p): p is string => p !== null);
+    if (shown.length > 0 && !ledger.take(v.window, "candidate", shown)) return null;
+  }
+  ledger.plan(sent);
   if (!ledger.take(w, "descriptor", [w.window.title])) return null;
   for (const c of cands) {
     const e = elementTexts(w, c.node);
@@ -137,6 +164,7 @@ export async function resolveTarget(
   askJev: AskJev | null,
   rand?: (n: number) => number,
   cutoff = TARGET_CUTOFF,
+  sourced: readonly SourcedValue[] = [],
 ): Promise<Resolution> {
   const local = resolveLocally(w, t);
   if ("node" in local) return { ok: true, node: local.node, how: local.how, jev: null };
@@ -144,8 +172,8 @@ export async function resolveTarget(
   if (askJev === null) return { ok: false, reason: `${local.ambiguous.length} elements match and Jev is off`, jev: null };
 
   const first = local.ambiguous.map((node, i) => ({ id: `e${i + 1}`, node }));
-  const snippets = targetSnippets(w, goal, t, first);
-  if (snippets === null) return { ok: false, reason: `${first.length} elements match, more than one question may describe from this window`, jev: null };
+  const snippets = targetSnippets(w, goal, t, first, sourced);
+  if (snippets === null) return { ok: false, reason: `${first.length} elements match, and asking would take more of a window than one question may`, jev: null };
   const second = shuffled(first, rand).map((c, i) => ({ id: `k${i + 1}`, node: c.node }));
   const [r1, r2] = await Promise.all([askJev(buildTargetRequest(w, goal, t, first, 0, snippets)), askJev(buildTargetRequest(w, goal, t, second, 1, snippets))]);
   const pick = (r: typeof r1, list: typeof first): { key: string | null; confidence: number } => {

@@ -282,6 +282,9 @@ describe("fill pop-up", () => {
       ["Name holds Dana Whitfield", FK("textfield:name~0"), "Checkout {{x}}"],
       ["Phone holds +1 (512) 555-0142", FK("textfield:phone~0"), "Checkout {{x}}"],
     ]);
+    // Each value is charged to the window it was copied from, each label and the title to the form.
+    expect(plan.sources).toEqual({ title: FORM, l0: FORM, l1: FORM, v0: SRC, v1: SRC });
+    expect(() => fillSlots(Plan.parse({ ...plan, sources: { ...plan.sources, nope: SRC } }), slots)).toThrow(/nope, which is not a declared slot/);
   });
 });
 

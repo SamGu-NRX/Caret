@@ -107,9 +107,13 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
   const w = model.windows.get(p.windowId);
   const slots: Record<string, string> = { title: w?.window.title ?? "" };
   const declared: Record<string, string> = { title: "the form window's title" };
+  // Where each slot was read, so a target question that quotes one charges that window (Plan.sources).
+  const sources: Record<string, string> = { title: p.windowId };
   const steps = p.fields.map((f, i) => {
     slots[`v${i}`] = f.value;
     slots[`l${i}`] = fieldLabel(model, p.windowId, f.key);
+    sources[`v${i}`] = f.source.windowId;
+    sources[`l${i}`] = p.windowId;
     declared[`v${i}`] = `value ${i + 1}`;
     declared[`l${i}`] = `the name of field ${i + 1}`;
     return {
@@ -122,5 +126,5 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       },
     };
   });
-  return { plan: { id: p.id, title: `Fill ${p.fields.length} fields`, slots: declared, steps }, slots };
+  return { plan: { id: p.id, title: `Fill ${p.fields.length} fields`, slots: declared, sources, steps }, slots };
 }

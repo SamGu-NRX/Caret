@@ -344,8 +344,12 @@ describe("the privacy line on every Jev request", () => {
       // A plan's value can be any text a window shows; here a whole page of the private notes. It goes out cut short.
       const page = [...(s.helper.model.windows.get(NOTES)?.nodes.values() ?? [])].map((n) => n.label ?? "").join(" ");
       await resolveTarget(w, { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask);
+      // The same value with the plan saying where it was copied from (Plan.sources): the part the cut goal shows is charged to the notes.
+      const notes = s.helper.model.windows.get(NOTES);
+      await resolveTarget(w, { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask, undefined, undefined, [{ text: page, window: notes }]);
     });
-    expect(rec).toHaveLength(4);
+    expect(rec).toHaveLength(6);
+    expect(rec.slice(4).every((r) => r.req.snippets.some((x) => x.windowId === NOTES && x.kind === "candidate"))).toBe(true);
     // The notes are a bystander for every other producer; here the plan quoted them, and the cut kept the request under the bound.
     expect(rec.flatMap((r) => violations(r, new Set()))).toEqual([]);
     expect(Math.max(...rec.flatMap(measure).filter((m) => m.windowId === NOTES).map((m) => m.covered))).toBeLessThanOrEqual(120);
