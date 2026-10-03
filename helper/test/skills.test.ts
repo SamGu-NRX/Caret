@@ -174,9 +174,12 @@ describe("skills in the helper", () => {
   let asked: JevRequest[];
   /** Set to take over the run at its first act. */
   let takeOverAtAct: string | null;
+  /** While set, the namer's answer waits for it, as a slow network would. */
+  let namingHeld: Promise<void> | null;
 
   const namer: AskJev = async (req) => {
     asked.push(req);
+    if (namingHeld !== null) await namingHeld;
     const choice = Object.keys(req.questions.name?.criteria ?? {}).find((k) => k !== "none") ?? "none";
     return { model: "jev-test", answers: { name: { choice, confidence: 0.9 } }, inputTokens: 300, latencyMs: 1, costUsd: 0 };
   };
@@ -270,6 +273,7 @@ describe("skills in the helper", () => {
     buttons = undefined;
     frontmost = "other";
     takeOverAtAct = null;
+    namingHeld = null;
     desk = new Desk();
     desk.enforceGrants = true;
     helper = new Helper({
@@ -327,6 +331,21 @@ describe("skills in the helper", () => {
     expect(skills()[0]!.fields).toMatchObject({ runs: 1, cleanRuns: 1 });
     // Naming is never asked again.
     expect(asked).toHaveLength(1);
+  });
+
+  it("keeps the first name: a keep offer made while Jev's answer is on its way shows code's name, and the late answer changes nothing", async () => {
+    let release: () => void = () => undefined;
+    namingHeld = new Promise<void>((r) => (release = r));
+    for (let i = 0; i < 3; i++) byHand();
+    const r = await caretRun();
+    finish(r);
+    const shown = r.skillOffers[0]!.name;
+    expect(helper.memory.routine(routines()[0]!.id)?.nameBy).toBe("code");
+    release();
+    await helper.patterns.skills.namesSettled();
+    expect(routines()[0]!.fields.name).toBe(shown);
+    answer(r.skillOffers[0]!, "accept");
+    expect(skills()[0]!.fields.name).toBe(shown);
   });
 
   it("remembers a declined keep offer, and asks again after a later run when nobody answered", async () => {

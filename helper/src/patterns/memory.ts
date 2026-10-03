@@ -477,10 +477,13 @@ export class MemoryStore {
     this.patchRoutine(id, { namingAsked: true });
   }
 
-  /** Names a routine, unless the user already named it: a name they gave is never replaced by Caret's. */
+  /**
+   * Names a routine that has no name yet. The first name stays: one the user gave, or code's fallback that a
+   * keep offer already showed while Jev's answer was still on its way (B19 live eval), is never replaced.
+   */
   setRoutineName(id: string, name: string, by: "jev" | "code"): void {
     const r = this.routine(id);
-    if (r === null || r.nameBy === "you") return;
+    if (r === null || r.name !== null) return;
     this.patchRoutine(id, { name, nameBy: by });
   }
 
