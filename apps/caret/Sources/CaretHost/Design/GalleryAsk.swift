@@ -11,7 +11,7 @@ extension Gallery {
 
     /// The golden proposal's card (helper/fixtures/golden/protocol.ndjson, `plan-1-ask-1`).
     static let askCard = AskCaret.Card(
-        title: "1 field in 'Caret Fixture — Executor'", app: "Caret Fixture",
+        title: AskCopy.title(fields: ["Reference"], writes: 1, press: "Send", app: "Caret Fixture"), app: "Caret Fixture",
         steps: [AskCaret.Step(text: AskCopy.write("ORD-2026-48213", into: "Reference")), AskCaret.Step(text: AskCopy.press("Send"), yours: true)],
         more: 0, action: "Fill 1 field", offerKey: "plan-1-ask-1", actionId: "run", writes: 1, press: "Send"
     )
@@ -19,7 +19,7 @@ extension Gallery {
     /// A three-write plan with a press, for the running card.
     static let askCardLonger: AskCaret.Card = {
         var card = askCard
-        card.title = "2 fields in 'Caret Fixture — Executor'"
+        card.title = AskCopy.title(fields: ["Name", "Email"], writes: 2, press: "Send", app: "Caret Fixture")
         card.steps = [
             AskCaret.Step(text: AskCopy.write("Dana Whitfield", into: "Name"), state: .done),
             AskCaret.Step(text: AskCopy.write("dana.whitfield@lumenlabs.example", into: "Email"), state: .running),
@@ -33,7 +33,7 @@ extension Gallery {
     static func ask(_ character: FigureCharacter = .pebble) -> [Item] {
         func list(_ text: String, _ phase: AskCaret.Phase, rows: [ActivityRow] = [], focus: Bool = true) -> AnyView {
             let section = AskSection(text: text, phase: phase, character: character, showsFocus: focus, animated: false)
-            return AnyView(ActivityListView(rows: rows, character: character, animated: false, now: listNow, ask: AnyView(section), askActive: phase != .idle)
+            return AnyView(ActivityListView(rows: rows, character: character, animated: false, now: listNow, ask: AnyView(section), askActive: phase != .idle, askHeader: phase.header)
                 .environment(\.timeZone, TimeZone(identifier: "America/Chicago")!)
                 .environment(\.locale, Locale(identifier: "en_US")))
         }

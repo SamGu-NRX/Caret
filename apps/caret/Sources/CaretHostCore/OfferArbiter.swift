@@ -345,7 +345,10 @@ public final class OfferArbiter: @unchecked Sendable {
         case (.up, .alternatives(let count)):
             return navigate { $0.candidate = ($0.candidate + count - 1) % count }
         case (.down, .actionLine):
-            // A pop-up drawn as its compact line: ↓ opens the full card, highlight as it was.
+            // A pop-up drawn as its compact line: ↓ opens the full card, highlight as it was. Lead
+            // decision (A14): the card it opens may cover something, placed where it covers least
+            // (`FieldPanelPlacement.choose`), because the user asked to see it and Esc closes it.
+            // Caret never covers a label on its own; only this key opens a card with no clear spot.
             if case .popup = offer.kind { return navigate { $0.compact = false } }
             return navigate { ui in
                 ui.expanded = true

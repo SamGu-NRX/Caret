@@ -130,6 +130,52 @@ public struct ActivityRow: Equatable, Sendable, Codable, Identifiable {
     }
 }
 
+/// The activity list's header: what is going on, in a few words, counted the way the sections
+/// under it are. The ask field's state is part of it, because a plan waiting for Tab is not
+/// "Nothing running" (brief A14, part 4).
+public enum ListHeader {
+    /// What the ask field holds, as far as the header cares.
+    public enum Ask: Equatable, Sendable {
+        /// Nothing asked, or the answer is over: a failure sentence or an ended run's line.
+        case none
+        /// The instruction went out and no plan has come back.
+        case planning
+        /// A plan is on the card, waiting for Tab or Esc.
+        case waiting
+        /// Tab took the plan and it is running.
+        case running
+    }
+
+    ///   1 needs you, 2 in progress
+    ///   1 plan ready              (a proposal waits for Tab)
+    ///   Nothing running yet       (planning; the ask field already says "Planning" under it)
+    ///   1 in progress             (the asked plan runs before its task reaches the list)
+    ///   All done                  (only Done rows)
+    ///   Nothing running           (no rows, nothing asked, or the asked run is over)
+    public static func title(needsYou: Int, inProgress: Int, hasRows: Bool, ask: Ask) -> String {
+        var parts: [String] = []
+        if needsYou > 0 { parts.append("\(needsYou) need\(needsYou == 1 ? "s" : "") you") }
+        if ask == .waiting { parts.append("1 plan ready") }
+        // The asked run is listed as a task once the helper reports it; until then it is still in progress.
+        let running = ask == .running ? max(inProgress, 1) : inProgress
+        if running > 0 { parts.append("\(running) in progress") }
+        if !parts.isEmpty { return parts.joined(separator: ", ") }
+        if ask == .planning { return "Nothing running yet" }
+        return hasRows ? "All done" : "Nothing running"
+    }
+}
+
+public extension AskCaret.Phase {
+    var header: ListHeader.Ask {
+        switch self {
+        case .idle, .failed, .ended: return .none
+        case .asking: return .planning
+        case .proposed: return .waiting
+        case .running: return .running
+        }
+    }
+}
+
 public enum ActivityList {
     /// Done rows shown at most, per page. The list is a glance, not a log. No measurement behind
     /// the number.

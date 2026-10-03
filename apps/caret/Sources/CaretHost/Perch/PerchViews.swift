@@ -140,6 +140,8 @@ struct ActivityListView: View {
     var ask: AnyView? = nil
     /// The ask field shows an answer or a card: the empty list's sentence would read as part of it.
     var askActive = false
+    /// What the ask field holds, for the header (`ListHeader`).
+    var askHeader: ListHeader.Ask = .none
 
     static let knowsLink = "What Caret knows"
 
@@ -214,15 +216,13 @@ struct ActivityListView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// "1 needs you, 2 in progress"; "Nothing running" when the list is empty.
+    /// "1 needs you, 2 in progress", "1 plan ready"; "Nothing running" when nothing is (`ListHeader`).
     var title: String {
-        let needs = rows.filter { $0.section == .needsYou }.count
-        let running = rows.filter { $0.section == .inProgress }.count
-        var parts: [String] = []
-        if needs > 0 { parts.append("\(needs) need\(needs == 1 ? "s" : "") you") }
-        if running > 0 { parts.append("\(running) in progress") }
-        if parts.isEmpty { return rows.isEmpty ? "Nothing running" : "All done" }
-        return parts.joined(separator: ", ")
+        ListHeader.title(
+            needsYou: rows.filter { $0.section == .needsYou }.count,
+            inProgress: rows.filter { $0.section == .inProgress }.count,
+            hasRows: !rows.isEmpty, ask: askHeader
+        )
     }
 }
 

@@ -313,7 +313,8 @@ public final class SurfaceMachine {
             return reply
         }
         // An action line or pop-up needs a spot that covers none of the app's fields or labels: its
-        // full panel, else its compact line, else it is not drawn at all (brief A13, part 3).
+        // full panel, else its compact line, else it is not drawn at all (brief A13, part 3). Only
+        // the user's ↓ opens the full card from there, wherever it covers least (OfferArbiter, A14).
         var compact = false
         if let full = Self.panelContent(for: offer) {
             let frame = field.frame ?? caret

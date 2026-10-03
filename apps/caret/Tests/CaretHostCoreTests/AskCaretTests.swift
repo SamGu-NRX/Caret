@@ -121,7 +121,7 @@ final class AskCaretTests: XCTestCase {
 
     func testTheGoldenProposalIsACardWithTheSendLeftToTheUser() throws {
         let card = try proposed()
-        XCTAssertEqual(card.title, "1 field in 'Caret Fixture — Executor'")
+        XCTAssertEqual(card.title, "Fill Reference in Caret Fixture", "a sentence, not the helper's echo of the window title")
         XCTAssertEqual(card.steps, [
             AskCaret.Step(text: "Put \u{201C}ORD-2026-48213\u{201D} in Reference"),
             AskCaret.Step(text: "Press Send", yours: true),
@@ -324,12 +324,52 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(ask.phase, .failed("I couldn't find \u{201C}ORD-2026-99999\u{201D} on screen, in what I remember, or in what you asked."))
     }
 
+    /// The card's title says what the plan does and where (brief A14, part 4).
+    func testTheCardTitleIsAPlainSentence() {
+        func title(_ fields: [String], _ writes: Int, press: String? = nil, app: String = "Caret Fixture") -> String {
+            AskCopy.title(fields: fields, writes: writes, press: press, app: app)
+        }
+        XCTAssertEqual(title(["Reference"], 1, press: "Send"), "Fill Reference in Caret Fixture")
+        XCTAssertEqual(title(["Name", "Email"], 2), "Fill Name and Email in Caret Fixture")
+        XCTAssertEqual(title(["Name", "Email", "Phone"], 3), "Fill 3 fields in Caret Fixture")
+        XCTAssertEqual(title(["Name", "Email"], 4), "Fill 4 fields in Caret Fixture", "rows past the card's cap are counted with the rest")
+        XCTAssertEqual(title([" "], 1), "Fill 1 field in Caret Fixture", "an unnamed field is counted, never named as blank")
+        XCTAssertEqual(title([], 0, press: "Send", app: "Mail"), "You press Send in Mail")
+        for t in [title(["Reference"], 1), title(["Name", "Email"], 2), title([], 0, press: "Send")] {
+            XCTAssertFalse(t.contains("'") || t.contains("\u{2014}") || t.hasSuffix("."), t)
+        }
+    }
+
+    /// The list header says something true while the ask field is busy: a plan waiting for Tab is
+    /// not "Nothing running" (brief A14, part 4).
+    func testTheListHeaderSaysWhatIsGoingOnInEachAskState() {
+        func header(_ ask: ListHeader.Ask, needs: Int = 0, running: Int = 0, rows: Bool = false) -> String {
+            ListHeader.title(needsYou: needs, inProgress: running, hasRows: rows || needs + running > 0, ask: ask)
+        }
+        XCTAssertEqual(header(.none), "Nothing running")
+        XCTAssertEqual(header(.none, rows: true), "All done")
+        XCTAssertEqual(header(.planning), "Nothing running yet", "the field says Planning under it; the header does not repeat it")
+        XCTAssertEqual(header(.planning, running: 2), "2 in progress")
+        XCTAssertEqual(header(.waiting), "1 plan ready")
+        XCTAssertEqual(header(.running), "1 in progress", "the run before its task reaches the list")
+        XCTAssertEqual(header(.running, running: 1), "1 in progress", "and not counted twice once it has")
+        XCTAssertEqual(header(.waiting, needs: 1, running: 2), "1 needs you, 1 plan ready, 2 in progress")
+        XCTAssertEqual(header(.none, needs: 2), "2 need you")
+        let card = AskCaret.Card(title: "t", app: "a", steps: [], more: 0, action: "Fill 1 field", offerKey: "k", actionId: "run", writes: 1, press: nil)
+        XCTAssertEqual(AskCaret.Phase.idle.header, .none)
+        XCTAssertEqual(AskCaret.Phase.asking(requestId: "ask-1").header, .planning)
+        XCTAssertEqual(AskCaret.Phase.proposed(card).header, .waiting)
+        XCTAssertEqual(AskCaret.Phase.running(card).header, .running)
+        XCTAssertEqual(AskCaret.Phase.failed("x").header, .none)
+        XCTAssertEqual(AskCaret.Phase.ended(card, AskCopy.lostTouch).header, .none)
+    }
+
     /// One sentence per code; the helper's detail formats (validate.ts, planner.ts) give the value
     /// where they carry one, and any other detail gives the code's sentence alone.
     func testEveryErrorCodeHasAPlainSentence() {
         let codes: [PlanProposal.ErrorCode] = [
             .schema, .noWindow, .unsure, .nothingToDo, .unsupportedStep, .multipleWindows, .unknownWindow, .ambiguousWindow,
-            .unknownTarget, .ambiguousTarget, .notEditable, .untracedValue, .stepAfterHandoff, .riskMismatch, .unavailable, .jevFailed, .privacy, .internal,
+            .unknownTarget, .ambiguousTarget, .notEditable, .untracedValue, .wrongKind, .stepAfterHandoff, .riskMismatch, .unavailable, .jevFailed, .privacy, .internal,
         ]
         for code in codes {
             let words = AskCopy.planError(PlanProposal.Failure(code: code, detail: "something only the helper reads"))
@@ -349,6 +389,19 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(say(.notEditable, "step 2 ('Password holds x'): its target is a password field, which is left to you"), "That's a password field, which I leave to you.")
         XCTAssertEqual(say(.unknownWindow, "step 1 ('Name holds Dana'): no open window matches 'Invoices'"), "I couldn't find a window called \u{201C}Invoices\u{201D}.")
         XCTAssertEqual(say(.unknownWindow, "'Invoices' closed while Caret planned, and another window took its title"), "The window I planned for closed while I planned.")
+        // wrongKind (B18, kinds.ts misfit): the field and both kinds, in the helper's own words.
+        XCTAssertEqual(say(.wrongKind, "step 1 ('City holds 455 Congress Ave, Austin, TX 78701'): '455 Congress Ave, Austin, TX 78701' is a whole address, and the field takes a city"),
+                       "City takes a city, not a whole address.")
+        XCTAssertEqual(say(.wrongKind, "step 2 ('Contact holds dana@x.example'): 'dana@x.example' is an email address, and the field takes a name or a phone number"),
+                       "Contact takes a name or a phone number, not an email address.")
+        // A value that itself says "' is " or " holds " still leaves the kinds and the field name readable.
+        XCTAssertEqual(say(.wrongKind, "step 1 ('Reference holds it's a whole address' is a holds'): 'it's a whole address' is a holds' is plain text, and the field takes an amount"),
+                       "Reference takes an amount, not plain text.")
+        XCTAssertEqual(say(.wrongKind, "'x' is a whole address, and the field takes a city"), "That field takes a city, not a whole address.")
+        // A kind the helper does not write is not put on screen.
+        XCTAssertEqual(say(.wrongKind, "step 1 ('City holds x'): 'x' is a password, and the field takes a city"),
+                       "That value doesn't fit the field it would go in, so I didn't plan it.")
+        XCTAssertEqual(say(.wrongKind, "something only the helper reads"), "That value doesn't fit the field it would go in, so I didn't plan it.")
         // A value holding the prefix's own "'): '" cannot be split surely: no value is named (review A13, finding 8).
         XCTAssertEqual(say(.untracedValue, "step 1 ('Name holds Anna'): 'Bob'): 'Anna'): 'Bob' is not in any window, in memory or in your instruction"),
                        "I couldn't find that value on screen, in what I remember, or in what you asked.")
@@ -437,6 +490,31 @@ final class CompactFallbackTests: XCTestCase {
             .did(["panel redraw Fill 2 fields"]),
             .press(Fx.tab()),
             .sent(["accept fill-2 fillAll"]),
+        ]))
+    }
+
+    /// Lead decision (brief A14): when nothing is clear, the card a deliberate ↓ opens may sit
+    /// where it covers least, because the user asked to see it and Esc closes it. Caret never covers
+    /// a label on its own: the offer arrives as its compact line, and nothing but ↓ opens the card.
+    func testOnlyADeliberateDownOpensACardThatHasNoClearSpot() {
+        play(Transition("no clear spot for the card; ↓ opens it anyway, Esc closes it", [
+            .screen { $0.front(); $0.clearPanel = { c in if case .compactLine = c { return true } else { return false } } },
+            .offer(Fx.fillPopup()),
+            .expect(.custom("on its own, Caret draws only what covers nothing", { rig in
+                guard case .compactLine? = rig.panels.last else { return false }
+                return !rig.panels.contains { if case .popup = $0 { return true } else { return false } }
+            })),
+            .wait(2),
+            .expect(.custom("time alone never opens the card", { rig in
+                if case .compactLine? = rig.panels.last { return true } else { return false }
+            })),
+            .press(Fx.down()),
+            .expect(.custom("↓ opens it without asking for a clear spot again", { rig in
+                guard case .popup? = rig.panels.last else { return false }
+                return rig.screen.clearAsked.count == 2
+            })),
+            .press(Fx.esc()),
+            .expect(.shown(nil)),
         ]))
     }
 

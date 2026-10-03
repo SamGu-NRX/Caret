@@ -40,7 +40,7 @@ public final class AskCaret {
 
     /// The helper's proposal, reduced to what the card shows and what Tab sends.
     public struct Card: Equatable, Sendable, Codable {
-        /// The spec's header: "2 fields in 'Caret Fixture — Executor'".
+        /// What the plan does, as a sentence: "Fill Reference in Caret Fixture" (`AskCopy.title`).
         public var title: String
         /// The app the plan acts in, for the lines after it ends.
         public var app: String
@@ -307,21 +307,24 @@ public final class AskCaret {
         guard let spec = proposal.spec, let key = proposal.offerKey,
               let tab = spec.actions.first(where: { $0.key == .tab }) else { return nil }
         var steps: [Step] = []
+        var fields: [String] = []
         var more = 0
         for block in spec.blocks {
-            if case .fields(let fields) = block.content {
-                more = fields.more
-                for row in fields.rows {
+            if case .fields(let list) = block.content {
+                more = list.more
+                for row in list.rows {
+                    fields.append(row.destination.text)
                     steps.append(Step(text: AskCopy.write(row.value?.text ?? "", into: row.destination.text)))
                 }
             }
         }
         let writes = steps.count + more
         if let handoff = proposal.handoff { steps.append(Step(text: AskCopy.press(handoff.label), yours: true)) }
+        let app = proposal.window?.appName ?? "the app"
+        let press = proposal.handoff.map { $0.label.isEmpty ? AskCopy.unlabelled : $0.label }
         return Card(
-            title: spec.header?.title.text ?? "", app: proposal.window?.appName ?? "the app", steps: steps, more: more,
-            action: tab.label, offerKey: key, actionId: tab.id, writes: writes,
-            press: proposal.handoff.map { $0.label.isEmpty ? AskCopy.unlabelled : $0.label }
+            title: AskCopy.title(fields: fields, writes: writes, press: press, app: app), app: app, steps: steps, more: more,
+            action: tab.label, offerKey: key, actionId: tab.id, writes: writes, press: press
         )
     }
 
@@ -403,6 +406,25 @@ public enum AskCopy {
     }
     public static let yours = "You do this"
 
+    /// The card's title: what the plan does, in the app it does it in. The helper's header echoes
+    /// the window title ("1 field in 'Caret Fixture — Executor'"), which says where but not what;
+    /// the steps under it carry the values. Two fields are named, more are counted, so the title
+    /// stays one line at the list's 320 pt.
+    ///   Fill Reference in Caret Fixture
+    ///   Fill Name and Email in Caret Fixture
+    ///   Fill 3 fields in Caret Fixture
+    ///   You press Send in Mail            (a plan that only hands a press over)
+    public static func title(fields: [String], writes: Int, press: String?, app: String) -> String {
+        let names = fields.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let named = names.count == writes && !names.contains(where: \.isEmpty)
+        switch writes {
+        case 0: return press.map { "You press \($0) in \(app)" } ?? "Nothing to fill in \(app)"
+        case 1 where named: return "Fill \(names[0]) in \(app)"
+        case 2 where named: return "Fill \(names[0]) and \(names[1]) in \(app)"
+        default: return "Fill \(Captions.fields(writes)) in \(app)"
+        }
+    }
+
     /// A field write in plain words: Put “Priya Raman” in Name.
     public static func write(_ value: String, into field: String) -> String {
         "Put \u{201C}\(value)\u{201D} in \(field)"
@@ -449,6 +471,7 @@ public enum AskCopy {
         case .notEditable:
             if failure.detail.contains("password") { return "That's a password field, which I leave to you." }
             return q.map { "I can't write in \u{201C}\($0)\u{201D}." } ?? "I can't write in that field."
+        case .wrongKind: return misfit(failure.detail) ?? "That value doesn't fit the field it would go in, so I didn't plan it."
         case .unsure: return "I wasn't sure enough which field or window you meant. Try naming it."
         case .multipleWindows: return "That needs more than one window, and I act in one at a time."
         case .unsupportedStep: return "That needs a step I don't take: I fill fields and leave buttons to you."
@@ -478,6 +501,37 @@ public enum AskCopy {
             return value.isEmpty ? nil : value
         default: return nil
         }
+    }
+
+    /// What the helper says a value is (helper/src/fill/kinds.ts KIND_SAYS, plus misfit's "text with
+    /// digits") and what a field takes (FIT_SAYS). The sentence uses only these words, so a detail in
+    /// another shape gives the plain sentence rather than whatever text it carries.
+    static let valueKinds: Set<String> = [
+        "an email address", "a web link", "a phone number", "an amount", "a whole address", "a street line", "plain text", "text with digits",
+    ]
+    static let fieldKinds: Set<String> = [
+        "an email address", "a phone number", "a web link", "a city", "a street line", "an address", "a name", "a date", "a time", "an amount",
+    ]
+
+    /// `wrongKind` as validate.ts writes it: `step 1 ('City holds 455 Congress Ave, Austin'): '455
+    /// Congress Ave, Austin' is a whole address, and the field takes a city`. Gives "City takes a
+    /// city, not a whole address.", or "That field takes …" when the step names no field. Nil when
+    /// either kind is not one the helper writes.
+    static func misfit(_ detail: String) -> String? {
+        let takes = ", and the field takes "
+        guard let t = detail.range(of: takes, options: .backwards),
+              let i = detail[..<t.lowerBound].range(of: "' is ", options: .backwards) else { return nil }
+        let kind = String(detail[i.upperBound..<t.lowerBound])
+        let fits = detail[t.upperBound...].components(separatedBy: " or ")
+        guard valueKinds.contains(kind), !fits.isEmpty, fits.allSatisfy(fieldKinds.contains) else { return nil }
+        // The step's field, from planner.ts's `<field> holds <value>`; a value can hold anything, so
+        // the name ends at the first " holds ".
+        var field = "That field"
+        if detail.hasPrefix("step "), let open = detail.range(of: " ('"), let holds = detail[open.upperBound...].range(of: " holds ") {
+            let name = String(detail[open.upperBound..<holds.lowerBound]).trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty, !name.contains("'") { field = name }
+        }
+        return "\(field) takes \(fits.joined(separator: " or ")), not \(kind)."
     }
 
     private static func once(_ text: String, _ part: String) -> Bool {
