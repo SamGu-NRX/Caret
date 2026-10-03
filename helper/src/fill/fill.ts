@@ -198,16 +198,15 @@ export async function proposeFill(
   // Whitfield", and filled with another window's name (B13 reviews). Withholding it on any cut instead
   // blanked Name on the fill desk, where an unrelated team chat is cut, and lost the desk's first-look
   // offer (~/.caret-run/evidence/screen/b13/live-final). A bare cut name ("Dana Whitfield") shares no
-  // word with "Name", so a field that takes a name and a name-like line both carry NAME_TERM (kinds.ts):
-  // the conversation's names go in whole, and when they do not, the field shares that term with the cut.
-  // Like a cut kind, a cut name also stops any field's name-like pick (test/name-decoy.test.ts). And like
-  // a field of a kind, a field that takes a name is not withheld for another kind's cut: it wants a name,
-  // and withholding it then spent the chat's budget on names no field could be asked about (the
-  // calibration chat's links gave way to its names and Attendee job title was still blanked).
+  // word with "Name", so names are handled as a kind (kinds.ts NAME_TERM): a conversation's name-like
+  // lines go in whole or not at all, and namesCut says whether a name may have been kept out (candidates.ts).
+  // Then a field that takes a name is not asked, and no field's name-like pick is proposed, as with a cut
+  // kind (test/name-decoy.test.ts). Like a field of a kind, a field that takes a name is not withheld for
+  // another kind's cut: withholding it then spent the chat's budget on names no field could be asked
+  // about (the calibration chat's links gave way to its names and Attendee job title was still blanked).
   const nameCut = opts.cutRule !== false && opts.nameGroup !== false && namesCut;
   const takesName = (f: { terms: ReadonlySet<string> }): boolean => opts.nameGroup !== false && f.terms.has(NAME_TERM);
-  // A cut of names reaches such a field through cutTerms, which then holds NAME_TERM (candidates.ts).
-  const unknownCut = (f: { terms: ReadonlySet<string> }): boolean => (removed.size > 0 && !takesName(f)) || cutAll || overlap(f.terms, cutTerms) > 0;
+  const unknownCut = (f: { terms: ReadonlySet<string> }): boolean => (removed.size > 0 && !takesName(f)) || (nameCut && takesName(f)) || cutAll || overlap(f.terms, cutTerms) > 0;
   const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? unknownCut(f) : isCut(f.kinds));
   // With every candidate cut away there is nothing to ask about.
   const asked = candidates.length === 0 ? [] : fields.filter((f) => !fieldCut(f));

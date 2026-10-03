@@ -7,10 +7,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
 import { proposeFill } from "../src/fill/fill.ts";
-import { fieldTerms, isNameLike } from "../src/fill/kinds.ts";
+import { fieldTerms, isNameLike, namesIn } from "../src/fill/kinds.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { SnippetLedger } from "../src/privacy.ts";
-import { snap, text } from "./builders.ts";
+import { field, snap, text, value } from "./builders.ts";
 import { FORM_KEY, MESSAGES, SCHEDULE_FORM as FORM, scheduleForm } from "./desks.ts";
 
 // The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and
@@ -86,6 +86,60 @@ describe("a cut conversation's plain name never leaves a decoy name", () => {
   });
 });
 
+describe("a name the shape test misses is still a name when it is cut (B14 review)", () => {
+  const notes = (m: ScreenModel, lines: readonly string[]): void => {
+    m.apply(snap(lines.map((l, i) => text(`notes/${i}`, l)), { at: 500, windowId: NOTES, title: "Notes", app: { pid: 6161, bundleId: "dev.caret.notes", name: "Notes" } }));
+  };
+  const chatter = Array.from({ length: 20 }, (_, i) => `the venue deposit is still pending, item ${i}`);
+
+  it("counts a source field labelled Name as a name, so it goes in with the names", async () => {
+    const m = new ScreenModel();
+    notes(m, [DECOY, "pick up the badges"]);
+    m.apply(snap([...chatter.map((l, i) => text(`chat/${i}`, l)), field("chat/name", "dana w.", { label: "Name" })], { at: 1000, windowId: CHAT, title: "Kofi", app: MESSAGES, focused: true }));
+    m.apply(scheduleForm(2000, ["Name"]));
+    // This Jev takes "dana w." when offered, and the decoy otherwise.
+    const jev: AskJev = async (req) => {
+      const answers: Record<string, { choice: string; confidence: number }> = {};
+      for (const [id, q] of Object.entries(req.questions)) {
+        const offered = Object.entries(q.criteria);
+        const hit = offered.find(([, d]) => d?.startsWith('"dana w."')) ?? offered.find(([, d]) => d?.startsWith(`"${DECOY}"`));
+        answers[id] = { choice: hit?.[0] ?? "none", confidence: 0.9 };
+      }
+      return { model: "jev-test", answers, inputTokens: 1000, latencyMs: 5, costUsd: 0 };
+    };
+    const p = await proposeFill(m, jev, FORM, FORM_KEY("Name"), 3000);
+    expect(p.fields[0]?.value).not.toBe(DECOY);
+    expect(p.fields[0]?.value).toBe("dana w.");
+  });
+
+  it("withholds Name when cut chat lines hold names beside typed values", async () => {
+    const m = new ScreenModel();
+    notes(m, [DECOY, "pick up the badges"]);
+    // Each line holds a name and a typed email; no line is a name alone, so none is in the names' group.
+    const people = Array.from({ length: 30 }, (_, i) => `Guest Number${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))} Okafor`);
+    const lines = [...chatter, ...people.map((p, i) => `${p} <guest${i}@example.com>`)];
+    const values = people.map((_, i) => value("email", `guest${i}@example.com`, `chat/${chatter.length + i}`));
+    m.apply(snap(lines.map((l, i) => text(`chat/${i}`, l)), { at: 1000, windowId: CHAT, title: "Kofi", app: MESSAGES, focused: true, values }));
+    m.apply(scheduleForm(2000, ["Name"]));
+    const p = await proposeFill(m, nameProneJev(), FORM, FORM_KEY("Name"), 3000);
+    expect(p.fields[0]).toMatchObject({ value: null, withheld: "sourceCut" });
+  });
+
+  it("withholds Name when the cap stops partway through a window, before its names", async () => {
+    // Not a conversation. Lines over 80 characters offer nothing but raise its budget, so the
+    // 80-candidate cap, not the budget, stops the generator before the right name.
+    const m = new ScreenModel();
+    const long = Array.from({ length: 12 }, (_, i) => `${"the printer queue log for the badge desk ".repeat(5)}${i}`);
+    notes(m, [...long, DECOY, ...Array.from({ length: 90 }, (_, i) => `row ${i}`), RIGHT]);
+    m.apply(scheduleForm(2000, ["Name"]));
+    const ledger = new SnippetLedger(m.windows.values());
+    const { candidates, cut, cutAll } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Name"])] });
+    expect({ n: candidates.length, cut, cutAll }).toEqual({ n: 80, cut: [NOTES], cutAll: false });
+    const p = await proposeFill(m, nameProneJev(), FORM, FORM_KEY("Name"), 3000);
+    expect(p.fields[0]?.value).not.toBe(DECOY);
+  });
+});
+
 describe("name-like lines and fields", () => {
   it.each([
     ["Dana Whitfield", true],
@@ -102,6 +156,21 @@ describe("name-like lines and fields", () => {
     ["ORD-2026-48213", false],
   ])("%s is name-like: %s", (line, want) => {
     expect(isNameLike(line, null)).toBe(want);
+  });
+
+  it.each([
+    ["Dana Whitfield <dana@example.com>", ["Dana Whitfield"]],
+    ["Design review with Priya Raman", ["Priya Raman"]],
+    ["(Head of Operations), from Monday", ["Head of Operations"]],
+    ["Kofi Mensah, table 4 is set for Ana de la Cruz", ["Kofi Mensah", "Ana de la Cruz"]],
+    ["Thanks Dana", ["Thanks Dana"]],
+    ["see you all there", []],
+    ["Dana", []],
+    ["Room 4B Floor 2", []],
+    ["Order ORD-2026-48213 Shipped", []],
+    ["the venue deposit is still pending", []],
+  ])("%s holds the names %j", (line, want) => {
+    expect(namesIn(line)).toEqual(want);
   });
 
   it("counts a span labelled as a name, whatever its shape", () => {

@@ -99,6 +99,41 @@ export function isNameLike(text: string, label: string | null): boolean {
   return ws.every((w) => NAME_WORD.test(w) || NAME_JOINERS.has(w));
 }
 
+/** Punctuation that can wrap a word of a name in a line: "(Dana", "Whitfield,", "<dana@…>". */
+const WRAP = /^[("'“‘<[]+|[)"'”’>\],;:!?]+$/gu;
+
+/**
+ * The names a line holds: each run of two or more capitalized words, joining words allowed between them
+ * ("Dana Whitfield <dana@example.com>" holds "Dana Whitfield"; "Design review with Priya Raman" holds
+ * "Priya Raman"). The generator counts the names of a cut line that holds a typed value as kept out
+ * unless offered elsewhere (candidates.ts): B14's review cut the first line, whose email was typed and
+ * whose name was not, and the form's Name took another window's name. "Thanks Dana" and "I Will" count
+ * too, which errs toward withholding.
+ */
+export function namesIn(line: string): string[] {
+  const out: string[] = [];
+  let run: string[] = [];
+  let names = 0;
+  const end = (): void => {
+    while (run.length > 0 && NAME_JOINERS.has(run[run.length - 1] as string)) run.pop();
+    if (names >= 2) out.push(run.join(" "));
+    run = [];
+    names = 0;
+  };
+  for (const raw of line.split(/\s+/)) {
+    const w = raw.replace(WRAP, "");
+    if (!/\p{N}/u.test(w) && NAME_WORD.test(w)) {
+      run.push(w);
+      names++;
+    } else if (names > 0 && NAME_JOINERS.has(w) && !(run.length >= 2 && NAME_JOINERS.has(run[run.length - 1] as string) && NAME_JOINERS.has(run[run.length - 2] as string))) run.push(w);
+    else end();
+    // Punctuation after a word ends the run: "Whitfield, see" is not one name with what follows.
+    if (names > 0 && raw !== w && /[,;:!?)>\]"”’]$/u.test(raw)) end();
+  }
+  end();
+  return out;
+}
+
 /** A field's terms: its label words, the kinds they name, and NAME_TERM when they ask for a name. */
 export function fieldTerms(labelWords: readonly (string | null | undefined)[]): Set<string> {
   const out = new Set(labelWords.flatMap(words));
