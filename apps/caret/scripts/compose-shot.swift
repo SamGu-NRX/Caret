@@ -1,8 +1,10 @@
 // Joins per-window captures into one picture, for evidence of what the fill overlay looks like
 // over a fixture window that sits behind other windows. Each input is a `screencapture -l` PNG of
 // one window (the fixture's, or one of the host's own panels) with its frame in global top-left
-// points; the first input is the base and sets the canvas. Nothing but those windows is drawn, so
-// whatever else is on the screen never reaches the file.
+// points; the first input is the base and sets the scale. The canvas is the union of every frame,
+// so a panel placed beside the base window is in the picture; what lies outside the captured
+// windows is flat gray, not the screen. Nothing but those windows is drawn, so whatever else is on
+// the screen never reaches the file.
 //
 // Build: swiftc -O compose-shot.swift -o ../.build/compose-shot
 // Usage: compose-shot <out.png> <base.png>:<x>,<y>,<w>,<h> [<panel.png>:<x>,<y>,<w>,<h> ...]
@@ -34,7 +36,8 @@ let base = layers[0]
 // Pixels per point, from the base capture.
 let rep = base.image.representations.first
 let scale = CGFloat(rep?.pixelsWide ?? Int(base.frame.width)) / base.frame.width
-let pixelSize = NSSize(width: base.frame.width * scale, height: base.frame.height * scale)
+let canvas = layers.dropFirst().reduce(base.frame) { $0.union($1.frame) }
+let pixelSize = NSSize(width: canvas.width * scale, height: canvas.height * scale)
 
 guard let bitmap = NSBitmapImageRep(
     bitmapDataPlanes: nil, pixelsWide: Int(pixelSize.width), pixelsHigh: Int(pixelSize.height),
@@ -43,10 +46,14 @@ guard let bitmap = NSBitmapImageRep(
 ) else { fail("cannot allocate canvas") }
 NSGraphicsContext.saveGraphicsState()
 NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+if canvas != base.frame {
+    NSColor(white: 0.5, alpha: 1).setFill()
+    NSRect(origin: .zero, size: pixelSize).fill()
+}
 for layer in layers {
     // Top-left global points to bottom-left canvas pixels.
-    let x = (layer.frame.minX - base.frame.minX) * scale
-    let yFromTop = (layer.frame.minY - base.frame.minY) * scale
+    let x = (layer.frame.minX - canvas.minX) * scale
+    let yFromTop = (layer.frame.minY - canvas.minY) * scale
     let rect = NSRect(x: x, y: pixelSize.height - yFromTop - layer.frame.height * scale,
                       width: layer.frame.width * scale, height: layer.frame.height * scale)
     layer.image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
