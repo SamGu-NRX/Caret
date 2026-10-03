@@ -97,17 +97,49 @@ describe("the calendar through the reader", () => {
   const progress = (taskId: string) => published.filter((m): m is TaskProgress => m.type === "taskProgress" && m.taskId === taskId);
 
   it("adds the event, finds it on rerun without adding again, and undo removes it", async () => {
-    expect(await helper.executor.run("t1", plan("Coffee with Dana"), {})).toMatchObject({ outcome: "done", acted: 1 });
+    expect(await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true })).toMatchObject({ outcome: "done", acted: 1 });
     expect([...(adapter.calendars.get("Caret Test")?.values() ?? [])]).toEqual([{ title: "Coffee with Dana", start: "2026-10-08T15:00:00-05:00", end: "2026-10-08T15:30:00-05:00" }]);
-    expect(await helper.executor.run("t2", plan("Coffee with Dana"), {})).toMatchObject({ outcome: "done", acted: 0, skipped: 1 });
+    expect(await helper.executor.run("t2", plan("Coffee with Dana"), {}, undefined, { grant: true })).toMatchObject({ outcome: "done", acted: 0, skipped: 1 });
     expect(await helper.executor.undo("t1")).toEqual({ restored: 1, notRestored: [], notUndoable: 0 });
     expect(adapter.calendars.get("Caret Test")?.size).toBe(0);
     expect(reader.verbs.map((v) => v.kind)).toEqual(["calendarFind", "calendarAdd", "calendarFind", "calendarFind", "calendarGet", "calendarRemove", "calendarGet"]);
+    expect(reader.verbs.filter((v) => "taskId" in v).map((v) => ("taskId" in v ? v.taskId : ""))).toEqual(["t1", "t1"]);
+  });
+
+  it("refuses the add for a task with no calendar grant, as a consumer's runPlan has none", async () => {
+    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {});
+    expect(r).toMatchObject({ outcome: "stopped", step: 0, acted: 0 });
+    expect(r.detail).toMatch(/notAllowed \(no calendar grant for task t1\)/);
+    expect(adapter.calendars.size).toBe(0);
+    expect(reader.grants.log).toEqual([]);
+  });
+
+  it("grants the calendar to an accepted task, revokes it when the run ends, and grants it again for undo", async () => {
+    await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true });
+    await until(() => reader.grants.log.length === 2);
+    expect(reader.grants.log.map((g) => `${g.type} ${g.taskId}`)).toEqual(["calendarGrant t1", "actRevoke t1"]);
+    await helper.executor.undo("t1");
+    await until(() => reader.grants.log.length === 4);
+    expect(reader.grants.log.map((g) => `${g.type} ${g.taskId}`)).toEqual(["calendarGrant t1", "actRevoke t1", "calendarGrant t1", "actRevoke t1"]);
+    // An undo after the grant ended is refused by the reader, not carried out quietly.
+    expect(reader.grants.calendarRefusal("t1")).toBe("no calendar grant for task t1");
+  });
+
+  it("keeps an added event in the undo ledger even when it fails the check after the add", async () => {
+    const answer = adapter.answer;
+    let finds = 0;
+    reader.calendar = (v) => (v.kind === "calendarFind" && ++finds === 2 ? { outcome: "ok", detail: null } : answer(v));
+    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true });
+    expect(r).toMatchObject({ outcome: "stopped" });
+    expect(helper.executor.ledger("t1")).toHaveLength(1);
+    reader.calendar = answer;
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+    expect(adapter.calendars.get("Caret Test")?.size).toBe(0);
   });
 
   it("hands the step to the user as blocked tcc without Calendar access, and adds nothing", async () => {
     adapter.granted = false;
-    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {});
+    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true });
     expect(r).toMatchObject({ outcome: "handoff", step: 0, acted: 0 });
     expect(r.detail).toMatch(/^blocked: tcc\. Caret has no Calendar access, and never asks for it/);
     expect(progress("t1").at(-1)).toMatchObject({ phase: "handoff", blocked: "tcc" });
@@ -118,7 +150,7 @@ describe("the calendar through the reader", () => {
 
   it("hands the step to the user as blocked noLocalSource when there is no local account to create its calendar on", async () => {
     adapter.localSource = false;
-    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {});
+    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true });
     expect(r).toMatchObject({ outcome: "handoff", step: 0, acted: 0 });
     expect(progress("t1").at(-1)).toMatchObject({ phase: "handoff", blocked: "noLocalSource" });
     expect(r.detail).toMatch(/^blocked: noLocalSource\./);
@@ -126,7 +158,7 @@ describe("the calendar through the reader", () => {
 
   it("stops as a reader refusal when the reader runs without --calendar-test", async () => {
     reader.calendar = null;
-    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {});
+    const r = await helper.executor.run("t1", plan("Coffee with Dana"), {}, undefined, { grant: true });
     expect(r).toMatchObject({ outcome: "stopped", step: 0 });
     expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", stopReason: "reader" });
     expect(r.detail).toMatch(/notAllowed \(the reader was not started with --calendar-test\)/);
@@ -151,10 +183,10 @@ describe("ReaderCalendar", () => {
     const l = link((v) => (v.kind === "calendarAdd" ? { outcome: "blocked", detail: null, blocked: "noLocalSource" } : v.kind === "calendarGet" ? { outcome: "axError", detail: "EKErrorDomain 3" } : { outcome: "ok", detail: null }));
     const cal = new ReaderCalendar(l);
     expect(await cal.find("Caret Test", "t", "2026-10-08T15:00:00-05:00", "2026-10-08T15:30:00-05:00")).toBeNull();
-    await expect(cal.add("Caret Test", "t", "2026-10-08T15:00:00-05:00", "2026-10-08T15:30:00-05:00")).rejects.toBeInstanceOf(CalendarBlocked);
-    await expect(cal.add("Caret Test", "t", "2026-10-08T15:00:00-05:00", "2026-10-08T15:30:00-05:00")).rejects.toMatchObject({ reason: "noLocalSource" });
+    await expect(cal.add("Caret Test", "t", "2026-10-08T15:00:00-05:00", "2026-10-08T15:30:00-05:00", "t1")).rejects.toBeInstanceOf(CalendarBlocked);
+    await expect(cal.add("Caret Test", "t", "2026-10-08T15:00:00-05:00", "2026-10-08T15:30:00-05:00", "t1")).rejects.toMatchObject({ reason: "noLocalSource" });
     await expect(cal.get("ev-1")).rejects.toThrow("the reader's calendar refused calendarGet: axError (EKErrorDomain 3)");
-    await cal.dispose("Caret Test");
+    await cal.dispose("Caret Test", "t1");
     expect(l.sent.map((v) => v.kind)).toEqual(["calendarFind", "calendarAdd", "calendarAdd", "calendarGet", "calendarDispose"]);
   });
 });
@@ -180,10 +212,15 @@ describe("calendar messages", () => {
   });
 
   it("refuses a calendar verb with an empty calendar name or a time without an offset", () => {
-    const cmd = { type: "readerCommand", v: PROTOCOL_VERSION, id: "c", expires: 2, verb: { kind: "calendarAdd", calendar: "Caret Test", title: "t", start: event.start, end: event.end } };
+    const cmd = { type: "readerCommand", v: PROTOCOL_VERSION, id: "c", expires: 2, verb: { kind: "calendarAdd", calendar: "Caret Test", title: "t", start: event.start, end: event.end, taskId: "t1" } };
     expect(HelperToReader.safeParse(cmd).success).toBe(true);
+    const { taskId: _, ...untasked } = cmd.verb;
+    expect(HelperToReader.safeParse({ ...cmd, verb: untasked }).success).toBe(false);
+    expect(HelperToReader.safeParse({ type: "calendarGrant", v: PROTOCOL_VERSION, taskId: "t1", at: 1, expires: 1 + 120_000 }).success).toBe(true);
+    expect(HelperToReader.safeParse({ type: "calendarGrant", v: PROTOCOL_VERSION, taskId: "t1", at: 1, expires: 2 + 120_000 }).success).toBe(false);
     expect(HelperToReader.safeParse({ ...cmd, verb: { ...cmd.verb, calendar: "" } }).success).toBe(false);
     expect(HelperToReader.safeParse({ ...cmd, verb: { ...cmd.verb, end: "2026-10-08T15:30:00" } }).success).toBe(false);
-    expect(HelperToReader.safeParse({ ...cmd, verb: { kind: "calendarRemove", id: "" } }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...cmd, verb: { kind: "calendarRemove", id: "", taskId: "t1" } }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...cmd, verb: { kind: "calendarRemove", id: "ev-1" } }).success).toBe(false);
   });
 });

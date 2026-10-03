@@ -21,9 +21,9 @@ public struct PlanRequest: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         requestId = try c.decode(String.self, forKey: .requestId); at = try c.decode(Int64.self, forKey: .at)
         instruction = try c.decode(String.self, forKey: .instruction); windowId = try c.decodeOptional(String.self, forKey: .windowId)
-        guard (1...200).contains(requestId.count) else { throw ProtocolError("requestId is 1 to 200 characters") }
-        // zod counts UTF-16 code units.
-        guard (1...500).contains(instruction.utf16.count) else { throw ProtocolError("instruction is 1 to 500 characters") }
+        // zod 4 counts a string's length in Unicode code points.
+        guard (1...200).contains(requestId.unicodeScalars.count) else { throw ProtocolError("requestId is 1 to 200 characters") }
+        guard (1...500).contains(instruction.unicodeScalars.count) else { throw ProtocolError("instruction is 1 to 500 characters") }
         if windowId == "" { throw ProtocolError("windowId is empty; omit it instead") }
         guard at >= 0 else { throw ProtocolError("at is milliseconds since the epoch, never negative") }
     }
@@ -44,7 +44,7 @@ public struct PlanProposal: Codable, Equatable, Sendable {
     /// protocol.ts PlanErrorCode has a sentence for each.
     public enum ErrorCode: String, Codable, Sendable {
         case schema, noWindow, unsure, nothingToDo, unsupportedStep, multipleWindows, unknownWindow, ambiguousWindow
-        case unknownTarget, ambiguousTarget, notEditable, untracedValue, stepAfterHandoff, riskMismatch, unavailable, jevFailed, `internal`
+        case unknownTarget, ambiguousTarget, notEditable, untracedValue, stepAfterHandoff, riskMismatch, unavailable, jevFailed, privacy, `internal`
     }
     public struct Window: Codable, Equatable, Sendable {
         public var pid: Int
@@ -105,6 +105,7 @@ public struct PlanProposal: Codable, Equatable, Sendable {
         handoff = try c.decodeNullable(Handoff.self, forKey: .handoff)
         error = try c.decodeNullable(Failure.self, forKey: .error)
         if let e = error, e.detail.isEmpty { throw ProtocolError("an error says what failed") }
+        guard at >= 0 else { throw ProtocolError("at is milliseconds since the epoch, never negative") }
         if let p = problem { throw ProtocolError(p) }
     }
     public func encode(to encoder: Encoder) throws {

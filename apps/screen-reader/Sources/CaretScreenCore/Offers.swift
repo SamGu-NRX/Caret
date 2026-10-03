@@ -258,7 +258,8 @@ public struct OfferWithdrawn: Codable, Equatable, Sendable {
 public struct GateSettings: Codable, Equatable, Sendable {
     public static let type = "settings"
     /// The host's roles by their raw values. `words` is the host's ghost text; the helper ignores it.
-    public enum Role: String, Codable, CaseIterable, Sendable { case fill, `repeat` = "repeat", watch, words }
+    /// `calendar` switches the event card (B16).
+    public enum Role: String, Codable, CaseIterable, Sendable { case fill, `repeat` = "repeat", watch, calendar, words }
     public enum Level: String, Codable, CaseIterable, Sendable { case quiet, balanced, eager }
 
     public var at: Int64

@@ -66,6 +66,11 @@ describe("instruction spans", () => {
     expect(instructionValues('Write "Go to bed" in Notes')).toEqual(["Go to bed"]);
   });
 
+  it("takes quoted text literally", () => {
+    expect(instructionValues('Write "The meeting moved" in Message')).toEqual(["The meeting moved"]);
+    expect(instructionValues('Write "Hello!" in Message')).toEqual(["Hello!"]);
+  });
+
   it("offers no description as a value, and nothing from Dana's apostrophe", () => {
     expect(instructionValues("Put the tracking number in Notes")).toEqual([]);
     expect(instructionValues("Copy Dana's email address from her signature into Email")).toEqual([]);
@@ -263,6 +268,16 @@ describe("planTask", () => {
     await expect(forgotten).rejects.toMatchObject({ code: "untracedValue" });
   });
 
+  it("asks nothing when the instruction quotes more of a window than a question may carry", async () => {
+    const m = desk();
+    // A conversation always keeps more than half its text back; quoting most of it in the instruction is refused.
+    const chat = ["Kofi: are we still on for the vendor review", "Me: yes, I moved it to the big room", "Kofi: great, see you then"];
+    m.apply(snap(chat.map((t, i) => text(`dev.caret.chat/standard/statictext:m${i}~0`, t)), { at: 900, windowId: "7373-1", title: "Kofi", app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" } }));
+    const jev = plannerJev({ fields: { Notes: "x" } });
+    await expect(planTask(`Put "${chat[0]} ${chat[1]}" in Name`, m, mem(), opts(jev))).rejects.toMatchObject({ code: "privacy" });
+    expect(jev.requests).toHaveLength(0);
+  });
+
   it("declares every piece of screen text it sends and offers no secure field", async () => {
     const jev = plannerJev({ fields: { Name: "Dana Whitfield" } });
     const m = desk([...executorWindow(), { key: K("textfield:pin~0"), parent: null, role: "AXTextField", label: "PIN", editable: true, states: ["secure"] }]);
@@ -347,6 +362,16 @@ describe("planRequest through the helper", () => {
     expect(await accept(r.offerKey ?? "")).toBeNull();
     expect(published.some((m) => m.type === "error" && m.message.includes("unknownTarget"))).toBe(true);
     expect(progress(r.offerKey ?? "").at(-1)).toMatchObject({ phase: "stopped", stopReason: "refused" });
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
+  });
+
+  it("refuses an accept once the proposed window closed, even with a same-titled window in its place", async () => {
+    jev = plannerJev({ fields: { Name: "Dana Whitfield" } });
+    const r = await request("Set Name to Dana Whitfield");
+    void helper.handleReader({ type: "windowClosed", v: PROTOCOL_VERSION, at: clock, windowId: WIN });
+    void helper.handleReader(snap(executorWindow(), { at: clock + 1, windowId: "5150-9", title: TITLE }));
+    expect(await accept(r.offerKey ?? "")).toBeNull();
+    expect(published.some((m) => m.type === "error" && m.message.includes("unknownWindow"))).toBe(true);
     expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
   });
 

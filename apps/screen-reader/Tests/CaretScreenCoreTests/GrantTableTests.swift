@@ -85,4 +85,23 @@ import Testing
         guard case .actGrant(let ok) = try? JSONDecoder().decode(Message.self, from: line("0", "120000")) else { Issue.record("a grant of exactly maxMs is refused"); return }
         #expect(ok.expires == GrantTable.maxMs)
     }
+
+    @Test func calendarGrantsCoverOnlyTheirTaskEndWithTheRevokeAndExpireOnTheMonotonicClock() {
+        let t = GrantTable()
+        #expect(t.calendarRefusal(taskId: "t1", now: 1_000, uptimeMs: 10) == "no calendar grant for task t1")
+        t.issueCalendar(CalendarGrant(taskId: "t1", at: 1_000, expires: 61_000), uptimeMs: 10)
+        #expect(t.calendarRefusal(taskId: "t1", now: 2_000, uptimeMs: 20) == nil)
+        #expect(t.calendarRefusal(taskId: "t2", now: 2_000, uptimeMs: 20) == "no calendar grant for task t2")
+        // An act grant for the same task does not cover calendar writes, nor the other way round.
+        #expect(t.refusal(taskId: "t1", pid: 1, windowId: "1-1", now: 2_000, uptimeMs: 20) == "no act grant for task t1")
+        #expect(t.calendarRefusal(taskId: "t1", now: 2_000, uptimeMs: 60_011) == "the calendar grant for task t1 has expired")
+        // Ended stays ended, even when the clock is read lower again.
+        #expect(t.calendarRefusal(taskId: "t1", now: 2_000, uptimeMs: 30) == "the calendar grant for task t1 has expired")
+        t.issueCalendar(CalendarGrant(taskId: "t3", at: 1_000, expires: 61_000), uptimeMs: 100)
+        t.revoke(taskId: "t3")
+        #expect(t.calendarRefusal(taskId: "t3", now: 2_000, uptimeMs: 110) == "no calendar grant for task t3")
+        t.issueCalendar(CalendarGrant(taskId: "t4", at: 1_000, expires: 61_000), uptimeMs: 100)
+        t.clear()
+        #expect(t.calendarRefusal(taskId: "t4", now: 2_000, uptimeMs: 110) == "no calendar grant for task t4")
+    }
 }

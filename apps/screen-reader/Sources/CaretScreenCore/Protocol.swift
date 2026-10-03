@@ -522,12 +522,13 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     /// Brings one window to the front and activates its app, then re-walks it. It writes nothing, but
     /// it moves the user's focus, so it is gated like write and press.
     case raise(pid: Int, windowId: String, taskId: String?)
-    /// The calendar verbs (B16) go to CalendarAdapter, only with --calendar-test. Times are ISO 8601 with offset.
+    /// The calendar verbs (B16) go to CalendarAdapter, only with --calendar-test. Times are ISO 8601 with
+    /// offset. The writes name their task, whose calendar grant the reader checks right before writing.
     case calendarFind(calendar: String, title: String, start: String, end: String)
-    case calendarAdd(calendar: String, title: String, start: String, end: String)
+    case calendarAdd(calendar: String, title: String, start: String, end: String, taskId: String)
     case calendarGet(id: String)
-    case calendarRemove(id: String)
-    case calendarDispose(calendar: String)
+    case calendarRemove(id: String, taskId: String)
+    case calendarDispose(calendar: String, taskId: String)
 
     enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows, taskId, calendar, title, start, end, id }
 
@@ -543,8 +544,16 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     public var taskId: String? {
         switch self {
         case let .write(_, _, _, _, _, _, _, t), let .press(_, _, _, _, _, t), let .raise(_, _, t): t
-        case .walk, .watchInput, .watchWindows, .calendarFind, .calendarAdd, .calendarGet, .calendarRemove, .calendarDispose: nil
+        case let .calendarAdd(_, _, _, _, t), let .calendarRemove(_, t), let .calendarDispose(_, t): t
+        case .walk, .watchInput, .watchWindows, .calendarFind, .calendarGet: nil
         }
+    }
+
+    /// A calendar write names its task: required and non-empty, as protocol.ts requires.
+    private static func calendarTask(_ c: KeyedDecodingContainer<CodingKeys>) throws -> String {
+        let t = try c.decode(String.self, forKey: .taskId)
+        if t.isEmpty { throw ProtocolError("a calendar write names its task") }
+        return t
     }
 
     /// An empty task id is refused, as zod's min(1) refuses it.
@@ -584,15 +593,15 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             let title = try c.decode(String.self, forKey: .title)
             self = try c.decode(String.self, forKey: .kind) == "calendarFind"
                 ? .calendarFind(calendar: calendar, title: title, start: start, end: end)
-                : .calendarAdd(calendar: calendar, title: title, start: start, end: end)
+                : .calendarAdd(calendar: calendar, title: title, start: start, end: end, taskId: try Self.calendarTask(c))
         case "calendarGet", "calendarRemove":
             let id = try c.decode(String.self, forKey: .id)
             if id.isEmpty { throw ProtocolError("a calendar verb names its event") }
-            self = try c.decode(String.self, forKey: .kind) == "calendarGet" ? .calendarGet(id: id) : .calendarRemove(id: id)
+            self = try c.decode(String.self, forKey: .kind) == "calendarGet" ? .calendarGet(id: id) : .calendarRemove(id: id, taskId: try Self.calendarTask(c))
         case "calendarDispose":
             let calendar = try c.decode(String.self, forKey: .calendar)
             if calendar.isEmpty { throw ProtocolError("a calendar verb names its calendar") }
-            self = .calendarDispose(calendar: calendar)
+            self = .calendarDispose(calendar: calendar, taskId: try Self.calendarTask(c))
         case let k:
             throw ProtocolError("unknown verb \(k)")
         }
@@ -618,14 +627,19 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
         case let .raise(pid, windowId, taskId):
             try c.encode("raise", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
             try c.encodeIfPresent(taskId, forKey: .taskId)
-        case let .calendarFind(calendar, title, start, end), let .calendarAdd(calendar, title, start, end):
-            if case .calendarFind = self { try c.encode("calendarFind", forKey: .kind) } else { try c.encode("calendarAdd", forKey: .kind) }
+        case let .calendarFind(calendar, title, start, end):
+            try c.encode("calendarFind", forKey: .kind)
             try c.encode(calendar, forKey: .calendar); try c.encode(title, forKey: .title); try c.encode(start, forKey: .start); try c.encode(end, forKey: .end)
-        case let .calendarGet(id), let .calendarRemove(id):
-            if case .calendarGet = self { try c.encode("calendarGet", forKey: .kind) } else { try c.encode("calendarRemove", forKey: .kind) }
-            try c.encode(id, forKey: .id)
-        case let .calendarDispose(calendar):
-            try c.encode("calendarDispose", forKey: .kind); try c.encode(calendar, forKey: .calendar)
+        case let .calendarAdd(calendar, title, start, end, taskId):
+            try c.encode("calendarAdd", forKey: .kind)
+            try c.encode(calendar, forKey: .calendar); try c.encode(title, forKey: .title); try c.encode(start, forKey: .start); try c.encode(end, forKey: .end)
+            try c.encode(taskId, forKey: .taskId)
+        case let .calendarGet(id):
+            try c.encode("calendarGet", forKey: .kind); try c.encode(id, forKey: .id)
+        case let .calendarRemove(id, taskId):
+            try c.encode("calendarRemove", forKey: .kind); try c.encode(id, forKey: .id); try c.encode(taskId, forKey: .taskId)
+        case let .calendarDispose(calendar, taskId):
+            try c.encode("calendarDispose", forKey: .kind); try c.encode(calendar, forKey: .calendar); try c.encode(taskId, forKey: .taskId)
         }
     }
 }
@@ -715,7 +729,8 @@ public enum VerbOutcome: String, Codable, Sendable { case ok, notAllowed, noWind
 /// Why the calendar adapter refused: no Calendar access (the reader never asks for it), or no local source.
 public enum CalendarBlock: String, Codable, Sendable { case tcc, noLocalSource }
 
-/// One event in a calendar the reader created, as the calendar verbs answer it.
+/// One event in a calendar the reader created, as the calendar verbs answer it. Checked as protocol.ts
+/// checks it: non-empty id and calendar, times ISO 8601 with offset.
 public struct CalendarEventRecord: Codable, Equatable, Sendable {
     public var id: String
     public var calendar: String
@@ -724,6 +739,39 @@ public struct CalendarEventRecord: Codable, Equatable, Sendable {
     public var end: String
     public init(id: String, calendar: String, title: String, start: String, end: String) {
         self.id = id; self.calendar = calendar; self.title = title; self.start = start; self.end = end
+    }
+    enum CodingKeys: String, CodingKey { case id, calendar, title, start, end }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); calendar = try c.decode(String.self, forKey: .calendar)
+        title = try c.decode(String.self, forKey: .title); start = try c.decode(String.self, forKey: .start); end = try c.decode(String.self, forKey: .end)
+        if id.isEmpty || calendar.isEmpty { throw ProtocolError("an event names its id and calendar") }
+        guard CalendarTime.parse(start) != nil, CalendarTime.parse(end) != nil else { throw ProtocolError("start and end are ISO 8601 times with an offset") }
+    }
+}
+
+/// Lets the reader write to its calendars for one task until `expires`, at most GrantTable.maxMs after it
+/// arrives. Mirrors CalendarGrant in protocol.ts: the helper sends it only for a task from an accepted
+/// offer, and the task's actRevoke ends it.
+public struct CalendarGrant: Codable, Equatable, Sendable {
+    public static let type = "calendarGrant"
+    public var taskId: String
+    public var at: Int64
+    public var expires: Int64
+    public init(taskId: String, at: Int64, expires: Int64) { self.taskId = taskId; self.at = at; self.expires = expires }
+    enum CodingKeys: String, CodingKey { case taskId, at, expires }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        taskId = try c.decode(String.self, forKey: .taskId); at = try c.decode(Int64.self, forKey: .at); expires = try c.decode(Int64.self, forKey: .expires)
+        if taskId.isEmpty { throw ProtocolError("a calendar grant names a task") }
+        guard at >= 0, expires >= 0 else { throw ProtocolError("at and expires are milliseconds since the epoch, never negative") }
+        guard expires > at, expires - at <= GrantTable.maxMs else { throw ProtocolError("expires must be after at and at most \(GrantTable.maxMs) ms after it") }
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(taskId, forKey: .taskId); try c.encode(at, forKey: .at); try c.encode(expires, forKey: .expires)
     }
 }
 
@@ -862,7 +910,7 @@ public enum Message: Codable, Equatable, Sendable {
     case fillResult(FillResult), taskControl(TaskControl), activityRequest(ActivityRequest), activity(Activity), activityReply(ActivityReply)
     case alternatives(OfferAlternatives), action(OfferAction), popup(OfferPopup), offerAccept(OfferAccept), offerStop(OfferStop)
     case offerWithdrawn(OfferWithdrawn), settings(GateSettings), actGrant(ActGrant), actRevoke(ActRevoke)
-    case planRequest(PlanRequest), planProposal(PlanProposal)
+    case planRequest(PlanRequest), planProposal(PlanProposal), calendarGrant(CalendarGrant)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -896,6 +944,7 @@ public enum Message: Codable, Equatable, Sendable {
         case ActRevoke.type: self = .actRevoke(try ActRevoke(from: decoder))
         case PlanRequest.type: self = .planRequest(try PlanRequest(from: decoder))
         case PlanProposal.type: self = .planProposal(try PlanProposal(from: decoder))
+        case CalendarGrant.type: self = .calendarGrant(try CalendarGrant(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -931,6 +980,7 @@ public enum Message: Codable, Equatable, Sendable {
         case .actRevoke(let m): try m.encode(to: encoder)
         case .planRequest(let m): try m.encode(to: encoder)
         case .planProposal(let m): try m.encode(to: encoder)
+        case .calendarGrant(let m): try m.encode(to: encoder)
         }
     }
 }

@@ -125,11 +125,18 @@ public final class ScreenReader {
                 answer(.notAllowed, "the reader was not started with --calendar-test")
                 return
             }
+            let grants = opts.grants
             calendarQueue.async {
                 let at = nowMs()
                 // As with acts in a window: past the helper's deadline, it has already reported the step as failed.
                 if at > cmd.expires {
                     emitter.send(.verbResult(VerbResult(id: cmd.id, at: at, outcome: .axError, detail: "the command expired before the calendar was reached")))
+                    return
+                }
+                // A write needs its task's calendar grant, asked here, right before it: a revoke that came
+                // while the command waited on this queue refuses it.
+                if let task = cmd.verb.taskId, let no = grants.calendarRefusal(taskId: task, now: at, uptimeMs: uptimeMs()) {
+                    emitter.send(.verbResult(VerbResult(id: cmd.id, at: at, outcome: .notAllowed, detail: no)))
                     return
                 }
                 let result: VerbResult

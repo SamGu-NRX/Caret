@@ -5,7 +5,11 @@
 //     without full access every verb answers blocked: tcc.
 //   - It writes only to calendars it created itself, on a local (On My Mac) source, which no account
 //     syncs. With no local source it answers blocked: noLocalSource. It never looks at, writes to or
-//     removes from any other calendar: an event outside its own calendars is not found.
+//     removes from any other calendar: it looks events up only by the ids of events it added, and
+//     searches only its own calendars, so an event outside them is never even read.
+//   - An add of an event its calendar already holds (same title, start and end) returns that event, so
+//     two tasks racing to add the same event make one. The add's answer is built from what was saved,
+//     with no read back that could fail after the save and lose the id.
 //   - calendarDispose, and disposeAll when the reader stops, delete the calendars it created.
 // A calendar it created is known only for the life of the reader; a reader that is killed leaves it behind.
 import Foundation
@@ -49,6 +53,8 @@ public final class CalendarAdapter: @unchecked Sendable {
     private let lock = NSLock()
     /// Calendar name to the identifier of the calendar this adapter created under that name.
     private var owned: [String: String] = [:]
+    /// Each event this adapter added and has not removed, by id, with the name of its calendar.
+    private var events: [String: String] = [:]
 
     public init(backend: CalendarBackend, zone: TimeZone = .current) {
         self.backend = backend
@@ -71,33 +77,38 @@ public final class CalendarAdapter: @unchecked Sendable {
             case let .calendarFind(calendar, title, start, end):
                 guard let s = CalendarTime.parse(start), let e = CalendarTime.parse(end) else { return .refused(.changed, "start and end are not ISO 8601 times") }
                 guard let cid = owned[calendar] else { return .ok(nil) }
-                let hit = backend.events(calendarID: cid, from: s.addingTimeInterval(-1), to: e.addingTimeInterval(1))
-                    .first { $0.title == title && abs($0.start.timeIntervalSince(s)) < 1 && abs($0.end.timeIntervalSince(e)) < 1 }
-                return .ok(hit.map { record($0, calendar) })
-            case let .calendarAdd(calendar, title, start, end):
+                return .ok(match(cid, title, s, e).map { record($0, calendar) })
+            case let .calendarAdd(calendar, title, start, end, _):
                 guard let s = CalendarTime.parse(start), let e = CalendarTime.parse(end), e > s else { return .refused(.changed, "start and end are not ISO 8601 times, or end is not after start") }
                 let cid: String
                 if let known = owned[calendar] {
                     cid = known
+                    if let same = match(cid, title, s, e) { return .ok(record(same, calendar)) }
                 } else {
                     guard let source = backend.localSourceID() else { return .blocked(.noLocalSource) }
                     cid = try backend.createCalendar(title: calendar, sourceID: source)
                     owned[calendar] = cid
                 }
                 let id = try backend.saveEvent(calendarID: cid, title: title, start: s, end: e)
-                guard let ev = backend.event(id: id) else { return .refused(.axError, "the saved event cannot be read back") }
-                return .ok(record(ev, calendar))
+                events[id] = calendar
+                return .ok(record(BackendEvent(id: id, calendarID: cid, title: title, start: s, end: e), calendar))
             case let .calendarGet(id):
-                guard let ev = backend.event(id: id), let name = name(of: ev.calendarID) else { return .ok(nil) }
-                return .ok(record(ev, name))
-            case let .calendarRemove(id):
-                guard let ev = backend.event(id: id), name(of: ev.calendarID) != nil else { return .refused(.notAllowed, "the event is not in a calendar the reader created") }
+                guard let calendar = events[id] else { return .ok(nil) }
+                guard let ev = backend.event(id: id) else {
+                    events.removeValue(forKey: id)
+                    return .ok(nil)
+                }
+                return .ok(record(ev, calendar))
+            case let .calendarRemove(id, _):
+                guard events[id] != nil else { return .refused(.notAllowed, "the event is not one the reader added") }
                 try backend.removeEvent(id: id)
+                events.removeValue(forKey: id)
                 return .ok(nil)
-            case let .calendarDispose(calendar):
+            case let .calendarDispose(calendar, _):
                 if let cid = owned[calendar] {
                     try backend.deleteCalendar(id: cid)
                     owned.removeValue(forKey: calendar)
+                    events = events.filter { $0.value != calendar }
                 }
                 return .ok(nil)
             default:
@@ -114,13 +125,19 @@ public final class CalendarAdapter: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         var errors: [String] = []
         for (name, cid) in owned {
-            do { try backend.deleteCalendar(id: cid); owned.removeValue(forKey: name) } catch { errors.append("\(name): \(error)") }
+            do {
+                try backend.deleteCalendar(id: cid)
+                owned.removeValue(forKey: name)
+                events = events.filter { $0.value != name }
+            } catch { errors.append("\(name): \(error)") }
         }
         return errors
     }
 
-    private func name(of calendarID: String) -> String? {
-        owned.first { $0.value == calendarID }?.key
+    /// The event in its own calendar `cid` with this title, start and end, if any.
+    private func match(_ cid: String, _ title: String, _ s: Date, _ e: Date) -> BackendEvent? {
+        backend.events(calendarID: cid, from: s.addingTimeInterval(-1), to: e.addingTimeInterval(1))
+            .first { $0.title == title && abs($0.start.timeIntervalSince(s)) < 1 && abs($0.end.timeIntervalSince(e)) < 1 }
     }
 
     private func record(_ e: BackendEvent, _ calendar: String) -> CalendarEventRecord {

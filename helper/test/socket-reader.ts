@@ -205,8 +205,9 @@ export class SocketReader {
       this.client.send({ type: "verbResult", v: PROTOCOL_VERSION, id: cmd.id, at: this.clock, outcome, detail } satisfies VerbResult);
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return reply("ok");
     if (isCalendarVerb(verb)) {
-      // As caret-screen answers without --calendar-test, unless a test plays its EventKit adapter.
-      const r = this.calendar?.(verb) ?? { outcome: "notAllowed" as const, detail: "the reader was not started with --calendar-test" };
+      // As caret-screen answers: nothing without --calendar-test (no adapter here), and a write only under its task's calendar grant.
+      const refused = this.calendar !== null && "taskId" in verb ? this.grants.calendarRefusal(verb.taskId) : null;
+      const r = this.calendar === null ? { outcome: "notAllowed" as const, detail: "the reader was not started with --calendar-test" } : refused !== null ? { outcome: "notAllowed" as const, detail: refused } : this.calendar(verb);
       this.client.send({ type: "verbResult", v: PROTOCOL_VERSION, id: cmd.id, at: this.clock, ...r } satisfies VerbResult);
       return;
     }

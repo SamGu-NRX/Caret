@@ -550,7 +550,11 @@ export class Helper {
     if (p === undefined) return { refused: "the plan was withdrawn" };
     this.withdrawPlan(offerKey, "taken");
     try {
-      validatePlan(p.draft.plan, p.draft.slots, { model: this.model, memory: this.plannerMemory(), instruction: p.instruction });
+      const now = validatePlan(p.draft.plan, p.draft.slots, { model: this.model, memory: this.plannerMemory(), instruction: p.instruction });
+      // The plan names its window by app and title; a window that replaced the proposed one under the same
+      // title is another window, and the destinations' expected values were read from the first.
+      const proposed = p.draft.checked.window.window.windowId;
+      if (now.window.window.windowId !== proposed) return { refused: `unknownWindow: the window the plan was made for (${proposed}) closed; nothing was written` };
     } catch (e) {
       if (e instanceof PlannerError) return { refused: `${e.code}: ${e.message}; nothing was written` };
       throw e;

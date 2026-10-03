@@ -8,7 +8,10 @@
 //   - "yesterday", "last" or a day already past is not an event to add: null.
 //   - An hour with no AM or PM: 1 to 7 is afternoon, 8 to 11 morning, 12 noon, and in "tonight" every
 //     hour is evening.
-//   - A month and day with no year: this year, or next year once it has passed.
+//   - A month and day with no year: this year, or next year once it has passed. A stated year is kept, and
+//     a stated date already past makes no event.
+//   - A time zone or offset ("UTC", "PST", "-07:00") makes no event: times are read only in the Mac's zone.
+//   - A time that cannot be ("3:99", "0pm", "13pm"), or that the clocks skip that day, makes no event.
 //   - The event lasts DEFAULT_MINUTES unless the span gives an end ("3:00 to 3:45", "3-4pm").
 // Times are wall-clock times in the process's time zone, written as ISO 8601 with that zone's offset on
 // the event's own date, so a daylight-saving change between now and then is handled by the Date object.
@@ -31,14 +34,17 @@ const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "S
 
 const TIME = /\b(noon|midnight|(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)?)(?:\s*(?:-|–|to|until)\s*(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)?)?\b/i;
 const WEEKDAY = /\b(sun|mon|tues?|wed|thu(?:rs?)?|fri|sat)[a-z]*\b/i;
-const MONTH_DAY = /\b(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b|\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\b/i;
-const NUMERIC_DATE = /\b(\d{1,2})\/(\d{1,2})\b/;
+const MONTH_DAY = /\b(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?|\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\b(?:,?\s+(\d{4})\b)?/i;
+const NUMERIC_DATE = /\b(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?\b/;
+const ZONE = /\b(?:utc|gmt|[a-z]{1,2}[sd]t)\b|[+-]\d{2}:?\d{2}\b/i;
+const CLOCK = /(\d{1,2}):(\d{2})/g;
 
 /** 24-hour hour from an hour, its AM/PM if any, and whether the sentence says tonight. */
 function hour24(h: number, meridiem: string | undefined, tonight: boolean): number | null {
   const m = meridiem?.toLowerCase().replace(/\./g, "");
-  if (m === "am") return h === 12 ? 0 : h <= 12 ? h : null;
-  if (m === "pm") return h === 12 ? 12 : h <= 12 ? h + 12 : null;
+  if ((m === "am" || m === "pm") && (h < 1 || h > 12)) return null;
+  if (m === "am") return h === 12 ? 0 : h;
+  if (m === "pm") return h === 12 ? 12 : h + 12;
   if (h >= 13 && h <= 23) return h;
   if (h === 0 || h > 23) return null;
   if (tonight) return h === 12 ? 0 : h + 12;
@@ -102,6 +108,8 @@ export function resolveEventTime(spans: readonly string[], now: Date): EventTime
   const all = spans.join(" ");
   const lower = all.toLowerCase();
   if (/\b(yesterday|last)\b/.test(lower)) return null;
+  if (ZONE.test(all)) return null;
+  for (const c of all.matchAll(CLOCK)) if (Number(c[1]) > 23 || Number(c[2]) > 59) return null;
   const tonight = /\btonight\b/.test(lower);
   const time = parseTime(all, tonight);
   if (time === null) return null;
@@ -113,12 +121,15 @@ export function resolveEventTime(spans: readonly string[], now: Date): EventTime
   const numeric = NUMERIC_DATE.exec(all);
   const wd = WEEKDAY.exec(all);
   if (md !== null || numeric !== null) {
-    const month = md !== null ? MONTHS[(md[1] ?? md[4] ?? "").toLowerCase().slice(0, 3)] : Number(numeric?.[1]) - 1;
-    const date = md !== null ? Number(md[2] ?? md[3]) : Number(numeric?.[2]);
+    const month = md !== null ? MONTHS[(md[1] ?? md[5] ?? "").toLowerCase().slice(0, 3)] : Number(numeric?.[1]) - 1;
+    const date = md !== null ? Number(md[2] ?? md[4]) : Number(numeric?.[2]);
+    const yearText = md !== null ? (md[3] ?? md[6]) : numeric?.[3];
     if (month === undefined || month < 0 || month > 11 || date < 1 || date > 31) return null;
-    start = at(now.getFullYear(), month, date);
+    const year = yearText === undefined ? now.getFullYear() : Number(yearText);
+    start = at(year, month, date);
     if (start.getMonth() !== month) return null;
-    if (start.getTime() < now.getTime() - 86_400_000) start = at(now.getFullYear() + 1, month, date);
+    // No stated year: a date already past is next year's. A stated one is kept, and the check below refuses it if past.
+    if (yearText === undefined && start.getTime() < now.getTime() - 86_400_000) start = at(now.getFullYear() + 1, month, date);
   } else if (/\btomorrow\b/.test(lower)) {
     start = at(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   } else if (/\b(today|tonight)\b/.test(lower)) {
@@ -134,7 +145,10 @@ export function resolveEventTime(spans: readonly string[], now: Date): EventTime
     if (start.getTime() <= now.getTime()) start = at(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   }
   if (start.getTime() <= now.getTime()) return null;
+  // A wall-clock time the clocks skip that day (a daylight-saving gap) comes back shifted by Date: none such is offered.
+  if (start.getHours() !== time.h || start.getMinutes() !== time.m) return null;
   const end = time.end === null ? new Date(start.getTime() + DEFAULT_MINUTES * 60_000) : new Date(start.getFullYear(), start.getMonth(), start.getDate(), time.end.h, time.end.m, 0, 0);
+  if (time.end !== null && (end.getHours() !== time.end.h || end.getMinutes() !== time.end.m)) return null;
   if (end.getTime() <= start.getTime()) return null;
   return { start: localIso(start), end: localIso(end), says: sayWhen(start, end, now) };
 }

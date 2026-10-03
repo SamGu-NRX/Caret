@@ -15,7 +15,8 @@ import { MemoryStore } from "../src/patterns/memory.ts";
 import { HelperMessage, PROTOCOL_VERSION, type AppRef, type OfferAction, type ReaderMessage, type TypedValue } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { DEFAULT_MINUTES, resolveEventTime } from "../src/offers/event-time.ts";
-import { eventTitle, personIn, sentences } from "../src/offers/event-card.ts";
+import { eventTitle, MAX_PENDING_EVENT_ASKS, personIn, sentences, spansIn } from "../src/offers/event-card.ts";
+import type { WindowState } from "../src/model.ts";
 import { snap, text } from "./builders.ts";
 
 interface Golden {
@@ -73,8 +74,20 @@ describe("event times", () => {
     for (const spans of [["Friday"], ["Oct 16"], ["3"], ["yesterday at 3"], ["6pm last Friday"], ["today at 9am"], ["25:00"], ["13pm"], ["Feb 30 at 3pm"], []]) expect(at(spans)).toBeNull();
   });
 
-  it("writes the offset of the event's own date across a daylight-saving change", () => {
+  it("writes the offset of the event's own date across a daylight-saving change, and offers no time the clocks skip", () => {
     expect(at(["Nov 2 at 10am"])?.start).toBe("2026-11-02T10:00:00-06:00");
+    expect(at(["Mar 14 at 2:30am"])).toBeNull();
+  });
+
+  it("keeps a stated year, and makes no event from a stated date already past", () => {
+    expect(at(["Oct 16 2027 at 6pm"])?.start).toBe("2027-10-16T18:00:00-05:00");
+    expect(at(["Oct 16, 2027 at 6pm"])?.start).toBe("2027-10-16T18:00:00-05:00");
+    expect(at(["10/12/2027 at 9am"])?.start).toBe("2027-10-12T09:00:00-05:00");
+    expect(at(["Oct 16, 2025 at 6pm"])).toBeNull();
+  });
+
+  it("makes no event from a time in another zone or a time that cannot be", () => {
+    for (const spans of [["tomorrow at 3pm UTC"], ["tomorrow at 3pm -07:00"], ["Friday at 9am PST"], ["Friday at 3:99"], ["today at 0pm"], ["Friday at 13pm"], ["Friday at 24:10"]]) expect(at(spans), spans[0]).toBeNull();
   });
 });
 
@@ -95,6 +108,14 @@ describe("person, title and sentences", () => {
     expect(eventTitle("Lunch with Priya tomorrow at noon.", "Priya")).toBe("Lunch with Priya");
     expect(eventTitle("Dana and I are grabbing coffee Friday at 3.", "Dana")).toBe("Coffee with Dana");
     expect(eventTitle("See Priya at 6:30 PM Friday.", "Priya")).toBe("Meet Priya");
+  });
+
+  it("reads the reader's spans as the stretch of the sentence they cover, so a range keeps its 'to'", () => {
+    const w = { values: [{ kind: "date", text: "tomorrow", nodeKey: "k" }, { kind: "time", text: "3:00", nodeKey: "k" }, { kind: "time", text: "4:00pm", nodeKey: "k" }, { kind: "time", text: "9:00", nodeKey: "other" }] } as unknown as WindowState;
+    const s = "Lunch with Dana tomorrow 3:00 to 4:00pm.";
+    expect(spansIn(w, "k", s)).toEqual(["tomorrow 3:00 to 4:00pm"]);
+    expect(resolveEventTime(spansIn(w, "k", s), new Date(NOW))).toMatchObject({ start: "2026-10-06T15:00:00-05:00", end: "2026-10-06T16:00:00-05:00" });
+    expect(spansIn(w, "none", s)).toEqual([]);
   });
 
   it("leaves out a last sentence still being typed", () => {
@@ -258,6 +279,54 @@ describe("event cards through the helper", () => {
     clock += 10 * 60 * 1000;
     helper.tick(clock);
     expect(published.some((m) => m.type === "offerWithdrawn" && m.id === o[0]?.offerKey && m.reason === "expired")).toBe(true);
+  });
+
+  it("drops an answer to a question asked before the reader restarted", async () => {
+    const s = GOLDEN.sentences[0] as Golden["sentences"][number];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const inner = jev;
+    jev = Object.assign(async (r: JevRequest) => (await gate, inner(r)), { asked: inner.asked });
+    const typed = type(s.sentence, spansOf(s));
+    send({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 1, version: "t" });
+    send({ type: "appSwitch", v: PROTOCOL_VERSION, at: clock, from: null, to: MAIL });
+    clock += 1000;
+    send(snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true, value: s.sentence }], { at: clock, windowId: COMPOSE, app: MAIL, title: "New message", focused: true, focusedKey: BODY, values: spansOf(s) }));
+    release();
+    await typed;
+    await helper.eventsSettled;
+    expect(offers()).toHaveLength(0);
+  });
+
+  it("asks about at most a few sentences at once, and leaves the rest unjudged", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const inner = attendJev(() => "yes");
+    jev = Object.assign(async (r: JevRequest) => (await gate, inner(r)), { asked: inner.asked });
+    const chat = "7373-3";
+    const app = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
+    const history = Array.from({ length: 30 }, (_, i) => text(`dev.caret.chat/standard/statictext:h${i}~0`, `Kofi: an earlier message about the deck, number ${i}`));
+    send(snap(history, { at: clock, windowId: chat, app, title: "Kofi" }));
+    clock += 1000;
+    const lines = ["Lunch with Kofi tomorrow at noon?", "Coffee with Priya Friday at 3pm?", "Dinner with Marcus Saturday at 7pm?", "Breakfast with Ines Sunday at 9am?"];
+    const keys = lines.map((_, i) => `dev.caret.chat/standard/statictext:n${i}~0`);
+    const spans = ["tomorrow at noon", "Friday at 3pm", "Saturday at 7pm", "Sunday at 9am"];
+    send(snap([...history, ...lines.map((t, i) => text(keys[i] as string, t))], { at: clock, windowId: chat, app, title: "Kofi", values: spans.map((t, i) => ({ kind: "date" as const, text: t, nodeKey: keys[i] as string })) }));
+    const settled = helper.eventsSettled;
+    release();
+    await settled;
+    // Three new lines at most are judged, and of those only two are asked about while others wait.
+    expect(new Set(inner.asked).size).toBe(MAX_PENDING_EVENT_ASKS);
+  });
+
+  it("refuses to add an event whose time has come, and withdraws its offer", async () => {
+    const s = GOLDEN.sentences[3] as Golden["sentences"][number];
+    await type(s.sentence, spansOf(s));
+    const o = offers()[0] as OfferAction;
+    clock = Date.parse("2026-10-05T16:31:00-05:00");
+    expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: o.offerKey, actionId: "add", overrides: {}, at: clock })).toBeNull();
+    expect(published.some((m) => m.type === "offerWithdrawn" && m.id === o.offerKey && m.reason === "stale")).toBe(true);
+    expect(calendar.events.size).toBe(0);
   });
 
   it("finds an event card in a first look and adds it when taken", async () => {

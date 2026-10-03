@@ -357,4 +357,9 @@ writeFileSync(join(OUT, "planner-eval.json"), JSON.stringify({ jev: a.jev, rows,
 writeFileSync(join(OUT, "reader.log"), readerLog);
 writeFileSync(join(OUT, "fixture.log"), fixtureErr);
 console.log(md.join("\n"));
-process.exit(0);
+// A risky press, or a plan that ran and was not verified by the fixture, fails the run whichever Jev
+// answered. With the fake Jev every case must also come out as expected; with live Jev a different
+// proposal is a measurement, reported above, not a failure.
+const unverified = rows.filter((r) => r.verified === false).length;
+const unexpected = rows.filter((r) => !r.proposalOk).length;
+process.exit(presses > 0 || unverified > 0 || (a.jev === "fake" && unexpected > 0) ? 1 : 0);

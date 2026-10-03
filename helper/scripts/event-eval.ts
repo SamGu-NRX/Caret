@@ -60,7 +60,7 @@ for (const s of golden.sentences) {
   });
   const w = model.windows.get("6160-4");
   if (w === undefined) throw new Error("no window");
-  const r = await askAttend(ask, model, w, s.sentence);
+  const r = await askAttend(ask, model, w, s.sentence, "typed");
   const yes = r?.yes ?? null;
   rows.push({ id: s.id, sentence: s.sentence, want: s.attend, codePasses: true, asks: r === null ? null : r.asks.map((x) => `${x.choice} ${x.confidence.toFixed(2)}`), yes, agrees: yes === null ? null : yes === (s.attend === "yes") });
   process.stdout.write(`${s.id}: ${r === null ? "not asked (privacy)" : `${r.asks.map((x) => x.choice).join("/")} -> ${yes ? "offer" : "no offer"}`}${s.attend === null ? " (fixture expected no ask)" : ""}\n`);

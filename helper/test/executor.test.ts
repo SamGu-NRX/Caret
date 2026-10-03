@@ -181,6 +181,12 @@ describe("executor", () => {
     expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 
+  it("names a handoff's reason from the control's label, whatever reason the plan gives", async () => {
+    const p = plan([{ says: "You press Send", end: { kind: "handoff", window: W, target: { key: K("button:send~0"), describe: "the Send button" }, why: "unverifiable" } }]);
+    expect((await helper.executor.run("t1", p, {})).detail).toBe("'Send' reads as outbound; Caret leaves that press to you");
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
   it("stops as unreachable when a handoff's control is not in the window", async () => {
     const p = plan([{ says: "You press Pay", end: { kind: "handoff", window: W, target: { role: "AXButton", label: "Pay now", describe: "the Pay button" }, why: "money" } }]);
     const r = await helper.executor.run("t1", p, {});

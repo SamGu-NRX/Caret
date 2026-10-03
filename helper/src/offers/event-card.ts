@@ -24,6 +24,10 @@ import type { OfferGate } from "./settings.ts";
 
 /** Sentences a first look asks about, most recent windows first; each costs two Jev asks. Assumed. */
 export const MAX_EVENT_LOOKS = 3;
+/** Sentences being asked about at once; one more found meanwhile is left unjudged. Assumed, not measured. */
+export const MAX_PENDING_EVENT_ASKS = 2;
+/** New conversation lines one snapshot may send to be judged, the latest first. Assumed. */
+const MAX_NEW_LINES = 3;
 /** Words that name the kind of event, in the order they are looked for; the first found titles it. */
 const EVENT_WORDS = ["coffee", "lunch", "dinner", "breakfast", "brunch", "drinks", "interview", "meeting", "review", "sync", "call", "chat", "walk", "catch up"];
 /** Capitalised words that are never a person's name in "with X". */
@@ -93,16 +97,29 @@ export function eventCandidate(sentence: string, spans: readonly string[], peopl
   return { sentence, title: eventTitle(sentence, person), person, time };
 }
 
-const WORDINGS = [
-  "Is the writer of this sentence arranging something that they will attend at the time it names? Answer no for something already over, cancelled, declined, only wondered about, or planned by other people without the writer.",
-  "Does this sentence set up a future meeting or appointment that its author is going to? Choose no if it is past, called off, turned down, hypothetical, or about other people only.",
-] as const;
+/**
+ * Where a sentence came from. `typed`: the user is writing it in a field, so its writer is the user.
+ * `conversation`: a line in a conversation the user is reading, whose writer may be someone else, so the
+ * question asks about the user, not the writer.
+ */
+export type SentenceSource = "typed" | "conversation";
+
+const WORDINGS: Record<SentenceSource, readonly [string, string]> = {
+  typed: [
+    "The user is writing this sentence. Is the user arranging something that they will attend at the time it names? Answer no for something already over, cancelled, declined, only wondered about, or planned by other people without the user.",
+    "This sentence is being typed by the user. Does it set up a future meeting or appointment that the user is going to? Choose no if it is past, called off, turned down, hypothetical, or about other people only.",
+  ],
+  conversation: [
+    "This line is from a conversation the user is reading; the user may or may not have written it. Does it arrange something that the user of this computer will attend at the time it names? Answer no if it is over, cancelled, declined, only wondered about, or for other people without the user.",
+    "A message in a conversation the user is reading, perhaps written by someone else. Is the user themselves going to a future meeting or appointment it sets up? Choose no if it is past, called off, turned down, hypothetical, or not something the user attends.",
+  ],
+};
 
 /** One of the two asks. `declared` is the sentence as its window's ledger took it. */
-export function buildAttendRequest(sentence: string, wording: 0 | 1, declared: { snippets: JevRequest["snippets"]; charged: JevRequest["charged"] }): JevRequest {
+export function buildAttendRequest(sentence: string, wording: 0 | 1, declared: { snippets: JevRequest["snippets"]; charged: JevRequest["charged"] }, source: SentenceSource = "typed"): JevRequest {
   return {
-    state: { sentence, task: "The user wrote or received this sentence. Caret is deciding whether to offer adding an event to the user's calendar." },
-    questions: { attend: { type: "choice", instructions: WORDINGS[wording], criteria: { yes: "Yes: a future event the writer will attend.", no: "No." } } },
+    state: { sentence, task: source === "typed" ? "The user is typing this sentence. Caret is deciding whether to offer adding an event to the user's calendar." : "The user is reading this line in a conversation. Caret is deciding whether to offer adding an event to the user's calendar." },
+    questions: { attend: { type: "choice", instructions: WORDINGS[source][wording], criteria: { yes: "Yes: a future event the user will attend.", no: "No." } } },
     snippets: declared.snippets,
     charged: declared.charged,
   };
@@ -115,20 +132,32 @@ export interface AttendAnswer {
 }
 
 /** Both asks; `yes` only when both answered yes. Null when the sentence does not fit its window's budget, so nothing was asked. */
-export async function askAttend(ask: AskJev, model: ScreenModel, w: WindowState, sentence: string): Promise<AttendAnswer | null> {
+export async function askAttend(ask: AskJev, model: ScreenModel, w: WindowState, sentence: string, source: SentenceSource = "typed"): Promise<AttendAnswer | null> {
   const ledger = new SnippetLedger(model.windows.values());
   if (!ledger.take(w, "candidate", [sentence])) return null;
   const declared = ledger.declared();
-  const [r1, r2] = await Promise.all([ask(buildAttendRequest(sentence, 0, declared)), ask(buildAttendRequest(sentence, 1, declared))]);
+  const [r1, r2] = await Promise.all([ask(buildAttendRequest(sentence, 0, declared, source)), ask(buildAttendRequest(sentence, 1, declared, source))]);
   const a1 = r1.answers.attend;
   const a2 = r2.answers.attend;
   if (a1 === undefined || a2 === undefined) throw new Error("Jev gave no answer to the attend question");
   return { yes: a1.choice === "yes" && a2.choice === "yes", asks: [a1, a2], costUsd: r1.costUsd + r2.costUsd };
 }
 
-/** The node's date and time spans that lie inside the sentence. */
+/**
+ * The stretch of the sentence from the first of the node's date and time spans in it to the end of the
+ * last, as one text, so words between them ("3:00 to 4:00 PM") are kept; empty when there are none.
+ */
 export function spansIn(w: WindowState, key: string, sentence: string): string[] {
-  return w.values.filter((v) => v.nodeKey === key && (v.kind === "date" || v.kind === "time") && sentence.includes(v.text)).map((v) => v.text);
+  let from = Number.POSITIVE_INFINITY;
+  let to = -1;
+  for (const v of w.values) {
+    if (v.nodeKey !== key || (v.kind !== "date" && v.kind !== "time")) continue;
+    const i = sentence.indexOf(v.text);
+    if (i < 0) continue;
+    from = Math.min(from, i);
+    to = Math.max(to, i + v.text.length);
+  }
+  return to < 0 ? [] : [sentence.slice(from, to)];
 }
 
 /** The card the down arrow opens: what, when, which calendar, and the sentence it came from. */
@@ -193,6 +222,10 @@ export class EventCards {
   private readonly judged = new Set<string>();
   private readonly entries = new Map<string, Entry>();
   private seq = 0;
+  /** Bumped when a new reader connects: an answer to a question asked before then is about other windows. */
+  private gen = 0;
+  /** Sentences being asked about now. */
+  private pending = 0;
   private readonly deps: EventCardDeps;
 
   constructor(deps: EventCardDeps) {
@@ -210,6 +243,7 @@ export class EventCards {
    */
   onChanges(changes: readonly Change[]): Promise<void> {
     const work: Promise<void>[] = [];
+    const lines: { w: WindowState; key: string; text: string; field: OfferField }[] = [];
     const model = this.deps.model;
     for (const c of changes) {
       const w = model.windows.get(c.windowId);
@@ -217,15 +251,17 @@ export class EventCards {
       const typing = c.editable && c.kind === "value" && model.focusedWindowId === w.window.windowId && w.focusedKey === c.key && model.frontmostPid === w.app.pid;
       if (typing) {
         const last = sentences(c.after, false).at(-1);
-        if (last !== undefined) work.push(this.consider(w, c.key, last, offerField(w, c.key)));
+        if (last !== undefined) work.push(this.consider(w, c.key, last, offerField(w, c.key), "typed"));
       } else if (!c.editable && isConversation(w)) {
         const field = this.typingField();
-        if (field !== null) for (const s of sentences(c.after, true)) work.push(this.consider(w, c.key, s, field));
+        if (field !== null) lines.push({ w, key: c.key, text: c.after, field });
       }
     }
+    // A conversation that loads its history arrives as many new lines at once; only the latest few are judged.
+    for (const l of lines.slice(-MAX_NEW_LINES)) for (const s of sentences(l.text, true)) work.push(this.consider(l.w, l.key, s, l.field, "conversation"));
     for (const e of [...this.entries.values()]) {
       const node = model.windows.get(e.windowId)?.nodes.get(e.key);
-      if (node === undefined || !nodeText(node).includes(e.candidate.sentence)) this.withdraw(e.offerKey, "stale");
+      if (node === undefined || !nodeText(node).includes(e.candidate.sentence) || this.started(e.candidate)) this.withdraw(e.offerKey, "stale");
     }
     return Promise.all(work).then(() => undefined);
   }
@@ -240,26 +276,41 @@ export class EventCards {
     return offerField(w, key);
   }
 
-  private async consider(w: WindowState, key: string, sentence: string, field: OfferField): Promise<void> {
+  /** The event's start has come: too late to offer or add it. */
+  private started(c: EventCandidate): boolean {
+    return Date.parse(c.time.start) <= this.deps.now();
+  }
+
+  private async consider(w: WindowState, key: string, sentence: string, field: OfferField, source: SentenceSource): Promise<void> {
     const deps = this.deps;
     const id = `${w.window.windowId}\u0000${sentence}`;
     if (this.judged.has(id) || !deps.live() || deps.askJev === null) return;
     const now = deps.now();
     if (deps.gate.holds("event", now).length > 0) return;
     const c = eventCandidate(sentence, spansIn(w, key, sentence), deps.people(), new Date(now));
+    if (c === null) {
+      this.judged.add(id);
+      return;
+    }
+    // Asks are bounded, not queued: a sentence found while others are being asked about is left unjudged.
+    if (this.pending >= MAX_PENDING_EVENT_ASKS) return deps.count?.("event.held_busy");
     this.judged.add(id);
-    if (c === null) return;
     deps.count?.("event.asked");
+    const gen = this.gen;
     let a: AttendAnswer | null;
+    this.pending++;
     try {
-      a = await askAttend(deps.askJev, deps.model, w, sentence);
+      a = await askAttend(deps.askJev, deps.model, w, sentence, source);
     } catch {
       deps.count?.("event.jev_error");
       return;
+    } finally {
+      this.pending--;
     }
     if (a === null) return deps.count?.("event.held_privacy");
     if (!a.yes) return deps.count?.(a.asks[0].choice === a.asks[1].choice ? "event.no" : "event.disagree");
-    // The screen and the settings may have moved while Jev answered.
+    // The reader, the screen, the clock and the settings may all have moved while Jev answered.
+    if (gen !== this.gen || this.started(c)) return;
     const node = deps.model.windows.get(w.window.windowId)?.nodes.get(key);
     if (node === undefined || !nodeText(node).includes(sentence) || !deps.live() || deps.gate.holds("event", deps.now()).length > 0) return;
     this.show(w, key, c, field);
@@ -295,6 +346,10 @@ export class EventCards {
       this.withdraw(offerKey, "stale");
       return { refused: "the sentence is no longer on screen; nothing was added" };
     }
+    if (this.started(e.candidate)) {
+      this.withdraw(offerKey, "stale");
+      return { refused: "the event's time has come; nothing was added" };
+    }
     this.withdraw(offerKey, "taken");
     const { plan, slots } = eventPlan(offerKey, e.candidate, this.deps.calendar);
     try {
@@ -313,7 +368,7 @@ export class EventCards {
     const deps = this.deps;
     if (deps.askJev === null) return [];
     const now = new Date(deps.now());
-    const found: { w: WindowState; key: string; candidate: EventCandidate }[] = [];
+    const found: { w: WindowState; key: string; candidate: EventCandidate; source: SentenceSource }[] = [];
     const windows = [...deps.model.windows.values()]
       .filter((w) => !exclude.has(w.window.windowId))
       .sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
@@ -324,11 +379,11 @@ export class EventCards {
         if (n.states?.includes("secure") || (n.editable !== true && !chat)) continue;
         for (const s of sentences(nodeText(n), true)) {
           const c = eventCandidate(s, spansIn(w, n.key, s), deps.people(), now);
-          if (c !== null && !found.some((f) => f.candidate.sentence === s)) found.push({ w, key: n.key, candidate: c });
+          if (c !== null && !found.some((f) => f.candidate.sentence === s)) found.push({ w, key: n.key, candidate: c, source: n.editable === true ? "typed" : "conversation" });
         }
       }
     }
-    const asked = await Promise.all(found.slice(0, MAX_EVENT_LOOKS).map(async (f) => ({ f, a: await askAttend(deps.askJev as AskJev, deps.model, f.w, f.candidate.sentence) })));
+    const asked = await Promise.all(found.slice(0, MAX_EVENT_LOOKS).map(async (f) => ({ f, a: await askAttend(deps.askJev as AskJev, deps.model, f.w, f.candidate.sentence, f.source) })));
     return asked.filter((x) => x.a?.yes === true).map((x) => x.f);
   }
 
@@ -336,6 +391,7 @@ export class EventCards {
   async acceptFound(offerKey: string, windowId: string, key: string, c: EventCandidate, run: (taskId: string, plan: Plan, slots: Record<string, string>) => Promise<TaskResult>): Promise<AcceptResult> {
     const node = this.deps.model.windows.get(windowId)?.nodes.get(key);
     if (node === undefined || !nodeText(node).includes(c.sentence)) return { refused: "the sentence is no longer on screen; nothing was added" };
+    if (this.started(c)) return { refused: "the event's time has come; nothing was added" };
     const { plan, slots } = eventPlan(offerKey, c, this.deps.calendar);
     return run(offerKey, plan, slots);
   }
@@ -344,9 +400,12 @@ export class EventCards {
     return this.deps.calendar;
   }
 
-  /** Withdraws every offer whose lifetime has ended at `now`. */
+  /** Withdraws every offer whose lifetime has ended at `now`, and any whose event has started. */
   tick(now: number): void {
-    for (const e of [...this.entries.values()]) if (expired("event", e.at, now)) this.withdraw(e.offerKey, "expired");
+    for (const e of [...this.entries.values()]) {
+      if (expired("event", e.at, now)) this.withdraw(e.offerKey, "expired");
+      else if (this.started(e.candidate)) this.withdraw(e.offerKey, "stale");
+    }
   }
 
   withdrawAll(reason: "settings" | "stale"): void {
@@ -355,6 +414,7 @@ export class EventCards {
 
   /** Window ids start over with a new reader; the helper withdraws every recorded offer itself. */
   readerRestarted(): void {
+    this.gen++;
     this.entries.clear();
     this.judged.clear();
   }

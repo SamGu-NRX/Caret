@@ -19,12 +19,14 @@ public final class GrantTable: @unchecked Sendable {
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
+    /// Calendar grants (B16), by task: when each ends on the monotonic clock and at its wall-clock expiry.
+    private var calendar: [String: (expires: Int64, deadline: Int64, ended: Bool)] = [:]
 
     public init() {}
 
     public var count: Int {
         lock.lock(); defer { lock.unlock() }
-        return entries.count
+        return entries.count + calendar.count
     }
 
     /// Stores a grant that arrived at `uptimeMs`, replacing the task's earlier one. Grants whose deadline
@@ -36,15 +38,37 @@ public final class GrantTable: @unchecked Sendable {
         entries[g.taskId] = Entry(grant: g, deadline: uptimeMs + min(g.expires - g.at, Self.maxMs))
     }
 
+    /// Stores a calendar grant that arrived at `uptimeMs`, as `issue` does an act grant.
+    public func issueCalendar(_ g: CalendarGrant, uptimeMs: Int64) {
+        lock.lock(); defer { lock.unlock() }
+        calendar = calendar.filter { $0.value.deadline > uptimeMs - Self.maxMs }
+        calendar[g.taskId] = (g.expires, uptimeMs + min(g.expires - g.at, Self.maxMs), false)
+    }
+
+    /// Nil when a live calendar grant covers `taskId`; otherwise the reason. Asked right before each calendar write.
+    public func calendarRefusal(taskId: String, now: Int64, uptimeMs: Int64) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard var e = calendar[taskId] else { return "no calendar grant for task \(taskId)" }
+        if e.ended || now >= e.expires || uptimeMs >= e.deadline {
+            e.ended = true
+            calendar[taskId] = e
+            return "the calendar grant for task \(taskId) has expired"
+        }
+        return nil
+    }
+
+    /// Ends the task's act grant and its calendar grant.
     public func revoke(taskId: String) {
         lock.lock(); defer { lock.unlock() }
         entries.removeValue(forKey: taskId)
+        calendar.removeValue(forKey: taskId)
     }
 
     /// Every grant came from one helper connection; when it closes they all end.
     public func clear() {
         lock.lock(); defer { lock.unlock() }
         entries.removeAll()
+        calendar.removeAll()
     }
 
     /// Nil when a live grant for `taskId` covers this process and window. Otherwise the reason, worded for

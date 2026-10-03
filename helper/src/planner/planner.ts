@@ -38,6 +38,8 @@ export const MAX_PLAN_BUTTONS = 20;
 export const MAX_PLAN_VALUES = 40;
 const KEEP = "keep";
 const NONE = "none";
+/** A refused SnippetLedger take means the text cannot go out at all, so the question is not asked. */
+const PRIVACY_SAYS = "your instruction quotes more of an open window than one question to Jev may carry, so Caret did not ask";
 
 /** Memory as the planner reads it, at the start and again when it checks the plan. */
 export interface PlannerMemory {
@@ -108,8 +110,9 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   const fields = writableFields(w);
   const buttons = labelledButtons(w);
   const ledger = new SnippetLedger(model.windows.values());
-  ledger.plan([instruction]);
-  ledger.take(w, "descriptor", [w.window.title]);
+  if (!ledger.plan([instruction])) throw new PlannerError("privacy", PRIVACY_SAYS);
+  // A title that does not fit the window's budget is left out; the question then names the app alone.
+  const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   // A window that is not a card gives a question less than half its text (privacy.ts), which may not hold
   // every field and button: what the instruction names is taken first, the rest in document order.
   const order = byRelevance(instruction, [...fields.map((f) => ({ key: f.node.key, name: f.name, text: f.descriptor })), ...buttons.map((b) => ({ key: b.key, name: b.label, text: b.label }))]);
@@ -125,8 +128,8 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   const second = { values: shuffled(values, rand).map((v, i) => ({ ...v, id: `k${i + 1}` })), buttons: shuffled(askedButtons, rand).map((b, i) => ({ ...b, id: `d${i + 1}` })) };
   const questioned = values.length === 0 ? [] : askedFields;
   const [r1, r2] = await ask(
-    fieldRequest(instruction, w, questioned, values, askedButtons, 0, declared),
-    fieldRequest(instruction, w, questioned, second.values, second.buttons, 1, declared),
+    fieldRequest(instruction, w, title, questioned, values, askedButtons, 0, declared),
+    fieldRequest(instruction, w, title, questioned, second.values, second.buttons, 1, declared),
   );
   const withheld: PlanDraft["withheld"] = [];
   /** The agreed option, or null for keep or none and for an answer withheld as unsure. */
@@ -285,8 +288,9 @@ async function chooseWindow(
   if (candidates.length === 0) throw new PlannerError("noWindow", "no open window has a field or a button");
   if (candidates.length === 1) return candidates[0] as WindowState;
   const ledger = new SnippetLedger(model.windows.values());
-  ledger.plan([instruction]);
+  if (!ledger.plan([instruction])) throw new PlannerError("privacy", PRIVACY_SAYS);
   const listed = candidates.filter((w) => ledger.take(w, "descriptor", [w.window.title]));
+  if (listed.length === 0) throw new PlannerError("privacy", "no open window's title fits what one question to Jev may carry");
   const declared = ledger.declared();
   const first = listed.map((w, i) => ({ id: `w${i + 1}`, w }));
   const second = shuffled(first, rand).map((x, i) => ({ id: `x${i + 1}`, w: x.w }));
@@ -331,7 +335,7 @@ const PRESS_WORDINGS = [
   (instr: string) => `Instruction: "${instr}". If the instruction asks for a button to be pressed, pick it; otherwise pick none.`,
 ] as const;
 
-function fieldRequest(instruction: string, w: WindowState, fields: readonly Field[], values: readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
+function fieldRequest(instruction: string, w: WindowState, title: string | null, fields: readonly Field[], values: readonly Option[], buttons: readonly Button[], wording: 0 | 1, declared: Declared): JevRequest {
   const criteria: Record<string, string> = { ...Object.fromEntries(values.map((v) => [v.id, v.describe])), [KEEP]: "Leave the field as it is." };
   const questions: JevRequest["questions"] = {};
   for (const f of fields) questions[f.id] = { type: "choice", instructions: FIELD_WORDINGS[wording](instruction, f.descriptor), criteria };
@@ -345,7 +349,7 @@ function fieldRequest(instruction: string, w: WindowState, fields: readonly Fiel
   return {
     state: {
       instruction,
-      window: `${w.app.name} window '${w.window.title}'`,
+      window: title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`,
       task: "Caret plans the instruction as values written into this window's fields. Values come from the instruction, the user's memory and the user's other open windows; Caret writes only a value listed here.",
     },
     questions,

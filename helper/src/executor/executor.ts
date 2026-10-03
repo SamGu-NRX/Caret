@@ -142,6 +142,8 @@ interface Task {
   granted: boolean;
   /** The act grant the reader holds for this task now, or null. One window per task. */
   grant: { pid: number; windowId: string } | null;
+  /** The reader holds a calendar grant for this task now (protocol.ts CalendarGrant). */
+  calendarGranted: boolean;
 }
 
 /**
@@ -200,7 +202,10 @@ export class Executor {
   readerRestarted(): void {
     this.session++;
     // The reader dropped every grant with the old connection.
-    for (const t of this.tasks.values()) t.grant = null;
+    for (const t of this.tasks.values()) {
+      t.grant = null;
+      t.calendarGranted = false;
+    }
   }
 
   /** Whether a run with this id exists, running or finished. */
@@ -251,6 +256,7 @@ export class Executor {
       }),
       granted: opts.grant === true,
       grant: null,
+      calendarGranted: false,
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -366,6 +372,7 @@ export class Executor {
     // the window its writes went to, until the restore ends.
     const written = task.ledger.find((e) => e.kind === "write");
     if (written !== undefined) this.issueGrant(task, written.pid, written.windowId);
+    if (task.ledger.some((e) => e.kind === "calendar")) this.issueCalendarGrant(task);
     try {
       for (const e of [...task.ledger].reverse()) {
         if (e.kind === "press") {
@@ -380,7 +387,7 @@ export class Executor {
               ? "you stopped the undo"
               : e.kind === "write"
                 ? await this.undoWrite(task, e)
-                : await this.undoCalendar(e);
+                : await this.undoCalendar(task, e);
         if (reason === null) out.restored++;
         else {
           out.notRestored.push({ step: e.step, reason });
@@ -491,7 +498,9 @@ export class Executor {
       const node = await this.resolve(task, i, w, end.target, step.says);
       const label = (node.label ?? "").trim();
       const what = label === "" ? end.target.describe : `'${label}'`;
-      throw StepStop.handoff(end.why === "unverifiable" ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${end.why}; Caret leaves that press to you`);
+      // The control's own label decides the reason, as for a press: a plan cannot call a Send press unverifiable.
+      const risk = label === "" ? "safe" : classifyLabel(label);
+      throw StepStop.handoff(risk === "safe" ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${risk}; Caret leaves that press to you`);
     }
 
     if (end.kind === "valueEquals" || end.kind === "focused") {
@@ -615,10 +624,13 @@ export class Executor {
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `add event '${end.title}' to ${end.calendar}; expect it to be found there`);
     this.checkSession(task);
-    const ev = await cal.add(end.calendar, end.title, end.start, end.end);
+    // Only a task from an accepted offer gets one; without it the reader refuses the add.
+    this.issueCalendarGrant(task);
+    const ev = await cal.add(end.calendar, end.title, end.start, end.end, task.id);
+    // In the ledger before it is checked, so undo can remove an event that fails the check.
+    task.ledger.push({ kind: "calendar", step: i, eventId: ev.id, calendar: ev.calendar, title: ev.title, start: ev.start, end: ev.end });
     const found = await cal.find(end.calendar, end.title, end.start, end.end);
     if (found === null || found.id !== ev.id) throw StepStop.stop("mismatch", "mismatch: the added event is not found by the same query");
-    task.ledger.push({ kind: "calendar", step: i, eventId: ev.id, calendar: ev.calendar, title: ev.title, start: ev.start, end: ev.end });
     task.acted++;
     this.progress(task, "verified", i, null);
   }
@@ -661,9 +673,19 @@ export class Executor {
     task.grant = { pid, windowId };
   }
 
+  /** Gives the reader a calendar grant for this task, on the same terms as issueGrant. */
+  private issueCalendarGrant(task: Task): void {
+    if (!task.granted || task.calendarGranted || task.interrupt !== null || this.deps.reader.grant === undefined) return;
+    const at = Date.now();
+    this.deps.reader.grant({ type: "calendarGrant", v: PROTOCOL_VERSION, taskId: task.id, at, expires: at + GRANT_MAX_MS });
+    task.calendarGranted = true;
+  }
+
+  /** Ends both of the task's grants with one revoke. */
   private revokeGrant(task: Task): void {
-    if (task.grant === null) return;
+    if (task.grant === null && !task.calendarGranted) return;
     task.grant = null;
+    task.calendarGranted = false;
     this.deps.reader.grant?.({ type: "actRevoke", v: PROTOCOL_VERSION, taskId: task.id, at: Date.now() });
   }
 
@@ -869,15 +891,15 @@ export class Executor {
     return null;
   }
 
-  private async undoCalendar(e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
+  private async undoCalendar(task: Task, e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
     try {
-      return await this.undoCalendarEvent(e);
+      return await this.undoCalendarEvent(task, e);
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
     }
   }
 
-  private async undoCalendarEvent(e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
+  private async undoCalendarEvent(task: Task, e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
     const cal = this.deps.calendar;
     if (cal === null) return "no calendar is configured";
     const ev = await cal.get(e.eventId);
@@ -885,7 +907,7 @@ export class Executor {
     if (ev.title !== e.title || ev.calendar !== e.calendar || Date.parse(ev.start) !== Date.parse(e.start) || Date.parse(ev.end) !== Date.parse(e.end)) {
       return "the event changed after Caret added it";
     }
-    await cal.remove(e.eventId);
+    await cal.remove(e.eventId, task.id);
     return (await cal.get(e.eventId)) === null ? null : "the event is still there after removal";
   }
 

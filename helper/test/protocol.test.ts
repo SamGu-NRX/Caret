@@ -20,13 +20,18 @@ describe("golden protocol fixture", () => {
       "settings", "settings", "offerWithdrawn",
       "actGrant", "readerCommand", "verbResult", "actRevoke",
       "planRequest", "planProposal", "planProposal",
-      "readerCommand", "verbResult", "verbResult", "taskProgress",
+      "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
     ]);
   });
 
   it("carries B16's calendar verbs: an add, its event, a refusal for no Calendar access, and the hand-off it becomes", () => {
     const [add, added, blocked, handoff] = lines.slice(41, 45).map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(HelperToReader.parse(add)).toMatchObject({ verb: { kind: "calendarAdd", calendar: "Caret Test" } });
+    expect(HelperToReader.parse(add)).toMatchObject({ verb: { kind: "calendarAdd", calendar: "Caret Test", taskId: "event-1" } });
+    const grant = JSON.parse(lines[45] ?? "") as Record<string, unknown>;
+    expect(HelperToReader.parse(grant)).toMatchObject({ type: "calendarGrant", taskId: "event-1" });
+    expect(ConsumerMessage.safeParse(grant).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...grant, expires: (grant.at as number) + GRANT_MAX_MS + 1 }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...grant, taskId: "" }).success).toBe(false);
     expect(ConsumerMessage.safeParse(add).success).toBe(false);
     expect(ReaderMessage.parse(added)).toMatchObject({ outcome: "ok", event: { id: "ev-1", title: "Coffee with Dana" } });
     expect(ReaderMessage.parse(blocked)).toMatchObject({ outcome: "blocked", blocked: "tcc" });
@@ -48,6 +53,9 @@ describe("golden protocol fixture", () => {
       { ...req, instruction: "x".repeat(501) },
       { ...req, windowId: "" },
     ]) expect(ConsumerMessage.safeParse(bad).success).toBe(false);
+    // The Swift mirror counts the same way (GoldenTests readsThePlannerPair): 250 emoji pass.
+    expect(ConsumerMessage.safeParse({ ...req, instruction: "😀".repeat(250) }).success).toBe(true);
+    expect(HelperMessage.safeParse({ ...failed, at: -1 }).success).toBe(false);
     for (const bad of [
       { ...proposal, error: { code: "unsure", detail: "x" } },
       { ...proposal, spec: null },

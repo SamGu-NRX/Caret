@@ -1,7 +1,7 @@
 // The executor's means of acting, each behind an interface so tests and fixture runs never touch a
 // real account: reader verbs over the socket, a calendar, and a URL opener.
 import { randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarBlock, type HelperToReader, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarBlock, type CalendarGrant, type HelperToReader, type ReaderVerb, type VerbResult } from "../protocol.ts";
 
 /** The reader's verbs. Each resolves with the reader's answer, after any snapshot the verb produced has been applied. */
 export interface ReaderLink {
@@ -10,7 +10,7 @@ export interface ReaderLink {
    * Hands the reader an act grant or revoke. The reader answers neither: a grant that does not arrive
    * shows up as the next act's notAllowed. A link without it (read-only tests) grants nothing.
    */
-  grant?(m: ActGrant | ActRevoke): void;
+  grant?(m: ActGrant | ActRevoke | CalendarGrant): void;
 }
 
 /**
@@ -28,7 +28,7 @@ export class SocketReaderLink implements ReaderLink {
     this.timeoutMs = timeoutMs;
   }
 
-  grant(m: ActGrant | ActRevoke): void {
+  grant(m: ActGrant | ActRevoke | CalendarGrant): void {
     this.send(m);
   }
 
@@ -76,9 +76,10 @@ export interface CalendarEvent {
  */
 export interface CalendarPort {
   find(calendar: string, title: string, start: string, end: string): Promise<CalendarEvent | null>;
-  add(calendar: string, title: string, start: string, end: string): Promise<CalendarEvent>;
+  /** `taskId`: the task writing, whose calendar grant the reader's adapter checks. */
+  add(calendar: string, title: string, start: string, end: string, taskId: string): Promise<CalendarEvent>;
   get(id: string): Promise<CalendarEvent | null>;
-  remove(id: string): Promise<void>;
+  remove(id: string, taskId: string): Promise<void>;
 }
 
 /** An in-memory calendar store. It records every call so a test can show what was asked of it. */
@@ -96,7 +97,7 @@ export class FakeCalendar implements CalendarPort {
     return null;
   }
 
-  async add(calendar: string, title: string, start: string, end: string): Promise<CalendarEvent> {
+  async add(calendar: string, title: string, start: string, end: string, _taskId?: string): Promise<CalendarEvent> {
     this.calls.push(`add ${calendar}`);
     const ev = { id: randomUUID(), calendar, title, start, end };
     this.events.set(ev.id, ev);
@@ -109,7 +110,7 @@ export class FakeCalendar implements CalendarPort {
     return ev === undefined ? null : { ...ev };
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, _taskId?: string): Promise<void> {
     this.calls.push("remove");
     this.events.delete(id);
   }
@@ -154,8 +155,8 @@ export class ReaderCalendar implements CalendarPort {
     return this.call({ kind: "calendarFind", calendar, title, start, end });
   }
 
-  async add(calendar: string, title: string, start: string, end: string): Promise<CalendarEvent> {
-    const ev = await this.call({ kind: "calendarAdd", calendar, title, start, end });
+  async add(calendar: string, title: string, start: string, end: string, taskId: string): Promise<CalendarEvent> {
+    const ev = await this.call({ kind: "calendarAdd", calendar, title, start, end, taskId });
     if (ev === null) throw new Error("the reader added the event but did not return it");
     return ev;
   }
@@ -164,13 +165,13 @@ export class ReaderCalendar implements CalendarPort {
     return this.call({ kind: "calendarGet", id });
   }
 
-  async remove(id: string): Promise<void> {
-    await this.call({ kind: "calendarRemove", id });
+  async remove(id: string, taskId: string): Promise<void> {
+    await this.call({ kind: "calendarRemove", id, taskId });
   }
 
-  /** Deletes the calendar of this name the reader created, with its events. For tests and evaluations. */
-  async dispose(calendar: string): Promise<void> {
-    await this.call({ kind: "calendarDispose", calendar });
+  /** Deletes the calendar of this name the reader created, with its events, under `taskId`'s calendar grant. For tests and evaluations. */
+  async dispose(calendar: string, taskId: string): Promise<void> {
+    await this.call({ kind: "calendarDispose", calendar, taskId });
   }
 }
 

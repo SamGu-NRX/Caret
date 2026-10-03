@@ -162,10 +162,11 @@ export type Pasteboard = z.infer<typeof Pasteboard>;
  * only when something changed. An empty list ends every watch. It only reads, so it needs no `--act-pids`.
  * `raise` brings one window to the front and activates its app (AXRaise, then activation), re-walks it
  * and sends the snapshot; it writes nothing, but it moves focus, so it is gated like write and press.
- * The calendar verbs (B16) reach EventKit, which needs a native process. They touch no app window, so act
- * grants do not cover them; the reader answers them only when started with --calendar-test, and then only
- * in calendars it created itself on a local (On My Mac) source, which `calendarDispose` deletes. It never
- * asks for Calendar access: without it, or without a local source, the answer is `blocked`.
+ * The calendar verbs (B16) reach EventKit, which needs a native process. The reader answers them only when
+ * started with --calendar-test, and then only in calendars it created itself on a local (On My Mac)
+ * source, which `calendarDispose` deletes. A write (add, remove, dispose) names its task and needs that
+ * task's live CalendarGrant, checked right before the write. It never asks for Calendar access: without
+ * it, or without a local source, the answer is `blocked`.
  */
 /** One event in a calendar, as the calendar verbs name it: times are ISO 8601 with offset. */
 const CalendarSlot = { calendar: z.string().min(1), title: z.string(), start: z.iso.datetime({ offset: true }), end: z.iso.datetime({ offset: true }) };
@@ -219,14 +220,14 @@ export const ReaderCommand = z.object({
     z.object({ kind: z.literal("raise"), pid: z.number().int(), windowId: z.string(), taskId: GrantTask }),
     /** The event with this title, start and end in the reader's calendar of this name, if any. */
     z.object({ kind: z.literal("calendarFind"), ...CalendarSlot }),
-    /** Adds the event, creating the calendar on a local source first if the reader has not yet. */
-    z.object({ kind: z.literal("calendarAdd"), ...CalendarSlot }),
-    /** One event by id, if it is in a calendar the reader created. */
+    /** Adds the event, creating the calendar on a local source first if the reader has not yet; an identical event already there is returned instead. */
+    z.object({ kind: z.literal("calendarAdd"), ...CalendarSlot, taskId: z.string().min(1) }),
+    /** One event by id, only if it is one the reader added. */
     z.object({ kind: z.literal("calendarGet"), id: z.string().min(1) }),
-    /** Removes an event by id, only from a calendar the reader created. */
-    z.object({ kind: z.literal("calendarRemove"), id: z.string().min(1) }),
+    /** Removes an event by id, only one the reader added. */
+    z.object({ kind: z.literal("calendarRemove"), id: z.string().min(1), taskId: z.string().min(1) }),
     /** Deletes the calendar of this name the reader created, with its events. Nothing else is touched. */
-    z.object({ kind: z.literal("calendarDispose"), calendar: z.string().min(1) }),
+    z.object({ kind: z.literal("calendarDispose"), calendar: z.string().min(1), taskId: z.string().min(1) }),
   ]),
 });
 export type ReaderCommand = z.infer<typeof ReaderCommand>;
@@ -267,7 +268,17 @@ export const ActGrant = z
   });
 export type ActGrant = z.infer<typeof ActGrant>;
 
-/** Ends a task's act grant: the run finished, paused, was stopped or taken over, or its undo finished. */
+/**
+ * Lets the reader write to its calendars for one task until `expires`, at most GRANT_MAX_MS after `at`.
+ * The helper sends it only for a task from an accepted offer, before the task's first calendar write and
+ * again for its undo; the task's actRevoke ends it with the act grant.
+ */
+export const CalendarGrant = z
+  .object({ type: z.literal("calendarGrant"), v: z.literal(PROTOCOL_VERSION), taskId: z.string().min(1), at: ms, expires: ms })
+  .refine((g) => g.expires > g.at && g.expires - g.at <= GRANT_MAX_MS, { message: `expires must be after at and at most ${GRANT_MAX_MS} ms after it`, path: ["expires"] });
+export type CalendarGrant = z.infer<typeof CalendarGrant>;
+
+/** Ends a task's act grant and calendar grant: the run finished, paused, was stopped or taken over, or its undo finished. */
 export const ActRevoke = z.object({
   type: z.literal("actRevoke"),
   v: z.literal(PROTOCOL_VERSION),
@@ -1031,12 +1042,13 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  * `untracedValue`: a value that no window, memory entry or the instruction shows verbatim.
  * `stepAfterHandoff`: a step after the press handed to the user. `riskMismatch`: a hand-off whose reason
  * is not the one the risk table gives its control. `unavailable`: Jev is off, the helper is in shadow
- * mode, Caret is paused, or no reader is connected. `jevFailed`: the Jev request failed. `internal`: the
+ * mode, Caret is paused, or no reader is connected. `jevFailed`: the Jev request failed. `privacy`: the
+ * question would carry more of a window than one Jev request may (privacy.ts), so it was not asked. `internal`: the
  * planner failed in a way no other code names; the helper logged why.
  */
 export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
-  "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "internal",
+  "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 
@@ -1084,7 +1096,7 @@ export const HelperMessage = z.discriminatedUnion("type", [
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
 /** What the helper sends the reader. A consumer can send none of these: ConsumerMessage refuses them. */
-export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand, ActGrant, ActRevoke]);
+export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand, ActGrant, ActRevoke, CalendarGrant]);
 export type HelperToReader = z.infer<typeof HelperToReader>;
 export type HelperMessage = z.infer<typeof HelperMessage>;
 
