@@ -435,9 +435,26 @@ export function cutKinds(model: ScreenModel, cut: readonly string[], offered: re
   for (const id of cut) {
     const w = model.windows.get(id);
     if (w === undefined) continue;
-    for (const v of w.values) if (w.nodes.has(v.nodeKey) && !taken.includes(v.text)) for (const k of valueKinds(v)) out.add(k);
+    for (const v of w.values) if (w.nodes.has(v.nodeKey) && !holdsWhole(taken, v.text)) for (const k of valueKinds(v)) out.add(k);
   }
   return out;
+}
+
+/** A character that can continue a value: a letter, a digit, or one of an email's or a web address's joining marks. */
+const VALUE_CHAR = /[\p{L}\p{N}@._%+\-/:]/u;
+
+/**
+ * Whether the text holds the value as a whole token, with no value character either side of it. A plain
+ * substring search found "a@example.com" inside "dana@example.com", so a cut email counted as offered
+ * when only another address was (B13 review).
+ */
+function holdsWhole(text: string, value: string): boolean {
+  for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
+    const before = text[at - 1];
+    const after = text[at + value.length];
+    if ((before === undefined || !VALUE_CHAR.test(before)) && (after === undefined || !VALUE_CHAR.test(after))) return true;
+  }
+  return false;
 }
 
 /** The kinds of the reader's typed values a candidate's text holds, its own kind included. */

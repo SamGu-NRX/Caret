@@ -127,6 +127,14 @@ interface Task {
   sourced: { text: string; windowId: string; window: WindowState | undefined }[];
 }
 
+/**
+ * Lets go of the source windows a task kept, once it can no longer ask a target question: tasks stay in
+ * the executor's map for undo, which needs only the write ledger, and a kept window holds all its nodes.
+ */
+function releaseSources(task: Task): void {
+  task.sourced = task.sourced.map((v) => ({ ...v, window: undefined }));
+}
+
 class StepStop extends Error {
   readonly outcome: "stopped" | "handoff";
   /** A stop caused by the screen changing under the task, not by a mismatch after Caret acted. */
@@ -262,6 +270,7 @@ export class Executor {
     const task = this.need(taskId);
     if (task.finished === "paused") {
       task.finished = "stopped";
+      releaseSources(task);
       this.progress(task, "stopped", task.next, `stopped by you before step ${task.next + 1} of ${task.plan.steps.length}`, "you");
       return;
     }
@@ -299,6 +308,7 @@ export class Executor {
     // A paused run whose writes are being restored cannot continue from where it was, so it stops
     // being resumable before the first restore is awaited.
     if (task.finished === "paused") task.finished = "stopped";
+    releaseSources(task);
     task.undoing = true;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
@@ -378,6 +388,7 @@ export class Executor {
       this.progress(task, outcome === "handoff" ? "handoff" : "stopped", i, detail, e instanceof StepStop ? e.by : "caret");
       return this.result(task, outcome, i, detail);
     } finally {
+      if (task.finished !== null && task.finished !== "paused") releaseSources(task);
       await this.updateWatch();
     }
   }

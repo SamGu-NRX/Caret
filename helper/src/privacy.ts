@@ -189,6 +189,13 @@ export class SnippetLedger {
   private readonly known = new Map<string, WindowState>();
   /** Every known window's lines by their first CONTAINED_MIN characters: each line, and the windows that show it. */
   private index: LineIndex | null = null;
+  /**
+   * What each text reveals, worked out once per ledger: the lines it holds, with their windows, and the
+   * windows that show it inside a line. The generator prices each kind of a conversation again after
+   * every take, and takes the one it priced, so the same texts are looked up many times (B13 review:
+   * 25 to 29 ms per pricing of 40 texts over eight windows of 5,000 lines).
+   */
+  private readonly reveals = new Map<string, { lines: [string, string[]][]; shownBy: string[] }>();
   readonly snippets: Snippet[] = [];
 
   /** `windows`: every window whose lines a request's text could reveal, normally all of the screen model's. */
@@ -208,6 +215,17 @@ export class SnippetLedger {
     if (this.known.has(w.window.windowId)) return;
     this.known.set(w.window.windowId, w);
     this.index = null;
+    this.reveals.clear();
+  }
+
+  private revealed(t: string): { lines: [string, string[]][]; shownBy: string[] } {
+    let r = this.reveals.get(t);
+    if (r !== undefined) return r;
+    const shownBy: string[] = [];
+    if (t.length >= CONTAINED_MIN) for (const [wid, w] of this.known) if (windowText(w).joined.includes(t)) shownBy.push(wid);
+    r = { lines: this.contained(t), shownBy };
+    this.reveals.set(t, r);
+    return r;
   }
 
   private lineIndex(): LineIndex {
@@ -264,12 +282,12 @@ export class SnippetLedger {
     };
     for (const t of fresh) {
       if (from !== null) charge(from.window.windowId, t);
+      const r = this.revealed(t);
       // Every line the text holds, in whichever window shows it.
-      for (const [l, ids] of this.contained(t)) for (const wid of ids) charge(wid, l);
+      for (const [l, ids] of r.lines) for (const wid of ids) charge(wid, l);
       // And every other window that shows the text inside a line: a value taken from a card that a chat
       // message also quotes reveals that much of the chat.
-      if (t.length < CONTAINED_MIN) continue;
-      for (const [wid, w] of this.known) if (wid !== from?.window.windowId && windowText(w).joined.includes(t)) charge(wid, t);
+      for (const wid of r.shownBy) if (wid !== from?.window.windowId) charge(wid, t);
     }
     for (const [wid, a] of adds) {
       const e = this.entries.get(wid) as Entry;

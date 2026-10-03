@@ -55,6 +55,25 @@ const { values: a } = parseArgs({
 });
 /** The run stops before spending more than this on Jev. B13's brief allows $0.30. */
 const SPEND_LIMIT_USD = 0.29;
+
+/**
+ * The earlier run to compare with, read before any request so a bad file costs nothing; a file that is
+ * not a replay's JSON is reported and left out rather than stopping the run.
+ */
+type EarlierRow = Pick<FillRow, "set" | "variant" | "rule" | "fix" | "form" | "label" | "gold" | "proposed">;
+const earlier: { fillRows: EarlierRow[] } | null = (() => {
+  if (a.compare === undefined || a.compare === "") return null;
+  try {
+    const d = JSON.parse(readFileSync(a.compare, "utf8")) as { fillRows?: unknown };
+    const rows = d.fillRows;
+    const ok = Array.isArray(rows) && rows.length > 0 && rows.every((r) => typeof r === "object" && r !== null && ["set", "variant", "rule", "fix", "form", "label"].every((k) => typeof (r as Record<string, unknown>)[k] === "string"));
+    if (!ok) throw new Error("its fillRows are missing or malformed");
+    return d as NonNullable<typeof earlier>;
+  } catch (e) {
+    process.stderr.write(`--compare ${a.compare} left out: ${e instanceof Error ? e.message : String(e)}\n`);
+    return null;
+  }
+})();
 if (a.out === undefined) throw new Error("--out is required");
 mkdirSync(a.out, { recursive: true });
 
@@ -410,25 +429,19 @@ for (const variant of VARIANTS.filter((v) => v !== "as recorded")) for (const fi
 lines.push("", "Conversation sign of each window as replayed (conversation.ts):", "");
 for (const [w, s] of Object.entries(sourceSigns)) lines.push(`- ${w}: ${s ?? "not a conversation"}`);
 
-// Against the earlier run (--compare): the same sets, variants and rule, its main fix against B13.
-interface Earlier { fillRows: FillRow[] }
-const earlier: Earlier | null = (() => {
-  try {
-    return JSON.parse(readFileSync(a.compare ?? "", "utf8")) as Earlier;
-  } catch {
-    return null;
-  }
-})();
+// Against the earlier run (--compare): its main fix against B13, over the fields both runs asked.
 if (earlier !== null) {
   const mainFix = earlier.fillRows[0]?.fix ?? "";
-  const old = (variant: string, rule: string): FillRow[] => earlier.fillRows.filter((r) => r.variant === variant && r.rule === rule && r.fix === mainFix);
+  const key = (r: EarlierRow): string => `${r.set}\u0000${r.variant}\u0000${r.rule}\u0000${r.form}\u0000${r.label}`;
+  const asked = new Set(fillRows.filter((r) => r.fix === "B13").map(key));
+  const old = (variant: string, rule: string): EarlierRow[] => earlier.fillRows.filter((r) => r.variant === variant && r.rule === rule && r.fix === mainFix && asked.has(key(r)));
   lines.push("", `### Against the earlier run (${mainFix}, ${a.compare})`, "", `| Variant | Rule | Answerable filled, ${mainFix} | Answerable filled, B13 | Wrong, ${mainFix} | Wrong, B13 |`, "|---|---|---|---|---|---|");
   for (const variant of VARIANTS) for (const on of CAPS) {
     const was = old(variant, capName(on));
     const now = conditionRows(variant, on, "B13");
     if (was.length === 0 || now.length === 0) continue;
-    const filled = (rows: FillRow[]): string => pct(rows.filter((r) => r.gold !== null && r.proposed === r.gold).length, rows.filter((r) => r.gold !== null).length);
-    const wrong = (rows: FillRow[]): number => rows.filter((r) => r.proposed !== null && r.proposed !== r.gold).length;
+    const filled = (rows: readonly EarlierRow[]): string => pct(rows.filter((r) => r.gold !== null && r.proposed === r.gold).length, rows.filter((r) => r.gold !== null).length);
+    const wrong = (rows: readonly EarlierRow[]): number => rows.filter((r) => r.proposed !== null && r.proposed !== r.gold).length;
     lines.push(`| ${variant} | ${capName(on)} | ${filled(was)} | ${filled(now)} | ${wrong(was)} | ${wrong(now)} |`);
   }
   lines.push("", `#### Fields that changed against ${mainFix} (rule on)`, "", `| Set | Variant | Form | Field | Gold | ${mainFix} | B13 | B13 withheld |`, "|---|---|---|---|---|---|---|---|");

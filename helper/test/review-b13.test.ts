@@ -114,7 +114,8 @@ describe("B13 review: no wrong fill from a partial set", () => {
     const labels = ["Start time", "Meeting date"];
     m.apply(scheduleForm(2000, labels));
     const ledger = new SnippetLedger(m.windows.values());
-    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])) });
+    // No time budget, so only the cap stops it: under a loaded test run the 15 ms clock can stop it first.
+    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])), budgetMs: Number.POSITIVE_INFINITY });
     expect(candidates).toHaveLength(80);
     expect(candidates.map((c) => c.text)).toContain(DECOY);
     expect(candidates.map((c) => c.text)).not.toContain(MEETING);
@@ -139,6 +140,35 @@ describe("B13 review: no wrong fill from a partial set", () => {
     // B12 asked it, and the untyped pick went through.
     const b12 = await proposeFill(m, jev, FORM, FORM_KEY("When"), 3000, { unknownKindRule: false });
     expect(fieldOf(b12, "When")?.value).toBe("Design review");
+  });
+});
+
+describe("B13 second review: the fixes' own gaps", () => {
+  it("a field of no kind is not asked when a cut took an untyped line", async () => {
+    // The chat's only line is the name; with its title it is more than the chat's budget.
+    const m = new ScreenModel();
+    m.apply(snap([text(`${CHAT}/n`, "Name: Dana Whitfield")], { at: 1000, windowId: CHAT, title: "Thread with Dana Whitfield", app: MESSAGES }));
+    m.apply(snap([text("notes/0", "Name: Alex Raman")], { at: 1200, windowId: "6464-1", title: "Notes", app: NOTES }));
+    m.apply(scheduleForm(2000, ["Name"]));
+    const jev = fallthrough({ Name: ["Dana Whitfield", "Alex Raman"] });
+    const p = await proposeFill(m, jev, FORM, FORM_KEY("Name"), 3000);
+    expect(fieldOf(p, "Name")?.value).toBeNull();
+    expect(fieldOf(p, "Name")?.withheld).toBe("sourceCut");
+  });
+
+  it("an email cut from a chat is not made whole by a longer address that ends the same", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([text(`${CHAT}/e`, "Email: a@example.com"), text(`${CHAT}/k`, "ok")], { at: 1000, windowId: CHAT, title: "Kofi", app: MESSAGES, values: [value("email", "a@example.com", `${CHAT}/e`)] }));
+    m.apply(snap([text("notes/0", "dana@example.com")], { at: 1200, windowId: "6464-1", title: "Notes", app: NOTES, values: [value("email", "dana@example.com", "notes/0")] }));
+    m.apply(scheduleForm(2000, ["Email"]));
+    const ledger = new SnippetLedger(m.windows.values());
+    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Email"])] });
+    expect(cut).toContain(CHAT);
+    expect(candidates.map((c) => c.text)).toContain("dana@example.com");
+    expect(candidates.map((c) => c.text)).not.toContain("a@example.com");
+    const p = await proposeFill(m, fallthrough({ Email: ["a@example.com", "dana@example.com"] }), FORM, FORM_KEY("Email"), 3000);
+    expect(fieldOf(p, "Email")?.value).toBeNull();
+    expect(fieldOf(p, "Email")?.withheld).toBe("sourceCut");
   });
 });
 

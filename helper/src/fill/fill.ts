@@ -190,8 +190,11 @@ export async function proposeFill(
   const isCut = (kinds: ReadonlySet<ValueKind>): boolean => [...kinds].some((k) => removed.has(k));
   // A field whose label names no kind (kinds.ts) could want a value of any kind, so any cut may have
   // taken its value: a "When" field was asked after a cut took the dates, and filled with a note's
-  // untyped "Design review" (B13 review). Such a field is not asked while anything was cut.
-  const fieldCut = (f: { kinds: ReadonlySet<ValueKind> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? removed.size > 0 : isCut(f.kinds));
+  // untyped "Design review"; a "Name" field, after a cut took a chat's only line, "Name: Dana
+  // Whitfield", with another window's name (B13 reviews). Such a field is not asked while any window was
+  // cut. On real screens a large chat is cut on most fills, so this blanks most name and company fields
+  // there; no run has measured how many.
+  const fieldCut = (f: { kinds: ReadonlySet<ValueKind> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? cut.length > 0 : isCut(f.kinds));
   // With every candidate cut away there is nothing to ask about.
   const asked = candidates.length === 0 ? [] : fields.filter((f) => !fieldCut(f));
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
