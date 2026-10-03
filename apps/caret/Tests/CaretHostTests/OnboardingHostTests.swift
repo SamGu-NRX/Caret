@@ -34,8 +34,7 @@ final class OnboardingHostTests: XCTestCase {
         XCTAssertFalse(text.contains("\u{2014}"), "em dash")
         XCTAssertFalse(text.contains("\u{2013}"), "en dash")
         XCTAssertFalse(text.contains("Text stays on this Mac"))
-        XCTAssertTrue(text.contains("sends short snippets"))
-        XCTAssertTrue(text.contains("Never whole windows."))
+        XCTAssertFalse(text.contains("Never whole windows."))
         let literals = try NSRegularExpression(pattern: #"(?:Text|Button|ScreenTitle\(title:|detail:|SectionLabel\(text:)\(?"([^"\\]*)""#)
         let shown = literals.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { Range($0.range(at: 1), in: text).map { String(text[$0]) } }
         XCTAssertGreaterThan(shown.count, 12, "the pattern must find the copy")
@@ -44,6 +43,15 @@ final class OnboardingHostTests: XCTestCase {
             let letters = line.filter(\.isLetter)
             XCTAssertFalse(letters.count >= 2 && letters == letters.uppercased(), "all caps: \(line)")
         }
+    }
+
+    /// The privacy line, word for word (A10 brief). A change to it is a product decision, not a
+    /// copy edit, so it fails here first.
+    func testThePrivacyLineIsPinned() {
+        XCTAssertEqual(
+            PermissionsScreen.privacyLine,
+            "To decide what to offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might fill. Never a whole document or conversation. The next words are written on this Mac."
+        )
     }
 
     // MARK: - Keys

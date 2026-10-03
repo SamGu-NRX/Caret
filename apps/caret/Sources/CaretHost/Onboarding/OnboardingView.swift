@@ -363,6 +363,10 @@ struct LevelPicker: View {
 // MARK: - 3. Permissions
 
 struct PermissionsScreen: View {
+    /// What leaves the Mac, as B10's privacy test bounds it: field descriptors and candidate
+    /// values, never a whole window's text, and a conversation never whole (B11's cap).
+    static let privacyLine = "To decide what to offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might fill. Never a whole document or conversation. The next words are written on this Mac."
+
     var state: OnboardingFlow.State
     var animated: Bool
     var send: (OnboardingFlow.Event) -> Void
@@ -392,7 +396,7 @@ struct PermissionsScreen: View {
             .padding(.top, 18)
             VStack(alignment: .leading, spacing: 4) {
                 SectionLabel(text: "What leaves this Mac")
-                Text("To decide what to offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might fill. Never whole windows. The next words are written on this Mac.")
+                Text(Self.privacyLine)
                     .font(.system(size: 12))
                     .foregroundStyle(Color(token: Tokens.secondary))
                     .fixedSize(horizontal: false, vertical: true)
