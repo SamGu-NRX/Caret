@@ -31,7 +31,7 @@ import { proposeFill } from "../src/fill/fill.ts";
 import { JEV_MODEL, loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../src/fill/jev.ts";
 import { heldAsConversation, setConversationCap } from "../src/privacy.ts";
 import { conversationSign } from "../src/conversation.ts";
-import { PROTOCOL_VERSION, ReaderMessage, Snapshot, type FirstLookReply, type Frame, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, ReaderMessage, Snapshot, type FirstLookReply, type Frame, type ReaderVerb, type ValueKind, type VerbResult } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
 import { loadRecording } from "../test/socket-reader.ts";
 import { agentThreads, chatWindow, notesWindow, shortChats } from "../test/desks.ts";
@@ -119,6 +119,51 @@ function relabel(m: ReaderMessage, pid: number): ReaderMessage {
   return { ...m, app: { pid, ...MESSAGES } };
 }
 
+/**
+ * Twenty-four earlier messages, each with values of the kinds the forms take (dates, times, amounts, emails,
+ * phones, URLs, addresses, IDs), as the reader would report them. Put above a source window's own text,
+ * they make each Messages window hold more values of those kinds than its budget, which is where a cut
+ * splits a kind and the cut rule has to act. Invented, like the fixture.
+ */
+const EARLIER: [string, [ValueKind, string][]][] = [
+  ["Kofi: the venue deposit of $240.00 is due September 30, 2026", [["amount", "$240.00"], ["date", "September 30, 2026"]]],
+  ["Aiko: call me at +1 (737) 555-0110 after 4:30 PM", [["phone", "+1 (737) 555-0110"], ["time", "4:30 PM"]]],
+  ["Kofi: plan is at https://docs.example.com/q4-plan", [["url", "https://docs.example.com/q4-plan"]]],
+  ["Aiko: cc mara.okafor@example.org on INV-2026-0912", [["email", "mara.okafor@example.org"], ["id", "INV-2026-0912"]]],
+  ["Kofi: ship to 88 Rainey St, Austin, TX 78701 by Monday, October 12, 2026", [["address", "88 Rainey St, Austin, TX 78701"], ["date", "Monday, October 12, 2026"]]],
+  ["Aiko: standup moves to 9:15 AM on Tuesday, October 6, 2026", [["time", "9:15 AM"], ["date", "Tuesday, October 6, 2026"]]],
+  ["Kofi: the refund was $72.40, ref RFD-2026-3317", [["amount", "$72.40"], ["id", "RFD-2026-3317"]]],
+  ["Aiko: new number is +1 (512) 555-0187", [["phone", "+1 (512) 555-0187"]]],
+  ["Kofi: slides at https://slides.example.com/kickoff", [["url", "https://slides.example.com/kickoff"]]],
+  ["Aiko: write to kofi.mensah@example.net for the badge", [["email", "kofi.mensah@example.net"]]],
+  ["Kofi: room hold ends 5:45 PM, Wednesday, October 14, 2026", [["time", "5:45 PM"], ["date", "Wednesday, October 14, 2026"]]],
+  ["Aiko: parking is $18.00 at 301 Brazos St, Austin, TX 78701", [["amount", "$18.00"], ["address", "301 Brazos St, Austin, TX 78701"]]],
+  ["Kofi: invoice INV-2026-1044 for $1,180.00 went out Friday, September 25, 2026", [["id", "INV-2026-1044"], ["amount", "$1,180.00"], ["date", "Friday, September 25, 2026"]]],
+  ["Aiko: Lena's cell is +1 (512) 555-0163", [["phone", "+1 (512) 555-0163"]]],
+  ["Kofi: lena.ortiz@lumenlabs.example wants the deck by 2:00 PM", [["email", "lena.ortiz@lumenlabs.example"], ["time", "2:00 PM"]]],
+  ["Aiko: the portal is https://lumenlabs.example/portal", [["url", "https://lumenlabs.example/portal"]]],
+  ["Kofi: return label goes to 1450 Lamar Blvd, Austin, TX 78703", [["address", "1450 Lamar Blvd, Austin, TX 78703"]]],
+  ["Aiko: ticket SUP-31877 says the total was $1,351.50", [["id", "SUP-31877"], ["amount", "$1,351.50"]]],
+  ["Kofi: retro is Thursday, October 15, 2026 at 3:30 PM", [["date", "Thursday, October 15, 2026"], ["time", "3:30 PM"]]],
+  ["Aiko: join at https://meet.example.com/rtv-pkq-wzd", [["url", "https://meet.example.com/rtv-pkq-wzd"]]],
+  ["Kofi: ordered on September 21, 2026 as ORD-2026-47950", [["date", "September 21, 2026"], ["id", "ORD-2026-47950"]]],
+  ["Aiko: billing contact is ap@lumenlabs.example", [["email", "ap@lumenlabs.example"]]],
+  ["Kofi: their front desk is +1 (512) 555-0100", [["phone", "+1 (512) 555-0100"]]],
+  ["Aiko: lunch order came to $64.25", [["amount", "$64.25"]]],
+];
+
+function withEarlier(m: ReaderMessage): ReaderMessage {
+  if (m.type !== "snapshot" || m.root !== null || !SOURCE_TITLES.test(m.window.title)) return m;
+  const group = "dev.caret.replay/standard/group:earlier~0";
+  const nodes = EARLIER.map(([line], i) => ({ key: `${group}/statictext:${i}~0`, parent: group, role: "AXStaticText", label: line }));
+  const values = EARLIER.flatMap(([, vs], i) => vs.map(([kind, text]) => ({ kind, text, nodeKey: `${group}/statictext:${i}~0` })));
+  return { ...m, nodes: [{ key: group, parent: null, role: "AXGroup", label: "Earlier messages" }, ...nodes, ...m.nodes], values: [...values, ...m.values] };
+}
+
+const VARIANTS = ["as recorded", "sources in Messages", "long Messages threads"] as const;
+type Variant = (typeof VARIANTS)[number];
+const toVariant = (v: Variant, m: ReaderMessage, pid: number): ReaderMessage => (v === "as recorded" ? m : v === "sources in Messages" ? relabel(m, pid) : relabel(withEarlier(m), pid));
+
 const center = (f: Frame): [number, number] => [f[0] + f[2] / 2, f[1] + f[3] / 2];
 const inside = (p: [number, number], f: Frame): boolean => p[0] >= f[0] && p[0] <= f[0] + f[2] && p[1] >= f[1] && p[1] <= f[1] + f[3];
 const hashSeed = (s: string): number => [...s].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7);
@@ -132,17 +177,19 @@ for (const set of (a.sets ?? "").split(",").filter((s) => s !== "")) {
   const latest = new Map<string, Snapshot>();
   for (const m of messages) if (m.type === "snapshot" && m.root === null) latest.set(m.window.title, m);
   const last = Math.max(...messages.map((m) => ("at" in m ? m.at : 0)));
-  for (const variant of ["as recorded", "sources in Messages"] as const) {
+  for (const variant of VARIANTS) {
     for (const on of CAPS) {
       for (const fix of FIXES) {
-        if (fix.name !== "B12" && !(variant === "sources in Messages" && on)) continue;
+        // The comparison runs where conversations are cut: the Messages variants with the rule on.
+        if (fix.name !== "B12" && !(variant !== "as recorded" && on)) continue;
+        if (variant === "long Messages threads" && (!on || fix.name === "cut rule only")) continue;
         setConversationCap(on);
         part = "fill";
         condition = `${variant}, ${capName(on)}, ${fix.name}`;
         const model = new ScreenModel();
         current = model;
         for (const m of messages) {
-          const x = variant === "as recorded" ? m : relabel(m, gold.pid + 1);
+          const x = toVariant(variant, m, gold.pid + 1);
           if (x.type === "snapshot") model.apply(x);
           else if (x.type === "windowClosed") model.close(x.windowId, x.at);
         }
@@ -280,13 +327,13 @@ const lines: string[] = ["# Live-Jev replay, conversation rule on and off", "", 
 
 lines.push("## Fill over the calibration recordings", "", `Sets: ${a.sets}. One proposeFill per form per condition (two asks each), candidate order seeded per set and form.`, "");
 lines.push(
-  "Fix: B12 is relevance-first spending plus the source-cut rule. The four variants run with B12; with the sources in Messages and the rule on, fill also runs without either change, and with each alone.",
+  "Fix: B12 is relevance-first spending plus the source-cut rule. The four variants of B11 (as recorded and sources in Messages, rule on and off) run with B12; with the sources in Messages and the rule on, fill also runs without either change, and with each alone. \"long Messages threads\" adds twenty-four earlier messages full of dates, times, amounts, emails, phones, URLs, addresses and IDs above each Messages source window (EARLIER in the script), so the budget cannot hold every value of a kind and the cut rule has to act; it runs with the rule on, B12 against relevance only and neither.",
   "",
   "| Variant | Rule | Fix | Exact | Wrong fills | Answerable filled | Missed | Withheld (disagree / low / source cut) | Most chars from one source window | Most from one conversation | Latency per ask p50 / p90 ms | Input tokens | Spend |",
   "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
 );
 const conditionRows = (variant: string, on: boolean, fix: string): FillRow[] => fillRows.filter((r) => r.variant === variant && r.rule === capName(on) && r.fix === fix);
-for (const variant of ["as recorded", "sources in Messages"]) {
+for (const variant of VARIANTS) {
   for (const on of CAPS) {
     for (const fix of FIXES) {
       const rows = conditionRows(variant, on, fix.name);
@@ -317,15 +364,15 @@ for (const r of fillRows.filter((x) => x.proposed !== null && x.proposed !== x.g
 const SWEEP = [0.75, 0.8, 0.85, 0.9, 0.95];
 lines.push(
   "",
-  "### A higher cutoff for values from conversations, over the same answers (sources in Messages, rule on)",
+  "### A higher cutoff for values from conversations, over the same answers (rule on)",
   "",
   `A value from a conversation is kept only at or above the cutoff; others keep ${0.75}. Cells: wrong fills, answerable filled.`,
   "",
-  `| Fix | ${SWEEP.map((c) => `cutoff ${c.toFixed(2)}`).join(" | ")} |`,
-  `|---|${SWEEP.map(() => "---").join("|")}|`,
+  `| Variant | Fix | ${SWEEP.map((c) => `cutoff ${c.toFixed(2)}`).join(" | ")} |`,
+  `|---|---|${SWEEP.map(() => "---").join("|")}|`,
 );
-for (const fix of FIXES) {
-  const rows = conditionRows("sources in Messages", true, fix.name);
+for (const variant of VARIANTS.filter((v) => v !== "as recorded")) for (const fix of FIXES) {
+  const rows = conditionRows(variant, true, fix.name);
   if (rows.length === 0) continue;
   const cells = SWEEP.map((c) => {
     const kept = rows.map((r) => (r.proposed !== null && r.fromConversation && r.confidence < c ? null : r.proposed));
@@ -334,7 +381,7 @@ for (const fix of FIXES) {
     const filled = rows.filter((r, i) => r.gold !== null && kept[i] === r.gold).length;
     return `${wrong}, ${pct(filled, answerable)}`;
   });
-  lines.push(`| ${fix.name} | ${cells.join(" | ")} |`);
+  lines.push(`| ${variant} | ${fix.name} | ${cells.join(" | ")} |`);
 }
 
 lines.push("", "Conversation sign of each window as replayed (conversation.ts):", "");

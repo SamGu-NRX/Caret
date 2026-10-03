@@ -171,7 +171,7 @@ export async function proposeFill(
     ...(opts.exclude === undefined ? {} : { exclude: opts.exclude }),
     ...(opts.relevance === false ? {} : { fields: fields.map((f) => f.terms) }),
   });
-  if (candidates.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
+  if (candidates.length === 0 && cut.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
 
   // A window's budget can cut the value a field wants and keep another of the same kind: with the
   // calibration sources as Messages windows, the cap cut the meeting block and Jev filled Meeting date
@@ -181,7 +181,8 @@ export async function proposeFill(
   // fill costs their trust.
   const removed = opts.cutRule === false ? new Set<ValueKind>() : cutKinds(model, cut, ledger);
   const isCut = (kinds: ReadonlySet<ValueKind>): boolean => [...kinds].some((k) => removed.has(k));
-  const asked = fields.filter((f) => !isCut(f.kinds));
+  // With every candidate cut away there is nothing to ask about.
+  const asked = candidates.length === 0 ? [] : fields.filter((f) => !isCut(f.kinds));
 
   // The second ask sees the same candidates in another order under other ids, so neither position
   // nor id can carry a choice from one ask to the other. Windows keep their recency order and only
