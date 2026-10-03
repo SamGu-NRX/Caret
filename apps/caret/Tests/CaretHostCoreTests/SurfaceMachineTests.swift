@@ -448,6 +448,16 @@ final class SurfaceMachineTests: XCTestCase {
                 .offer(Fx.alternatives(candidates: [String(repeating: "w", count: 40)])),
                 .expect(.held(nil)), .expect(.shown(nil)), .expect(.counted("surface.held.wouldOverlapText")),
             ]),
+            Transition("in a field holding text, a caret estimated flush with its bottom edge still shows them", [
+                .screen {
+                    $0.front()
+                    $0.focused[Fx.app] = Fx.field(.email, value: "Dana ")
+                    let email = Fx.Element.email.frame
+                    $0.caretOverride[Fx.app] = .at(CGRect(x: email.minX + 39, y: email.maxY - 19, width: 2, height: 19))
+                },
+                .offer(Fx.alternatives()),
+                .did(["alternatives enter Cara Diaz quoted"]),
+            ]),
             Transition("alternatives take down a result line left on the panel", actionWorking + [
                 .progress("offer-5", .done), .did(["working off", "line Done, in Sheet Fixture"]),
                 .offer(Fx.alternatives()),

@@ -288,10 +288,13 @@ public final class SurfaceMachine {
         if let held = gate(field.identity, anchors: anchors, requireFocus: true) { return hold(incoming, held) }
         let candidates = incoming.candidates
         if !candidates.isEmpty, let frame = field.frame {
-            // Ghost text and its underline stay inside the field, clear of the app's own text:
-            // the widest candidate must fit after the caret with nothing after it.
+            // Ghost text stays inside the field, clear of the app's own text: the widest candidate
+            // must fit after the caret with nothing after it. The caret's own height, not 3 pt
+            // more for the underline: in a single-line field that holds text, KeyType estimates
+            // the caret flush with the field's bottom edge (AXCaretGeometryResolver, single-line
+            // branch), and A10's filled-field run held every alternative as wouldOverlapText.
             let widest = candidates.map { world.textWidth($0, readID: field.readID) }.max() ?? 0
-            let ghostRect = CGRect(x: caret.maxX, y: caret.minY, width: widest, height: caret.height + 3)
+            let ghostRect = CGRect(x: caret.maxX, y: caret.minY, width: widest, height: caret.height)
             let textAfter = field.selection.end < UTF16Text.length(field.value)
             if !SurfaceGate.fitsInField(ghost: ghostRect, field: frame, textAfterCaret: textAfter) {
                 return hold(incoming, .wouldOverlapText, retry: false)
