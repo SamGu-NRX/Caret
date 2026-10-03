@@ -489,12 +489,12 @@ public final class AppWorker: @unchecked Sendable {
     /// role, label and value against what the helper expects, act, wait for the app to settle, and
     /// walk again, so the helper has the new state before the answer arrives. Every recheck fails
     /// closed: an attribute that cannot be read refuses the act. Raise brings a window to the front and
-    /// activates the app, which moves the user's focus, so it is gated like write and press. `mayAct` is
-    /// false unless the reader was started with --act-pids for this app; `expires` is when the helper
-    /// stops waiting.
-    func perform(_ verb: ReaderVerb, mayAct: Bool, expires: Int64, reply: @escaping @Sendable (VerbOutcome, String?) -> Void) {
+    /// activates the app, which moves the user's focus, so it is gated like write and press. `gate` is
+    /// asked before the walk and again right before the act, so a grant that ends during the walk
+    /// still stops it; `expires` is when the helper stops waiting.
+    func perform(_ verb: ReaderVerb, gate: ActGate, expires: Int64, reply: @escaping @Sendable (VerbOutcome, String?) -> Void) {
         queue.async {
-            let (outcome, detail) = self.performNow(verb, mayAct: mayAct, expires: expires)
+            let (outcome, detail) = self.performNow(verb, gate: gate, expires: expires)
             reply(outcome, detail)
         }
     }
@@ -502,7 +502,11 @@ public final class AppWorker: @unchecked Sendable {
     /// Time for the app to apply an act before the window is walked again. Assumed, not measured.
     static let settle: TimeInterval = 0.15
 
-    private func performNow(_ verb: ReaderVerb, mayAct: Bool, expires: Int64) -> (VerbOutcome, String?) {
+    private func performNow(_ verb: ReaderVerb, gate: ActGate, expires: Int64) -> (VerbOutcome, String?) {
+        /// Nil when the verb may act in this window now; otherwise the notAllowed answer.
+        func refused(_ windowId: String) -> (VerbOutcome, String?)? {
+            gate.refusal(taskId: verb.taskId, pid: Int(pid), windowId: windowId).map { (.notAllowed, $0) }
+        }
         switch verb {
         case .watchInput, .watchWindows:
             return (.ok, nil)
@@ -512,8 +516,8 @@ public final class AppWorker: @unchecked Sendable {
             let contexts = windows[w]?.contexts ?? [:]
             windows[w]?.decided = Dictionary(contexts.map { ($0.value.key, $0.key) }, uniquingKeysWith: { a, _ in a })
             return (.ok, nil)
-        case let .write(_, windowId, key, role, attribute, expect, value):
-            guard mayAct else { return (.notAllowed, "the reader was not started with --act-pids \(pid)") }
+        case let .write(_, windowId, key, role, attribute, expect, value, _):
+            if let no = refused(windowId) { return no }
             let found = target(windowId: windowId, key: key, role: role)
             guard case let .success((w, el)) = found else { return found.failure }
             switch AX.read(el, kAXSubroleAttribute) {
@@ -525,6 +529,7 @@ public final class AppWorker: @unchecked Sendable {
             let err: AXError
             if attribute == "focused" {
                 if nowMs() > expires { return (.axError, "the command expired before it could act") }
+                if let no = refused(windowId) { return no }
                 err = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             } else {
                 // The value is read again right before the write, so a change since the walk is caught too.
@@ -538,14 +543,26 @@ public final class AppWorker: @unchecked Sendable {
                 }
                 guard current == expect else { return (.changed, "value is '\(current.prefix(80))'") }
                 if nowMs() > expires { return (.axError, "the command expired before it could act") }
-                err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
+                if let no = refused(windowId) { return no }
+                if attribute == "insert" {
+                    // Each of the insert's three steps may block up to the element timeout, so the deadline
+                    // and the grant are asked again before every one of them.
+                    let stillAllowed: () -> (VerbOutcome, String?)? = {
+                        if nowMs() > expires { return (.axError, "the command expired before it could act") }
+                        return refused(windowId)
+                    }
+                    if let fail = insert(value, into: el, expect: expect, check: stillAllowed) { return fail }
+                    err = .success
+                } else {
+                    err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
+                }
             }
             guard err == .success else { return (.axError, "AXUIElementSetAttributeValue \(err.rawValue)") }
             Thread.sleep(forTimeInterval: Self.settle)
             requestWalk(w)
             return (.ok, nil)
-        case let .press(_, windowId, key, role, label):
-            guard mayAct else { return (.notAllowed, "the reader was not started with --act-pids \(pid)") }
+        case let .press(_, windowId, key, role, label, _):
+            if let no = refused(windowId) { return no }
             let found = target(windowId: windowId, key: key, role: role)
             guard case let .success((w, el)) = found else { return found.failure }
             // The label is read from the element itself, not from the walk, right before the press:
@@ -553,15 +570,17 @@ public final class AppWorker: @unchecked Sendable {
             guard let live = liveLabel(el) else { return (.axError, "cannot read the control's label") }
             guard live.trimmingCharacters(in: .whitespacesAndNewlines) == label else { return (.changed, "label is '\(live.prefix(80))'") }
             if nowMs() > expires { return (.axError, "the command expired before it could act") }
+            if let no = refused(windowId) { return no }
             let err = AXUIElementPerformAction(el, kAXPressAction as CFString)
             guard err == .success else { return (.axError, "AXUIElementPerformAction \(err.rawValue)") }
             Thread.sleep(forTimeInterval: Self.settle)
             requestWalk(w)
             return (.ok, nil)
-        case let .raise(_, windowId):
-            guard mayAct else { return (.notAllowed, "the reader was not started with --act-pids \(pid)") }
+        case let .raise(_, windowId, _):
+            if let no = refused(windowId) { return no }
             guard let w = window(id: windowId) else { return (.noWindow, windowId) }
             if nowMs() > expires { return (.axError, "the command expired before it could act") }
+            if let no = refused(windowId) { return no }
             let err = AXUIElementPerformAction(w.el, kAXRaiseAction as CFString)
             guard err == .success else { return (.axError, "AXUIElementPerformAction \(err.rawValue)") }
             // AXRaise orders the window front within its app; activation brings the app itself forward.
@@ -571,11 +590,52 @@ public final class AppWorker: @unchecked Sendable {
             // forward: macOS 14 may decline a request from a process that is not active itself, and
             // the snapshot that follows is what shows whether it did.
             guard let running = NSRunningApplication(processIdentifier: pid) else { return (.noWindow, "process \(pid) has exited") }
+            // AXRaise can take up to the element timeout; a grant that ended meanwhile stops the activation.
+            if nowMs() > expires { return (.axError, "the command expired before it could activate the app") }
+            if let no = refused(windowId) { return no }
             guard running.activate(options: []) else { return (.axError, "the system refused to activate process \(pid)") }
             Thread.sleep(forTimeInterval: Self.settle)
             requestWalk(w)
             return (.ok, nil)
         }
+    }
+
+    /// Focus and insert: focus the field, select all of its text and replace the selection, as typing over
+    /// it would. Some apps answer an AXValue write with success and change nothing (B15: a web view whose
+    /// window is not key); a selection replacement goes through the editor instead. `check` is asked before
+    /// each step. Focus can run the app's own handlers, and an editor may clamp or ignore a selection, so
+    /// before the replacement the field must still hold `expect` and the selection must be all of it. The
+    /// executor's walk afterwards checks what the field holds. Nil when every step went through.
+    private func insert(_ value: String, into el: AXUIElement, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+        func holdsExpect(_ when: String) -> (VerbOutcome, String?)? {
+            switch AX.read(el, kAXValueAttribute) {
+            case .failed(let e): return (.axError, "insert: cannot read the value \(when) (\(e.rawValue))")
+            case .absent: return expect.isEmpty ? nil : (.changed, "\(when) the field is empty")
+            case .value(let v):
+                guard let now = v as? String else { return (.changed, "\(when) the value is not text") }
+                return now == expect ? nil : (.changed, "\(when) the value is '\(now.prefix(80))'")
+            }
+        }
+        let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        guard f == .success else { return (.axError, "insert: focus failed with \(f.rawValue)") }
+        if let no = holdsExpect("after focus") { return no }
+        if let no = check() { return no }
+        var range = CFRange(location: 0, length: (expect as NSString).length)
+        guard let all = AXValueCreate(.cfRange, &range) else { return (.axError, "insert: cannot make the selection range") }
+        let r = AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, all)
+        guard r == .success else { return (.axError, "insert: select failed with \(r.rawValue)") }
+        if let no = holdsExpect("after selecting") { return no }
+        guard case .value(let sel) = AX.read(el, kAXSelectedTextRangeAttribute), CFGetTypeID(sel) == AXValueGetTypeID() else {
+            return (.axError, "insert: cannot read the selection")
+        }
+        var got = CFRange()
+        guard AXValueGetValue(sel as! AXValue, .cfRange, &got), got.location == 0, got.length == range.length else {
+            return (.changed, "the selection is \(got.location)+\(got.length), not the whole field")
+        }
+        if let no = check() { return no }
+        let w = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, value as CFString)
+        guard w == .success else { return (.axError, "insert: replace failed with \(w.rawValue)") }
+        return nil
     }
 
     private enum Found {
@@ -663,5 +723,23 @@ public final class AppWorker: @unchecked Sendable {
             }
             return out
         }
+    }
+}
+
+/// Whether a verb may act. A process named by --act-pids always may (fixture tests); any other needs a
+/// live act grant for the command's task, process and window, asked at the moment of the check.
+public struct ActGate: Sendable {
+    let actPid: Bool
+    let grants: GrantTable
+
+    public init(actPid: Bool, grants: GrantTable) {
+        self.actPid = actPid
+        self.grants = grants
+    }
+
+    func refusal(taskId: String?, pid: Int, windowId: String) -> String? {
+        if actPid { return nil }
+        guard let why = grants.refusal(taskId: taskId, pid: pid, windowId: windowId, now: nowMs(), uptimeMs: uptimeMs()) else { return nil }
+        return "\(why), and the reader was not started with --act-pids \(pid)"
     }
 }

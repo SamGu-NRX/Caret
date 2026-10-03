@@ -17,9 +17,11 @@ public struct ReaderOptions: Sendable {
     /// When non-empty, only these processes are read. For experiments that must not read anything else.
     public var onlyPids: Set<pid_t> = []
     public var denyList: DenyList
-    /// Processes the executor's write and press verbs may act on. Empty means no process: the reader
-    /// only reads unless it is started with --act-pids naming fixture processes.
+    /// Processes the executor's write, press and raise verbs may act on without a grant, for fixture tests.
+    /// Every other process needs a live act grant from the helper (`grants`).
     public var actPids: Set<pid_t> = []
+    /// The helper's act grants, filled by the socket client as grant lines arrive.
+    public var grants = GrantTable()
     public var pasteboardPoll: TimeInterval = 0.5
     /// False leaves AXManualAccessibility alone. A read-only audit beside another reader sets nothing in
     /// any app; the other reader has already asked Chromium and Electron apps for their trees.
@@ -112,14 +114,14 @@ public final class ScreenReader {
             let unread = byPid.keys.filter { workers[$0] == nil }.sorted()
             answer(.ok, unread.isEmpty ? nil : "not read, so not watched: \(unread.map(String.init).joined(separator: ","))")
             return
-        case let .walk(p, _), let .write(p, _, _, _, _, _, _), let .press(p, _, _, _, _), let .raise(p, _):
+        case let .walk(p, _), let .write(p, _, _, _, _, _, _, _), let .press(p, _, _, _, _, _), let .raise(p, _, _):
             pid = pid_t(p)
         }
         guard let w = workers[pid] else {
             answer(.noWindow, "the reader does not read process \(pid)")
             return
         }
-        w.perform(cmd.verb, mayAct: opts.actPids.contains(pid), expires: cmd.expires, reply: answer)
+        w.perform(cmd.verb, gate: ActGate(actPid: opts.actPids.contains(pid), grants: opts.grants), expires: cmd.expires, reply: answer)
     }
 
     /// Reports real key presses and clicks that land in a watched process, so the executor can pause.

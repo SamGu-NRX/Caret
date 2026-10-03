@@ -1,10 +1,11 @@
 // An in-process stand-in for the reader and one app window, for executor tests. It answers reader
 // verbs the way caret-screen does: recheck the target, act, and send a fresh snapshot before the
 // answer. Buttons run small handlers. Everything here is synthetic.
-import { PROTOCOL_VERSION, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import type { Helper } from "../src/helper.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
 import { FIXTURE_APP, snap } from "./builders.ts";
+import { FakeGrants } from "./fake-grants.ts";
 
 export const WIN = "5150-7";
 export const TITLE = "Fixture — Executor";
@@ -17,8 +18,10 @@ export class FakeApp implements ReaderLink {
   focusedKey: string | null = null;
   readonly verbs: ReaderVerb[] = [];
   readonly buttons = new Map<string, (app: FakeApp) => void>();
-  /** Makes value writes report success while changing nothing, as Chromium does in the background. */
+  /** Makes value writes report success while changing nothing, as a web view whose window is not key does (B15). */
   dropWrites = false;
+  /** The same for focus-and-insert. */
+  dropInserts = false;
   /** Sets the value but answers axError, as a reader that timed out while settling does. */
   timeoutAfterWrite = false;
   /** Answers this many walks with axError first, as a walk cut short by a busy app is. */
@@ -27,6 +30,14 @@ export class FakeApp implements ReaderLink {
   normalize: ((v: string) => string) | null = null;
   /** Called after each verb, so a test can change the app between steps. */
   afterVerb: ((app: FakeApp, v: ReaderVerb) => void) | null = null;
+  /** Called when a verb arrives, before the fake judges it: a control the user sends while the verb is on its way. */
+  beforeVerb: ((app: FakeApp, v: ReaderVerb) => void) | null = null;
+  /** Every grant and revoke the executor sent. */
+  readonly grants = new FakeGrants();
+  /** Refuses write, press and raise without a live grant, as caret-screen without --act-pids does. Off by default. */
+  enforceGrants = false;
+  /** Other windows a test sent itself, which walks re-read as unchanged; the fake acts in none of them. */
+  readonly readable = new Set<string>();
   private at = 1000;
 
   constructor(nodes: Node[]) {
@@ -52,15 +63,22 @@ export class FakeApp implements ReaderLink {
     );
   }
 
+  grant(m: ActGrant | ActRevoke): void {
+    this.grants.receive(m);
+  }
+
   async run(verb: ReaderVerb): Promise<VerbResult> {
     this.verbs.push(verb);
-    const r = this.perform(verb);
+    this.beforeVerb?.(this, verb);
+    const refused = this.enforceGrants ? this.grants.refusal(verb) : null;
+    const r = refused !== null ? { outcome: "notAllowed" as const, detail: refused } : this.perform(verb);
     this.afterVerb?.(this, verb);
     return { type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: this.at, outcome: r.outcome, detail: r.detail };
   }
 
   private perform(verb: ReaderVerb): { outcome: VerbResult["outcome"]; detail: string | null } {
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return { outcome: "ok", detail: null };
+    if (verb.kind === "walk" && this.readable.has(verb.windowId)) return { outcome: "ok", detail: null };
     if (verb.pid !== FIXTURE_APP.pid) return { outcome: "notAllowed", detail: null };
     if (verb.windowId !== WIN) return { outcome: "noWindow", detail: null };
     if (verb.kind === "walk" && this.failWalks > 0) {
@@ -75,9 +93,10 @@ export class FakeApp implements ReaderLink {
     if (n.role !== verb.role) return { outcome: "changed", detail: `role is ${n.role}` };
     if (verb.kind === "write") {
       if (n.states?.includes("secure")) return { outcome: "secure", detail: null };
-      if (verb.attribute === "value") {
+      if (verb.attribute === "value" || verb.attribute === "insert") {
         if ((n.value ?? "") !== verb.expect) return { outcome: "changed", detail: `value is '${n.value ?? ""}'` };
-        if (!this.dropWrites) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
+        if (verb.attribute === "insert") this.focusedKey = verb.key;
+        if (!(verb.attribute === "value" ? this.dropWrites : this.dropInserts)) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
         if (this.timeoutAfterWrite) return { outcome: "axError", detail: "no answer from the reader within 5000 ms" };
       } else this.focusedKey = verb.key;
     } else {

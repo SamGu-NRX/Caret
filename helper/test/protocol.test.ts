@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { AnyMessage, ConsumerMessage, HelperMessage, HelperToReader, Node, ReaderMessage } from "../src/protocol.ts";
+import { AnyMessage, ConsumerMessage, GRANT_MAX_MS, HelperMessage, HelperToReader, Node, ReaderMessage, StopReason } from "../src/protocol.ts";
 import { PLAN_SCHEMA_PATH, renderPlanJsonSchema, renderProtocolJsonSchema, SCHEMA_PATH } from "../src/export-schema.ts";
 import { Plan } from "../src/executor/schema.ts";
 
@@ -18,7 +18,31 @@ describe("golden protocol fixture", () => {
       "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
       "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
       "settings", "settings", "offerWithdrawn",
+      "actGrant", "readerCommand", "verbResult", "actRevoke",
     ]);
+  });
+
+  it("carries B15's act grant: helper to reader only, capped, and a write that names its task", () => {
+    const [grant, write, refused, revoke] = lines.slice(34, 38).map((l) => JSON.parse(l) as Record<string, unknown>);
+    for (const m of [grant, write, revoke]) {
+      expect(HelperToReader.safeParse(m).success).toBe(true);
+      expect(ConsumerMessage.safeParse(m).success).toBe(false);
+      expect(ReaderMessage.safeParse(m).success).toBe(false);
+    }
+    expect(ReaderMessage.parse(refused)).toMatchObject({ outcome: "notAllowed" });
+    expect(HelperToReader.parse(write)).toMatchObject({ verb: { kind: "write", taskId: "offer-5" } });
+    const at = grant?.at as number;
+    expect(HelperToReader.safeParse({ ...grant, expires: at + GRANT_MAX_MS }).success).toBe(true);
+    expect(HelperToReader.safeParse({ ...grant, expires: at + GRANT_MAX_MS + 1 }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...grant, expires: at }).success).toBe(false);
+    for (const bad of [{ taskId: "" }, { windowId: "" }, { taskId: undefined }]) expect(HelperToReader.safeParse({ ...grant, ...bad }).success).toBe(false);
+    const verb = write?.verb as Record<string, unknown>;
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, taskId: null } }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, taskId: "" } }).success).toBe(false);
+    const { taskId: _, ...bare } = verb;
+    expect(HelperToReader.safeParse({ ...write, verb: bare }).success).toBe(true);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "insert" } }).success).toBe(true);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "paste" } }).success).toBe(false);
   });
 
   it("carries the host's window identity, a fill's source apps, and done and undo counts", () => {
@@ -69,6 +93,18 @@ describe("golden protocol fixture", () => {
     expect(HelperMessage.safeParse({ ...line, replacedBy: "" }).success).toBe(false);
     expect(HelperMessage.safeParse({ ...line, reason: "stale" }).success).toBe(false);
     expect(HelperMessage.safeParse({ ...bare, reason: "stale" }).success).toBe(true);
+  });
+
+  it("carries B14's stop reason: a stopped progress says why, and only a stopped one may", () => {
+    const stopped = JSON.parse(lines[12] ?? "") as Record<string, unknown>;
+    const done = JSON.parse(lines[28] ?? "") as Record<string, unknown>;
+    expect(HelperMessage.parse(stopped)).toMatchObject({ type: "taskProgress", phase: "stopped", stopReason: "changed" });
+    const { stopReason: _, ...bare } = stopped;
+    expect(HelperMessage.safeParse(bare).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...stopped, stopReason: "timeout" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...done, stopReason: "you" }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...stopped, phase: "handoff" }).success).toBe(false);
+    for (const r of StopReason.options) expect(HelperMessage.safeParse({ ...stopped, stopReason: r }).success, r).toBe(true);
   });
 
   it("parses every line, and each parse is lossless", () => {

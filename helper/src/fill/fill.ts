@@ -12,7 +12,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type Node, type ValueKind } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
 import { candidateKinds, collectCandidates, cutKinds, describeCandidate, type Candidate } from "./candidates.ts";
-import { fieldKinds, fieldTerms, overlap } from "./kinds.ts";
+import { fieldKinds, fieldTerms, isNameLike, NAME_TERM, overlap } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField } from "./descriptor.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
@@ -142,6 +142,8 @@ export interface FillOptions {
   unknownKindRule?: boolean;
   /** False takes a conversation's kinds in the order the fields want them, as B12 did (candidates.ts kindsByCost). The helper never sets it. */
   kindsByCost?: boolean;
+  /** False leaves a conversation's names ungrouped and their cut unchecked, as B13 did (candidates.ts nameGroup). The helper never sets it. */
+  nameGroup?: boolean;
 }
 
 export async function proposeFill(
@@ -171,12 +173,13 @@ export async function proposeFill(
     const labelWords = [d.label, d.nearest, d.placeholder];
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field", kinds: fieldKinds(labelWords), terms: fieldTerms(labelWords), texts });
   }
-  const { candidates, cut, cutTerms, cutAll } = collectCandidates(model, windowId, {
+  const { candidates, cut, cutTerms, cutAll, namesCut } = collectCandidates(model, windowId, {
     now,
     ledger,
     ...(opts.exclude === undefined ? {} : { exclude: opts.exclude }),
     ...(opts.relevance === false ? {} : { fields: fields.map((f) => f.terms) }),
     ...(opts.kindsByCost === false ? { kindsByCost: false } : {}),
+    ...(opts.nameGroup === false ? { nameGroup: false } : {}),
   });
   if (candidates.length === 0 && cut.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
 
@@ -194,9 +197,16 @@ export async function proposeFill(
   // word with the field's label: a "Name" field was asked after a cut took a chat's only line, "Name: Dana
   // Whitfield", and filled with another window's name (B13 reviews). Withholding it on any cut instead
   // blanked Name on the fill desk, where an unrelated team chat is cut, and lost the desk's first-look
-  // offer (~/.caret-run/evidence/screen/b13/live-final). A bare cut line ("Dana Whitfield") beside a bare
-  // decoy elsewhere is still guarded only by agreement and the cutoff, as before B13.
-  const unknownCut = (f: { terms: ReadonlySet<string> }): boolean => removed.size > 0 || cutAll || overlap(f.terms, cutTerms) > 0;
+  // offer (~/.caret-run/evidence/screen/b13/live-final). A bare cut name ("Dana Whitfield") shares no
+  // word with "Name", so names are handled as a kind (kinds.ts NAME_TERM): a conversation's name-like
+  // lines go in whole or not at all, and namesCut says whether a name may have been kept out (candidates.ts).
+  // Then a field that takes a name is not asked, and no field's name-like pick is proposed, as with a cut
+  // kind (test/name-decoy.test.ts). Like a field of a kind, a field that takes a name is not withheld for
+  // another kind's cut: withholding it then spent the chat's budget on names no field could be asked
+  // about (the calibration chat's links gave way to its names and Attendee job title was still blanked).
+  const nameCut = opts.cutRule !== false && opts.nameGroup !== false && namesCut;
+  const takesName = (f: { terms: ReadonlySet<string> }): boolean => opts.nameGroup !== false && f.terms.has(NAME_TERM);
+  const unknownCut = (f: { terms: ReadonlySet<string> }): boolean => (removed.size > 0 && !takesName(f)) || (nameCut && takesName(f)) || cutAll || overlap(f.terms, cutTerms) > 0;
   const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? unknownCut(f) : isCut(f.kinds));
   // With every candidate cut away there is nothing to ask about.
   const asked = candidates.length === 0 ? [] : fields.filter((f) => !fieldCut(f));
@@ -244,7 +254,7 @@ export async function proposeFill(
         ? null
         : !agree
           ? "disagree"
-          : picked !== undefined && isCut(candidateKinds(model, picked))
+          : picked !== undefined && (isCut(candidateKinds(model, picked)) || (nameCut && isNameLike(picked.text, picked.context)))
             ? "sourceCut"
             : confidence < cutoff
               ? "lowConfidence"

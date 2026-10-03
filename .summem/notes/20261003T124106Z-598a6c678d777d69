@@ -1,0 +1,1 @@
+caret-screen acts only under a helper actGrant (task, pid, window; 120 s max, monotonic); --act-pids is for fixture tests. Only accepted offers get grants (Executor.run opts.grant); a consumer runPlan never does, so the product refuses it (B15).

@@ -1,11 +1,16 @@
 // The executor's means of acting, each behind an interface so tests and fixture runs never touch a
 // real account: reader verbs over the socket, a calendar, and a URL opener.
 import { randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type ReaderCommand, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type HelperToReader, type ReaderVerb, type VerbResult } from "../protocol.ts";
 
 /** The reader's verbs. Each resolves with the reader's answer, after any snapshot the verb produced has been applied. */
 export interface ReaderLink {
   run(verb: ReaderVerb): Promise<VerbResult>;
+  /**
+   * Hands the reader an act grant or revoke. The reader answers neither: a grant that does not arrive
+   * shows up as the next act's notAllowed. A link without it (read-only tests) grants nothing.
+   */
+  grant?(m: ActGrant | ActRevoke): void;
 }
 
 /**
@@ -16,11 +21,15 @@ export interface ReaderLink {
  */
 export class SocketReaderLink implements ReaderLink {
   private readonly pending = new Map<string, (r: VerbResult) => void>();
-  private readonly send: (cmd: ReaderCommand) => boolean;
+  private readonly send: (m: HelperToReader) => boolean;
   private readonly timeoutMs: number;
-  constructor(send: (cmd: ReaderCommand) => boolean, timeoutMs = 5000) {
+  constructor(send: (m: HelperToReader) => boolean, timeoutMs = 5000) {
     this.send = send;
     this.timeoutMs = timeoutMs;
+  }
+
+  grant(m: ActGrant | ActRevoke): void {
+    this.send(m);
   }
 
   run(verb: ReaderVerb): Promise<VerbResult> {

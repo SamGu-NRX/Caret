@@ -256,15 +256,24 @@ function nodeLines(n: Node): string[] {
  * message; no real window's tree was read for them.
  */
 export function hasMessageList(w: WindowState): boolean {
+  // The window's lines are read only as far as the scan needs them (ROW_REACH past the line at hand), so
+  // a chat found in its first rows is not read to the end. Reading every node's lines first was most of
+  // this function's time in a CPU profile of a cold request on eight windows of 5,000 lines (B14).
   const texts: { text: string; frame: Frame | undefined }[] = [];
-  for (const n of w.nodes.values()) {
-    const lines = nodeLines(n);
-    // A multi-line node's frame is the whole block's, so its lines have none of their own.
-    for (const text of lines) texts.push({ text, frame: lines.length === 1 ? n.frame : undefined });
-  }
+  const nodes = w.nodes.values();
+  const readTo = (j: number): void => {
+    while (texts.length <= j) {
+      const next = nodes.next();
+      if (next.done === true) return;
+      const n = next.value;
+      const lines = nodeLines(n);
+      // A multi-line node's frame is the whole block's, so its lines have none of their own.
+      for (const text of lines) texts.push({ text, frame: lines.length === 1 ? n.frame : undefined });
+    }
+  };
   const senders = new Map<string, number>();
   let rows = 0;
-  for (let i = 0; i < texts.length; i++) {
+  for (let i = 0; (readTo(i + ROW_REACH), i < texts.length); i++) {
     const { text, frame } = texts[i] as { text: string; frame: Frame | undefined };
     if (!STAMP.test(text)) continue;
     let sender: string | null = null;

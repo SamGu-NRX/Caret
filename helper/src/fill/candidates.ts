@@ -6,7 +6,7 @@ import type { FillSource, Node, TypedValue, ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, type SnippetLedger } from "../privacy.ts";
-import { isKindTerm, kindTerm, overlap, valueKinds, words } from "./kinds.ts";
+import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 
 export interface Candidate {
   id: string;
@@ -47,6 +47,19 @@ export const MAX_CANDIDATES = 80;
  * are taken most recent first.
  */
 export const GENERATOR_BUDGET_MS = 15;
+const wallClock = (): number => performance.now();
+let defaultClock: () => number = wallClock;
+
+/**
+ * Sets the clock the budget reads when a call passes none; null puts back the wall clock. Tests whose
+ * answers must not depend on the machine's load fix it: under CPU stress the wall clock stopped a long
+ * chat partway, which withheld Name on the fill desk in 2 of 20 suite runs (B14). The budget's own tests
+ * pass a clock per call instead. The helper never sets it.
+ */
+export function setGeneratorClock(clock: (() => number) | null): void {
+  defaultClock = clock ?? wallClock;
+}
+
 /** Nodes or values between clock reads. */
 const CLOCK_EVERY = 64;
 const MIN_LINE = 2;
@@ -83,6 +96,11 @@ export interface GenerateOptions {
    * by cost per field served; for the live replay's comparison. The helper never sets it.
    */
   kindsByCost?: boolean;
+  /**
+   * False leaves a conversation's name-like lines ungrouped, as B13 did, for the live replay's
+   * comparison. The helper never sets it.
+   */
+  nameGroup?: boolean;
 }
 
 /** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
@@ -105,6 +123,13 @@ export interface Collected {
    */
   cutTerms: ReadonlySet<string>;
   cutAll: boolean;
+  /**
+   * A field takes a name and a name may have been kept out: a conversation's names, or a line holding
+   * one, did not fit; a window was cut whose left-out lines were not read; or the cap or the clock
+   * stopped the generator partway through a window. Fill then asks no field that takes a name and
+   * proposes no name-like value (fill.ts).
+   */
+  namesCut: boolean;
 }
 
 export interface GenerateStats {
@@ -127,7 +152,7 @@ export interface GenerateStats {
 export function collectCandidates(model: ScreenModel, targetWindowId: string, o: GenerateOptions = {}): Collected {
   const max = o.max ?? MAX_CANDIDATES;
   const now = o.now ?? Date.now();
-  const clock = o.clock ?? (() => performance.now());
+  const clock = o.clock ?? defaultClock;
   const budget = o.budgetMs ?? GENERATOR_BUDGET_MS;
   const t0 = clock();
   const stats: GenerateStats = { windows: 0, values: 0, nodes: 0, overBudget: false, ms: 0 };
@@ -205,7 +230,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   const finish = (): Collected => {
     stats.windows = touched.size;
     stats.ms = clock() - t0;
-    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll };
+    return { candidates: out, stats, cut: [...missed], cutTerms, cutAll, namesCut: wantsNames && (cutAll || partway || namesKeptOut(cutNames, out)) };
   };
   /**
    * Stops early, on the cap or the clock, partway through `reading`: what of it was offered is a partial
@@ -214,30 +239,48 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
    * Windows not reached at all are left out whole; their values are the least recent on screen.
    */
   const stop = (): Collected => {
-    if (reading !== null) missed.add(reading);
+    if (reading !== null) {
+      missed.add(reading);
+      // The rest of the window was not read, so whether it held a name is not known (B14 review: the
+      // cap stopped a notes window between another window's name and the right one).
+      partway = true;
+    }
     return finish();
   };
 
   const cutTerms = new Set<string>();
   let cutAll = false;
+  /** The cap or the clock stopped the generator inside a window. */
+  let partway = false;
+  /** The names held by spans a conversation's budget left out. */
+  const cutNames: string[] = [];
   /** Conversations whose budget went by relevance; the line pass leaves them alone. */
   const ranked = new Set<string>();
   const relevance = o.fields !== undefined && o.fields.length > 0 && o.ledger !== undefined ? o.fields : null;
+  /** Some field takes a name, so a conversation's name-like lines are a group like a kind's values. */
+  const wantsNames = relevance !== null && o.nameGroup !== false && relevance.some((f) => f.has(NAME_TERM));
 
   /**
    * Every span of a conversation, typed values first and then lines as the two passes below would take
    * them, each with the terms of its line, its section and the kinds of typed values it holds; then adds
-   * them in relevance order. False when the cap or the clock ran out.
+   * them in relevance order. False when the cap or the clock ran out. A span's group is the term of the
+   * whole-or-nothing set it goes in with: its kind's for a typed value, NAME_TERM for a name-like line.
    */
-  type Span = { node: Node; text: string; kind: ValueKind | null; context: () => string | null; terms: Set<string> };
+  type Span = { node: Node; text: string; kind: ValueKind | null; group: string | null; context: () => string | null; terms: Set<string>; names: string[] };
   const byRelevance = (w: WindowState, fields: readonly ReadonlySet<string>[]): boolean => {
     const spans: Span[] = [];
     const built = { done: false };
     const finished = rankWindow(w, fields, spans, built);
     if (finished && !missed.has(w.window.windowId)) return true;
     // Cut, or stopped partway: what it left out. Spans the clock stopped it from even listing are unknown.
+    // A left-out span's names are weighed at the end against everything offered, as cutKinds weighs
+    // typed values, so NAME_TERM stays out of cutTerms.
     if (!built.done) cutAll = true;
-    for (const sp of spans) if (!seen.has(sp.text)) for (const t of sp.terms) cutTerms.add(t);
+    for (const sp of spans) {
+      if (seen.has(sp.text)) continue;
+      for (const t of sp.terms) if (t !== NAME_TERM) cutTerms.add(t);
+      cutNames.push(...sp.names);
+    }
     return finished;
   };
   /** byRelevance's work: lists the window's spans into `spans`, then offers them; false when the cap or the clock ran out. */
@@ -264,7 +307,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
       if (node === undefined) continue;
-      spans.push({ node, text: v.text, kind: v.kind, context: () => contextFor(w, node, v.text), terms: termsOf(node, lineHolding(nodeText(node), v.text), [v.kind]) });
+      const line = lineHolding(nodeText(node), v.text);
+      const terms = termsOf(node, line, [v.kind]);
+      const names = wantsNames ? namesOutside(line, valuesOf.get(node.key)) : [];
+      if (names.length > 0) terms.add(NAME_TERM);
+      spans.push({ node, text: v.text, kind: v.kind, group: kindTerm(v.kind), context: () => contextFor(w, node, v.text), terms, names });
     }
     for (const node of w.nodes.values()) {
       if (outOfTime()) return false;
@@ -278,7 +325,21 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         if (s === null) continue;
         const kinds = (valuesOf.get(node.key) ?? []).filter((v) => s.line.includes(v.text)).map((v) => v.kind);
         const context = s.label !== null ? constant(s.label) : () => lineContext(w, node, lines.length, isSourceField);
-        spans.push({ node, text: s.text, kind: null, context, terms: termsOf(node, s.line, kinds) });
+        const terms = termsOf(node, s.line, kinds);
+        // A source field's own label says what its value is, as contextFor reads it ("Name" for "dana w.").
+        const name = wantsNames && isNameLike(s.text, s.label ?? (isSourceField ? (node.label ?? null) : null));
+        // A contact line holds a name beside a typed value ("Dana Whitfield <dana@example.com>"): it is not
+        // offered as a name, but its cut can keep the name out. A name a sentence mentions without a typed
+        // value ("Design review with Priya Raman") is not counted: counting those withheld Full name and
+        // Company on every calibration set with the sources as Messages (B14 oracle replay).
+        const names = wantsNames && kinds.length > 0 ? namesOutside(s.line, valuesOf.get(node.key)) : [];
+        if (name) names.push(s.text);
+        if (names.length > 0) terms.add(NAME_TERM);
+        spans.push({ node, text: s.text, kind: null, group: name ? NAME_TERM : null, context, terms, names });
+        // Each name a contact line holds goes in with the names too, as its own span, copied verbatim from
+        // the line: else "From: Priya Raman <priya.raman@…>" left a name out whenever the line was cut, and
+        // the names spent the budget for nothing (B14 oracle replay, Claim form with the sources as Messages).
+        for (const n of names) if (n !== s.text) spans.push({ node, text: n, kind: null, group: NAME_TERM, context, terms: new Set([...terms]), names: [n] });
       }
     }
     built.done = true;
@@ -307,21 +368,22 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // missing, and none lost the facts (label, section, block) that set it apart from another. The first
     // B12 replays spent a conversation's budget value by value: four values with facts used up a
     // 220-character Messages window, and values let in bare, to fit, let Jev take a padding thread's
-    // meeting link for the form's (~/.caret-run/evidence/screen/b12/live-run5).
+    // meeting link for the form's (~/.caret-run/evidence/screen/b12/live-run5). Name-like lines are one
+    // more such group when a field takes a name (kinds.ts NAME_TERM).
     const kinds = new Set(fields.flatMap((f) => [...f].filter(isKindTerm)));
     const takesKind = (i: number): boolean => {
-      const k = spans[i]?.kind;
-      return k !== null && k !== undefined && kinds.has(kindTerm(k));
+      const g = spans[i]?.group;
+      return g !== null && g !== undefined && kinds.has(g);
     };
-    const kindOrder = [...new Set(order.filter(takesKind).map((i) => spans[i]?.kind as ValueKind))];
-    const groups = new Map<ValueKind, Candidate[]>();
+    const kindOrder = [...new Set(order.filter(takesKind).map((i) => spans[i]?.group as string))];
+    const groups = new Map<string, Candidate[]>();
     for (const k of kindOrder) {
       if (outOfTime()) return false;
       const group: Candidate[] = [];
       const texts = new Set<string>();
       for (const i of order) {
         const sp = spans[i] as (typeof spans)[number];
-        if (sp.kind !== k || seen.has(sp.text) || texts.has(sp.text)) continue;
+        if (sp.group !== k || seen.has(sp.text) || texts.has(sp.text)) continue;
         texts.add(sp.text);
         group.push(build(w, sp.node, sp.text, sp.kind, sp.context));
       }
@@ -331,10 +393,10 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     // since a kind's facts can share texts (the window's title, a section) with one already in. B12 took
     // them in the order the fields first wanted them, so one dear kind could spend the budget that two
     // cheap ones needed. No run measured this before B13's replay.
-    const served = (k: ValueKind): number => fields.filter((f) => f.has(kindTerm(k))).length;
+    const served = (k: string): number => fields.filter((f) => f.has(k)).length;
     for (;;) {
       if (full() || outOfTime()) return false;
-      let best: { k: ValueKind; rate: number } | null = null;
+      let best: { k: string; rate: number } | null = null;
       for (const [k, group] of groups) {
         const cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
         if (cost === null || cost === undefined) continue;
@@ -352,7 +414,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       }
     }
     /** Kinds left out whole, since none of them fits what is left; a line holding a value of one stays out too. */
-    const leftOut = new Set([...groups.keys()].map(kindTerm));
+    const leftOut = new Set(groups.keys());
     if (leftOut.size > 0) missed.add(w.window.windowId);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {
@@ -460,6 +522,24 @@ export function cutKinds(model: ScreenModel, cut: readonly string[], offered: re
     for (const v of w.values) if (w.nodes.has(v.nodeKey) && !holdsWhole(taken, v.text)) for (const k of valueKinds(v)) out.add(k);
   }
   return out;
+}
+
+/** The names a line holds (kinds.ts namesIn), less those inside a typed value: "Barton Springs Rd" is part of an address. */
+function namesOutside(line: string, values: readonly TypedValue[] | undefined): string[] {
+  const names = namesIn(line);
+  if (names.length === 0 || values === undefined) return names;
+  return names.filter((n) => !values.some((v) => v.text.includes(n)));
+}
+
+/**
+ * Whether a name a cut span held is offered nowhere: not as a span, and not whole inside a longer one.
+ * A team chat whose every line starts with its sender's name cuts lines whose names are already offered,
+ * and those keep nothing out (the fill desk, test/review-b13.test.ts).
+ */
+function namesKeptOut(names: readonly string[], offered: readonly { text: string }[]): boolean {
+  if (names.length === 0) return false;
+  const taken = offered.map((c) => c.text).join("\u0000");
+  return names.some((n) => !holdsWhole(taken, n));
 }
 
 /** A character that can continue a value: a letter, a digit, or one of an email's or a web address's joining marks. */

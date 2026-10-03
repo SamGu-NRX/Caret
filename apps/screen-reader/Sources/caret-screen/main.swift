@@ -52,7 +52,8 @@ let denyPath = option("--deny-list") ?? "\(home)/.caret-run/deny-apps.txt"
 let background = option("--background-interval").map { TimeInterval($0) ?? 30 } ?? 30
 let eventPids = pids(option("--event-pids"))
 let onlyPids = pids(option("--only-pids"))
-// The executor may write and press only in these processes. Acting needs reading, so they must also be in --only-pids.
+// The executor may act in these processes without a grant, for fixture tests. Acting needs reading, so
+// they must also be in --only-pids. Every other process needs an act grant from the helper.
 let actPids = pids(option("--act-pids"))
 let eventBundles = Set((option("--event-bundles") ?? "").split(separator: ",").map(String.init))
 let recordPath = option("--record")
@@ -65,7 +66,7 @@ let outPath = option("--out")
 if !args.isEmpty { fail("unknown arguments: \(args.joined(separator: " "))") }
 // A recording holds screen text, so it is only allowed for processes named explicitly (fixtures).
 if recordPath != nil && onlyPids.isEmpty { fail("--record writes screen text to disk; it needs --only-pids naming fixture processes") }
-if !actPids.isEmpty && !actPids.isSubset(of: onlyPids) { fail("--act-pids must be a subset of --only-pids: the executor acts only in fixture processes") }
+if !actPids.isEmpty && !actPids.isSubset(of: onlyPids) { fail("--act-pids must be a subset of --only-pids: the executor acts without a grant only in fixture processes") }
 
 guard AXIsProcessTrusted() else {
     fail("not trusted for Accessibility. Launch the binary directly from a process that has the grant.")
@@ -120,6 +121,7 @@ options.eventPids = eventPids
 options.onlyPids = onlyPids
 options.eventBundles = eventBundles
 options.actPids = actPids
+socket.grants = options.grants
 options.setManualAccessibility = !noManualAX
 let reader = MainActor.assumeIsolated { ScreenReader(ctx: ctx, options: options) }
 var connectedOnce = false

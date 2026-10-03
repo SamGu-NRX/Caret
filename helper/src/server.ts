@@ -5,7 +5,7 @@
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type HelperMessage, type ReaderCommand } from "./protocol.ts";
+import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type ActRevoke, type HelperMessage, type HelperToReader } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 
 /** One line may carry a whole window; a longer line is a reader bug, not a bigger window. */
@@ -15,6 +15,12 @@ export class HelperServer {
   private readonly consumers = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
+  /**
+   * Tasks holding a grant on the current reader connection. When another reader says hello, the old
+   * connection stays open, so its grants are revoked there: a command still queued in the old reader
+   * must not act after the helper has moved on to a new session.
+   */
+  private granted = new Set<string>();
   private readonly sockets = new Set<Socket>();
   private server: Server | null = null;
   private readonly helper: () => Helper;
@@ -27,10 +33,21 @@ export class HelperServer {
     this.warn = warn;
   }
 
-  sendToReader(cmd: ReaderCommand): boolean {
+  /** Commands, act grants and revokes go to the reader only; no consumer ever receives one. */
+  sendToReader(m: HelperToReader): boolean {
     if (this.reader === null || this.reader.destroyed) return false;
-    this.reader.write(JSON.stringify(cmd) + "\n");
+    this.reader.write(JSON.stringify(m) + "\n");
+    if (m.type === "actGrant") this.granted.add(m.taskId);
+    else if (m.type === "actRevoke") this.granted.delete(m.taskId);
     return true;
+  }
+
+  /** Ends every grant the outgoing reader holds, on its own connection, before a new reader takes over. */
+  private revokeOnOldReader(old: Socket | null): void {
+    if (old !== null && !old.destroyed) {
+      for (const taskId of this.granted) old.write(JSON.stringify({ type: "actRevoke", v: PROTOCOL_VERSION, taskId, at: Date.now() } satisfies ActRevoke) + "\n");
+    }
+    this.granted = new Set();
   }
 
   publish(m: HelperMessage): void {
@@ -63,6 +80,7 @@ export class HelperServer {
   private accept(s: Socket): void {
     this.sockets.add(s);
     let role: "reader" | "consumer" | null = null;
+    let replaced = false;
     let buf = "";
     s.setEncoding("utf8");
     s.on("data", (chunk: string) => {
@@ -94,12 +112,20 @@ export class HelperServer {
           role = hello.data.role;
           if (role === "consumer") this.consumers.add(s);
           else {
+            this.revokeOnOldReader(this.reader);
             this.reader = s;
             void this.helper().handleReader(hello.data);
           }
           continue;
         }
         if (role === "reader") {
+          // A reader another reader replaced numbers windows from its own session: its snapshots and
+          // answers would describe windows under ids the current reader may give to others.
+          if (s !== this.reader) {
+            if (!replaced) this.reject(s, "another reader has connected since; this connection's messages are ignored");
+            replaced = true;
+            continue;
+          }
           const m = ReaderMessage.safeParse(json);
           if (!m.success) {
             this.reject(s, `invalid reader message: ${m.error.message.slice(0, 500)}`);
@@ -150,6 +176,8 @@ export class HelperServer {
       this.consumers.delete(s);
       if (this.reader === s) {
         this.reader = null;
+        // The reader drops its grants when its connection closes.
+        this.granted = new Set();
         this.helper().readerClosed();
       }
       this.sockets.delete(s);

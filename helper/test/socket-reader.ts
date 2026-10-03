@@ -6,7 +6,8 @@
 import { readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { fileURLToPath } from "node:url";
-import { PROTOCOL_VERSION, ReaderCommand, ReaderMessage, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
+import { HelperToReader, PROTOCOL_VERSION, ReaderMessage, type ReaderCommand, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
+import { FakeGrants } from "./fake-grants.ts";
 
 /** A line-oriented client: every message received is kept in order, and a test can wait for one. */
 export class LineClient {
@@ -93,6 +94,10 @@ export class SocketReader {
   /** Milliseconds to hold the answer to a verb of this kind, to keep a run in flight. */
   readonly delayMs: Partial<Record<ReaderVerb["kind"], number>> = {};
   frontmostPid: number | null = null;
+  /** Every act grant and revoke the helper sent on the socket, applied in socket order before later commands. */
+  readonly grants = new FakeGrants();
+  /** Refuses write, press and raise without a live grant, as caret-screen without --act-pids does. Off by default. */
+  enforceGrants = false;
   /** Each app's own focused window, which it keeps while it is in the background. */
   private readonly appFocus = new Map<number, string>();
   /** The recording's clock, carried on into the snapshots verbs produce. */
@@ -102,8 +107,10 @@ export class SocketReader {
   private constructor(client: LineClient) {
     this.client = client;
     client.onMessage = (m) => {
-      const cmd = ReaderCommand.safeParse(m);
-      if (cmd.success) void this.answer(cmd.data);
+      const msg = HelperToReader.safeParse(m);
+      if (!msg.success) return;
+      if (msg.data.type === "readerCommand") void this.answer(msg.data);
+      else this.grants.receive(msg.data);
     };
   }
 
@@ -195,6 +202,8 @@ export class SocketReader {
     const reply = (outcome: VerbResult["outcome"], detail: string | null = null): void =>
       this.client.send({ type: "verbResult", v: PROTOCOL_VERSION, id: cmd.id, at: this.clock, outcome, detail } satisfies VerbResult);
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return reply("ok");
+    const refused = this.enforceGrants ? this.grants.refusal(verb) : null;
+    if (refused !== null) return reply("notAllowed", refused);
     const w = this.windows.get(verb.windowId);
     if (w === undefined) return reply("noWindow");
     if (w.app.pid !== verb.pid) return reply("notAllowed");

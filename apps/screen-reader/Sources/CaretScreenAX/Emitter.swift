@@ -11,6 +11,8 @@ public protocol Emitter: AnyObject, Sendable {
 /// down, messages wait in a bounded backlog and the client reconnects every second; on reconnect it
 /// sends hello and calls `onConnect`, so the reader can resend full state. Lines the helper sends
 /// back (the executor's readerCommands) are decoded on the same queue and handed to `onCommand`.
+/// Act grants and revokes go straight into `grants` on that queue, so a grant is in place before any
+/// command that follows it on the socket is handed on, and every grant ends when the connection does.
 public final class SocketEmitter: Emitter, @unchecked Sendable {
     private let path: String
     private let hello: Hello
@@ -24,6 +26,8 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     public private(set) var sent = 0
     public var onConnect: (@Sendable () -> Void)?
     public var onCommand: (@Sendable (ReaderCommand) -> Void)?
+    /// Set before start(). Only the helper's connection writes it, so only the helper can grant.
+    public var grants: GrantTable?
     private var readSource: DispatchSourceRead?
     private var inbox = Data()
     /// A line longer than this from the helper is a bug; the connection is dropped. Commands are small.
@@ -188,7 +192,16 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
             inbox.removeSubrange(inbox.startIndex...nl)
             guard !line.isEmpty else { continue }
             do {
-                if case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: Data(line)) { onCommand?(c) }
+                switch try JSONDecoder().decode(Message.self, from: Data(line)) {
+                case .readerCommand(let c): onCommand?(c)
+                case .actGrant(let g):
+                    grants?.issue(g, uptimeMs: uptimeMs())
+                    log("act grant: task \(g.taskId), process \(g.pid), window \(g.windowId), for \(g.expires - g.at) ms")
+                case .actRevoke(let r):
+                    grants?.revoke(taskId: r.taskId)
+                    log("act grant revoked: task \(r.taskId)")
+                default: break
+                }
             } catch {
                 // The helper also sends error lines for bad input; anything else undecodable is logged and skipped.
                 if !(String(decoding: line, as: UTF8.self).contains(#""type":"error""#)) { log("cannot decode a helper line: \(error)") }
@@ -201,6 +214,10 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     }
 
     private func disconnect(_ why: String) {
+        if let g = grants, g.count > 0 {
+            g.clear()
+            log("act grants cleared with the connection")
+        }
         if let src = readSource {
             src.cancel()
             readSource = nil

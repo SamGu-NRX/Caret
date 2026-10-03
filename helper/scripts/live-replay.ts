@@ -1,14 +1,15 @@
 // Live-Jev replay, headless: no reader, no fixture app, no windows. It loads recorded and synthetic
 // screens into the helper's model and asks live Jev, once with the conversation rule on and once with it
 // off (privacy.ts setConversationCap), to measure what the rule costs. With the sources as Messages
-// windows and the rule on, it also replays fill without each of B13's two coverage changes (kinds by
-// cost per field served, and not asking a field of no kind after a cut; fill.ts FillOptions), sweeps a
+// windows and the rule on, it also replays fill without B14's name group and without each of B13's two
+// coverage changes (kinds by cost per field served, and not asking a field of no kind after a cut; fill.ts
+// FillOptions), sweeps a
 // higher confidence cutoff for values from conversations over the answers, and compares every field
 // with an earlier run's (--compare, B12's by default).
 //
 //   node scripts/live-replay.ts --out DIR [--fill-dir DIR] [--sets cal-1,cal-2,...] [--compare FILE]
 //     [--variants "sources in Messages,..."] [--rules on|off|on,off] [--no-look] [--spend-limit USD]
-//     [--fixes "B13,..."]
+//     [--fixes "B14,..."]
 //
 // --variants, --rules, --fixes and --no-look run part of it again, to see how much of a difference is Jev
 // answering differently on a second ask.
@@ -48,15 +49,15 @@ const { values: a } = parseArgs({
     "fill-dir": { type: "string", default: join(homedir(), ".caret-run", "evidence", "screen", "fill-distractors-v2") },
     sets: { type: "string", default: "cal-1,cal-2,cal-3,accept-1,accept-2,accept-3" },
     "env-file": { type: "string", default: join(homedir(), "Programming Projects", "Caret", ".env") },
-    compare: { type: "string", default: join(homedir(), ".caret-run", "evidence", "screen", "b12", "live", "live-replay.json") },
+    compare: { type: "string", default: join(homedir(), ".caret-run", "evidence", "screen", "b13", "live-final2", "live-replay.json") },
     variants: { type: "string" },
     rules: { type: "string", default: "on,off" },
     "no-look": { type: "boolean", default: false },
-    "spend-limit": { type: "string", default: "0.29" },
+    "spend-limit": { type: "string", default: "0.145" },
     fixes: { type: "string" },
   },
 });
-/** The run stops before spending more than this on Jev (--spend-limit). B13's brief allows $0.30 across its runs. */
+/** The run stops before spending more than this on Jev (--spend-limit). B14's brief allows $0.15; B13's full run spent $0.113. */
 const SPEND_LIMIT_USD = Number(a["spend-limit"]);
 if (!(SPEND_LIMIT_USD > 0)) throw new Error(`--spend-limit must be a positive number of dollars, not ${a["spend-limit"]}`);
 
@@ -134,7 +135,7 @@ interface FillRow {
   set: string;
   variant: string;
   rule: string;
-  /** Which of B13's coverage changes were on: "B13" (both), or the name of the one left out. */
+  /** Which fixes were on: MAIN (all), or the name of the one left out. */
   fix: string;
   form: string;
   label: string;
@@ -146,11 +147,13 @@ interface FillRow {
   fromConversation: boolean;
 }
 
-/** B13 as shipped, and each of its two coverage changes left out; the comparison runs where conversations are cut. */
+/** B14 as shipped, and each of its name group and B13's two coverage changes left out; the comparison runs where conversations are cut. */
+const MAIN = "B14";
 const FIXES = [
-  { name: "B13", opts: {} },
-  { name: "B13, kinds in field order", opts: { kindsByCost: false } },
-  { name: "B13, field of no kind asked", opts: { unknownKindRule: false } },
+  { name: MAIN, opts: {} },
+  { name: "B14, names ungrouped", opts: { nameGroup: false } },
+  { name: "B14, kinds in field order", opts: { kindsByCost: false } },
+  { name: "B14, field of no kind asked", opts: { unknownKindRule: false } },
 ] as const;
 
 const MESSAGES = { bundleId: "com.apple.MobileSMS", name: "Messages" };
@@ -225,7 +228,7 @@ for (const set of (a.sets ?? "").split(",").filter((s) => s !== "")) {
       for (const fix of FIXES) {
         if (a.fixes !== undefined && !a.fixes.split(",").includes(fix.name)) continue;
         // The comparison runs where conversations are cut: the Messages variants with the rule on.
-        if (fix.name !== "B13" && !(variant !== "as recorded" && on)) continue;
+        if (fix.name !== MAIN && !(variant !== "as recorded" && on)) continue;
         if (variant === "long Messages threads" && !on) continue;
         setConversationCap(on);
         part = "fill";
@@ -371,7 +374,7 @@ const lines: string[] = ["# Live-Jev replay, conversation rule on and off", "", 
 
 lines.push("## Fill over the calibration recordings", "", `Sets: ${a.sets}. One proposeFill per form per condition (two asks each), candidate order seeded per set and form.`, "");
 lines.push(
-  "Fix: B13 is B12 with the review's fixes, the ledger charging every window a request reveals, no typed value used as a label, conversation kinds by cost per field served, and no field of no kind asked after a cut. The five variants (as recorded and sources in Messages, rule on and off, and long Messages threads with the rule on) run with B13. Where conversations are cut (the Messages variants, rule on), fill also runs with each of the last two left out. \"long Messages threads\" adds twenty-four earlier messages full of dates, times, amounts, emails, phones, URLs, addresses and IDs above each Messages source window (EARLIER in the script), so the budget cannot hold every value of a kind and the cut rule has to act.",
+  "Fix: B14 is B13 (the ledger charging every window a request reveals, no typed value used as a label, conversation kinds by cost per field served, and no field of no kind asked after a cut) with a conversation's name-like lines offered whole or not at all when a field takes a name, and no name-like value proposed after a cut of names. The five variants (as recorded and sources in Messages, rule on and off, and long Messages threads with the rule on) run with B14. Where conversations are cut (the Messages variants, rule on), fill also runs with the name group and with each of B13's last two fixes left out. \"long Messages threads\" adds twenty-four earlier messages full of dates, times, amounts, emails, phones, URLs, addresses and IDs above each Messages source window (EARLIER in the script), so the budget cannot hold every value of a kind and the cut rule has to act.",
   "",
   "\"Most charged to one conversation\" is the ledger's own count (JevRequest.charged), which also charges lines revealed through another window's text; \"most from one conversation\" counts declared snippets only, as B12's report did.",
   "",
@@ -434,31 +437,31 @@ for (const variant of VARIANTS.filter((v) => v !== "as recorded")) for (const fi
 lines.push("", "Conversation sign of each window as replayed (conversation.ts):", "");
 for (const [w, s] of Object.entries(sourceSigns)) lines.push(`- ${w}: ${s ?? "not a conversation"}`);
 
-// Against the earlier run (--compare): its main fix against B13, over the fields both runs asked.
+// Against the earlier run (--compare): its main fix against MAIN, over the fields both runs asked.
 if (earlier !== null) {
   const mainFix = earlier.fillRows[0]?.fix ?? "";
   const key = (r: EarlierRow): string => `${r.set}\u0000${r.variant}\u0000${r.rule}\u0000${r.form}\u0000${r.label}`;
-  const asked = new Set(fillRows.filter((r) => r.fix === "B13").map(key));
+  const asked = new Set(fillRows.filter((r) => r.fix === MAIN).map(key));
   const old = (variant: string, rule: string): EarlierRow[] => earlier.fillRows.filter((r) => r.variant === variant && r.rule === rule && r.fix === mainFix && asked.has(key(r)));
-  lines.push("", `### Against the earlier run (${mainFix}, ${a.compare})`, "", `| Variant | Rule | Answerable filled, ${mainFix} | Answerable filled, B13 | Wrong, ${mainFix} | Wrong, B13 |`, "|---|---|---|---|---|---|");
+  lines.push("", `### Against the earlier run (${mainFix}, ${a.compare})`, "", `| Variant | Rule | Answerable filled, ${mainFix} | Answerable filled, ${MAIN} | Wrong, ${mainFix} | Wrong, ${MAIN} |`, "|---|---|---|---|---|---|");
   for (const variant of VARIANTS) for (const on of CAPS) {
     const was = old(variant, capName(on));
-    const now = conditionRows(variant, on, "B13");
+    const now = conditionRows(variant, on, MAIN);
     if (was.length === 0 || now.length === 0) continue;
     const filled = (rows: readonly EarlierRow[]): string => pct(rows.filter((r) => r.gold !== null && r.proposed === r.gold).length, rows.filter((r) => r.gold !== null).length);
     const wrong = (rows: readonly EarlierRow[]): number => rows.filter((r) => r.proposed !== null && r.proposed !== r.gold).length;
     lines.push(`| ${variant} | ${capName(on)} | ${filled(was)} | ${filled(now)} | ${wrong(was)} | ${wrong(now)} |`);
   }
-  lines.push("", `#### Fields that changed against ${mainFix} (rule on)`, "", `| Set | Variant | Form | Field | Gold | ${mainFix} | B13 | B13 withheld |`, "|---|---|---|---|---|---|---|---|");
-  for (const variant of VARIANTS) for (const r of conditionRows(variant, true, "B13")) {
+  lines.push("", `#### Fields that changed against ${mainFix} (rule on)`, "", `| Set | Variant | Form | Field | Gold | ${mainFix} | ${MAIN} | ${MAIN} withheld |`, "|---|---|---|---|---|---|---|---|");
+  for (const variant of VARIANTS) for (const r of conditionRows(variant, true, MAIN)) {
     const o = old(variant, "rule on").find((x) => x.set === r.set && x.form === r.form && x.label === r.label);
     if (o !== undefined && o.proposed !== r.proposed) lines.push(`| ${r.set} | ${variant} | ${r.form} | ${r.label} | ${r.gold ?? "(none)"} | ${o.proposed ?? "(none)"} | ${r.proposed ?? "(none)"} | ${r.withheld ?? "-"} |`);
   }
 }
 
-lines.push("", "### Fields that changed between rule on and off (B13)", "", "| Set | Variant | Form | Field | Gold | Rule on | Rule off |", "|---|---|---|---|---|---|---|");
-for (const r of fillRows.filter((x) => x.rule === "rule on" && x.fix === "B13")) {
-  const off = fillRows.find((x) => x.rule === "rule off" && x.fix === "B13" && x.set === r.set && x.variant === r.variant && x.form === r.form && x.label === r.label);
+lines.push("", `### Fields that changed between rule on and off (${MAIN})`, "", "| Set | Variant | Form | Field | Gold | Rule on | Rule off |", "|---|---|---|---|---|---|---|");
+for (const r of fillRows.filter((x) => x.rule === "rule on" && x.fix === MAIN)) {
+  const off = fillRows.find((x) => x.rule === "rule off" && x.fix === MAIN && x.set === r.set && x.variant === r.variant && x.form === r.form && x.label === r.label);
   if (off !== undefined && off.proposed !== r.proposed) lines.push(`| ${r.set} | ${r.variant} | ${r.form} | ${r.label} | ${r.gold ?? "(none)"} | ${r.proposed ?? "(none)"} | ${off.proposed ?? "(none)"} |`);
 }
 

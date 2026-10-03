@@ -86,20 +86,26 @@ describe("offers over the socket", () => {
     dir = mkdtempSync(join(tmpdir(), "caret-offers-"));
     store = new Store(join(dir, "data"));
     let n = 0;
-    helper = new Helper({
+    // This test's helper talks to this test's server only. Through the `server` variable, a run still in
+    // flight when its test ended published its stop into a later test's host (B13's socket flake).
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const mine: Helper = new Helper({
       store,
       askJev,
       shadow: false,
       allowBackgroundFocus: false,
       newId: () => `id-${++n}`,
-      publish: (m) => server.publish(m),
-      sendToReader: (cmd) => server.sendToReader(cmd),
+      publish: (m) => own.publish(m),
+      sendToReader: (cmd) => own.sendToReader(cmd),
     });
-    server = new HelperServer(join(dir, "screen.sock"), () => helper, () => {});
+    helper = mine;
+    server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });
     reader = await SocketReader.connect(join(dir, "screen.sock"));
+    // As caret-screen started without --act-pids: every act needs the helper's grant for its task (B15).
+    reader.enforceGrants = true;
   });
 
   afterEach(async () => {
@@ -166,6 +172,11 @@ describe("offers over the socket", () => {
       "dana.whitfield@example.com",
       "+1 (512) 555-0142",
     ]);
+    // The accept granted the form's window to this task alone, every write named it, and the grant ended with the run.
+    await until(() => reader.grants.log.length === 2);
+    expect(reader.grants.log.map((m) => m.type)).toEqual(["actGrant", "actRevoke"]);
+    expect(reader.grants.log[0]).toMatchObject({ taskId: "id-1", pid: 5150, windowId: FORM });
+    expect(new Set(reader.verbs.flatMap((v) => (v.kind === "write" ? [v.taskId] : [])))).toEqual(new Set(["id-1"]));
     expect(await host.waitFor((m) => m.type === "offerWithdrawn")).toMatchObject({ id: "id-1", reason: "taken" });
   });
 
@@ -233,7 +244,10 @@ describe("offers over the socket", () => {
 
     host.send(accept("open-watch-id-1.1", "open"));
     expect(await phases("open-watch-id-1.1")).toEqual(["started", "acting", "verified", "done"]);
-    expect(reader.verbs.filter((v) => v.kind === "raise")).toEqual([{ kind: "raise", pid: 5150, windowId: JOB }]);
+    expect(reader.verbs.filter((v) => v.kind === "raise")).toEqual([{ kind: "raise", pid: 5150, windowId: JOB, taskId: "open-watch-id-1.1" }]);
+    // The revoke goes to the reader's socket after the done progress went to the host's.
+    await until(() => reader.grants.log.length === 2);
+    expect(reader.grants.log.map((m) => [m.type, m.taskId])).toEqual([["actGrant", "open-watch-id-1.1"], ["actRevoke", "open-watch-id-1.1"]]);
     expect(reader.focusedWindow()).toBe(JOB);
     expect(reader.frontmostPid).toBe(5150);
     expect(helper.model.focusedWindowId).toBe(JOB);
@@ -247,7 +261,7 @@ describe("offers over the socket", () => {
     await until(() => reader.verbs.some((v) => v.kind === "walk"));
     reader.setValue(FORM, F("textfield:email~0"), "typed@example.com");
     expect(await phases("id-1")).toEqual(["started", "stopped"]);
-    expect(host.received.find((m) => (m as { phase?: string }).phase === "stopped")).toMatchObject({ detail: expect.stringContaining("changed since the plan started") });
+    expect(host.received.find((m) => (m as { phase?: string }).phase === "stopped")).toMatchObject({ detail: expect.stringContaining("changed since the plan started"), stopReason: "changed" });
     expect(reader.verbs.filter((v) => v.kind === "write")).toEqual([]);
     expect([F("textfield:name~0"), F("textfield:email~0"), F("textfield:phone~0")].map((k) => reader.value(FORM, k))).toEqual(["", "typed@example.com", ""]);
   });
@@ -299,22 +313,52 @@ describe("offers over the socket", () => {
       steps: 0,
       says: null,
       detail: "no such offer, or it expired",
+      stopReason: "refused",
     });
   });
 
-  it("stops a running fill on offerStop, after the step in flight", async () => {
+  it("stops a running fill on offerStop: the grant ends at once, so the write still on its way is refused", async () => {
     await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
     await host.waitFor((m) => m.type === "popup");
-    // The first write is answered late, so the run is still at step 1 when the host stops it.
+    // The first write reaches the reader's grant check late, so the stop arrives while it is on its way.
     reader.delayMs.write = 300;
     host.send(accept("id-1", "fillAll"));
     await host.waitFor((m) => m.type === "taskProgress" && m.taskId === "id-1" && m.phase === "acting");
     host.send({ type: "offerStop", v: PROTOCOL_VERSION, offerId: "id-1", at: 2 });
-    expect(await phases("id-1")).toEqual(["started", "acting", "verified", "stopped"]);
+    expect(await phases("id-1")).toEqual(["started", "acting", "stopped"]);
     const records = host.received.filter((m) => (m as { type: string; task?: { id: string } }).type === "activity" && (m as { task: { id: string } }).task.id === "id-1");
     expect(records.at(-1)).toMatchObject({ task: { state: "failed", cause: "you" } });
-    expect(await host.waitFor((m) => m.type === "taskProgress" && m.phase === "stopped")).toMatchObject({ detail: "stopped by you before step 2 of 3" });
-    expect([F("textfield:name~0"), F("textfield:email~0"), F("textfield:phone~0")].map((k) => reader.value(FORM, k))).toEqual(["Dana Whitfield", "", ""]);
+    expect(await host.waitFor((m) => m.type === "taskProgress" && m.phase === "stopped")).toMatchObject({ detail: "stopped by you before step 1 of 3", stopReason: "you" });
+    expect([F("textfield:name~0"), F("textfield:email~0"), F("textfield:phone~0")].map((k) => reader.value(FORM, k))).toEqual(["", "", ""]);
+    await until(() => reader.grants.log.length === 2);
+    expect(reader.grants.log.map((m) => m.type)).toEqual(["actGrant", "actRevoke"]);
+  });
+
+  it("a consumer's runPlan gets no grant: the reader refuses its first write and the form is unchanged", async () => {
+    await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+    const plan = {
+      id: "p",
+      title: "p",
+      slots: {},
+      steps: [{ says: "Name holds Dana", end: { kind: "valueEquals", window: { title: "Checkout" }, target: { key: F("textfield:name~0"), describe: "Name" }, value: "Dana" } }],
+    };
+    host.send({ type: "runPlan", v: PROTOCOL_VERSION, taskId: "direct-1", plan, slots: {} });
+    expect(await phases("direct-1")).toEqual(["started", "acting", "stopped"]);
+    expect(host.received.find((m) => (m as { phase?: string }).phase === "stopped")).toMatchObject({
+      stopReason: "reader",
+      detail: expect.stringContaining("no act grant for task direct-1"),
+    });
+    expect(reader.value(FORM, F("textfield:name~0"))).toBe("");
+    expect(reader.grants.log).toEqual([]);
+  });
+
+  it("only the helper grants: a grant line from a consumer or a reader is refused and never reaches the reader", async () => {
+    const grant = { type: "actGrant", v: PROTOCOL_VERSION, taskId: "mine", pid: 5150, windowId: FORM, at: Date.now(), expires: Date.now() + 1000 };
+    host.send(grant);
+    expect(await host.waitFor((m) => m.type === "error")).toMatchObject({ message: expect.stringMatching(/^invalid consumer message/) });
+    reader.client.send(grant);
+    expect(await reader.client.waitFor((m) => m.type === "error")).toMatchObject({ message: expect.stringMatching(/^invalid reader message/) });
+    expect(reader.grants.log).toEqual([]);
   });
 
   it.each([

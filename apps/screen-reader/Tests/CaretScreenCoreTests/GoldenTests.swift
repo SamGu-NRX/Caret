@@ -43,6 +43,8 @@ private func goldenLines() throws -> [Data] {
             case .offerStop: "offerStop"
             case .offerWithdrawn: "offerWithdrawn"
             case .settings: "settings"
+            case .actGrant: "actGrant"
+            case .actRevoke: "actRevoke"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -50,7 +52,8 @@ private func goldenLines() throws -> [Data] {
                           "readerCommand", "fillResult", "taskControl", "activityRequest", "activity", "activityReply",
                           "alternatives", "action", "popup", "offerAccept", "offerStop", "offerWithdrawn", "readerCommand",
                           "offerWithdrawn", "taskControl", "taskProgress", "taskProgress", "offerWithdrawn",
-                          "settings", "settings", "offerWithdrawn"])
+                          "settings", "settings", "offerWithdrawn",
+                          "actGrant", "readerCommand", "verbResult", "actRevoke"])
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -82,8 +85,9 @@ private func goldenLines() throws -> [Data] {
         guard case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: lines[9]) else {
             Issue.record("line 10 is not a readerCommand"); return
         }
-        guard case let .write(pid, _, _, role, attribute, expect, value) = c.verb else { Issue.record("not a write"); return }
+        guard case let .write(pid, _, _, role, attribute, expect, value, taskId) = c.verb else { Issue.record("not a write"); return }
         #expect(pid == 5150 && role == "AXTextField" && attribute == "value" && expect == "" && value == "dana.whitfield@example.com")
+        #expect(taskId == nil)
         let badVerb = Data(#"{"type":"readerCommand","v":1,"id":"x","verb":{"kind":"type","pid":1}}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badVerb) }
     }
@@ -162,6 +166,7 @@ private func goldenLines() throws -> [Data] {
               case .taskProgress(let undone) = try JSONDecoder().decode(Message.self, from: lines[29]) else { Issue.record("lines 29 and 30 are not taskProgress"); return }
         #expect(done.phase == .done && done.written == 3 && done.restored == nil)
         #expect(undone.phase == .undone && undone.restored == 2 && undone.notRestored == 1 && undone.notUndoablePresses == 0)
+        #expect(done.stopReason == nil && undone.stopReason == nil)
         let text = String(decoding: lines[21], as: UTF8.self)
         for bad in [#""sourceApps":[]"#, #""sourceApps":["Mail Fixture","Mail Fixture"]"#] {
             let line = text.replacingOccurrences(of: #""sourceApps":["Mail Fixture"]"#, with: bad)
@@ -169,6 +174,25 @@ private func goldenLines() throws -> [Data] {
         }
         let noWindow = String(decoding: lines[19], as: UTF8.self).replacingOccurrences(of: #","window":{"number":4421,"title":"Seating"}"#, with: "")
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(noWindow.utf8)) }
+    }
+
+    /// B14: a stopped taskProgress says why in stopReason, and no other phase may carry one; protocol.test.ts checks the same.
+    @Test func readsTheStopReason() throws {
+        let lines = try goldenLines()
+        guard case .taskProgress(let stopped) = try JSONDecoder().decode(Message.self, from: lines[12]) else { Issue.record("line 13 is not taskProgress"); return }
+        #expect(stopped.phase == .stopped && stopped.stopReason == .changed)
+        let text = String(decoding: lines[12], as: UTF8.self)
+        let done = String(decoding: lines[28], as: UTF8.self)
+        for bad in [
+            text.replacingOccurrences(of: #","stopReason":"changed""#, with: ""),
+            text.replacingOccurrences(of: #""stopReason":"changed""#, with: #""stopReason":"timeout""#),
+            text.replacingOccurrences(of: #""stopReason":"changed""#, with: #""stopReason":null"#),
+            text.replacingOccurrences(of: #""phase":"stopped""#, with: #""phase":"handoff""#),
+            done.replacingOccurrences(of: #","written":3"#, with: #","written":3,"stopReason":"you""#),
+        ] {
+            #expect(bad != text && bad != done)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
     }
 
     @Test func readsTheOfferMessagesAndRaise() throws {
@@ -205,7 +229,7 @@ private func goldenLines() throws -> [Data] {
         guard case .offerWithdrawn(let gone) = try JSONDecoder().decode(Message.self, from: lines[24]) else { Issue.record("line 25 is not an offerWithdrawn"); return }
         #expect(gone.id == "offer-4.0" && gone.reason == .taken)
         guard case .readerCommand(let raise) = try JSONDecoder().decode(Message.self, from: lines[25]) else { Issue.record("line 26 is not a readerCommand"); return }
-        #expect(raise.verb == .raise(pid: 5150, windowId: "5150-4") && raise.expires == 1_790_000_007_600)
+        #expect(raise.verb == .raise(pid: 5150, windowId: "5150-4", taskId: nil) && raise.expires == 1_790_000_007_600)
     }
 
     /// Optional keys stay out of the encoding when absent, and a null where zod wants the key left out is refused.
@@ -231,6 +255,43 @@ private func goldenLines() throws -> [Data] {
         let lines = try goldenLines()
         guard case .offerWithdrawn(let reoffered) = try JSONDecoder().decode(Message.self, from: lines[30]) else { Issue.record("line 31 is not an offerWithdrawn"); return }
         #expect(reoffered == OfferWithdrawn(at: 1_790_000_124_000, id: "offer-5", reason: .reoffered, replacedBy: "offer-6"))
+    }
+
+    /// B15: the act grant, a write that names its task, the refusal, and the revoke; protocol.test.ts checks the same.
+    @Test func readsTheActGrant() throws {
+        let lines = try goldenLines()
+        guard case .actGrant(let g) = try JSONDecoder().decode(Message.self, from: lines[34]) else { Issue.record("line 35 is not an actGrant"); return }
+        #expect(g == ActGrant(taskId: "offer-5", pid: 5150, windowId: "5150-1", at: 1_790_000_140_000, expires: 1_790_000_260_000))
+        guard case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: lines[35]) else { Issue.record("line 36 is not a readerCommand"); return }
+        #expect(c.verb.taskId == "offer-5")
+        guard case .verbResult(let r) = try JSONDecoder().decode(Message.self, from: lines[36]) else { Issue.record("line 37 is not a verbResult"); return }
+        #expect(r.outcome == .notAllowed)
+        guard case .actRevoke(let rv) = try JSONDecoder().decode(Message.self, from: lines[37]) else { Issue.record("line 38 is not an actRevoke"); return }
+        #expect(rv == ActRevoke(taskId: "offer-5", at: 1_790_000_141_000))
+        let grant = String(decoding: lines[34], as: UTF8.self)
+        let write = String(decoding: lines[35], as: UTF8.self)
+        for bad in [
+            grant.replacingOccurrences(of: #""expires":1790000260000"#, with: #""expires":1790000260001"#),
+            grant.replacingOccurrences(of: #""expires":1790000260000"#, with: #""expires":1790000140000"#),
+            grant.replacingOccurrences(of: #""taskId":"offer-5""#, with: #""taskId":"""#),
+            grant.replacingOccurrences(of: #""windowId":"5150-1","#, with: ""),
+            write.replacingOccurrences(of: #""taskId":"offer-5""#, with: #""taskId":null"#),
+            write.replacingOccurrences(of: #""taskId":"offer-5""#, with: #""taskId":"""#),
+        ] {
+            #expect(bad != grant && bad != write)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
+        let insert = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"insert""#)
+        guard case .readerCommand(let ins) = try JSONDecoder().decode(Message.self, from: Data(insert.utf8)),
+              case let .write(_, _, _, _, attribute, _, _, _) = ins.verb else { Issue.record("an insert write does not decode"); return }
+        #expect(attribute == "insert")
+        let paste = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"paste""#)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(paste.utf8)) }
+        let bare = write.replacingOccurrences(of: #","taskId":"offer-5""#, with: "")
+        guard case .readerCommand(let noTask) = try JSONDecoder().decode(Message.self, from: Data(bare.utf8)) else { Issue.record("a write without taskId does not decode"); return }
+        #expect(noTask.verb.taskId == nil)
+        let again = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(Message.readerCommand(noTask))) as! [String: Any]
+        #expect((again["verb"] as? [String: Any])?["taskId"] == nil)
     }
 
     @Test func rejectsAWrongVersionAndAnUnknownType() {

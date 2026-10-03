@@ -114,7 +114,10 @@ describe("offer lifetimes over the socket", () => {
     dir = mkdtempSync(join(tmpdir(), "caret-lifetimes-"));
     store = new Store(join(dir, "data"));
     let n = 0;
-    helper = new Helper({
+    // This test's helper talks to this test's server only. Through the `server` variable, a run still in
+    // flight when its test ended published its stop into a later test's host (B13's socket flake).
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const mine: Helper = new Helper({
       store,
       askJev,
       shadow: false,
@@ -123,10 +126,11 @@ describe("offer lifetimes over the socket", () => {
       // Eager, whose routines need two silent hits, so a routine is offered on its fourth day as these tests expect.
       settings: { ...DEFAULT_SETTINGS, level: "eager" },
       now: () => reader?.clock ?? 0,
-      publish: (m) => server.publish(m),
-      sendToReader: (cmd) => server.sendToReader(cmd),
+      publish: (m) => own.publish(m),
+      sendToReader: (cmd) => own.sendToReader(cmd),
     });
-    server = new HelperServer(join(dir, "screen.sock"), () => helper, () => {});
+    helper = mine;
+    server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });

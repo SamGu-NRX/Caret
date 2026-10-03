@@ -184,7 +184,10 @@ describe("settings over the socket take effect on the next decision", () => {
     jevCalls = 0;
     jevGate = null;
     const pick = jevPickingText((_, instructions) => VALUES[/Label: '([^']+)'/.exec(instructions)?.[1] ?? ""] ?? null);
-    helper = new Helper({
+    // This test's helper talks to this test's server only. Through the `server` variable, a run still in
+    // flight when its test ended published its stop into a later test's host (B13's socket flake).
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const mine: Helper = new Helper({
       store,
       askJev: async (req) => {
         jevCalls++;
@@ -194,10 +197,11 @@ describe("settings over the socket take effect on the next decision", () => {
       shadow: false,
       allowBackgroundFocus: false,
       now: () => clock,
-      publish: (m) => server.publish(m),
-      sendToReader: (cmd) => server.sendToReader(cmd),
+      publish: (m) => own.publish(m),
+      sendToReader: (cmd) => own.sendToReader(cmd),
     });
-    server = new HelperServer(join(dir, "screen.sock"), () => helper, () => {});
+    helper = mine;
+    server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });

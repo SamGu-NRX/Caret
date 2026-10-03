@@ -1,1 +1,0 @@
-Read the shadow store only through sqlite3 'file:...?mode=ro' .backup into a temp copy; opening a data dir as Store creates a salt file and chmods it.

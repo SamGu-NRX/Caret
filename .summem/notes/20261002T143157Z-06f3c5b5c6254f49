@@ -1,1 +1,0 @@
-A value shown in two windows is credited by RollingText.find to the most recently seen one; pattern code must use findAll and pick the window that explains every round, or loop columns look like different sources.

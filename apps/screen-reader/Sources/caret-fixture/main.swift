@@ -21,6 +21,8 @@
 //   stdin `focus NAME` makes one of the fixture's own windows key without activating the app, which
 //   moves AX focus inside the fixture only (it works in the background-only default too: AppKit
 //   reports no key window, yet the reader sees the focus move).
+//   stdin `web JS` (with --webkit) evaluates JS in the page and answers with the JSON it returns, once the
+//   page answers; the executor's web form defines caretState, caretReset and caretSeed for it.
 //   stdin `activate legacy|cooperative` (with --foreground only) lets the app become active and asks
 //   AppKit for it, through activate(ignoringOtherApps:) or macOS 14's activate(). `quit PID` hands
 //   activation to that process if the fixture holds it, then exits. They exist for the activation
@@ -824,7 +826,8 @@ func focusCommand(_ name: String) -> [String: Any] {
     guard let w = namedWindows()[name] else { return ["ok": false, "error": "no window named \(name)"] }
     w.makeKey()
     let field = w.contentView.flatMap { firstTextField(in: $0) }
-    if let f = field { _ = w.makeFirstResponder(f) } else { _ = w.makeFirstResponder(w.contentView) }
+    // The WebKit window's page takes keys and edits only while the web view is first responder.
+    if let wv = webView, wv.window === w { _ = w.makeFirstResponder(wv) } else if let f = field { _ = w.makeFirstResponder(f) } else { _ = w.makeFirstResponder(w.contentView) }
     return ["ok": true, "at": ms(), "key": NSApp.keyWindow?.title ?? NSNull(), "isKey": w.isKeyWindow]
 }
 
@@ -877,6 +880,23 @@ let stdinCommand: ((String) -> [String: Any])? = { line in
         return windowCommand?(line) ?? ["ok": false, "error": "unknown command \(line)"]
     }
 }
+/// Evaluates `js` in the WebKit window's page and answers with its value, passed through JSON.stringify.
+func webCommand(_ js: String, reply: @escaping ([String: Any]) -> Void) {
+    guard let wv = webView else { return reply(["ok": false, "error": "no WebKit window; pass --webkit URL"]) }
+    wv.evaluateJavaScript("JSON.stringify(\(js))") { r, e in
+        if let s = r as? String, let d = s.data(using: .utf8), let v = try? JSONSerialization.jsonObject(with: d, options: [.fragmentsAllowed]) {
+            reply(["ok": true, "value": v])
+        } else {
+            reply(["ok": false, "error": e.map { "\($0)" } ?? "the page returned nothing"])
+        }
+    }
+}
+
+func printReply(_ out: [String: Any]) {
+    let d = (try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])) ?? Data("{\"ok\":false}".utf8)
+    print(String(decoding: d, as: UTF8.self))
+}
+
 if let command = stdinCommand {
     var pending = Data()
     FileHandle.standardInput.readabilityHandler = { h in
@@ -888,9 +908,9 @@ if let command = stdinCommand {
             pending.removeSubrange(pending.startIndex...nl)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    let out = command(line.trimmingCharacters(in: .whitespaces))
-                    let d = (try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])) ?? Data("{\"ok\":false}".utf8)
-                    print(String(decoding: d, as: UTF8.self))
+                    let l = line.trimmingCharacters(in: .whitespaces)
+                    // The page answers later; the caller waits for each answer before it sends the next line.
+                    if l.hasPrefix("web ") { webCommand(String(l.dropFirst(4)), reply: printReply) } else { printReply(command(l)) }
                 }
             }
         }

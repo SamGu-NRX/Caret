@@ -1,1 +1,0 @@
-Eval scripts: never execFileSync in a polling loop. lsappinfo every 100 ms held the in-process helper's event loop and added 150-250 ms to every measured latency (B4).

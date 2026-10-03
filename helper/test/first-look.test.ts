@@ -100,15 +100,19 @@ describe("the first look over the socket", () => {
     store = new Store(join(dir, "data"));
     asked = 0;
     ask = fill;
-    helper = new Helper({
+    // This test's helper talks to this test's server only. Through the `server` variable, a run still in
+    // flight when its test ended published its stop into a later test's host (B13's socket flake).
+    const own: HelperServer = new HelperServer(join(dir, "screen.sock"), () => mine, () => {});
+    const mine: Helper = new Helper({
       store,
       askJev: (req) => (asked++, ask(req)),
       shadow: false,
       allowBackgroundFocus: false,
-      publish: (m) => server.publish(m),
-      sendToReader: (cmd) => server.sendToReader(cmd),
+      publish: (m) => own.publish(m),
+      sendToReader: (cmd) => own.sendToReader(cmd),
     });
-    server = new HelperServer(join(dir, "screen.sock"), () => helper, () => {});
+    helper = mine;
+    server = own;
     await server.listen();
     host = await LineClient.connect(join(dir, "screen.sock"));
     host.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 1, version: "host-test" });

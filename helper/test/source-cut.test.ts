@@ -229,14 +229,16 @@ describe("a conversation's budget goes to the lines nearest each field first", (
   });
 
   it("fills more of the form than screen order did, and nothing wrong", async () => {
-    const fill = async (o: { relevance?: boolean; kindsByCost?: boolean }) => {
-      const p = await proposeFill(model(), decoyProneJev(), FORM, FORM_KEY("Meeting date"), 3000, o);
+    // Kinds alone, with names as B13 took them; the names' group is the next test's.
+    const fill = async (o: { relevance?: boolean; kindsByCost?: boolean; nameGroup?: boolean }) => {
+      const p = await proposeFill(model(), decoyProneJev(), FORM, FORM_KEY("Meeting date"), 3000, { nameGroup: false, ...o });
       return new Map(p.fields.map((f) => [SCHEDULE.find((l) => f.descriptor.includes(`'${l}'`)), f.value]));
     };
     const byCost = await fill({});
     const b12 = await fill({ kindsByCost: false });
     const inOrder = await fill({ relevance: false });
-    for (const [l, v] of [...byCost, ...b12, ...inOrder]) expect(v === null || v === GOLD[l as string], `${l}: ${v}`).toBe(true);
+    const b14 = await fill({ nameGroup: true });
+    for (const [l, v] of [...byCost, ...b12, ...inOrder, ...b14]) expect(v === null || v === GOLD[l as string], `${l}: ${v}`).toBe(true);
     const filled = (m: Map<unknown, string | null>) => [...m.values()].filter((v) => v !== null).length;
     expect(filled(b12)).toBeGreaterThan(filled(inOrder));
     expect(b12.get("Meeting date")).toBe("Thursday, October 8, 2026");
@@ -248,6 +250,10 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     expect(byCost.get("Attendee email")).toBe(GOLD["Attendee email"]);
     expect(byCost.get("Video link")).toBe(GOLD["Video link"]);
     expect(byCost.get("Meeting date")).toBeNull();
+    // With the names' group (B14) the chat's names are cheaper per field served than the links, so they go
+    // in instead, and every name the chat holds is offered: Attendee job title is filled, Video link not.
+    expect(b14.get("Video link")).toBeNull();
+    expect(b14.get("Attendee job title")).toBe(GOLD["Attendee job title"]);
   });
 
   it("offers a kind the form takes whole, every value with its facts, or not at all", () => {
@@ -266,9 +272,10 @@ describe("a conversation's budget goes to the lines nearest each field first", (
       // A value offered carries the facts a window that is not a conversation would give it.
       for (const c of of) if (c !== undefined) expect(c.section, c.text).not.toBeNull();
     }
-    // The cheapest kinds per field get in whole: a time, an email and the links, not the two dates.
-    expect(removed.has("date")).toBe(true);
-    for (const k of ["time", "email", "url"] as const) expect(removed.has(k), k).toBe(false);
+    // The cheapest groups per field get in whole: a time, an email and the names, not the dates or links.
+    for (const k of ["date", "url"] as const) expect(removed.has(k), k).toBe(true);
+    for (const k of ["time", "email"] as const) expect(removed.has(k), k).toBe(false);
+    for (const n of ["Dana Whitfield", "Senior Product Designer", "Lumen Labs"]) expect(candidates.map((c) => c.text)).toContain(n);
   });
 
   it("goes round the fields: each field's best line before any field's second", () => {
