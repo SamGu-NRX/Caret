@@ -140,6 +140,8 @@ export interface FillOptions {
   relevance?: boolean;
   /** False asks a field whose label names no kind despite a cut, as B12 did, for the same replay. The helper never sets it. */
   unknownKindRule?: boolean;
+  /** False takes a conversation's kinds in the order the fields want them, as B12 did (candidates.ts kindsByCost). The helper never sets it. */
+  kindsByCost?: boolean;
 }
 
 export async function proposeFill(
@@ -174,6 +176,7 @@ export async function proposeFill(
     ledger,
     ...(opts.exclude === undefined ? {} : { exclude: opts.exclude }),
     ...(opts.relevance === false ? {} : { fields: fields.map((f) => f.terms) }),
+    ...(opts.kindsByCost === false ? { kindsByCost: false } : {}),
   });
   if (candidates.length === 0 && cut.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
 

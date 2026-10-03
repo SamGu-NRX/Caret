@@ -216,7 +216,8 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     const m = model();
     const budget = windowBudget(m.windows.get(REF)!);
     const ranked = new SnippetLedger(m.windows.values());
-    const byRelevance = collectCandidates(m, FORM, { now: 3000, ledger: ranked, fields: terms }).candidates.map((c) => c.text);
+    // B12's order of kinds; by cost per field (the default) see the test below.
+    const byRelevance = collectCandidates(m, FORM, { now: 3000, ledger: ranked, fields: terms, kindsByCost: false }).candidates.map((c) => c.text);
     const plain = new SnippetLedger(m.windows.values());
     const inOrder = collectCandidates(m, FORM, { now: 3000, ledger: plain }).candidates.map((c) => c.text);
     for (const want of ["Thursday, October 8, 2026", "3:00 PM"]) expect(byRelevance, want).toContain(want);
@@ -228,17 +229,25 @@ describe("a conversation's budget goes to the lines nearest each field first", (
   });
 
   it("fills more of the form than screen order did, and nothing wrong", async () => {
-    const fill = async (relevance: boolean) => {
-      const p = await proposeFill(model(), decoyProneJev(), FORM, FORM_KEY("Meeting date"), 3000, { relevance });
+    const fill = async (o: { relevance?: boolean; kindsByCost?: boolean }) => {
+      const p = await proposeFill(model(), decoyProneJev(), FORM, FORM_KEY("Meeting date"), 3000, o);
       return new Map(p.fields.map((f) => [SCHEDULE.find((l) => f.descriptor.includes(`'${l}'`)), f.value]));
     };
-    const ranked = await fill(true);
-    const inOrder = await fill(false);
-    for (const [l, v] of [...ranked, ...inOrder]) expect(v === null || v === GOLD[l as string], `${l}: ${v}`).toBe(true);
+    const byCost = await fill({});
+    const b12 = await fill({ kindsByCost: false });
+    const inOrder = await fill({ relevance: false });
+    for (const [l, v] of [...byCost, ...b12, ...inOrder]) expect(v === null || v === GOLD[l as string], `${l}: ${v}`).toBe(true);
     const filled = (m: Map<unknown, string | null>) => [...m.values()].filter((v) => v !== null).length;
-    expect(filled(ranked)).toBeGreaterThan(filled(inOrder));
-    expect(ranked.get("Meeting date")).toBe("Thursday, October 8, 2026");
-    expect(ranked.get("Start time")).toBe("3:00 PM");
+    expect(filled(b12)).toBeGreaterThan(filled(inOrder));
+    expect(b12.get("Meeting date")).toBe("Thursday, October 8, 2026");
+    expect(b12.get("Start time")).toBe("3:00 PM");
+    // By cost per field the budget serves three fields where B12's order served two: the two dates cost
+    // more than a time, an email and the links together.
+    expect(filled(byCost)).toBeGreaterThan(filled(b12));
+    expect(byCost.get("Start time")).toBe("3:00 PM");
+    expect(byCost.get("Attendee email")).toBe(GOLD["Attendee email"]);
+    expect(byCost.get("Video link")).toBe(GOLD["Video link"]);
+    expect(byCost.get("Meeting date")).toBeNull();
   });
 
   it("offers a kind the form takes whole, every value with its facts, or not at all", () => {
@@ -257,9 +266,9 @@ describe("a conversation's budget goes to the lines nearest each field first", (
       // A value offered carries the facts a window that is not a conversation would give it.
       for (const c of of) if (c !== undefined) expect(c.section, c.text).not.toBeNull();
     }
-    // The fields nearest the trigger, Meeting date and Start time, get their kinds whole.
-    expect(removed.has("date")).toBe(false);
-    expect(removed.has("time")).toBe(false);
+    // The cheapest kinds per field get in whole: a time, an email and the links, not the two dates.
+    expect(removed.has("date")).toBe(true);
+    for (const k of ["time", "email", "url"] as const) expect(removed.has(k), k).toBe(false);
   });
 
   it("goes round the fields: each field's best line before any field's second", () => {
@@ -273,7 +282,7 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     expect(cands.map((c) => c.text).slice(0, 4)).toEqual(["level two", "Gate closes at ten", "Parking is free after six", "north entrance"]);
   });
 
-  it("takes kinds in the order the fields first want them", () => {
+  it("takes kinds by cost per field served, or, as B12 did, in the order the fields first want them", () => {
     const m = new ScreenModel();
     const filler = ["See you at the venue tomorrow", "Bring the projector and the long cable", "Sounds good, thanks again"];
     const lines = ["Invoice total: $120.00", "Gate code: 4417", "Parking total: $15.00", ...filler];
@@ -287,9 +296,13 @@ describe("a conversation's budget goes to the lines nearest each field first", (
       }),
     );
     m.apply(scheduleForm(2000, ["Parking total", "Gate code"]));
-    const cands = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()), fields: [fieldTerms(["Parking total"]), fieldTerms(["Gate code"])] }).candidates;
+    const fields = [fieldTerms(["Parking total"]), fieldTerms(["Gate code"])];
+    const b12 = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()), fields, kindsByCost: false }).candidates;
     // Amounts first, Parking's best leading, both together; then the gate code.
-    expect(cands.map((c) => c.text).slice(0, 3)).toEqual(["$15.00", "$120.00", "4417"]);
+    expect(b12.map((c) => c.text).slice(0, 3)).toEqual(["$15.00", "$120.00", "4417"]);
+    // By cost: the gate code is one short value for one field, the amounts two for one.
+    const byCost = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()), fields }).candidates;
+    expect(byCost.map((c) => c.text).slice(0, 3)).toEqual(["4417", "$15.00", "$120.00"]);
   });
 
   it("leaves windows that are not conversations in screen order", () => {

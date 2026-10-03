@@ -99,8 +99,9 @@ describe("B13 review: no wrong fill from a partial set", () => {
     expect(fieldOf(p, "Start time")?.withheld).toBe("sourceCut");
   });
 
-  it("F3: a chat the candidate cap stops partway through is reported cut", async () => {
-    // A calendar offers one decoy date; the chat's 79 times fill the cap of 80 before its meeting date.
+  it("F3: a window the candidate cap stops partway through is reported cut", async () => {
+    // A calendar offers one decoy date; a note's 79 times fill the cap of 80 before its meeting date. (In
+    // a conversation the kinds go in whole or not at all, so there the cap leaves a kind out instead.)
     const m = new ScreenModel();
     const times = Array.from({ length: 79 }, (_, i) => `${10 + Math.floor(i / 60)}:${String(i % 60).padStart(2, "0")}`);
     const nodes = times.map((t, i) => text(`${CHAT}/t${i}`, t));
@@ -108,11 +109,12 @@ describe("B13 review: no wrong fill from a partial set", () => {
     const values = times.map((t, i) => value("time", t, `${CHAT}/t${i}`));
     nodes.push(text(`${CHAT}/d`, `Review on ${MEETING}`));
     values.push(value("date", MEETING, `${CHAT}/d`));
-    m.apply(snap([...nodes, ...pad], { at: 1000, windowId: CHAT, title: "Dana", app: MESSAGES, focused: true, values }));
+    m.apply(snap([...nodes, ...pad], { at: 1000, windowId: CHAT, title: "Dana", app: NOTES, focused: true, values }));
     m.apply(calendar(1500));
-    m.apply(scheduleForm(2000, ["Start time", "Meeting date"]));
+    const labels = ["Start time", "Meeting date"];
+    m.apply(scheduleForm(2000, labels));
     const ledger = new SnippetLedger(m.windows.values());
-    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Start time"]), fieldTerms(["Meeting date"])] });
+    const { candidates, cut } = collectCandidates(m, FORM, { now: 3000, ledger, fields: labels.map((l) => fieldTerms([l])) });
     expect(candidates).toHaveLength(80);
     expect(candidates.map((c) => c.text)).toContain(DECOY);
     expect(candidates.map((c) => c.text)).not.toContain(MEETING);

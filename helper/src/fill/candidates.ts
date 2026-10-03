@@ -78,6 +78,11 @@ export interface GenerateOptions {
    * answerable fields with the sources as Messages windows).
    */
   fields?: readonly ReadonlySet<string>[];
+  /**
+   * False takes a conversation's kinds in the order the fields first want them, as B12 did, rather than
+   * by cost per field served; for the live replay's comparison. The helper never sets it.
+   */
+  kindsByCost?: boolean;
 }
 
 /** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
@@ -273,7 +278,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     }
     for (let i = 0; i < spans.length; i++) if (!used.has(i)) order.push(i);
     // A kind some field takes goes in whole or not at all: every typed value of it in the window, each
-    // with all its facts, in one take, kind by kind in the order the fields first want them. A kind that
+    // with all its facts, in one take. A kind that
     // does not fit is left out whole, so cutKinds reports it and fill withholds its fields, and the budget
     // goes on to the next kind. So a field is asked only when every value of its kind in the window is
     // offered, and offered as fully as a window that is not a conversation would offer it: no value is
@@ -287,10 +292,9 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       return k !== null && k !== undefined && kinds.has(kindTerm(k));
     };
     const kindOrder = [...new Set(order.filter(takesKind).map((i) => spans[i]?.kind as ValueKind))];
-    /** Kinds left out whole; a line holding a value of one stays out too. */
-    const leftOut = new Set<string>();
+    const groups = new Map<ValueKind, Candidate[]>();
     for (const k of kindOrder) {
-      if (full() || outOfTime()) return false;
+      if (outOfTime()) return false;
       const group: Candidate[] = [];
       const texts = new Set<string>();
       for (const i of order) {
@@ -299,18 +303,35 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
         texts.add(sp.text);
         group.push(build(w, sp.node, sp.text, sp.kind, sp.context));
       }
-      if (group.length === 0) continue;
-      if (out.length + group.length > max || o.ledger?.take(w, "candidate", group.flatMap(candidateTexts)) !== true) {
-        missed.add(w.window.windowId);
-        leftOut.add(kindTerm(k));
-        continue;
+      if (group.length > 0) groups.set(k, group);
+    }
+    // Kinds go in by what they cost per field they serve, cheapest first, priced again after each take,
+    // since a kind's facts can share texts (the window's title, a section) with one already in. B12 took
+    // them in the order the fields first wanted them, so one dear kind could spend the budget that two
+    // cheap ones needed. No run measured this before B13's replay.
+    const served = (k: ValueKind): number => fields.filter((f) => f.has(kindTerm(k))).length;
+    for (;;) {
+      if (full() || outOfTime()) return false;
+      let best: { k: ValueKind; rate: number } | null = null;
+      for (const [k, group] of groups) {
+        const cost = out.length + group.length > max ? null : o.ledger?.cost(w, group.flatMap(candidateTexts));
+        if (cost === null || cost === undefined) continue;
+        const rate = o.kindsByCost === false ? kindOrder.indexOf(k) : cost / served(k);
+        if (best === null || rate < best.rate) best = { k, rate };
       }
+      if (best === null) break;
+      const group = groups.get(best.k) as Candidate[];
+      groups.delete(best.k);
+      if (o.ledger?.take(w, "candidate", group.flatMap(candidateTexts)) !== true) throw new Error(`a kind priced to fit did not fit window ${w.window.windowId}`);
       for (const c of group) {
         c.id = `c${out.length + 1}`;
         seen.add(c.text);
         out.push(c);
       }
     }
+    /** Kinds left out whole, since none of them fits what is left; a line holding a value of one stays out too. */
+    const leftOut = new Set([...groups.keys()].map(kindTerm));
+    if (leftOut.size > 0) missed.add(w.window.windowId);
     // Then the rest, nearest the fields first, with their facts, until one does not fit.
     for (const i of order.filter((x) => !takesKind(x))) {
       if (full() || outOfTime()) return false;
