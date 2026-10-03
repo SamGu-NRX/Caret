@@ -41,13 +41,48 @@ struct WindowInfo {
 /// from any thread. A user's press is resolved the moment the button goes down, not behind walks queued on the
 /// worker, since Send can close its window before those finish (B20 review).
 final class PressIndex: @unchecked Sendable {
+    /// A pressable node of the latest walk, for placing a click the window's app cannot hit-test.
+    struct Control {
+        let key: String
+        let role: String
+        let label: String
+        let frame: Frame
+    }
+    private struct Entry {
+        var id: String
+        var number: Int?
+        var keys: [AXRef: String]
+        var controls: [Control]
+    }
     private let lock = NSLock()
-    private var byWindow: [AXRef: (id: String, keys: [AXRef: String])] = [:]
+    private var byWindow: [AXRef: Entry] = [:]
 
-    func set(_ w: AXRef, id: String, contexts: [AXRef: KeyContext]) {
+    /// After a full walk: the window's keys and its pressable controls with their frames.
+    func set(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node]) {
+        let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
+        let controls = nodes.compactMap { n -> Control? in
+            guard Roles.pressable.contains(n.role), let f = n.frame else { return nil }
+            return Control(key: n.key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines), frame: f)
+        }
+        lock.lock(); defer { lock.unlock() }
+        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls)
+    }
+
+    /// After a walk of part of the window: its keys, keeping the controls of the last full walk.
+    func setKeys(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext]) {
         let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
         lock.lock(); defer { lock.unlock() }
-        byWindow[w] = (id, keys)
+        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: byWindow[w]?.controls ?? [])
+    }
+
+    /// The smallest pressable control of the window with this window-server number whose walked frame holds
+    /// `p`, with the window's id. The frames are as of the latest full walk.
+    func control(number: Int, at p: CGPoint) -> (id: String, control: Control)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let e = byWindow.values.first(where: { $0.number == number }) else { return nil }
+        let hits = e.controls.filter { p.x >= $0.frame.x && p.x <= $0.frame.x + $0.frame.width && p.y >= $0.frame.y && p.y <= $0.frame.y + $0.frame.height }
+        guard let best = hits.min(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }) else { return nil }
+        return (e.id, best)
     }
 
     func remove(_ w: AXRef) {
@@ -459,7 +494,7 @@ public final class AppWorker: @unchecked Sendable {
         for (h, kc) in result.contexts { contexts[AXRef(walker.elements[h])] = kc }
         info.contexts = contexts
         info.lastWalk = CFAbsoluteTimeGetCurrent()
-        pressIndex.set(w, id: info.id, contexts: contexts)
+        pressIndex.set(w, id: info.id, number: info.number, contexts: contexts, nodes: result.nodes)
 
         let frame = AX.frame(of: w.el)
         var h = Hasher()
@@ -492,7 +527,7 @@ public final class AppWorker: @unchecked Sendable {
         for (h, c) in result.contexts { info.contexts[AXRef(walker.elements[h])] = c }
         info.contentHash = nil
         windows[w] = info
-        pressIndex.set(w, id: info.id, contexts: info.contexts)
+        pressIndex.setKeys(w, id: info.id, number: info.number, contexts: info.contexts)
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: .event, app: app,
                             window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: AX.frame(of: w.el), number: info.number),
                             focused: w == focusedWindow, root: kc.key, nodes: result.nodes, values: ctx.detector.values(for: result.nodes),
@@ -529,28 +564,39 @@ public final class AppWorker: @unchecked Sendable {
     /// image is often the element hit. Assumed.
     static let pressClimb = 6
 
-    /// The user clicked at `point` (Accessibility coordinates) at `at`. When the element under it, or a near
-    /// ancestor, is pressable and sits in one of `windows`, reports it as a userPress with its key from the
-    /// window's latest walk and its label as the element carries it. Read only: nothing is pressed or set.
-    func observePress(at point: CGPoint, time at: Int64, windows ids: Set<String>) {
+    /// The user clicked at `point` (Accessibility coordinates) at `at`, in the window with window-server number
+    /// `number` when the event named one. When the element under the click, or a near ancestor, is pressable
+    /// and sits in one of `windows`, reports it as a userPress with its key from the window's latest walk and
+    /// its label as the element carries it. An app cannot hit-test a point another app's window covers (B20: a
+    /// click posted to a covered fixture window), so then the control is found among the latest full walk's
+    /// frames in the window the event names, with the label that walk read. Read only: nothing is pressed or set.
+    func observePress(at point: CGPoint, number: Int?, time at: Int64, windows ids: Set<String>) {
         pressQueue.async {
-            var hit: AXUIElement?
-            guard AXUIElementCopyElementAtPosition(self.ax, Float(point.x), Float(point.y), &hit) == .success, var el = hit else { return }
-            AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
-            var role = AX.string(el, kAXRoleAttribute)
-            var climbed = 0
-            while let r = role, !Roles.pressable.contains(r), climbed < Self.pressClimb, let up = AX.element(el, kAXParentAttribute) {
-                el = up
-                AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
-                role = AX.string(el, kAXRoleAttribute)
-                climbed += 1
-            }
-            guard let r = role, Roles.pressable.contains(r),
-                  let w = AX.element(el, kAXWindowAttribute).map(AXRef.init), let (id, key) = self.pressIndex.lookup(window: w, element: AXRef(el)), ids.contains(id),
-                  let label = self.liveLabel(el) else { return }
-            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: id, key: key, role: r,
-                                                       label: label.trimmingCharacters(in: .whitespacesAndNewlines))))
+            if self.pressByHitTest(at: point, time: at, windows: ids) { return }
+            guard let n = number, let (id, c) = self.pressIndex.control(number: n, at: point), ids.contains(id) else { return }
+            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: id, key: c.key, role: c.role, label: c.label)))
         }
+    }
+
+    /// The hit-test path of observePress; false when it placed nothing.
+    private func pressByHitTest(at point: CGPoint, time at: Int64, windows ids: Set<String>) -> Bool {
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(ax, Float(point.x), Float(point.y), &hit) == .success, var el = hit else { return false }
+        AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+        var role = AX.string(el, kAXRoleAttribute)
+        var climbed = 0
+        while let r = role, !Roles.pressable.contains(r), climbed < Self.pressClimb, let up = AX.element(el, kAXParentAttribute) {
+            el = up
+            AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+            role = AX.string(el, kAXRoleAttribute)
+            climbed += 1
+        }
+        guard let r = role, Roles.pressable.contains(r),
+              let w = AX.element(el, kAXWindowAttribute).map(AXRef.init), let (id, key) = pressIndex.lookup(window: w, element: AXRef(el)), ids.contains(id),
+              let label = liveLabel(el) else { return false }
+        ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(pid), windowId: id, key: key, role: r,
+                                              label: label.trimmingCharacters(in: .whitespacesAndNewlines))))
+        return true
     }
 
     // MARK: - verbs

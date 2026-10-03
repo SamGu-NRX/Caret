@@ -44,8 +44,12 @@ public final class ScreenReader {
     private var started = false
     private var watchedPids: Set<pid_t> = []
     private var inputMonitor: Any?
-    /// B20: windows whose user presses are reported, by process; the monitor exists only while it is non-empty.
+    /// B20: windows whose user presses are reported, by process; taps and the monitor exist only while it is non-empty.
     private var pressWatch: [pid_t: Set<String>] = [:]
+    /// A listen-only event tap per watched process. It sees a click posted to that process alone, which the
+    /// global monitor does not (B20 experiment: 3 of 3 against 0 of 3), and only that process's clicks.
+    private var pressTaps: [pid_t: (port: CFMachPort, source: CFRunLoopSource, box: PressTapBox)] = [:]
+    /// The global monitor, for watched processes no tap could be made for (no Input Monitoring access).
     private var pressMonitor: Any?
     /// EventKit calls block, so calendar verbs run here, one at a time, off the main thread.
     private let calendarQueue = DispatchQueue(label: "caret.screen.calendar")
@@ -187,18 +191,31 @@ public final class ScreenReader {
     }
 
     /**
-     * Reports the user's clicks on pressable elements in the named windows (B20). The same global mouse
-     * monitor as the input watch: it observes and cannot change or block an event. Only a left button going
-     * down is read, and only its location, which is matched to an element of a watched window.
+     * Reports the user's clicks on pressable elements in the named windows (B20). Each watched process gets a
+     * listen-only event tap: it observes and cannot change, block or post an event. Only a left button going
+     * down is read: its location and the window it went to, matched to an element of a watched window. A
+     * process no tap can be made for falls back to the global mouse monitor, placed by the frontmost window
+     * under the click.
      */
     private func watchPresses(_ byPid: [pid_t: Set<String>]) {
         pressWatch = byPid.filter { !$0.value.isEmpty }
-        if pressWatch.isEmpty {
+        for (pid, tap) in pressTaps where pressWatch[pid] == nil {
+            CGEvent.tapEnable(tap: tap.port, enable: false)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), tap.source, .commonModes)
+            CFMachPortInvalidate(tap.port)
+            pressTaps.removeValue(forKey: pid)
+        }
+        for pid in pressWatch.keys where pressTaps[pid] == nil {
+            if let tap = makePressTap(pid) { pressTaps[pid] = tap }
+        }
+        let untapped = pressWatch.keys.contains { pressTaps[$0] == nil }
+        if !untapped {
             if let m = pressMonitor { NSEvent.removeMonitor(m) }
             pressMonitor = nil
             return
         }
         guard pressMonitor == nil else { return }
+        ctx.log("press watch: no event tap for \(pressWatch.keys.filter { pressTaps[$0] == nil }.map(String.init).joined(separator: ",")); using the global monitor")
         pressMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { e in
             // Where the click was, not where the cursor is by the time this runs: for another app's event,
             // locationInWindow is in screen coordinates.
@@ -208,11 +225,33 @@ public final class ScreenReader {
         }
     }
 
+    private func makePressTap(_ pid: pid_t) -> (port: CFMachPort, source: CFRunLoopSource, box: PressTapBox)? {
+        let box = PressTapBox(pid: pid) { [weak self] p, number, at in
+            MainActor.assumeIsolated { self?.tapPress(pid: pid, at: p, number: number, time: at) }
+        }
+        let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+        guard let port = CGEvent.tapCreateForPid(pid: pid, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mask,
+                                                 callback: pressTapCallback, userInfo: Unmanaged.passUnretained(box).toOpaque()) else { return nil }
+        box.port = port
+        guard let source = CFMachPortCreateRunLoopSource(nil, port, 0) else {
+            CFMachPortInvalidate(port)
+            return nil
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: port, enable: true)
+        return (port, source, box)
+    }
+
+    private func tapPress(pid: pid_t, at p: CGPoint, number: Int?, time at: Int64) {
+        guard let ids = pressWatch[pid], let w = workers[pid] else { return }
+        w.observePress(at: p, number: number, time: at, windows: ids)
+    }
+
     private func pressSeen(location: NSPoint, at: Int64) {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let p = CGPoint(x: location.x, y: primaryHeight - location.y)
-        guard let owner = windowOwner(at: p), let ids = pressWatch[owner], let w = workers[owner] else { return }
-        w.observePress(at: p, time: at, windows: ids)
+        guard let owner = windowOwner(at: p), pressTaps[owner] == nil, let ids = pressWatch[owner], let w = workers[owner] else { return }
+        w.observePress(at: p, number: nil, time: at, windows: ids)
     }
 
     private func inputSeen(isKey: Bool, location: NSPoint) {
@@ -262,6 +301,11 @@ public final class ScreenReader {
     }
 
     private func remove(_ pid: pid_t) {
+        if pressWatch[pid] != nil {
+            var rest = pressWatch
+            rest.removeValue(forKey: pid)
+            watchPresses(rest)
+        }
         guard let w = workers.removeValue(forKey: pid) else { return }
         manualAXSet.remove(pid)
         w.stop()
@@ -321,6 +365,34 @@ public final class ScreenReader {
         }
         return false
     }
+}
+
+/// What a press tap's callback needs: the process it watches, its port (to re-enable it after the system turns
+/// it off for a slow callback), and where to send a click. Kept alive by the reader's tap table.
+final class PressTapBox: @unchecked Sendable {
+    let pid: pid_t
+    var port: CFMachPort?
+    let onPress: @Sendable (CGPoint, Int?, Int64) -> Void
+    init(pid: pid_t, onPress: @escaping @Sendable (CGPoint, Int?, Int64) -> Void) {
+        self.pid = pid
+        self.onPress = onPress
+    }
+}
+
+/// Runs on the main run loop for each left button going down in a watched process. It only reads the event and
+/// passes it on unchanged.
+private let pressTapCallback: CGEventTapCallBack = { _, type, event, refcon in
+    guard let refcon else { return Unmanaged.passUnretained(event) }
+    let box = Unmanaged<PressTapBox>.fromOpaque(refcon).takeUnretainedValue()
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let port = box.port { CGEvent.tapEnable(tap: port, enable: true) }
+        return Unmanaged.passUnretained(event)
+    }
+    guard type == .leftMouseDown else { return Unmanaged.passUnretained(event) }
+    // CGEvent locations share Accessibility's space: origin at the top left of the primary screen.
+    let number = Int(event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
+    box.onPress(event.location, number > 0 ? number : nil, nowMs())
+    return Unmanaged.passUnretained(event)
 }
 
 public enum AppClassifier {
