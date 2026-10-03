@@ -82,6 +82,8 @@ export class Desk implements ReaderLink {
     this.verbs.push(verb);
     const answer = (outcome: VerbResult["outcome"], detail: string | null = null): VerbResult => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "desk", at: this.at, outcome, detail });
     if (verb.kind === "watchInput" || verb.kind === "watchWindows") return answer("ok");
+    // A list window is read-only here: its walk changes nothing, as a walk of an unchanged window sends nothing new.
+    if (verb.kind === "walk" && !this.grids.has(verb.windowId) && this.h.model.windows.has(verb.windowId)) return answer("ok");
     const g = this.grids.get(verb.windowId);
     if (g === undefined) return answer("noWindow");
     if (verb.pid !== g.app.pid) return answer("notAllowed");

@@ -408,11 +408,17 @@ describe("pattern engine in the helper", () => {
       expect(offers("routine")).toEqual([]);
       helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: false });
 
+      // A look the routine does not win (here a draft built and then dropped) adds no offer to the engine.
+      expect(helper.patterns.firstLook(["routine"], 3)).toHaveLength(1);
+      expect(helper.patterns.openOffers()).toEqual([]);
       // Eager or Balanced, the routine is proven (3 hits); at Quiet it is not looked for.
       const quiet = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "q", at: desk.at, families: ["routine"], level: "quiet", deadlineMs: 2000 });
       expect(quiet.outcome).toBe("nothing");
       const r = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "look", at: desk.at, families: ["routine"], level: "balanced", deadlineMs: 2000 });
       expect(r).toMatchObject({ outcome: "found", found: { kind: "fill", family: "routine", offerKey: "look.0", window: { windowId: c.windowId } } });
+      // The routine the look chose joined the engine's offers, unshown; a look that did not choose it leaves nothing behind.
+      expect(helper.patterns.openOffers().map((o) => o.kind)).toEqual(["routine"]);
+      expect(r.found?.sourceApps).toEqual(["Caret Fixture"]);
       const fields = r.found?.spec.blocks.find((b) => b.type === "fields");
       expect(fields?.type === "fields" ? fields.rows.map((x) => x.value?.text) : []).toEqual(cal.lines);
       expect(offers("routine")).toEqual([]);

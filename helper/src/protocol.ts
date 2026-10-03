@@ -844,6 +844,8 @@ export const FirstLookFound = z.object({
   offerKey: z.string().min(1),
   window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }),
   spec: PopupSpec,
+  /** A fill's source apps, each once, in field order, as OfferPopup.sourceApps; absent for a report. */
+  sourceApps: z.array(z.string().min(1)).min(1).refine((a) => new Set(a).size === a.length, "sourceApps repeats an app").optional(),
 });
 export type FirstLookFound = z.infer<typeof FirstLookFound>;
 

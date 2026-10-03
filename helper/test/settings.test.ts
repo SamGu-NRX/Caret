@@ -69,11 +69,13 @@ describe("pending watches follow the watch role", () => {
   let dir: string;
   let store: Store;
   let helper: Helper;
+  let asks: number;
   beforeEach(() => {
+    asks = 0;
     dir = mkdtempSync(join(tmpdir(), "caret-settings-"));
     store = new Store(dir);
     const ask: AskJev = async () => ({ model: "jev-test", answers: { finished: { choice: "no", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 });
-    helper = new Helper({ store, askJev: ask, shadow: false, allowBackgroundFocus: false, publish: () => undefined, readerLink: { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: 0, outcome: "ok", detail: null }) } });
+    helper = new Helper({ store, askJev: (req) => (asks++, ask(req)), shadow: false, allowBackgroundFocus: false, publish: () => undefined, readerLink: { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: 0, outcome: "ok", detail: null }) } });
   });
   afterEach(() => {
     helper.shutdown();
@@ -97,6 +99,20 @@ describe("pending watches follow the watch role", () => {
     expect(watches()).toEqual(["running:"]);
     helper.handleSettings(settings({ roles: ["fill"] }));
     expect(watches()).toEqual(["failed:you turned off watching"]);
+  });
+
+  it("asks nothing about a watched window while Caret is paused, and asks once it is not", async () => {
+    leaveRunningJob(1000);
+    expect(watches()).toEqual(["running:"]);
+    helper.handleSettings(settings({ paused: true }));
+    helper.handleReader(snap([text("dev.caret.fixture/standard/statictext:done~0", "Done. 48 of 48 tests passed.")], { at: 2000, windowId: JOB, title: "Test run" }));
+    await helper.pending.whenIdle();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(asks).toBe(0);
+    helper.handleSettings(settings());
+    await new Promise((r) => setTimeout(r, 200));
+    await helper.pending.whenIdle();
+    expect(asks).toBe(1);
   });
 });
 
@@ -201,6 +217,32 @@ describe("settings over the socket take effect on the next decision", () => {
     expect(popups()).toEqual([]);
     store.flush();
     expect(store.counts()).toMatchObject({ "fill.held_caretPaused": 1 });
+  });
+
+  it("charges an offer to the hour from when it was shown, not from when it was asked for", async () => {
+    host.send(settings({ level: "quiet" }));
+    let release = (): void => {};
+    jevGate = new Promise((r) => (release = r));
+    await reader.replay(loadRecording("offers-fill.ndjson"), hooks);
+    await settled();
+    expect(jevCalls).toBe(2);
+    // Jev answers ten minutes after the focus that asked.
+    clock += 10 * 60 * 1000;
+    const shownAt = clock;
+    release();
+    const first = await host.waitFor<{ offerKey: string }>((m) => m.type === "popup");
+    host.send(settings({ level: "quiet", roles: ["watch"] }));
+    await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === first.offerKey);
+    host.send(settings({ level: "quiet" }));
+    jevGate = null;
+    // An hour after the ask but not after the showing: still held.
+    clock = shownAt + HOUR - 60_000;
+    focusName();
+    await settled();
+    expect(jevCalls).toBe(2);
+    clock = shownAt + HOUR + 1;
+    focusName();
+    await host.waitFor((m) => m.type === "popup" && m.offerKey !== first.offerKey);
   });
 
   it("a fill role turned off holds fills; Quiet then allows one offer an hour", async () => {

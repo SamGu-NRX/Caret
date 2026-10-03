@@ -125,6 +125,8 @@ export interface FillOptions {
   rand?: (n: number) => number;
   /** Makes the proposal id; tests pass a counter. */
   newId?: () => string;
+  /** Windows that give no candidates. */
+  exclude?: ReadonlySet<string>;
 }
 
 export async function proposeFill(
@@ -152,7 +154,7 @@ export async function proposeFill(
     }
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: d.label ?? d.nearest ?? d.placeholder ?? "unnamed field" });
   }
-  const candidates = generateCandidates(model, windowId, undefined, now, ledger);
+  const candidates = generateCandidates(model, windowId, undefined, now, ledger, opts.exclude);
   if (candidates.length === 0) throw new FillError(`no candidate values in any window other than ${windowId}`);
 
   // The second ask sees the same candidates in another order under other ids, so neither position

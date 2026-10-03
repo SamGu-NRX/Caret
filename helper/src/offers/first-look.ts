@@ -15,7 +15,7 @@ import type { PopupBlock, PopupRef, PopupSpecT } from "../popup.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { FILLABLE_ROLES, FillError, proposeFill } from "../fill/fill.ts";
 import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, MAX_FILL_ROWS, recheckFill, type GroundedProposal } from "./fill-popup.ts";
-import { buildLookRequest, readPendingAnswer, stateFor, windowMarkers } from "../tasks/pending.ts";
+import { allWatchLines, buildLookRequest, readPendingAnswer, stateFor, windowMarkers } from "../tasks/pending.ts";
 import { statusNode } from "./open-app.ts";
 import { offerField } from "./field.ts";
 import { FAMILIES, LEVELS, type Family } from "./settings.ts";
@@ -57,8 +57,11 @@ export interface FirstLookDeps {
   resolvedWatches: () => { windowId: string; status: string; state: "done" | "needsYou" }[];
   patterns: PatternEngine;
   run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>) => Promise<TaskResult>;
-  /** Records the found offer so an offerAccept with its key reaches `accept`. */
-  record: (msg: OfferPopup, family: Family, accept: AcceptHandler) => void;
+  /**
+   * Records the found offer so an offerAccept with its key reaches `accept`. `underlying` is the id of the
+   * engine's offer it reports, so that offer's withdrawal ends the first look's key too.
+   */
+  record: (msg: OfferPopup, family: Family, accept: AcceptHandler, underlying: string | null) => void;
   /** Ends the found offer: publishes offerWithdrawn for its key. */
   withdraw: (offerKey: string, reason: "taken" | "stale") => void;
   now: () => number;
@@ -75,7 +78,12 @@ interface Candidate {
   /** The element the offer is recorded against: a fill's trigger field, a report's status line, a pattern's first destination. */
   key: string;
   spec: (offerKey: string) => PopupSpecT;
+  /** A fill's source apps, each once, in field order. */
+  sourceApps?: string[];
   accept: (offerKey: string) => AcceptHandler;
+  /** The engine offer a loop or routine candidate reports, and what to do once it is chosen. */
+  underlying?: string;
+  chosen?: () => void;
 }
 
 /** Why a family could not finish its look; a short phrase with no screen text. */
@@ -117,18 +125,28 @@ export class FirstLookRunner {
     if (this.deps.paused()) return reply("error", null, "Caret is paused", false);
     if (!this.deps.readerConnected()) return reply("error", null, "reader not connected", false);
 
-    const failed = await this.walkAll(Math.min(WALK_MAX_MS, req.deadlineMs * WALK_SHARE));
-    if (failed !== null) return reply("error", null, failed);
+    const walked = await this.walkAll(Math.min(WALK_MAX_MS, req.deadlineMs * WALK_SHARE));
+    if (typeof walked === "string") return reply("error", null, walked);
+    // The generators race deadlineAt, which keeps REPLY_MARGIN_MS back; a reply still has to leave before
+    // the deadline itself, with a little time to be written.
+    const sendBy = t0 + req.deadlineMs - Math.min(50, req.deadlineMs / 20);
+    const late = (): boolean => performance.now() >= sendBy;
+    if (late()) return reply("error", null, "the walks did not finish before the deadline");
 
     // A family the level keeps quiet is not looked at, as the helper's gate would hold its offers.
     const families = (req.families as Family[]).filter((f) => LEVELS[req.level].families[f]);
     const looks: Promise<Settled>[] = families.map((family) =>
-      this.look(family, req)
+      this.look(family, req, walked)
         .then((found): Settled => ({ family, ok: true, found }))
         .catch((e: unknown): Settled => ({ family, ok: false, reason: e instanceof LookError ? e.message : "failed" })),
     );
     const settled = await Promise.all(looks.map((p, i) => byDeadline(p, deadlineAt, { family: families[i] as Family, ok: false as const, reason: "did not finish before the deadline" })));
 
+    // Whatever the generators found, a reply past the deadline is one the host ignores, and the user may
+    // have paused Caret or the helper left live mode while Jev answered: nothing is recorded then.
+    if (late()) return reply("error", null, "the look did not finish before the deadline");
+    if (!this.deps.live()) return reply("error", null, "the helper is in shadow mode");
+    if (this.deps.paused()) return reply("error", null, "Caret is paused");
     const all = settled.flatMap((s) => (s.ok ? s.found : []));
     const best = all.sort((a, b) => a.rank - b.rank || b.weight - a.weight)[0];
     if (best === undefined) {
@@ -143,6 +161,7 @@ export class FirstLookRunner {
       offerKey,
       window: { pid: best.window.app.pid, windowId: best.window.window.windowId, appName: best.window.app.name, title: best.window.window.title },
       spec,
+      ...(best.sourceApps === undefined ? {} : { sourceApps: best.sourceApps }),
     };
     const out = reply("found", found, null);
     const checked = FirstLookReply.safeParse(out);
@@ -150,50 +169,55 @@ export class FirstLookRunner {
       const issue = checked.error.issues[0];
       return reply("error", null, `the found offer failed the protocol check: ${issue?.message ?? "invalid"} at ${(issue?.path ?? []).join(".")}`);
     }
+    if (late()) return reply("error", null, "the look did not finish before the deadline");
+    best.chosen?.();
     const msg: OfferPopup = { type: "popup", v: PROTOCOL_VERSION, offerKey, at: out.at, field: offerField(best.window, best.key), spec };
-    this.deps.record(msg, best.family, best.accept(offerKey));
+    this.deps.record(msg, best.family, best.accept(offerKey), best.underlying ?? null);
     return out;
   }
 
   /**
    * Walks every window once, each within `ms`, so the generators read the screen as it is now. Returns
-   * why the look cannot go on when no walk succeeded, or null. A window the reader no longer has is gone,
-   * not a failure.
+   * the windows whose walk did not succeed, which the generators then leave out as destinations and as
+   * sources, since what the model holds of them may be stale; or why the look cannot go on, when no
+   * window the reader still has could be walked. A window the reader no longer has is gone, not a failure.
    */
-  private async walkAll(ms: number): Promise<string | null> {
+  private async walkAll(ms: number): Promise<ReadonlySet<string> | string> {
     const windows = [...this.deps.model.windows.values()];
-    if (windows.length === 0) return null;
+    if (windows.length === 0) return new Set();
     const outcomes = await Promise.all(
       windows.map(async (w) => {
         const r = await byDeadline(this.deps.walk(w.app.pid, w.window.windowId).then((v) => v.outcome), performance.now() + ms, "timeout" as const);
         return { windowId: w.window.windowId, outcome: r };
       }),
     );
+    const excluded = new Set(outcomes.filter((o) => o.outcome !== "ok").map((o) => o.windowId));
     const bad = outcomes.filter((o) => o.outcome !== "ok" && o.outcome !== "noWindow");
-    if (bad.length === 0 || bad.length < outcomes.filter((o) => o.outcome !== "noWindow").length) return null;
+    if (bad.length === 0 || bad.length < outcomes.filter((o) => o.outcome !== "noWindow").length) return excluded;
     const named = bad.slice(0, MAX_NAMED).map((o) => `${o.windowId} ${o.outcome}`);
     const more = bad.length > MAX_NAMED ? ` and ${bad.length - MAX_NAMED} more` : "";
     return `reader walks failed: ${named.join(", ")}${more}`;
   }
 
-  private look(family: Family, req: FirstLook): Promise<Candidate[]> {
+  private look(family: Family, req: FirstLook, exclude: ReadonlySet<string>): Promise<Candidate[]> {
     switch (family) {
       case "fill":
-        return this.fills(req.requestId);
+        return this.fills(req.requestId, exclude);
       case "pending":
-        return this.pendings();
+        return this.pendings(exclude);
       case "loop":
       case "routine":
-        return Promise.resolve(this.patternOffers(family, LEVELS[req.level].routineSightings));
+        return Promise.resolve(this.patternOffers(family, LEVELS[req.level].routineSightings, exclude));
     }
   }
 
   // MARK: - fill
 
   /** Every window with two or more empty fillable fields is a form; the most recent few are asked about, two asks each. */
-  private async fills(requestId: string): Promise<Candidate[]> {
+  private async fills(requestId: string, exclude: ReadonlySet<string>): Promise<Candidate[]> {
     const model = this.deps.model;
     const forms = [...model.windows.values()]
+      .filter((w) => !exclude.has(w.window.windowId))
       .map((w) => ({ w, empty: emptyFields(w) }))
       .filter((f) => f.empty.length >= 2)
       .sort((a, b) => b.w.lastFocusedAt - a.w.lastFocusedAt || b.w.updatedAt - a.w.updatedAt)
@@ -205,7 +229,7 @@ export class FirstLookRunner {
     const results = await Promise.allSettled(
       forms.map(({ w, empty }, i) => {
         const trigger = w.focusedKey !== null && empty.includes(w.focusedKey) ? w.focusedKey : (empty[0] as string);
-        return proposeFill(model, ask, w.window.windowId, trigger, now, { newId: () => `${requestId}.form${i}` });
+        return proposeFill(model, ask, w.window.windowId, trigger, now, { newId: () => `${requestId}.form${i}`, exclude });
       }),
     );
     const out: Candidate[] = [];
@@ -221,14 +245,16 @@ export class FirstLookRunner {
       if (p === null) continue;
       const w = model.windows.get(p.windowId);
       if (w === undefined) continue;
+      const popup = buildFillPopup(model, p);
       out.push({
+        sourceApps: popup.sourceApps ?? [],
         family: "fill",
         kind: "fill",
         rank: RANK.fill,
         weight: p.fields.length * 1e13 + w.lastFocusedAt,
         window: w,
         key: p.triggerKey,
-        spec: (offerKey) => ({ ...buildFillPopup(model, p).spec, id: offerKey }),
+        spec: (offerKey) => ({ ...popup.spec, id: offerKey }),
         accept: (offerKey) => () => this.acceptFill(offerKey, p),
       });
     }
@@ -252,10 +278,10 @@ export class FirstLookRunner {
    * running work, each asked once whether it finished or waits on the user. A window still running is
    * no offer.
    */
-  private async pendings(): Promise<Candidate[]> {
+  private async pendings(exclude: ReadonlySet<string>): Promise<Candidate[]> {
     const model = this.deps.model;
     const out: Candidate[] = [];
-    const seen = new Set<string>();
+    const seen = new Set<string>(exclude);
     for (const r of this.deps.resolvedWatches()) {
       const w = model.windows.get(r.windowId);
       if (w === undefined || seen.has(r.windowId)) continue;
@@ -278,14 +304,18 @@ export class FirstLookRunner {
       marked.map(async ({ w, markers }) => {
         const { req, lines } = buildLookRequest(w, markers);
         const a = readPendingAnswer(await ask(req));
-        return { w, lines, state: stateFor(a.finished.choice, a.waiting.choice) };
+        return { asked: w, lines, state: stateFor(a.finished.choice, a.waiting.choice) };
       }),
     );
     if (out.length === 0 && answers.every((a) => a.status === "rejected")) throw new LookError("Jev request failed");
     for (const a of answers) {
       if (a.status === "rejected") continue;
-      const { w, lines, state } = a.value;
+      const { asked, lines, state } = a.value;
       if (state !== "done" && state !== "needsYou") continue;
+      // The answer is about the window as it was asked; a window that closed, or whose end changed while
+      // Jev answered, is not reported on it.
+      const w = model.windows.get(asked.window.windowId);
+      if (w === undefined || tailOf(w) !== tailOf(asked)) continue;
       // The line the report quotes: the last plain text line of the window's end that a node shows.
       const status = [...lines].reverse().find((l) => !l.startsWith("[") && statusNode(w, l) !== null) ?? null;
       out.push(this.report(w, state, status));
@@ -333,9 +363,9 @@ export class FirstLookRunner {
 
   // MARK: - loops and routines
 
-  private patternOffers(family: "loop" | "routine", sightings: number | null): Candidate[] {
+  private patternOffers(family: "loop" | "routine", sightings: number | null, exclude: ReadonlySet<string>): Candidate[] {
     const model = this.deps.model;
-    return this.deps.patterns.firstLook([family], sightings).flatMap((msg): Candidate[] => {
+    return this.deps.patterns.firstLook([family], sightings, exclude).flatMap((msg): Candidate[] => {
       const w = model.windows.get(msg.windowId);
       const first = msg.cells[0];
       if (w === undefined || first === undefined) return [];
@@ -348,6 +378,9 @@ export class FirstLookRunner {
           window: w,
           key: first.key,
           spec: (offerKey) => patternSpec(model, msg, offerKey),
+          ...sourceAppsOf(msg),
+          underlying: msg.id,
+          chosen: () => this.deps.patterns.adoptFirstLook(msg.id),
           accept: (offerKey) => () => {
             this.deps.withdraw(offerKey, "taken");
             return this.deps.patterns.take(msg.id, offerKey);
@@ -357,6 +390,18 @@ export class FirstLookRunner {
     });
   }
 }
+
+/** A pattern offer's source apps, each once, in cell order; none when no cell names its app. */
+function sourceAppsOf(msg: PatternOffer): { sourceApps?: string[] } {
+  const apps = [...new Set(msg.cells.map((c) => c.source.appName).filter((a) => a !== ""))];
+  return apps.length === 0 ? {} : { sourceApps: apps };
+}
+
+/** A window's last few lines, as the first look's pending question reads them, to tell whether they changed. */
+function tailOf(w: WindowState): string {
+  return allWatchLines(w).slice(-LOOK_TAIL).join("\n");
+}
+const LOOK_TAIL = 6;
 
 /** The empty fillable fields of a window, in document order: what a fill would ask about. */
 function emptyFields(w: WindowState): string[] {
@@ -418,9 +463,10 @@ function patternSpec(model: ScreenModel, msg: PatternOffer, offerKey: string): P
   };
 }
 
-/** The promise's value, or `late` once real time passes `at` (performance.now() milliseconds). */
+/** The promise's value, or `late` once real time passes `at` (performance.now() milliseconds); `late` at once when it has passed. */
 function byDeadline<T, L>(p: Promise<T>, at: number, late: L): Promise<T | L> {
-  const wait = Math.max(0, at - performance.now());
+  const wait = at - performance.now();
+  if (wait <= 0) return Promise.resolve(late);
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([p, new Promise<L>((r) => (timer = setTimeout(() => r(late), wait)))]).finally(() => clearTimeout(timer));
 }

@@ -67,6 +67,8 @@ export interface GenerateOptions {
    * audit's measures, which send nothing.
    */
   ledger?: SnippetLedger;
+  /** Windows that give no candidates: the first look leaves out windows the reader could not walk just now. */
+  exclude?: ReadonlySet<string>;
 }
 
 /** Wall milliseconds per part of one generator call: splitting node text into lines, and the three facts worked out per kept span. */
@@ -110,7 +112,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
   };
 
   const windows = [...model.windows.values()]
-    .filter((w) => w.window.windowId !== targetWindowId)
+    .filter((w) => w.window.windowId !== targetWindowId && o.exclude?.has(w.window.windowId) !== true)
     .sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
   const justLeft = model.windowBefore(targetWindowId);
   const recency = (w: WindowState): Recency =>
@@ -209,8 +211,8 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
 }
 
 /** The candidates for a fill; see collectCandidates. With a ledger, each window gives only what fits its budget. */
-export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now(), ledger?: SnippetLedger): Candidate[] {
-  return collectCandidates(model, targetWindowId, { max, now, ...(ledger === undefined ? {} : { ledger }) }).candidates;
+export function generateCandidates(model: ScreenModel, targetWindowId: string, max = MAX_CANDIDATES, now = Date.now(), ledger?: SnippetLedger, exclude?: ReadonlySet<string>): Candidate[] {
+  return collectCandidates(model, targetWindowId, { max, now, ...(ledger === undefined ? {} : { ledger }), ...(exclude === undefined ? {} : { exclude }) }).candidates;
 }
 
 /** The screen text describeCandidate puts in a request for this candidate: the span, its facts, and its window's title. */

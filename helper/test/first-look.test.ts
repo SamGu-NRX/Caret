@@ -50,10 +50,14 @@ describe("the host's first-look contract", () => {
       expect(line, `${name}: the edit must apply`).not.toBe(name.startsWith("found") || name.startsWith("a spec") || name.startsWith("a value") || name.startsWith("nothing with") ? f : name.startsWith("error") ? e : n);
       expect(HelperMessage.safeParse(JSON.parse(line)).success, name).toBe(false);
     }
-    // And two the host's decoder checks but its fixture test does not exercise.
+    // And the ones the host's decoder checks but its fixture test does not exercise.
     const parsed = JSON.parse(f) as { found: Record<string, unknown> };
+    expect(parsed.found.sourceApps).toEqual(["Mail"]);
     expect(HelperMessage.safeParse({ ...parsed, found: { ...parsed.found, family: "" } }).success).toBe(false);
     expect(HelperMessage.safeParse({ ...parsed, found: { ...parsed.found, offerKey: "" } }).success).toBe(false);
+    for (const apps of [[], ["Mail", "Mail"], [""]]) expect(HelperMessage.safeParse({ ...parsed, found: { ...parsed.found, sourceApps: apps } }).success, JSON.stringify(apps)).toBe(false);
+    const { sourceApps: _, ...noApps } = parsed.found;
+    expect(HelperMessage.safeParse({ ...parsed, found: noApps }).success).toBe(true);
   });
 });
 
@@ -132,6 +136,7 @@ describe("the first look over the socket", () => {
       scanned: { windows: 2, apps: 2 },
       found: { kind: "fill", family: "fill", offerKey: "first-look-1.0", window: { pid: 5150, windowId: FORM, appName: "Caret Fixture", title: "Checkout" } },
     });
+    expect(reply.found?.sourceApps).toEqual(["Mail Fixture"]);
     const spec = reply.found?.spec;
     expect(spec?.id).toBe("first-look-1.0");
     expect(spec?.blocks.map((b) => b.type)).toEqual(["header", "source", "fields", "actions"]);
@@ -187,6 +192,14 @@ describe("the first look over the socket", () => {
     await host.waitFor((m) => m.type === "taskProgress" && m.taskId === key && m.phase === "done");
   });
 
+  it("ends a loop's first-look key when the loop offer it reports expires", async () => {
+    await (reader as SocketReader).replay(loadRecording("offers-loop.ndjson"), hooks);
+    await host.waitFor((m) => m.type === "alternatives");
+    const key = (await look({ families: ["loop"] })).reply.found?.offerKey ?? "";
+    helper.tick((reader as SocketReader).clock + 3 * 60 * 1000);
+    expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === key)).toMatchObject({ reason: "expired" });
+  });
+
   it("withdraws a found offer when Caret is paused, answers no look while paused, and lets an offer nobody took expire after five minutes", async () => {
     await seed("offers-fill.ndjson");
     const first = (await look()).reply.found?.offerKey ?? "";
@@ -199,6 +212,67 @@ describe("the first look over the socket", () => {
     expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === second)).toMatchObject({ reason: "expired" });
     host.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: second, actionId: "fillAll", overrides: {}, at: 4 });
     await host.waitFor((m) => m.type === "error" && String(m.message).includes(second));
+  });
+
+  it("records nothing when Caret is paused while Jev answers", async () => {
+    await seed("offers-fill.ndjson");
+    let release = (): void => {};
+    const gate = new Promise<void>((r) => (release = r));
+    ask = async (req) => {
+      await gate;
+      return fill(req);
+    };
+    const pending = look();
+    await until(() => asked === 2);
+    host.send({ type: "settings", v: PROTOCOL_VERSION, at: 3, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: true });
+    await until(() => helper.gate.settings.paused);
+    release();
+    const { reply } = await pending;
+    expect(reply).toMatchObject({ outcome: "error", error: "Caret is paused", found: null });
+    host.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: reply.requestId + ".0", actionId: "fillAll", overrides: {}, at: 4 });
+    await host.waitFor((m) => m.type === "error" && String(m.message).includes(`${reply.requestId}.0`));
+  });
+
+  it("leaves out windows the reader could not walk: no fill from a form it no longer has", async () => {
+    await seed("offers-fill.ndjson");
+    (reader as SocketReader).windows.clear();
+    const { reply } = await look();
+    expect(reply).toMatchObject({ outcome: "nothing", error: null });
+    expect(asked).toBe(0);
+  });
+
+  it("drops a pending answer about a window that closed while Jev answered", async () => {
+    let release = (): void => {};
+    const gate = new Promise<void>((r) => (release = r));
+    ask = async () => {
+      await gate;
+      return { model: "jev-test", answers: { finished: { choice: "yes", confidence: 0.9 }, waiting: { choice: "no", confidence: 0.9 } }, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+    };
+    await (reader as SocketReader).replay(loadRecording("offers-pending.ndjson").slice(0, 1), hooks);
+    const pending = look({ families: ["pending"] });
+    await until(() => asked === 1);
+    (reader as SocketReader).send({ type: "windowClosed", v: PROTOCOL_VERSION, at: 5000, windowId: JOB });
+    await until(() => !helper.model.windows.has(JOB));
+    release();
+    expect((await pending).reply).toMatchObject({ outcome: "nothing", found: null });
+  });
+
+  it("answers an error, and records nothing, when work that holds the event loop runs past the deadline", async () => {
+    await seed("offers-fill.ndjson");
+    // Jev answers only after blocking the event loop for 60 ms, so no timer can fire first: the result is
+    // ready, but the deadline has passed.
+    ask = async (req) => {
+      const end = performance.now() + 60;
+      while (performance.now() < end) {
+        // busy: holds the loop as a long synchronous generator would
+      }
+      return fill(req);
+    };
+    const { reply, ms } = await look({ deadlineMs: 40 });
+    expect(ms).toBeGreaterThan(40);
+    expect(reply).toMatchObject({ outcome: "error", error: "the look did not finish before the deadline", found: null });
+    host.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: `${reply.requestId}.0`, actionId: "fillAll", overrides: {}, at: 4 });
+    await host.waitFor((m) => m.type === "error" && String(m.message).includes(`${reply.requestId}.0`));
   });
 
   it("answers nothing for an empty desk, and asks Jev nothing", async () => {

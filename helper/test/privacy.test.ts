@@ -357,9 +357,14 @@ describe("the privacy line on every Jev request", () => {
       const w = s.helper.model.windows.get("5150-9") as WindowState;
       s.producer = "executor target";
       await resolveTarget(w, { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", s.ask);
+      // A plan's value can be any text a window shows; here a whole page of the private notes. It goes out cut short.
+      const page = [...(s.helper.model.windows.get(NOTES)?.nodes.values() ?? [])].map((n) => n.label ?? "").join(" ");
+      await resolveTarget(w, { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask);
     });
-    expect(rec).toHaveLength(2);
-    expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
+    expect(rec).toHaveLength(4);
+    // The notes are a bystander for every other producer; here the plan quoted them, and the cut kept the request under the bound.
+    expect(rec.flatMap((r) => violations(r, new Set()))).toEqual([]);
+    expect(Math.max(...rec.flatMap(measure).filter((m) => m.windowId === NOTES).map((m) => m.covered))).toBeLessThanOrEqual(120);
   });
 
   it("catches what it is for: a request that pastes a window, or names text it did not declare", () => {

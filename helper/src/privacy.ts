@@ -110,8 +110,8 @@ export class SnippetLedger {
 
   /**
    * Declares text a request carries that a plan wrote rather than a window shows: an executor step's goal
-   * and target. A plan's values were copied from windows when it was made, so these are candidate values,
-   * but they are not charged to the window the step acts in. Their window id is "plan".
+   * and target. A plan's values were copied from windows when it was made, so these are candidate values;
+   * the caller cuts each to SNIPPET_CHARS, since no window's budget is charged for them. Their window id is "plan".
    */
   plan(texts: readonly string[]): void {
     for (const t of new Set(texts)) if (t !== "") this.snippets.push({ windowId: "plan", kind: "candidate", text: t });

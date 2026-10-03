@@ -85,6 +85,8 @@ interface OfferState {
    * latest change to them, or null. Judged once they have been still for EDIT_SETTLE_MS (handEntry).
    */
   handEditAt: number | null;
+  /** Published to consumers. A routine a first look found is kept without being shown, and is never re-offered. */
+  shown: boolean;
 }
 
 interface AltCandidate {
@@ -283,6 +285,8 @@ export class PatternEngine {
    * is assumed, like the lifetimes themselves.
    */
   private reoffer(o: OfferState, keep: readonly number[]): void {
+    // An offer only a first look reported is not offered again at a field: the first look's key ends with it.
+    if (!o.shown) return this.withdraw(o, "stale");
     const model = this.deps.model;
     const w = model.windows.get(o.msg.windowId);
     if (w === undefined) return this.withdraw(o, "stale");
@@ -294,7 +298,7 @@ export class PatternEngine {
     });
     const { plan, slots } = this.plan(id, o.msg.kind, w.window.title, o.msg.bundleId, cells);
     const msg: PatternOffer = { ...o.msg, id, at: this.clock, says: this.says(o.msg.kind, msgCells), cells: msgCells };
-    const n: OfferState = { msg, cells, plan, slots, loopId: o.loopId, routineId: o.routineId, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null };
+    const n: OfferState = { msg, cells, plan, slots, loopId: o.loopId, routineId: o.routineId, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null, shown: true };
     this.withdraw(o, "reoffered", id);
     this.offers.set(id, n);
     this.deps.publish(msg);
@@ -610,30 +614,48 @@ export class PatternEngine {
     return this.create(kind, patternId, ids, cells, w.window.windowId, decision.showProbability, true);
   }
 
+  /** Routine offers a first look built and has not yet adopted, by id; replaced by each first look. */
+  private drafts = new Map<string, OfferState>();
+
   /**
    * The loop and routine offers a first look may report: every open one, best first (a routine, then a
    * loopFinish, then a loopNext), and for a window already open that holds a routine's empty destinations,
-   * the routine's prediction now, made an offer without being shown when it is proven at `sightings`
-   * silent hits and every value is on screen. The window-open path asks the speak-now gate; this one is
-   * the host's own request, so only the routine's proof applies.
+   * the routine's prediction now, built as a draft offer when it is proven at `sightings` silent hits and
+   * every value is on screen. A draft stays out of the engine until adoptFirstLook takes it, so one the
+   * first look did not choose never lives on. The window-open path asks the speak-now gate; this one is
+   * the host's own request, so only the routine's proof applies. Windows in `exclude` (whose walk failed)
+   * are neither destinations nor sources.
    */
-  firstLook(families: readonly Family[], sightings: number | null): PatternOffer[] {
-    const open = [...this.offers.values()].filter((o) => o.state === "open" && families.includes(familyOf(o.msg.kind)));
+  firstLook(families: readonly Family[], sightings: number | null, exclude: ReadonlySet<string> = new Set()): PatternOffer[] {
+    const touches = (o: OfferState): boolean => o.cells.some((c) => exclude.has(c.dstWindowId) || exclude.has(c.srcWindowId));
+    const open = [...this.offers.values()].filter((o) => o.state === "open" && families.includes(familyOf(o.msg.kind)) && !touches(o));
     const rank: Record<OfferKind, number> = { routine: 0, loopFinish: 1, loopNext: 2 };
     const out = open.sort((a, b) => rank[a.msg.kind] - rank[b.msg.kind] || b.msg.at - a.msg.at).map((o) => o.msg);
+    this.drafts = new Map();
     if (!families.includes("routine") || sightings === null || this.deps.shadow()) return out;
-    const covered = new Set(open.filter((o) => o.msg.kind === "routine").map((o) => o.msg.windowId));
+    const covered = new Set([...this.offers.values()].filter((o) => o.state === "open" && o.msg.kind === "routine").map((o) => o.msg.windowId));
     for (const w of this.deps.model.windows.values()) {
       const windowId = w.window.windowId;
-      if (covered.has(windowId)) continue;
-      const preds = this.routines.predict(windowId, this.clock).filter((p) => p.grounded && !p.routine.paused && routineProven(p.routine.hits, p.routine.misses, sightings));
+      if (covered.has(windowId) || exclude.has(windowId)) continue;
+      const preds = this.routines
+        .predict(windowId, this.clock)
+        .filter((p) => p.grounded && !p.routine.paused && routineProven(p.routine.hits, p.routine.misses, sightings) && p.cells.every((c) => c === null || !exclude.has(c.srcWindowId)));
       const best = preds.sort((a, b) => b.routine.hits - a.routine.hits)[0];
       if (best === undefined) continue;
       const cells = best.cells.filter((c): c is RoutineCell => c !== null);
       const o = this.create("routine", best.routine.id, { loopId: null, routineId: best.routine.id }, cells, windowId, (best.routine.hits + 1) / (best.routine.hits + best.routine.misses + 2), false);
+      this.drafts.set(o.msg.id, o);
       out.push(o.msg);
     }
     return out;
+  }
+
+  /** The first look chose this offer: a draft joins the engine's open offers, unshown, so taking it and its lifetime work as for any offer. */
+  adoptFirstLook(offerId: string): void {
+    const d = this.drafts.get(offerId);
+    if (d === undefined) return;
+    this.drafts.delete(offerId);
+    this.offers.set(offerId, d);
   }
 
   /** Builds an offer that has passed its gate and keeps it open; `show` publishes it to consumers, with an action line for loopFinish and routine. */
@@ -685,9 +707,9 @@ export class PatternEngine {
     };
     // A memory rule may change what Caret writes; the loop must accept that value when it comes back as a transfer.
     if (ids.loopId !== null) for (const c of written) if (c.written !== c.value) this.loops.expect(ids.loopId, c.dstKey, c.written, c.kind);
-    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null };
-    this.offers.set(id, o);
+    const o: OfferState = { msg, cells: written, plan, slots, ...ids, state: "open", closedAt: null, alts: [], altMemory: new Set(), handEditAt: null, shown: show };
     if (!show) return o;
+    this.offers.set(id, o);
     this.deps.publish(msg);
     if (kind !== "loopNext") this.offerAction(o);
     return o;

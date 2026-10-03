@@ -623,6 +623,11 @@ export class PendingWatcher {
     this.resolved.clear();
   }
 
+  /** Caret is no longer paused: every watch whose window changed since its last answer is asked about now. */
+  resumeAsks(): void {
+    for (const watch of this.watches.values()) if (!watch.paused && watch.sig !== watch.asked && watch.timer === null && watch.inflight === null) this.schedule(watch);
+  }
+
   /** The user turned the watch role off: every watch ends as a stop by the user would end it. */
   stopAll(detail: string): void {
     for (const watch of [...this.watches.values()]) this.end(watch, "failed", "you", detail);
@@ -700,8 +705,9 @@ export class PendingWatcher {
 
   private async ask(watch: Watch): Promise<void> {
     const askJev = this.deps.askJev;
-    // One question at a time per window; a change meanwhile is asked about when this one returns.
-    if (askJev === null || watch.paused || !this.live(watch) || watch.inflight !== null) return;
+    // One question at a time per window; a change meanwhile is asked about when this one returns. While
+    // Caret is paused (live() false) nothing is asked; resumeAsks asks once it is not.
+    if (askJev === null || watch.paused || !this.live(watch) || watch.inflight !== null || !this.deps.live()) return;
     const w = this.deps.model.windows.get(watch.windowId);
     if (w === undefined) return;
     const sig = watch.sig;
@@ -748,8 +754,9 @@ export class PendingWatcher {
     watch.tries = 0;
     watch.info.asks++;
     const state = stateFor(answer.finished.choice, answer.waiting.choice);
-    // The window changed while Jev answered, or the watch ended or paused: the answer is about a screen that is gone.
-    const stale = watch.sig !== sig || !this.live(watch) || watch.paused;
+    // The window changed while Jev answered, or the watch ended or paused, or Caret was paused: the answer
+    // is about a screen that is gone, or one the user asked Caret not to act on now.
+    const stale = watch.sig !== sig || !this.live(watch) || watch.paused || !this.deps.live();
     this.asks.push({ watchId: watch.id, at: t0, latencyMs, finished: answer.finished.choice, waiting: answer.waiting.choice, state, stale });
     if (stale) {
       this.stats.stale++;

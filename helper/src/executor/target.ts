@@ -5,7 +5,7 @@
 import type { Node } from "../protocol.ts";
 import { nodeText, type WindowState } from "../model.ts";
 import type { AskJev, JevRequest } from "../fill/jev.ts";
-import { SnippetLedger, type Snippet } from "../privacy.ts";
+import { SnippetLedger, cut, type Snippet } from "../privacy.ts";
 import { shuffled } from "../fill/fill.ts";
 import type { Target } from "./schema.ts";
 
@@ -91,13 +91,14 @@ export function describeElement(w: WindowState, n: Node): string {
 
 /**
  * The screen text of a target question: the window's title and every candidate element, held to the
- * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan). Null
+ * window's budget (privacy.ts), and the step's goal and target, which the plan wrote (SnippetLedger.plan),
+ * each cut to SNIPPET_CHARS since a plan's values were copied from windows the question does not name. Null
  * when the candidates do not all fit: the question is then not asked, since leaving one out could leave
  * out the right one.
  */
 export function targetSnippets(w: WindowState, goal: string, t: Target, cands: readonly { node: Node }[]): Snippet[] | null {
   const ledger = new SnippetLedger();
-  ledger.plan([goal, t.describe]);
+  ledger.plan([cut(goal), cut(t.describe)]);
   if (!ledger.take(w, "descriptor", [w.window.title])) return null;
   for (const c of cands) {
     const e = elementTexts(w, c.node);
@@ -122,7 +123,8 @@ export function buildTargetRequest(w: WindowState, goal: string, t: Target, cand
   criteria[NONE] = "None of these elements.";
   return {
     state: { window: `${w.app.name} window '${w.window.title}'`, task: "Choose the element an automated step should act on." },
-    questions: { target: { type: "choice", instructions: WORDINGS[wording](goal, t.describe), criteria } },
+    // The goal and target are plan text, which can quote a value copied from any window: each goes out cut to SNIPPET_CHARS.
+    questions: { target: { type: "choice", instructions: WORDINGS[wording](cut(goal), cut(t.describe)), criteria } },
     snippets,
   };
 }
