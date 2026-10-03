@@ -351,17 +351,20 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(header(.planning), "Nothing running yet", "the field says Planning under it; the header does not repeat it")
         XCTAssertEqual(header(.planning, running: 2), "2 in progress")
         XCTAssertEqual(header(.waiting), "1 plan ready")
-        XCTAssertEqual(header(.running), "1 in progress", "the run before its task reaches the list")
-        XCTAssertEqual(header(.running, running: 1), "1 in progress", "and not counted twice once it has")
+        XCTAssertEqual(header(.running(listed: false)), "1 in progress", "the run before its task reaches the list")
+        XCTAssertEqual(header(.running(listed: true), running: 1), "1 in progress", "and not counted twice once it has")
+        XCTAssertEqual(header(.running(listed: false), running: 1), "2 in progress", "another task running is not the asked one")
         XCTAssertEqual(header(.waiting, needs: 1, running: 2), "1 needs you, 1 plan ready, 2 in progress")
         XCTAssertEqual(header(.none, needs: 2), "2 need you")
         let card = AskCaret.Card(title: "t", app: "a", steps: [], more: 0, action: "Fill 1 field", offerKey: "k", actionId: "run", writes: 1, press: nil)
-        XCTAssertEqual(AskCaret.Phase.idle.header, .none)
-        XCTAssertEqual(AskCaret.Phase.asking(requestId: "ask-1").header, .planning)
-        XCTAssertEqual(AskCaret.Phase.proposed(card).header, .waiting)
-        XCTAssertEqual(AskCaret.Phase.running(card).header, .running)
-        XCTAssertEqual(AskCaret.Phase.failed("x").header, .none)
-        XCTAssertEqual(AskCaret.Phase.ended(card, AskCopy.lostTouch).header, .none)
+        let none: (String) -> Bool = { _ in false }
+        XCTAssertEqual(AskCaret.Phase.idle.header(listed: none), .none)
+        XCTAssertEqual(AskCaret.Phase.asking(requestId: "ask-1").header(listed: none), .planning)
+        XCTAssertEqual(AskCaret.Phase.proposed(card).header(listed: none), .waiting)
+        XCTAssertEqual(AskCaret.Phase.running(card).header(listed: none), .running(listed: false))
+        XCTAssertEqual(AskCaret.Phase.running(card).header { $0 == "k" }, .running(listed: true), "listed by its offer key, the task id")
+        XCTAssertEqual(AskCaret.Phase.failed("x").header(listed: none), .none)
+        XCTAssertEqual(AskCaret.Phase.ended(card, AskCopy.lostTouch).header(listed: none), .none)
     }
 
     /// One sentence per code; the helper's detail formats (validate.ts, planner.ts) give the value

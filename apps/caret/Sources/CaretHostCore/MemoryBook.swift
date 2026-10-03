@@ -91,8 +91,8 @@ public final class MemoryBook {
     /// After every change to `state`.
     public var onChange: () -> Void = {}
     /// An entry's value changed or stopped being usable: the helper accepted an edit, pause, forget
-    /// or an add that replaced a value. A fill held from before then must not offer the old value
-    /// (`FillMachine.memoryChanged`).
+    /// or an add that replaced a value, or a list shows such a change the book had not heard of. A
+    /// fill held from before then must not offer the old value (`FillMachine.memoryChanged`).
     public var onEntryChanged: (String) -> Void = { _ in }
 
     let clock: SurfaceClock
@@ -141,6 +141,13 @@ public final class MemoryBook {
         }
         switch p.op {
         case .list:
+            // A change whose own reply came too late (`timedOut` ignores it) shows up here: an entry
+            // gone, paused, or holding other values than the book last had.
+            let listed = Dictionary(reply.entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            for old in state.entries {
+                guard let now = listed[old.id] else { onEntryChanged(old.id); continue }
+                if now.fields != old.fields || (old.status == .active && now.status != .active) { onEntryChanged(old.id) }
+            }
             state.entries = reply.entries
             state.unreadable = reply.unreadable.count
             state.acceptsAdd = reply.acceptsAdd

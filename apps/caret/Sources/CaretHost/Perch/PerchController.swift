@@ -417,7 +417,7 @@ final class PerchController {
             onAction: { [weak self] taskId, action in self?.center.control(taskId, action) },
             ask: AnyView(AskLiveSection(model: askModel, character: character, animated: !Motion.reduceMotion)),
             askActive: ask.phase != .idle,
-            askHeader: ask.phase.header
+            askHeader: ask.phase.header { id in page.rows.contains { $0.id == id } }
         )
         list.text = view.title
         list.setContent(view)

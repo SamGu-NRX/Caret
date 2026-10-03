@@ -266,10 +266,11 @@ public final class FillMachine {
         let now = clock.now
         memoryChangedAt = memoryChangedAt.filter { now.timeIntervalSince($0.value) <= Self.proposalMaxAge }
         memoryChangedAt[id] = now
-        let pids = Set(held.values
-            .filter { $0.proposal.fields.contains { $0.memory?.id == id } }
-            .compactMap { FillSelection.pid(fromWindowID: $0.proposal.windowId) })
-        for pid in pids.sorted() { evaluate(pid: pid, trigger: .other) }
+        // Only the offer on screen needs taking down now; a held proposal is skipped when it is
+        // next evaluated. Evaluating another app here could withdraw an unrelated offer.
+        guard let shownOfferID, let current = arbiter.snapshot().current, current.id == shownOfferID,
+              current.kind.fillOrigin?.memoryID == id else { return }
+        evaluate(pid: current.target.pid, trigger: .other)
     }
 
     /// The form's app notified a focus or value change.

@@ -33,7 +33,7 @@ extension Gallery {
     static func ask(_ character: FigureCharacter = .pebble) -> [Item] {
         func list(_ text: String, _ phase: AskCaret.Phase, rows: [ActivityRow] = [], focus: Bool = true) -> AnyView {
             let section = AskSection(text: text, phase: phase, character: character, showsFocus: focus, animated: false)
-            return AnyView(ActivityListView(rows: rows, character: character, animated: false, now: listNow, ask: AnyView(section), askActive: phase != .idle, askHeader: phase.header)
+            return AnyView(ActivityListView(rows: rows, character: character, animated: false, now: listNow, ask: AnyView(section), askActive: phase != .idle, askHeader: phase.header { id in rows.contains { $0.id == id } })
                 .environment(\.timeZone, TimeZone(identifier: "America/Chicago")!)
                 .environment(\.locale, Locale(identifier: "en_US")))
         }

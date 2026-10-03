@@ -142,14 +142,14 @@ public enum ListHeader {
         case planning
         /// A plan is on the card, waiting for Tab or Esc.
         case waiting
-        /// Tab took the plan and it is running.
-        case running
+        /// Tab took the plan and it is running; `listed` once its task has a row in the list.
+        case running(listed: Bool)
     }
 
     ///   1 needs you, 2 in progress
     ///   1 plan ready              (a proposal waits for Tab)
     ///   Nothing running yet       (planning; the ask field already says "Planning" under it)
-    ///   1 in progress             (the asked plan runs before its task reaches the list)
+    ///   1 in progress             (the asked plan runs before its task reaches the list: counted here)
     ///   All done                  (only Done rows)
     ///   Nothing running           (no rows, nothing asked, or the asked run is over)
     public static func title(needsYou: Int, inProgress: Int, hasRows: Bool, ask: Ask) -> String {
@@ -157,7 +157,7 @@ public enum ListHeader {
         if needsYou > 0 { parts.append("\(needsYou) need\(needsYou == 1 ? "s" : "") you") }
         if ask == .waiting { parts.append("1 plan ready") }
         // The asked run is listed as a task once the helper reports it; until then it is still in progress.
-        let running = ask == .running ? max(inProgress, 1) : inProgress
+        let running = inProgress + (ask == .running(listed: false) ? 1 : 0)
         if running > 0 { parts.append("\(running) in progress") }
         if !parts.isEmpty { return parts.joined(separator: ", ") }
         if ask == .planning { return "Nothing running yet" }
@@ -166,12 +166,14 @@ public enum ListHeader {
 }
 
 public extension AskCaret.Phase {
-    var header: ListHeader.Ask {
+    /// `listed(taskId)`: the task already has a row in the list. A running plan's task id is its
+    /// offer key (the helper runs an accepted offer under its id).
+    func header(listed: (String) -> Bool) -> ListHeader.Ask {
         switch self {
         case .idle, .failed, .ended: return .none
         case .asking: return .planning
         case .proposed: return .waiting
-        case .running: return .running
+        case .running(let card): return .running(listed: listed(card.offerKey))
         }
     }
 }

@@ -519,6 +519,22 @@ final class MemoryFillTests: XCTestCase {
         XCTAssertEqual(rig.arbiter.snapshot().current?.kind.fillOrigin?.proposalID, "fill-m2")
     }
 
+    func testAChangeToAnEntryLeavesAWindowValueOnScreenUp() {
+        let rig = FillRig()
+        rig.world.front(.phone)
+        rig.propose(FillFx.memoryProposal())
+        rig.takeLog()
+        let shownID = rig.machine.shownOfferID
+        rig.clock.advance(by: 1)
+        rig.machine.memoryChanged(id: FillFx.emailEntry)
+        XCTAssertEqual(rig.takeLog(), [])
+        XCTAssertEqual(rig.arbiter.snapshot().current?.id, shownID)
+        // The email field is skipped when it is next evaluated.
+        rig.world.focus(.email)
+        rig.machine.fieldChanged(pid: Fx.app, at: 3)
+        XCTAssertEqual(rig.machine.status.lastSkip, "memoryChanged")
+    }
+
     func testAnotherEntrysChangeLeavesTheOfferUp() {
         let rig = shown()
         let shownID = rig.machine.shownOfferID

@@ -160,6 +160,45 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertEqual(changed, [Self.about, Self.routine])
     }
 
+    func testAnAcceptedEditAndAReplacingAddAreReported() throws {
+        let rig = try Rig()
+        var changed: [String] = []
+        rig.book.onEntryChanged = { changed.append($0) }
+        rig.book.beginEdit(Self.about)
+        rig.book.updateDraft("value", "Marcus Lowe")
+        XCTAssertTrue(rig.book.saveEdit())
+        var edited = try XCTUnwrap(rig.entry(Self.about))
+        edited.says = "Name: Marcus Lowe"
+        rig.answer(HelperMemory.Reply(requestId: "", error: nil, entries: [edited]))
+        XCTAssertEqual(changed, [Self.about])
+        rig.answer(try HelperMemoryTests.reply(1))
+        changed = []
+        rig.book.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])
+        let kept = try HelperMemoryTests.reply(5)
+        rig.answer(kept)
+        XCTAssertEqual(changed, kept.entries.map(\.id), "the add's entry, which may have replaced a value under its label")
+    }
+
+    /// A Forget whose reply came after the book stopped waiting: the next list shows the entry gone,
+    /// and that is reported, so a held fill does not offer it.
+    func testAListReportsAChangeWhoseReplyCameTooLate() throws {
+        let rig = try Rig()
+        var changed: [String] = []
+        rig.book.onEntryChanged = { changed.append($0) }
+        rig.book.askToForget(Self.about)
+        XCTAssertTrue(rig.book.confirmForget())
+        rig.clock.advance(by: MemoryBook.answerTimeout + 0.1)
+        XCTAssertEqual(changed, [], "no answer is no change")
+        XCTAssertEqual(rig.last?.op, .list, "the book reads the list again")
+        var listed = try HelperMemoryTests.reply(1)
+        listed.entries.removeAll { $0.id == Self.about }
+        rig.answer(listed)
+        XCTAssertEqual(changed, [Self.about])
+        rig.book.requestList()
+        rig.answer(listed)
+        XCTAssertEqual(changed, [Self.about], "an unchanged list reports nothing")
+    }
+
     func testARefusalShowsOnTheRowAndTheEntryStays() throws {
         let rig = try Rig()
         rig.book.askToForget(Self.about)
