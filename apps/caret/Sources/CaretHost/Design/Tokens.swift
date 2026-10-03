@@ -33,8 +33,11 @@ enum Tokens {
     static let carrotWash = dynamic(light: 0xD9641E, dark: 0xF49A5B, alpha: 0.10, darkAlpha: 0.14)
     /// The figure's eyes, dark on the Carrot body in both themes.
     static let eye = srgb(0x1D1D1F)
-    /// The error figure; the menu bar glyph at rest.
-    static let graphite = dynamic(light: 0x8E8E93, dark: 0x98989D)
+    /// The error figure; the menu bar glyph at rest. Light was `#8E8E93` (IDENTITY.md), 3.26:1 on
+    /// white but 2.86:1 on the light panel surface over a dark window (`#F0F0F0`), under the 3:1 a
+    /// graphic needs (WCAG 1.4.11). `#7C7C80` is 4.16:1 on white and 3.65:1 on `#F0F0F0`, and stays
+    /// lighter than Secondary so the figure does not read as text. Dark is 4.85:1 on the dark surface.
+    static let graphite = dynamic(light: 0x7C7C80, dark: 0x98989D)
     static let ink = dynamic(light: 0x1D1D1F, dark: 0xF5F5F7)
     static let secondary = dynamic(light: 0x6E6E73, dark: 0xA1A1A6)
     static let border = dynamic(light: 0x000000, dark: 0xFFFFFF, alpha: 0.08, darkAlpha: 0.10)
