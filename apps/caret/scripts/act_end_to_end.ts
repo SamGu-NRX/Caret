@@ -675,7 +675,7 @@ try {
         await key(t.pid, "escape");
         await until("the stopped line", async () => {
           const x = await surface();
-          return x.workingOn === undefined && (x.lineText ?? "").startsWith("Stopped") ? x : null;
+          return x.workingOn === undefined && /^(You stopped|Stopped)/.test(x.lineText ?? "") ? x : null;
         }, 8000);
         const end = await until("the run to end", () => ended(["stopped", "done"]), 10_000);
         row.outcome = end.phase === "stopped" ? `stopped:${end.stopReason}` : end.phase;
