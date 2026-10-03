@@ -288,12 +288,13 @@ const WAITING_CRITERIA: Record<Waiting, string> = {
  */
 export function buildPendingRequest(
   w: WindowState,
+  screen: Iterable<WindowState>,
   then: readonly string[],
   now: readonly string[],
   thenMarkers: readonly Marker[] = [],
   nowMarkers: readonly Marker[] = [],
 ): JevRequest {
-  const ledger = new SnippetLedger();
+  const ledger = new SnippetLedger(screen);
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const before = new Set(then.map(mask));
   const changed = now.filter((l) => !before.has(mask(l)));
@@ -326,7 +327,7 @@ export function buildPendingRequest(
         criteria: WAITING_CRITERIA,
       },
     },
-    snippets: ledger.snippets,
+    ...ledger.declared(),
   };
 }
 
@@ -368,8 +369,8 @@ function isIndicatorLine(w: WindowState, line: string): boolean {
  * markers and its last few lines, as snippets within the window's budget; `lines` is that tail, so the
  * caller can quote it.
  */
-export function buildLookRequest(w: WindowState, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
-  const ledger = new SnippetLedger();
+export function buildLookRequest(w: WindowState, screen: Iterable<WindowState>, markers: readonly Marker[]): { req: JevRequest; lines: string[] } {
+  const ledger = new SnippetLedger(screen);
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const signs = takeLines(ledger, w, markerLines(markers), SIGN_LINES);
   const tail = takeLines(ledger, w, allWatchLines(w).slice(-CHANGED_LINES), CHANGED_LINES);
@@ -391,7 +392,7 @@ export function buildLookRequest(w: WindowState, markers: readonly Marker[]): { 
           criteria: WAITING_CRITERIA,
         },
       },
-      snippets: ledger.snippets,
+      ...ledger.declared(),
     },
   };
 }
@@ -733,7 +734,7 @@ export class PendingWatcher {
     let answer: ReturnType<typeof readPendingAnswer>;
     let latencyMs: number;
     try {
-      const r = await askJev(buildPendingRequest(w, watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w)));
+      const r = await askJev(buildPendingRequest(w, this.deps.model.windows.values(), watch.then, watchLines(w), watch.thenMarkers, windowMarkers(w)));
       latencyMs = r.latencyMs;
       answer = readPendingAnswer(r);
     } catch (e) {

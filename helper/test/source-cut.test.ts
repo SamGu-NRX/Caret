@@ -91,7 +91,7 @@ describe("a cut conversation never leaves a decoy", () => {
     // and here not at all.
     const m = datedChat(["Date", "Notes"]);
     const asked: JevRequest[] = [];
-    const ledger = new SnippetLedger();
+    const ledger = new SnippetLedger(m.windows.values());
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: [fieldTerms(["Date"]), fieldTerms(["Notes"])] });
     expect(cut).toEqual([CHAT]);
     expect(candidates.some((c) => /September|October/.test(c.text))).toBe(false);
@@ -166,7 +166,7 @@ function decoyPicksAnyDate(asked: JevRequest[] = []): AskJev {
 describe("cut kinds", () => {
   it("counts a cut window's typed values that no taken text holds, and nothing from an uncut window", () => {
     const m = model();
-    const ledger = new SnippetLedger();
+    const ledger = new SnippetLedger(m.windows.values());
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger });
     const kinds = cutKinds(m, cut, ledger);
     const offered = new Set(candidates.map((c) => c.text));
@@ -179,7 +179,7 @@ describe("cut kinds", () => {
     const m = new ScreenModel();
     const filler = ["See you there", "Bring the deck", "Room is booked"].map((t, i) => text(`f${i}`, t));
     m.apply(snap([text("a", "3:00 PM to 3:45 PM"), ...filler], { at: 1, windowId: REF, app: MESSAGES, values: [value("time", "3:45 PM", "a")] }));
-    const ledger = new SnippetLedger();
+    const ledger = new SnippetLedger(m.windows.values());
     expect(ledger.take(m.windows.get(REF)!, "candidate", ["3:00 PM to 3:45 PM"])).toBe(true);
     expect(cutKinds(m, [REF], ledger).size).toBe(0);
   });
@@ -209,9 +209,9 @@ describe("a conversation's budget goes to the lines nearest each field first", (
   it("takes the meeting block for the Schedule follow-up form, under the same budget", () => {
     const m = model();
     const budget = windowBudget(m.windows.get(REF)!);
-    const ranked = new SnippetLedger();
+    const ranked = new SnippetLedger(m.windows.values());
     const byRelevance = collectCandidates(m, FORM, { now: 3000, ledger: ranked, fields: terms }).candidates.map((c) => c.text);
-    const plain = new SnippetLedger();
+    const plain = new SnippetLedger(m.windows.values());
     const inOrder = collectCandidates(m, FORM, { now: 3000, ledger: plain }).candidates.map((c) => c.text);
     for (const want of ["Thursday, October 8, 2026", "3:00 PM"]) expect(byRelevance, want).toContain(want);
     // In screen order the order block came first and the meeting date did not fit.
@@ -237,7 +237,7 @@ describe("a conversation's budget goes to the lines nearest each field first", (
 
   it("offers a kind the form takes whole, every value with its facts, or not at all", () => {
     const m = model();
-    const ledger = new SnippetLedger();
+    const ledger = new SnippetLedger(m.windows.values());
     const { cut, candidates } = collectCandidates(m, FORM, { now: 3000, ledger, fields: terms });
     expect(cut).toEqual([REF]);
     expect(ledger.chars(REF)).toBeLessThanOrEqual(windowBudget(m.windows.get(REF)!));
@@ -262,7 +262,7 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     const lines = ["Gate closes at ten", "Parking is free after six", "Parking spot: level two", "Gate: north entrance", ...filler];
     m.apply(snap(lines.map((l, i) => text(`c${i}`, l)), { at: 1000, windowId: CHAT, app: MESSAGES, title: "Kofi" }));
     m.apply(scheduleForm(2000, ["Parking spot", "Gate"]));
-    const cands = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(), fields: [fieldTerms(["Parking spot"]), fieldTerms(["Gate"])] }).candidates;
+    const cands = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()), fields: [fieldTerms(["Parking spot"]), fieldTerms(["Gate"])] }).candidates;
     // Parking's best (two shared words), the gate's first, parking's second, the gate's second; then the rest.
     expect(cands.map((c) => c.text).slice(0, 4)).toEqual(["level two", "Gate closes at ten", "Parking is free after six", "north entrance"]);
   });
@@ -281,7 +281,7 @@ describe("a conversation's budget goes to the lines nearest each field first", (
       }),
     );
     m.apply(scheduleForm(2000, ["Parking total", "Gate code"]));
-    const cands = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(), fields: [fieldTerms(["Parking total"]), fieldTerms(["Gate code"])] }).candidates;
+    const cands = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()), fields: [fieldTerms(["Parking total"]), fieldTerms(["Gate code"])] }).candidates;
     // Amounts first, Parking's best leading, both together; then the gate code.
     expect(cands.map((c) => c.text).slice(0, 3)).toEqual(["$15.00", "$120.00", "4417"]);
   });
@@ -290,8 +290,8 @@ describe("a conversation's budget goes to the lines nearest each field first", (
     const m = new ScreenModel();
     m.apply({ ...reference(1000), app: { pid: 6161, bundleId: "dev.caret.notes", name: "Notes" } });
     m.apply(scheduleForm(2000, SCHEDULE));
-    const a = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(), fields: terms }).candidates;
-    const b = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger() }).candidates;
+    const a = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()), fields: terms }).candidates;
+    const b = collectCandidates(m, FORM, { now: 3000, ledger: new SnippetLedger(m.windows.values()) }).candidates;
     expect(a).toEqual(b);
   });
 });

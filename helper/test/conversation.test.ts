@@ -131,7 +131,7 @@ describe("the budget of a conversation", () => {
     const MESSAGES: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
     const w = windowOf(["Alice, meet Bob at 3:41 PM", "Alice", "meet Bob", "Bob at 3:41 PM", "3:41 PM", "Bob"].map((l) => t(l)), MESSAGES);
     const budget = windowBudget(w);
-    const ledger = new SnippetLedger();
+    const ledger = new SnippetLedger([w]);
     // The parent line is 26 characters, but with the four lines inside it, 59: over the budget.
     expect(budget).toBeLessThan(59);
     expect(ledger.take(w, "candidate", ["Alice, meet Bob at 3:41 PM"])).toBe(false);
@@ -145,7 +145,7 @@ describe("the budget of a conversation", () => {
   it("charges a window's text that reads like an indicator line", () => {
     const MESSAGES: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
     const w = windowOf([t("[progress bar]"), { key: "p", parent: null, role: "AXProgressIndicator" }], MESSAGES);
-    const { req } = buildLookRequest(w, [{ rule: "progressBar", line: "[progress bar]" }]);
+    const { req } = buildLookRequest(w, [w], [{ rule: "progressBar", line: "[progress bar]" }]);
     expect(req.snippets.map((x) => x.text)).not.toContain("[progress bar]");
     expect(JSON.stringify(req.state)).not.toContain("[progress bar]");
   });

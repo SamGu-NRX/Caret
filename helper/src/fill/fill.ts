@@ -13,7 +13,7 @@ import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type
 import type { ScreenModel, WindowState } from "../model.ts";
 import { candidateKinds, collectCandidates, cutKinds, describeCandidate, type Candidate } from "./candidates.ts";
 import { fieldKinds, fieldTerms } from "./kinds.ts";
-import { SnippetLedger, type Snippet } from "../privacy.ts";
+import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField } from "./descriptor.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 
@@ -69,7 +69,7 @@ const WORDINGS = [
 ] as const;
 
 /**
- * One ask. `snippets` declares the screen text in it (privacy.ts); `title` is the form window's title as
+ * One ask. `declared` holds the screen text in it and what each window was charged (privacy.ts); `title` is the form window's title as
  * declared there, or null when it did not fit the window's budget and the question names the app alone.
  */
 export function buildFillRequest(
@@ -77,7 +77,7 @@ export function buildFillRequest(
   fields: AskField[],
   candidates: Candidate[],
   wording: 0 | 1 = 0,
-  snippets: readonly Snippet[] = [],
+  declared: Declared = { snippets: [], charged: {} },
   title: string | null = w.window.title,
 ): JevRequest {
   const criteria: Record<string, string> = {};
@@ -97,7 +97,8 @@ export function buildFillRequest(
         "Users most often copy from the window they were in just before the form.",
     },
     questions,
-    snippets,
+    snippets: declared.snippets,
+    charged: declared.charged,
   };
 }
 
@@ -153,7 +154,7 @@ export async function proposeFill(
   // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
   // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
-  const ledger = new SnippetLedger();
+  const ledger = new SnippetLedger(model.windows.values());
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const fields: { id: string; node: Node; descriptor: string; name: string; kinds: Set<ValueKind>; terms: Set<string>; texts: (string | null)[] }[] = [];
   for (const n of formFields(w, triggerKey)) {
@@ -188,7 +189,7 @@ export async function proposeFill(
   // window was still charged for them, which errs on the side of saying less.
   const sent = new Set(asked.flatMap((f) => f.texts));
   const unsent = new Set(fields.filter((f) => !asked.includes(f)).flatMap((f) => f.texts).filter((t) => t !== null && !sent.has(t) && t !== title));
-  const snippets = ledger.snippets.filter((x) => !(x.kind === "descriptor" && x.windowId === windowId && unsent.has(x.text)));
+  const declared: Declared = { snippets: ledger.snippets.filter((x) => !(x.kind === "descriptor" && x.windowId === windowId && unsent.has(x.text))), charged: ledger.charges() };
 
   // The second ask sees the same candidates in another order under other ids, so neither position
   // nor id can carry a choice from one ask to the other. Windows keep their recency order and only
@@ -201,7 +202,7 @@ export async function proposeFill(
   const [r1, r2] =
     asked.length === 0
       ? [null, null]
-      : await Promise.all([askJev(buildFillRequest(w, asked, candidates, 0, snippets, title)), askJev(buildFillRequest(w, asked, second, 1, snippets, title))]);
+      : await Promise.all([askJev(buildFillRequest(w, asked, candidates, 0, declared, title)), askJev(buildFillRequest(w, asked, second, 1, declared, title))]);
 
   const byId = new Map(candidates.map((c) => [c.id, c]));
   const readAsk = (r: JevResult, fieldId: string, mapId: (id: string) => string | undefined): FillAsk => {

@@ -160,6 +160,8 @@ function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations:
   const subjects = new Set(r.req.snippets.filter((s) => s.kind === "descriptor").map((s) => s.windowId));
   if (subjects.size > 1) out.push(`${where}: descriptors from ${subjects.size} windows`);
   for (const m of measure(r)) {
+    const charged = r.req.charged[m.windowId] ?? 0;
+    if (m.covered > charged) out.push(`${where}: covers ${m.covered} characters of ${m.windowId}, and its ledger charged ${charged}`);
     if (m.covered > WINDOW_CHARS) out.push(`${where}: ${m.covered} characters from ${m.windowId}, over ${WINDOW_CHARS}`);
     if (!m.card && m.covered * 2 >= m.chars && m.covered > 0) out.push(`${where}: ${m.covered} of ${m.chars} characters of ${m.windowId}, half or more of a window that is not a card`);
     if (bystanders.has(m.windowId) && m.covered > 0) out.push(`${where}: ${m.covered} characters from bystander ${m.windowId}`);
@@ -340,13 +342,13 @@ describe("the privacy line on every Jev request", () => {
       await s.replay([notesWindow(500), snap([...city("Shipping"), ...city("Billing")], { at: 1000, windowId: "5150-9", title: "Addresses", app: FIXTURE_APP })], "executor target");
       const w = s.helper.model.windows.get("5150-9") as WindowState;
       s.producer = "executor target";
-      await resolveTarget(w, { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", s.ask);
+      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, "The shipping City field holds Austin", s.ask);
       // A plan's value can be any text a window shows; here a whole page of the private notes. It goes out cut short.
       const page = [...(s.helper.model.windows.get(NOTES)?.nodes.values() ?? [])].map((n) => n.label ?? "").join(" ");
-      await resolveTarget(w, { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask);
+      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask);
       // The same value with the plan saying where it was copied from (Plan.sources): the part the cut goal shows is charged to the notes.
       const notes = s.helper.model.windows.get(NOTES);
-      await resolveTarget(w, { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask, undefined, undefined, [{ text: page, window: notes }]);
+      await resolveTarget(w, s.helper.model.windows.values(), { role: "AXTextField", label: "City", describe: "the City field" }, `The shipping City field holds ${page}`, s.ask, undefined, undefined, [{ text: page, window: notes }]);
     });
     expect(rec).toHaveLength(6);
     expect(rec.slice(4).every((r) => r.req.snippets.some((x) => x.windowId === NOTES && x.kind === "candidate"))).toBe(true);
@@ -398,19 +400,22 @@ describe("the privacy line on every Jev request", () => {
   it("catches what it is for: a request that pastes a window, or names text it did not declare", () => {
     const w: WindowText = { windowId: "x-1", title: "Big", lines: Array.from({ length: 60 }, (_, i) => `A line of the window, number ${i}`), chars: 0, card: false };
     w.chars = w.lines.reduce((n, l) => n + l.length, 0);
-    const pasted: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: w.lines.join("\n") }, questions: {}, snippets: w.lines.map((t) => ({ windowId: "x-1", kind: "candidate", text: t })) } };
+    const pasted: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: w.lines.join("\n") }, questions: {}, snippets: w.lines.map((t) => ({ windowId: "x-1", kind: "candidate", text: t })), charged: { "x-1": w.chars } } };
     expect(violations(pasted, new Set())).toEqual([expect.stringContaining("over 1200"), expect.stringContaining("half or more")]);
     // A short chat that is a card: the card rule lets it go whole, the conversation rule does not.
     const chat: WindowText = { windowId: "c-1", title: "Chat", lines: ["Dana", "3:41 PM", "see you at five", "Kofi", "3:42 PM", "on my way"], chars: 0, card: true };
     chat.chars = chat.lines.reduce((n, l) => n + l.length, 0);
-    const chatWhole: Recorded = { session: "s", producer: "p", windows: [chat], req: { state: { now: chat.lines.join("\n") }, questions: {}, snippets: chat.lines.map((t) => ({ windowId: "c-1", kind: "candidate", text: t })) } };
+    const chatWhole: Recorded = { session: "s", producer: "p", windows: [chat], req: { state: { now: chat.lines.join("\n") }, questions: {}, snippets: chat.lines.map((t) => ({ windowId: "c-1", kind: "candidate", text: t })), charged: { "c-1": chat.chars } } };
     expect(violations(chatWhole, new Set(), new Set())).toEqual([]);
     expect(violations(chatWhole, new Set(), new Set(["c-1"]))).toEqual([expect.stringContaining("conversation c-1, half or more")]);
-    const sneaky: Recorded = { ...pasted, req: { state: { now: w.lines.slice(0, 2).join("\n") }, questions: {}, snippets: [] } };
+    const sneaky: Recorded = { ...pasted, req: { state: { now: w.lines.slice(0, 2).join("\n") }, questions: {}, snippets: [], charged: {} } };
     const found = violations(sneaky, new Set(["x-1"]));
     expect(found.filter((v) => v.includes("undeclared line"))).toHaveLength(2);
     expect(found.filter((v) => v.includes("a window it does not name"))).toHaveLength(2);
     expect(found.filter((v) => v.includes("from bystander x-1"))).toHaveLength(1);
+    // A ledger that charged a window less than the request shows of it.
+    const under: Recorded = { ...chatWhole, req: { ...chatWhole.req, charged: { "c-1": chat.chars - 1 } } };
+    expect(violations(under, new Set(), new Set())).toEqual([expect.stringContaining(`its ledger charged ${chat.chars - 1}`)]);
   });
 
   /** For each session's window that any request took from: the most one request took, and its share of the window. */
@@ -427,6 +432,26 @@ describe("the privacy line on every Jev request", () => {
       }
     }
     return [...best.values()].sort((a, b) => b.share - a.share);
+  };
+
+  const ledgerVsTest = (recs: readonly Recorded[]) => {
+    const rows = recs.map((r) => ({
+      session: r.session,
+      producer: r.producer,
+      windows: measure(r)
+        .filter((m) => m.covered > 0 || (r.req.charged[m.windowId] ?? 0) > 0)
+        .map((m) => ({ windowId: m.windowId, title: r.windows.find((w) => w.windowId === m.windowId)?.title ?? m.windowId, conversation: CONVERSATIONS.has(m.windowId), test: m.covered, ledger: r.req.charged[m.windowId] ?? 0 })),
+    }));
+    const pairs = rows.flatMap((r) => r.windows);
+    return {
+      requests: rows.length,
+      windowsCounted: pairs.length,
+      ledgerBelowTest: pairs.filter((p) => p.ledger < p.test).length,
+      equal: pairs.filter((p) => p.ledger === p.test).length,
+      ledgerAboveTest: pairs.filter((p) => p.ledger > p.test).length,
+      requestsAgreeing: rows.filter((r) => r.windows.every((p) => p.ledger >= p.test)).length,
+      rows,
+    };
   };
 
   afterAll(() => {
@@ -457,6 +482,12 @@ describe("the privacy line on every Jev request", () => {
       largestPerWindow: perWindow(all),
       /** The short-chat session again with the conversation rule off, as the helper behaved before B11. */
       ruleOff: perWindow(capOff),
+      /**
+       * The ledger against this test, request by request: for each window either one counts, the characters
+       * the test measures the request covers and the characters the ledger charged it. The ledger never
+       * charging less is what lets it hold the caps at runtime (violations checks it on every request).
+       */
+      ledgerVsTest: ledgerVsTest(all),
     };
     if (process.env.PRIVACY_REPORT !== undefined) writeFileSync(process.env.PRIVACY_REPORT, `${JSON.stringify(report, null, 2)}\n`);
   });
