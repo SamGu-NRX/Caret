@@ -25,6 +25,22 @@ public enum HelperInbound: Equatable, Sendable {
     /// A `type` this host does not know. Newer helpers may send these.
     case unknown(type: String)
 
+    /// The message's wire `type`, for counters.
+    public var typeName: String {
+        switch self {
+        case .fillProposal: return FillProposal.type
+        case .error: return HelperError.type
+        case .activity: return Activity.type
+        case .activityReply: return ActivityReply.type
+        case .alternatives: return OfferAlternatives.type
+        case .action: return OfferAction.type
+        case .popup: return OfferPopup.type
+        case .offerWithdrawn: return OfferWithdrawn.type
+        case .taskProgress: return TaskProgress.type
+        case .notForConsumer(let type), .unknown(let type): return type
+        }
+    }
+
     public static func decode(_ line: Data) throws -> HelperInbound {
         let envelope = try JSONDecoder().decode(EnvelopeProbe.self, from: line)
         guard envelope.v == Proto.version else {

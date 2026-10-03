@@ -21,6 +21,8 @@ final class HostCoordinator {
     /// The focused field of the frontmost app after every read (nil when there is none), for the
     /// other coordinators' offers bound to a field.
     var onFocus: ((TargetIdentity?) -> Void)?
+    /// The settings allow ghost text: not paused, and the words role on (`HostGate`).
+    var wordsAllowed: () -> Bool = { true }
 
     /// The suggestion the visible ghost text derives from.
     private var anchor: GhostSuggestion?
@@ -68,7 +70,7 @@ final class HostCoordinator {
                 valueDigest: field.identity.elementRevision
             )
         }
-        guard engine.state == .ready,
+        guard engine.state == .ready, wordsAllowed(),
               policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
               !field.secure, !context.traits.isSecureTextEntry, !context.traits.isPasswordField,
               field.selection.isEmpty

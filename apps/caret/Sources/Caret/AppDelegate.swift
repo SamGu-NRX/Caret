@@ -3,7 +3,8 @@ import CaretHost
 import CaretHostCore
 
 /// A minimal menu-bar shell: the figure as the status item (Carrot while work runs), the engine
-/// state, the activity list, the perch toggle, the character setting, and Quit.
+/// state, pause, the activity list, the perch toggle, the settings (what Caret helps with, how
+/// forward it is, the character), and Quit.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let runtime: HostRuntime
@@ -14,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var working = false
     private var characterItems: [NSMenuItem] = []
     private let perchItem = NSMenuItem(title: "Show Perch", action: nil, keyEquivalent: "")
+    private let pauseItem = NSMenuItem(title: "Pause Caret", action: nil, keyEquivalent: "")
+    private var roleItems: [NSMenuItem] = []
+    private var levelItems: [NSMenuItem] = []
 
     init(configuration: HostRuntime.Configuration) {
         runtime = HostRuntime(configuration: configuration)
@@ -70,6 +74,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for item in characterItems {
             item.state = item.representedObject as? String == current.rawValue ? .on : .off
         }
+        let settings = SettingsStore.shared.settings
+        pauseItem.title = settings.paused ? "Resume Caret" : "Pause Caret"
+        for item in roleItems {
+            let role = (item.representedObject as? String).flatMap(CaretRole.init(rawValue:))
+            item.state = role.map(settings.roles.contains) == true ? .on : .off
+        }
+        for item in levelItems {
+            item.state = item.representedObject as? String == settings.level.rawValue ? .on : .off
+        }
+    }
+
+    @objc private func togglePause(_ sender: NSMenuItem) {
+        SettingsStore.shared.update(source: .menu) { $0.paused.toggle() }
+    }
+
+    @objc private func toggleRole(_ sender: NSMenuItem) {
+        guard let role = (sender.representedObject as? String).flatMap(CaretRole.init(rawValue:)) else { return }
+        SettingsStore.shared.update(source: .menu) { s in
+            if s.roles.contains(role) { s.roles.remove(role) } else { s.roles.insert(role) }
+        }
+    }
+
+    @objc private func chooseLevel(_ sender: NSMenuItem) {
+        guard let level = (sender.representedObject as? String).flatMap(CaretLevel.init(rawValue:)) else { return }
+        SettingsStore.shared.update(source: .menu) { $0.level = level }
     }
 
     private func refreshGlyph() {
@@ -98,6 +127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         stateItem.isEnabled = false
         menu.addItem(stateItem)
+        // Pause stops every offer, ghost text included; work already accepted goes on.
+        pauseItem.action = #selector(togglePause(_:))
+        pauseItem.target = self
+        menu.addItem(pauseItem)
         menu.addItem(.separator())
         let activityItem = NSMenuItem(title: "Activity", action: #selector(showActivity(_:)), keyEquivalent: "")
         activityItem.target = self
@@ -107,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         perchItem.target = self
         menu.addItem(perchItem)
         menu.addItem(.separator())
-        // The figure is provisional until Sam picks one (OPEN-QUESTIONS.md 1); all three are kept.
+        // The pebble is the default (Sam, 2026-10-02); seed and wren stay as choices.
         let characterMenu = NSMenu()
         for character in FigureCharacter.allCases {
             let choice = NSMenuItem(title: character.displayName, action: #selector(chooseCharacter(_:)), keyEquivalent: "")
@@ -116,6 +149,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             characterMenu.addItem(choice)
             characterItems.append(choice)
         }
+        // The same choices onboarding asks for, here to change later.
+        let roleMenu = NSMenu()
+        for role in CaretRole.allCases {
+            let item = NSMenuItem(title: role.title, action: #selector(toggleRole(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = role.rawValue
+            roleMenu.addItem(item)
+            roleItems.append(item)
+        }
+        let roleItem = NSMenuItem(title: "Help With", action: nil, keyEquivalent: "")
+        roleItem.submenu = roleMenu
+        menu.addItem(roleItem)
+        let levelMenu = NSMenu()
+        for level in CaretLevel.allCases {
+            let item = NSMenuItem(title: level.title, action: #selector(chooseLevel(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = level.rawValue
+            item.toolTip = level.detail
+            levelMenu.addItem(item)
+            levelItems.append(item)
+        }
+        let levelItem = NSMenuItem(title: "How Forward", action: nil, keyEquivalent: "")
+        levelItem.submenu = levelMenu
+        menu.addItem(levelItem)
         let characterItem = NSMenuItem(title: "Character", action: nil, keyEquivalent: "")
         characterItem.submenu = characterMenu
         menu.addItem(characterItem)

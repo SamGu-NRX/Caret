@@ -132,6 +132,7 @@ public final class HostRuntime {
         fill.executor = executor
         surface.executor = executor
         coordinator.onFocus = { identity in surface.focusChanged(identity) }
+        coordinator.wordsAllowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
         // Publishing happens on the main thread, so the displaced offer's owner hears at once.
         arbiter.onDisplaced = { offer in
             MainActor.assumeIsolated {
@@ -149,8 +150,13 @@ public final class HostRuntime {
             let at = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    fill.receive(message, at: at)
                     activity.receive(message)
+                    // Pause and the roles the host can tell apart (`HostGate`); the perch still
+                    // hears about work, which the user asked to see.
+                    guard HostGate.allows(message, SettingsStore.shared.settings) else {
+                        return status.increment("gate.refused.\(message.typeName)")
+                    }
+                    fill.receive(message, at: at)
                     switch message {
                     case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
                     case .offerWithdrawn(let withdrawn): surface.withdrawn(withdrawn)
@@ -244,7 +250,8 @@ public final class HostRuntime {
                 }
             },
             surface: { MainActor.assumeIsolated { surface.debugInfo() } },
-            perch: { words in MainActor.assumeIsolated { Self.perchCommand(words, perch: perch, activity: activity, pauser: pauser) } }
+            perch: { words in MainActor.assumeIsolated { Self.perchCommand(words, perch: perch, activity: activity, pauser: pauser) } },
+            settings: { words in MainActor.assumeIsolated { Self.settingsCommand(words) } }
         )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
             Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods, hooks: hooks)
@@ -341,6 +348,21 @@ public final class HostRuntime {
         let surface: @Sendable () -> DebugState.SurfaceInfo
         /// `perch`, `activity`, `control`, `click` and `perch-avoid` (`perchCommand`).
         let perch: @Sendable ([String]) -> String
+        /// `settings` and `settings set ...` (`settingsCommand`).
+        let settings: @Sendable ([String]) -> String
+    }
+
+    /// `settings` reads the settings file, the choices and the gate they make; `settings set
+    /// <name> <value>` changes one as the menu bar would (`SettingsStore.set`). Main thread.
+    static func settingsCommand(_ words: [String]) -> String {
+        let store = SettingsStore.shared
+        if words.count > 1 {
+            guard words[1] == "set" else { return #"{"error":"usage: settings | settings set <name> <value>"}"# }
+            if let usage = store.set(Array(words.dropFirst(2))) { return "{\"error\":\(jsonString(usage))}" }
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? String(decoding: encoder.encode(store.debugInfo()), as: UTF8.self)) ?? "{}"
     }
 
     /// Debug socket commands for the perch and the activity list. Main thread.
@@ -426,6 +448,9 @@ public final class HostRuntime {
         case "progress":
             guard words.count == 2 else { return Data("{\"error\":\"usage: progress done|error\"}\n".utf8) }
             let reply = DispatchQueue.main.sync { hooks.progress(words[1]) }
+            return Data((reply + "\n").utf8)
+        case "settings":
+            let reply = DispatchQueue.main.sync { hooks.settings(words) }
             return Data((reply + "\n").utf8)
         case "perch", "activity", "control", "click", "perch-avoid":
             let reply = DispatchQueue.main.sync { hooks.perch(words) }

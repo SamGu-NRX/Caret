@@ -54,7 +54,15 @@ enum FillFx {
     static let caption = "from Caret Fixture, Reference"
 
     /// A proposal for the fixture's form: email and phone, both quoted from the Reference window.
+    static var proposalLine: String { line() }
+
     static func proposal(id: String = "fill-1", email: String? = FillFx.email, phone: String? = FillFx.phone, at: Int64 = 1_790_000_000_500) -> FillProposal {
+        let json = line(id: id, email: email, phone: phone, at: at)
+        guard case .fillProposal(let proposal) = try! HelperInbound.decode(Data(json.utf8)) else { fatalError("not a proposal") }
+        return proposal
+    }
+
+    static func line(id: String = "fill-1", email: String? = FillFx.email, phone: String? = FillFx.phone, at: Int64 = 1_790_000_000_500) -> String {
         func field(_ element: Fx.Element, _ value: String?) -> String {
             let f = element.frame
             let source = value.map { _ in #"{"pid":5150,"windowId":"5150-2","bundleId":"dev.caret.fixture","appName":"Caret Fixture","windowTitle":"Reference","nodeKey":"n","kind":"email"}"# } ?? "null"
@@ -62,9 +70,7 @@ enum FillFx {
             let asks = #"{"choice":"\#(value == nil ? "none" : "c1")","confidence":0.9,"value":\#(v)}"#
             return #"{"key":"k:\#(element.rawValue)","frame":[\#(f.minX),\#(f.minY),\#(f.width),\#(f.height)],"descriptor":"d","choice":"\#(value == nil ? "none" : "c1")","confidence":0.9,"value":\#(v),"source":\#(source),"withheld":null,"asks":[\#(asks),\#(asks)]}"#
         }
-        let json = #"{"type":"fillProposal","v":1,"id":"\#(id)","at":\#(at),"pid":5150,"windowId":"5150-1","bundleId":"dev.caret.fixture","triggerKey":"k:email","fields":[\#(field(.email, email)),\#(field(.phone, phone))],"candidates":4,"jev":{"model":"m","latencyMs":1,"inputTokens":1,"costUsd":0},"cutoff":0.75}"#
-        guard case .fillProposal(let proposal) = try! HelperInbound.decode(Data(json.utf8)) else { fatalError("not a proposal") }
-        return proposal
+        return #"{"type":"fillProposal","v":1,"id":"\#(id)","at":\#(at),"pid":5150,"windowId":"5150-1","bundleId":"dev.caret.fixture","triggerKey":"k:email","fields":[\#(field(.email, email)),\#(field(.phone, phone))],"candidates":4,"jev":{"model":"m","latencyMs":1,"inputTokens":1,"costUsd":0},"cutoff":0.75}"#
     }
 }
 
@@ -114,6 +120,7 @@ final class FillRig {
         }
     }
 
+    @discardableResult
     func takeLog() -> [String] {
         defer { log = [] }
         return log

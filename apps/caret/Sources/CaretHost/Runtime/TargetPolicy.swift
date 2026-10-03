@@ -26,7 +26,11 @@ struct TargetPolicy: Sendable {
     /// Nil means every pid.
     var allowedPIDs: Set<Int32>?
 
+    /// Caret never offers into its own windows: onboarding's staged field handles its own Tab.
+    static let ownPID = ProcessInfo.processInfo.processIdentifier
+
     func allows(pid: Int32, bundleID: String?) -> Bool {
+        if pid == Self.ownPID { return false }
         if let allowedPIDs, !allowedPIDs.contains(pid) { return false }
         if let allowedBundleIDs, !allowedBundleIDs.contains(bundleID ?? "pid:\(pid)") { return false }
         return true

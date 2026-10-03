@@ -306,6 +306,22 @@ public struct DebugState: Codable, Equatable, Sendable {
         }
     }
 
+    /// The debug socket's `settings` reply: the file, the choices, and the gate they make.
+    public struct SettingsInfo: Codable, Equatable, Sendable {
+        public var path: String
+        /// Set when the file exists but could not be read, or could not be written.
+        public var error: String?
+        public var settings: CaretSettings
+        public var gate: GatePolicy
+
+        public init(path: String, error: String?, settings: CaretSettings, gate: GatePolicy) {
+            self.path = path
+            self.error = error
+            self.settings = settings
+            self.gate = gate
+        }
+    }
+
     public struct UndoInfo: Codable, Equatable, Sendable {
         public var grantID: UInt64
         public var ok: Bool

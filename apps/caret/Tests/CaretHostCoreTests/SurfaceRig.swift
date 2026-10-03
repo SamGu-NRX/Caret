@@ -241,6 +241,7 @@ final class SurfaceRig {
         }
     }
 
+    @discardableResult
     func takeLog() -> [String] {
         defer { log = [] }
         return log

@@ -20,20 +20,23 @@ extension FigureCharacter {
     }
 }
 
-/// The character in use: `CARET_FIGURE` when set, else the menu's choice in user defaults.
+/// The character in use: `CARET_FIGURE` when set (for screenshots, never saved), else the
+/// settings' choice (`SettingsStore`), pebble by default.
 @MainActor
 public final class FigureSettings: ObservableObject {
     public static let shared = FigureSettings()
-    static let defaultsKey = "figureCharacter"
 
     @Published public var character: FigureCharacter {
-        didSet { UserDefaults.standard.set(character.rawValue, forKey: Self.defaultsKey) }
+        didSet {
+            guard character != oldValue else { return }
+            let chosen = character
+            SettingsStore.shared.update(source: .menu) { $0.character = chosen }
+        }
     }
 
     init() {
-        let env = ProcessInfo.processInfo.environment["CARET_FIGURE"]
-        let stored = UserDefaults.standard.string(forKey: Self.defaultsKey)
-        character = (env ?? stored).flatMap(FigureCharacter.init(rawValue:)) ?? .pebble
+        let env = ProcessInfo.processInfo.environment["CARET_FIGURE"].flatMap(FigureCharacter.init(rawValue:))
+        character = env ?? SettingsStore.shared.settings.character
     }
 }
 

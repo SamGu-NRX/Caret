@@ -4,10 +4,11 @@ import CaretHost
 // Launch by direct exec of Caret.app/Contents/MacOS/Caret so the process inherits the launching
 // app's Accessibility grant. Flags: --socket <path>, --model <path>, --allow <bundle,ids>,
 // --allow-pids <pid,pid>, --helper-socket <path>, --no-ghost, --no-fill-advance,
-// --appearance light|dark, --perch hidden|shown, --surfaces headless|shown, --test-hooks.
+// --appearance light|dark, --perch hidden|shown, --surfaces headless|shown, --test-hooks,
+// --settings <path>, --onboarding auto|show|hidden|off.
 // Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES,
 // CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off, CARET_PERCH=hidden,
-// CARET_SURFACES=headless, CARET_TEST_HOOKS=1.
+// CARET_SURFACES=headless, CARET_TEST_HOOKS=1, CARET_SETTINGS_PATH.
 
 var configuration = HostRuntime.Configuration()
 
@@ -75,6 +76,9 @@ while let argument = arguments.next() {
     case "--test-hooks":
         // The debug socket's `inject` and `progress`, which fake helper offers and their results.
         configuration.testHooks = true
+    case "--settings":
+        // A settings file of the run's own, so a test never reads or writes the user's choices.
+        if let value = arguments.next() { SettingsStore.path = value }
     case "--allow":
         if let value = arguments.next() {
             configuration.allowedBundleIDs = Set(value.split(separator: ",").map(String.init))
