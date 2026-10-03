@@ -92,6 +92,18 @@ final class FirstLookRunTests: XCTestCase {
         XCTAssertNil(rig.request, "and sends no request")
     }
 
+    func testASettingsWithdrawalAsksWithTheRolesAndLevelSavedSince() throws {
+        let rig = shown(try found())
+        var saved = CaretSettings()
+        saved.roles.remove(.fill)
+        saved.level = .quiet
+        rig.send(.settingsChanged(saved), withdrawn("first-look-1.0", .settings))
+        let request = try XCTUnwrap(rig.request)
+        XCTAssertFalse(request.families.contains("fill"), "the family turned off is not asked for again")
+        XCTAssertEqual(request.level, .quiet)
+        XCTAssertEqual(rig.flow.state.roles, saved.roles)
+    }
+
     func testAnyOtherWithdrawalLeavesNothingToTake() throws {
         for reason in [OfferWithdrawn.Reason.taken, .dismissed, .diverged, .idle, .stale, .expired] {
             let rig = shown(try found())

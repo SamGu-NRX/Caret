@@ -340,8 +340,10 @@ final class SurfaceCoordinator {
                 let size = panel.measure(view(width))
                 let grown = Self.frame(pinnedAt: current.choice, size: size)
                 if grown.size != current.choice.frame.size {
-                    let under = ObstacleProbe.obstacles(pid: pid, under: [grown]).filter { !$0.insetBy(dx: -2, dy: -2).contains(field) }
-                    if under.contains(where: { $0.intersects(grown) }) {
+                    let usable = Screen.axVisibleFrame(around: field).insetBy(dx: FieldPanelPlacement.margin, dy: FieldPanelPlacement.margin)
+                    let under = ObstacleProbe.probe(pid: pid, under: [grown], until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)?
+                        .filter { !$0.insetBy(dx: -2, dy: -2).contains(field) }
+                    if !usable.contains(grown) || under.map({ $0.contains(where: { $0.intersects(grown) }) }) ?? true {
                         placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
                     } else {
                         current.choice.frame = grown
@@ -363,15 +365,22 @@ final class SurfaceCoordinator {
         let started = DispatchTime.now().uptimeNanoseconds
         let size = panel.measure(view(nil))
         let narrow = narrows && size.width > PopupView.minWidth ? panel.measure(view(PopupView.minWidth)) : nil
+        let deadline = started + Self.probeBudget
         let choice = FieldPanelPlacement.choose(
             field: field, caret: caret, size: size, narrow: narrow, bounds: Screen.axVisibleFrame(around: field),
-            obstacles: { ObstacleProbe.obstacles(pid: pid, under: [$0]) }
+            obstacles: { ObstacleProbe.probe(pid: pid, under: [$0], until: deadline) }
         )
         status.increment("surface.placed.\(choice.spot.rawValue)")
         if choice.overlap ?? 0 > 0 { status.increment("surface.placed.covering") }
         let ms = Double(DispatchTime.now().uptimeNanoseconds &- started) / 1_000_000
         return Placed(choice: choice, field: field, caret: caret, pid: pid, milliseconds: ms)
     }
+
+    /// Hit-testing for one placement stops after this long on the main thread; a spot not fully
+    /// probed by then is not taken. Assumed: A10 measured 9 to 49 ms for three to five spots in
+    /// the claim form at the coarser grid, and an unresponsive app could otherwise cost 50 ms per
+    /// point.
+    static let probeBudget: UInt64 = 150_000_000
 
     /// The frame a panel of `size` takes when pinned at `choice`'s corner.
     static func frame(pinnedAt choice: FieldPanelPlacement.Choice, size: CGSize) -> CGRect {

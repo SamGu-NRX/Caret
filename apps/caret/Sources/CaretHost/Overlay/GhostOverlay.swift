@@ -28,6 +28,8 @@ final class GhostOverlay {
     private(set) var shownText: String?
     /// The last attempt to draw, shown or not, for the debug state.
     private(set) var lastFit: GhostFit.Record?
+    /// What the capsule was drawn with, so typing through its head redraws the rest in place.
+    private var capsuleShow: (placement: OverlayPlacement, style: OverlayTextStyle)?
     private let overflow: GhostFit.OverflowRule
 
     init(compatibilityStore: AppCompatibilityStore, overflow: GhostFit.OverflowRule = .capsule) {
@@ -76,7 +78,16 @@ final class GhostOverlay {
         let decision = Self.decision(text, font: font, placement: placement, canMirror: canMirror, rule: overflow)
         switch decision {
         case .asPlaced: break
-        case .capsule: placement.presentation = .capsule
+        case .capsule:
+            placement.presentation = .capsule
+            // KeyType hangs the capsule under the caret with no screen check; one that would fall
+            // off the bottom of the display is not drawn, because an offer nobody can see must
+            // not own Tab (A10 review).
+            if !Self.capsuleFitsOnScreen(placement: placement, font: font) {
+                lastFit = Self.record(.declined, .capsuleOffScreen, text: text, font: font, placement: placement, context: live)
+                hide()
+                return nil
+            }
         case .decline(let cause):
             lastFit = Self.record(.declined, cause, text: text, font: font, placement: placement, context: live)
             hide()
@@ -97,6 +108,7 @@ final class GhostOverlay {
             return nil
         }
         let shown: Presentation = placement.presentation == .capsule ? .capsule : (canMirror ? .mirror : .inline)
+        capsuleShow = shown == .capsule ? (placement, effective) : nil
         let outcome: GhostFit.Outcome = decision == .capsule ? .overflowCapsule : GhostFit.Outcome(rawValue: shown.rawValue) ?? .inline
         lastFit = Self.record(outcome, nil, text: text, font: font, placement: placement, context: live)
         presentation = shown
@@ -131,10 +143,18 @@ final class GhostOverlay {
         )
     }
 
-    /// Redraws the inline ghost text without its head right after the user typed it, before the AX
-    /// snapshot arrives (ADR-054). No-op for capsule and mirror presentations.
+    /// Redraws the ghost text without its head right after the user typed it, before the AX
+    /// snapshot arrives (ADR-054). KeyType's advance skips capsules, so the capsule is redrawn
+    /// here with the rest, where it stands; otherwise it would show text Tab no longer inserts.
     func advance(typed: String, remainder: String) {
         guard shownText != nil else { return }
+        if presentation == .capsule, let capsuleShow {
+            guard !remainder.isEmpty else { return hide() }
+            presenter.show(candidate: CompletionCandidate(text: remainder, mode: .prose), placement: capsuleShow.placement,
+                           style: capsuleShow.style, mirrorContext: nil)
+            shownText = remainder
+            return
+        }
         presenter.advanceAfterAccepting(
             head: typed,
             remainder: remainder.isEmpty ? nil : CompletionCandidate(text: remainder, mode: .prose)
@@ -147,5 +167,17 @@ final class GhostOverlay {
         presenter.hide()
         presentation = nil
         shownText = nil
+        capsuleShow = nil
+    }
+
+    /// The capsule's bottom stays above the bottom of the caret's display. Its height is KeyType's
+    /// (`capsuleLayout`: the line plus 4 pt above and below, 5 pt under the caret); the placement
+    /// is in AppKit coordinates, where below means a smaller y.
+    static func capsuleFitsOnScreen(placement: OverlayPlacement, font: NSFont, screens: [CGRect] = NSScreen.screens.map(\.visibleFrame)) -> Bool {
+        let caret = placement.cursorRect
+        let line = max(ceil(font.ascender - font.descender), min(caret.height, 48))
+        let bottom = caret.minY - 5 - (line + 8)
+        guard let screen = screens.first(where: { $0.contains(CGPoint(x: caret.midX, y: caret.midY)) }) else { return false }
+        return bottom >= screen.minY
     }
 }

@@ -117,12 +117,18 @@ final class HelperClient: @unchecked Sendable {
     /// The user's settings for the helper's gate (B10). Sent now when connected and the roles,
     /// level or pause changed, and again after every hello, so a helper that restarts hears them
     /// before anything else the host writes. Any thread.
+    ///
+    /// A write that fails on a live connection shuts it down: the reconnect sends these settings
+    /// after its hello. Otherwise the same settings asked for again would be dropped as no change
+    /// while the helper still held the old ones (A10 review).
     func update(_ settings: GateSettings) {
         let sent = connection.withLock { link -> Bool? in
             if let previous = link.settings, previous.sameGate(as: settings) { return nil }
             link.settings = settings
             guard link.fd >= 0, let line = try? NDJSON.line(settings) else { return false }
-            return Self.writeAll(link.fd, line)
+            let written = Self.writeAll(link.fd, line)
+            if !written { shutdown(link.fd, SHUT_RDWR) }
+            return written
         }
         if sent == true { stats.withLock { $0.settingsSent &+= 1 } }
     }

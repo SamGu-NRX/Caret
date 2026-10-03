@@ -126,6 +126,25 @@ final class FieldPanelPlacementTests: XCTestCase {
         XCTAssertEqual(choice.probed, 0)
     }
 
+    func testTheFallbackIsClampedOntoTheScreenWhereItFits() {
+        // Too wide for any spot, short enough to fit vertically: below would run off the bottom.
+        let short = CGRect(x: 0, y: 0, width: 300, height: 200)
+        let field = CGRect(x: 20, y: 150, width: 150, height: 24)
+        let choice = FieldPanelPlacement.choose(field: field, caret: caret(in: field), size: CGSize(width: 400, height: 60), narrow: nil,
+                                                bounds: short, obstacles: probe([]))
+        XCTAssertNil(choice.overlap)
+        XCTAssertLessThanOrEqual(choice.frame.maxY, short.maxY - 8)
+    }
+
+    func testASpotThatCouldNotBeProbedInTimeIsNeverTaken() {
+        let field = CGRect(x: 710, y: 400, width: 320, height: 24)
+        var asked = 0
+        let choice = FieldPanelPlacement.choose(field: field, caret: caret(in: field), size: card, narrow: nil, bounds: screen,
+                                                obstacles: { _ in asked += 1; return asked == 1 ? nil : [] })
+        XCTAssertEqual(choice.spot, .above, "below was not probed in time, so it is not clear")
+        XCTAssertEqual(choice.overlap, 0)
+    }
+
     func testEachSpotPinsTheCornerNearestTheField() {
         let choice = FieldPanelPlacement.Choice(frame: CGRect(x: 10, y: 20, width: 100, height: 50), spot: .left, overlap: 0, probed: 1)
         XCTAssertEqual(choice.cornerPoint, CGPoint(x: 110, y: 20))

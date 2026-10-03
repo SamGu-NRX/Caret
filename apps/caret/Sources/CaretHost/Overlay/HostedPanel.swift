@@ -231,11 +231,12 @@ final class HostedPanel {
 /// window's title bar, which hit-tests as the window itself.
 ///
 /// The grid has a row every `rowPitch` points and a column every `columnPitch`, at least two rows
-/// and four columns, so a 28 pt line is probed as before (two rows) and a 170 pt card has no gap
-/// a 16 pt label could hide in. A point inside an element already found is not asked again.
+/// and four columns, so a 28 pt line is probed on its two rows as before and a 170 pt card has no
+/// gap a 16 pt tall or 20 pt wide label could hide in; a narrower label still can. A point inside
+/// an element already found is not asked again, so a wide field costs one hit per row.
 enum ObstacleProbe {
     static let rowPitch: CGFloat = 14
-    static let columnPitch: CGFloat = 64
+    static let columnPitch: CGFloat = 20
     /// Per hit-test: an app that does not answer in time is treated as empty there, so a hung app
     /// cannot stall the main thread for AX's default six seconds.
     static let messagingTimeout: Float = 0.05
@@ -246,25 +247,33 @@ enum ObstacleProbe {
 
     static let containerRoles: Set<String> = ["AXWindow", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXUnknown", "AXSheet"]
 
-    /// Fractions across a span of `length`: `count` evenly spaced, the outer two 4% in from each
-    /// edge for columns and 20% for rows of a two-row line, as the probe always sampled.
+    /// Fractions across a span of `length`, the outer two `edge` in from each end and no two more
+    /// than `pitch` points apart.
     static func fractions(length: CGFloat, pitch: CGFloat, minimum: Int, edge: CGFloat) -> [CGFloat] {
-        let count = max(minimum, Int((length / pitch).rounded(.up)))
+        let count = max(minimum, Int((length * (1 - 2 * edge) / pitch).rounded(.up)) + 1)
         return (0..<count).map { edge + (1 - 2 * edge) * CGFloat($0) / CGFloat(count - 1) }
     }
 
     static func points(in rect: CGRect) -> [CGPoint] {
         let columns = fractions(length: rect.width, pitch: columnPitch, minimum: 4, edge: 0.04)
-        let rows = fractions(length: rect.height, pitch: rowPitch, minimum: 2, edge: rect.height > 2 * rowPitch ? 0.04 : 0.2)
+        // A line keeps the two rows, 20% in, the probe has always used for it.
+        let rows = rect.height > 2 * rowPitch ? fractions(length: rect.height, pitch: rowPitch, minimum: 2, edge: 0.04) : [0.2, 0.8]
         return rows.flatMap { fy in columns.map { fx in CGPoint(x: rect.minX + rect.width * fx, y: rect.minY + rect.height * fy) } }
     }
 
     static func obstacles(pid: pid_t, under candidates: [CGRect]) -> [CGRect] {
+        probe(pid: pid, under: candidates, until: nil) ?? []
+    }
+
+    /// The same, giving up at `until` (uptime nanoseconds): nil when some point was never asked,
+    /// so a slow app's half-probed spot is not taken for a clear one.
+    static func probe(pid: pid_t, under candidates: [CGRect], until deadline: UInt64?) -> [CGRect]? {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, messagingTimeout)
         var found: [CGRect] = []
         for rect in candidates {
             for point in points(in: rect) where !found.contains(where: { $0.contains(point) }) {
+                if let deadline, DispatchTime.now().uptimeNanoseconds > deadline { return nil }
                 var hit: AXUIElement?
                 guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
                       let hit, AXRead.pid(of: hit) == pid else { continue }

@@ -205,11 +205,19 @@ extension OnboardingFlow {
     /// look found has changed, so it looks again with the settings as they are now; a paused Caret
     /// asks for no family and lands on "Nothing yet." Any other reason leaves nothing to take.
     /// Once taken, the run's own progress says what happened, and a withdrawal changes nothing.
+    ///
+    /// The work screen saved the flow's roles and level before the first look, so a `settings`
+    /// withdrawal means they were changed elsewhere since: the flow takes the saved ones, or the
+    /// new look would ask again for the family just turned off (A10 review).
     func firstLookWithdrawn(_ withdrawn: OfferWithdrawn) {
         guard state.step == .firstLook, state.firstLookRun == nil,
               case .found(let found) = state.firstLook, found.offerKey == withdrawn.id else { return }
         switch withdrawn.reason {
-        case .settings, .reoffered: askFirstLook()
+        case .settings:
+            state.roles = base.roles
+            state.level = base.level
+            askFirstLook()
+        case .reoffered: askFirstLook()
         case .taken, .dismissed, .diverged, .idle, .stale, .expired: state.firstLook = .nothing
         }
     }

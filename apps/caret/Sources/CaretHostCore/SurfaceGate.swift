@@ -46,12 +46,15 @@ public enum SurfaceGate {
     /// transparent full-screen overlays there, and counting them would hide Caret everywhere.
     /// Measured on 2026-10-03: Snipaste keeps one window at layer 25, alpha 1, spanning every
     /// display at once ([-1977, -1207, 5168, 3188] around a 2560 x 1440 main display), and A10's
-    /// first surface run held every offer as `covered` under it. So the test is containment, not
-    /// equality with one display. A real opaque window at such a layer is assumed rare.
+    /// first surface run held every offer as `covered` under it. So a window equal to one display,
+    /// or containing every display, is skipped. Nothing here proves such a window transparent; a
+    /// real opaque one at such a layer is assumed rare, and one covering only part of a display
+    /// still counts (A10 review).
     public static func topPID(at point: CGPoint, windows: [Window], ownPID: Int32, displays: [CGRect] = []) -> Int32? {
         for window in windows {
             guard window.pid != ownPID, window.alpha > 0.01, window.bounds.contains(point) else { continue }
-            if window.layer > 0, displays.contains(where: { window.bounds.contains($0) }) { continue }
+            if window.layer > 0, !displays.isEmpty,
+               displays.contains(where: { $0.equalTo(window.bounds) }) || displays.allSatisfy({ window.bounds.contains($0) }) { continue }
             return window.pid
         }
         return nil

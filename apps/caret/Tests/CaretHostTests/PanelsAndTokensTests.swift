@@ -86,10 +86,12 @@ final class PanelFocusTests: XCTestCase {
 /// The obstacle probe's grid: a line is sampled as it always was, a card leaves no gap a label
 /// could hide in.
 final class ObstacleProbeGridTests: XCTestCase {
-    func testALineIsProbedOnTwoRowsAndFourColumns() {
+    func testALineIsProbedOnItsTwoRows() {
         let points = ObstacleProbe.points(in: CGRect(x: 100, y: 200, width: 200, height: 28))
-        XCTAssertEqual(points.count, 8)
         XCTAssertEqual(Set(points.map(\.y)), [200 + 28 * 0.2, 200 + 28 * 0.8])
+        XCTAssertEqual(points.count % 2, 0)
+        let columns = Array(Set(points.map(\.x))).sorted()
+        for (a, b) in zip(columns, columns.dropFirst()) { XCTAssertLessThanOrEqual(b - a, ObstacleProbe.columnPitch + 0.001) }
     }
 
     func testACardHasNoRowGapWiderThanASmallLabel() {
@@ -99,6 +101,6 @@ final class ObstacleProbeGridTests: XCTestCase {
         XCTAssertLessThanOrEqual(card.maxY - rows.last!, 8)
         for (a, b) in zip(rows, rows.dropFirst()) { XCTAssertLessThanOrEqual(b - a, 14, "a 16 pt label fits in no gap") }
         let columns = Array(Set(ObstacleProbe.points(in: card).map(\.x))).sorted()
-        for (a, b) in zip(columns, columns.dropFirst()) { XCTAssertLessThanOrEqual(b - a, 80, "a 110 pt label fits in no gap") }
+        for (a, b) in zip(columns, columns.dropFirst()) { XCTAssertLessThanOrEqual(b - a, 20, "a 20 pt label fits in no gap") }
     }
 }

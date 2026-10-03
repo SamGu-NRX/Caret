@@ -42,3 +42,29 @@ final class GhostOverflowTests: XCTestCase {
         XCTAssertFalse(GhostTextOverlayWindow.shouldSuppressMirrorOverflow(text: " before lunch today", font: font, placement: p))
     }
 }
+
+@MainActor
+final class GhostCapsuleScreenTests: XCTestCase {
+    private let screen = CGRect(x: 0, y: 0, width: 2560, height: 1415)
+    private let font = NSFont.systemFont(ofSize: 13)
+
+    private func placement(caretY: CGFloat) -> OverlayPlacement {
+        var p = OverlayPlacement(cursorRect: CGRect(x: 900, y: caretY, width: 1, height: 18),
+                                 fieldRect: CGRect(x: 710, y: caretY - 3, width: 320, height: 24), cursorRectQuality: .exact)
+        p.presentation = .capsule
+        return p
+    }
+
+    func testACapsuleWithRoomBelowTheCaretFits() {
+        XCTAssertTrue(GhostOverlay.capsuleFitsOnScreen(placement: placement(caretY: 120), font: font, screens: [screen]))
+    }
+
+    func testACapsuleThatWouldHangOffTheDisplayIsRefused() {
+        // AppKit coordinates: a caret 10 pt above the bottom edge leaves no room for the capsule.
+        XCTAssertFalse(GhostOverlay.capsuleFitsOnScreen(placement: placement(caretY: 10), font: font, screens: [screen]))
+    }
+
+    func testACaretOnNoDisplayIsRefused() {
+        XCTAssertFalse(GhostOverlay.capsuleFitsOnScreen(placement: placement(caretY: 3000), font: font, screens: [screen]))
+    }
+}

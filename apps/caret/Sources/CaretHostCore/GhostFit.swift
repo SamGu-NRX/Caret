@@ -30,6 +30,8 @@ public enum GhostFit {
         case mirrorOverflow
         /// KeyType's window was asked to draw and stayed hidden.
         case windowDeclined
+        /// The capsule would hang below the bottom of the caret's display.
+        case capsuleOffScreen
     }
 
     public enum Outcome: String, Codable, Sendable {

@@ -100,11 +100,13 @@ public enum FieldPanelPlacement {
     }
 
     /// The first candidate on screen that covers nothing; else the one on screen covering least,
-    /// earlier ones winning ties; else below, clamped. `obstacles(frame)` returns the frames of
-    /// what lies under `frame`; the field and anything containing it are never obstacles.
+    /// earlier ones winning ties; else below, clamped onto the screen as far as it fits.
+    /// `obstacles(frame)` returns the frames of what lies under `frame`, or nil when it could not
+    /// find out in time, and such a candidate is never chosen. The field and anything containing
+    /// it are never obstacles.
     public static func choose(
         field: CGRect, caret: CGRect, size: CGSize, narrow: CGSize?, bounds: CGRect,
-        obstacles: (CGRect) -> [CGRect]
+        obstacles: (CGRect) -> [CGRect]?
     ) -> Choice {
         let usable = bounds.insetBy(dx: margin, dy: margin)
         // Never over the line it hangs from. Inside a tall field the rest of the field is fair
@@ -116,7 +118,8 @@ public enum FieldPanelPlacement {
         var best: Choice?
         for (spot, frame) in all where usable.contains(frame) && !frame.intersects(hang) {
             probed += 1
-            for found in obstacles(frame) where !found.insetBy(dx: -2, dy: -2).contains(field) && !known.contains(found) {
+            guard let under = obstacles(frame) else { continue }
+            for found in under where !found.insetBy(dx: -2, dy: -2).contains(field) && !known.contains(found) {
                 known.append(found)
             }
             let overlap = known.reduce(CGFloat(0)) { sum, o in
@@ -132,7 +135,8 @@ public enum FieldPanelPlacement {
             best.probed = probed
             return best
         }
-        let (spot, frame) = all[0]
+        var (spot, frame) = all[0]
+        if frame.height <= usable.height { frame.origin.y = min(max(frame.minY, usable.minY), usable.maxY - frame.height) }
         return Choice(frame: frame, spot: spot, overlap: nil, probed: probed)
     }
 }
