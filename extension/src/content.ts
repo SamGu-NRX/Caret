@@ -4,8 +4,13 @@
 // things, neither naming an element: that the document moved in history, so the worker bumps the frame's
 // navigation generation at once; and that focus moved while this document is visible and focused, so the helper
 // can walk the tab the user is in (W2). The second is one focusin listener, at most one message per 150 ms.
-import type { FocusMoved, FrameReport, GrantAlive, NavChanged, ToContent } from "./shared/messages.ts";
+//
+// W3 adds a third, only while the worker has armed this frame because a grant covers it: the user pressed a pointer
+// or a key here. Only events the browser marks trusted count, so neither the page's script nor Caret's own synthetic
+// events (the combobox handler's presses) can raise it; nothing about the element or the key travels.
+import type { FocusMoved, FrameReport, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
+import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
@@ -78,18 +83,25 @@ function walk(reg: Registry): FrameReport {
 function isToContent(m: unknown): m is ToContent {
   if (typeof m !== "object" || m === null) return false;
   const x = m as Record<string, unknown>;
-  return x.caret === 1 && (x.op === "walk" || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number"));
+  return x.caret === 1 && (x.op === "walk" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number"));
 }
 
 if (globalThis.__caretContent === undefined) {
   globalThis.__caretContent = true;
   const reg = new Registry();
+  /** Until when the worker armed this frame's report of the user's own input (a grant covers the frame); 0 when not. */
+  let guardUntil = 0;
 
   chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
       reply(walk(reg));
+      return false;
+    }
+    if (m.op === "guard") {
+      guardUntil = m.until;
+      reply(true);
       return false;
     }
     const taskId = m.verb.taskId;
@@ -117,6 +129,23 @@ if (globalThis.__caretContent === undefined) {
     },
     { capture: true, passive: true },
   );
+
+  /**
+   * The user's own pointer or key press while a grant covers this frame: the worker drops the frame's grants and the
+   * helper pauses the task (W3). Capture on the window, registered at document_start, so the page's own listeners
+   * cannot hide it from Caret; passive, so it never delays the page. At most one report per 150 ms.
+   */
+  let lastInput = 0;
+  const onInput = (e: Event): void => {
+    if (!isUsersOwn(e) || Date.now() >= guardUntil) return;
+    const now = Date.now();
+    if (now - lastInput < FOCUS_EVERY_MS) return;
+    lastInput = now;
+    const m: UserActed = { caret: 1, op: "userInput", kind: e.type === "keydown" ? "key" : "mouse" };
+    chrome.runtime.sendMessage(m).catch(() => {});
+  };
+  addEventListener("pointerdown", onInput, { capture: true, passive: true });
+  addEventListener("keydown", onInput, { capture: true, passive: true });
 
   const moved = (why: NavChanged["why"]): void => {
     const m: NavChanged = { caret: 1, op: "navChanged", why };

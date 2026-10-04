@@ -3,6 +3,11 @@
 // same object. When React or another framework replaced the node, the strong key the walk recorded may rebind it,
 // but only to exactly one connected control with the same strong key, kind and name whose value is still the one
 // the helper expects (memo: "This is not fuzzy"). Without a strong key, a dead reference is simply gone.
+//
+// An id names one element object for good (W3): a rebind acts on the replacement but never moves the old id to it,
+// and the replacement keeps (or gets) an id of its own. So the helper's undo mark, which holds the id it wrote, no
+// longer matches once the element was replaced, and an undo that reaches the frame anyway (`rebind: false`) refuses
+// a dead reference as notSameElement instead of rebinding.
 import type { PageControlKind } from "../shared/messages.ts";
 import { candidates, exclusionOf, formIdentity, valueOf, checkedOf, type Found } from "./walker.ts";
 import { authorIdentifier, strongKey } from "../shared/ids.ts";
@@ -59,15 +64,17 @@ export class Registry {
   }
 
   /**
-   * The element for `id`: the retained one when it is still connected in this document, else the single strong-key
-   * match holding `expect` (when given), else null with why.
+   * The element for `id`: the retained one when it is still connected in this document, else (when `rebind`) the
+   * single strong-key match holding `expect` (when given), else why not. `replaced` says the walked element is gone:
+   * with `rebind` false that is the whole answer.
    */
-  resolve(id: string, expect: string | null): { el: Element; rebound: boolean } | { missing: string } {
+  resolve(id: string, expect: string | null, rebind = true): { el: Element; rebound: boolean } | { missing: string; replaced: boolean } {
     const e = this.entries.get(id);
-    if (e === undefined) return { missing: `no element ${id} in this frame's walks` };
+    if (e === undefined) return { missing: `no element ${id} in this frame's walks`, replaced: false };
     const el = e.ref.deref();
     if (el !== undefined && el.isConnected && el.ownerDocument === document) return { el, rebound: false };
-    if (e.strongKey === null) return { missing: "the element was replaced and has no author identifier to rebind by" };
+    if (!rebind) return { missing: "the element Caret wrote was replaced, and an undo never rebinds to its replacement", replaced: true };
+    if (e.strongKey === null) return { missing: "the element was replaced and has no author identifier to rebind by", replaced: true };
     const matches: Found[] = [];
     for (const f of candidates()) {
       if (f.kind !== e.kind || f.name !== e.name) continue;
@@ -77,10 +84,9 @@ export class Registry {
       if (expect !== null && (valueOf(f.el) ?? String(checkedOf(f.el))) !== expect) continue;
       matches.push(f);
     }
-    if (matches.length !== 1 || matches[0] === undefined) return { missing: `the element was replaced and ${matches.length} controls carry its strong key with the expected value` };
+    if (matches.length !== 1 || matches[0] === undefined) return { missing: `the element was replaced and ${matches.length} controls carry its strong key with the expected value`, replaced: true };
     const fresh = matches[0].el;
-    this.ids.set(fresh, id);
-    this.entries.set(id, { ...e, ref: new WeakRef(fresh) });
+    // The replacement is another object: it keeps the id a later walk gave it, or takes a new one there; `id` stays the old element's.
     return { el: fresh, rebound: true };
   }
 }

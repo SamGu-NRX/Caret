@@ -197,9 +197,13 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     if (!(await alive())) return answer("notAllowed", `the task's grant ended (before ${stage})`);
     return check();
   };
-  /** After the pick went in: a stop leaves the control alone and reports no readings unless it is still eligible. */
+  /**
+   * After the pick went in: a stop leaves the control alone and reports `failed` with no readings, a revoke included
+   * (W3). The helper reads `failed` without readings as "may have landed", so the pick goes into undo, unconfirmed,
+   * before any verify; `notAllowed` here would read as "nothing was done" and leave the pick out of undo.
+   */
   const afterPickStop = (why: ActAnswer, stage: string, pickName: string): ActAnswer =>
-    answer(why.outcome === "notAllowed" ? "notAllowed" : "failed", `the pick went in, then ${why.detail ?? why.outcome} (${stage}); Caret stopped without touching the control again`, { choice: choice([pickName]) });
+    answer("failed", `the pick went in, then ${why.detail ?? why.outcome} (${stage}); Caret stopped without touching the control again`, { choice: choice([pickName]) });
 
   // Stage 1: open.
   const g1 = await gate("opening the list");

@@ -66,13 +66,16 @@ public struct PageFocus: Codable, Equatable, Sendable { public var frameId: Int,
 public struct PageMissing: Codable, Equatable, Sendable { public var frameId: Int, reason: String }
 
 public struct PageSnapshot: Codable, Equatable, Sendable {
-    public var v: Int, id: String, at: Int64, tabId: Int, browserWindowId: Int, active: Bool, title: String
+    /// `inFocusedWindow` (W3): the tab's window is the one Chrome last focused; a background window's selected tab is not the user's.
+    public var v: Int, id: String, at: Int64, tabId: Int, browserWindowId: Int, active: Bool, inFocusedWindow: Bool, title: String
     public var frames: [PageFrame], missing: [PageMissing], focused: PageFocus?
 }
 
 /// The element a mutating page verb names, as the last walk named it.
 public struct PageTarget: Equatable, Sendable {
     public var tabId: Int, frameId: Int, documentId: String, id: String, control: PageControlKind, name: String, taskId: String
+    /// `false` (an undo, W3): only the element the walk retained; a replaced one is notSameElement, never rebound. nil: rebinding allowed.
+    public var rebind: Bool? = nil
 }
 
 /// The file pageAttachFile carries: its bytes in `data`, base64 (W2).
@@ -87,7 +90,7 @@ public enum PageVerb: Codable, Equatable, Sendable {
     case setChecked(PageTarget, checked: Bool)
     case attachFile(PageTarget, file: PageFile)
 
-    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, expect, value, checked, file }
+    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, expect, value, checked, file }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         let kind = try c.decode(String.self, forKey: .kind)
@@ -95,7 +98,9 @@ public enum PageVerb: Codable, Equatable, Sendable {
         let t = PageTarget(tabId: try c.decode(Int.self, forKey: .tabId), frameId: try c.decode(Int.self, forKey: .frameId),
                            documentId: try c.decode(String.self, forKey: .documentId), id: try c.decode(String.self, forKey: .id),
                            control: try c.decode(PageControlKind.self, forKey: .control), name: try c.decode(String.self, forKey: .name),
-                           taskId: try c.decode(String.self, forKey: .taskId))
+                           taskId: try c.decode(String.self, forKey: .taskId), rebind: try c.decodeIfPresent(Bool.self, forKey: .rebind))
+        // The wire allows only `false` (protocol.ts PageTarget.rebind).
+        if t.rebind == true { throw DecodingError.dataCorruptedError(forKey: .rebind, in: c, debugDescription: "rebind is false or absent") }
         switch kind {
         case "pageWrite": self = .write(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
         case "pagePress": self = .press(t)
@@ -112,6 +117,7 @@ public enum PageVerb: Codable, Equatable, Sendable {
             try c.encode(kind, forKey: .kind); try c.encode(t.tabId, forKey: .tabId); try c.encode(t.frameId, forKey: .frameId)
             try c.encode(t.documentId, forKey: .documentId); try c.encode(t.id, forKey: .id); try c.encode(t.control, forKey: .control)
             try c.encode(t.name, forKey: .name); try c.encode(t.taskId, forKey: .taskId)
+            try c.encodeIfPresent(t.rebind, forKey: .rebind)
         }
         switch self {
         case let .walk(tabId): try c.encode("pageWalk", forKey: .kind); try c.encode(tabId, forKey: .tabId)
@@ -127,7 +133,7 @@ public enum PageVerb: Codable, Equatable, Sendable {
 
 public struct PageCommand: Codable, Equatable, Sendable { public var v: Int, id: String, expires: Int64, verb: PageVerb }
 
-public enum PageOutcome: String, Codable, Sendable { case ok, alreadyTrue, notAllowed, stale, failed, handoff, noElement, excluded, unsupported, error, siteOff }
+public enum PageOutcome: String, Codable, Sendable { case ok, alreadyTrue, notAllowed, stale, failed, handoff, noElement, notSameElement, excluded, unsupported, error, siteOff }
 
 public struct PageWriteReadings: Codable, Equatable, Sendable {
     public var before: String, afterInput: String, afterBlur: String, invalid: Bool, error: String?
@@ -154,6 +160,12 @@ public struct PageResult: Codable, Equatable, Sendable {
 
 /// Focus moved in the tab the user is in (W2); nothing about the element.
 public struct PageFocusMoved: Codable, Equatable, Sendable { public var v: Int, at: Int64, tabId: Int, frameId: Int }
+
+/// The user's own pointer or key press in a frame under a live grant (W3); nothing about the element or the key.
+public struct PageInput: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable { case key, mouse }
+    public var v: Int, at: Int64, tabId: Int, frameId: Int, kind: Kind
+}
 
 /// "Not on this site": every origin Caret is off for, the whole list each time (W2).
 public struct PageSitesOff: Codable, Equatable, Sendable { public var v: Int, origins: [String] }
@@ -200,7 +212,7 @@ public enum PageMessage: Decodable, Equatable, Sendable {
     case engineChallenge(EngineChallenge), engineHello(EngineHello), engineWelcome(EngineWelcome), engineReady(EngineReady)
     case pageHello(PageHello), pageCommand(PageCommand), pageSnapshot(PageSnapshot), pageResult(PageResult)
     case scopedActGrant(ScopedActGrant), actRevoke(ActRevoke), pagePing(PagePing), pagePong(PagePong), pageChunk(PageChunk)
-    case pageFocus(PageFocusMoved), pageSitesOff(PageSitesOff)
+    case pageFocus(PageFocusMoved), pageSitesOff(PageSitesOff), pageInput(PageInput)
 
     private enum K: String, CodingKey { case type }
     public init(from d: Decoder) throws {
@@ -221,6 +233,7 @@ public enum PageMessage: Decodable, Equatable, Sendable {
         case "pageChunk": self = .pageChunk(try PageChunk(from: d))
         case "pageFocus": self = .pageFocus(try PageFocusMoved(from: d))
         case "pageSitesOff": self = .pageSitesOff(try PageSitesOff(from: d))
+        case "pageInput": self = .pageInput(try PageInput(from: d))
         default: throw DecodingError.dataCorrupted(.init(codingPath: [K.type], debugDescription: "unknown page message \(type)"))
         }
     }
@@ -235,7 +248,7 @@ public enum Direction: Sendable {
 
     public var allowed: Set<String> {
         switch self {
-        case .toHelper: ["pageHello", "pageSnapshot", "pageResult", "pagePong", "pageFocus"]
+        case .toHelper: ["pageHello", "pageSnapshot", "pageResult", "pagePong", "pageFocus", "pageInput"]
         case .toExtension: ["pageCommand", "scopedActGrant", "actRevoke", "pagePing", "pageSitesOff"]
         }
     }

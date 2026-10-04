@@ -61,7 +61,8 @@ export class PageFocus {
       return;
     }
     // Only the active tab of the focused window counts: the worker sent the report for it, and the walk shows it still is.
-    if (!a.snapshot.active) return;
+    // A background window's selected tab is active too, so the window must be the one Chrome last focused (W3).
+    if (!a.snapshot.active || !a.snapshot.inFocusedWindow) return;
     const windowId = pageWindowId(session.info.engine, tabId);
     const w = this.opts.model.windows.get(windowId);
     if (w === undefined || w.focusedKey === null) return;

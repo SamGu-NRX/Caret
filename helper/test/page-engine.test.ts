@@ -18,7 +18,7 @@ const browser = { pid: 4100, bundleId: "com.google.chrome.for.testing", name: "G
 
 function snapshot(id: string, tabId = 7, navGen = 1): PageSnapshot {
   return {
-    type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: 1, tabId, browserWindowId: 1, active: true, title: "Synthetic",
+    type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: 1, tabId, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Synthetic",
     frames: [
       { frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/form", navGen, title: "Synthetic", headings: [], iframes: [], excluded: {}, truncated: false,
         controls: [

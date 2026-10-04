@@ -31,13 +31,36 @@ private func goldenLines() throws -> [Data] {
             case .pageChunk: "pageChunk"
             case .pageFocus: "pageFocus"
             case .pageSitesOff: "pageSitesOff"
+            case .pageInput: "pageInput"
             }
         }
         #expect(kinds == ["engineChallenge", "engineHello", "engineWelcome", "engineReady", "pageHello",
                           "pageCommand", "pageSnapshot", "pageResult", "scopedActGrant", "pageCommand", "pageResult", "pageCommand", "pageResult",
                           "pageCommand", "pageCommand", "pageResult", "actRevoke", "pageResult", "pageResult", "pageCommand", "pageCommand", "pageResult",
                           "pagePing", "pagePong", "pageChunk", "scopedActGrant",
-                          "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult"])
+                          "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult",
+                          "pageCommand", "pageResult", "pageInput"])
+    }
+
+    /// W3: an undo's verb carries rebind false and is refused as notSameElement; the user's input; the focused-window flag.
+    @Test func readsTheW3Messages() throws {
+        let lines = try goldenLines()
+        guard case let .pageCommand(undo) = try JSONDecoder().decode(PageMessage.self, from: lines[31]),
+              case let .write(t, expect, value) = undo.verb else { Issue.record("line 32 is not an undo write"); return }
+        #expect(t.rebind == false && expect == "Ada" && value == "")
+        guard case let .pageResult(refused) = try JSONDecoder().decode(PageMessage.self, from: lines[32]),
+              case let .pageInput(input) = try JSONDecoder().decode(PageMessage.self, from: lines[33]),
+              case let .pageSnapshot(snap) = try JSONDecoder().decode(PageMessage.self, from: lines[6]) else { Issue.record("lines 33, 34 and 7"); return }
+        #expect(refused.outcome == .notSameElement)
+        #expect(input == PageInput(v: 1, at: 1_790_000_004_500, tabId: 7, frameId: 0, kind: .mouse))
+        #expect(snap.inFocusedWindow)
+        #expect(Direction.toHelper.allowed.contains("pageInput") && !Direction.toExtension.allowed.contains("pageInput"))
+        // Only false travels; a verb that says rebind true is not a page verb.
+        let bad = String(decoding: lines[31], as: UTF8.self).replacingOccurrences(of: "\"rebind\":false", with: "\"rebind\":true")
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(PageMessage.self, from: Data(bad.utf8)) }
+        // Encoding keeps rebind, so a round trip is lossless.
+        let again = try JSONDecoder().decode(PageVerb.self, from: JSONEncoder().encode(undo.verb))
+        #expect(again == undo.verb)
     }
 
     /// W2: the combobox pick and its ambiguous stop, the attach with its bytes, focus, Not on this site.

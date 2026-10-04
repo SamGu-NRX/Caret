@@ -17,6 +17,7 @@ describe("page golden lines", () => {
       "pageCommand", "pageCommand", "pageResult", "actRevoke", "pageResult", "pageResult", "pageCommand", "pageCommand", "pageResult",
       "pagePing", "pagePong", "pageChunk", "scopedActGrant",
       "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult",
+      "pageCommand", "pageResult", "pageInput",
     ]);
   });
 
@@ -25,7 +26,7 @@ describe("page golden lines", () => {
   });
 
   it("keeps each direction to its own union", () => {
-    const fromEngine = new Set(["pageHello", "pageSnapshot", "pageResult", "pagePong", "pageFocus"]);
+    const fromEngine = new Set(["pageHello", "pageSnapshot", "pageResult", "pagePong", "pageFocus", "pageInput"]);
     const toEngine = new Set(["pageCommand", "scopedActGrant", "actRevoke", "pagePing", "pageSitesOff"]);
     for (const l of lines) {
       expect(EngineMessage.safeParse(l).success).toBe(fromEngine.has(l.type as string));
@@ -134,5 +135,25 @@ describe("handshake vector", () => {
     expect(createHmac("sha256", key).update(`caret-page-helper\n${v.bridgeNonce}\n${v.challenge}\n${v.helperPid}`).digest("hex")).toBe(v.helperProof);
     // Another pid gives another proof: a relay's peer pid cannot reuse the helper's answer.
     expect(helperProof(key, v.challenge as string, v.bridgeNonce as string, Number(v.helperPid) + 1)).not.toBe(v.helperProof);
+  });
+});
+
+describe("W3 page messages", () => {
+  it("an undo's verb says rebind: false, its refusal is notSameElement, and no other rebind value is accepted", () => {
+    const undo = PageCommand.parse(lines[31]);
+    expect(undo.verb).toMatchObject({ kind: "pageWrite", rebind: false });
+    expect(PageResult.parse(lines[32]).outcome).toBe("notSameElement");
+    const verb = (lines[31] as { verb: Record<string, unknown> }).verb;
+    expect(PageCommand.safeParse({ ...lines[31], verb: { ...verb, rebind: true } }).success).toBe(false);
+    const { rebind: _r, ...forward } = verb;
+    expect(PageCommand.safeParse({ ...lines[31], verb: forward }).success).toBe(true);
+  });
+
+  it("the user's input names the tab, frame and kind only, and a snapshot must say whether its window has focus", () => {
+    expect(EngineMessage.parse(lines[33])).toEqual({ type: "pageInput", v: 1, at: 1790000004500, tabId: 7, frameId: 0, kind: "mouse" });
+    expect(EngineMessage.safeParse({ ...lines[33], kind: "scroll" }).success).toBe(false);
+    expect(HelperToEngine.safeParse(lines[33]).success).toBe(false);
+    const { inFocusedWindow: _f, ...older } = lines[6] as Record<string, unknown>;
+    expect(PageSnapshot.safeParse(older).success).toBe(false);
   });
 });

@@ -8,7 +8,12 @@
 // size and digest here, before any page sees them), a grant-liveness answer for a content script mid-act, focus
 // reports from the tab the user is in, and "Not on this site": the helper's list of origins Caret is off for, where
 // the worker walks nothing, acts on nothing and reports no focus.
-import type { ActAnswer, ActVerb, FrameReport, NavChanged, ToContent } from "./shared/messages.ts";
+//
+// W3 adds: a snapshot says whether its tab's window is the one Chrome last focused, since a background window's
+// selected tab is not the user's; and the user's own input in a frame under a grant. The worker arms each frame a
+// grant covers; an armed frame reports a trusted pointer or key press, and the worker then drops every grant of the
+// tasks acting there, at once, before telling the helper (pageInput), which pauses them.
+import type { ActAnswer, ActVerb, FrameReport, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { GrantTable } from "./shared/grants.ts";
 import { classifyPress } from "./shared/risk.ts";
 import { NavGens, frameOrigin } from "./worker/frames.ts";
@@ -29,6 +34,8 @@ let retryMs = 2000;
 let chunks = new Chunks();
 /** "Not on this site": origins the helper says Caret is off for. Kept in this worker only; the helper resends it after every hello. */
 let sitesOff = new Set<string>();
+/** Frames armed to report the user's input ("tabId:frameId"), and until when. */
+const armed = new Map<string, number>();
 /** Last focus report per tab, for the 150 ms limit. */
 const lastFocus = new Map<number, number>();
 const FOCUS_EVERY_MS = 150;
@@ -50,6 +57,27 @@ function send(m: object): void {
     port?.postMessage(m);
   } catch (e) {
     log("send failed", e);
+  }
+}
+
+/** Arms a frame's report of the user's input until `until`, or disarms it (0). Only the frame's current document hears it. */
+function guard(tabId: number, frameId: number, until: number): void {
+  const k = `${tabId}:${frameId}`;
+  if (until === 0) {
+    if (!armed.delete(k)) return;
+  } else {
+    if ((armed.get(k) ?? 0) >= until) return;
+    armed.set(k, until);
+  }
+  const msg: ToContent = { caret: 1, op: "guard", until };
+  chrome.tabs.sendMessage(tabId, msg, { frameId }).catch(() => armed.delete(k));
+}
+
+/** Ends a task's grants and disarms every frame no other task still covers. */
+function revokeTask(taskId: string): void {
+  for (const f of grants.revoke(taskId)) {
+    const [tabId, frameId] = f.split(":").map(Number) as [number, number];
+    if (!grants.covers(tabId, frameId)) guard(tabId, frameId, 0);
   }
 }
 
@@ -79,6 +107,10 @@ function connect(): void {
     if (port === p) port = null;
     engine = null;
     grants.clear();
+    for (const k of [...armed.keys()]) {
+      const [tabId, frameId] = k.split(":").map(Number) as [number, number];
+      guard(tabId, frameId, 0);
+    }
     chunks = new Chunks();
     sitesOff = new Set();
     setTimeout(connect, retryMs);
@@ -102,18 +134,23 @@ async function onHelper(raw: unknown): Promise<void> {
     case "engineReady":
       engine = m.engine;
       retryMs = 2000;
-      send({ type: "pageHello", v: 1, extensionId: chrome.runtime.id, version: VERSION, profile: await profileId(), instance, startedAt, capabilities: ["pageWalk", "pageWrite", "pageSelect", "pageSetChecked", "pagePress", "pageChooseOption", "pageAttachFile", "pageFocus", "pageSitesOff"] });
+      send({ type: "pageHello", v: 1, extensionId: chrome.runtime.id, version: VERSION, profile: await profileId(), instance, startedAt, capabilities: ["pageWalk", "pageWrite", "pageSelect", "pageSetChecked", "pagePress", "pageChooseOption", "pageAttachFile", "pageFocus", "pageSitesOff", "pageInput"] });
       return;
     case "pagePing":
       send({ type: "pagePong", v: 1, id: m.id, at: Date.now(), instance, startedAt });
       return;
     case "scopedActGrant": {
       const why = grants.grant(m.taskId, m.scope, m.expires, engine);
-      if (why !== null) log("grant refused:", why);
+      if (why !== null) return log("grant refused:", why);
+      // A page grant (grants.grant refused every other kind); wire.ts checked these are integers.
+      const { tabId, frameId } = m.scope;
+      if (typeof tabId !== "number" || typeof frameId !== "number") return;
+      const g = grants.check(m.taskId, tabId, frameId);
+      if (g.ok) guard(tabId, frameId, g.expires);
       return;
     }
     case "actRevoke":
-      grants.revoke(m.taskId);
+      revokeTask(m.taskId);
       return;
     case "pageChunk":
       return;
@@ -167,6 +204,8 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       }
     }),
   );
+  // The window Chrome last focused, read once the frames answered, so the snapshot says where focus is as it is sent.
+  const lastFocused = await chrome.windows.getLastFocused().catch(() => undefined);
   const answered = reports.filter((x): x is NonNullable<typeof x> => x !== null).sort((a, b) => a.f.frameId - b.f.frameId);
   // A frame is kept only when its document's own origin (self.origin, which is opaque for a sandboxed frame) is the
   // one the worker derived from Chrome's URL for it (W1 review #8), and, below the top, when it can be shown to sit in
@@ -228,6 +267,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     tabId: tab.id,
     browserWindowId: tab.windowId,
     active: tab.active,
+    inFocusedWindow: lastFocused?.id !== undefined && lastFocused.id === tab.windowId,
     title: tab.title ?? "",
     frames: kept.map(({ f, r, origin }) => ({
       frameId: f.frameId,
@@ -358,6 +398,24 @@ chrome.runtime.onMessage.addListener((m: unknown, sender) => {
     if ((top !== null && sitesOff.has(top)) || (here !== null && sitesOff.has(here))) return;
     send({ type: "pageFocus", v: 1, at: now, tabId, frameId });
   })();
+  return false;
+});
+
+/**
+ * The user pressed a pointer or a key in a frame this worker armed (W3). Accepted only from this extension's content
+ * script in a tab, and only while some task's grant covers that frame: every such task loses all its grants here,
+ * before the helper hears of it, so an act on its way is refused at the worker and a multi-stage act stops at its
+ * next stage. Then the helper pauses those tasks (pageInput). Nothing about the element or the key is passed on.
+ */
+chrome.runtime.onMessage.addListener((m: unknown, sender) => {
+  const x = m as Partial<UserActed> | null;
+  if (x?.caret !== 1 || x.op !== "userInput" || (x.kind !== "key" && x.kind !== "mouse")) return false;
+  if (sender.id !== chrome.runtime.id || sender.tab?.id === undefined || sender.frameId === undefined || engine === null) return false;
+  const tabId = sender.tab.id;
+  const frameId = sender.frameId;
+  if (!grants.covers(tabId, frameId)) return false;
+  for (const t of grants.tasksIn(tabId, frameId)) revokeTask(t);
+  send({ type: "pageInput", v: 1, at: Date.now(), tabId, frameId, kind: x.kind });
   return false;
 });
 

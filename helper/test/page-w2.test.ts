@@ -25,7 +25,7 @@ const chrome = { pid: 4100, bundleId: "com.google.chrome.for.testing", name: "Go
 function snapshot(id: string, opts: { focused?: string | null; tabId?: number } = {}): PageSnapshot {
   const focused = opts.focused === undefined ? "e2" : opts.focused;
   return {
-    type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: 1000, tabId: opts.tabId ?? 7, browserWindowId: 1, active: true, title: "Apply: Synthetic Role",
+    type: "pageSnapshot", v: PROTOCOL_VERSION, id, at: 1000, tabId: opts.tabId ?? 7, browserWindowId: 1, active: true, inFocusedWindow: true, title: "Apply: Synthetic Role",
     frames: [{
       frameId: 0, parentFrameId: -1, documentId: "D0", origin: "http://127.0.0.1:4310", path: "/form", navGen: 1, title: "Apply: Synthetic Role", headings: ["Apply: Synthetic Role"], iframes: [], excluded: {}, truncated: false,
       controls: [

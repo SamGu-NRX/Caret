@@ -28,7 +28,7 @@ export interface PageControl {
   shadow?: "open" | "closed";
 }
 
-export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "excluded" | "unsupported" | "error" | "siteOff";
+export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";
 export type HandoffRisk = "outbound" | "destructive" | "money" | "system" | "unclassified" | "submitsForm" | "pageScript";
 
 export interface WriteReadings {
@@ -71,6 +71,8 @@ interface TargetFields {
   control: PageControlKind;
   name: string;
   taskId: string;
+  /** false: only the element the walk retained; a replaced one is notSameElement, never rebound (undo, W3). */
+  rebind?: false;
 }
 
 export type ActVerb =
@@ -99,10 +101,15 @@ export interface FrameReport {
   hasFocus: boolean;
 }
 
-/** Worker to content script. `caret` marks the extension's own messages. */
+/**
+ * Worker to content script. `caret` marks the extension's own messages. `guard` arms the frame's report of the
+ * user's own input until `until` (epoch ms; 0 disarms): sent when a grant for the frame arrives and when its last one
+ * ends (W3).
+ */
 export type ToContent =
   | { caret: 1; op: "walk" }
-  | { caret: 1; op: "act"; verb: ActVerb; deadline: number };
+  | { caret: 1; op: "act"; verb: ActVerb; deadline: number }
+  | { caret: 1; op: "guard"; until: number };
 
 /** Content script to worker, on its own: the document moved in history (pageshow from the back-forward cache, popstate, hashchange). */
 export interface NavChanged {
@@ -125,4 +132,14 @@ export interface GrantAlive {
   caret: 1;
   op: "grantAlive";
   taskId: string;
+}
+
+/**
+ * Content script to worker, on its own, only while the worker has armed the frame (a grant covers it): the user
+ * pressed a key or a pointer here, an event the browser marked trusted. Nothing about the element or the key (W3).
+ */
+export interface UserActed {
+  caret: 1;
+  op: "userInput";
+  kind: "key" | "mouse";
 }

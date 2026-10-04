@@ -45,8 +45,21 @@ export class GrantTable {
     return null;
   }
 
-  revoke(taskId: string): void {
+  /** Ends the task's grants; returns the frames they covered, as "tabId:frameId". */
+  revoke(taskId: string): string[] {
+    const held = this.byTask.get(taskId) ?? [];
     this.byTask.delete(taskId);
+    return held.map((h) => `${h.scope.tabId}:${h.scope.frameId}`);
+  }
+
+  /** Tasks whose grant, live or not yet pruned, covers this frame. */
+  tasksIn(tabId: number, frameId: number): string[] {
+    return [...this.byTask].filter(([, held]) => held.some((h) => h.scope.tabId === tabId && h.scope.frameId === frameId)).map(([t]) => t);
+  }
+
+  /** Whether any task holds a live grant for this frame. */
+  covers(tabId: number, frameId: number): boolean {
+    return this.tasksIn(tabId, frameId).some((t) => this.check(t, tabId, frameId).ok);
   }
 
   clear(): void {

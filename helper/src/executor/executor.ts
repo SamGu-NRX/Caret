@@ -429,21 +429,40 @@ export class Executor {
    */
   onUserInput(m: UserInput): void {
     for (const task of this.tasks.values()) {
-      const acting = task.undoing || (task.finished === null && task.interrupt?.kind !== "stop");
-      if (!acting) continue;
+      if (!this.acting(task)) continue;
       for (const windowId of task.windows.values()) {
         const w = this.deps.model.windows.get(windowId);
         if (w === undefined || w.app.pid !== m.pid) continue;
         const inside = m.kind === "mouse" ? m.point !== null && w.window.frame !== null && contains(w.window.frame, m.point) : w.focused;
-        if (!inside) continue;
-        const why = `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'`;
-        // An undo under way stops its remaining restores, as a pause of it does (B22 review).
-        if (task.undoing) this.stopUndo(task, `you used the window: ${why}`);
-        else {
-          task.interrupt = { kind: "pause", by: "input", why };
-          this.revokeGrant(task);
-        }
+        if (inside) this.inputIn(task, `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'`);
       }
+    }
+  }
+
+  /**
+   * Real input inside a page a task acts in (W3): the page engine saw a trusted pointer or key press in a frame of that
+   * tab under a live grant. A page window has no frame on screen for the reader's click test, so this is how a click
+   * in the page counts as taking the task over; it pauses exactly as onUserInput does.
+   */
+  onPageInput(windowId: string, kind: "key" | "mouse"): void {
+    for (const task of this.tasks.values()) {
+      if (!this.acting(task) || ![...task.windows.values()].includes(windowId)) continue;
+      const title = this.deps.model.windows.get(windowId)?.window.title ?? "the page";
+      this.inputIn(task, `${kind === "key" ? "typing" : "a click"} in '${title}'`);
+    }
+  }
+
+  private acting(task: Task): boolean {
+    return task.undoing || (task.finished === null && task.interrupt?.kind !== "stop");
+  }
+
+  /** The user's input in one of the task's windows: the grant ends now, and the run pauses (an undo stops) at its next boundary. */
+  private inputIn(task: Task, why: string): void {
+    // An undo under way stops its remaining restores, as a pause of it does (B22 review).
+    if (task.undoing) this.stopUndo(task, `you used the window: ${why}`);
+    else {
+      task.interrupt = { kind: "pause", by: "input", why };
+      this.revokeGrant(task);
     }
   }
 
@@ -866,10 +885,15 @@ export class Executor {
           task.handedOff = { action: w.window.windowId === task.userWindow ? "writeHere" : "writeElsewhere", what: field, windowId: w.window.windowId };
           throw StepStop.handoff(`focus moved away from ${field} when Caret focused it, so Caret did not write it; it is yours to fill`);
         }
-        // An axError may come after the value was set (a timeout while the reader settles and re-walks),
-        // so the write is recorded as if it happened. Undo restores it only if the field holds `value`.
+        // An axError may come after the value was set (a timeout while the reader settles and re-walks; a page pick or
+        // write that went in before a revoke stopped its later stages, W3), so the write is recorded before any verify,
+        // unconfirmed: undo restores it only if the field holds `value`, and counts it as never landed if the field
+        // still holds `before`.
         if (attribute === "value" && e instanceof StepStop && e.message.includes("axError")) {
-          this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null });
+          this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, unconfirmed: true });
+          // A pause, stop or take-over that came in while it was on its way: the write stays in the ledger for undo,
+          // and the run ends as the user asked, not as a reader failure (as the loop's end does, B19 review).
+          if (task.interrupt !== null) throw new Interrupted();
         }
         throw e;
       }

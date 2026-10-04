@@ -1500,7 +1500,14 @@ export const PageSnapshot = z.object({
   tabId: z.number().int().nonnegative(),
   /** Chrome's window id of the tab. */
   browserWindowId: z.number().int(),
+  /** The tab is the selected one of its browser window, which may be a background window. */
   active: z.boolean(),
+  /**
+   * The tab's browser window is the one chrome.windows.getLastFocused names (W3). Only an active tab of that window is
+   * the tab the user is in, and only while the reader reports the browser frontmost: a background window's selected
+   * tab is not the user's.
+   */
+  inFocusedWindow: z.boolean(),
   title: z.string(),
   frames: z.array(PageFrame).min(1),
   missing: z.array(z.object({ frameId: z.number().int().nonnegative(), reason: z.string() })),
@@ -1529,6 +1536,12 @@ const PageTarget = {
   name: z.string(),
   /** Mutating page verbs always name their task: there is no fixture bypass for pages. */
   taskId: z.string().min(1),
+  /**
+   * `false`: act only on the element the walk retained, alive and in this document; a replaced element is
+   * `notSameElement`, never rebound by its strong key. Undo sends it (W3): a restore must reach the element Caret
+   * wrote, not a re-rendered one that took its identifier. Absent: a strong-key rebind is allowed.
+   */
+  rebind: z.literal(false).optional(),
 };
 
 /**
@@ -1598,6 +1611,8 @@ export const PageOutcome = z.enum([
   "handoff",
   /** The element is gone and no strong key rebinds it. */
   "noElement",
+  /** A verb with `rebind: false` found its element replaced: nothing was done (W3, undo). */
+  "notSameElement",
   /** The element is one Caret never reads or writes (PageExclusion). */
   "excluded",
   /** A verb this build does not carry out yet. */
@@ -1757,8 +1772,17 @@ export type PageFocusMoved = z.infer<typeof PageFocusMoved>;
 export const PageSitesOff = z.object({ type: z.literal("pageSitesOff"), v: z.literal(PROTOCOL_VERSION), origins: z.array(z.string().regex(/^https?:\/\/[^/\s]+$/)).max(1000) });
 export type PageSitesOff = z.infer<typeof PageSitesOff>;
 
+/**
+ * The user's own pointer or key press in a frame that holds a live grant (W3): an event the browser marks trusted
+ * (`isTrusted`), which page scripts and Caret's own synthetic events cannot produce. Nothing about the element or the
+ * key travels. The worker drops the frame's grants at once and sends this; the helper pauses every task acting in the
+ * tab, as it does for the reader's userInput.
+ */
+export const PageInput = z.object({ type: z.literal("pageInput"), v: z.literal(PROTOCOL_VERSION), at: ms, tabId: z.number().int().nonnegative(), frameId: z.number().int().nonnegative(), kind: z.enum(["key", "mouse"]) });
+export type PageInput = z.infer<typeof PageInput>;
+
 /** What the extension sends the helper after the handshake. */
-export const EngineMessage = z.discriminatedUnion("type", [PageHello, PageSnapshot, PageResult, PagePong, PageFocusMoved]);
+export const EngineMessage = z.discriminatedUnion("type", [PageHello, PageSnapshot, PageResult, PagePong, PageFocusMoved, PageInput]);
 export type EngineMessage = z.infer<typeof EngineMessage>;
 /** What the helper sends the extension after the handshake. ActRevoke is the native one, unchanged. */
 export const HelperToEngine = z.discriminatedUnion("type", [PageCommand, ScopedActGrant, ActRevoke, PagePing, PageSitesOff]);

@@ -7,6 +7,12 @@
 // change the field: W1 review #3), and again before each later stage. The page can still change the field between
 // the last check and the setter's own line; nothing in a single-threaded page runs there.
 //
+// Every stage boundary of a text, select or checkbox write also asks the worker whether the task's grant still
+// covers this frame (W3), as the combobox handler does: after focus and before the value goes in, before change,
+// and before blur. A page handler that runs long on focus or input is where a revoke can land mid-write. A grant
+// that ended before the value went in stops the write untouched (notAllowed); after it went in, the write stops
+// there and reports `failed` with no readings, which the helper treats as "may have landed" and records for undo.
+//
 // Text goes in through the prototype's value setter, which bypasses React's per-instance value tracker so its
 // delegated input listener sees a real change, then input, change and blur. It is read twice: on the next frame after
 // input, and on the next frame after blur, because React puts a controlled input back on its next render when its
@@ -54,8 +60,8 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
     return answer("handoff", `'${clean(verb.name, 60)}' runs the page's own script, so you press it`, { risk: risk === "safe" || risk === "unclassified" ? "pageScript" : risk });
   }
   const expect = verb.kind === "pageWrite" || verb.kind === "pageSelect" || verb.kind === "pageChooseOption" ? verb.expect : null;
-  const r = reg.resolve(verb.id, expect);
-  if ("missing" in r) return answer("noElement", r.missing);
+  const r = reg.resolve(verb.id, expect, verb.rebind !== false);
+  if ("missing" in r) return answer(r.replaced && verb.rebind === false ? "notSameElement" : "noElement", r.missing);
   const entry = reg.entry(verb.id);
   const check = (): ActAnswer | null => ineligible(r.el, verb, entry, deadline);
   const first = check();
@@ -66,13 +72,24 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
   } else if (verb.kind === "pageAttachFile") {
     a = await attachFile(r.el, verb, check, alive);
   } else {
-    a = await actOn(r.el, verb, check);
+    a = await actOn(r.el, verb, check, gateWith(alive, check));
   }
   // A rebind is the one way an act reaches an element other than the walked object; the receipt says so.
   return r.rebound && (a.outcome === "ok" || a.outcome === "alreadyTrue") ? { ...a, detail: a.detail === null ? "rebound by its strong key" : `${a.detail}; rebound by its strong key` } : a;
 }
 
-async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null): Promise<ActAnswer> {
+/** A stage boundary: the task's grant still covers the frame (asked of the worker), then the element is still eligible. */
+type Gate = (stage: string) => Promise<ActAnswer | null>;
+
+/** The stop, if any, with the stage it came at in its detail. */
+function gateWith(alive: () => Promise<boolean>, check: () => ActAnswer | null): Gate {
+  return async (stage) => {
+    const stop = (await alive()) ? check() : answer("notAllowed", "the task's grant ended");
+    return stop === null ? null : { ...stop, detail: `${stop.detail ?? stop.outcome} (${stage})` };
+  };
+}
+
+async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null, gate: Gate): Promise<ActAnswer> {
   const disabled = (el as HTMLInputElement).disabled === true || el.getAttribute("aria-disabled") === "true" || (el as HTMLInputElement).readOnly === true;
   switch (verb.kind) {
     case "pageWrite": {
@@ -81,7 +98,7 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null)
       if (before === verb.value) return answer("alreadyTrue", null);
       if (before !== verb.expect) return answer("stale", "the field holds other text than when it was walked");
       if (disabled) return answer("failed", "the field is disabled or read-only");
-      return writeValue(el, verb.value, before, verb.expect, check);
+      return writeValue(el, verb.value, before, verb.expect, check, gate);
     }
     case "pageSelect": {
       if (!(el instanceof HTMLSelectElement)) return answer("unsupported", "only a native select takes a pageSelect; a custom listbox is pageChooseOption");
@@ -90,7 +107,7 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null)
       if (before !== verb.expect) return answer("stale", "the select shows another option than when it was walked");
       if (![...el.options].some((o) => o.value === verb.value)) return answer("failed", "the select has no option with that value");
       if (disabled) return answer("failed", "the select is disabled");
-      return writeValue(el, verb.value, before, verb.expect, check);
+      return writeValue(el, verb.value, before, verb.expect, check, gate);
     }
     case "pageSetChecked": {
       const now = checkedOf(el);
@@ -98,6 +115,11 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null)
       if (now === verb.checked) return answer("alreadyTrue", null);
       if (!verb.checked && verb.control === "radio") return answer("unsupported", "a radio is cleared by choosing another one");
       if (disabled) return answer("failed", "the control is disabled");
+      // Focus first, as a real click does, so a page that reacts to focus does so before the grant is asked again.
+      (el as HTMLElement).focus();
+      const ready = await gate("after focus, before the click");
+      if (ready !== null) return ready;
+      if (checkedOf(el) === verb.checked) return answer("alreadyTrue", null);
       (el as HTMLElement).click();
       await settle();
       const after = checkedOf(el);
@@ -110,30 +132,30 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null)
 const current = (el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string => (el instanceof HTMLSelectElement ? (el.selectedOptions[0]?.value ?? "") : el.value);
 
 /**
- * Focus, recheck, set, input; read; recheck, change, blur; recheck, read. A recheck that fails after the value went in
- * stops there and reports `failed` without readings: the field may now be one Caret never reads (a handler can turn
- * it into a password field), so no value of it leaves the frame, and the helper re-reads the page instead of
- * assuming nothing landed (W1 review, round 2, #3).
+ * Focus, gate, set, input; read; gate, change, gate, blur; recheck, read. A gate or recheck that fails after the value
+ * went in stops there and reports `failed` without readings: the field may now be one Caret never reads (a handler
+ * can turn it into a password field), so no value of it leaves the frame, and the helper re-reads the page instead
+ * of assuming nothing landed (W1 review, round 2, #3). A grant that ended is one such stop (W3).
  */
-async function writeValue(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string, before: string, expect: string, check: () => ActAnswer | null): Promise<ActAnswer> {
+async function writeValue(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string, before: string, expect: string, check: () => ActAnswer | null, gate: Gate): Promise<ActAnswer> {
   el.focus();
-  const afterFocus = check();
+  const afterFocus = await gate("after focus, before the value went in");
   if (afterFocus !== null) return afterFocus;
   if (current(el) !== expect) return answer("stale", "the page changed the field when it took focus");
   setterFor(el)(value);
   el.dispatchEvent(el instanceof HTMLSelectElement ? new Event("input", { bubbles: true, composed: true }) : new InputEvent("input", { bubbles: true, composed: true, inputType: "insertReplacementText", data: value }));
   await settle();
-  const stopped = (why: ActAnswer, stage: string): ActAnswer => answer("failed", `the write went in, then ${why.detail ?? why.outcome} (${stage}); Caret stopped there`);
-  const midway = check();
-  if (midway !== null) return stopped(midway, "after input");
+  const stopped = (why: ActAnswer): ActAnswer => answer("failed", `the write went in, then ${why.detail ?? why.outcome}; Caret stopped there`);
+  const midway = await gate("after input, before change");
+  if (midway !== null) return stopped(midway);
   const afterInput = current(el);
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  const afterChange = check();
-  if (afterChange !== null) return stopped(afterChange, "after change");
+  const afterChange = await gate("after change, before blur");
+  if (afterChange !== null) return stopped(afterChange);
   el.blur();
   await settle();
   const end = check();
-  if (end !== null) return stopped(end, "after blur");
+  if (end !== null) return stopped({ ...end, detail: `${end.detail ?? end.outcome} (after blur)` });
   return judge({ before, afterInput, afterBlur: current(el), invalid: invalidNow(el), error: errorText(el) }, value);
 }
 

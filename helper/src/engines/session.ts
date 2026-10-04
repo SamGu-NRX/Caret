@@ -4,7 +4,7 @@
 // the engine refuses to act after the helper stopped waiting. Closing ends every pending command; the worker drops
 // every grant when its port closes, so a new session starts with none.
 import { randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageFocusMoved, type PageHello, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
+import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageFocusMoved, type PageHello, type PageInput, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
 
 export interface EngineInfo {
   /** The session id the helper issued at the handshake; part of every page window id. */
@@ -40,6 +40,8 @@ export class EngineSession {
   onSnapshot: ((s: PageSnapshot, session: EngineSession) => void) | null = null;
   /** Called when focus moved in the tab the user is in (engines/page-focus.ts). */
   onFocus: ((m: PageFocusMoved, session: EngineSession) => void) | null = null;
+  /** Called when the user pressed a key or a pointer in a frame under a live grant (W3; engines/wire.ts pauses tasks there). */
+  onInput: ((m: PageInput, session: EngineSession) => void) | null = null;
 
   constructor(info: EngineInfo, send: (m: HelperToEngine) => boolean, timeoutMs = COMMAND_TIMEOUT_MS) {
     this.info = info;
@@ -143,6 +145,11 @@ export class EngineSession {
       case "pageFocus": {
         if (this.hello === null) return "a focus report before the engine's hello; ignored";
         this.onFocus?.(m, this);
+        return null;
+      }
+      case "pageInput": {
+        if (this.hello === null) return "user input before the engine's hello; ignored";
+        this.onInput?.(m, this);
         return null;
       }
       case "pagePong": {

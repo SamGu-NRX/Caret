@@ -20,6 +20,9 @@ const ROLE: Record<PageControlKind, string> = {
 /** Kinds a pageWrite sets. A contenteditable is a hand-off in v1 (memo section 1, write path). */
 export const TEXT_KINDS: ReadonlySet<PageControlKind> = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]);
 
+/** Kinds the executor may write a value to: text, a native select (by option label) and a custom listbox (by option name). */
+export const VALUE_KINDS: ReadonlySet<PageControlKind> = new Set([...TEXT_KINDS, "select", "combobox"]);
+
 /**
  * How long a combobox pick or a file attach may take. Each waits for the page (the list to open and settle, the pick or
  * the file name to show: up to about 4 s in content/combobox.ts), so they get longer than COMMAND_TIMEOUT_MS. Assumed.
@@ -71,8 +74,9 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         role: ROLE[c.kind],
         label: c.name,
         ...(value === undefined ? {} : { value }),
-        // A custom listbox takes a value too (pageChooseOption picks the option named exactly that), so fill can ask about it.
-        ...(TEXT_KINDS.has(c.kind) || c.kind === "combobox" ? { editable: true as const } : {}),
+        // A custom listbox takes a value too (pageChooseOption picks the option named exactly that), and so does a native
+        // select (pageSelect, verified by selectedOptions; W3): without `editable` the executor never reaches their write.
+        ...(VALUE_KINDS.has(c.kind) ? { editable: true as const } : {}),
         ...(states.length > 0 ? { states } : {}),
       });
     }
@@ -85,7 +89,9 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
     reason: "request",
     app: session.info.browser,
     window: { windowId: pageWindowId(session.info.engine, s.tabId), kind: "page", title: s.title, frame: null },
-    focused: s.active,
+    // The selected tab of a background browser window is not where the user is (W3): only the selected tab of the
+    // window Chrome last focused counts, and the model's frontmost app (the reader's) decides whether that browser does.
+    focused: s.active && s.inFocusedWindow,
     root: null,
     nodes,
     values: [],
@@ -122,6 +128,8 @@ export function toVerbOutcome(r: PageResult): VerbResult {
       return verbResult("changed", detail);
     case "noElement":
       return verbResult("noElement", detail);
+    case "notSameElement":
+      return verbResult("notSameElement", detail);
     case "excluded":
       return verbResult("secure", detail);
     case "handoff":
@@ -171,7 +179,9 @@ export class PageEngineLink implements ReaderLink {
           if (was === undefined) return verbResult("notSameElement", "the page engine holds no element under this mark (it restarted, or never wrote it)");
           if (was.tabId !== w.tabId || was.frameId !== t.frameId || was.documentId !== t.documentId || was.id !== t.id) return verbResult("notSameElement", `another element now has the key ${verb.key}`);
         }
-        const base = { tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId: verb.taskId };
+        // An undo (sameAs) never rebinds by strong key: a re-rendered element that took the identifier is not the one
+        // Caret wrote, and the content script refuses it as notSameElement (W3).
+        const base = { tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId: verb.taskId, ...(verb.sameAs === undefined ? {} : { rebind: false as const }) };
         let page: PageVerb;
         if (t.control.kind === "select") {
           // The model shows a select's selected label; the page verb names options by value.
