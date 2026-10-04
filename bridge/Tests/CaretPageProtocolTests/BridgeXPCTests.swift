@@ -53,6 +53,7 @@ private final class FakeHelper: @unchecked Sendable {
             while true {
                 let c = accept(fd, nil, nil)
                 if c < 0 { return }
+                noSigpipe(c)
                 self?.serve(LineSocket(fd: c), key: key)
             }
         }.start()
@@ -244,6 +245,7 @@ private final class Trickler: @unchecked Sendable {
         Thread {
             let c = accept(fd, nil, nil)
             if c < 0 { return }
+            noSigpipe(c)
             for b in Array(#"{"type":"engineChallenge","v":1,"nonce":"aaaa"#.utf8) {
                 var x = b
                 if write(c, &x, 1) != 1 { break }
@@ -351,4 +353,11 @@ private final class ReplyThenDrop: NSObject, NSXPCListenerDelegate, CaretBridgeH
             host.listener.invalidate()
         }
     }
+}
+
+/// An accepted test socket raises no SIGPIPE when its peer has gone: a write then fails with EPIPE instead of killing
+/// the whole test process (W4: the trickling helper's next byte after the bridge cut it off ended a run with signal 13).
+private func noSigpipe(_ fd: Int32) {
+    var one: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
 }
