@@ -1,0 +1,1 @@
+B23: recovery.sqlite holds sealed rows of runs under way (skill_id in clear). At start each row's skill goes back on Tab; readable rows list as 'Stopped when Caret restarted, at step N of M' with undo. Id generators skip ids in use (idTaken).

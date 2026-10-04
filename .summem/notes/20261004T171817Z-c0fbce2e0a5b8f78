@@ -1,0 +1,1 @@
+B23: caret-screen needs --auth-fd (32-byte secret) and trusts only a helper whose first line is helperAuth (HMAC of challenge+pid, pid = LOCAL_PEERPID). Use helper/src/launch.ts; evals pass --auth-fd 0, sendSecret(reader, s), new HelperServer(..., s).
