@@ -432,6 +432,23 @@ async function checks(e: Engine, site: FixtureSite): Promise<void> {
   });
 }
 
+async function decoyCheck(e: Engine, site: FixtureSite): Promise<void> {
+  await check("a frame hidden off screen is not vouched for by a visible sibling", async () => {
+    const since = Date.now();
+    await site.command({ cmd: "navigate", url: `${site.mainOrigin}/decoy` });
+    await site.waitForLoad((h) => h.endsWith("/decoy"), since);
+    let s = await walk(e);
+    for (let i = 0; i < 20 && s.missing.length + s.frames.length < 3; i++) {
+      await sleep(250);
+      s = await walk(e);
+    }
+    const names = s.frames.flatMap((f) => f.controls.map((c) => c.name));
+    expect(!names.includes("Offscreen frame field"), `the off-screen frame's field left it: ${JSON.stringify(names)}`);
+    expect(s.missing.some((m) => m.reason.includes("more frames than visible iframes")), `missing ${JSON.stringify(s.missing)}`);
+    return `frames kept ${s.frames.length}; missing ${JSON.stringify(s.missing)}`;
+  });
+}
+
 async function idleCheck(e: Engine, seconds: number): Promise<void> {
   await check(`an open Native Messaging port keeps the MV3 worker alive through ${seconds} s idle`, async () => {
     const hello = e.session.hello;
@@ -637,6 +654,7 @@ async function main(): Promise<number> {
   for (let i = 0; i < 40 && !(await walk(e)).frames.some((f) => f.controls.some((c) => c.name === "Country of residence")); i++) await sleep(250);
 
   await checks(e, site);
+  await decoyCheck(e, site);
   const idle = Number(args.idle);
   if (idle > 0) await idleCheck(e, idle);
   if (frontmost() !== front0 && /Chrome for Testing/.test(frontmost())) results.push({ name: "Chrome for Testing never took the front", pass: false, ms: 0, detail: frontmost() });

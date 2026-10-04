@@ -128,10 +128,27 @@ function clipsToNothing(cs: CSSStyleDeclaration, w: number, h: number): boolean 
   if (/^circle\(\s*0(px|%)?(\s|\))/.test(cp)) return true;
   const poly = /^polygon\((.*)\)$/.exec(cp);
   if (poly !== null) {
-    const pts = (poly[1] ?? "").split(",").map((x) => x.trim().replace(/^(nonzero|evenodd)\s*/, "")).filter((x) => x !== "");
-    if (pts.length > 0 && pts.every((x) => x === pts[0])) return true;
+    // Shoelace area of the points resolved against the box; a polygon of a pixel or less hides the element.
+    const pts = (poly[1] ?? "").split(",").map((x) => x.trim().replace(/^(nonzero|evenodd)\s*/, "").split(/\s+/)).filter((x) => x.length === 2);
+    const xy = pts.map(([x, y]) => [length(x ?? "", w), length(y ?? "", h)] as const);
+    if (xy.length > 0 && xy.every(([x, y]) => x !== null && y !== null)) {
+      let twice = 0;
+      for (let i = 0; i < xy.length; i++) {
+        const [x0, y0] = xy[i] as readonly [number, number];
+        const [x1, y1] = xy[(i + 1) % xy.length] as readonly [number, number];
+        twice += x0 * y1 - x1 * y0;
+      }
+      if (Math.abs(twice) / 2 <= 1) return true;
+    }
   }
   return false;
+}
+
+/** The box clip-path and clip resolve against: the layout box before transforms, where the element has one. */
+function clipBox(el: Element): [number, number] {
+  if (el instanceof HTMLElement) return [el.offsetWidth, el.offsetHeight];
+  const r = el.getBoundingClientRect();
+  return [r.width, r.height];
 }
 
 /**
@@ -144,7 +161,7 @@ function clipsToNothing(cs: CSSStyleDeclaration, w: number, h: number): boolean 
 export function visible(el: Element): boolean {
   if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
   const r = el.getBoundingClientRect();
-  if (clipsToNothing(getComputedStyle(el), r.width, r.height)) return false;
+  if (clipsToNothing(getComputedStyle(el), ...clipBox(el))) return false;
   const doc = document.documentElement;
   const left = r.left + window.scrollX;
   const top = r.top + window.scrollY;
@@ -154,7 +171,7 @@ export function visible(el: Element): boolean {
   for (let p = composedParent(el); p !== null && p !== doc; p = composedParent(p)) {
     const cs = getComputedStyle(p);
     const pb = p.getBoundingClientRect();
-    if (clipsToNothing(cs, pb.width, pb.height)) return false;
+    if (clipsToNothing(cs, ...clipBox(p))) return false;
     const clips = (v: string): boolean => v === "hidden" || v === "clip";
     if (!clips(cs.overflowX) && !clips(cs.overflowY)) continue;
     if (clips(cs.overflowX)) [x0, x1] = [Math.max(x0, pb.left), Math.min(x1, pb.right)];

@@ -107,6 +107,10 @@ export class FixtureSite {
         return html(res, read("form.html").replaceAll("__EMBED_ORIGIN__", this.embedOrigin));
       case "GET /frame/same":
         return html(res, read("frame.html").replaceAll("__TITLE__", "Referral").replaceAll("__ID__", "referral").replaceAll("__NAME__", "referral_code").replaceAll("__LABEL__", "Referral code"));
+      case "GET /decoy":
+        return html(res, read("decoy.html"));
+      case "GET /frame/offscreen":
+        return html(res, read("frame.html").replaceAll("__TITLE__", "Off screen").replaceAll("__ID__", "offscreen").replaceAll("__NAME__", "offscreen_field").replaceAll("__LABEL__", "Offscreen frame field"));
       case "GET /frame/hidden":
         return html(res, read("frame.html").replaceAll("__TITLE__", "Hidden frame").replaceAll("__ID__", "hiddenframe").replaceAll("__NAME__", "hidden_frame").replaceAll("__LABEL__", "Hidden frame field"));
       case "GET /opener": {

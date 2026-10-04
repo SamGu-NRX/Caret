@@ -73,7 +73,7 @@ export interface FrameReport {
   title: string;
   headings: string[];
   controls: PageControl[];
-  iframes: { src: string; rect: Rect }[];
+  iframes: { src: string; rect: Rect; inner: [number, number] }[];
   /** The frame's own viewport, [innerWidth, innerHeight]: 0 by 0 inside an iframe its embedder hides with display:none. */
   viewport: [number, number];
   excluded: Partial<Record<PageExclusion, number>>;

@@ -23,6 +23,13 @@ function srcOf(f: HTMLIFrameElement): string {
   }
 }
 
+/** An iframe's content box, which is its child document's viewport: client size less padding. */
+function contentBox(f: HTMLIFrameElement): [number, number] {
+  const cs = getComputedStyle(f);
+  const px = (v: string): number => Number.parseFloat(v) || 0;
+  return [f.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight), f.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom)];
+}
+
 function walk(reg: Registry): FrameReport {
   const href = location.href;
   const nav = navigationEntry();
@@ -54,10 +61,10 @@ function walk(reg: Registry): FrameReport {
     title: clean(document.title, 200),
     headings: [...document.querySelectorAll("h1, h2")].filter(visible).slice(0, 10).map((h) => clean(h.textContent, 120)).filter((t) => t !== ""),
     controls: out.controls,
-    // Each visible iframe, so the worker can match child frames to one (worker.ts walk). Chrome gives content scripts
-    // no frame id for an element (chrome.runtime.getFrameId is undefined there in Chrome 154), so the match is by
-    // size and src.
-    iframes: [...document.querySelectorAll("iframe")].filter(visible).map((f) => ({ src: srcOf(f), rect: r(f) })),
+    // Each visible iframe with a content box over a pixel each way, and that box's size, which is exactly its child
+    // document's viewport: the worker matches child frames to these (worker.ts walk). Chrome gives content scripts no
+    // frame id for an element (chrome.runtime.getFrameId is undefined there in Chrome 154).
+    iframes: [...document.querySelectorAll("iframe")].filter((f) => visible(f) && contentBox(f)[0] > 1 && contentBox(f)[1] > 1).map((f) => ({ src: srcOf(f), rect: r(f), inner: contentBox(f) })),
     viewport: [window.innerWidth, window.innerHeight],
     excluded: out.excluded,
     truncated: out.truncated,

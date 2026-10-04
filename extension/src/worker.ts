@@ -13,8 +13,6 @@ const HOST = "ai.caret.bridge";
 const VERSION = chrome.runtime.getManifest().version;
 /** How long a frame has to answer a walk. Assumed: a walk of a large form measured in tens of milliseconds. */
 const FRAME_WALK_MS = 1500;
-/** Border plus padding an <iframe> box may add around its document's viewport. Assumed: UA default is 2 px of border each side. */
-const FRAME_CHROME_PX = 24;
 const instance = crypto.randomUUID();
 const startedAt = Date.now();
 
@@ -140,15 +138,23 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   const answered = reports.filter((x): x is NonNullable<typeof x> => x !== null).sort((a, b) => a.f.frameId - b.f.frameId);
   // A frame is kept only when its document's own origin (self.origin, which is opaque for a sandboxed frame) is the
   // one the worker derived from Chrome's URL for it (W1 review #8), and, below the top, when it can be shown to sit in
-  // a visible <iframe> of its parent (#5): its own viewport is more than a pixel each way (an iframe its embedder hides
-  // with display:none or zero size gives its document a 0 by 0 viewport), and one visible parent iframe, not already
-  // matched to a sibling, has its size (the iframe's box less at most FRAME_CHROME_PX of border and padding),
-  // preferring one with the same src. Size, not src alone, so a frame that redirected still matches. Chrome gives
-  // content scripts no frame id for an iframe element (chrome.runtime.getFrameId is undefined there in Chrome 154),
-  // so a sibling hidden only by opacity, visibility or clipping that has a visible twin of the same size can take
-  // the twin's match; that case is not closed.
+  // a visible <iframe> of its parent (#5). Chrome gives content scripts no frame id for an iframe element
+  // (chrome.runtime.getFrameId is undefined there in Chrome 154), so identity is argued from counts and sizes, and
+  // where that argument fails every child of the parent is dropped:
+  //   - a child whose own viewport is a pixel or less sits in an iframe hidden by display:none or zero size, and is
+  //     dropped by itself;
+  //   - every other child, answered or not, is "sized". If a parent has more sized children than visible iframes,
+  //     some sized child is hidden and nothing says which, so all of that parent's children are dropped (review
+  //     round 3: a decoy iframe sized to vouch for a hidden one);
+  //   - otherwise each sized child must take a distinct visible iframe whose content box is exactly its viewport
+  //     (src preferred), or it is dropped.
   const kept: typeof answered = [];
   const used = new Set<string>();
+  const sizedChildren = (parentId: number): number =>
+    frames.filter((f) => f.parentFrameId === parentId).filter((f) => {
+      const a = answered.find((x) => x.f.frameId === f.frameId);
+      return a === undefined || (a.r.viewport[0] > 1 && a.r.viewport[1] > 1);
+    }).length;
   for (const k of answered.filter((x) => x.f.parentFrameId < 0).concat(answered.filter((x) => x.f.parentFrameId >= 0))) {
     if (k.r.origin !== k.origin) {
       missing.push({ frameId: k.f.frameId, reason: `its document's origin ${k.r.origin} is not ${k.origin}` });
@@ -157,15 +163,22 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     if (k.f.parentFrameId >= 0) {
       const parent = kept.find((p) => p.f.frameId === k.f.parentFrameId);
       const [vw, vh] = k.r.viewport;
+      if (parent === undefined || vw <= 1 || vh <= 1) {
+        missing.push({ frameId: k.f.frameId, reason: "its <iframe> is not visible in the parent frame" });
+        continue;
+      }
+      if (sizedChildren(parent.f.frameId) > parent.r.iframes.length) {
+        missing.push({ frameId: k.f.frameId, reason: "its parent holds more frames than visible iframes, so which are seen cannot be told" });
+        continue;
+      }
       const src = k.f.url.startsWith("about:") ? "about:" : (() => {
         const u = new URL(k.f.url);
         return `${u.origin}${u.pathname}`;
       })();
-      const fits = (i: { rect: [number, number, number, number] }): boolean => i.rect[2] - vw >= 0 && i.rect[2] - vw <= FRAME_CHROME_PX && i.rect[3] - vh >= 0 && i.rect[3] - vh <= FRAME_CHROME_PX;
-      const candidates = parent === undefined || vw <= 1 || vh <= 1 ? [] : parent.r.iframes.map((i, n) => ({ i, key: `${parent.f.frameId}:${n}` })).filter((c) => !used.has(c.key) && fits(c.i));
+      const candidates = parent.r.iframes.map((i, n) => ({ i, key: `${parent.f.frameId}:${n}` })).filter((c) => !used.has(c.key) && Math.abs(c.i.inner[0] - vw) <= 1 && Math.abs(c.i.inner[1] - vh) <= 1);
       const pick = candidates.find((c) => c.i.src.startsWith(src)) ?? candidates[0];
       if (pick === undefined) {
-        missing.push({ frameId: k.f.frameId, reason: "its <iframe> is not visible in the parent frame" });
+        missing.push({ frameId: k.f.frameId, reason: "no visible <iframe> in the parent has its size" });
         continue;
       }
       used.add(pick.key);
@@ -194,7 +207,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       title: r.title,
       headings: r.headings,
       controls: r.controls,
-      iframes: r.iframes,
+      iframes: r.iframes.map((i) => ({ src: i.src, rect: i.rect })),
       excluded: r.excluded,
       truncated: r.truncated,
     })),
