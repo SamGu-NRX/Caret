@@ -15,6 +15,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveInt } from "./flags.ts";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { collectCandidates, MAX_CANDIDATES } from "../src/fill/candidates.ts";
 import { Helper } from "../src/helper.ts";
@@ -28,9 +29,9 @@ import { legacyGenerateCandidates } from "../test/legacy-candidates.ts";
 const { values: a } = parseArgs({ options: { out: { type: "string" }, focuses: { type: "string", default: "200" }, "legacy-focuses": { type: "string", default: "50" } } });
 if (a.out === undefined) throw new Error("--out is required");
 const OUT = a.out;
-const FOCUSES = Number(a.focuses);
+const FOCUSES = positiveInt("focuses", a.focuses);
 /** The old generator takes most of a second per focus on the largest scene, so it is timed on fewer focuses. */
-const LEGACY_FOCUSES = Math.min(FOCUSES, Number(a["legacy-focuses"]));
+const LEGACY_FOCUSES = Math.min(FOCUSES, positiveInt("legacy-focuses", a["legacy-focuses"]));
 mkdirSync(OUT, { recursive: true });
 
 const quant = (xs: number[]): { p50: number; p95: number; max: number; n: number } => {
@@ -195,7 +196,7 @@ writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toIS
 const md = [
   "# Candidate generator per focus",
   "",
-  `\`node --expose-gc scripts/generator-bench.ts --out DIR --focuses ${FOCUSES} --legacy-focuses ${LEGACY_FOCUSES}\` in the helper, ${new Date().toISOString().slice(0, 16)}Z, one-minute load average ${load[0]?.toFixed(1)} before and ${loadAfter[0]?.toFixed(1)} after (this Mac was shared). ${FOCUSES} focuses per row, the first ${LEGACY_FOCUSES} of them also timed before.`,
+  `\`node ${(globalThis as { gc?: unknown }).gc === undefined ? "" : "--expose-gc "}scripts/generator-bench.ts --out DIR --focuses ${FOCUSES} --legacy-focuses ${LEGACY_FOCUSES}\` in the helper, ${new Date().toISOString().slice(0, 16)}Z, one-minute load average ${load[0]?.toFixed(1)} before and ${loadAfter[0]?.toFixed(1)} after (this Mac was shared). ${FOCUSES} focuses per row, the first ${LEGACY_FOCUSES} of them also timed before.`,
   "",
   "- *Before*: the generator as of 129b4b3 with the product's cap of 80.",
   "- *After*: the early-capped generator with its 15 ms budget.",

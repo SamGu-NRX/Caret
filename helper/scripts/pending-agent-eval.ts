@@ -12,6 +12,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveInt } from "./flags.ts";
 import { loadJevKey, makeJevClient, type JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef, Node, TaskState } from "../src/protocol.ts";
@@ -21,7 +22,7 @@ import { agentSnap, BROWSER, browserChat, CODEX, codexWindow, T3, t3Window, type
 const { values: a } = parseArgs({ options: { out: { type: "string" }, reps: { type: "string", default: "2" } } });
 if (a.out === undefined) throw new Error("--out is required");
 const OUT = a.out;
-const REPS = Number(a.reps);
+const REPS = positiveInt("reps", a.reps);
 mkdirSync(OUT, { recursive: true });
 loadJevKey(); // fail now, not at the first question
 const ask = makeJevClient(() => loadJevKey());
