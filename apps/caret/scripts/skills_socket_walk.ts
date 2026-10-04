@@ -456,6 +456,7 @@ interface Panel {
   text?: string | null;
 }
 const shots: Record<string, string | null> = {};
+let hostReduceMotion: boolean | null = null;
 /**
  * The form window and every panel the host has up, each captured by window number (never a region,
  * so nothing else on the screen can be in it) and joined over a flat background.
@@ -670,6 +671,7 @@ try {
   await hostCommand("memory rule writeElsewhere actIfApproved");
   await until("the rule from the host", () => memoryReplies.find((r) => r.op.startsWith("edit permission-writeElsewhere") && r.error === null), 5000);
   if (DRAWN !== null) {
+    hostReduceMotion = (((await hostCommand("state")).surface ?? {}) as { reduceMotion?: boolean }).reduceMotion ?? null;
     const asked = await fx("activate legacy");
     await until("the fixture at the front", () => (front().pid === fixturePid ? true : null), 3000).catch(() => {
       throw new Error(`deferred: foreground (activate legacy: ${JSON.stringify(asked)}, front ${JSON.stringify(front())})`);
@@ -856,6 +858,8 @@ result.frontSamples = fronts.length;
 result.fixtureOrHostWasFront = DRAWN === null ? foreign.length > 0 : null;
 result.otherAppTookTheFront = DRAWN === null ? null : foreign.length > 0;
 result.drawn = DRAWN;
+// The host's own reading of Reduce Motion while it drew (null for a host that does not report it).
+result.hostReduceMotion = DRAWN === null ? null : hostReduceMotion;
 result.focusKeys = focusKeys;
 result.announced = announced;
 result.shots = shots;

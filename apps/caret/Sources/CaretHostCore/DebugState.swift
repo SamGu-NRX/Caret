@@ -285,6 +285,8 @@ public struct DebugState: Codable, Equatable, Sendable {
     public struct SurfaceInfo: Codable, Equatable, Sendable {
         /// The host runs with `--surfaces headless`: offers are decided, never drawn.
         public var headless: Bool?
+        /// System Settings' Reduce Motion as the host reads it, when it draws.
+        public var reduceMotion: Bool?
         public var offerId: UInt64?
         /// The helper's key for the shown offer.
         public var offerKey: String?

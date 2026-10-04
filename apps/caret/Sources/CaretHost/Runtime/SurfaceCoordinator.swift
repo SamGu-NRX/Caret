@@ -518,7 +518,10 @@ final class SurfaceCoordinator {
         info.decor = decor.debugInfo()
         info.list = list.debugInfo()
         info.character = character.rawValue
-        if !headless { info.lineText = panel.isVisible ? panel.text : nil }
+        if !headless {
+            info.lineText = panel.isVisible ? panel.text : nil
+            info.reduceMotion = Motion.reduceMotion
+        }
         return info
     }
 
