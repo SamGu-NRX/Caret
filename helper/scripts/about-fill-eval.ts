@@ -13,11 +13,15 @@
 //   eager   picks the user's own value whenever a question offers it, else the oracle's answer: the wrong
 //           fills the code alone would allow, which only Jev's judgment keeps out.
 //   live    asks Jev; needs CARET_ENV_FILE and stops before spending more than --max-usd.
+// --memory-store (M1) takes the user's Name and Email from a markdown memory store in a temporary folder, written,
+// closed and reopened, instead of from literals: the fills must not change.
 // --memory-cutoff, --whose-cutoff and --no-whose (whose: false) set fill.ts's options (B18). A field may say `who`: whose
 // details it wants (user, other, unclear, n/a). The report then counts by it, and sweeps the memory cutoff
 // (and the whose cutoff, unless --no-whose) over the answers Jev gave, so one live pass shows every cutoff.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { MemoryStore } from "../src/patterns/memory.ts";
 import { parseArgs } from "node:util";
 import { positiveNumber } from "./flags.ts";
 import { fileURLToPath } from "node:url";
@@ -36,6 +40,7 @@ const { values: a } = parseArgs({
     "memory-cutoff": { type: "string" },
     "no-whose": { type: "boolean", default: false },
     "whose-cutoff": { type: "string" },
+    "memory-store": { type: "boolean", default: false },
   },
 });
 if (a.forms === undefined || a.out === undefined) throw new Error("--forms and --out are required");
@@ -62,10 +67,28 @@ interface Form {
 const forms = JSON.parse(readFileSync(a.forms, "utf8")) as Form[];
 
 // The user's typed About entries, as onboarding keeps them.
-const ABOUT = aboutValues([
+const ABOUT = a["memory-store"] ? aboutFromStore() : aboutValues([
   { id: "about-name", fields: { label: "Name", value: "Sam Rivera", source: "typed" } },
   { id: "about-email", fields: { label: "Email", value: "sam.rivera@example.com", source: "typed" } },
 ]);
+
+/** The same two values, kept by "remember this" in a markdown store, then read back by a fresh store. Never the user's folder. */
+function aboutFromStore(): ReturnType<typeof aboutValues> {
+  const dir = mkdtempSync(join(tmpdir(), "caret-about-eval-"));
+  try {
+    const first = new MemoryStore(dir);
+    first.addTyped({ label: "Name", value: "Sam Rivera", source: "typed" }, (l) => `typed:${l.toLowerCase()}`, 1);
+    first.addTyped({ label: "Email", value: "sam.rivera@example.com", source: "typed" }, (l) => `typed:${l.toLowerCase()}`, 2);
+    first.close();
+    const again = new MemoryStore(dir);
+    const out = aboutValues(again.active("about"));
+    again.close();
+    if (out.length !== 2) throw new Error(`the memory store gave ${out.length} About values, not 2`);
+    return out;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 const expected = (e: Expect): string | null => (e === "name" ? "Sam Rivera" : e === "email" ? "sam.rivera@example.com" : e === "none" ? null : e.value);
 
 const SOURCES = (readFileSync(fileURLToPath(new URL("../fixtures/recorded/fixture-sources.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l)) as Snapshot[]);

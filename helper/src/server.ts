@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader } from "./protocol.ts";
+import { ConsumerMessage, Hello, MEMORY_DOCUMENTS_CAPABILITY, PROTOCOL_VERSION, ReaderMessage, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader, type MemoryReply } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
 
@@ -19,6 +19,8 @@ const MAX_LINE_CHARS = 32 * 1024 * 1024;
 
 export class HelperServer {
   private readonly consumers = new Set<Socket>();
+  /** Consumers whose hello named MEMORY_DOCUMENTS_CAPABILITY (M1). The others never see `noticed` or the new memory messages. */
+  private readonly memoryDocuments = new Set<Socket>();
   /** The most recent reader connection; commands go there. */
   private reader: Socket | null = null;
   /**
@@ -64,7 +66,8 @@ export class HelperServer {
 
   publish(m: HelperMessage): void {
     const line = JSON.stringify(m) + "\n";
-    for (const c of this.consumers) c.write(line);
+    // Provenance is new in M1: a consumer that did not ask for it is not sent it.
+    for (const c of m.type === "memoryProvenance" ? this.memoryDocuments : this.consumers) c.write(line);
   }
 
   async listen(): Promise<void> {
@@ -131,6 +134,7 @@ export class HelperServer {
           role = hello.data.role;
           if (role === "consumer") {
             this.consumers.add(s);
+            if (hello.data.capabilities?.includes(MEMORY_DOCUMENTS_CAPABILITY) === true) this.memoryDocuments.add(s);
             session = `consumer-${++this.sessions}`;
             // Only the host's hello says so; any other consumer binds its own work but never counts as the host (B23).
             if (hello.data.host === true) this.helper().hostConnected(session);
@@ -204,7 +208,11 @@ export class HelperServer {
                 return planError(requestId, "internal", "the planner failed; the helper logged why", Date.now());
               })
               .then((r) => {
-                if (!s.destroyed) s.write(JSON.stringify(r) + "\n");
+                if (s.destroyed) return;
+                s.write(JSON.stringify(r) + "\n");
+                // The noticed facts the plan used, to the asker too, when it understands them.
+                const p = r.outcome === "proposed" && this.memoryDocuments.has(s) ? this.helper().provenanceFor(r.offerKey) : null;
+                if (p !== null) s.write(JSON.stringify(p) + "\n");
               });
           }
           // Records hold window titles and status lines, so a list goes to the asker only, as memory does.
@@ -212,9 +220,21 @@ export class HelperServer {
           else if (m.data.type === "memoryRequest") {
             // A bad request is answered in the reply; this catches only a failure of the store itself.
             try {
-              s.write(JSON.stringify(this.helper().handleMemory(m.data)) + "\n");
+              s.write(JSON.stringify(this.forConsumer(s, this.helper().handleMemory(m.data))) + "\n");
             } catch (e) {
               this.reject(s, `memory request ${m.data.requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          } else if (m.data.type === "memoryNotRight" || m.data.type === "memoryDocumentRequest") {
+            // Refused by name, not half-handled, for a consumer that did not say it understands markdown memory.
+            if (!this.memoryDocuments.has(s)) {
+              this.reject(s, `${m.data.type} needs "${MEMORY_DOCUMENTS_CAPABILITY}" in the consumer's hello capabilities`);
+              continue;
+            }
+            try {
+              const reply = m.data.type === "memoryNotRight" ? this.helper().handleMemoryNotRight(m.data) : this.helper().handleMemoryDocument(m.data);
+              s.write(JSON.stringify(reply) + "\n");
+            } catch (e) {
+              this.reject(s, `${m.data.type} ${m.data.requestId} failed: ${e instanceof Error ? e.message : String(e)}`);
             }
           }
         }
@@ -222,6 +242,7 @@ export class HelperServer {
     });
     s.on("close", () => {
       this.consumers.delete(s);
+      this.memoryDocuments.delete(s);
       if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;
@@ -232,6 +253,22 @@ export class HelperServer {
       this.sockets.delete(s);
     });
     s.on("error", (e) => this.warn(`socket error: ${e.message}`));
+  }
+
+  /**
+   * A memory reply as this consumer can read it: one without MEMORY_DOCUMENTS_CAPABILITY gets a noticed entry as
+   * active and no `noticed` key, the shape it knew before M1.
+   */
+  private forConsumer(s: Socket, r: MemoryReply): MemoryReply {
+    if (this.memoryDocuments.has(s)) return r;
+    return {
+      ...r,
+      entries: r.entries.map((e) => {
+        if (e.kind !== "about" && e.kind !== "people" && e.kind !== "preference") return e;
+        const { noticed: _n, ...rest } = e;
+        return { ...rest, status: e.status === "noticed" ? "active" : e.status } as typeof e;
+      }),
+    };
   }
 
   private reject(s: Socket, message: string): void {

@@ -24,12 +24,19 @@ export interface FilledField {
   /** The field's label, for the sentence; "Field" when it has none. */
   fieldLabel: string;
   app: string;
+  /** The window the edit was made in, for the noticed fact's source; null when unknown. */
+  windowTitle?: string | null;
 }
 
 export type Captured = { entry: "format" | "people" | "useInstead"; ids: string[] } | null;
 
-/** Turns one settled edit of a filled value into memory. Returns what it wrote, or null for no rule. */
+/**
+ * Turns one settled edit of a filled value into memory. Returns what it wrote, or null for no rule. What it
+ * writes is a fact Caret noticed (M1, lead decision 3): straight into its file, marked noticed with the app,
+ * window and time, and used at once.
+ */
 export function captureEdit(memory: MemoryStore, hash: Hash, f: FilledField, at: number): Captured {
+  const seen = { app: f.app === "" ? null : f.app, window: f.windowTitle ?? null, at };
   const written = f.written.trim();
   const edited = f.edited.trim();
   // A cleared field is an undo or a rejection, not a preference; "Don't offer this here" covers it.
@@ -39,13 +46,13 @@ export function captureEdit(memory: MemoryStore, hash: Hash, f: FilledField, at:
   if (f.kind === "phone" && normalizeValue(written, "phone") === normalizeValue(edited, "phone")) {
     const template = edited.replace(/\d/g, "#");
     if (formatDigits(template, written) === null) return null;
-    const id = memory.upsert("preference", "format:phone", { rule: "format", valueKind: "phone", template }, at, f.app);
+    const id = memory.upsert("preference", "format:phone", { rule: "format", valueKind: "phone", template }, at, f.app, seen);
     return { entry: "format", ids: [id] };
   }
 
   const source = f.source.trim();
   if (isName(source) && edited.toLowerCase().startsWith(`${source.toLowerCase()} `) && isName(edited)) {
-    const id = memory.upsert("people", hash(`people\u0000${source.toLowerCase()}`), { alias: source, name: edited }, at, f.app);
+    const id = memory.upsert("people", hash(`people\u0000${source.toLowerCase()}`), { alias: source, name: edited }, at, f.app, seen);
     return { entry: "people", ids: [id] };
   }
 
@@ -55,9 +62,10 @@ export function captureEdit(memory: MemoryStore, hash: Hash, f: FilledField, at:
     { label: f.fieldLabel, value: edited, source: "edit" },
     at,
     f.app,
+    seen,
   );
   // Keyed on the source text, so a second correction replaces the first instead of adding a rule that never matches.
-  const prefId = memory.upsert("preference", useInsteadMatch(hash, f.dstShapeHash, source, f.kind), { rule: "useInstead", field: f.fieldLabel, aboutId }, at, f.app);
+  const prefId = memory.upsert("preference", useInsteadMatch(hash, f.dstShapeHash, source, f.kind), { rule: "useInstead", field: f.fieldLabel, aboutId }, at, f.app, seen);
   return { entry: "useInstead", ids: [aboutId, prefId] };
 }
 

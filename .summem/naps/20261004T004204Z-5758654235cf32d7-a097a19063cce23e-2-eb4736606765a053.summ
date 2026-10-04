@@ -1,0 +1,1 @@
+B20: a closing window can reach the model without its fields, so routines place late edits and presses from where elements were last seen; the agent host sets ELECTRON_RUN_AS_NODE, so an eval that starts Electron must drop it.

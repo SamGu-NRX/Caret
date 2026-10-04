@@ -94,8 +94,15 @@ export const Hello = z
      * anything else; until the proof checks out the reader sends nothing more and acts on nothing (B23).
      */
     challenge: z.string().min(16).optional(),
+    /**
+     * What a consumer understands beyond protocol 1 (M1). With MEMORY_DOCUMENTS_CAPABILITY it gets noticed facts as
+     * `noticed` with their source, memoryProvenance lines, and may send memoryNotRight and memoryDocumentRequest.
+     * Without it, a noticed fact reads as active and those messages are refused by name.
+     */
+    capabilities: z.array(z.string().min(1).max(64)).max(32).optional(),
   })
   .refine((h) => h.host === undefined || h.role === "consumer", { message: "only a consumer says host", path: ["host"] })
+  .refine((h) => h.capabilities === undefined || h.role === "consumer", { message: "only a consumer sends capabilities", path: ["capabilities"] })
   .refine((h) => (h.session === undefined && h.challenge === undefined) || h.role === "reader", { message: "only the reader sends session and challenge", path: ["session"] });
 export type Hello = z.infer<typeof Hello>;
 
@@ -519,6 +526,60 @@ export const MemoryRequest = z.object({
 });
 export type MemoryRequest = z.infer<typeof MemoryRequest>;
 
+// MARK: - markdown memory (M1, plan section 6 and lead decisions 1-3 of 2026-10-04)
+
+/** The hello capability that turns on noticed facts, provenance, "Not right" and the document messages. */
+export const MEMORY_DOCUMENTS_CAPABILITY = "memoryDocuments";
+
+/** A memory document, named by the helper: one of three fixed files or a skill's. Never a path. */
+export const MemoryDocId = z.string().regex(/^(?:about-me|people|preferences|skills\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$/, "a memory document is about-me, people, preferences or skills/<id>");
+
+/**
+ * "Not right" on an offer (lead decision 3), about one fact the offer used, which its memoryProvenance named.
+ * `correction` null forgets the fact; a string replaces an About value or a person's name with what the user
+ * typed, active from then on. A preference can only be forgotten. Every offer that used the fact is withdrawn
+ * as stale and every task that copies it is revoked. Answered with memoryReply under `requestId`: the entry
+ * after the change, or none after a forget.
+ */
+export const MemoryNotRight = z.object({
+  type: z.literal("memoryNotRight"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string(),
+  memoryId: z.string().min(1),
+  /** The offer the user said it on, for the record; null from anywhere else. */
+  offerKey: z.string().min(1).nullable(),
+  correction: z.string().min(1).max(500).nullable(),
+});
+export type MemoryNotRight = z.infer<typeof MemoryNotRight>;
+
+export const MemoryDocumentOp = z.enum(["list", "read", "save"]);
+export type MemoryDocumentOp = z.infer<typeof MemoryDocumentOp>;
+
+/**
+ * The memory window's documents. `list`: every document with its path, revision and problems, and the folder for
+ * Show in Finder. `read`: one document's text. `save`: the host's editor writes `text` over `doc`, only if the file
+ * is still at `baseRevision` (null: it does not exist yet); otherwise the reply carries `conflict` and nothing is
+ * written, and the host offers Reload or Keep my text. Text holding what Caret never keeps is refused, naming the line.
+ */
+export const MemoryDocumentRequest = z
+  .object({
+    type: z.literal("memoryDocumentRequest"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string(),
+    op: MemoryDocumentOp,
+    doc: MemoryDocId.optional(),
+    baseRevision: z.string().min(1).nullable().optional(),
+    text: z.string().max(256 * 1024).optional(),
+  })
+  .superRefine((m, ctx) => {
+    const has = { doc: m.doc !== undefined, baseRevision: m.baseRevision !== undefined, text: m.text !== undefined };
+    const want = m.op === "list" ? { doc: false, baseRevision: false, text: false } : m.op === "read" ? { doc: true, baseRevision: false, text: false } : { doc: true, baseRevision: true, text: true };
+    for (const k of ["doc", "baseRevision", "text"] as const) {
+      if (has[k] !== want[k]) ctx.addIssue({ code: "custom", message: `${m.op} ${want[k] ? "needs" : "takes no"} ${k}`, path: [k] });
+    }
+  });
+export type MemoryDocumentRequest = z.infer<typeof MemoryDocumentRequest>;
+
 /**
  * The host's report on one field of a fill proposal: what it did with the proposed value and how.
  * `inserted` marks the matching transfer as Caret's; `undone` removes that transfer from the log again.
@@ -739,7 +800,7 @@ export const SkillAnswer = z.object({
 });
 export type SkillAnswer = z.infer<typeof SkillAnswer>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -1024,7 +1085,11 @@ export const OfferWithdrawn = z
   });
 export type OfferWithdrawn = z.infer<typeof OfferWithdrawn>;
 
-export const MemoryStatus = z.enum(["learning", "active", "paused"]);
+/**
+ * `noticed` (M1): a fact Caret saw itself, used at once, whose offers say where it came from; about, people and
+ * preference entries only. A host without MEMORY_DOCUMENTS_CAPABILITY is sent `active` instead.
+ */
+export const MemoryStatus = z.enum(["learning", "active", "paused", "noticed"]);
 export type MemoryStatus = z.infer<typeof MemoryStatus>;
 
 /** Action types from plan section 3, "Permission per action type". */
@@ -1108,6 +1173,10 @@ export const MAX_PERMISSION_USES = 5;
 export const PermissionUse = z.object({ at: ms, says: z.string().min(1), app: z.string().nullable(), outcome: UseOutcome.optional() });
 export type PermissionUse = z.infer<typeof PermissionUse>;
 
+/** Where Caret noticed a fact: the app and window title when known, and when. */
+export const NoticedSource = z.object({ app: z.string().nullable(), windowTitle: z.string().nullable(), at: ms });
+export type NoticedSource = z.infer<typeof NoticedSource>;
+
 const entryBase = {
   id: z.string(),
   status: MemoryStatus,
@@ -1117,13 +1186,20 @@ const entryBase = {
 };
 /** Only a skill says what it wrote: the key is refused in any other kind's fields, not dropped. */
 const notWrote = { wrote: z.never().optional() };
+/** A noticed entry says where it came from; other statuses may keep it as history (M1). */
+const noticedNeedsSource = (e: { status: string; noticed?: unknown }, ctx: z.RefinementCtx): void => {
+  if (e.status === "noticed" && e.noticed === undefined) ctx.addIssue({ code: "custom", message: "a noticed entry says where Caret noticed it", path: ["noticed"] });
+};
+const neverNoticed = (e: { status: string }, ctx: z.RefinementCtx): void => {
+  if (e.status === "noticed") ctx.addIssue({ code: "custom", message: "only about, people and preference entries are noticed", path: ["status"] });
+};
 export const MemoryEntry = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("about"), ...entryBase, fields: AboutFields.extend(notWrote) }),
-  z.object({ kind: z.literal("people"), ...entryBase, fields: PeopleFields.extend(notWrote) }),
-  z.object({ kind: z.literal("preference"), ...entryBase, fields: PreferenceFields.and(z.object(notWrote)) }),
-  z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields.extend(notWrote) }),
+  z.object({ kind: z.literal("about"), ...entryBase, noticed: NoticedSource.optional(), fields: AboutFields.extend(notWrote) }).superRefine(noticedNeedsSource),
+  z.object({ kind: z.literal("people"), ...entryBase, noticed: NoticedSource.optional(), fields: PeopleFields.extend(notWrote) }).superRefine(noticedNeedsSource),
+  z.object({ kind: z.literal("preference"), ...entryBase, noticed: NoticedSource.optional(), fields: PreferenceFields.and(z.object(notWrote)) }).superRefine(noticedNeedsSource),
+  z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields.extend(notWrote) }).superRefine(neverNoticed),
   /** `uses`: the permission's last MAX_PERMISSION_USES uses, newest first; this helper always sends it, empty when none. */
-  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields.extend(notWrote), uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
+  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields.extend(notWrote), uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }).superRefine(neverNoticed),
   /**
    * Status: `learning` while it runs on Tab, `active` once it runs on its own, `paused` when the user paused
    * it. A skill that hands a press to the user never runs on its own. CaretScreenCore's MemoryEntry refuses
@@ -1184,6 +1260,69 @@ export const MemoryReply = z.object({
   ops: z.array(MemoryOp).optional(),
 });
 export type MemoryReply = z.infer<typeof MemoryReply>;
+
+/**
+ * The noticed facts an offer was built from (M1, lead decision 3), sent right after the offer to consumers with
+ * MEMORY_DOCUMENTS_CAPABILITY, and with a planProposal to its asker. `offerKey` is the offer's key or a
+ * patternOffer's id. The host shows `says` on the offer ("from what Caret noticed in Mail, Tue") with "Not right"
+ * (memoryNotRight). Taking the offer confirms each fact: it becomes active. An offer with no noticed fact gets none.
+ */
+export const MemoryProvenance = z.object({
+  type: z.literal("memoryProvenance"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  offerKey: z.string().min(1),
+  facts: z
+    .array(
+      z.object({
+        memoryId: z.string().min(1),
+        kind: z.enum(["about", "people", "preference"]),
+        /** The fact's label: an About label, a person's alias, the field a rule fills. */
+        label: z.string(),
+        says: z.string().min(1),
+        noticed: NoticedSource,
+      }),
+    )
+    .min(1),
+});
+export type MemoryProvenance = z.infer<typeof MemoryProvenance>;
+
+/** A problem in a memory document, by line and field (1-based line). Errors disable the record; warnings change nothing. */
+export const MemoryDiagnostic = z.object({ line: z.number().int().positive(), field: z.string().nullable(), severity: z.enum(["error", "warning"]), message: z.string().min(1) });
+export type MemoryDiagnostic = z.infer<typeof MemoryDiagnostic>;
+
+export const MemoryDocument = z.object({
+  doc: MemoryDocId,
+  /** The file's name inside the folder: "people.md", "skills/skill-1a2b3c4d.md". */
+  file: z.string().min(1),
+  /** Its absolute path, for Edit (open in the user's editor) and Show in Finder. */
+  path: z.string().min(1),
+  /** Null when the file does not exist yet. */
+  revision: z.string().nullable(),
+  bytes: z.number().int().nonnegative(),
+  diagnostics: z.array(MemoryDiagnostic),
+});
+export type MemoryDocument = z.infer<typeof MemoryDocument>;
+
+/**
+ * The answer to memoryDocumentRequest, to the asker only. `documents`: every document for list; the one document
+ * for read and save. `text`: the document's text for read, else null. `conflict`: on a save refused because the
+ * file changed since `baseRevision`, its revision now (null: removed); nothing was written.
+ */
+export const MemoryDocumentReply = z
+  .object({
+    type: z.literal("memoryDocumentReply"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string(),
+    error: z.string().nullable(),
+    conflict: z.object({ revision: z.string().nullable() }).nullable(),
+    /** The memory folder, for Show in Finder. */
+    folder: z.string().min(1),
+    documents: z.array(MemoryDocument),
+    text: z.string().nullable(),
+  })
+  .refine((m) => m.conflict === null || m.error !== null, { message: "a conflict comes with an error saying so", path: ["conflict"] });
+export type MemoryDocumentReply = z.infer<typeof MemoryDocumentReply>;
 
 // MARK: - tasks and the activity feed (plan section 3, "Reporting")
 
@@ -1419,7 +1558,7 @@ export type PageEngineState = z.infer<typeof PageEngineState>;
 
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
