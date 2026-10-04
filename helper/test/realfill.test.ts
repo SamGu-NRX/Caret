@@ -426,3 +426,14 @@ describe("B24 fix-check review", () => {
     expect(misfit("abc", ["Constructor"])).toBeNull();
   });
 });
+
+describe("B24: a message header's sender", () => {
+  it("is not the user's details when the owner question splits", async () => {
+    const m = desk(NOTE);
+    m.apply(snap([text("mail/from", "From: bea.sutherland@example.com")], { at: 950, windowId: "mail", title: "Re: plus-one", app: MAIL_APP, focused: true, values: [value("email", "bea.sutherland@example.com", "mail/from")] }));
+    m.apply(snap([...page(), field(`${P}/textfield:email~0`, "", { parent: `${P}/webarea:~0`, label: "Email", frame: [100, 440, 200, 20] })], { at: 1000, windowId: "form", title: "RSVP", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${P}/textfield:customer name~0` }));
+    const pick = (_: string, ins: string): string | null => (ins.includes("'Email'") ? "bea.sutherland@example.com" : null);
+    const p = await proposeFill(m, jevPickingText(pick, 0.9, () => "user", () => "unclear"), "form", `${P}/textfield:customer name~0`, 2000);
+    expect(fieldOf(p, "textfield:email")).toMatchObject({ value: null, withheld: "otherPerson" });
+  });
+});

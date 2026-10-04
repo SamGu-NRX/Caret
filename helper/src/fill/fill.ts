@@ -402,6 +402,8 @@ const PART_SAYS: Record<FieldPart, string> = {
 const ADDRESS_PARTS: ReadonlySet<FieldPart> = new Set(["street", "unit", "city", "state", "zip"]);
 /** Kinds whose values are someone's: whose they are is asked before one fills a field that wants someone's (B24 owner veto). */
 const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "address"]);
+/** Labels of a message header's sender. */
+const SENDER = /^(?:from|sender|reply-to)$/i;
 /** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
 const MAX_OWNERS = 40;
 
@@ -792,7 +794,10 @@ export async function proposeFill(
     // live replay, evidence/screen/b24/adv-live-replay-final): there the unsettled owner vetoes nothing.
     const labelsField = c.labelled === true && c.recency === "justLeft" && c.context !== null && overlap(fieldTerms([c.context]), f.terms) > 0;
     const kind = candidateKinds(model, c).has("email") ? "email" : personName(c) !== null || isNameLike(c.text, c.context) ? "name" : null;
-    return wants === "user" && is !== "user" && kind !== null && memoryKinds.has(kind) && !labelsField;
+    if (wants === "user" && is !== "user" && kind !== null && memoryKinds.has(kind) && !labelsField) return true;
+    // A message header's sender is the one who wrote to the user: "From: Bea <bea@…>" is not the user's email
+    // though the owner question split on it (an RSVP's Email, final scoreboard; a rule tuned on the B24 corpus).
+    return wants === "user" && is !== "user" && c.labelled === true && c.context !== null && SENDER.test(c.context.trim());
   };
   /** Kinds of the user's own values in memory ("email", "name"). */
   const memoryKinds = new Set<string>((opts.about ?? []).map((a) => a.kind));
