@@ -158,7 +158,11 @@ describe("the calendar through the reader", () => {
     expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
     // A second task whose add is refused because the event is already there claims nothing.
     await helper.executor.run("t2", plan("Lunch with Priya"), {}, undefined, { grant: true });
-    reader.calendar = (v) => (v.kind === "calendarFind" ? { outcome: "ok", detail: null } : v.kind === "calendarAdd" ? { outcome: "changed", detail: "an identical event is already in the calendar; nothing was added" } : answer(v));
+    // Only t3's first find misses t2's event; any later find sees it, so a late find after this refusal
+    // would put t2's event in t3's ledger.
+    let finds = 0;
+    reader.calendar = (v) =>
+      v.kind === "calendarFind" && ++finds === 1 ? { outcome: "ok", detail: null } : v.kind === "calendarAdd" ? { outcome: "changed", detail: "an identical event is already in the calendar; nothing was added" } : answer(v);
     expect(await helper.executor.run("t3", plan("Lunch with Priya"), {}, undefined, { grant: true })).toMatchObject({ outcome: "stopped" });
     expect(helper.executor.ledger("t3")).toHaveLength(0);
   });
