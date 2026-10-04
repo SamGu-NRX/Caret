@@ -229,7 +229,7 @@ public final class AppWorker: @unchecked Sendable {
     public init(pid: pid_t, app: AppRef, ctx: ReaderContext) {
         self.pid = pid
         self.app = app
-        self.chromiumFamily = NSRunningApplication(processIdentifier: pid)?.bundleURL.map(AppClassifier.isChromiumFamily) ?? false
+        self.chromiumFamily = NSRunningApplication(processIdentifier: pid)?.bundleURL.map { AppClassifier.family(bundleURL: $0).rendersWithChromium } ?? false
         self.appPart = ElementKey.appPart(bundleId: app.bundleId.isEmpty ? nil : app.bundleId, name: app.name)
         self.ax = AXUIElementCreateApplication(pid)
         self.queue = DispatchQueue(label: "caret.screen.app.\(pid)", qos: .utility)
