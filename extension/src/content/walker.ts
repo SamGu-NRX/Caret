@@ -101,15 +101,14 @@ export function exclusionOf(el: Element, name: string): PageExclusion | null {
 
 /**
  * React-select makes its input transparent while the chip shows the chosen value; the control box, which holds both,
- * is what the user sees. So a react-select input counts as visible when its box does and the input itself is still
- * rendered with a size. Only the opacity rule is waived, and only inside a visible react-select box (W2).
+ * is what the user sees. So a react-select input counts as visible when its box is visible and the input passes every
+ * other test of visible() (rendered, not clipped, on the page, more than a pixel each way): only the opacity rule is
+ * waived, and only inside a visible react-select box (W2 review #2).
  */
 function visibleReactSelect(el: Element): boolean {
   if (el.getAttribute("role") !== "combobox" || !(el instanceof HTMLInputElement)) return false;
   const f = flavorOf(el);
-  if (f.kind !== "reactSelect" || !visible(f.box)) return false;
-  const r = el.getBoundingClientRect();
-  return el.checkVisibility({ checkVisibilityCSS: true }) && r.width > 0 && r.height > 0;
+  return f.kind === "reactSelect" && visible(f.box) && visible(el, { opacity: false });
 }
 
 /** A length in px or % of `size`, or null when it is neither. */
@@ -172,8 +171,8 @@ function clipBox(el: Element): [number, number] {
  * with overflow hidden or clip has cut it (the visually-hidden pattern: a 1 px box, or a 1 px wrapper). A scrolling
  * ancestor (overflow auto or scroll) does not hide what it holds; the user can scroll to it.
  */
-export function visible(el: Element): boolean {
-  if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+export function visible(el: Element, opts: { opacity: boolean } = { opacity: true }): boolean {
+  if (!el.checkVisibility({ checkOpacity: opts.opacity, checkVisibilityCSS: true })) return false;
   const r = el.getBoundingClientRect();
   if (clipsToNothing(getComputedStyle(el), ...clipBox(el))) return false;
   const doc = document.documentElement;

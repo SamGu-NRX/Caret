@@ -1,7 +1,7 @@
 // W2: the helper's side of page controls. The confirmed-file rule for attaches, the combobox and attach verbs the page
 // link builds, "Not on this site" reaching every engine, the host's presence signal, and page focus reaching the fill
 // path while a covered browser's Accessibility focus does not. Every name, address and file here is invented.
-import { mkdtempSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +93,21 @@ describe("confirmed files", () => {
     expect(files.read("t1")).toEqual({ refused: "the file changed after you confirmed it" });
   });
 
+  it("refuses another file put at the path, and the same file with other bytes, even with size and time kept", () => {
+    const files = new ConfirmedFiles();
+    const p = file("cv.pdf", Buffer.from("aaaa"));
+    const t = statSync(p).mtime;
+    files.confirm("t1", p);
+    const swap = file("swap.pdf", Buffer.from("bbbb"));
+    utimesSync(swap, t, t);
+    renameSync(swap, p);
+    expect(files.read("t1")).toEqual({ refused: "the file changed after you confirmed it" });
+    files.confirm("t2", p);
+    writeFileSync(p, "cccc");
+    utimesSync(p, t, t);
+    expect(files.read("t2")).toEqual({ refused: "the file changed after you confirmed it" });
+  });
+
   it("refuses a relative path, a directory, a file over the cap, and a symlink planted after the confirmation", () => {
     const files = new ConfirmedFiles();
     expect(files.confirm("t", "cv.pdf")).toEqual({ refused: "the confirmed file has no absolute path" });
@@ -154,6 +169,20 @@ describe("page link: combobox and attach", () => {
     expect(commands(sent).find((v) => v.kind === "pageAttachFile")).toMatchObject({ id: "e4", control: "file", taskId: "t1", file: { name: "cv.pdf", size: 3, data: "YWJj" } });
     // Used once.
     expect((await link.attachFile("page:eng1:7", key, "t1", files)).verb.outcome).toBe("notAllowed");
+  });
+
+  it("sends no file to a control that is not a file input or a dropzone, and keeps the confirmation", async () => {
+    const { session, sent } = rig();
+    const link = new PageEngineLink(session, () => {});
+    await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
+    const files = new ConfirmedFiles();
+    const p = join(dir, "cv.pdf");
+    writeFileSync(p, "abc");
+    files.confirm("t1", p);
+    const r = await link.attachFile("page:eng1:7", "f0/form[apply]/textbox:email~0", "t1", files);
+    expect(r.verb.outcome).toBe("axError");
+    expect(commands(sent).filter((v) => v.kind === "pageAttachFile")).toEqual([]);
+    expect(files.read("t1")).toMatchObject({ name: "cv.pdf" });
   });
 
   it("reads siteOff as not allowed", () => {

@@ -8,11 +8,13 @@
 // stage first asks the worker whether the task's grant is still alive and rechecks the element, so a revoke or a
 // page change between stages stops it there.
 //
-// The stages: open with a press on the control; find the listbox by aria-controls or aria-owns, else the newest
-// visible [role=listbox] anywhere in the document, portals and shadow roots included, waiting up to 1.5 s; type the
-// value as the filter through the native setter; read the visible [role=option] names; pick only when exactly one
-// normalized name equals the value (shared/choose.ts); click it; then verify the control's shown text, react-select's
-// hidden input, and aria-expanded=false, before and after blur. A stop puts the filter text back and closes the list.
+// The stages: open with a press on the control; find the listbox by aria-controls or aria-owns, else the one newly
+// visible [role=listbox] anywhere in the document (portals and shadow roots included) that is shown to belong to the
+// control, waiting up to 1.5 s; type the value as the filter through the native setter; read the visible
+// [role=option] names; pick only when exactly one normalized name equals the value (shared/choose.ts), read again
+// right before the click; then verify the control's shown text, react-select's hidden input, and
+// aria-expanded=false, before and after blur. A stop puts the filter text back and closes the list, but only while
+// the grant is alive and the control still eligible.
 import type { ActAnswer, ActVerb, Choice } from "../shared/messages.ts";
 import { matchOptions, normalizeName, whyNoPick } from "../shared/choose.ts";
 import { accessibleName, clean, composedParent } from "./names.ts";
@@ -65,11 +67,36 @@ function namedListbox(el: Element): Element | null {
   return null;
 }
 
-/** The newest visible listbox: the last in tree order of those that were not visible before the control opened. */
-function newestListbox(before: ReadonlySet<Element>): Element | null {
-  let found: Element | null = null;
-  for (const lb of deepAll('[role="listbox"]')) if (!before.has(lb) && visible(lb)) found = lb;
-  return found;
+/** The ids a control is known by: its own id, its labels' ids, and the ids aria-labelledby names. */
+function controlIds(el: Element): Set<string> {
+  const ids = new Set<string>();
+  if (el.id !== "") ids.add(el.id);
+  for (const id of (el.getAttribute("aria-labelledby") ?? "").split(/\s+/)) if (id !== "") ids.add(id);
+  const labels = (el as HTMLInputElement).labels;
+  if (labels !== undefined && labels !== null) for (const l of labels) if (l.id !== "") ids.add(l.id);
+  return ids;
+}
+
+/**
+ * A listbox that became visible after the control opened and is shown to belong to it, when aria-controls and
+ * aria-owns name none: it sits inside react-select's own container, it is labelled by the control or the control's
+ * label, or the control's aria-activedescendant is one of its options. Exactly one such listbox, or null: a list
+ * another widget opened is never taken for this control's (W2 review #1).
+ */
+function associatedNewListbox(el: Element, f: Flavor, before: ReadonlySet<Element>): Element | null {
+  const ids = controlIds(el);
+  const active = el.getAttribute("aria-activedescendant");
+  const root = el.getRootNode() as Document | ShadowRoot;
+  const activeEl = active === null || active === "" ? null : (root.getElementById(active) ?? document.getElementById(active));
+  const found: Element[] = [];
+  for (const lb of deepAll('[role="listbox"]')) {
+    if (before.has(lb) || !visible(lb)) continue;
+    const inside = f.kind === "reactSelect" && within(lb, f.container);
+    const labelled = (lb.getAttribute("aria-labelledby") ?? "").split(/\s+/).some((id) => ids.has(id));
+    const holdsActive = activeEl !== null && within(activeEl, lb);
+    if (inside || labelled || holdsActive) found.push(lb);
+  }
+  return found.length === 1 ? (found[0] as Element) : null;
 }
 
 interface Opt {
@@ -133,15 +160,16 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     await settle();
   };
   /**
-   * Stops after something was done (the list opened, a filter typed): puts the control back and says what it shows
-   * now, so a stop that left the old value reads as "nothing landed" and any other as "may have landed".
+   * Stops after something was done (the list opened, a filter typed). The control is put back only while the grant
+   * is alive and the control is still eligible; a revoked grant, an expiry, or a control that left or became one Caret
+   * never touches is left exactly as it is (W2 review #3). Says what the control shows now, so a stop that left the
+   * old value reads as "nothing landed" and any other as "may have landed".
    */
   const stopped = async (why: ActAnswer, stage: string, matches: string[] = []): Promise<ActAnswer> => {
-    // A grant that ended means no further touch at all, not even to tidy up: the list is left as it is.
-    const revoked = why.outcome === "notAllowed";
-    if (!revoked) await restore();
-    const outcome = revoked ? "notAllowed" : "failed";
-    const detail = `${why.detail ?? why.outcome} (${stage}); ${revoked ? "Caret stopped without touching the control again" : "Caret put the control back and stopped"}`;
+    const tidy = why.outcome !== "notAllowed" && why.outcome !== "excluded" && (await alive()) && check() === null;
+    if (tidy) await restore();
+    const outcome = why.outcome === "notAllowed" ? "notAllowed" : "failed";
+    const detail = `${why.detail ?? why.outcome} (${stage}); ${tidy ? "Caret put the control back and stopped" : "Caret stopped without touching the control again"}`;
     // No reading of a control that is no longer one Caret may read (it left, or turned into an excluded field): W1 review round 2, #3.
     if (check() !== null) return answer(outcome, detail, { choice: choice(matches) });
     const now = shownValue(el, f);
@@ -151,6 +179,9 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     if (!(await alive())) return answer("notAllowed", `the task's grant ended (before ${stage})`);
     return check();
   };
+  /** After the pick went in: a stop leaves the control alone and reports no readings unless it is still eligible. */
+  const afterPickStop = (why: ActAnswer, stage: string, pickName: string): ActAnswer =>
+    answer(why.outcome === "notAllowed" ? "notAllowed" : "failed", `the pick went in, then ${why.detail ?? why.outcome} (${stage}); Caret stopped without touching the control again`, { choice: choice([pickName]) });
 
   // Stage 1: open.
   const g1 = await gate("opening the list");
@@ -161,8 +192,9 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     // A real press focuses the control; a generic combobox often opens on focus alone.
     if (deepActiveElement() !== el && el instanceof HTMLElement) el.focus();
   }
-  listbox = await until(() => namedListbox(el) ?? newestListbox(listsBefore), LIST_WAIT_MS);
-  if (listbox === null) return stopped(answer("failed", `no list opened within ${LIST_WAIT_MS} ms`), "opening");
+  const findList = (): Element | null => namedListbox(el) ?? associatedNewListbox(el, f, listsBefore);
+  listbox = await until(findList, LIST_WAIT_MS);
+  if (listbox === null) return stopped(answer("failed", `no list that belongs to this control opened within ${LIST_WAIT_MS} ms`), "opening");
   const afterOpen = check();
   if (afterOpen !== null) return stopped(afterOpen, "after opening");
 
@@ -170,11 +202,7 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const g2 = await gate("typing the filter");
   if (g2 !== null) return stopped(g2, "filtering");
   if (textField !== null && el.getAttribute("aria-autocomplete") !== "none") typeInto(textField, verb.value);
-  const current = (): Element | null => {
-    const named = namedListbox(el);
-    if (named !== null) return (listbox = named);
-    return listbox !== null && listbox.isConnected && visible(listbox) ? listbox : (listbox = newestListbox(listsBefore));
-  };
+  const current = (): Element | null => (listbox = findList());
   const options = await settledOptions(current);
   const m = matchOptions(options, verb.value);
   const why = whyNoPick(m, verb.value);
@@ -182,28 +210,33 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   if (why !== null) return stopped(answer("failed", why), "matching", named);
   const pick = m.exact[0] as Opt;
 
-  // Stage 3: pick.
+  // Stage 3: pick. The grant check awaits, so the list is read again after it: the same node must still be the one
+  // visible, enabled option named the value (W2 review #5).
   const g3 = await gate("picking the option");
   if (g3 !== null) return stopped(g3, "picking", [pick.name]);
-  if (!pick.el.isConnected) return stopped(answer("failed", "the option left the list before the pick"), "picking", [pick.name]);
+  const lbNow = current();
+  const again = lbNow === null ? { exact: [], partial: [] } : matchOptions(optionsOf(lbNow), verb.value);
+  if (again.exact.length !== 1 || again.exact[0]?.el !== pick.el) return stopped(answer("failed", "the list changed before the pick"), "picking", again.exact.map((o) => o.name));
   press(pick.el);
   const want = normalizeName(pick.name);
   await until(() => (normalizeName(shownValue(el, f)) === want ? true : null), PICK_WAIT_MS);
   // A list that stays open after a pick (a multi-select, or closeMenuOnSelect off) is closed with Escape on the control.
   if (expandedOf(el) === true) {
+    const g4 = await gate("closing the list");
+    if (g4 !== null) return afterPickStop(g4, "closing the list", pick.name);
     assertOwned(el);
     keyEvents(el, "Escape");
     await settle();
   }
   const afterPick = shownValue(el, f);
-  const midway = check();
-  if (midway !== null) return answer("failed", `the pick went in, then ${midway.detail ?? midway.outcome}; Caret stopped there`, { choice: choice([pick.name]) });
 
   // Stage 4: blur, then verify the shown text, the hidden input and aria-expanded.
+  const g5 = await gate("blurring the control");
+  if (g5 !== null) return afterPickStop(g5, "before blur", pick.name);
   (el as HTMLElement).blur();
   await settle();
   const end = check();
-  if (end !== null) return answer("failed", `the pick went in, then ${end.detail ?? end.outcome} (after blur); Caret stopped there`, { choice: choice([pick.name]) });
+  if (end !== null) return afterPickStop(end, "after blur", pick.name);
   const afterBlur = shownValue(el, f);
   const hiddenAfter = hiddenValue(f);
   const hiddenInput: Choice["hiddenInput"] = hiddenAfter === null ? "none" : hiddenAfter !== "" && hiddenAfter !== hiddenBefore ? "set" : "unchanged";

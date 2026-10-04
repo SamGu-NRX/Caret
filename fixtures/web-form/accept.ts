@@ -587,6 +587,14 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
     return `${a.verb.outcome}: ${a.verb.detail}`;
   });
 
+  await check("a file is never dropped on a control that holds no file input of its own", async () => {
+    grant(e, "t-notdz");
+    files.confirm("t-notdz", filePath);
+    const a = await link.attachFile(windowId, nodeKey(e, "Show more"), "t-notdz", files);
+    expect(a.page?.outcome === "unsupported", `${a.page === null ? `${a.verb.outcome} ${a.verb.detail}` : outcome(a.page)}`);
+    return outcome(a.page as PageResult);
+  });
+
   await check("a page snapshot makes a fill proposal: focus in the page, the helper walks it and Jev (canned) fills Email from what you told Caret", async () => {
     e.helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "w2-about", op: "add", kind: "about", fields: { label: "Email", value: "robin@example.test", source: "typed" } });
     // The reader would say the browser is frontmost; there is no reader here, so the run says it.

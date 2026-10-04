@@ -192,6 +192,9 @@ export class PageEngineLink implements ReaderLink {
     if (w === null || w.engine !== this.session.info.engine) return { verb: verbResult("noWindow", `${windowId} is not a window of engine ${this.session.info.engine}`), page: null };
     const t = targetFor(this.session.tabs.get(w.tabId), key);
     if (t === null) return { verb: verbResult("noElement", `no element ${key} in the tab's last walk`), page: null };
+    // A file input, or a dropzone (which walks as a button); the content script then requires the dropzone to hold its
+    // own file input. No text field or link is ever sent a file's bytes.
+    if (t.control.kind !== "file" && t.control.kind !== "button") return { verb: verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which takes no file`), page: null };
     const file = files.read(taskId);
     if ("refused" in file) return { verb: verbResult("notAllowed", file.refused), page: null };
     const verb: PageVerb = { kind: "pageAttachFile", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, file };

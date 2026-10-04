@@ -61,7 +61,7 @@ function walk(reg: Registry): FrameReport {
     origin: self.origin,
     path: location.protocol === "about:" ? location.href : location.pathname,
     title: clean(document.title, 200),
-    headings: [...document.querySelectorAll("h1, h2")].filter(visible).slice(0, 10).map((h) => clean(h.textContent, 120)).filter((t) => t !== ""),
+    headings: [...document.querySelectorAll("h1, h2")].filter((x) => visible(x)).slice(0, 10).map((h) => clean(h.textContent, 120)).filter((t) => t !== ""),
     controls: out.controls,
     // Each visible iframe with a content box over a pixel each way, and that box's size, which is exactly its child
     // document's viewport: the worker matches child frames to these (worker.ts walk). Chrome gives content scripts no
