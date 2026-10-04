@@ -99,6 +99,19 @@ enum AXRead {
         return range
     }
 
+    /// The part of `element` on screen, global top-left points: its frame clipped to the scroll
+    /// area holding it (a text view's frame is the whole document), its window and `screen`. Nil
+    /// when its frame or window cannot be read.
+    static func visibleFrame(of element: AXUIElement, frame: CGRect, screen: CGRect) -> CGRect? {
+        guard let window = self.element(kAXWindowAttribute, on: element), let windowFrame = self.frame(of: window) else { return nil }
+        var visible = frame.intersection(windowFrame).intersection(screen)
+        if let parent = self.element(kAXParentAttribute, on: element), string(kAXRoleAttribute, on: parent) == "AXScrollArea",
+           let clip = self.frame(of: parent) {
+            visible = visible.intersection(clip)
+        }
+        return visible.isNull || visible.isEmpty ? nil : visible
+    }
+
     /// A stable token for an element: equal elements hash equal (CF contract), and re-reading the
     /// focused element returns an equal element while focus stays put.
     static func token(_ element: AXUIElement) -> String {

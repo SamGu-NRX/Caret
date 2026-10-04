@@ -67,6 +67,9 @@ final class SurfaceCoordinator {
     /// are placed within it instead of the screen's visible frame. Global, top-left origin.
     var placementBounds: CGRect?
     private var lastRead: FieldRead?
+    /// The on-screen part of the last field read, for the compact line in a text view
+    /// (`FieldPanelPlacement.caretLineSpot`). Keyed by the field's frame, as placements are.
+    private var lastVisible: (field: CGRect, visible: CGRect)?
     private var nextReadID: UInt64 = 1
     private var drawn: Drawn?
     private var activation: NSObjectProtocol?
@@ -146,6 +149,9 @@ final class SurfaceCoordinator {
         let id = nextReadID
         nextReadID &+= 1
         lastRead = FieldRead(id: id, element: element, field: field, frame: frame)
+        lastVisible = frame.flatMap { f in
+            AXRead.visibleFrame(of: element, frame: f, screen: bounds(around: f)).map { (f, $0) }
+        }
         return FocusedField(
             identity: field.identity, value: field.value, selection: field.selection, frame: frame,
             window: AXRead.windowIdentity(of: element), readID: id
@@ -205,6 +211,7 @@ final class SurfaceCoordinator {
         case .toastSlotTaken: onToastChanged?()
         case .count(let name): status.increment(name)
         case .publish: publish()
+        case .log(let line): FileHandle.standardError.write(Data("caret: surface: \(line)\n".utf8))
         }
     }
 
@@ -377,7 +384,7 @@ final class SurfaceCoordinator {
     /// around the field that covers none of the app's own elements? The probe is the one the draw
     /// would make, and its answer is kept for that draw.
     fileprivate func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool {
-        let placed = place(Self.view(content, character: character), narrows: Self.narrows(content), field: field, caret: caret, pid: pid, counts: false)
+        let placed = place(Self.view(content, character: character), narrows: Self.narrows(content), field: field, caret: caret, pid: pid, counts: false, content: content)
         fitted = (content, field, caret, pid, placed)
         return placed.choice.overlap == 0
     }
@@ -398,7 +405,7 @@ final class SurfaceCoordinator {
                 placed = fit.placed
                 countPlacement(fit.placed.choice)
             } else if enter {
-                placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
+                placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid, content: content)
             } else if var current = placed {
                 // Content grew or shrank about the pinned corner (a reveal, the highlight moving).
                 // Only the area it grew into is probed; if that covers something, runs off the
@@ -413,7 +420,7 @@ final class SurfaceCoordinator {
                     let under = added.isEmpty ? [] : ObstacleProbe.Session(pid: pid, until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)
                         .under(added)?.filter { !$0.insetBy(dx: -2, dy: -2).contains(field) }
                     if !usable.contains(grown) || under.map({ $0.contains(where: { $0.intersects(grown) }) }) ?? true {
-                        placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid)
+                        placed = place(view, narrows: narrows, field: field, caret: caret, pid: pid, content: content)
                     } else {
                         current.choice.frame = grown
                         placed = current
@@ -430,9 +437,19 @@ final class SurfaceCoordinator {
         }
     }
 
-    private func place(_ view: (CGFloat?) -> AnyView, narrows: Bool, field: CGRect, caret: CGRect, pid: Int32, counts: Bool = true) -> Placed {
+    private func place(
+        _ view: (CGFloat?) -> AnyView, narrows: Bool, field: CGRect, caret: CGRect, pid: Int32, counts: Bool = true, content: PanelContent? = nil
+    ) -> Placed {
         let started = DispatchTime.now().uptimeNanoseconds
         let size = panel.measure(view(nil))
+        // The compact line in a text view hangs from the caret's line inside the view's visible
+        // part, unprobed (A18, bug 2).
+        if case .compactLine? = content, let seen = lastVisible, seen.field == field,
+           let spot = FieldPanelPlacement.caretLineSpot(field: field, caret: caret, size: size, visible: seen.visible) {
+            if counts { countPlacement(spot) }
+            let ms = Double(DispatchTime.now().uptimeNanoseconds &- started) / 1_000_000
+            return Placed(choice: spot, field: field, caret: caret, pid: pid, milliseconds: ms)
+        }
         let narrow = narrows && size.width > PopupView.minWidth ? panel.measure(view(PopupView.minWidth)) : nil
         let probe = ObstacleProbe.Session(pid: pid, until: started + Self.probeBudget)
         let choice = FieldPanelPlacement.choose(
@@ -448,6 +465,8 @@ final class SurfaceCoordinator {
     /// A13 only the full card a user opened with ↓ can be, and only on a screen with no clear spot).
     private func countPlacement(_ choice: FieldPanelPlacement.Choice) {
         status.increment("surface.placed.\(choice.spot.rawValue)")
+        // Only `caretLineSpot` answers with nothing probed and nothing covered.
+        if choice.probed == 0, choice.overlap == 0 { status.increment("surface.placed.caretLine") }
         if choice.overlap ?? 0 > 0 { status.increment("surface.placed.covering") }
     }
 

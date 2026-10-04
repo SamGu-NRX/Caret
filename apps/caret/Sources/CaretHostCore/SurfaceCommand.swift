@@ -26,6 +26,8 @@ public enum SurfaceCommand: Equatable, Sendable {
     case count(String)
     /// The debug state changed; republish it.
     case publish
+    /// One line for the host's log (stderr): something a run must be able to find afterwards.
+    case log(String)
 }
 
 public struct AlternativesDraw: Equatable, Sendable {

@@ -335,9 +335,23 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(title(["Name", "Email"], 4), "Fill 4 fields in Caret Fixture", "rows past the card's cap are counted with the rest")
         XCTAssertEqual(title([" "], 1), "Fill 1 field in Caret Fixture", "an unnamed field is counted, never named as blank")
         XCTAssertEqual(title([], 0, press: "Send", app: "Mail"), "You press Send in Mail")
+        // Bug 16 (A18): a required field's marker is not part of its name.
+        XCTAssertEqual(title(["Email *"], 1, app: "Google Chrome"), "Fill Email in Google Chrome")
+        XCTAssertEqual(title(["First Name*", "Email (Required)"], 2), "Fill First Name and Email in Caret Fixture")
+        XCTAssertEqual(title(["*"], 1), "Fill 1 field in Caret Fixture", "a label that is only a marker is counted")
         for t in [title(["Reference"], 1), title(["Name", "Email"], 2), title([], 0, press: "Send")] {
             XCTAssertFalse(t.contains("'") || t.contains("\u{2014}") || t.hasSuffix("."), t)
         }
+    }
+
+    func testRequiredMarkersLeaveFieldNames() {
+        XCTAssertEqual(AskCopy.fieldName("Email *"), "Email")
+        XCTAssertEqual(AskCopy.fieldName("Email:*"), "Email")
+        XCTAssertEqual(AskCopy.fieldName("Phone \u{FF0A}"), "Phone")
+        XCTAssertEqual(AskCopy.fieldName("Notes (required) *"), "Notes")
+        XCTAssertEqual(AskCopy.fieldName("Rate*Plan"), "Rate*Plan", "only a trailing marker goes")
+        XCTAssertEqual(AskCopy.fieldName(" * "), "")
+        XCTAssertEqual(AskCopy.write("jo@example.org", into: "Email *"), "Put \u{201C}jo@example.org\u{201D} in Email")
     }
 
     /// The list header says something true while the ask field is busy: a plan waiting for Tab is
@@ -550,9 +564,30 @@ final class CompactFallbackTests: XCTestCase {
             .screen { $0.front(); $0.clearPanel = { _ in false } },
             .offer(Fx.fillPopup()),
             .expect(.shown(nil)), .expect(.held(nil)), .expect(.counted("surface.held.noClearSpot")),
+            .expect(.counted("surface.unshown.noClearSpot")),
+            .expect(.custom("withdrawn and logged, not kept (A18, bug 2)", { rig in
+                rig.machine.lastUnshown == DebugState.Unshown(offerKey: "fill-2", kind: "popup", reason: "noClearSpot", heldMs: 0)
+                    && rig.logged.contains { $0.contains("fill-2") && $0.contains("noClearSpot") }
+            })),
             .expect(.tabTakes(false)), .did([]),
             .press(Fx.tab()), .sent([]),
             .wait(2), .expect(.shown(nil)), .did([]),
+        ]))
+    }
+
+    /// A18, bug 2: an offer held past `holdLimit` is withdrawn and logged, not dropped silently.
+    func testAnOfferHeldPastTheLimitIsWithdrawnAndLogged() {
+        play(Transition("the app stays behind for 31 s", [
+            .screen { $0.behind() },
+            .offer(Fx.action()),
+            .expect(.held(.appNotFront)),
+            .wait(31),
+            .expect(.held(nil)), .expect(.counted("surface.unshown.appNotFront")),
+            .expect(.custom("held 30 s, then withdrawn", { rig in
+                guard let u = rig.machine.lastUnshown else { return false }
+                return u.reason == "appNotFront" && u.kind == "action" && u.heldMs > 30_000
+            })),
+            .screen { $0.front() }, .wait(1), .expect(.shown(nil)),
         ]))
     }
 

@@ -173,4 +173,51 @@ final class FieldPanelPlacementTests: XCTestCase {
         XCTAssertEqual(FieldPanelPlacement.Spot.right.corner, .topLeft)
         XCTAssertEqual(FieldPanelPlacement.Spot.aboveNarrow.corner, .bottomLeft)
     }
+
+    // MARK: - The compact line in a text view (A18, bug 2)
+
+    /// A full-window TextEdit document as Q1 had it: the text view fills a 1280 x 860 window under a
+    /// 28 pt title bar, and the document is taller than the window.
+    private let editorWindow = CGRect(x: 100, y: 80, width: 1280, height: 860)
+    private var editorView: CGRect { CGRect(x: 100, y: 108, width: 1265, height: 2400) }
+    private var editorVisible: CGRect { editorView.intersection(editorWindow).intersection(screen) }
+    private let compactLine = CGSize(width: 330, height: 20)
+
+    func testTheCompactLineHangsUnderTheCaretsLineInAFullWindowTextView() throws {
+        let caret = CGRect(x: 520, y: 300, width: 1, height: 16)
+        let choice = try XCTUnwrap(FieldPanelPlacement.caretLineSpot(field: editorView, caret: caret, size: compactLine, visible: editorVisible))
+        XCTAssertEqual(choice.spot, .below)
+        XCTAssertEqual(choice.frame, CGRect(x: 508, y: 322, width: 330, height: 20))
+        XCTAssertEqual(choice.overlap, 0)
+        XCTAssertEqual(choice.probed, 0, "no hit-test: nothing but the document's own text is there")
+        XCTAssertFalse(choice.frame.intersects(CGRect(x: editorView.minX, y: caret.minY, width: editorView.width, height: caret.height)), "never over the caret's line")
+        XCTAssertTrue(editorWindow.contains(choice.frame))
+    }
+
+    func testOnTheLastVisibleLineItGoesAbove() throws {
+        let caret = CGRect(x: 520, y: editorWindow.maxY - 22, width: 1, height: 16)
+        let choice = try XCTUnwrap(FieldPanelPlacement.caretLineSpot(field: editorView, caret: caret, size: compactLine, visible: editorVisible))
+        XCTAssertEqual(choice.spot, .above)
+        XCTAssertEqual(choice.frame.maxY, caret.minY - FieldPanelPlacement.gap)
+        XCTAssertTrue(editorWindow.contains(choice.frame))
+    }
+
+    func testNearTheRightEdgeItSlidesLeftToStayInTheWindow() throws {
+        let caret = CGRect(x: editorWindow.maxX - 30, y: 300, width: 1, height: 16)
+        let choice = try XCTUnwrap(FieldPanelPlacement.caretLineSpot(field: editorView, caret: caret, size: compactLine, visible: editorVisible))
+        XCTAssertEqual(choice.frame.maxX, editorVisible.maxX - FieldPanelPlacement.margin)
+    }
+
+    func testAOneLineFieldIsLeftToChoose() {
+        let field = CGRect(x: 200, y: 140, width: 260, height: 22)
+        XCTAssertNil(FieldPanelPlacement.caretLineSpot(field: field, caret: caret(in: field), size: compactLine, visible: screen))
+    }
+
+    func testNoSpotWhenTheVisiblePartIsTooSmall() {
+        let caret = CGRect(x: 520, y: 300, width: 1, height: 16)
+        let narrow = CGRect(x: 400, y: 290, width: 200, height: 400)
+        XCTAssertNil(FieldPanelPlacement.caretLineSpot(field: editorView, caret: caret, size: compactLine, visible: narrow), "narrower than the line")
+        let short = CGRect(x: 100, y: 292, width: 1200, height: 34)
+        XCTAssertNil(FieldPanelPlacement.caretLineSpot(field: editorView, caret: caret, size: compactLine, visible: short), "no room above or below")
+    }
 }
