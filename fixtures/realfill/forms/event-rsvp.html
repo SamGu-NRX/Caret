@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>RSVP | Jun &amp; Priscilla's 10th Anniversary</title>
+<style>
+body{font-family:"Cormorant Garamond",Georgia,serif;max-width:620px;margin:30px auto;color:#3c3530;background:#fffaf4;text-align:left}
+h1{font-size:34px;font-weight:400;text-align:center;margin:0} .when{text-align:center;color:#8a7a6b;margin:6px 0 26px;font-style:italic}
+h2{font-size:20px;font-weight:400;border-top:1px solid #e6d9c8;padding-top:14px;margin-top:26px}
+label,legend{display:block;font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:13px;letter-spacing:.02em;margin:12px 0 5px}
+input[type=text],input[type=email],input[type=tel],input[type=time],select,textarea{width:100%;padding:9px;font-size:15px;box-sizing:border-box;border:1px solid #d9c9b6;border-radius:4px;background:#fff}
+fieldset{border:0;padding:0;margin:12px 0} fieldset label{display:inline-block;margin-right:22px;font-size:15px}
+.check label{display:inline} .hint{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:12px;color:#8a7a6b}
+button{display:block;margin:26px auto 0;padding:12px 34px;font-size:16px;background:#7c5e46;color:#fff;border:0;border-radius:30px}
+</style></head><body>
+<!-- Invented celebration RSVP page (B24 corpus). Submit is inert. -->
+<h1>Jun &amp; Priscilla</h1>
+<p class="when">Ten years! Saturday, October 24 &middot; The Glasshouse, Portland</p>
+<form onsubmit="event.preventDefault()">
+<label for="name">Your full name *</label><input type="text" id="name" autocomplete="off">
+<label for="email">Email *</label><input type="email" id="email" autocomplete="off">
+<label for="phone">Phone (optional)</label><input type="tel" id="phone" autocomplete="off">
+<fieldset><legend>Will you be joining us? *</legend>
+<label><input type="radio" name="attend" value="yes"> Joyfully accepts</label>
+<label><input type="radio" name="attend" value="no"> Regretfully declines</label>
+</fieldset>
+<label for="party">How many in your party? *</label>
+<select id="party"><option value="">Select</option><option>1</option><option>2</option></select>
+<p class="hint">Your invitation includes one guest.</p>
+
+<h2>Dinner</h2>
+<label for="meal">Your meal choice</label>
+<select id="meal"><option value="">Select a meal</option><option>Braised short rib</option><option>Herb-roasted salmon</option><option>Wild mushroom risotto (vegetarian)</option></select>
+<label for="gname">Guest's full name</label><input type="text" id="gname" autocomplete="off">
+<label for="gmeal">Guest's meal choice</label>
+<select id="gmeal"><option value="">Select a meal</option><option>Braised short rib</option><option>Herb-roasted salmon</option><option>Wild mushroom risotto (vegetarian)</option></select>
+<label for="diet">Dietary restrictions or allergies (optional)</label><textarea id="diet" rows="2"></textarea>
+
+<h2>The evening</h2>
+<label for="arrive">Approximate arrival time</label><input type="time" id="arrive" min="17:00" max="23:00">
+<p class="hint">Doors open at 5:00 PM; dinner is served at 8:00 PM.</p>
+<label for="note">A note for the couple (optional)</label><textarea id="note" rows="3"></textarea>
+<div class="check"><input type="checkbox" id="texts"> <label for="texts">Text me updates about the day</label></div>
+<button type="submit">Send RSVP</button>
+</form>
+</body></html>

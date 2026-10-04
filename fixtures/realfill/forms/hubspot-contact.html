@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Contact Sales | HubSpot's Software (local replica)</title>
+<style>
+body{font-family:-apple-system,Helvetica,Arial,sans-serif;max-width:640px;margin:24px auto;color:#33475b}
+.row{display:flex;gap:16px} .row>div{flex:1} label{display:block;font-size:14px;margin:14px 0 4px}
+input,select,textarea{width:100%;padding:10px;font-size:15px;box-sizing:border-box;border:1px solid #cbd6e2;border-radius:3px}
+input[type=checkbox]{width:auto} .consent label{display:inline;font-size:12px}
+button{margin-top:20px;padding:12px 24px;font-size:16px;background:#ff7a59;color:#fff;border:0;border-radius:3px}
+</style></head><body>
+<!-- Replica of HubSpot's contact-sales form as the Q1 dogfood saw it: required markers written straight
+     after the label ("First Name*"). Submit is inert. -->
+<h1>Talk to sales</h1>
+<form onsubmit="event.preventDefault()">
+<div class="row">
+ <div><label for="firstname">First Name*</label><input id="firstname" type="text" autocomplete="off"></div>
+ <div><label for="lastname">Last Name*</label><input id="lastname" type="text" autocomplete="off"></div>
+</div>
+<div class="row">
+ <div><label for="email">Email*</label><input id="email" type="email" autocomplete="off"></div>
+ <div><label for="phone">Phone number*</label><input id="phone" type="tel" autocomplete="off"></div>
+</div>
+<label for="company">Company name*</label><input id="company" type="text" autocomplete="off">
+<label for="website">Website URL*</label><input id="website" type="text" autocomplete="off">
+<label for="size">Company size*</label>
+<select id="size"><option value="">Please Select</option><option>1 employee</option><option>2 to 9 employees</option><option>10 to 24 employees</option><option>25 to 49 employees</option><option>50 to 99 employees</option><option>100 to 199 employees</option><option>200 or more employees</option></select>
+<label for="help">How can we help?</label><textarea id="help" rows="3"></textarea>
+<div class="consent"><input type="checkbox" id="consent"> <label for="consent">I agree to receive other communications from HubSpot.</label></div>
+<button type="submit">Submit</button>
+</form>
+</body></html>

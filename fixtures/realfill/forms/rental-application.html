@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Rental Application | Cedar Court Apartments</title>
+<style>
+body{font-family:Georgia,"Times New Roman",serif;max-width:780px;margin:28px auto;color:#2b2b2b;background:#fbfaf7}
+h1{font-size:26px;margin-bottom:4px} .sub{color:#666;margin-top:0}
+h2{font-size:17px;border-bottom:1px solid #d8d2c4;padding-bottom:4px;margin-top:30px;font-family:-apple-system,Helvetica,Arial,sans-serif}
+label,legend{display:block;font:600 13px -apple-system,Helvetica,Arial,sans-serif;margin:12px 0 4px}
+.row{display:flex;gap:14px} .row>div{flex:1}
+input[type=text],input[type=email],input[type=tel],input[type=date],select,textarea{width:100%;padding:8px;font-size:15px;box-sizing:border-box;border:1px solid #b9b2a3;border-radius:2px;background:#fff}
+fieldset{border:0;padding:0;margin:12px 0} fieldset label{display:inline-block;font-weight:400;margin-right:18px}
+.req{color:#a3341c} .hint{font:12px -apple-system,Helvetica,Arial,sans-serif;color:#777;margin:2px 0 0}
+.check label{display:inline;font-weight:400}
+button{margin-top:26px;padding:12px 26px;font-size:16px;background:#3d5a40;color:#fff;border:0;border-radius:2px}
+</style></head><body>
+<!-- Invented property-management rental application (B24 corpus). Submit is inert. -->
+<h1>Rental Application</h1>
+<p class="sub">Cedar Court Apartments &middot; one application per adult occupant. Fields marked <span class="req">*</span> are required.</p>
+<form onsubmit="event.preventDefault()">
+<h2>Applicant</h2>
+<div class="row">
+ <div><label for="first">First name <span class="req">*</span></label><input type="text" id="first" autocomplete="off"></div>
+ <div><label for="middle">Middle name</label><input type="text" id="middle" autocomplete="off"></div>
+ <div><label for="last">Last name <span class="req">*</span></label><input type="text" id="last" autocomplete="off"></div>
+</div>
+<div class="row">
+ <div><label for="dob">Date of birth <span class="req">*</span></label><input type="date" id="dob"></div>
+ <div><label for="ssn">Social Security number <span class="req">*</span></label><input type="text" id="ssn" inputmode="numeric" autocomplete="off" placeholder="XXX-XX-XXXX"></div>
+</div>
+<div class="row">
+ <div><label for="email">Email address <span class="req">*</span></label><input type="email" id="email" autocomplete="off"></div>
+ <div><label for="mobile">Mobile phone <span class="req">*</span></label><input type="tel" id="mobile" autocomplete="off"></div>
+</div>
+
+<h2>Current residence</h2>
+<div class="row">
+ <div style="flex:3"><label for="street">Street address <span class="req">*</span></label><input type="text" id="street" autocomplete="off"></div>
+ <div><label for="unit">Apt / Unit (optional)</label><input type="text" id="unit" autocomplete="off"></div>
+</div>
+<div class="row">
+ <div style="flex:2"><label for="city">City <span class="req">*</span></label><input type="text" id="city" autocomplete="off"></div>
+ <div><label for="state">State <span class="req">*</span></label>
+  <select id="state"><option value="">Select</option><option>AL</option><option>AK</option><option>AZ</option><option>AR</option><option>CA</option><option>CO</option><option>CT</option><option>DE</option><option>DC</option><option>FL</option><option>GA</option><option>HI</option><option>ID</option><option>IL</option><option>IN</option><option>IA</option><option>KS</option><option>KY</option><option>LA</option><option>ME</option><option>MD</option><option>MA</option><option>MI</option><option>MN</option><option>MS</option><option>MO</option><option>MT</option><option>NE</option><option>NV</option><option>NH</option><option>NJ</option><option>NM</option><option>NY</option><option>NC</option><option>ND</option><option>OH</option><option>OK</option><option>OR</option><option>PA</option><option>RI</option><option>SC</option><option>SD</option><option>TN</option><option>TX</option><option>UT</option><option>VT</option><option>VA</option><option>WA</option><option>WV</option><option>WI</option><option>WY</option></select></div>
+ <div><label for="zip">ZIP code <span class="req">*</span></label><input type="text" id="zip" inputmode="numeric" autocomplete="off"></div>
+</div>
+<div class="row">
+ <div><label for="since">Moved in (MM/YYYY) <span class="req">*</span></label><input type="text" id="since" placeholder="MM/YYYY" autocomplete="off"></div>
+ <div><label for="rent">Monthly rent ($) <span class="req">*</span></label><input type="text" id="rent" inputmode="decimal" autocomplete="off"></div>
+</div>
+<label for="reason">Reason for moving (optional)</label><textarea id="reason" rows="2"></textarea>
+
+<h2>Current landlord</h2>
+<p class="hint">We will contact your current landlord or property manager to verify your rental history.</p>
+<div class="row">
+ <div><label for="llname">Landlord or property manager name <span class="req">*</span></label><input type="text" id="llname" autocomplete="off"></div>
+ <div><label for="llphone">Landlord phone <span class="req">*</span></label><input type="tel" id="llphone" autocomplete="off"></div>
+</div>
+
+<h2>Move details</h2>
+<div class="row">
+ <div><label for="movein">Desired move-in date <span class="req">*</span></label><input type="date" id="movein"></div>
+ <div><label for="occ">Number of occupants (including you) <span class="req">*</span></label>
+  <select id="occ"><option value="">Select</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5 or more</option></select></div>
+</div>
+<fieldset><legend>Do you have pets? <span class="req">*</span></legend>
+<label><input type="radio" name="pets" value="yes"> Yes</label>
+<label><input type="radio" name="pets" value="no"> No</label>
+</fieldset>
+
+<h2>Employment and income</h2>
+<div class="row">
+ <div><label for="employer">Current employer <span class="req">*</span></label><input type="text" id="employer" autocomplete="off"></div>
+ <div><label for="title">Job title</label><input type="text" id="title" autocomplete="off"></div>
+</div>
+<div class="row">
+ <div><label for="income">Gross monthly income ($) <span class="req">*</span></label><input type="text" id="income" inputmode="decimal" autocomplete="off"></div>
+ <div><label for="vehicle">Vehicle make and model (optional)</label><input type="text" id="vehicle" autocomplete="off"></div>
+</div>
+
+<h2>Agreements</h2>
+<div class="check"><input type="checkbox" id="certify"> <label for="certify">I certify that the information in this application is true and complete.</label></div>
+<div class="check"><input type="checkbox" id="news"> <label for="news">Email me about available units and resident events.</label></div>
+<button type="submit">Submit application</button>
+</form>
+</body></html>
