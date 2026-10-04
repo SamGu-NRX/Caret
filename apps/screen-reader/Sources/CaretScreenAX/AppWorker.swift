@@ -84,11 +84,22 @@ final class PressIndex: @unchecked Sendable {
         byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: defaultButton)
     }
 
-    /// After a walk of part of the window: its keys, keeping the controls and default button of the last full walk.
-    func setKeys(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext]) {
+    /// After a walk of part of the window: its keys, and the controls and default button of the last full walk with
+    /// the label and enabled state this walk read for any of them it covered (B21 review: a Send renamed or disabled
+    /// since the full walk must not be reported as it was).
+    func setKeys(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node]) {
         let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
+        let read = Dictionary(nodes.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let label = { (n: Node) in (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
         lock.lock(); defer { lock.unlock() }
-        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: byWindow[w]?.controls ?? [], defaultButton: byWindow[w]?.defaultButton)
+        let controls = (byWindow[w]?.controls ?? []).map { c in
+            read[c.key].map { Control(key: c.key, role: $0.role, label: label($0), frame: $0.frame ?? c.frame) } ?? c
+        }
+        var d = byWindow[w]?.defaultButton
+        if let old = d, let k = old.key, let n = read[k] {
+            d = DefaultButton(key: k, role: n.role, label: label(n), enabled: !n.states.contains(.disabled))
+        }
+        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: d)
     }
 
     func setFocus(_ f: Focused?) {
@@ -539,12 +550,15 @@ public final class AppWorker: @unchecked Sendable {
         let raw = walker.readChildren(of: w.el)
         let title = AX.string(w.el, kAXTitleAttribute) ?? ""
         let result = Compactor(app: appPart, windowKind: info.kind, windowTitle: title).compact(windowChildren: raw)
-        let walkMs = walker.elapsedMs
         var contexts: [AXRef: KeyContext] = [:]
         for (h, kc) in result.contexts { contexts[AXRef(walker.elements[h])] = kc }
+        // A sheet the walk found among the window's children takes the window's keys, so its default button is Return's.
+        let sheet = raw.first { $0.role == kAXSheetRole }?.handle.map { walker.elements[$0] }
+        let defaultButton = defaultButton(of: sheet ?? w.el, contexts: contexts, nodes: result.nodes)
+        let walkMs = walker.elapsedMs
         info.contexts = contexts
         info.lastWalk = CFAbsoluteTimeGetCurrent()
-        pressIndex.set(w, id: info.id, number: info.number, contexts: contexts, nodes: result.nodes, defaultButton: defaultButton(of: w, contexts: contexts, nodes: result.nodes))
+        pressIndex.set(w, id: info.id, number: info.number, contexts: contexts, nodes: result.nodes, defaultButton: defaultButton)
 
         let frame = AX.frame(of: w.el)
         var h = Hasher()
@@ -566,12 +580,10 @@ public final class AppWorker: @unchecked Sendable {
         return (result.nodes, walker.truncated || walker.clipped)
     }
 
-    /// The button Return presses in the window: a sheet's default button while the window shows one, since keys go
-    /// to the sheet, else the window's own (AXDefaultButton). Its key, role, label and enabled state are from this
-    /// walk when the walk kept it; otherwise from the element itself, with no key.
-    private func defaultButton(of w: AXRef, contexts: [AXRef: KeyContext], nodes: [Node]) -> PressIndex.DefaultButton? {
-        let sheet = AX.elements(w.el, kAXChildrenAttribute)?.first { AX.string($0, kAXRoleAttribute) == kAXSheetRole }
-        guard let el = AX.element(sheet ?? w.el, kAXDefaultButtonAttribute) else { return nil }
+    /// The button Return presses in `owner`, a window or the sheet it shows (AXDefaultButton). Its key, role, label
+    /// and enabled state are from this walk when the walk kept it; otherwise from the element itself, with no key.
+    private func defaultButton(of owner: AXUIElement, contexts: [AXRef: KeyContext], nodes: [Node]) -> PressIndex.DefaultButton? {
+        guard let el = AX.element(owner, kAXDefaultButtonAttribute) else { return nil }
         AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
         if let key = contexts[AXRef(el)]?.key, let n = nodes.first(where: { $0.key == key }) {
             return PressIndex.DefaultButton(key: key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
@@ -594,7 +606,7 @@ public final class AppWorker: @unchecked Sendable {
         for (h, c) in result.contexts { info.contexts[AXRef(walker.elements[h])] = c }
         info.contentHash = nil
         windows[w] = info
-        pressIndex.setKeys(w, id: info.id, number: info.number, contexts: info.contexts)
+        pressIndex.setKeys(w, id: info.id, number: info.number, contexts: info.contexts, nodes: result.nodes)
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: .event, app: app,
                             window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: AX.frame(of: w.el), number: info.number),
                             focused: w == focusedWindow, root: kc.key, nodes: result.nodes, values: ctx.detector.values(for: result.nodes),
@@ -662,8 +674,10 @@ public final class AppWorker: @unchecked Sendable {
     /// button for Return and Enter, the focused button for Space, as the reader last read them (KeyPresses).
     /// Nothing is read from the app here, so a key that closes the window is placed all the same. Read only.
     func observeKey(_ via: UserPress.Via, time at: Int64, windows ids: Set<String>) {
+        // Placed now, as the key goes down: a walk or focus change while a click ahead of it is resolved must not
+        // change which button this key pressed (B21 review). Sent on the press queue, in order with clicks.
+        guard let p = pressIndex.keyPress(via), ids.contains(p.id) else { return }
         pressQueue.async {
-            guard let p = self.pressIndex.keyPress(via), ids.contains(p.id) else { return }
             self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: p.id, key: p.key, role: p.role, label: p.label, via: via)))
         }
     }

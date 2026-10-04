@@ -13,10 +13,13 @@
 //      2026-10-02, older than this code.
 //   2. A replay of the transfer log through this code's RoutineRecognizer. A stored transfer has its source and
 //      destination element keys only as hashes, so a hash stands in for each element's template and every
-//      position is 0. "strict" keeps the source element's hash in the shape: the same field filled from another
-//      row of a list is another shape, so routines are undercounted. "loose" drops the source element and keeps
-//      its app, window kind and part: overcounted. A destination window is one app and window kind until 120 s
-//      pass with no transfer (the recognizer's own idle close), since window ids are not stored.
+//      position is 0. "strict" keeps the source element's hash in the shape; "loose" drops it and keeps the
+//      source's app, window kind and part. Neither bounds the live count from one side: a key hash keeps the
+//      row ordinal a template drops, so strict splits a repeated routine into several (fewer repeats) and can
+//      also make one field filled from two list rows into two shapes, a routine the live recognizer would not
+//      see (B21 review); loose merges sources the live recognizer keeps apart. A destination window is one app
+//      and window kind until 120 s pass with no transfer (the recognizer's own idle close), since window ids
+//      are not stored, so separate windows of one app can share a bundle.
 //   3. A loop proxy: the loop recognizer needs element positions, which are not stored, so runs of transfers
 //      that repeat one (source app and kind, part, destination app and kind) into distinct destination fields,
 //      under LOOP_GAP_MS apart, are counted instead. An upper bound: it cannot check that rows step evenly.
@@ -251,7 +254,9 @@ try {
     "",
     "## 2. Replay through this code's RoutineRecognizer (hashes as templates)",
     "",
-    "| Shape | Transfers | Bundles | Bundles of 2+ shapes | Routines | Seen 2+ | Seen 3+ | Seen 4+ | Proven by balanced (first) | Proven by eager (first) | Promoted (balanced / eager) |",
+    "Approximations, not bounds: strict can split one routine into many and can invent one from a field filled from two list rows; loose merges different sources; one app's windows share a bundle until 120 s pass.",
+    "",
+    "| Shape | Transfers | Bundles | Bundles of 2+ shapes | Routines | Seen 2+ | Seen 3+ | Seen 4+ | Reach proof by balanced (first) | Reach proof by eager (first) | Reach promotion (balanced / eager) |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...replays.map((r) => {
       const seen = (k: number): number => r.routines.filter((x) => x.occurrences.length >= k).length;

@@ -410,6 +410,19 @@ describe("typed name and email over the socket, as the host sends them", () => {
     expect(host.received.slice(before).some((m) => (m as { type: string }).type === "error")).toBe(false);
   });
 
+  it("re-proposes for the frontmost app's form after a background app's request walk moved the model's focused window (B21 review)", async () => {
+    await reader.replay([snap([text(F("statictext:order ord-#-#~0"), "Order ORD-2026-48213")], { at: 1000, windowId: "5150-60", title: "Order" })], hooks);
+    await openForm("5150-61", ["Name", "Email"], 2000);
+    await host.waitFor((m) => m.type === "fillProposal" && m.windowId === "5150-61");
+    // A request walk of a background app's window arrives marked focused, as the reader's walks for the executor do.
+    await reader.replay([snap([field("dev.caret.mail/standard/textfield:to~0", "", { label: "To" })], { at: 2500, windowId: "6160-1", title: "Compose", app: MAIL_APP, focused: true, focusedKey: "dev.caret.mail/standard/textfield:to~0", reason: "request" })], hooks);
+    expect(helper.model.focusedWindowId).toBe("6160-1");
+    await memory("add-name", { op: "add", kind: "about", fields: { label: "Name", value: "Sam Rivera", source: "typed" } });
+    const p = FillProposal.parse(await host.waitFor((m) => m.type === "fillProposal" && m.windowId === "5150-61" && (m.fields as { value: unknown }[]).some((f) => f.value !== null), 1000));
+    expect(p.fields.find((f) => f.key === key("Name"))?.value).toBe("Sam Rivera");
+    expect(host.received.some((m) => (m as { windowId?: string }).windowId === "6160-1" && (m as { type: string }).type === "fillProposal")).toBe(false);
+  });
+
   it("does not ask again inside the repeat window when the added entry fits no field of the focused form (B21)", async () => {
     await reader.replay([snap([text(F("statictext:order ord-#-#~0"), "Order ORD-2026-48213")], { at: 1000, windowId: "5150-50", title: "Order" })], hooks);
     await openForm("5150-51", ["Phone", "Company"], 2000);

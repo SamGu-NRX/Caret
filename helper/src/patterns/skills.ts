@@ -31,10 +31,11 @@ export type FactCell = Pick<RoutineCell, "dstWindowId" | "dstLabel" | "srcWindow
 
 /**
  * Clean runs in a row before Caret offers to run a skill without a Tab. Assumed, not measured: the plan's
- * permission table names 10 (fable55-plan.md section 3). B21 replayed two real days of the shadow store
- * (scripts/real-day-replay.ts, 557 transfers): no routine came back more than 8 times, and the longest run of
- * a routine repeating into its destination with nothing else in between was 3, so the data can neither
- * support nor refute 10. Kept until a store holds routines that repeat past it.
+ * permission table names 10 (fable55-plan.md section 3). B21 read two real days of the shadow store
+ * (scripts/real-day-replay.ts, 557 transfers): the shadow helper's own recognizer saw no routine more than
+ * twice and scored no prediction; an approximate replay through this code found one routine 8 times and no
+ * run of a routine repeating into its destination longer than 3. The data can neither support nor refute
+ * 10, so it is kept until a store holds routines that repeat past it.
  */
 export const PROMOTE_AFTER = 10;
 

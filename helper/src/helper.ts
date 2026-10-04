@@ -718,10 +718,13 @@ export class Helper {
    */
   private refillFocused(): void {
     if (this.mode !== "live") return;
-    const id = this.model.focusedWindowId;
-    const w = id === null ? undefined : this.model.windows.get(id);
-    if (id === null || w === undefined || w.focusedKey === null) return;
-    if (this.model.frontmostPid !== w.app.pid && !this.opts.allowBackgroundFocus) return;
+    // The frontmost app's focused window: focusedWindowId can name a background app's window after a request walk.
+    // Tests that allow background focus take the latest focus in any app, as their focus events do.
+    const background = this.opts.allowBackgroundFocus && this.model.focusedWindowId !== null ? this.model.windows.get(this.model.focusedWindowId) : undefined;
+    const w = background ?? this.model.userWindow();
+    if (w === null || w.focusedKey === null) return;
+    if (!this.opts.allowBackgroundFocus && (this.model.frontmostPid === null || this.model.frontmostPid !== w.app.pid)) return;
+    const id = w.window.windowId;
     const n = w.nodes.get(w.focusedKey);
     if (n?.editable !== true || (n.value ?? "") !== "") return;
     void this.fill(id, w.focusedKey, false, true);

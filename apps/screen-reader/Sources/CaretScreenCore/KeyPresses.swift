@@ -20,6 +20,10 @@ public enum KeyPresses {
     /// on a laptop is Fn-Return, and keypad keys carry the keypad flag.
     public static let shortcutFlags: UInt64 = 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010_0000
 
+    /// Roles that take typed text, Return and Space included: the editable roles, and a password field, which
+    /// some apps give its own role rather than a subrole of AXTextField (B21 review).
+    public static let textRoles: Set<String> = Roles.editable.union(["AXSecureTextField"])
+
     /// Roles that Space presses when focused. A link is left out: Space scrolls a page with a link focused.
     public static let spacePressable: Set<String> = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton"]
 
@@ -46,7 +50,7 @@ public enum KeyPresses {
     /// enabled default button, as the reader last read them. Nil when it presses nothing the reader reports:
     /// a text field has focus, Return with no enabled default button, or Space on something that is not a button.
     public static func target(_ via: UserPress.Via, focusedRole: String?, enabledDefaultButton: Bool) -> Target? {
-        if let r = focusedRole, Roles.editable.contains(r) { return nil }
+        if let r = focusedRole, textRoles.contains(r) { return nil }
         switch via {
         case .return, .enter: return enabledDefaultButton ? .defaultButton : nil
         case .space: return focusedRole.map { spacePressable.contains($0) } == true ? .focused : nil

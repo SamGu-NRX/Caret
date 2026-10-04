@@ -12,6 +12,11 @@ export const WindowSel = z
     title: z.string().optional(),
     /** Title prefix, for windows whose title an earlier step changes. */
     titleStartsWith: z.string().optional(),
+    /**
+     * The window server's number (WindowRef.number): only that window matches. The planner sets it when the
+     * reader read one, so two windows of one app with one title ("Untitled") are told apart (B21 review).
+     */
+    number: z.number().int().positive().optional(),
   })
   .refine((w) => w.title !== undefined || w.titleStartsWith !== undefined, { message: "a window needs title or titleStartsWith" });
 export type WindowSel = z.infer<typeof WindowSel>;

@@ -901,7 +901,8 @@ export class Executor {
       (w) =>
         (sel.bundleId === undefined || w.app.bundleId === sel.bundleId) &&
         (sel.title === undefined || w.window.title === sel.title) &&
-        (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)),
+        (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)) &&
+        (sel.number === undefined || w.window.number === sel.number),
     );
     if (hits.length === 0) throw StepStop.stop("windowGone", `no window matches ${k}`, "screen");
     if (hits.length > 1) throw StepStop.stop("ambiguous", `${hits.length} windows match ${k}; the plan must name one`);

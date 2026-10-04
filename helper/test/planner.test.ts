@@ -18,7 +18,7 @@ import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.
 import { asksToFillForm, byRelevance, namesShortLabel, planTask, requestedWindow, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
-import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
+import { executorWindow, FakeApp, K, TITLE, WIN, WIN_NUMBER, wireButtons } from "./fake-app.ts";
 
 const REF = "6160-2";
 const REF_TITLE = "Mail Fixture — Order";
@@ -637,6 +637,16 @@ describe("planRequest through the helper", () => {
     const miss = await named(999_999, "w2");
     expect(miss).toMatchObject({ outcome: "error", error: { code: "unseenWindow", detail: "the reader has not read window 999999 of process 5150" } });
     expect(PlanProposal.parse(miss).offerKey).toBeNull();
+  });
+
+  it("plans and runs in the numbered window when another window of the app has the same title (B21 review)", async () => {
+    // Same app, same title, another number: by title alone the plan's window would be ambiguous.
+    void helper.handleReader(snap(executorWindow(), { at: 700, windowId: "5150-9", title: TITLE, number: 4900 }));
+    jev = plannerJev({ fields: { Name: "Dana Whitfield" } });
+    const r = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "same", at: clock, instruction: "Set Name to Dana Whitfield", window: { pid: 5150, number: WIN_NUMBER, title: TITLE } });
+    expect(PlanProposal.parse(r)).toMatchObject({ outcome: "proposed", window: { windowId: WIN } });
+    expect(await accept(r.offerKey ?? "")).toMatchObject({ outcome: "done", acted: 1 });
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana Whitfield");
   });
 
   it("copies a memory value, and refuses it once the entry is forgotten", async () => {

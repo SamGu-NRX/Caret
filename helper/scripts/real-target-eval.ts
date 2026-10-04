@@ -944,6 +944,11 @@ async function candidatesTable(probe: string): Promise<void> {
       } catch (e) {
         o = { ok: false, error: String(e) };
       }
+      // The probe saw another app frontmost before a key: the run is not measuring a frontmost target any more.
+      if (FRONT && String(o.error ?? "").startsWith("deferred: foreground")) {
+        aborted = `${String(o.error)} (candidate ${candidate}, run ${r})`;
+        throw new Aborted(aborted);
+      }
       await sleep(300);
       const after = await target.state();
       const others = Object.keys(before.fields).filter((k) => k !== "name" && before.fields[k] !== after.fields[k]);

@@ -201,7 +201,8 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
     throw new PlannerError("nothingToDo", "Jev found nothing in your instruction to write or press here");
   }
 
-  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title };
+  // By number too when the reader read one: another window of the app with the same title is not this one.
+  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }) };
   const slots: Record<string, string> = {};
   const slotNames: Record<string, string> = {};
   const steps: Step[] = writes.map(({ field, value }, i) => {
@@ -371,22 +372,8 @@ export function requestedWindow(model: ScreenModel, req: { windowId?: string | u
     if (!model.windows.has(req.windowId)) throw new PlannerError("unseenWindow", `the reader has not read window ${req.windowId}`);
     return req.windowId;
   }
-  const last = lastFocusedWindow(model);
+  const last = model.userWindow();
   return last !== null && actionable(last) ? last.window.windowId : null;
-}
-
-/**
- * The window most recently focused in the app the user is in (ScreenModel.frontmostPid), or in any app
- * while the frontmost app is unknown. A request walk marks a background app's own window focused, so the
- * frontmost app decides which focus counts.
- */
-function lastFocusedWindow(model: ScreenModel): WindowState | null {
-  let best: WindowState | null = null;
-  for (const w of model.windows.values()) {
-    if (w.lastFocusedAt <= 0 || (model.frontmostPid !== null && w.app.pid !== model.frontmostPid)) continue;
-    if (best === null || w.lastFocusedAt > best.lastFocusedAt) best = w;
-  }
-  return best;
 }
 
 /** Values to choose from: the instruction's spans, then memory, then the other windows' candidates; each text once. */

@@ -34,7 +34,7 @@ import Testing
     }
 
     @Test func aReturnTypedIntoATextFieldIsNeverAPress() {
-        for role in ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"] {
+        for role in ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXSecureTextField"] {
             for via in [UserPress.Via.return, .enter, .space] {
                 #expect(KeyPresses.target(via, focusedRole: role, enabledDefaultButton: true) == nil, "\(via) in \(role)")
             }
