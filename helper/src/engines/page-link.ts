@@ -62,14 +62,36 @@ const nodeKey = (frameId: number, c: PageControl): string => `${frameKey(frameId
  * (B24 capture-2), so fill reads one radio group per set of buttons and not one per frame. Buttons that share an
  * author-chosen identifier (the `name` attribute, in strongKey) in one form are one group. A button without one
  * gets a group of its own, which fill does not offer (a group needs two buttons), rather than joining every other
- * such button of the frame. The group carries no label: PageControl has no fieldset legend.
+ * such button of the frame. The group is labelled with the question its buttons answer (PageControl.group: the
+ * fieldset legend, else the text around the group, W4), which fill reads as the radio group's label.
  */
 function radioGroupKey(frameId: number, c: PageControl): string {
+  // W4: the walk's own group (the buttons that share a name attribute in the page, whatever the name looks like):
+  // Lever names its radios "cards[<uuid>][field0]", which strongKey rejects as generated, so every button stood alone.
+  if (c.group !== undefined) return `${frameKey(frameId)}/radiogroup:${c.group.id}`;
   const ident = c.strongKey === null ? null : (JSON.parse(c.strongKey) as unknown[])[2];
   return `${frameKey(frameId)}/radiogroup:${typeof ident === "string" ? `${c.form ?? ""}/${ident}` : c.key}`;
 }
 
-/** The window snapshot the screen model takes for a tab: one AXWebArea per frame, its controls below it. */
+/** The node key of a press group (W4): one per group container, by the registry id the walk gave it. */
+const pressGroupKey = (frameId: number, groupId: string): string => `${frameKey(frameId)}/pressgroup:${groupId}`;
+
+/** A press-group option: a toggle button of a Yes/No question (content/question.ts pressGroup). */
+const isPressOption = (c: PageControl): c is PageControl & { group: { id: string; name: string }; pressed: boolean } => c.kind === "button" && c.group !== undefined && c.pressed !== undefined;
+
+/** What a press group shows as its answer: the pressed options' names, comma-joined ("" for none), as content/press.ts reads it. */
+function pressedValue(options: readonly PageControl[]): string {
+  return options.filter((o) => o.pressed === true).map((o) => o.name).join(", ");
+}
+
+/**
+ * The window snapshot the screen model takes for a tab: one AXWebArea per frame, its controls below it.
+ *
+ * A press group (W4: Ashby's Yes/No questions built from toggle buttons) reads as Chrome shows a radio group: an AXGroup
+ * labelled with the question, holding one AXRadioButton per option, checked when pressed. The group node holds the
+ * answer as its value and is editable: a write of an option's name is the one press the page engine makes there
+ * (pageChooseOption on that option, content/press.ts), verified by aria-pressed afterwards.
+ */
 export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: number): Snapshot {
   const nodes: Node[] = [];
   let focusedKey: string | null = null;
@@ -82,7 +104,16 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         parent = radioGroupKey(f.frameId, c);
         if (!groups.has(parent)) {
           groups.add(parent);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset" });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }) });
+        }
+      }
+      const press = isPressOption(c);
+      if (press) {
+        parent = pressGroupKey(f.frameId, c.group.id);
+        if (!groups.has(parent)) {
+          groups.add(parent);
+          const options = f.controls.filter((o) => isPressOption(o) && o.group.id === c.group.id);
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", label: c.group.name, value: pressedValue(options), editable: true });
         }
       }
       const states: NodeState[] = [];
@@ -90,13 +121,17 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         states.push("focused");
         focusedKey = nodeKey(f.frameId, c);
       }
-      if (c.checked === true) states.push("checked");
+      if (c.checked === true || (press && c.pressed === true)) states.push("checked");
       if (c.disabled === true) states.push("disabled");
-      const value = c.kind === "select" ? c.options?.find((o) => o.selected)?.label : c.value;
+      // A select shows its selected option's label, unless that option's value is empty: then it is the HTML placeholder,
+      // and nothing is chosen whatever it says (HubSpot's "Employees*" select shows a prompt with value ""), so the node
+      // holds no value and fill counts it unfilled (I2's queue, W4).
+      const selected = c.kind === "select" ? c.options?.find((o) => o.selected) : undefined;
+      const value = c.kind === "select" ? (selected === undefined ? undefined : selected.value === "" ? "" : selected.label) : c.value;
       nodes.push({
         key: nodeKey(f.frameId, c),
         parent,
-        role: ROLE[c.kind],
+        role: press ? "AXRadioButton" : ROLE[c.kind],
         label: c.name,
         ...(value === undefined ? {} : { value }),
         // A custom listbox takes a value too (pageChooseOption picks the option named exactly that), and so does a native
@@ -129,6 +164,16 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
     focusedKey,
     stats: { walkMs: 0, visited: nodes.length, truncated: s.frames.some((f) => f.truncated) || s.missing.length > 0 },
   };
+}
+
+/** The press group a node key names in a tab's last walk: its frame, question and options, or null. */
+export function pressGroupFor(s: PageSnapshot | undefined, key: string): { frameId: number; documentId: string; question: string; options: PageControl[] } | null {
+  if (s === undefined) return null;
+  for (const f of s.frames) {
+    const options = f.controls.filter((c) => isPressOption(c) && pressGroupKey(f.frameId, c.group.id) === key);
+    if (options.length > 0) return { frameId: f.frameId, documentId: f.documentId, question: options[0]?.group?.name ?? "", options };
+  }
+  return null;
 }
 
 /** The element a node key names in a tab's last walk, or null. */
@@ -202,9 +247,12 @@ export class PageEngineLink implements ReaderLink {
         return this.walk(w.tabId);
       case "write": {
         if (verb.attribute !== "value") return verbResult("axError", `a page field takes value writes only, not ${verb.attribute}`);
-        const t = targetFor(this.session.tabs.get(w.tabId), verb.key);
-        if (t === null) return verbResult("noElement", `no element ${verb.key} in the tab's last walk`);
+        const snap = this.session.tabs.get(w.tabId);
         if (verb.taskId === undefined) return verbResult("notAllowed", "a page write needs its task's grant");
+        const group = pressGroupFor(snap, verb.key);
+        if (group !== null) return this.pressAnswer(w.tabId, verb.key, group, verb.expect, verb.value, verb.taskId, verb.sameAs !== undefined);
+        const t = targetFor(snap, verb.key);
+        if (t === null) return verbResult("noElement", `no element ${verb.key} in the tab's last walk`);
         if (verb.sameAs !== undefined) {
           const was = this.marks.get(verb.sameAs);
           if (was === undefined) return verbResult("notSameElement", "the page engine holds no element under this mark (it restarted, or never wrote it)");
@@ -221,12 +269,16 @@ export class PageEngineLink implements ReaderLink {
           // carry it, and the option values are only what the page verb sends. Before is the option the walk saw
           // selected, which must still be the label the executor expects (W3 review #8).
           const options = t.control.options ?? [];
-          const want = options.filter((o) => o.label === verb.value);
+          // "" names the placeholder option (value ""), the value the model shows while it is selected, so an undo of a
+          // first pick puts the placeholder back.
+          const want = verb.value === "" ? options.filter((o) => o.value === "") : options.filter((o) => o.label === verb.value);
           if (want.length !== 1 || want[0] === undefined) return verbResult("noElement", `'${t.control.name}' has ${want.length} options labelled '${verb.value}'`);
           // The page verb names the option by value, and setting a value picks the first option holding it (W3 second review #5).
           if (options.filter((o) => o.value === want[0]?.value).length !== 1) return verbResult("noElement", `in '${t.control.name}', '${verb.value}' shares its value with another option, so Caret cannot pick it alone`);
           const had = options.find((o) => o.selected);
-          if ((had?.label ?? "") !== verb.expect) return verbResult("changed", `'${t.control.name}' shows '${had?.label ?? ""}', not '${verb.expect}'`);
+          // What the model shows for it (toWindowSnapshot): a placeholder option, whose value is empty, shows as "".
+          const shown = had === undefined || had.value === "" ? "" : had.label;
+          if (shown !== verb.expect) return verbResult("changed", `'${t.control.name}' shows '${shown}', not '${verb.expect}'`);
           page = { kind: "pageSelect", ...base, expect: had?.value ?? "", value: want[0].value };
         } else if (TEXT_KINDS.has(t.control.kind)) {
           page = { kind: "pageWrite", ...base, expect: verb.expect, value: verb.value };
@@ -250,6 +302,21 @@ export class PageEngineLink implements ReaderLink {
       default:
         return verbResult("axError", "not a page verb");
     }
+  }
+
+  /**
+   * A write to a press group (W4): exactly one option must carry the name written, and the group must show `expect` as
+   * its answer in the last walk. The page verb names the option and the question; the content script presses only
+   * that option and only while the question is the same. An undo is refused: no press can put "unanswered" back.
+   */
+  private async pressAnswer(tabId: number, key: string, g: NonNullable<ReturnType<typeof pressGroupFor>>, expect: string, value: string, taskId: string, undo: boolean): Promise<VerbResult> {
+    if (undo) return verbResult("notSameElement", `'${g.question}' was answered by a press, which Caret cannot take back; change the answer yourself`);
+    const want = g.options.filter((o) => o.name === value);
+    if (want.length !== 1 || want[0] === undefined) return verbResult("noElement", `'${g.question}' has ${want.length} options named '${value}'`);
+    const shown = pressedValue(g.options);
+    if (shown !== expect) return verbResult("changed", `'${g.question}' shows '${shown}' answered, not '${expect}' (${key})`);
+    const o = want[0];
+    return this.act({ kind: "pageChooseOption", tabId, frameId: g.frameId, documentId: g.documentId, id: o.id, control: "button", name: o.name, taskId, expect, value, question: g.question }, tabId);
   }
 
   private async walk(tabId: number): Promise<VerbResult> {

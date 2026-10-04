@@ -52,7 +52,11 @@ public struct PageControl: Codable, Equatable, Sendable {
     public var id: String, key: String, strongKey: String?, kind: PageControlKind, role: String, name: String
     public var value: String?, checked: Bool?, options: [PageOption]?, form: String?, rect: [Double]
     public var required: Bool?, disabled: Bool?, invalid: Bool?, shadow: String?
+    /// W4: the question a radio or a press-group option answers, and its group's id; a press-group option's aria-pressed.
+    public var group: PageGroup?, pressed: Bool?
 }
+
+public struct PageGroup: Codable, Equatable, Sendable { public var id: String, name: String }
 
 public struct PageIFrame: Codable, Equatable, Sendable { public var src: String, rect: [Double] }
 
@@ -89,11 +93,12 @@ public enum PageVerb: Codable, Equatable, Sendable {
     case write(PageTarget, expect: String, value: String)
     case press(PageTarget)
     case select(PageTarget, expect: String, value: String)
-    case chooseOption(PageTarget, expect: String, value: String)
+    /// `question` (W4): a press-group option's question, which the content script requires unchanged.
+    case chooseOption(PageTarget, expect: String, value: String, question: String? = nil)
     case setChecked(PageTarget, checked: Bool)
     case attachFile(PageTarget, file: PageFile)
 
-    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, value, checked, file }
+    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, value, checked, file, question }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         let kind = try c.decode(String.self, forKey: .kind)
@@ -109,7 +114,7 @@ public enum PageVerb: Codable, Equatable, Sendable {
         case "pageWrite": self = .write(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
         case "pagePress": self = .press(t)
         case "pageSelect": self = .select(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
-        case "pageChooseOption": self = .chooseOption(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value))
+        case "pageChooseOption": self = .chooseOption(t, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value), question: try c.decodeIfPresent(String.self, forKey: .question))
         case "pageSetChecked": self = .setChecked(t, checked: try c.decode(Bool.self, forKey: .checked))
         case "pageAttachFile": self = .attachFile(t, file: try c.decode(PageFile.self, forKey: .file))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown page verb \(kind)")
@@ -130,7 +135,7 @@ public enum PageVerb: Codable, Equatable, Sendable {
         case let .write(t, expect, value): try target("pageWrite", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value)
         case let .press(t): try target("pagePress", t)
         case let .select(t, expect, value): try target("pageSelect", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value)
-        case let .chooseOption(t, expect, value): try target("pageChooseOption", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value)
+        case let .chooseOption(t, expect, value, question): try target("pageChooseOption", t); try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value); try c.encodeIfPresent(question, forKey: .question)
         case let .setChecked(t, checked): try target("pageSetChecked", t); try c.encode(checked, forKey: .checked)
         case let .attachFile(t, file): try target("pageAttachFile", t); try c.encode(file, forKey: .file)
         }
@@ -147,7 +152,7 @@ public struct PageWriteReadings: Codable, Equatable, Sendable {
 
 /// What pageChooseOption found and checked (W2).
 public struct PageChoice: Codable, Equatable, Sendable {
-    public enum Flavor: String, Codable, Sendable { case aria, reactSelect }
+    public enum Flavor: String, Codable, Sendable { case aria, reactSelect, pressGroup }
     public enum HiddenInput: String, Codable, Sendable { case set, unchanged, none }
     public var flavor: Flavor, matches: [String], expanded: Bool?, hiddenInput: HiddenInput
 }

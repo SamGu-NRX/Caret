@@ -1647,6 +1647,13 @@ export const PageControl = z.object({
   invalid: z.literal(true).optional(),
   /** Inside a shadow root, and which kind; the walker descends closed roots through chrome.dom. */
   shadow: z.enum(["open", "closed"]).optional(),
+  /**
+   * W4: the question a radio or a press-group option answers (a fieldset legend, else the text around the group), and
+   * an id for its group, valid in this document. A press-group option is a toggle button of a Yes/No question.
+   */
+  group: z.object({ id: z.string().min(1), name: z.string().min(1) }).optional(),
+  /** W4: a press-group option's aria-pressed. */
+  pressed: z.boolean().optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 
@@ -1754,6 +1761,12 @@ const PageTarget = {
  * keys land only on the control it was given and that control's own listbox options: the one exception to "every
  * page press is a hand-off".
  *
+ * W4: `pageChooseOption` with `control: "button"` answers a Yes/No question built from toggle buttons (Ashby): `id` is
+ * the option to press, `question` the question the plan names, `expect` the group's pressed answer before ("" for
+ * none). The content script presses only that option, only while it is still an option of that question (2 to 6
+ * aria-pressed buttons that send no form, alone in one container), and verifies aria-pressed afterwards: the second
+ * exception (extension/src/content/press.ts).
+ *
  * `pageAttachFile` puts one file into a file input, or drops it on any other control (a dropzone), through
  * DataTransfer. `file.data` is the whole file, base64; a line over Chrome's 1 MB frame reaches the extension as
  * pageChunk parts. The worker checks `size` and `sha256` against the bytes before the page sees them. The helper
@@ -1764,7 +1777,7 @@ export const PageVerb = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pageWrite"), ...PageTarget, expect: z.string(), value: z.string() }),
   z.object({ kind: z.literal("pagePress"), ...PageTarget }),
   z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),
-  z.object({ kind: z.literal("pageChooseOption"), ...PageTarget, expect: z.string(), value: z.string() }),
+  z.object({ kind: z.literal("pageChooseOption"), ...PageTarget, expect: z.string(), value: z.string(), question: z.string().min(1).optional() }),
   z.object({ kind: z.literal("pageSetChecked"), ...PageTarget, checked: z.boolean() }),
   z.object({
     kind: z.literal("pageAttachFile"),
@@ -1836,7 +1849,8 @@ export type PageWriteReadings = z.infer<typeof PageWriteReadings>;
  * leaves the frame, since hidden inputs are never read out.
  */
 export const PageChoice = z.object({
-  flavor: z.enum(["aria", "reactSelect"]),
+  /** pressGroup (W4): a Yes/No question's toggle; `matches` is the option pressed. */
+  flavor: z.enum(["aria", "reactSelect", "pressGroup"]),
   matches: z.array(z.string()).max(20),
   expanded: z.boolean().nullable(),
   hiddenInput: z.enum(["set", "unchanged", "none"]),

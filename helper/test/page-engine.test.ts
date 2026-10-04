@@ -189,7 +189,8 @@ describe("engine session and page link", () => {
       ["f0/combobox:country~0/option~1", "f0/combobox:country~0", "AXMenuItem"], ["f0/button:submit~0", "f0", "AXButton"],
       ["f4", "f0", "AXWebArea"], ["f4/textbox:referral~0", "f4", "AXTextField"],
     ]);
-    expect(s.nodes.find((n) => n.key === "f0/combobox:country~0")?.value).toBe("Choose");
+    // Its placeholder (value "") shows as no value, so fill counts the select unfilled (W4).
+    expect(s.nodes.find((n) => n.key === "f0/combobox:country~0")?.value).toBe("");
     expect(s.focusedKey).toBe("f4/textbox:referral~0");
     expect(s.nodes.find((n) => n.key === "f0/textbox:first name~0")?.editable).toBe(true);
   });
@@ -221,7 +222,7 @@ describe("engine session and page link", () => {
     answer(walker(session));
     await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
     const before = applied.length;
-    const r = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f0/combobox:country~0", role: "AXPopUpButton", attribute: "value", expect: "Choose", value: "Canada", taskId: "t1" });
+    const r = await link.run({ kind: "write", pid: 4100, windowId: "page:eng1:7", key: "f0/combobox:country~0", role: "AXPopUpButton", attribute: "value", expect: "", value: "Canada", taskId: "t1" });
     expect(r.outcome).toBe("ok");
     const verbs = sent.filter((m) => m.type === "pageCommand").map((m) => (m.type === "pageCommand" ? m.verb : null));
     expect(verbs[1]).toEqual({ kind: "pageSelect", tabId: 7, frameId: 0, documentId: "D0", id: "e2", control: "select", name: "Country", taskId: "t1", expect: "", value: "ca" });
