@@ -1,10 +1,47 @@
 # Caret
 
+Caret is a copilot that lives on your own Mac. It keeps a live, structured record of every open window, offers help at the caret, and acts only after you accept, checking each change it makes and keeping undo for it.
+
+This branch holds v2. The v1 hackathon starter is still in the tree and is described [further down](#the-v1-hackathon-starter).
+
+## How v2 is built
+
+| Part | Where | What it does |
+| --- | --- | --- |
+| Reader | `apps/screen-reader/` (Swift) | Reads every open window through Accessibility, compacts it, gives each element a stable key and streams the result to the helper. It acts (writes a field, presses a safe button, adds a calendar event) only under a live grant from the helper, and rechecks its target right before each call. [README](apps/screen-reader/README.md) |
+| Helper | `helper/` (TypeScript, Node 24) | Holds the screen model and the transfer log, proposes fills and plans, and runs the executor: each step is an end state, checked before and after it acts, with undo. Also skills, memory and the recovery journal. [README](helper/README.md) |
+| Host app | the `v2/host` branch (Swift) | Owns input and acceptance: the key tap, Tab, the overlay at the caret and text insertion. |
+| Browser control | the `v2/browser` branch | Its own layer, still being decided. An extension with a native-messaging bridge is being built there. |
+
+The parts talk over one local socket in NDJSON. `helper/src/protocol.ts` is the contract; the Swift side mirrors it, and both test against `helper/fixtures/golden/`.
+
+Every action follows one rule: code proposes, Jev chooses, code copies and verifies. Jev (TypeSafe's choice API) only picks among options code built from what is on screen or in memory; it never writes a value. v2 does not use Screenpipe.
+
+## Run and test v2
+
+```sh
+cd apps/screen-reader && swift build && swift test
+cd ../../helper && pnpm install && pnpm test
+CARET_ENV_FILE=/path/to/.env node src/launch.ts --reader ../apps/screen-reader/.build/debug/caret-screen
+```
+
+The launcher starts the helper and the reader with one secret between them, so the reader talks only to that helper. Start the reader from a process that has the Accessibility grant, never through `open`.
+
+## What v2 keeps
+
+- Screen text stays in memory for ten minutes. The store keeps counts, timings and HMAC hashes of values, not the values.
+- What you tell Caret about yourself, and each run's recovery journal, are sealed with AES-256-GCM under a local key.
+- A Jev request carries snippets of the windows involved, never a whole document or conversation.
+
+## The v1 hackathon starter
+
+The rest of this file describes v1: the Python core in `caret/`, the Mac app in `apps/mac`, and the upstreams pinned under `packages/`.
+
 [Visit the Caret site](https://caret-landing-ebon.vercel.app/)
 
 A native Mac assistant with two interaction modes: inline completion accepted with Tab, and a nearby action hoverable. Jev chooses whether to abstain, offer a small text edit or propose an action; a second query selects the workflow or computer task. A fast Groq-hosted model generates inline text. The [input pipeline contract](docs/input-pipeline.md) is the source of truth; integration is still in progress.
 
-## Jev decision router
+### Jev decision router
 
 Caret does not run actions from ambient context alone. A shared judge runs on a ~2s cadence while you work:
 
@@ -15,31 +52,31 @@ Code owns cadence, validation, and execution. You accept before anything runs (T
 
 The product judge is [TypeSafe Jev](https://docs.typesafe.ai/introduction) (`TYPESAFE_API_KEY`, `--judge jev`). The Mac app defaults to `--judge pattern` so the loop works without a key; swap to `jev` in `~/.config/caret/dev.json` when you have one.
 
-## From the site
+### From the site
 
 Frames from the [interactive landing page](https://caret-landing-ebon.vercel.app/). These are browser demos with synthetic data, not recordings of the native app or live account actions.
 
-### Complete a reply in context
+#### Complete a reply in context
 
 ![A browser reply with Caret suggesting the next words beside the cursor](docs/images/landing/browser-typing.png)
 
-### Read the current frame
+#### Read the current frame
 
 ![The numbered explainer showing the active app, reply field and recent tabs](docs/images/landing/how-it-works.png)
 
-### Preview a rewrite
+#### Preview a rewrite
 
 ![Selected notes alongside a rewrite preview before replacing the text](docs/images/landing/revise.png)
 
-### Stop before payment
+#### Stop before payment
 
 ![The sample flight workflow stopped at checkout without buying a ticket](docs/images/landing/flight.png)
 
-### Propose meeting times
+#### Propose meeting times
 
 ![Three sample meeting times shown in a preview before sending a draft or placing holds](docs/images/landing/meeting.png)
 
-## Start here
+### Start here
 
 The starter needs Python 3.11+ and macOS 14+. `make app` requires full Xcode; SwiftPM checks can use the Command Line Tools. The local core has no third-party Python dependencies. The selected native executor uses Go 1.26 and a Swift worker when integrated; upstream services have separate setup requirements.
 
@@ -68,7 +105,7 @@ Caret.app starts pinned Screenpipe 0.4.50 on port 3031 (clipboard history on) wh
 
 The app asks for Accessibility, then shows a blue asterisk beside supported fields and selections. Command–Option opens the action panel; pinned skills use Command–Option–1/2/3. **Caret.app** launches a Python core over the bridge for inline routing and Jev-prepared action offers; Tab completions and gateway writing skills use the same repo via `~/.config/caret/dev.json`.
 
-## Status (honest)
+### Status (honest)
 
 **Works today**
 
@@ -85,7 +122,7 @@ The app asks for Accessibility, then shows a blue asterisk beside supported fiel
 
 **This is a contributor starter, not a finished product demo.** `make demo` exercises the planner only. The app cannot send email, create external calendar events, or purchase anything.
 
-## Where to work
+### Where to work
 
 | Component | Location | First integration |
 | --- | --- | --- |
@@ -99,7 +136,7 @@ The app asks for Accessibility, then shows a blue asterisk beside supported fiel
 
 The Python CLI also exposes JSON preview/hold/confirm for labeled fixtures (`python3 -m caret preview`). There is no server, container or web frontend in the default run. SQLite data stays in ignored `.local/` files. `python3 -m caret workflows` lists the seeds.
 
-## Public repositories
+### Public repositories
 
 Five selected repositories are pinned under `packages/`: KeyType and GhostType for one combined text interaction, Computer Use Jev for native actions, Skyvern for browser control and Screenpipe for history. Pins and roles live in [sources.json](sources.json). Alternative engines were removed so agents have one clear implementation path.
 
@@ -115,7 +152,7 @@ git submodule update --init --depth 1 packages/screenpipe
 
 Screenpipe retains its historical MIT pin, whose grant excludes `ee/`; coordinate any change with its owner. Skyvern has AGPL terms. The root license applies only to original Caret files. See [THIRD_PARTY.md](THIRD_PARTY.md).
 
-## Demo target (Austin–Dallas)
+### Demo target (Austin–Dallas)
 
 Start with the Austin–Dallas corridor. Before the live demo, connect one reliable travel source or check in a sourced, dated cached timetable. The current synthetic buffer fixture is **not** a timetable and must not be used as factual travel evidence.
 
@@ -123,7 +160,7 @@ Open a real thread, invoke Caret, and inspect its filled request. Enter produces
 
 Drop options when source calls fail. Never ask a model to invent missing availability, travel times or fares. Do not add multi-party polling, hotel search or ticket purchases to this build. The three seeds are Book a flight, Book a calendar link and Revise; only meeting previews currently execute.
 
-## Landing site
+### Landing site
 
 The first-party landing page is a separate Git submodule at `sites/landing`. Its browser demos use sample data and do not call the native app or external accounts.
 
@@ -135,7 +172,7 @@ npm run dev
 # npm run build writes the static site to dist/
 ```
 
-## Checks
+### Checks
 
 `make check` runs the scheduling/store tests, verifies submodule pins and builds the Mac executable. CI runs the Python suite and manifest check on Linux, and the Swift build on macOS. No check uses live accounts or sends messages.
 

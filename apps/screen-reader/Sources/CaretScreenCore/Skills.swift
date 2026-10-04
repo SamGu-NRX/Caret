@@ -42,7 +42,8 @@ public struct SkillOffer: Codable, Equatable, Sendable {
         for (k, v) in [("id", id), ("taskId", taskId), ("routineId", routineId), ("name", name), ("says", says), ("detail", detail)] where v.isEmpty {
             throw ProtocolError("skillOffer \(k) is empty")
         }
-        if name.count > 80 { throw ProtocolError("skillOffer name is over 80 characters") }
+        // UTF-16 code units, as zod's max(80) counts them; String.count counts grapheme clusters (CodeRabbit on PR #4).
+        if name.utf16.count > 80 { throw ProtocolError("skillOffer name is over 80 characters") }
         if (kind == .keep) != (skillId == nil) { throw ProtocolError("a keep offer has no skillId yet, and a promote offer names one") }
         if skillId?.isEmpty == true { throw ProtocolError("skillOffer skillId is empty") }
         guard actions.map(\.id) == ["accept", "decline"], actions.allSatisfy({ !$0.label.isEmpty }) else {

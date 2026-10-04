@@ -4,12 +4,14 @@ Listens on `~/.caret-run/sockets/screen.sock` for `caret-screen` and for consume
 
 ```sh
 pnpm install
-CARET_ENV_FILE=/path/to/.env node src/main.ts [--shadow] [--no-jev] [--data-dir DIR]
+CARET_ENV_FILE=/path/to/.env node src/launch.ts --reader PATH/caret-screen [-- --shadow --no-jev --data-dir DIR]
 pnpm test        # tsc, then vitest
 pnpm schema      # regenerate schemas/screen-protocol.schema.json after editing src/protocol.ts
 ```
 
 Node 24 or later; the store uses the built-in `node:sqlite`.
+
+`src/launch.ts` starts the helper and `caret-screen` with one launch secret, handed to each on its standard input (`--auth-fd 0`). The reader sends nothing and acts on nothing until the helper answers its challenge with that secret (`helperAuth`; the reader's README has the threat model). `node src/main.ts` alone runs a helper that no current reader will talk to.
 
 ## Protocol
 
@@ -24,6 +26,7 @@ A `fillProposal` holds one entry per empty field of the form: the field's key an
 - Plain screen text lives only in memory, in a rolling ten-minute window (`src/rolling-text.ts`).
 - The store under `~/Library/Application Support/CaretV2/` holds daily counts, transfers and shadow episodes. Values and element keys appear only as HMAC-SHA256 hashes under a local salt (`salt`, mode 0600), with kinds, lengths, bundle identifiers and timings. Tests read the database files byte by byte to check that no plain value is there.
 - In shadow mode the helper never calls Jev and publishes nothing.
+- The recovery journal (`recovery.sqlite`, B23) holds each run that is under way or paused: its plan, the writes it made with the values they replaced, what it was about to do, and the skill it counts for, sealed with AES-256-GCM under the memory key. A row is saved before every write, press and calendar add and dropped when the run ends. At start, a row left behind is a run a crash cut off: its skill goes back on Tab, the activity list shows it as "Stopped when Caret restarted, at step N of M", and its undo restores what it wrote, only into the elements the reader recorded. Rows older than a day are dropped.
 
 ## Transfers
 

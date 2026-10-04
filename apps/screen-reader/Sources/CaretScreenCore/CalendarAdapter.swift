@@ -8,9 +8,15 @@
 //     removes from any other calendar: it looks events up only by the ids of events it added, and
 //     searches only its own calendars, so an event outside them is never even read.
 //   - An add of an event its calendar already holds (same title, start and end) is refused and adds
-//     nothing, so two tasks racing to add the same event make one, and only the task that added it can
-//     undo it. The add's answer is built from what was saved, with no read back that could fail after
-//     the save and lose the id.
+//     nothing, so two tasks racing to add the same event make one. The add's answer is built from what
+//     was saved, with no read back that could fail after the save and lose the id.
+//   - Each event it added is kept with the task that added it, and only that task may remove it; a
+//     calendar still holding another task's event is not disposed (CodeRabbit on PR #4).
+//   - Right before each change (creating a calendar, saving or removing an event, deleting a calendar)
+//     it asks `allowed`, the reader's live grant and deadline check (S1 audit #8): a stop that came while
+//     it looked things up refuses the change.
+//   - A read that fails is an error, never "not there" (S1 audit #16): undo's check after a removal must
+//     not count a failed read as the event being gone.
 //   - An id it added is trusted only while the event is still in the calendar it was added to.
 //   - calendarDispose, and disposeAll when the reader stops, delete the calendars it created.
 // A calendar it created is known only for the life of the reader; a reader that is killed leaves it behind.
@@ -36,10 +42,18 @@ public protocol CalendarBackend: AnyObject {
     func localSourceID() -> String?
     func createCalendar(title: String, sourceID: String) throws -> String
     func deleteCalendar(id: String) throws
-    func events(calendarID: String, from: Date, to: Date) -> [BackendEvent]
+    /// Throws when the store cannot be read; an empty answer means it was read and holds none.
+    func events(calendarID: String, from: Date, to: Date) throws -> [BackendEvent]
     func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> String
-    func event(id: String) -> BackendEvent?
+    /// Throws when the store cannot be read; nil means it was read and holds no such event.
+    func event(id: String) throws -> BackendEvent?
     func removeEvent(id: String) throws
+}
+
+/// The store could not be read (S1 audit #16): answered as axError "cannot read the calendar", never as absent.
+public struct CalendarReadFailed: Error, CustomStringConvertible {
+    public let description: String
+    init(_ underlying: Error) { description = "cannot read the calendar: \(underlying)" }
 }
 
 public enum CalendarAnswer: Equatable, Sendable {
@@ -55,8 +69,8 @@ public final class CalendarAdapter: @unchecked Sendable {
     private let lock = NSLock()
     /// Calendar name to the identifier of the calendar this adapter created under that name.
     private var owned: [String: String] = [:]
-    /// Each event this adapter added and has not removed, by id, with the name of its calendar.
-    private var events: [String: String] = [:]
+    /// Each event this adapter added and has not removed, by id: the name of its calendar and the task that added it.
+    private var events: [String: (calendar: String, taskId: String)] = [:]
 
     public init(backend: CalendarBackend, zone: TimeZone = .current) {
         self.backend = backend
@@ -69,7 +83,12 @@ public final class CalendarAdapter: @unchecked Sendable {
         return owned.keys.sorted()
     }
 
-    public func perform(_ verb: ReaderVerb) -> CalendarAnswer {
+    /// Why a change may not be made now, asked right before each one; the reader's grant and deadline check.
+    public typealias Allowed = () -> String?
+
+    /// Runs one calendar verb. `allowed` is asked right before each change to the store; a refusal there answers
+    /// notAllowed with what was already done (a calendar created on the way) left as it is.
+    public func perform(_ verb: ReaderVerb, allowed: Allowed = { nil }) -> CalendarAnswer {
         lock.lock(); defer { lock.unlock() }
         guard verb.isCalendar else { return .refused(.notAllowed, "not a calendar verb") }
         // Checked before anything else, so without access nothing touches the store.
@@ -79,39 +98,48 @@ public final class CalendarAdapter: @unchecked Sendable {
             case let .calendarFind(calendar, title, start, end):
                 guard let s = CalendarTime.parse(start), let e = CalendarTime.parse(end) else { return .refused(.changed, "start and end are not ISO 8601 times") }
                 guard let cid = owned[calendar] else { return .ok(nil) }
-                return .ok(match(cid, title, s, e).map { record($0, calendar) })
-            case let .calendarAdd(calendar, title, start, end, _):
+                return .ok(try match(cid, title, s, e).map { record($0, calendar) })
+            case let .calendarAdd(calendar, title, start, end, taskId):
                 guard let s = CalendarTime.parse(start), let e = CalendarTime.parse(end), e > s else { return .refused(.changed, "start and end are not ISO 8601 times, or end is not after start") }
                 let cid: String
                 if let known = owned[calendar] {
                     cid = known
-                    if match(cid, title, s, e) != nil { return .refused(.changed, "an identical event is already in the calendar; nothing was added") }
+                    if try match(cid, title, s, e) != nil { return .refused(.changed, "an identical event is already in the calendar; nothing was added") }
                 } else {
                     guard let source = backend.localSourceID() else { return .blocked(.noLocalSource) }
+                    if let no = allowed() { return .refused(.notAllowed, no) }
                     cid = try backend.createCalendar(title: calendar, sourceID: source)
                     owned[calendar] = cid
                 }
+                if let no = allowed() { return .refused(.notAllowed, no) }
                 let id = try backend.saveEvent(calendarID: cid, title: title, start: s, end: e)
-                events[id] = calendar
+                events[id] = (calendar, taskId)
                 return .ok(record(BackendEvent(id: id, calendarID: cid, title: title, start: s, end: e), calendar))
             case let .calendarGet(id):
-                guard let (ev, calendar) = ownEvent(id) else { return .ok(nil) }
+                guard let (ev, calendar) = try ownEvent(id) else { return .ok(nil) }
                 return .ok(record(ev, calendar))
-            case let .calendarRemove(id, _):
-                guard ownEvent(id) != nil else { return .refused(.notAllowed, "the event is not one the reader added, in a calendar it created") }
+            case let .calendarRemove(id, taskId):
+                guard try ownEvent(id) != nil, let added = events[id] else { return .refused(.notAllowed, "the event is not one the reader added, in a calendar it created") }
+                guard added.taskId == taskId else { return .refused(.notAllowed, "another task added this event; only that task removes it") }
+                if let no = allowed() { return .refused(.notAllowed, no) }
                 try backend.removeEvent(id: id)
                 events.removeValue(forKey: id)
                 return .ok(nil)
-            case let .calendarDispose(calendar, _):
+            case let .calendarDispose(calendar, taskId):
                 if let cid = owned[calendar] {
+                    let others = Set(events.values.filter { $0.calendar == calendar && $0.taskId != taskId }.map(\.taskId))
+                    if !others.isEmpty { return .refused(.notAllowed, "the calendar holds events other tasks added (\(others.sorted().joined(separator: ", "))); it is not deleted") }
+                    if let no = allowed() { return .refused(.notAllowed, no) }
                     try backend.deleteCalendar(id: cid)
                     owned.removeValue(forKey: calendar)
-                    events = events.filter { $0.value != calendar }
+                    events = events.filter { $0.value.calendar != calendar }
                 }
                 return .ok(nil)
             default:
                 return .refused(.notAllowed, "not a calendar verb")
             }
+        } catch let e as CalendarReadFailed {
+            return .refused(.axError, e.description)
         } catch {
             return .refused(.axError, String(describing: error))
         }
@@ -126,30 +154,35 @@ public final class CalendarAdapter: @unchecked Sendable {
             do {
                 try backend.deleteCalendar(id: cid)
                 owned.removeValue(forKey: name)
-                events = events.filter { $0.value != name }
+                events = events.filter { $0.value.calendar != name }
             } catch { errors.append("\(name): \(error)") }
         }
         return errors
     }
 
     /// An event this adapter added, read only if its id is one it added, and kept only while the event is
-    /// still in the calendar it was added to; otherwise the id is forgotten and nil returned.
-    private func ownEvent(_ id: String) -> (BackendEvent, String)? {
-        guard let calendar = events[id], let cid = owned[calendar] else {
+    /// still in the calendar it was added to; otherwise the id is forgotten and nil returned. A read that fails
+    /// throws CalendarReadFailed and forgets nothing: it says nothing about whether the event is there.
+    private func ownEvent(_ id: String) throws -> (BackendEvent, String)? {
+        guard let added = events[id], let cid = owned[added.calendar] else {
             events.removeValue(forKey: id)
             return nil
         }
-        guard let ev = backend.event(id: id), ev.calendarID == cid else {
+        let read: BackendEvent?
+        do { read = try backend.event(id: id) } catch { throw CalendarReadFailed(error) }
+        guard let ev = read, ev.calendarID == cid else {
             events.removeValue(forKey: id)
             return nil
         }
-        return (ev, calendar)
+        return (ev, added.calendar)
     }
 
-    /// The event in its own calendar `cid` with this title, start and end, if any.
-    private func match(_ cid: String, _ title: String, _ s: Date, _ e: Date) -> BackendEvent? {
-        backend.events(calendarID: cid, from: s.addingTimeInterval(-1), to: e.addingTimeInterval(1))
-            .first { $0.title == title && abs($0.start.timeIntervalSince(s)) < 1 && abs($0.end.timeIntervalSince(e)) < 1 }
+    /// The event in its own calendar `cid` with this title, start and end, if any. Throws CalendarReadFailed when the
+    /// calendar cannot be read.
+    private func match(_ cid: String, _ title: String, _ s: Date, _ e: Date) throws -> BackendEvent? {
+        let all: [BackendEvent]
+        do { all = try backend.events(calendarID: cid, from: s.addingTimeInterval(-1), to: e.addingTimeInterval(1)) } catch { throw CalendarReadFailed(error) }
+        return all.first { $0.title == title && abs($0.start.timeIntervalSince(s)) < 1 && abs($0.end.timeIntervalSince(e)) < 1 }
     }
 
     private func record(_ e: BackendEvent, _ calendar: String) -> CalendarEventRecord {

@@ -20,6 +20,7 @@ mkdir -p "$1"
 OUT="$(cd "$1" && pwd)"
 SEEN="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/launch-secret.sh"
 BIN="$HERE/../.build/debug"
 HELPER="$HERE/../../../helper"
 WORK=$(mktemp -d /tmp/caret-audit.XXXXXX)
@@ -29,11 +30,11 @@ stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 
 cleanup() { stop "${READER:-}"; sleep 1; stop "${HPID:-}"; sleep 2; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-(cd "$HELPER" && exec node src/main.ts --audit-out "$OUT/audit-counts.json" --audit-seen "$SEEN" --socket "$SOCK" --data-dir "$WORK/data" --status-every 300 --audit-probe-every "$PROBE" > "$WORK/helper.log" 2>&1) &
+(cd "$HELPER" && exec node src/main.ts --auth-fd 0 --audit-out "$OUT/audit-counts.json" --audit-seen "$SEEN" --socket "$SOCK" --data-dir "$WORK/data" --status-every 300 --audit-probe-every "$PROBE" > "$WORK/helper.log" 2>&1) < <(secret_bytes) &
 HPID=$!
 for _ in $(seq 1 50); do [[ -S "$SOCK" ]] && break; sleep 0.2; done
 [[ -S "$SOCK" ]] || { echo "helper did not listen"; cat "$WORK/helper.log"; exit 1; }
-"$BIN/caret-screen" --shadow --no-manual-ax --socket "$SOCK" > "$WORK/reader.log" 2>&1 &
+"$BIN/caret-screen" --auth-fd 0 --shadow --no-manual-ax --socket "$SOCK" < <(secret_bytes) > "$WORK/reader.log" 2>&1 &
 READER=$!
 printf "helper %s\nreader %s\n" "$HPID" "$READER" > "$OUT/pids.txt"
 

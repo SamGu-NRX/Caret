@@ -10,12 +10,10 @@ import Testing
     private func connected(_ configure: (SocketEmitter) -> Void) throws -> (FakeHelperSocket, SocketEmitter, GrantTable) {
         let helper = try FakeHelperSocket()
         let grants = GrantTable()
-        let emitter = SocketEmitter(path: helper.path, hello: Hello(role: .reader, mode: .live, pid: Int(getpid()), version: "b22-test"))
-        emitter.log = { _ in }
-        emitter.grants = grants
-        configure(emitter)
-        emitter.start()
+        let emitter = readerEmitter(helper, grants: grants, configure: configure)
         #expect(helper.accept(timeout: 3))
+        #expect(helper.authenticate() != nil)
+        #expect(eventually(3) { emitter.isAuthenticated })
         helper.send(grantLine("t1"))
         #expect(eventually(3) { grants.count == 1 })
         return (helper, emitter, grants)

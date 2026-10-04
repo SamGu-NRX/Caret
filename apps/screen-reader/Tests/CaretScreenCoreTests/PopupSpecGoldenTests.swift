@@ -58,6 +58,14 @@ private func data(_ object: Any) throws -> Data {
         #expect(card.applyingReveal(of: "add") == card)
     }
 
+    // CodeRabbit on PR #4: Int(Double) traps on a whole number past Int's range, so a spec like this crashed the reader.
+    @Test func aWholeNumberPastIntsRangeIsAnErrorNotACrash() {
+        let choices = #"{"type":"choices","selected":1e300,"rows":[{"label":{"text":"Dana Reyes","ref":{"memory":"person-reyes"}}}]}"#
+        for spec in [#"{"v":1e300,"id":"x","figure":"offering","blocks":[]}"#, #"{"v":1,"id":"x","figure":"offering","blocks":[\#(choices)]}"#] {
+            #expect(throws: PopupSpecError.self, "\(spec)") { try PopupSpec.decode(Data(spec.utf8)) }
+        }
+    }
+
     @Test func notJSONIsMalformedAndJSONDecoderSurfacesTheSpecificError() {
         #expect(throws: PopupSpecError.malformedJSON) { try PopupSpec.decode(Data("{".utf8)) }
         let map = Data(#"{"v":1,"id":"x","figure":"offering","blocks":[{"type":"map"}]}"#.utf8)

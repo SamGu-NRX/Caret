@@ -25,7 +25,8 @@ quiet() {
   local until; until=$(awk '{print int($1); exit}' "$HOME/.long-run/QUIET-UNTIL")
   [[ -z "$until" || "$until" -gt $(date +%s) ]]
 }
-done_attempts() { [[ -f "$OUT/attempts.ndjson" ]] && grep -c '"becameFrontmost"' "$OUT/attempts.ndjson" || echo 0; }
+# grep -c prints 0 and exits 1 when nothing matches, so "|| echo 0" printed a second 0 (CodeRabbit on PR #4).
+done_attempts() { local c=0; [[ -f "$OUT/attempts.ndjson" ]] && c=$(grep -c '"becameFrontmost"' "$OUT/attempts.ndjson" || true); echo "${c:-0}"; }
 
 while :; do
   n=$(done_attempts)

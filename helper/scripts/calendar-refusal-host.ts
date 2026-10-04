@@ -16,6 +16,9 @@ import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import type { HelperMessage, TaskProgress } from "../src/protocol.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const { values: a } = parseArgs({ options: { bin: { type: "string" }, out: { type: "string" } } });
 if (a.bin === undefined || a.out === undefined) throw new Error("--bin and --out are required");
@@ -35,12 +38,13 @@ const store = new Store(dir);
 const published: HelperMessage[] = [];
 let server: HelperServer | null = null;
 const helper = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => (published.push(m), server?.publish(m)), sendToReader: (c) => server?.sendToReader(c) ?? false, calendar: "reader" });
-server = new HelperServer(socketPath, () => helper, () => {});
+server = new HelperServer(socketPath, () => helper, () => {}, launchSecret);
 await server.listen();
 // The reader reads only this script's own process, which has no windows.
-const reader = spawn(BIN, ["--socket", socketPath, "--calendar-test", "--only-pids", String(process.pid)]);
+const reader = spawn(BIN, ["--auth-fd", "0", "--socket", socketPath, "--calendar-test", "--only-pids", String(process.pid)]);
 let readerLog = "";
 reader.stderr.setEncoding("utf8");
+sendSecret(reader, launchSecret);
 reader.stderr.on("data", (d: string) => (readerLog += d));
 process.on("exit", () => reader.kill("SIGTERM"));
 const t0 = Date.now();

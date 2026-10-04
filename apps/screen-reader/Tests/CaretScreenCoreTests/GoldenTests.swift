@@ -52,6 +52,7 @@ private func goldenLines() throws -> [Data] {
             case .skillAnswer: "skillAnswer"
             case .memoryReply: "memoryReply"
             case .userPress: "userPress"
+            case .helperAuth: "helperAuth"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -66,7 +67,52 @@ private func goldenLines() throws -> [Data] {
                           "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
                           "readerCommand", "userPress",
                           "planRequest", "planProposal", "userPress",
-                          "skillOffer"])
+                          "skillOffer",
+                          "hello", "helperAuth", "hello", "readerCommand", "verbResult", "readerCommand", "verbResult"])
+    }
+
+    @Test func readsB23sHelloFieldsProofMarksAndRefusals() throws {
+        let lines = try goldenLines()
+        guard case .hello(let reader) = try JSONDecoder().decode(Message.self, from: lines[59]),
+              case .helperAuth(let auth) = try JSONDecoder().decode(Message.self, from: lines[60]),
+              case .hello(let host) = try JSONDecoder().decode(Message.self, from: lines[61]),
+              case .readerCommand(let write) = try JSONDecoder().decode(Message.self, from: lines[62]),
+              case .verbResult(let moved) = try JSONDecoder().decode(Message.self, from: lines[63]),
+              case .readerCommand(let restore) = try JSONDecoder().decode(Message.self, from: lines[64]),
+              case .verbResult(let notSame) = try JSONDecoder().decode(Message.self, from: lines[65]) else { Issue.record("lines 60 to 66 are not B23's"); return }
+        #expect(reader.session == "reader-3f9a6c21d4e8" && reader.challenge != nil && !reader.host)
+        #expect(HelperProof.verify(auth.proof, secret: Data("caret-b23-golden-launch-secret!!".utf8), challenge: reader.challenge!))
+        #expect(host.host && host.role == .consumer && host.session == nil)
+        guard case let .write(_, _, _, _, _, _, _, _, mark) = write.verb, case let .write(_, _, _, _, _, _, _, _, same) = restore.verb else { Issue.record("not writes"); return }
+        #expect(mark == .mark("8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60"))
+        #expect(same == .sameAs("8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60"))
+        #expect(moved.outcome == .focusMoved && notSame.outcome == .notSameElement)
+        // Each field belongs to one role, host is never false, and a write records a mark or checks one, not both.
+        let text = String(decoding: lines[62], as: UTF8.self)
+        for bad in [
+            String(decoding: lines[59], as: UTF8.self).replacingOccurrences(of: #""role":"reader""#, with: #""role":"consumer""#),
+            String(decoding: lines[61], as: UTF8.self).replacingOccurrences(of: #""role":"consumer""#, with: #""role":"reader""#),
+            String(decoding: lines[61], as: UTF8.self).replacingOccurrences(of: #""host":true"#, with: #""host":false"#),
+            text.replacingOccurrences(of: #""mark":"#, with: #""sameAs":"x","mark":"#),
+            text.replacingOccurrences(of: #""mark":"8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60""#, with: #""mark":"""#),
+        ] {
+            #expect(throws: (any Error).self, "\(bad.prefix(90))") { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
+        // The host's four-argument hello still encodes as before B23: no host, session or challenge.
+        let old = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(Message.hello(Hello(role: .consumer, mode: .live, pid: 1, version: "v")))) as! [String: Any]
+        #expect(Set(old.keys) == ["type", "v", "role", "mode", "pid", "version"])
+    }
+
+    // CodeRabbit on PR #4: zod's max(80) counts UTF-16 units, as Swift must; String.count counts grapheme clusters.
+    @Test func countsASkillNameInUTF16UnitsAsZodDoes() throws {
+        let line = String(decoding: try goldenLines()[46], as: UTF8.self)
+        guard case .skillOffer(let offer) = try JSONDecoder().decode(Message.self, from: Data(line.utf8)) else { Issue.record("line 47 is not a skillOffer"); return }
+        // 17 people at laptops: 17 grapheme clusters, 85 UTF-16 units.
+        let long = String(repeating: "\u{1F469}\u{200D}\u{1F4BB}", count: 17)
+        #expect(long.count == 17 && long.utf16.count == 85)
+        let bad = line.replacingOccurrences(of: #""name":"\#(offer.name)""#, with: #""name":"\#(long)""#)
+        #expect(bad != line)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
     }
 
     @Test func readsThePressWatch() throws {
@@ -120,7 +166,7 @@ private func goldenLines() throws -> [Data] {
         guard case .readerCommand(let c) = try JSONDecoder().decode(Message.self, from: lines[9]) else {
             Issue.record("line 10 is not a readerCommand"); return
         }
-        guard case let .write(pid, _, _, role, attribute, expect, value, taskId) = c.verb else { Issue.record("not a write"); return }
+        guard case let .write(pid, _, _, role, attribute, expect, value, taskId, _) = c.verb else { Issue.record("not a write"); return }
         #expect(pid == 5150 && role == "AXTextField" && attribute == "value" && expect == "" && value == "dana.whitfield@example.com")
         #expect(taskId == nil)
         let badVerb = Data(#"{"type":"readerCommand","v":1,"id":"x","verb":{"kind":"type","pid":1}}"#.utf8)
@@ -336,11 +382,11 @@ private func goldenLines() throws -> [Data] {
         }
         let insert = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"insert""#)
         guard case .readerCommand(let ins) = try JSONDecoder().decode(Message.self, from: Data(insert.utf8)),
-              case let .write(_, _, _, _, attribute, _, _, _) = ins.verb else { Issue.record("an insert write does not decode"); return }
+              case let .write(_, _, _, _, attribute, _, _, _, _) = ins.verb else { Issue.record("an insert write does not decode"); return }
         #expect(attribute == "insert")
         let focusValue = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"focusValue""#)
         guard case .readerCommand(let fv) = try JSONDecoder().decode(Message.self, from: Data(focusValue.utf8)),
-              case let .write(_, _, _, _, fvAttribute, _, _, _) = fv.verb else { Issue.record("a focusValue write does not decode"); return }
+              case let .write(_, _, _, _, fvAttribute, _, _, _, _) = fv.verb else { Issue.record("a focusValue write does not decode"); return }
         #expect(fvAttribute == "focusValue")
         let paste = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"paste""#)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(paste.utf8)) }

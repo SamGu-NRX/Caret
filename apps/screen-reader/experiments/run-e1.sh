@@ -10,6 +10,7 @@ MODE=$1
 OUT=$2
 DUR=${3:-300}
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/launch-secret.sh"
 BIN="$HERE/../.build/debug"
 # The bundled fixture (scripts/bundle-fixture.sh): macOS will not activate the bare executable.
 FIXTURE="$BIN/CaretFixture.app/Contents/MacOS/caret-fixture"
@@ -38,17 +39,18 @@ FIX=$!
 open -n -g -a "Google Chrome" --args --user-data-dir="$CHROME_PROFILE" --no-first-run --no-default-browser-check \
   --disable-sync --disable-extensions "$PAGE"
 sleep 4
-CHROME=$(pgrep -f "Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_PROFILE" | head -1)
+# With set -e and pipefail, a pgrep that matches nothing would end the run here (CodeRabbit on PR #4); "none" is handled below.
+CHROME=$(pgrep -f "Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$CHROME_PROFILE" | head -1 || true)
 echo "fixture $FIX chrome ${CHROME:-none}" | tee "$OUT/pids.txt"
 
 if [[ "$MODE" == on ]]; then
-  (cd "$HELPER" && exec node src/main.ts --no-jev --data-dir "$OUT/helper-data" --status-every 60 > "$OUT/helper.log" 2>&1) &
+  (cd "$HELPER" && exec node src/main.ts --auth-fd 0 --no-jev --data-dir "$OUT/helper-data" --status-every 60 > "$OUT/helper.log" 2>&1) < <(secret_bytes) &
   HELPERPID=$!
   sleep 1.5
-  "$BIN/caret-screen" --event-pids "$FIX,${CHROME}" --event-bundles com.t3tools.t3code --e1-log "$OUT/e1.ndjson" > "$OUT/reader.log" 2>&1 &
+  "$BIN/caret-screen" --auth-fd 0 --event-pids "$FIX,${CHROME}" --event-bundles com.t3tools.t3code --e1-log "$OUT/e1.ndjson" < <(secret_bytes) > "$OUT/reader.log" 2>&1 &
   READER=$!
   sleep 1
-  HPID=$(pgrep -f "node src/main.ts --no-jev --data-dir $OUT/helper-data" | head -1)
+  HPID=$(pgrep -f "node src/main.ts --auth-fd 0 --no-jev --data-dir $OUT/helper-data" | head -1 || true)
 fi
 
 # CPU seconds of a list of pids, from ps's cumulative TIME column.

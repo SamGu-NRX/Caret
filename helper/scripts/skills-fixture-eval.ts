@@ -29,6 +29,9 @@ import type { TaskResult } from "../src/executor/executor.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type PatternOffer, type SkillOffer, type TaskProgress } from "../src/protocol.ts";
 import { PROMOTE_AFTER } from "../src/patterns/skills.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const { values: a } = parseArgs({ options: { bin: { type: "string" }, out: { type: "string" }, socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "skills-fixture.sock") } } });
 if (a.bin === undefined || a.out === undefined) throw new Error("--bin and --out are required");
@@ -105,7 +108,7 @@ const helper = new Helper({
   },
   warn: (l) => log.push(l),
 });
-server = new HelperServer(a.socket, () => helper, (l) => log.push(l));
+server = new HelperServer(a.socket, () => helper, (l) => log.push(l), launchSecret);
 // This script answers offers itself, in process, so it is the host session a run with no Tab is bound to (B22, S1 audit #5).
 helper.hostConnected("eval");
 await server.listen();
@@ -287,9 +290,10 @@ let ok = false;
 try {
   await until("the fixture", () => fixturePid > 0);
   await sleep(800);
-  reader = spawn(join(a.bin, "caret-screen"), ["--socket", a.socket, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
+  reader = spawn(join(a.bin, "caret-screen"), ["--auth-fd", "0", "--socket", a.socket, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
   let readerErr = "";
   reader.stderr.setEncoding("utf8");
+  sendSecret(reader, launchSecret);
   reader.stderr.on("data", (d: string) => (readerErr += d));
   await until("the order queue", () => windowTitled(QUEUE));
   const rule = helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "rule", op: "edit", id: "permission-writeElsewhere", fields: { rule: "actIfApproved" } });

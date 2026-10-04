@@ -1,6 +1,6 @@
 // caret-screen: Caret's Accessibility reader.
 //
-//   caret-screen [--shadow] [--socket PATH] [--deny-list PATH] [--background-interval S]
+//   caret-screen --auth-fd N [--shadow] [--socket PATH] [--deny-list PATH] [--background-interval S]
 //                [--event-pids P,P] [--event-bundles B,B] [--only-pids P,P] [--act-pids P,P]
 //                [--record FILE] [--e1-log FILE] [--no-manual-ax]
 //   caret-screen --e8 --pids P,P [--title-match REGEX] [--runs N] [--interval S] --out FILE
@@ -13,6 +13,10 @@
 //
 // Default mode streams NDJSON to the helper's socket. --shadow tells the helper to log
 // opportunities and show nothing. Launch by direct exec so the process inherits Accessibility.
+//
+// --auth-fd names an inherited descriptor (0, or 3 and above) holding the 32-byte launch secret the launcher also
+// gave the helper (helper/src/launch.ts). The reader reads it to the end, closes it, and sends and acts on nothing
+// until the helper proves it holds the same secret (Emitter.swift). It is required in socket mode.
 import AppKit
 import ApplicationServices
 import CaretScreenAX
@@ -73,6 +77,7 @@ let outPath = option("--out")
 let calendarTest = flag("--calendar-test")
 let calendarProbe = flag("--calendar-probe")
 let calendarAudit = option("--calendar-audit")
+let authFd = option("--auth-fd")
 if !args.isEmpty { fail("unknown arguments: \(args.joined(separator: " "))") }
 // A recording holds screen text, so it is only allowed for processes named explicitly (fixtures).
 if recordPath != nil && onlyPids.isEmpty { fail("--record writes screen text to disk; it needs --only-pids naming fixture processes") }
@@ -156,10 +161,35 @@ if e8 {
     exit(0)
 }
 
+/// The launch secret from the inherited descriptor, read to its end, then the descriptor is closed.
+func launchSecret(_ arg: String?) -> Data {
+    guard let arg else { fail("--auth-fd N is required: the launch secret the helper proves itself with (start both with helper/src/launch.ts)") }
+    guard let fd = Int32(arg), fd == 0 || fd >= 3 else { fail("--auth-fd \(arg) is not an inherited input descriptor (0, or 3 and above)") }
+    var out = Data()
+    var buf = [UInt8](repeating: 0, count: 64)
+    while true {
+        let n = read(fd, &buf, buf.count)
+        if n < 0 {
+            if errno == EINTR { continue }
+            fail("cannot read the launch secret from descriptor \(fd): \(String(cString: strerror(errno)))")
+        }
+        if n == 0 { break }
+        out.append(contentsOf: buf[0..<n])
+        if out.count > 4096 { fail("descriptor \(fd) holds more than a launch secret") }
+    }
+    close(fd)
+    guard out.count == HelperProof.bytes else { fail("the launch secret on descriptor \(fd) is \(out.count) bytes, expected \(HelperProof.bytes)") }
+    return out
+}
+let secret = launchSecret(authFd)
+
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 
-let socket = SocketEmitter(path: socketPath, hello: Hello(role: .reader, mode: shadow ? .shadow : .live, pid: Int(getpid()), version: version))
+// The launch id stays the same on every reconnect of this process: the helper keeps undo for what it wrote through it.
+let socket = SocketEmitter(path: socketPath,
+                           hello: Hello(role: .reader, mode: shadow ? .shadow : .live, pid: Int(getpid()), version: version, session: HelperProof.launchId()),
+                           secret: secret)
 var emitter: Emitter = socket
 if let p = recordPath { emitter = TeeEmitter([socket, FileEmitter(handle: openForWriting(p))]) }
 let ctx = ReaderContext(emitter: emitter)
@@ -182,10 +212,11 @@ socket.grants = options.grants
 options.setManualAccessibility = !noManualAX
 let reader = MainActor.assumeIsolated { ScreenReader(ctx: ctx, options: options) }
 var connectedOnce = false
-socket.onConnect = {
+socket.onConnect = { lost in
     DispatchQueue.main.async {
         MainActor.assumeIsolated {
-            if connectedOnce { reader.resync(newHelper: true) }
+            // A new helper knows nothing; the first one may have missed snapshots dropped from the backlog before it came.
+            if connectedOnce { reader.resync(newHelper: true) } else if lost { reader.resync(newHelper: false) }
             connectedOnce = true
         }
     }

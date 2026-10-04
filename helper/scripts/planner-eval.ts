@@ -26,6 +26,9 @@ import { loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../src/
 import type { TaskResult } from "../src/executor/executor.ts";
 import { PlanProposal, PROTOCOL_VERSION, type HelperMessage, type TaskProgress } from "../src/protocol.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const { values: a } = parseArgs({
   options: {
@@ -164,7 +167,7 @@ const helper = new Helper({
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
   plannerHooks: { beforeCheck: () => hooks.beforeCheck?.() ?? Promise.resolve() },
 });
-server = new HelperServer(a.socket, () => helper, (l) => errors.push(l));
+server = new HelperServer(a.socket, () => helper, (l) => errors.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -209,9 +212,10 @@ const until = async (what: string, ok: () => boolean, ms = 20_000): Promise<void
 };
 await until("the fixture", () => fixturePid > 0);
 await new Promise((r) => setTimeout(r, 1000));
-reader = spawn(join(a.bin, "caret-screen"), ["--socket", a.socket, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
+reader = spawn(join(a.bin, "caret-screen"), ["--auth-fd", "0", "--socket", a.socket, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
 let readerLog = "";
 reader.stderr.setEncoding("utf8");
+sendSecret(reader, launchSecret);
 reader.stderr.on("data", (d: string) => (readerLog += d));
 const executorWindow = () => [...helper.model.windows.values()].find((w) => w.window.title.startsWith(TITLE));
 await until("the executor window in the screen model", () => executorWindow() !== undefined);

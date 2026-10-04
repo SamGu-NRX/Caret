@@ -100,7 +100,12 @@ public final class ScreenReader {
     /// with it, so the reader drops its own until the new helper asks for some. A resync after dropped snapshots
     /// keeps the press watch, which the same helper still counts on (B20 review).
     public func resync(newHelper: Bool) {
-        if newHelper { watchPresses([:]) }
+        // Every watch the old helper asked for goes, the input watch too (CodeRabbit on PR #4): until the new helper asks,
+        // nothing it did not ask for is reported to it.
+        if newHelper {
+            watchPresses([:])
+            watch([])
+        }
         for w in workers.values {
             // The pending-state watch too: before B20 a drain resync dropped it while the helper still relied on it.
             if newHelper { w.setWatched([]) }
@@ -139,7 +144,7 @@ public final class ScreenReader {
             let unread = byPid.keys.filter { workers[$0] == nil }.sorted()
             answer(.ok, unread.isEmpty ? nil : "not read, so not watched: \(unread.map(String.init).joined(separator: ","))")
             return
-        case let .walk(p, _), let .write(p, _, _, _, _, _, _, _), let .press(p, _, _, _, _, _), let .raise(p, _, _):
+        case let .walk(p, _), let .write(p, _, _, _, _, _, _, _, _), let .press(p, _, _, _, _, _), let .raise(p, _, _):
             pid = pid_t(p)
         case .calendarFind, .calendarAdd, .calendarGet, .calendarRemove, .calendarDispose:
             guard let calendar = opts.calendar else {
@@ -154,14 +159,21 @@ public final class ScreenReader {
                     emitter.send(.verbResult(VerbResult(id: cmd.id, at: at, outcome: .axError, detail: "the command expired before the calendar was reached")))
                     return
                 }
-                // A write needs its task's calendar grant, asked here, right before it: a revoke that came
-                // while the command waited on this queue refuses it.
-                if let task = cmd.verb.taskId, let no = grants.calendarRefusal(taskId: task, now: at, uptimeMs: uptimeMs()) {
+                // A write needs its task's calendar grant, asked here, before the adapter's lookups, and again by the
+                // adapter right before each change it makes (S1 audit #8): a stop or revoke that lands while it looks
+                // up the source, a duplicate or the calendar refuses the save, removal or deletion that would follow.
+                let allowed: @Sendable () -> String? = {
+                    let now = nowMs()
+                    if now > cmd.expires { return "the command expired before the calendar could change" }
+                    guard let task = cmd.verb.taskId else { return "the command names no task" }
+                    return grants.calendarRefusal(taskId: task, now: now, uptimeMs: uptimeMs())
+                }
+                if cmd.verb.taskId != nil, let no = allowed() {
                     emitter.send(.verbResult(VerbResult(id: cmd.id, at: at, outcome: .notAllowed, detail: no)))
                     return
                 }
                 let result: VerbResult
-                switch calendar.perform(cmd.verb) {
+                switch calendar.perform(cmd.verb, allowed: allowed) {
                 case let .ok(event): result = VerbResult(id: cmd.id, at: nowMs(), outcome: .ok, detail: nil, event: event)
                 case let .blocked(b): result = VerbResult(id: cmd.id, at: nowMs(), outcome: .blocked, detail: nil, blocked: b)
                 case let .refused(o, d): result = VerbResult(id: cmd.id, at: nowMs(), outcome: o, detail: d)

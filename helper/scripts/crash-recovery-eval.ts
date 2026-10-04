@@ -14,7 +14,7 @@
 //   2. the activity list shows the run as "Stopped when Caret restarted, at step 2 of 3", with undo;
 //   3. undo restores the first field (the verified prefix) through the element its write recorded, and the journal
 //      row is gone;
-//   4. the next trigger is offered with Tab, not run on its own.
+//   4. the next trigger is offered with Tab, not run on its own, and the restarted helper is still running.
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -279,7 +279,7 @@ try {
   check("4. the next trigger is offered with Tab, not run on its own", after.some((m) => m.type === "patternOffer" && m.kind === "routine") && !after.some((m) => m.type === "taskProgress" && m.unprompted === true), after.map((m) => m.type).join(","));
 
   const last = child;
-  say(`helper-2 before the stop: exit ${last.exitCode ?? "none"}, signal ${last.signalCode ?? "none"}`);
+  check("the restarted helper is still running at the end", last.exitCode === null && last.signalCode === null, `exit ${last.exitCode ?? "none"}, signal ${last.signalCode ?? "none"}`);
   last.kill("SIGTERM");
   await exited(last);
   const journal = new RecoveryJournal(dataDir);
@@ -295,6 +295,6 @@ try {
   writeFileSync(join(OUT, "crash-log.txt"), `${[...log, "--- child stderr ---", ...childLog].join("\n")}\n`);
   rmSync(work, { recursive: true, force: true });
 }
-const ok = failure === null && checks.length === 7 && checks.every((c) => c.pass);
+const ok = failure === null && checks.length === 8 && checks.every((c) => c.pass);
 say(ok ? "crash test passed" : "crash test FAILED");
 process.exit(ok ? 0 : 1);

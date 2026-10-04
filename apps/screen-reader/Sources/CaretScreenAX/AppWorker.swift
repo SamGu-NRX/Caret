@@ -202,6 +202,11 @@ public final class AppWorker: @unchecked Sendable {
     private let keyAdmission = NSLock()
 
     // Confined to `queue`.
+    /// Set by stop(): work already queued (a delayed walk, a watch walk, a notification) then does nothing, so an app
+    /// that quit cannot register a window again after its windows were reported closed (CodeRabbit on PR #4).
+    private var stopped = false
+    /// The elements this worker's writes recorded, by the helper's mark (B23, S1 audit #6).
+    private var marks = ElementMarks<AXRef>()
     private var windows: [AXRef: WindowInfo] = [:]
     private var nextWindow = 1
     private var focusedWindow: AXRef?
@@ -261,6 +266,7 @@ public final class AppWorker: @unchecked Sendable {
     /// Event-driven apps get observers and walks on notifications. `frontmost` is whether the user is in this app.
     func setEventDriven(_ on: Bool, frontmost: Bool) {
         queue.async {
+            guard !self.stopped else { return }
             self.frontmost = frontmost
             guard on != self.eventDriven else { return }
             self.eventDriven = on
@@ -288,6 +294,7 @@ public final class AppWorker: @unchecked Sendable {
     /// names windows it has seen, and a window that has since closed is dropped at the next watch walk.
     func setWatched(_ ids: Set<String>) {
         queue.async {
+            guard !self.stopped else { return }
             self.watched = ids
             if ids.isEmpty {
                 self.watchTimer?.cancel()
@@ -330,6 +337,7 @@ public final class AppWorker: @unchecked Sendable {
     /// sends a snapshot only when the window changed. A window whose element is gone is reported
     /// closed and leaves the watch.
     private func watchWalk(all: Bool) {
+        guard !stopped else { return }
         let targets = all || watchAll ? watched : watchDirty
         if !all { watchScheduled = false }
         watchDirty = []
@@ -353,6 +361,7 @@ public final class AppWorker: @unchecked Sendable {
 
     func activate() {
         queue.async {
+            guard !self.stopped else { return }
             // Returning to the same field is a new focus for the helper, so the last emitted one is forgotten.
             self.lastFocusEmitted = nil
             self.focusChanged(element: nil)
@@ -362,17 +371,19 @@ public final class AppWorker: @unchecked Sendable {
     /// Walks the window the user is leaving, once, at the moment of the switch.
     func leave() {
         queue.async {
+            guard !self.stopped else { return }
             self.lastFocusEmitted = nil
             if let w = self.focusedWindow { self.walkWindow(w, reason: .leave, isFocused: false) }
         }
     }
 
     func backgroundPass(reason: WalkReason, minAge: TimeInterval) {
-        queue.async { self.pass(reason: reason, minAge: minAge) }
+        queue.async { if !self.stopped { self.pass(reason: reason, minAge: minAge) } }
     }
 
     func stop() {
         queue.sync {
+            self.stopped = true
             self.watchTimer?.cancel()
             self.watchTimer = nil
             self.removeObserver()
@@ -380,6 +391,13 @@ public final class AppWorker: @unchecked Sendable {
             for (_, info) in self.windows { self.ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id))) }
             self.windows.removeAll()
             self.pressIndex.removeAll()
+            self.focusedWindow = nil
+            self.focusElement = nil
+            self.watched = []
+            self.watchDirty = []
+            self.pendingSubtrees = []
+            self.pendingFull = false
+            self.pendingFocus = false
         }
     }
 
@@ -392,6 +410,7 @@ public final class AppWorker: @unchecked Sendable {
     }
 
     private func handle(_ name: String, _ el: AXRef) {
+        guard !stopped else { return }
         if !watched.isEmpty { noteForWatch(el) }
         guard eventDriven else { return }
         switch name {
@@ -424,7 +443,7 @@ public final class AppWorker: @unchecked Sendable {
     /// Activity Monitor during E1), so those notifications are retried a few times, a second apart.
     private func addObserver(attempt: Int = 0) {
         if attempt > 0 {
-            guard eventDriven || !watched.isEmpty, let obs = observer else { return }
+            guard !stopped, eventDriven || !watched.isEmpty, let obs = observer else { return }
             let refcon = Unmanaged.passUnretained(self).toOpaque()
             let retry = pendingRegistrations
             pendingRegistrations = retry.filter { AXObserverAddNotification(obs, ax, $0 as CFString, refcon) == .cannotComplete }
@@ -477,6 +496,7 @@ public final class AppWorker: @unchecked Sendable {
 
     private func runPending() {
         walkScheduled = false
+        guard !stopped else { return }
         let start = CFAbsoluteTimeGetCurrent()
         let focus = pendingFocus
         var full = pendingFull || focus
@@ -572,6 +592,8 @@ public final class AppWorker: @unchecked Sendable {
     /// focus as it is now, whatever the reader last saw.
     @discardableResult
     private func walkWindow(_ w: AXRef, reason: WalkReason, isFocused: Bool, focusedElement: AXUIElement?? = nil) -> (nodes: [Node], truncated: Bool) {
+        // A worker that stopped registers no window and sends no snapshot, whatever queued this walk.
+        guard !stopped else { return ([], true) }
         AXUIElementSetMessagingTimeout(w.el, AX.elementTimeout)
         var info = info(for: w)
         let fe = focusedElement ?? (isFocused ? (focusElement?.el ?? AX.element(ax, kAXFocusedUIElementAttribute)) : nil)
@@ -771,6 +793,7 @@ public final class AppWorker: @unchecked Sendable {
     static let settle: TimeInterval = 0.15
 
     private func performNow(_ verb: ReaderVerb, gate: ActGate, expires: Int64) -> (VerbOutcome, String?) {
+        guard !stopped else { return (.noWindow, "process \(pid) has quit") }
         /// Nil when the verb may act in this window now; otherwise the notAllowed answer.
         func refused(_ windowId: String) -> (VerbOutcome, String?)? {
             gate.refusal(taskId: verb.taskId, pid: Int(pid), windowId: windowId).map { (.notAllowed, $0) }
@@ -787,16 +810,21 @@ public final class AppWorker: @unchecked Sendable {
             let contexts = windows[w]?.contexts ?? [:]
             windows[w]?.decided = Dictionary(contexts.map { ($0.value.key, $0.key) }, uniquingKeysWith: { a, _ in a })
             return (.ok, nil)
-        case let .write(_, windowId, key, role, attribute, expect, value, _):
+        case let .write(_, windowId, key, role, attribute, expect, value, _, element):
             if let no = refused(windowId) { return no }
             let found = target(windowId: windowId, key: key, role: role)
             guard case let .success((w, el)) = found else { return found.failure }
+            // Undo writes only into the element its write recorded (S1 audit #6): a sibling that took the key, role and
+            // value is another element, and a mark this worker never recorded (a restarted reader) proves nothing.
+            if case .sameAs(let m)? = element, let no = marks.refusal(sameAs: m, current: AXRef(el)) { return (.notSameElement, no) }
             switch AX.read(el, kAXSubroleAttribute) {
             case .failed(let e): return (.axError, "cannot read the subrole (\(e.rawValue)), so the field may be a password field")
             case .value(let v) where (v as? String) == "AXSecureTextField": return (.secure, nil)
             default: break
             }
             if role == "AXSecureTextField" { return (.secure, nil) }
+            // Recorded before any call that changes the field, so a write whose answer is lost still names its element.
+            if case .mark(let m)? = element { marks.record(m, AXRef(el)) }
             let err: AXError
             if attribute == "focused" {
                 if nowMs() > expires { return (.axError, "the command expired before it could act") }
@@ -825,13 +853,13 @@ public final class AppWorker: @unchecked Sendable {
                     return refused(windowId)
                 }
                 if attribute == "insert" {
-                    if let fail = insert(value, into: el, expect: expect, check: stillAllowed) { return fail }
+                    if let fail = insert(value, into: el, window: w, expect: expect, check: stillAllowed) { return fail }
                     err = .success
                 } else if focusFirst {
                     // A WebKit window that is not key applies a bare value write to whichever field has focus, not
                     // the one written to (B20 final table: Email's value landed in Name, focused by the step before),
                     // so a WebKit field is always focused first, whatever the executor asked.
-                    if let fail = focusThenValue(value, into: el, expect: expect, check: stillAllowed) { return fail }
+                    if let fail = focusThenValue(value, into: el, window: w, expect: expect, check: stillAllowed) { return fail }
                     err = .success
                 } else {
                     err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
@@ -896,7 +924,7 @@ public final class AppWorker: @unchecked Sendable {
     /// each step. Focus can run the app's own handlers, and an editor may clamp or ignore a selection, so
     /// before the replacement the field must still hold `expect` and the selection must be all of it. The
     /// executor's walk afterwards checks what the field holds. Nil when every step went through.
-    private func insert(_ value: String, into el: AXUIElement, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+    private func insert(_ value: String, into el: AXUIElement, window w: AXRef, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
         func holdsExpect(_ when: String) -> (VerbOutcome, String?)? {
             switch AX.read(el, kAXValueAttribute) {
             case .failed(let e): return (.axError, "insert: cannot read the value \(when) (\(e.rawValue))")
@@ -909,6 +937,7 @@ public final class AppWorker: @unchecked Sendable {
         let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         guard f == .success else { return (.axError, "insert: focus failed with \(f.rawValue)") }
         if let no = holdsExpect("after focus") { return no }
+        if let moved = focusStayed(on: el, in: w) { return (.focusMoved, "insert: \(moved)") }
         if let no = check() { return no }
         var range = CFRange(location: 0, length: (expect as NSString).length)
         guard let all = AXValueCreate(.cfRange, &range) else { return (.axError, "insert: cannot make the selection range") }
@@ -922,9 +951,11 @@ public final class AppWorker: @unchecked Sendable {
         guard AXValueGetValue(sel as! AXValue, .cfRange, &got), got.location == 0, got.length == range.length else {
             return (.changed, "the selection is \(got.location)+\(got.length), not the whole field")
         }
+        // Selecting runs the page's handlers too, so focus is checked again right before the replacement.
+        if let moved = focusStayed(on: el, in: w) { return (.focusMoved, "insert: \(moved)") }
         if let no = check() { return no }
-        let w = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, value as CFString)
-        guard w == .success else { return (.axError, "insert: replace failed with \(w.rawValue)") }
+        let r2 = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, value as CFString)
+        guard r2 == .success else { return (.axError, "insert: replace failed with \(r2.rawValue)") }
         return nil
     }
 
@@ -963,7 +994,7 @@ public final class AppWorker: @unchecked Sendable {
     /// field has AX focus (B20 candidate table: 3 of 3, with the window not raised and the app not activated).
     /// Focus can run the page's own handlers, so the field must still hold `expect` before the write. The
     /// executor's walk afterwards checks what the field holds. Nil when both steps went through.
-    private func focusThenValue(_ value: String, into el: AXUIElement, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+    private func focusThenValue(_ value: String, into el: AXUIElement, window win: AXRef, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
         let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         guard f == .success else { return (.axError, "focusValue: focus failed with \(f.rawValue)") }
         switch AX.read(el, kAXValueAttribute) {
@@ -973,10 +1004,38 @@ public final class AppWorker: @unchecked Sendable {
             guard let now = v as? String else { return (.changed, "after focus the value is not text") }
             if now != expect { return (.changed, "after focus the value is '\(now.prefix(80))'") }
         }
+        // A page's focus handler can move focus to another field while this one keeps its value; the write would then
+        // land there (S1 audit #14). Checked after the handlers ran and right before the write.
+        if let moved = focusStayed(on: el, in: win) { return (.focusMoved, "focusValue: \(moved)") }
         if let no = check() { return no }
         let w = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
         guard w == .success else { return (.axError, "focusValue: AXUIElementSetAttributeValue \(w.rawValue)") }
         return nil
+    }
+
+    /// Whether focus is still where the reader put it: on the field, in the window the helper named (FocusCheck). Nil
+    /// when the write may go ahead; otherwise why not.
+    private func focusStayed(on el: AXUIElement, in w: AXRef) -> String? {
+        let focused: Bool?
+        switch AX.read(el, kAXFocusedAttribute) {
+        case .value(let v): focused = CFGetTypeID(v) == CFBooleanGetTypeID() ? CFBooleanGetValue((v as! CFBoolean)) : nil
+        case .absent, .failed: focused = nil
+        }
+        let inWindow = AX.element(el, kAXWindowAttribute).map { CFEqual($0, w.el) }
+        let app: FocusCheck.AppFocus
+        if let fe = AX.element(ax, kAXFocusedUIElementAttribute) {
+            AXUIElementSetMessagingTimeout(fe, AX.elementTimeout)
+            if CFEqual(fe, el) {
+                app = .target
+            } else if let fw = AX.element(fe, kAXWindowAttribute) {
+                app = CFEqual(fw, w.el) ? .elsewhereInWindow : .otherWindow
+            } else {
+                app = .unknown
+            }
+        } else {
+            app = .unknown
+        }
+        return FocusCheck.refusal(elementFocused: focused, inTargetWindow: inWindow, appFocus: app)
     }
 
     private enum Found {

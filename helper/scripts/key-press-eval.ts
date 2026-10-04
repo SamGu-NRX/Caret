@@ -30,6 +30,9 @@ import { Store } from "../src/store.ts";
 import type { HelperMessage, UserPress } from "../src/protocol.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
 import { userInput } from "./synthetic-input.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const run = promisify(execFile);
 const { values: a } = parseArgs({
@@ -80,7 +83,7 @@ helper.handleReader = (m) => {
   if (m.type === "userPress") presses.push(m);
   return origHandle(m);
 };
-server = new HelperServer(join(sockDir, "s.sock"), () => helper, (l) => log.push(l));
+server = new HelperServer(join(sockDir, "s.sock"), () => helper, (l) => log.push(l), launchSecret);
 await server.listen();
 
 const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(a.bin), ["--windows", "keys", "--duration", "900", ...(a.foreground === true || FRONT ? ["--foreground"] : [])]);
@@ -178,8 +181,9 @@ let readerErr = "";
 try {
   await until("the fixture", () => fixturePid > 0);
   await sleep(800);
-  reader = spawn(join(a.bin, "caret-screen"), ["--socket", join(sockDir, "s.sock"), "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
+  reader = spawn(join(a.bin, "caret-screen"), ["--auth-fd", "0", "--socket", join(sockDir, "s.sock"), "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
   reader.stderr.setEncoding("utf8");
+  sendSecret(reader, launchSecret);
   reader.stderr.on("data", (d: string) => (readerErr += d));
   const main = await until("the Keys window", () => windowTitled("Caret Fixture — Keys"));
   const other = await until("the Keys other window", () => windowTitled("Caret Fixture — Keys other"));

@@ -11,6 +11,7 @@ OUT=$1
 WINDOWS=$2
 ROUNDS=${3:-3}
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/launch-secret.sh"
 BIN="$HERE/../.build/debug"
 # The bundled fixture (scripts/bundle-fixture.sh): macOS will not activate the bare executable.
 FIXTURE="$BIN/CaretFixture.app/Contents/MacOS/caret-fixture"
@@ -30,7 +31,7 @@ if [[ -n "${VISIT:-}" ]]; then
   VISIT_ARGS=(--visit "$VISIT")
   NVISIT=$(awk -F, '{print NF}' <<<"$VISIT")
 fi
-(cd "$HELPER" && exec node src/main.ts --data-dir "$OUT/helper-data" --allow-background-focus --status-every 60 ${CUTOFF_ARGS[@]+"${CUTOFF_ARGS[@]}"} > "$OUT/helper.log" 2>&1) &
+(cd "$HELPER" && exec node src/main.ts --auth-fd 0 --data-dir "$OUT/helper-data" --allow-background-focus --status-every 60 ${CUTOFF_ARGS[@]+"${CUTOFF_ARGS[@]}"} > "$OUT/helper.log" 2>&1) < <(secret_bytes) &
 HELPERPID=$!
 sleep 1.5
 "$FIXTURE" --foreground --windows "$WINDOWS" --gold "$OUT/gold.json" --focus-forms ${VISIT_ARGS[@]+"${VISIT_ARGS[@]}"} --duration 300 > "$OUT/fixture.log" 2>&1 &
@@ -38,7 +39,7 @@ FIX=$!
 # The fixture prints its pid line once its windows exist; a reader started earlier can find no windows to walk.
 for _ in $(seq 1 40); do grep -q 'caret-fixture pid' "$OUT/fixture.log" 2>/dev/null && break; sleep 0.25; done
 sleep 1
-"$BIN/caret-screen" --only-pids "$FIX" --event-pids "$FIX" --record "$OUT/reader-record.ndjson" > "$OUT/reader.log" 2>&1 &
+"$BIN/caret-screen" --auth-fd 0 --only-pids "$FIX" --event-pids "$FIX" --record "$OUT/reader-record.ndjson" < <(secret_bytes) > "$OUT/reader.log" 2>&1 &
 READER=$!
 # Wait until the reader has recorded both form windows (the first walk of every window can take a few seconds).
 for _ in $(seq 1 60); do

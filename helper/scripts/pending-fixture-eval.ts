@@ -25,6 +25,9 @@ import { Store } from "../src/store.ts";
 import { loadJevKey, makeJevClient } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type Activity, type HelperMessage, type TaskState } from "../src/protocol.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const { values: a } = parseArgs({
   options: {
@@ -107,7 +110,7 @@ helper.handleReader = (m) => {
   }
   return handleReader(m);
 };
-server = new HelperServer(a.socket, () => helper, (l) => log.push(l));
+server = new HelperServer(a.socket, () => helper, (l) => log.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -185,9 +188,10 @@ const watchRecords = () => activities().filter((m) => m.task.kind === "watch");
 function startReader(eventDriven: boolean): ChildProcessWithoutNullStreams {
   const args = ["--socket", a.socket, "--only-pids", String(fixturePid)];
   if (eventDriven) args.push("--event-pids", String(fixturePid));
-  const r = spawn(join(a.bin!, "caret-screen"), args);
+  const r = spawn(join(a.bin!, "caret-screen"), ["--auth-fd", "0", ...args]);
   readerPids.push(r.pid ?? -1);
   r.stderr.setEncoding("utf8");
+  sendSecret(r, launchSecret);
   r.stderr.on("data", (d: string) => {
     for (const line of d.split("\n")) if (line.trim() !== "") log.push(`${Date.now()} reader: ${line.trim()}`);
   });

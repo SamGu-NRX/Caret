@@ -7,11 +7,12 @@ Caret's Accessibility reader. It keeps the helper's screen model current: every 
 ```sh
 cd apps/screen-reader
 /usr/bin/lockf -k ~/.caret-run/locks/build.lock swift build
-(cd ../../helper && CARET_ENV_FILE=/path/to/.env node src/main.ts) &
-./.build/debug/caret-screen            # or --shadow: log opportunities, show nothing, call no model
+cd ../../helper
+CARET_ENV_FILE=/path/to/.env node src/launch.ts --reader ../apps/screen-reader/.build/debug/caret-screen
+# helper arguments after --, reader arguments after ---, for example: -- --no-jev --- --shadow
 ```
 
-Start the binary directly, not through `open`, so it inherits the Accessibility grant of the process that starts it. It exits with a message if it is not trusted.
+The launcher starts the helper and the reader with one launch secret between them (see "Who it talks to"). The reader is started directly, not through `open`, so it inherits the Accessibility grant of the process that starts it. It exits with a message if it is not trusted, or if it was started without `--auth-fd`.
 
 ## What it reads, and when
 
@@ -33,6 +34,10 @@ The helper sends `readerCommand` lines back over the same socket. `walk` re-read
 
 Write, press and raise act only under a live act grant. The helper sends `actGrant` (a task, a process, one window, an expiry) when an accepted offer starts that task, and `actRevoke` when the task ends, pauses, is stopped or is taken over. A command acts only when it names the granted task (`taskId`), process and window; the reader checks before it re-walks and again right before the Accessibility call, ends every grant 120 s after it arrives at the latest, and drops all of them when the helper's connection closes. Otherwise the answer is `notAllowed`, with the reason in `detail`. Grants arrive only on the reader's own connection to the helper, and the helper accepts none from a consumer. For fixture tests, `--act-pids` (a subset of `--only-pids`) lets the executor act in named processes without a grant; the reader accepts it only with `CARET_SCREEN_FIXTURE_ACTS=fixture-only` in its environment, outside an app bundle, and for `caret-fixture` processes, each bound to its start time. Whatever the grant, a press goes through only when the reader's own risk table (`RiskTable.swift`, the same cases as `helper/src/executor/risk.ts` in `helper/fixtures/golden/press-risk.json`) positively allows it: a control of a pressable role, outside any system prompt (window subrole `AXSystemDialog` or `AXSystemFloatingWindow`, or a system prompt process), whose whole label is on the short safe list (navigation, archive, add note, save draft) and reads as no risk class. The user's own key or click in a watched window ends that window's grants at the reader before the helper hears of it. The last grant check comes right before each Accessibility call that changes something; a revoke after it cannot stop that one call (at most 0.25 s), only every later one. Window ids are `<pid>-<process start>-<worker generation>-<n>`, so a process that reuses a pid never matches an old id, and a process's grants end when it exits. The socket is non-blocking: grants and revokes are read on their own queue however much output waits, and a helper that stops reading (32 MB waiting, or 10 s without taking any) makes the reader drop every grant and connect again. `watchInput` turns on a global key and mouse monitor for the named processes and reports that input happened, its process and a click's location: never key codes or characters.
 
+Undo writes only into the element its write wrote (B23). Each of the executor's value writes names a `mark`, and the reader keeps the native element it writes under it, per app worker, right before the write. A restore names it back as `sameAs`; the element at the key, after a fresh walk, must be that same element, or the answer is `notSameElement` and nothing is written. That covers a field the app replaced with an identical sibling (same key, role and value), a reader that restarted (it holds no marks), and a process that went (its worker and marks went with it). A mark survives the helper restarting, so the helper's recovery journal can still undo a run a crash cut off.
+
+A WebKit field is focused before its value is written, since a window that is not key applies a value write to whichever field has focus (B20). After focusing, and again right before the write, the reader checks that focus stayed: the field reads `AXFocused`, it is still in the window the helper named, and the app's focused element, when it is in that window, is the field (`FocusCheck`). A page handler that moved focus elsewhere gets `focusMoved` and no write; the executor hands the field to the user. The insert fallback checks the same before selecting and before replacing.
+
 ## Calendar
 
 With `--calendar-test` the reader answers the helper's calendar verbs (`calendarFind`, `calendarAdd`, `calendarGet`, `calendarRemove`, `calendarDispose`) through EventKit, which needs a native process. `CalendarAdapter` (in `CaretScreenCore`, tested with a fake store) holds the rules, and `EventKitBackend` (`CaretScreenCalendar`) talks to EventKit:
@@ -40,10 +45,20 @@ With `--calendar-test` the reader answers the helper's calendar verbs (`calendar
 - It never asks for Calendar access, since that would put a system prompt on the user's screen. Without full access every verb answers `blocked` with `blocked: tcc`, and no EventKit store is created.
 - It writes only to calendars it created itself on a local (On My Mac) source, which no account syncs. With no local source an add answers `blocked: noLocalSource`. It looks events up only by the ids of events it added, and only while each is still in its calendar, so an event in any other calendar is never read.
 - An add of an event already in its calendar is refused, so two tasks never share one event.
-- A write names its task and needs that task's live `calendarGrant`, checked on the calendar queue right before the write. The helper sends one only for a task from an accepted offer, and `actRevoke` ends it.
+- A write names its task and needs that task's live `calendarGrant`, checked on the calendar queue before the adapter's lookups and again right before each change it makes: creating its calendar, saving or removing an event, deleting a calendar (B23). A stop that lands while it looks for a duplicate or for the event to remove refuses the change. The helper sends a grant only for a task from an accepted offer, and `actRevoke` ends it.
+- Each event is kept with the task that added it: only that task may remove it, and a calendar still holding another task's event is not disposed.
+- A read that fails answers `axError` "cannot read the calendar", never "not there", so undo never counts a failed read as an event removed.
 - `calendarDispose`, and the reader stopping, delete the calendars it created. A reader that is killed leaves them behind.
 
 Without the flag every calendar verb answers `notAllowed`. `--calendar-probe` prints the authorization status and nothing else, and `--calendar-audit TITLE` lists, through a store of its own, every event calendar with that title, its source and its event count. Both only read and need no Accessibility. Calendar is a per-user TCC service, decided for the responsible process by its real path. The VM run that exercised all of this against real EventKit is in `~/.caret-run/evidence/screen/b16/`.
+
+## Who it talks to
+
+The socket is the reader's whole interface: what it sends holds screen text, and what it receives can make it act with Caret's Accessibility grant. So the reader talks only to a helper that proves itself (B23):
+
+- **Other users.** The socket's directory must be a directory this user owns with no access for group or others (the helper makes it mode 0700), and the socket this user's. After connecting, the peer's effective uid must be this user's (`getpeereid`). Otherwise the reader does not connect.
+- **This user's other processes.** One of them could replace the socket and listen in the helper's place. The launcher (`helper/src/launch.ts`) makes a 32-byte secret per launch and hands it to the helper and the reader on their standard input (`--auth-fd 0`), never on a command line or in the environment. Each connection's hello carries a fresh challenge, and the helper's first line must be `helperAuth`, an HMAC-SHA256 of it under the secret. Until that checks out the reader sends nothing but the hello, keeps every other message for later, and applies no grant, revoke or command; a wrong proof, any other first line, or no proof within 5 s drops the connection.
+- **Not covered.** A process of the same user that can read the launcher's memory or attach a debugger to it, or to the helper or the reader, gets the secret; macOS's same-user boundary is the limit here. A code-signing check would not help: the helper runs under `node`, and a check on `node` would vouch for every Node script. Consumers of the helper (the host app, evaluation scripts) are not authenticated by this; the helper treats only a consumer whose hello says `host: true` as the host, and a same-user process could still say so.
 
 ## Element keys
 
@@ -55,4 +70,4 @@ Without the flag every calendar verb answers `notAllowed`. `--calendar-probe` pr
 
 ## Tests
 
-`swift test` covers element keys, compaction, typed-value detection, act and calendar grants, the calendar adapter's rules, the golden protocol fixture shared with the helper (`helper/fixtures/golden/protocol.ndjson`), and the date and time spans the event card's sentences hold (`helper/fixtures/golden/event-sentences.json`).
+`swift test` covers element keys, compaction, typed-value detection, act and calendar grants, element marks and the focus check, the calendar adapter's rules, the socket client's backpressure and its refusal of a helper that does not prove itself (against a socket the test plays the helper on), the golden protocol fixture shared with the helper (`helper/fixtures/golden/protocol.ndjson`), and the date and time spans the event card's sentences hold (`helper/fixtures/golden/event-sentences.json`).

@@ -6,6 +6,7 @@ set -euo pipefail
 OUT=$1
 COUNT=${2:-50}
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/launch-secret.sh"
 BIN="$HERE/../.build/debug"
 SCRATCH=/tmp/caret-e1-textedit
 DRIVER=/tmp/caret-e1-drive-ax-value
@@ -22,7 +23,7 @@ echo "textedit $TE" | tee "$OUT/pids.txt"
 # Signals only pids this script recorded. An empty or zero pid would make `kill` signal the whole process group.
 stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
 trap 'stop "${READER:-}" "$TE"' EXIT
-"$BIN/caret-screen" --only-pids "$TE" --event-pids "$TE" --socket /tmp/caret-e1-textedit/none.sock --e1-log "$OUT/e1.ndjson" > "$OUT/reader.log" 2>&1 &
+"$BIN/caret-screen" --auth-fd 0 --only-pids "$TE" --event-pids "$TE" --socket /tmp/caret-e1-textedit/none.sock --e1-log "$OUT/e1.ndjson" < <(secret_bytes) > "$OUT/reader.log" 2>&1 &
 READER=$!
 sleep 2
 "$DRIVER" --pid "$TE" --title caret-e1-textedit --count "$COUNT" --period 1.2 --log "$OUT/driver.ndjson"
