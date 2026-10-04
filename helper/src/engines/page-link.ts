@@ -9,10 +9,14 @@ import type { EngineSession } from "./session.ts";
 import type { ConfirmedFiles } from "./attach.ts";
 import { pageWindowId, parsePageWindow } from "./windows.ts";
 
-/** The reader role a page control reads as, so plans and the planner see pages as they see native forms. */
+/**
+ * The reader role a page control reads as, so plans, the planner and fill (fill/controls.ts) see pages as they see
+ * native forms. A time input is AXTimeField, as Chrome's Accessibility shows it (B24 capture-2); as AXDateField, fill
+ * took it for a date. The roles of datetime, month and week inputs are not captured; they stay AXDateField.
+ */
 const ROLE: Record<PageControlKind, string> = {
   text: "AXTextField", email: "AXTextField", tel: "AXTextField", url: "AXTextField", number: "AXTextField", search: "AXTextField",
-  date: "AXDateField", time: "AXDateField", datetime: "AXDateField", month: "AXDateField", week: "AXDateField",
+  date: "AXDateField", time: "AXTimeField", datetime: "AXDateField", month: "AXDateField", week: "AXDateField",
   textarea: "AXTextArea", select: "AXPopUpButton", checkbox: "AXCheckBox", radio: "AXRadioButton", combobox: "AXComboBox",
   button: "AXButton", link: "AXLink", file: "AXButton", contenteditable: "AXTextArea", range: "AXSlider", color: "AXColorWell",
 };
@@ -53,13 +57,34 @@ export interface PageTargetRef {
 const frameKey = (frameId: number): string => `f${frameId}`;
 const nodeKey = (frameId: number, c: PageControl): string => `${frameKey(frameId)}/${c.key}`;
 
+/**
+ * The group node a radio button sits under, as Chrome's Accessibility puts a fieldset's radios under an AXGroup
+ * (B24 capture-2), so fill reads one radio group per set of buttons and not one per frame. Buttons that share an
+ * author-chosen identifier (the `name` attribute, in strongKey) in one form are one group. A button without one
+ * gets a group of its own, which fill does not offer (a group needs two buttons), rather than joining every other
+ * such button of the frame. The group carries no label: PageControl has no fieldset legend.
+ */
+function radioGroupKey(frameId: number, c: PageControl): string {
+  const ident = c.strongKey === null ? null : (JSON.parse(c.strongKey) as unknown[])[2];
+  return `${frameKey(frameId)}/radiogroup:${typeof ident === "string" ? `${c.form ?? ""}/${ident}` : c.key}`;
+}
+
 /** The window snapshot the screen model takes for a tab: one AXWebArea per frame, its controls below it. */
 export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: number): Snapshot {
   const nodes: Node[] = [];
   let focusedKey: string | null = null;
   for (const f of s.frames) {
     nodes.push({ key: frameKey(f.frameId), parent: f.parentFrameId < 0 ? null : frameKey(f.parentFrameId), role: "AXWebArea", label: f.title || `${f.origin}${f.path}` });
+    const groups = new Set<string>();
     for (const c of f.controls) {
+      let parent = frameKey(f.frameId);
+      if (c.kind === "radio") {
+        parent = radioGroupKey(f.frameId, c);
+        if (!groups.has(parent)) {
+          groups.add(parent);
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset" });
+        }
+      }
       const states: NodeState[] = [];
       if (s.focused !== null && s.focused.frameId === f.frameId && s.focused.id === c.id) {
         states.push("focused");
@@ -70,7 +95,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       const value = c.kind === "select" ? c.options?.find((o) => o.selected)?.label : c.value;
       nodes.push({
         key: nodeKey(f.frameId, c),
-        parent: frameKey(f.frameId),
+        parent,
         role: ROLE[c.kind],
         label: c.name,
         ...(value === undefined ? {} : { value }),
@@ -79,6 +104,12 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         ...(VALUE_KINDS.has(c.kind) ? { editable: true as const } : {}),
         ...(states.length > 0 ? { states } : {}),
       });
+      // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
+      // hand-off for it can name one. Chrome's Accessibility shows only the selected one. An option whose value is
+      // empty is the HTML placeholder ("Select..."), not a choice.
+      if (c.kind === "select")
+        for (const [i, o] of (c.options ?? []).entries())
+          if (o.value !== "" && o.label.trim() !== "") nodes.push({ key: `${nodeKey(f.frameId, c)}/option~${i}`, parent: nodeKey(f.frameId, c), role: "AXMenuItem", label: o.label });
     }
   }
   return {

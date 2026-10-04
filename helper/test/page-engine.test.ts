@@ -175,7 +175,9 @@ describe("engine session and page link", () => {
     const s = toWindowSnapshot(snapshot("c"), session, 1);
     expect(s.window.windowId).toBe("page:eng1:7");
     expect(s.nodes.map((n) => [n.key, n.parent, n.role])).toEqual([
-      ["f0", null, "AXWebArea"], ["f0/textbox:first name~0", "f0", "AXTextField"], ["f0/combobox:country~0", "f0", "AXPopUpButton"], ["f0/button:submit~0", "f0", "AXButton"],
+      ["f0", null, "AXWebArea"], ["f0/textbox:first name~0", "f0", "AXTextField"], ["f0/combobox:country~0", "f0", "AXPopUpButton"],
+      // Its options as menu items, as fill reads a select's options (I2); the empty-valued placeholder is no choice.
+      ["f0/combobox:country~0/option~1", "f0/combobox:country~0", "AXMenuItem"], ["f0/button:submit~0", "f0", "AXButton"],
       ["f4", "f0", "AXWebArea"], ["f4/textbox:referral~0", "f4", "AXTextField"],
     ]);
     expect(s.nodes.find((n) => n.key === "f0/combobox:country~0")?.value).toBe("Choose");
