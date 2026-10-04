@@ -1,1 +1,0 @@
-Onboarding's know step shows only when a memoryReply list names op add in 'ops' (host contract, memory.ndjson). Today's helper sends no ops, so the step stays hidden until the screen track adds the op and the field (A12).

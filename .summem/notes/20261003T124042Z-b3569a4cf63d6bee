@@ -1,1 +1,0 @@
-Chrome builds its web AX tree seconds after the reader asks for it: wait until the form's fields are in the screen model before acting, or the first plans stop with target-not-found (B15 explore run).

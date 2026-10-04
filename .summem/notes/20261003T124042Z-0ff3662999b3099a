@@ -1,1 +1,0 @@
-A stop or takeOver revokes the task's act grant at once, so a write still on its way is refused and the run ends as stopped by you; test fakes (FakeApp, SocketReader) refuse acts without a grant only when enforceGrants is set.

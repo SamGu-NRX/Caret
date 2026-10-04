@@ -1,1 +1,0 @@
-Helper memoryRequest has no add op and records no permission uses; the host's contract for both is apps/caret/Tests/CaretHostCoreTests/Fixtures/memory.ndjson, and typed values wait in MemoryBook (memory only) until a helper accepts add (A11).

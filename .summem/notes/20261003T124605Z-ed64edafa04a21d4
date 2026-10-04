@@ -1,1 +1,0 @@
-KeyType estimates a single-line field's caret flush with the field's bottom edge once it holds text; fit checks must not add height below the caret (A10 cd92606).

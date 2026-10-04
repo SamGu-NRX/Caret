@@ -1,1 +1,0 @@
-Socket test harnesses must bind the helper's publish/sendToReader to the HelperServer made in that beforeEach, not the reassigned server variable: an earlier test's run timed out 5 s later and its 'stopped id-1' reached a later test's host (B13's flake, fixed B14).

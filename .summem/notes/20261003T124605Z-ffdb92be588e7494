@@ -1,1 +1,0 @@
-Other runs' Playwright WebKit windows take the foreground every 20-50 s; on-screen runs started right after one quits (A10 onscreen-try.sh) or they fail as appNotFront.

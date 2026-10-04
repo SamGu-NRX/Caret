@@ -1,1 +1,0 @@
-ImageRenderer cannot draw TextField or ScrollView: Caret windows use EntryField and ScrollingColumn (Design/EntryField.swift), which draw still stand-ins when Gallery.png sets rendersOffscreen (A11).

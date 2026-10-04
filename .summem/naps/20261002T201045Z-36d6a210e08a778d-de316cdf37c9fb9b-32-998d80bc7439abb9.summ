@@ -1,0 +1,1 @@
+Helper: never mutate w.nodes, expiry only in lifetimes.ts; host machines decide, coordinators draw (Rig+ManualClock), tests own --settings. Fixture 'activate legacy' moves the front; Jev text via SnippetLedger; host needs caretRectAX; fill kinds whole or not at all.

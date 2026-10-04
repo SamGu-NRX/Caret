@@ -1,1 +1,0 @@
-Debug-socket 'inject helperLine' takes the helper-socket route, gate included (A12): an injected action is a helper offer whose Tab sends offerAccept. Scripts that inject must pass their own --settings, or a paused or Fill-off user file refuses it.
