@@ -582,7 +582,11 @@ async function caretRun(
   if ("kind" in first) {
     taskId = first.id;
     hostShown = (await until("the host to show the routine offer", async () => ((await surface()).offerKey === taskId ? true : null), 5000).catch(() => false)) === true;
-    if (!(await key("tab"))) throw new Error("the host did not take Tab on the routine offer");
+    if (!(await key("tab"))) {
+      // Why: the offer the host holds back (SurfaceGate.Hold) or what it shows instead.
+      const sf = await surface().catch(() => ({}) as Surface);
+      throw new Error(`the host did not take Tab on the routine offer (shown ${JSON.stringify(sf.offerKey ?? null)}, held ${JSON.stringify((sf as { held?: string }).held ?? null)})`);
+    }
   } else {
     taskId = first.taskId;
   }
