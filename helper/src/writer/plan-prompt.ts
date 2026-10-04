@@ -57,7 +57,7 @@ Rules:
 - Press a target only when the goal itself asks for what its effect does ("subscribe me" asks for Subscribe). Filling in a form does not ask to send, submit, save or continue it.
 - Leave out targets the goal does not need.
 - Pass every step you created to caret.plan exactly once, in the order they should run, with basedOn set to the focused window's snapshot, and return what plan returns.
-- Allowed syntax: const, let, arrow functions, if, for...of, for, while, template strings, calls, and new Map() or new Set(). No imports, classes, other new, regular expressions, this, eval, Date, Function or globalThis.
+- Allowed syntax: const, let, arrow functions, if, switch, for...of, for, while, template strings, calls, and new Map() or new Set(). No imports, classes, other new, regular expressions, this, eval, Date, Function or globalThis.
 
 Reply with only the function in one \`\`\`ts code block.`;
 

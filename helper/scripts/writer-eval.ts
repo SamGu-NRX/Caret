@@ -25,6 +25,9 @@ if (args.out === undefined) throw new Error("--out DIR is required");
 const outDir = args.out;
 const budget = Number(args.budget);
 const gapMs = Number(args.gap) * 1000;
+// Run 2 refused two qwen3.8 calls as "Request too large" against its 1,000 output-tokens-a-minute limit
+// with a 2,000-token cap. The longest reply across runs 1 and 2 was 809 tokens, so 1,000 fits all three.
+const MAX_OUTPUT = 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let retries = 0;
 mkdirSync(outDir, { recursive: true });
@@ -91,7 +94,7 @@ for (const route of routes) {
     }
     const call: Call = { model: route.model, servedModel: null, case: c.id, latencyMs: null, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0, valid: false, correct: false, failure: null, program: null };
     if (calls.length > 0) await sleep(gapMs);
-    const write = () => port.write({ kind: "plan", disclosureId: "writer-eval", input: { goal: c.goal, snapshots: c.snapshots }, maxOutputTokens: 2000, signal: AbortSignal.timeout(15_000) });
+    const write = () => port.write({ kind: "plan", disclosureId: "writer-eval", input: { goal: c.goal, snapshots: c.snapshots }, maxOutputTokens: MAX_OUTPUT, signal: AbortSignal.timeout(15_000) });
     try {
       const w = await write().catch(async (e: unknown) => {
         if (!(e instanceof ChatHttpError) || e.status !== 429) throw e;

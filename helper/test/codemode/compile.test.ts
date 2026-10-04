@@ -35,6 +35,10 @@ describe("compileProgram", () => {
     expect(detail(wrap(body))).toContain(expected);
   });
 
+  test("allows switch, which writers use to map a choice", () => {
+    expect(detail(wrap("const k = 'a' as string; switch (k) { case 'a': break; default: break; } return caret.plan({ basedOn: 'x' as SnapshotRef, steps: [] });"))).toBe("ok");
+  });
+
   test("refuses programs that are not one async main(caret)", () => {
     expect(detail("const x = 1;")).toContain("exactly one declaration");
     expect(detail(`${wrap("")}\nconst y = 2;`)).toContain("exactly one declaration");

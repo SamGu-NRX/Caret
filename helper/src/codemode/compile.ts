@@ -24,6 +24,8 @@ const ALLOWED = new Set([
   "VariableDeclarator",
   "ReturnStatement",
   "IfStatement",
+  "SwitchStatement",
+  "SwitchCase",
   "ForStatement",
   "ForOfStatement",
   "WhileStatement",
