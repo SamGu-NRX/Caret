@@ -14,6 +14,7 @@
     "schema": "node src/export-schema.ts"
   },
   "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
     "zod": "4.6.5"
   },
   "devDependencies": {

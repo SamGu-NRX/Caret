@@ -1,0 +1,1 @@
+B14: fix the generator clock with setGeneratorClock(() => 0) in load-proof tests; names withheld only on namesCut; stopped taskProgress carries stopReason; run an oracle-Jev copy of live-replay.ts before a live replay.
