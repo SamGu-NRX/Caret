@@ -174,27 +174,36 @@ class LineTable {
   }
 
   /**
-   * The runs of `t`, each PARTIAL_MIN or more characters long, that some line of the window also shows, as maximal
-   * stretches of `t`: what a text quoting part of a line reveals of it ("Copy this: " and a sentence's first hundred
-   * characters). Lines never join, so a run cannot cross from one line into the next.
+   * The runs of `t`, each PARTIAL_MIN or more characters long, that a line of the window also shows: what a text
+   * quoting part of a line reveals of it ("Copy this: " and a sentence's first hundred characters). Each run is the
+   * longest stretch of `t` from its start that one line shows, so every run stands inside a line and is charged
+   * there, prose share included. Runs from two lines may overlap in `t`. Before B26's review the matches of
+   * different lines were merged into one run that no line held, which was charged no prose: a text joining the end of
+   * one sentence to the start of another revealed 146 characters of a note's prose against a share of 96.
    */
   sharedRuns(t: string): string[] {
     if (t.length < PARTIAL_MIN) return [];
     this.joined ??= `\u0000${[...this.counts.keys()].filter((l) => l.length >= CONTAINED_MIN).join("\u0000")}\u0000`;
-    const cover = new Uint8Array(t.length);
-    for (let p = 0; p + PARTIAL_MIN <= t.length; p++) if (this.joined.includes(t.slice(p, p + PARTIAL_MIN))) cover.fill(1, p, p + PARTIAL_MIN);
+    const j = this.joined;
     const runs: string[] = [];
-    for (let i = 0; i < t.length; ) {
-      if (cover[i] === 0) {
-        i++;
-        continue;
+    let reach = 0;
+    for (let p = 0; p + PARTIAL_MIN <= t.length; p++) {
+      const gram = t.slice(p, p + PARTIAL_MIN);
+      let best = 0;
+      let n = 0;
+      // `t` holds no NUL, so a match ends where its line does.
+      for (let q = j.indexOf(gram); q >= 0 && n < MAX_OCCURRENCES; q = j.indexOf(gram, q + 1), n++) {
+        let k = PARTIAL_MIN;
+        while (p + k < t.length && j.charCodeAt(q + k) === t.charCodeAt(p + k)) k++;
+        if (k > best) best = k;
       }
-      let j = i;
-      while (j < t.length && cover[j] === 1) j++;
-      runs.push(t.slice(i, j));
-      i = j;
+      // A run inside one already found reveals nothing more of this window.
+      if (best > 0 && p + best > reach) {
+        runs.push(t.slice(p, p + best));
+        reach = p + best;
+      }
     }
-    return runs;
+    return [...new Set(runs)];
   }
 
   /** Every distinct line of the window that `t` holds, by where it starts in `t`; each line once. */
@@ -617,35 +626,38 @@ export class SnippetLedger {
       if (best !== null) mark(e, a, best.line, best.at, t.length);
     };
     for (const t of fresh) {
-      const r = this.revealed(t);
-      if (from !== null) {
-        const wid = from.window.windowId;
-        const table = windowText(from);
-        // A text taken from a window, piece by piece (a line break or a cut's ellipsis ends a piece): a whole line,
-        // a text inside lines, or neither, which is charged what of it the lines it holds do not cover.
-        for (const raw of t.split("\n")) {
-          const piece = flat(raw).replace(/^…|…$/gu, "");
-          if (piece === "") continue;
+      // A text is matched piece by piece in every window: a line break or a cut's ellipsis ends a piece, so a value
+      // cut to length still reveals the line it was cut from, in whichever window shows it (B26 review: a cut line
+      // charged its own window and not a chat that showed the same line).
+      const pieces = t.split("\n").map((raw) => flat(raw).replace(/^…|…$/gu, "")).filter((x) => x !== "");
+      for (const piece of pieces) {
+        const r = this.revealed(piece);
+        if (from !== null) {
+          const wid = from.window.windowId;
+          const table = windowText(from);
+          // Taken from this window: a whole line, a text inside lines, or neither, which is charged what of it the
+          // lines it holds do not cover.
           if (table.isLine(piece)) chargeLine(wid, piece);
           else if (piece.length >= CONTAINED_MIN && table.holds(piece)) chargeInside(wid, piece);
           else {
             const x = fresh1(wid, piece);
-            if (x === null) continue;
-            const held = new Set<string>();
-            table.linesIn(piece, held);
-            const cover = new Uint8Array(piece.length);
-            for (const l of held) for (let p = piece.indexOf(l); p >= 0; p = piece.indexOf(l, p + 1)) cover.fill(1, p, p + l.length);
-            x.a.cost += piece.length - cover.reduce((n, b) => n + b, 0);
+            if (x !== null) {
+              const held = new Set<string>();
+              table.linesIn(piece, held);
+              const cover = new Uint8Array(piece.length);
+              for (const l of held) for (let p = piece.indexOf(l); p >= 0; p = piece.indexOf(l, p + 1)) cover.fill(1, p, p + l.length);
+              x.a.cost += piece.length - cover.reduce((n, b) => n + b, 0);
+            }
           }
         }
+        // Every line the piece holds, in whichever window shows it.
+        for (const [l, ids] of r.lines) for (const wid of ids) chargeLine(wid, l);
+        // And every other window that shows the piece inside a line: a value taken from a card that a chat
+        // message also quotes reveals that much of the chat.
+        for (const wid of r.shownBy) if (wid !== from?.window.windowId) chargeInside(wid, piece);
+        // Plan and memory text that quotes part of a line reveals that part.
+        if (from === null) for (const [run, ids] of this.partialRuns(piece)) for (const wid of ids) chargeInside(wid, run);
       }
-      // Every line the text holds, in whichever window shows it.
-      for (const [l, ids] of r.lines) for (const wid of ids) chargeLine(wid, l);
-      // And every other window that shows the text inside a line: a value taken from a card that a chat
-      // message also quotes reveals that much of the chat.
-      for (const wid of r.shownBy) if (wid !== from?.window.windowId) chargeInside(wid, t);
-      // Plan and memory text that quotes part of a line reveals that part.
-      if (from === null) for (const [run, ids] of this.partialRuns(t)) for (const wid of ids) chargeInside(wid, run);
     }
     for (const [wid, a] of adds) {
       const e = this.entries.get(wid) as Entry;

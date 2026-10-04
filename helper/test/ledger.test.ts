@@ -228,3 +228,28 @@ describe("plan text that quotes part of a line (B25 review)", () => {
     expect(l.chars("note-1")).toBe(0);
   });
 });
+
+describe("the B26 review's undercharges", () => {
+  it("charges a plan text joining two sentences' ends to each sentence's prose share", () => {
+    const m = new ScreenModel();
+    const a = `left-only-start ${"x".repeat(65)}ABCDEFGHIJKLMNOP`;
+    const b = `ABCDEFGHIJKLMNOP${"y".repeat(65)} right-only-end`;
+    const shorts = Array.from({ length: 8 }, (_, i) => `Short value ${i}: sample information here`);
+    m.apply(snap([a, b, ...shorts].map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-3", title: "Notes.txt", app: NOTES }));
+    const joined = `${"x".repeat(65)}ABCDEFGHIJKLMNOP${"y".repeat(65)}`;
+    expect(new SnippetLedger(m.windows.values()).plan([joined])).toBe(false);
+    expect(new SnippetLedger(m.windows.values()).memory([joined])).toBe(false);
+  });
+
+  it("charges a cut line to every window that shows the line, not only the one it was taken from", () => {
+    const LINE = "Deliver around 7:30 pm, and please use the side door and ring twice because the front bell is broken since May";
+    const m = new ScreenModel();
+    m.apply(snap([text("n0", "Order"), text("n1", LINE)], { at: 1, windowId: "note-4", title: "Order note.txt", app: NOTES }));
+    m.apply(snap([text("c0", "Kofi: running late"), text("c1", LINE)], { at: 2, windowId: "chat-4", title: "Chat", app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" } }));
+    const note = m.windows.get("note-4") as WindowState;
+    const ledger = new SnippetLedger(m.windows.values(), { consented: new Set(["note-4"]) });
+    // The chat is a conversation held under half of its text, so 99 characters of its line do not fit.
+    expect(ledger.take(note, "candidate", [`${LINE.slice(0, 99)}…`])).toBe(false);
+    expect(ledger.chars("chat-4")).toBe(0);
+  });
+});

@@ -21,12 +21,17 @@ const NOUN = [...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS].join("|");
 const NAME = "\\p{Lu}[\\p{L}'’-]*";
 const OWNER = `(?:my|the|this|that|his|her|their|our|your|${NAME}['’]s)`;
 /**
- * "in" names a source only before a possessive ("in my note", "in Bea's email"), and never as part of a verb ("fill in
- * my email"); "in the notes" is where a value goes.
+ * "in" names a source only before a possessive ("in my note", "in Bea's email"), and only when no verb that places a
+ * value comes before it in its clause: "fill in my email" and "put it in my notes" name where a value goes.
  */
 const POSSESSIVE = `(?:my|his|her|their|our|your|${NAME}['’]s)`;
+const PLACING = /\b(?:fill|put|type|write|enter|add|paste|drop|save|jot|record|stick|place|insert|log|note|plug|pop|key|punch|pencil|sign|check|send)\b/iu;
 /** "from my note", "off my LinkedIn", "per Bea's email", "in her latest email"; never "in the Notes field". */
-const PREP_SOURCE = new RegExp(`\\b(?:from|off|out of|per|according to|based on|using|via|(?<!\\b(?:fill|put|type|write|enter|add|plug|pop|key|punch|pencil|jot|sign|log|check|turn|hand|send)\\s)in\\s+(?=${POSSESSIVE}\\s))\\s*(?:${OWNER}\\s+)?(?:[\\p{L}-]+\\s+){0,2}?(${NOUN})\\b(?!\\s+(?:field|box|line|section|part)\\b)`, "giu");
+const PREP_SOURCE = new RegExp(`\\b(?:from|off|out of|per|according to|based on|using|via|in\\s+(?=${POSSESSIVE}\\s))\\s*(?:${OWNER}\\s+)?(?:[\\p{L}-]+\\s+){0,2}?(${NOUN})\\b(?!\\s+(?:field|box|line|section|part)\\b)`, "giu");
+/** Words that rule a source out when they come shortly before its phrase: "without using Dana's email", "not from my note". */
+const NEGATION = /(?:\b(?:without|not|never|except|instead of|rather than|other than|ignore|ignoring|skip|skipping|no)\b|n['’]t)(?:\s+[\p{L}'’]+){0,3}\s*$/iu;
+/** An instruction that keeps Caret to what it says ("only use what I typed", "don't read other windows"). */
+const RESTRICTS = /\b(?:only|just)\b[^.;]*\b(?:instruction|what i (?:typed|wrote|said)|these words)\b|\b(?:do not|don['’]t|dont|never|without)\s+(?:read|reading|look|looking|use|using|open|opening|check|checking|touch|touching)\b/iu;
 /**
  * "Chris's last message", "Dana's note". Without a preposition, "Bea's email" or "her mail" can be the address itself
  * ("put Bea's email in the guest email field"), so a bare possessive names a source only by these nouns; "in Bea's
@@ -49,6 +54,8 @@ export interface SourcePhrase {
   noun: string | null;
   /** A person's name in the phrase ("Bea" in "Bea's email", "Chris" in "Chris mentioned"); null otherwise. */
   name: string | null;
+  /** The instruction rules this source out ("without using Dana's email"): its window is excluded, never consented. */
+  negated: boolean;
 }
 
 const PRONOUNS = new Set(["I", "you", "he", "she", "they", "we"]);
@@ -57,21 +64,26 @@ const kindOf = (noun: string): SourcePhrase["kind"] => (NOTE_NOUNS.includes(noun
 /** The phrases of an instruction that name where to copy from, in order, overlapping ones merged. */
 export function sourcePhrases(instruction: string): SourcePhrase[] {
   const out: SourcePhrase[] = [];
+  const negated = (start: number): boolean => NEGATION.test(instruction.slice(Math.max(0, start - 40), start));
   for (const m of instruction.matchAll(PREP_SOURCE)) {
+    if (/^in\b/iu.test(m[0])) {
+      const clause = instruction.slice(0, m.index).split(/[.;,!?]|\band\b|\bthen\b/iu).at(-1) ?? "";
+      if (PLACING.test(clause)) continue;
+    }
     const noun = (m[1] as string).toLowerCase();
     const owner = new RegExp(`(${NAME})['’]s\\s`, "u").exec(m[0])?.[1] ?? null;
-    out.push({ start: m.index, end: m.index + m[0].length, kind: kindOf(noun), noun: kindOf(noun) === "titled" ? noun : null, name: owner });
+    out.push({ start: m.index, end: m.index + m[0].length, kind: kindOf(noun), noun: kindOf(noun) === "titled" ? noun : null, name: owner, negated: negated(m.index) });
   }
   for (const m of instruction.matchAll(POSSESSIVE_SOURCE)) {
     const noun = (m[2] as string).toLowerCase();
-    out.push({ start: m.index, end: m.index + m[0].length, kind: kindOf(noun), noun: kindOf(noun) === "titled" ? noun : null, name: m[1] as string });
+    out.push({ start: m.index, end: m.index + m[0].length, kind: kindOf(noun), noun: kindOf(noun) === "titled" ? noun : null, name: m[1] as string, negated: negated(m.index) });
   }
   for (const m of instruction.matchAll(CLAUSE_SOURCE)) {
     const who = m[1] as string;
     // A sentence's capitalized first word is not a name ("Fill what I jotted down" has no person called Fill).
     if (!PRONOUNS.has(who) && /^(?:Fill|Use|Put|Add|Make|Set|Do|Go|Grab|Copy|Enter|Type|Get|Pick|Book|Choose|Please|Just|Ok|Okay|Can|Could)$/u.test(who)) continue;
     const name = PRONOUNS.has(who) ? null : who;
-    out.push({ start: m.index, end: m.index + m[0].length, kind: name !== null ? "person" : m[2] !== undefined ? "note" : "mail", noun: null, name });
+    out.push({ start: m.index, end: m.index + m[0].length, kind: name !== null ? "person" : m[2] !== undefined ? "note" : "mail", noun: null, name, negated: negated(m.index) });
   }
   out.sort((a, b) => a.start - b.start || b.end - a.end);
   const merged: SourcePhrase[] = [];
@@ -80,6 +92,7 @@ export function sourcePhrases(instruction: string): SourcePhrase[] {
     if (last !== undefined && p.start < last.end) {
       last.end = Math.max(last.end, p.end);
       if (last.name === null) last.name = p.name;
+      last.negated ||= p.negated;
       if (last.kind === "titled" || (last.kind !== "person" && p.kind === "person")) last.kind = p.kind;
       continue;
     }
@@ -94,6 +107,9 @@ export function fieldWords(instruction: string): string {
   for (const p of sourcePhrases(instruction)) s = `${s.slice(0, p.start)}${" ".repeat(p.end - p.start)}${s.slice(p.end)}`;
   return s;
 }
+
+/** Whether the instruction keeps Caret to its own words or rules out reading other windows. */
+export const restrictsSources = (instruction: string): boolean => RESTRICTS.test(instruction);
 
 /** Whether `span` (a person the instruction names) occurs only inside its source phrases. */
 export function onlyInSources(instruction: string, span: string): boolean {
@@ -123,16 +139,18 @@ export interface NamedSource {
 const wordsOf = (s: string): string[] => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x.length >= 2);
 const STOP = new Set(["the", "my", "this", "that", "from", "for", "and", "with", "txt", "md", "google", "chrome", "re", "fwd", "of", "to", "in", "on", "your", "me"]);
 
-/** Whether a person's name names a window: its sender (a word of the sender's name, or the start of the first one, "Bea" for "Beatrice"), or a word of a non-conversation's title. */
-function namedBy(name: string, w: WindowState, conversation: boolean): boolean {
+/**
+ * The windows a person's name names: conversations whose sender has that name as a word, and with `titles`, notes whose
+ * title has it. A name that is only the start of a sender's first name ("Bea" for "Beatrice") counts when no window has
+ * the name as a word and exactly one sender starts with it (B26 review: "Dan" named both Dan Wilson's and Dana
+ * Whitfield's mail).
+ */
+function byName(name: string, windows: readonly WindowState[], titles: boolean): WindowState[] {
   const n = name.toLowerCase();
-  if (conversation) {
-    const sender = senderOf(w);
-    if (sender === null) return false;
-    const ws = wordsOf(sender);
-    return ws.includes(n) || (n.length >= 3 && (ws[0] ?? "").startsWith(n));
-  }
-  return wordsOf(w.window.title).includes(n);
+  const exact = windows.filter((w) => (isConversation(w) ? wordsOf(senderOf(w) ?? "").includes(n) : titles && wordsOf(w.window.title).includes(n)));
+  if (exact.length > 0 || n.length < 3) return exact;
+  const prefix = windows.filter((w) => isConversation(w) && (wordsOf(senderOf(w) ?? "")[0] ?? "").startsWith(n));
+  return prefix.length === 1 ? prefix : [];
 }
 
 /** Whether a window is a note: not a conversation and not a browser page, or a page or file whose title says it is one. */
@@ -142,44 +160,46 @@ function isNote(w: WindowState): boolean {
 }
 
 /**
- * The windows an instruction names as its source, each once, among the model's windows other than the form: by a
- * person's name (a mail's sender, a note's title), by a noun of a kind (a note, a mail), or by a noun a title shows
- * ("LinkedIn"). When a kind's noun fits several windows, the one whose title shares the most of the instruction's
- * words is named, then the window the user just left; with neither, none is, and the windows keep their budgets.
- * `people` are the person spans the instruction names (intent.ts personSpans): a name names its mail too ("put Bea
- * down as my guest" names Bea's email), relations ("my wife") never do.
+ * The windows an instruction names as its source, each once, among the model's windows other than the form, and the
+ * ones it rules out. A source phrase names a window by a person's name in it (a mail's sender, a note's title), by a
+ * kind of window (a note, a mail), or by a noun a title shows ("LinkedIn"). When a kind's noun fits several windows,
+ * the one whose title shares the most of the instruction's words is named, then the window the user just left; with
+ * neither, none is, and the windows keep their budgets. `people` are the person spans the instruction names (intent.ts
+ * personSpans): a name outside any phrase names a mail by its sender ("put Bea down as my guest" names Bea's email),
+ * never a title, and relations ("my wife") name nothing. A phrase the instruction negates ("without using Dana's
+ * email") names no window: what it resolves to is excluded.
  */
-export function namedSources(instruction: string, model: ScreenModel, form: WindowState, people: readonly string[]): NamedSource[] {
+export function namedSources(instruction: string, model: ScreenModel, form: WindowState, people: readonly string[]): { named: NamedSource[]; excluded: string[] } {
   const others = [...model.windows.values()].filter((w) => w !== form);
+  const phrases = sourcePhrases(instruction);
+  const said = new Set(wordsOf(instruction).filter((x) => !STOP.has(x)));
+  const just = model.windowBefore(form.window.windowId);
+  const nouns = new Set([...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS]);
+  const score = (w: WindowState): number => new Set(wordsOf(w.window.title).filter((x) => !STOP.has(x) && !nouns.has(x) && said.has(x))).size;
+  /** The windows one phrase names. */
+  const resolve = (p: SourcePhrase): WindowState[] => {
+    if (p.name !== null) return byName(p.name, others, true);
+    const fits = others.filter((w) => (p.kind === "note" ? isNote(w) : p.kind === "mail" ? isConversation(w) : p.noun !== null && (wordsOf(w.window.title).includes(p.noun) || wordsOf(w.app.name).includes(p.noun))));
+    if (fits.length <= 1) return fits;
+    const best = Math.max(...fits.map(score));
+    const top = fits.filter((w) => score(w) === best);
+    if (best > 0 && top.length === 1) return top;
+    return top.filter((w) => w.window.windowId === just);
+  };
+  const excluded = new Set(phrases.filter((p) => p.negated).flatMap((p) => resolve(p).map((w) => w.window.windowId)));
   const out = new Map<string, NamedSource>();
   const add = (w: WindowState, names: readonly string[]): void => {
+    if (excluded.has(w.window.windowId)) return;
     const sender = isConversation(w) ? senderOf(w) : null;
     const all = [...new Set([...names, ...(sender === null ? [] : [sender])])];
     const had = out.get(w.window.windowId);
     out.set(w.window.windowId, { windowId: w.window.windowId, names: had === undefined ? all : [...new Set([...had.names, ...all])] });
   };
-  const phrases = sourcePhrases(instruction);
-  const names = new Set([...people.filter((p) => /^\p{Lu}/u.test(p) && !/^(?:my|our)\s/iu.test(p)), ...phrases.flatMap((p) => (p.name === null ? [] : [p.name]))]);
-  for (const name of names) for (const w of others) if (namedBy(name, w, isConversation(w))) add(w, [name]);
-  const said = new Set(wordsOf(instruction).filter((x) => !STOP.has(x)));
-  const just = model.windowBefore(form.window.windowId);
-  for (const p of phrases) {
-    if (p.name !== null) continue;
-    const fits = others.filter((w) => (p.kind === "note" ? isNote(w) : p.kind === "mail" ? isConversation(w) : p.noun !== null && (wordsOf(w.window.title).includes(p.noun) || wordsOf(w.app.name).includes(p.noun))));
-    if (fits.length === 0) continue;
-    if (fits.length === 1) {
-      add(fits[0] as WindowState, []);
-      continue;
-    }
-    const nouns = new Set([...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS]);
-    const score = (w: WindowState): number => new Set(wordsOf(w.window.title).filter((x) => !STOP.has(x) && !nouns.has(x) && said.has(x))).size;
-    const best = Math.max(...fits.map(score));
-    const top = fits.filter((w) => score(w) === best);
-    if (best > 0 && top.length === 1) add(top[0] as WindowState, []);
-    else {
-      const left = top.find((w) => w.window.windowId === just);
-      if (left !== undefined) add(left, []);
-    }
+  for (const p of phrases) if (!p.negated) for (const w of resolve(p)) add(w, p.name === null ? [] : [p.name]);
+  const negatedNames = new Set(phrases.filter((p) => p.negated && p.name !== null).map((p) => p.name as string));
+  for (const person of people) {
+    if (!/^\p{Lu}/u.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person)) continue;
+    for (const w of byName(person, others, false)) add(w, [person]);
   }
-  return [...out.values()];
+  return { named: [...out.values()], excluded: [...excluded] };
 }

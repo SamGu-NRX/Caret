@@ -18,7 +18,7 @@ import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
-import { namedSources, onlyInSources, senderOf, type NamedSource } from "./sources.ts";
+import { namedSources, onlyInSources, restrictsSources, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { SAYS, SaidError, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn } from "./says.ts";
 
@@ -72,6 +72,8 @@ export interface IntentSnapshot {
   literals: string[];
   /** Windows the instruction names as its source, resolved by code (sources.ts): read with consent (privacy.ts). */
   named: NamedSource[];
+  /** Windows the instruction rules out ("without using Dana's email"): never read for this Ask. */
+  excluded: string[];
   ledger: SnippetLedger;
 }
 
@@ -161,6 +163,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   const labels = [...new Set(memory.map((m) => m.label))];
   const memoryLabels = labels.length > 0 && ledger.memory(labels) ? labels : [];
   const persons = personSpans(instruction);
+  const sources = namedSources(instruction, model, w, persons);
   return {
     instruction,
     window: w,
@@ -171,7 +174,8 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     memory: memoryLabels,
     persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
     literals: instructionValues(instruction),
-    named: namedSources(instruction, model, w, persons),
+    named: sources.named,
+    excluded: sources.excluded,
     ledger,
   };
 }
@@ -285,18 +289,27 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   // The instruction alone gives only its own literals: a field in scope with none reads the named windows, or every
   // source when it names none. B25's maker answered "instruction" for "put Bea down as my guest with her meal" and
   // "make my wife the emergency contact", and fill then read no window at all (held-11, held-12, held-14).
+  // An instruction that keeps Caret to its own words ("only use what I typed", "don't read other windows") is never
+  // widened, and a window it rules out ("without using Dana's email") is never read (B26 review).
   const named = snap.named.map((n) => n.windowId);
-  if (!any && windows.size === 0 && !memory && fields.some((f) => !literals.has(f.key))) {
+  if (!any && windows.size === 0 && !memory && fields.some((f) => !literals.has(f.key)) && !restrictsSources(snap.instruction)) {
     if (named.length === 0) (any = true), (memory = true);
   }
   if (!any) for (const id of named) windows.add(id);
+  if (snap.excluded.length > 0) {
+    // Every source but those: the listed windows, less the excluded. A window past the snapshot's list is not read.
+    if (any) for (const x of snap.windows) windows.add(x.windowId);
+    any = false;
+    for (const id of snap.excluded) windows.delete(id);
+  }
 
   let person: string | null = null;
   if (intent.whose === "unnamed") stop("otherPersonUnnamed", snap);
   else if (intent.whose !== "user") person = (snap.persons.find((p) => p.ref === intent.whose) ?? bad(`names person '${intent.whose}', whom the instruction does not name`)).span;
   // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
-  // is not whose details go in: the source's words never set the scope.
-  if (person !== null && onlyInSources(snap.instruction, person)) person = null;
+  // is not whose details go in: the source's words never set the scope. Unless the instruction asks for someone's
+  // details by a pronoun ("from Dana's message, with her contact details"): then the source is whose they are.
+  if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(snap.instruction)) person = null;
 
   const scope: FillScope = {
     fields: fields.map((f) => f.key),

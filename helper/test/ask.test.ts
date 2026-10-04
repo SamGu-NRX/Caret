@@ -434,6 +434,25 @@ describe("where an Ask copies from (B26: source words never scope, a named windo
     expect(d.route === "fill" && d.scope.windows?.size).toBe(0);
   });
 
+  it("never widens an instruction that keeps Caret to its own words, and never reads a window it rules out (B26 review)", () => {
+    const s = snapOf("fill the landlord phone using only this instruction; do not read other windows");
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], sources: ["instruction"] }), s);
+    expect(c.route === "fill" && c.scope.windows?.size).toBe(0);
+    expect(c.route === "fill" && c.scope.memory).toBe(false);
+    const t = snapOf("fill the landlord phone without using my note");
+    expect(t.excluded).toEqual(["note"]);
+    const d = checkIntent(intent({ fields: [refOf(t, "Landlord phone")], sources: ["any"] }), t);
+    expect(d.route === "fill" && d.scope.windows !== null && [...d.scope.windows]).toEqual(["draft"]);
+    expect(d.route === "fill" && d.scope.consented?.size).toBe(0);
+  });
+
+  it("keeps the source as whose details when the instruction asks for them by a pronoun (B26 review)", () => {
+    const s = snapOf("fill in the landlord phone from Gary's note with his number");
+    const p = s.persons.find((x) => x.span === "Gary")?.ref ?? "missing";
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], whose: p }), s);
+    expect(c.route === "fill" && c.scope.person).toBe("Gary");
+  });
+
   it("does not take a person named only as the source as whose details go in", () => {
     const s = snapOf("fill in the landlord phone from Gary's note");
     const p = s.persons.find((x) => x.span === "Gary")?.ref ?? "missing";

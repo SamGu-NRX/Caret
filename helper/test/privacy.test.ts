@@ -135,7 +135,8 @@ interface WindowMeasure {
  */
 function measure(r: Recorded): WindowMeasure[] {
   const body = bodyOf(r.req);
-  const texts = [...new Set(r.req.snippets.map((s) => s.text).filter((t) => t.length >= 3))];
+  // A snippet cut to length with an ellipsis, or holding a line break, shows each of its pieces (B26 review).
+  const texts = [...new Set(r.req.snippets.flatMap((s) => s.text.split("\n").map((t) => t.replace(/\s+/g, " ").trim().replace(/^…|…$/gu, ""))).filter((t) => t.length >= 3))];
   return r.windows.map((w) => {
     let covered = 0;
     let coveredProse = 0;

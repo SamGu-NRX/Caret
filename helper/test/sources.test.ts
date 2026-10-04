@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { Snapshot } from "../src/protocol.ts";
-import { fieldWords, namedSources, onlyInSources, sourcePhrases } from "../src/planner/sources.ts";
+import { fieldWords, namedSources, onlyInSources, restrictsSources, sourcePhrases } from "../src/planner/sources.ts";
 import { personSpans } from "../src/planner/intent.ts";
 import { buildDesk, loadCorpus } from "../scripts/realfill-corpus.ts";
 import { field, snap, text } from "./builders.ts";
@@ -22,7 +22,7 @@ describe("fieldWords", () => {
     ["fill in my birthday from Morgan's email", "fill in my birthday"],
     ["use Chris's last message for the date", "use for the date"],
     ["fill the rest of this from my note", "fill the rest of this"],
-    ["put the address in her latest email into shipping", "put the address into shipping"],
+    ["the address in her latest email goes in shipping", "the address goes in shipping"],
   ])("leaves the field words of %s", (instruction, words) => {
     expect(squash(fieldWords(instruction))).toBe(words);
   });
@@ -37,10 +37,19 @@ describe("fieldWords", () => {
     "my email please",
     "fill in my email",
     "put in my phone number",
+    "put it in my notes",
+    "write the summary in my notes field",
     "Fill out the Northgate application",
   ])("names no source in %s", (instruction) => {
     expect(sourcePhrases(instruction)).toEqual([]);
     expect(fieldWords(instruction)).toBe(instruction);
+  });
+
+  it("knows an instruction that keeps Caret to its own words", () => {
+    expect(restrictsSources("fill my email using only this instruction; do not read other windows")).toBe(true);
+    expect(restrictsSources("just use what I typed here")).toBe(true);
+    expect(restrictsSources("make my wife the emergency contact")).toBe(false);
+    expect(restrictsSources("fill out the whole form")).toBe(false);
   });
 
   it("knows a person named only where to copy from from one whose details go in", () => {
@@ -65,7 +74,7 @@ function desk(): { m: ScreenModel; form: WindowState } {
 }
 const named = (instruction: string): string[] => {
   const { m, form } = desk();
-  return namedSources(instruction, m, form, personSpans(instruction)).map((n) => n.windowId);
+  return namedSources(instruction, m, form, personSpans(instruction)).named.map((n) => n.windowId);
 };
 
 describe("namedSources", () => {
@@ -82,13 +91,34 @@ describe("namedSources", () => {
     expect(named(instruction)).toEqual(ids);
   });
 
+  it("names a mail by a short name only when no sender has that name as a word and one sender starts with it (B26 review)", () => {
+    const { m, form } = desk();
+    m.apply(snap([text("h1", "From: Dan Wilson <dan@example.com>"), text("h2", "To: Avery Kim"), text("b", "Saturday is fine")], { at: 450, windowId: "mail-dan", title: "Saturday", app: { pid: 9005, bundleId: "com.apple.mail", name: "Mail" }, focused: true }));
+    m.apply(snap([field("f", "", { label: "Email" })], { at: 600, windowId: "form", title: "Checkout", app: CHROME, focused: true }));
+    expect(namedSources("fill this from Dan's message", m, form, ["Dan"]).named.map((n) => n.windowId)).toEqual(["mail-dan"]);
+    expect(namedSources("use what Dana sent", m, form, ["Dana"]).named.map((n) => n.windowId)).toEqual(["mail-dana"]);
+  });
+
+  it("never names a window by a capitalized field word, and names a note by a name only in a source phrase (B26 review)", () => {
+    const { m, form } = desk();
+    m.apply(snap([field("e", "old receipts", { role: "AXTextArea" })], { at: 450, windowId: "archive", title: "Email archive", app: TEXTEDIT(9006), focused: true }));
+    m.apply(snap([field("f", "", { label: "Email" })], { at: 600, windowId: "form", title: "Checkout", app: CHROME, focused: true }));
+    expect(namedSources("fill the Email field", m, form, personSpans("fill the Email field")).named).toEqual([]);
+  });
+
+  it("excludes a source the instruction rules out instead of naming it (B26 review)", () => {
+    const { m, form } = desk();
+    expect(namedSources("fill this without using Dana's message", m, form, ["Dana"])).toEqual({ named: [], excluded: ["mail-dana"] });
+    expect(namedSources("not from Dana's message, from my note", m, form, ["Dana"])).toEqual({ named: [{ windowId: "checkout-note", names: [] }], excluded: ["mail-dana"] });
+  });
+
   it("names nothing for a kind of source that is not open", () => {
     expect(named("grab my title off my LinkedIn")).toEqual([]);
   });
 
   it("puts the resolving name and the sender's name first in the window", () => {
     const { m, form } = desk();
-    expect(namedSources("put Bea down as my guest", m, form, ["Bea"])).toEqual([{ windowId: "mail-bea", names: ["Bea", "Beatrice Sutherland"] }]);
+    expect(namedSources("put Bea down as my guest", m, form, ["Bea"]).named).toEqual([{ windowId: "mail-bea", names: ["Bea", "Beatrice Sutherland"] }]);
   });
 });
 
@@ -100,7 +130,7 @@ describe("namedSources on the corpus's replayed desks", () => {
     const form = corpus.forms.find((f) => f.id === formId);
     if (form === undefined) throw new Error(formId);
     const d = buildDesk(corpus, snaps, form);
-    return namedSources(instruction, d.model, d.form, personSpans(instruction)).map((n) => d.model.windows.get(n.windowId)?.window.title ?? n.windowId);
+    return namedSources(instruction, d.model, d.form, personSpans(instruction)).named.map((n) => d.model.windows.get(n.windowId)?.window.title ?? n.windowId);
   };
 
   it.each([
