@@ -1,0 +1,1 @@
+B22: --act-pids now needs CARET_SCREEN_FIXTURE_ACTS=fixture-only and caret-fixture pids; window ids are <pid>-<start µs>-<generation>-<n>, opaque to the helper.

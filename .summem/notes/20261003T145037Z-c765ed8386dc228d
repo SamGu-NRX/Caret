@@ -1,1 +1,0 @@
-Evals exec CaretFixture.app, a copy of caret-fixture made by apps/screen-reader/scripts/bundle-fixture.sh: rerun it after every swift build that changes the fixture, or the eval runs the old one (B16 lost two planner cases to an 08:33 bundle).

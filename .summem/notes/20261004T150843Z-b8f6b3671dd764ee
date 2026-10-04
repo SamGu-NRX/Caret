@@ -1,0 +1,1 @@
+B22: presses only whole labels in risk.ts SAFE_PRESSES / RiskTable.safePresses, never in a system prompt (subrole AXSystemDialog or AXSystemFloatingWindow, or a TCC/SecurityAgent process); change both lists and press-risk.json together.

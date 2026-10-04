@@ -1,0 +1,1 @@
+B22: each consumer connection is a host session; accepted tasks bind to the session that started them and are revoked when it closes; runs with no Tab need a connected host. In-process tests and evals that play the host must call helper.hostConnected(id).

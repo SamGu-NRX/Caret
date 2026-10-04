@@ -1,0 +1,1 @@
+B22: every pause, take over, stop, Caret pause, settings/permission/skill/memory change and host disconnect revokes the act grant at once (Executor.revoke/recheck); the executor also asks Helper.authorize right before each write, press, raise and calendar add.
