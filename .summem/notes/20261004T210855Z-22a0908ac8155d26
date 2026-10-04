@@ -1,1 +1,0 @@
-Push v2/* branches to the remote named sam (SamGu-NRX/Caret), where their PRs live. origin is the team hackathon repo (theodorexli/hackathon-2026-09-19); a bare 'git push origin' publishes there.

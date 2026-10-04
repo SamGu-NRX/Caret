@@ -1,1 +1,0 @@
-Memory markdown grants no authority: permissions and a skill's onItsOwn, clean runs and hand-off stay in memory.sqlite; editing a skill's file puts it back on Tab, and SkillJson.fileDigest catches edits made while Caret was stopped.

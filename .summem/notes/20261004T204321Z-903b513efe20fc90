@@ -1,1 +1,0 @@
-W3: caret-bridge reaches the Caret host over XPC (CaretBridgeXPC), never page.sock; no <sock>.key exists. accept.ts needs --sign-identity <team SHA-1> (and --other-identity for refusal checks) and runs caret-bridge-testhost as a temporary launchd job it boots out.

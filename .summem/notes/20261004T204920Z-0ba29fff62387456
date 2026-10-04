@@ -1,1 +1,0 @@
-vite's oxc parser rejects a regex literal holding a raw U+2028/U+2029 (a line terminator); write the \u2028 escape. An agent's Write tool can turn the escape into the raw character.

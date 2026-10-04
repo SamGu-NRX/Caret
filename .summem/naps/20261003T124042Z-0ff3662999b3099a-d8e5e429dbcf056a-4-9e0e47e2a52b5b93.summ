@@ -1,0 +1,1 @@
+B15 (updated B22): the reader acts only under an actGrant from an accepted offer, revoked at once by any pause, stop or take over; Chrome builds web AX trees late and ignores AXSelectedText; background WKWebView drops writes; the walk check catches drops.

@@ -1,1 +1,0 @@
-B23: only a hello with host: true is the host (else no skill runs on its own; evals call helper.hostConnected(id)); value writes carry a mark, undo sends sameAs, reader answers notSameElement unless the key's element is the one it wrote (fakes: test/fake-marks.ts).

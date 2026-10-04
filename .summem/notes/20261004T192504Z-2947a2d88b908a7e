@@ -1,1 +1,0 @@
-B24: TextEdit is sandboxed: a file named on its command line opens only from inside ~/Library/Containers/com.apple.TextEdit/Data/tmp (realfill-capture.ts makes its own folder there and deletes it).

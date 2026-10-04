@@ -1,1 +1,0 @@
-Executor acts only under actGrants (revoked at once on stop); wait for Chrome's late web AX; walk checks catch silent drops. Gate skips whole-display overlays. Foreground runs lose the front to Playwright windows. Host-only memory contracts in Fixtures/memory.ndjson.

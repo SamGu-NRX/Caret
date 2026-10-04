@@ -1,1 +1,0 @@
-B24: Chrome's AX shows a native <select> as AXPopUpButton whose only child is the selected option; the option list is not readable without opening it, so fill names selects as hand-offs with no value (capture-2 probe).

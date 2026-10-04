@@ -1,1 +1,0 @@
-W3: NSXPCConnection.setCodeSigningRequirement on the client blocks what it receives, not its own first call; whoever owns the Mach name sees open's arguments, so XPCHostLink sends nothing until a verified reply.

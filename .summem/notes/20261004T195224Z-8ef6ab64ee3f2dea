@@ -1,1 +1,0 @@
-I3: apps/caret Fixtures/memory.ndjson is the helper's golden byte for byte as of H1 (host-memory-5 request added, A16's wrote line is host-memory-9, no -8); tests find lines by id, never by index.
