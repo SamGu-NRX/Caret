@@ -281,6 +281,26 @@ private final class ReplyThenDrop: NSObject, NSXPCListenerDelegate, CaretBridgeH
         #expect(!a.write(line: Data("z".utf8)))
     }
 
+    @Test func shutdownEndsAWriteBlockedOnAPeerThatStoppedReading() {
+        var fds: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        var one: Int32 = 1
+        setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        defer { close(fds[1]) }
+        let a = LineSocket(fd: fds[0])
+        let result = Locked<Bool?>(nil)
+        // Far past any socket buffer, and the other end never reads: the write blocks.
+        let big = Data(repeating: 0x61, count: 16 * 1024 * 1024)
+        Thread { result.set(a.write(line: big)) }.start()
+        usleep(300_000)
+        #expect(result.value == nil, "the write did not block")
+        let start = Date()
+        a.shutdown()
+        #expect(Date().timeIntervalSince(start) < 1, "shutdown waited on the blocked write")
+        #expect(waitUntil({ result.value == false }, seconds: 3), "the blocked write did not fail after shutdown")
+        a.closeDescriptor()
+    }
+
     @Test func aHelperThatTricklesItsChallengeIsCutOffAtTheDeadline() throws {
         let me = try ownRequirement()
         let t = try Trickler(); defer { t.stop() }

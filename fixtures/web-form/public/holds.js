@@ -23,6 +23,9 @@
   // A field the page disables when it takes focus, as some forms do while they validate.
   const dis = document.getElementById("h_disable");
   dis.addEventListener("focus", () => { dis.disabled = true; });
+  // A select the page turns into a multi-select when it takes focus.
+  const tm = document.getElementById("h_tomulti");
+  tm.addEventListener("focus", () => { tm.multiple = true; });
 
   // An ARIA combobox that holds the page once the filter is typed, and again once an option is picked.
   const d = document.getElementById("hdept");

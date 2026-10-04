@@ -1,1 +1,0 @@
-B19-B20: undoing a skill run resets its clean count. A listen-only tap per pid sees clicks posted to that pid (global monitor and session tap do not); a background-only caret-fixture takes no posted click, --foreground (accessory) does.

@@ -1153,6 +1153,23 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
     return `disable on focus ${d.outcome} (${d.detail}); multi-select ${m.outcome}`;
   });
 
+  await check("W3 second review #4: a select that turns multi-select on focus, and a field in a disabled fieldset, are not written", async () => {
+    s = await walk(e);
+    grant(e, "t-w3y");
+    const tm = await run(e, { kind: "pageSelect", ...target(s, "Becomes several", "t-w3y"), expect: "", value: "g" });
+    const tv = await read(site, "#h_tomulti");
+    expect(tm.outcome === "unsupported" && /several choices/.test(tm.detail ?? "") && tv === "", `turns multi: ${outcome(tm)}; value '${tv}'`);
+    const inLocked = s.frames.flatMap((f) => f.controls).filter((c) => c.name === "In a locked section");
+    let fs = "not walked";
+    if (inLocked.length === 1) {
+      const r = await run(e, { kind: "pageWrite", ...target(s, "In a locked section", "t-w3y"), expect: "", value: "Never" });
+      fs = outcome(r);
+      expect(r.outcome === "failed" && /disabled/.test(r.detail ?? "") && (await read(site, "#h_fieldset")) === "", `locked fieldset: ${fs}`);
+    }
+    revoke(e, "t-w3y");
+    return `turns multi ${tm.outcome}; locked fieldset ${fs}`;
+  });
+
   await check("W3 review #10: a revoke between the combobox filter and the pick reports what the filter left as possibly landed", async () => {
     s = await walk(e);
     const before = control(s, "Hold department").c.value ?? "";

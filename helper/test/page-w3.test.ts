@@ -233,6 +233,9 @@ describe("W3 page findings, helper side", () => {
       expect((await write("Canada", "Choose one")).outcome).toBe("noElement");
       await setOptions([{ value: "", label: "Choose one", selected: false }, { value: "us", label: "United States", selected: true }, { value: "ca", label: "Canada", selected: false }]);
       expect((await write("Canada", "Choose one")).outcome).toBe("changed");
+      // Two labels, one value: setting the value would pick the first of them.
+      await setOptions([{ value: "", label: "Choose one", selected: true }, { value: "x", label: "Canada", selected: false }, { value: "x", label: "Mexico", selected: false }]);
+      expect((await write("Mexico", "Choose one")).outcome).toBe("noElement");
       expect(page.verbs.filter((v) => v.kind === "pageSelect")).toEqual([]);
     });
   });

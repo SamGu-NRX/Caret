@@ -1,1 +1,0 @@
-The shadow store keeps element keys only as hashes, so an offline replay cannot recover templates or positions; scripts/real-day-replay.ts counts are approximations both ways; memory.sqlite routine rows are the faithful count (B21).

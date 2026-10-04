@@ -96,12 +96,15 @@ function gateWith(alive: () => Promise<boolean>, check: () => ActAnswer | null):
 }
 
 async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null, alive: () => Promise<boolean>): Promise<ActAnswer> {
-  const locked = (): boolean => (el as HTMLInputElement).disabled === true || el.getAttribute("aria-disabled") === "true" || (el as HTMLInputElement).readOnly === true;
+  // :disabled also covers a control in a disabled <fieldset> and an option in a disabled <optgroup> (W3 second review #4).
+  const locked = (): boolean => el.matches(":disabled") || el.getAttribute("aria-disabled") === "true" || (el as HTMLInputElement).readOnly === true;
   const disabled = locked();
   // Every gate also asks again whether the field still takes the value: a focus handler, or page code running while a
-  // gate awaits the worker, can disable it or (for a select) remove or disable the option (W3 review #9).
-  const optionOk = (): boolean => verb.kind !== "pageSelect" || !(el instanceof HTMLSelectElement) || [...el.options].some((o) => o.value === verb.value && !o.disabled);
-  const checkWrite = (): ActAnswer | null => check() ?? (locked() ? answer("failed", "the field became disabled or read-only") : !optionOk() ? answer("failed", "the option is gone or disabled") : null);
+  // gate awaits the worker, can disable it, make a select take several choices, or remove or disable the option (W3 review #9).
+  const optionOk = (): boolean => verb.kind !== "pageSelect" || !(el instanceof HTMLSelectElement) || [...el.options].some((o) => o.value === verb.value && !o.matches(":disabled"));
+  const multiple = (): boolean => el instanceof HTMLSelectElement && el.multiple;
+  const checkWrite = (): ActAnswer | null =>
+    check() ?? (locked() ? answer("failed", "the field became disabled or read-only") : multiple() ? answer("unsupported", "the select now takes several choices") : !optionOk() ? answer("failed", "the option is gone or disabled") : null);
   const gate = gateWith(alive, checkWrite);
   switch (verb.kind) {
     case "pageWrite": {
@@ -115,7 +118,7 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null,
     case "pageSelect": {
       if (!(el instanceof HTMLSelectElement)) return answer("unsupported", "only a native select takes a pageSelect; a custom listbox is pageChooseOption");
       // One value cannot say which of several selections to keep, and undo could not put them all back (W3 review #7).
-      if (el.multiple) return answer("unsupported", "a list that holds several choices is yours to set; Caret writes one value");
+      if (multiple()) return answer("unsupported", "a list that holds several choices is yours to set; Caret writes one value");
       const before = el.value;
       if (before === verb.value) return answer("alreadyTrue", null);
       if (before !== verb.expect) return answer("stale", "the select shows another option than when it was walked");

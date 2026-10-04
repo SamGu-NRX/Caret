@@ -67,6 +67,7 @@ function send(m: object): void {
  */
 function guard(tabId: number, frameId: number, until: number): void {
   const k = `${tabId}:${frameId}`;
+  // `until` is the end of the last grant covering the frame (GrantTable.coverUntil), never one task's alone.
   if (until === 0) {
     if (!armed.delete(k)) return;
   } else armed.set(k, until);
@@ -74,11 +75,11 @@ function guard(tabId: number, frameId: number, until: number): void {
   chrome.tabs.sendMessage(tabId, msg, { frameId }).catch(() => armed.delete(k));
 }
 
-/** Ends a task's grants and disarms every frame no other task still covers. */
+/** Ends a task's grants; each frame it covered is armed until its other tasks' grants end, or disarmed. */
 function revokeTask(taskId: string): void {
   for (const f of grants.revoke(taskId)) {
     const [tabId, frameId] = f.split(":").map(Number) as [number, number];
-    if (!grants.covers(tabId, frameId)) guard(tabId, frameId, 0);
+    guard(tabId, frameId, grants.coverUntil(tabId, frameId));
   }
 }
 
@@ -146,8 +147,9 @@ async function onHelper(raw: unknown): Promise<void> {
       // A page grant (grants.grant refused every other kind); wire.ts checked these are integers.
       const { tabId, frameId } = m.scope;
       if (typeof tabId !== "number" || typeof frameId !== "number") return;
-      const g = grants.check(m.taskId, tabId, frameId);
-      if (g.ok) guard(tabId, frameId, g.expires);
+      // Armed until the last grant covering the frame ends, so a shorter grant never cuts another task's coverage short.
+      const until = grants.coverUntil(tabId, frameId);
+      if (until > 0) guard(tabId, frameId, until);
       return;
     }
     case "actRevoke":

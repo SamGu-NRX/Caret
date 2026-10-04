@@ -1,1 +1,0 @@
-B20: input posted to a pid resets HIDIdleTime like a person's, so GUI evals record their last post (scripts/synthetic-input.ts) or the idle gate stops them. TextEdit cannot host a routine: one text area, no positions, one value per field.

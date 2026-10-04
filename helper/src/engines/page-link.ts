@@ -192,6 +192,8 @@ export class PageEngineLink implements ReaderLink {
           const options = t.control.options ?? [];
           const want = options.filter((o) => o.label === verb.value);
           if (want.length !== 1 || want[0] === undefined) return verbResult("noElement", `'${t.control.name}' has ${want.length} options labelled '${verb.value}'`);
+          // The page verb names the option by value, and setting a value picks the first option holding it (W3 second review #5).
+          if (options.filter((o) => o.value === want[0]?.value).length !== 1) return verbResult("noElement", `in '${t.control.name}', '${verb.value}' shares its value with another option, so Caret cannot pick it alone`);
           const had = options.find((o) => o.selected);
           if ((had?.label ?? "") !== verb.expect) return verbResult("changed", `'${t.control.name}' shows '${had?.label ?? ""}', not '${verb.expect}'`);
           page = { kind: "pageSelect", ...base, expect: had?.value ?? "", value: want[0].value };
