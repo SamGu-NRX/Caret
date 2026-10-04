@@ -9,10 +9,10 @@ final class WritingMarksTests: XCTestCase {
         WritingCorrection(span: UTF16Span((text as NSString).range(of: word)), original: word, replacement: replacement, kind: .spelling, reason: "", source: .spellChecker)
     }
 
-    func marks(_ text: String, _ found: [WritingCorrection]) -> WritingMarks {
+    func marks(_ text: String, _ found: [WritingCorrection], sentence checked: UTF16Span? = nil) -> WritingMarks {
         var m = WritingMarks()
         m.observe(field: field, value: text)
-        let sentence = UTF16Span(start: 0, end: UTF16Text.length(text))
+        let sentence = checked ?? UTF16Span(start: 0, end: UTF16Text.length(text))
         XCTAssertTrue(m.record(found, sentence: sentence, checkedValue: text))
         return m
     }
@@ -41,16 +41,29 @@ final class WritingMarksTests: XCTestCase {
 
     // MARK: - Following the text
 
-    func testAnEditBeforeAMarkShiftsIt() {
-        let text = "We will recieve it. "
-        var m = marks(text, [correction("recieve", in: text, "receive")])
-        m.observe(field: field, value: "So we will recieve it. ")
-        XCTAssertEqual(m.marks.first?.correction.span, UTF16Span(start: 11, end: 18))
+    func testAnEditInAnEarlierSentenceShiftsTheMark() {
+        let text = "Hi. We will recieve it. "
+        let sentence = UTF16Span((text as NSString).range(of: "We will recieve it."))
+        var m = marks(text, [correction("recieve", in: text, "receive")], sentence: sentence)
+        m.observe(field: field, value: "Hello. We will recieve it. ")
+        XCTAssertEqual(m.marks.first?.correction.span, UTF16Span(start: 15, end: 22))
+        XCTAssertEqual(m.marks.first?.sentence, sentence.shifted(by: 3))
+    }
+
+    /// The mark's own text still reads "a", but its fix ("an") was for "apple".
+    func testAnEditElsewhereInTheMarksSentenceDropsIt() {
+        let text = "I ate a apple. "
+        let article = WritingCorrection(
+            span: UTF16Span(start: 6, end: 7), original: "a", replacement: "an", kind: .grammar, reason: "", source: .rule(.article)
+        )
+        var m = marks(text, [article], sentence: UTF16Span(start: 0, end: 14))
+        m.observe(field: field, value: "I ate a pear. ")
+        XCTAssertEqual(m.marks, [])
     }
 
     func testAnEditAfterAMarkKeepsIt() {
         let text = "We will recieve it. "
-        var m = marks(text, [correction("recieve", in: text, "receive")])
+        var m = marks(text, [correction("recieve", in: text, "receive")], sentence: UTF16Span(start: 0, end: 19))
         m.observe(field: field, value: text + "Then")
         XCTAssertEqual(m.marks.first?.correction.span, UTF16Span(start: 8, end: 15))
     }

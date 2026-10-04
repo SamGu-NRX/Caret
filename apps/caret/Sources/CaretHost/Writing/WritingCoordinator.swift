@@ -38,6 +38,9 @@ final class WritingCoordinator {
     /// The value Caret's last fix or undo is expected to leave, so the read it causes does not count
     /// as the user finishing a sentence.
     private var ownWrite: String?
+    /// The sentences Caret's last fix wrote into, in the value it leaves: their marks were dropped
+    /// (the text around them changed), so they are checked again, quietly, once the write lands.
+    private var recheckAfterWrite: UTF16Span?
     private var checkTask: Task<Void, Never>?
     private var checks = 0
     private var lastCheck: String?
@@ -91,6 +94,10 @@ final class WritingCoordinator {
             previousValue = nil
             takeLineDown(exit: 0)
             checkTask?.cancel()
+            // A result reports on the field it came from; its ⌘Z goes with it.
+            endResult(exit: 0)
+            ownWrite = nil
+            recheckAfterWrite = nil
         }
         let previous = previousValue
         previousValue = field.value
@@ -106,6 +113,10 @@ final class WritingCoordinator {
         }
         if let ownWrite, ownWrite.utf16.elementsEqual(field.value.utf16) {
             self.ownWrite = nil
+            if let span = recheckAfterWrite {
+                recheckAfterWrite = nil
+                check(span, in: field, offering: false)
+            }
         } else if let sentence = WritingMarks.boundary(previous: previous, value: field.value, selection: field.selection) {
             check(sentence, in: field)
         }
@@ -114,8 +125,10 @@ final class WritingCoordinator {
 
     private func leaveField() {
         checkTask?.cancel()
-        if let shown { arbiter.invalidate(offerID: shown.offerID) }
         takeLineDown(exit: 0)
+        endResult(exit: 0)
+        ownWrite = nil
+        recheckAfterWrite = nil
         marks.clear()
         element = nil
         field = nil
@@ -132,7 +145,8 @@ final class WritingCoordinator {
 
     // MARK: - Checking
 
-    private func check(_ sentence: UTF16Span, in field: FieldState) {
+    /// `offering: false` records the marks without a line: a result is showing in the panel.
+    private func check(_ sentence: UTF16Span, in field: FieldState, offering: Bool = true) {
         guard let text = UTF16Text.slice(field.value, start: sentence.start, end: sentence.end) else { return }
         if WritingText.looksLikeCode(text) { return noteCheck("skippedCode") }
         if InputMethodState.shared.composes { return noteCheck("skippedComposing") }
@@ -142,7 +156,7 @@ final class WritingCoordinator {
         checkTask?.cancel()
         guard let language, NativeChecker.supports(language) else {
             noteCheck("noLanguage")
-            return finishCheck(rules, sentence: sentence, value: value)
+            return finishCheck(rules, sentence: sentence, value: value, offering: offering)
         }
         let key = NativeChecker.FieldKey(field.identity)
         checkTask = Task { [weak self, checker] in
@@ -150,7 +164,7 @@ final class WritingCoordinator {
             guard let self, !Task.isCancelled else { return }
             guard case .corrections(let found) = outcome else { return self.noteCheck("stale") }
             self.noteCheck("checked")
-            self.finishCheck(WritingCheck.merged(rules, found), sentence: sentence, value: value)
+            self.finishCheck(WritingCheck.merged(rules, found), sentence: sentence, value: value, offering: offering)
         }
     }
 
@@ -160,9 +174,9 @@ final class WritingCoordinator {
         publishStatus()
     }
 
-    private func finishCheck(_ found: [WritingCorrection], sentence: UTF16Span, value: String) {
+    private func finishCheck(_ found: [WritingCorrection], sentence: UTF16Span, value: String, offering: Bool) {
         guard marks.record(found, sentence: sentence, checkedValue: value) else { return noteCheck("stale") }
-        offerNearestMark()
+        if offering { offerNearestMark() }
         drawMarks()
     }
 
@@ -232,11 +246,14 @@ final class WritingCoordinator {
         return AXRead.visibleFrame(of: element, frame: frame, screen: Screen.axVisibleFrame(around: frame))
     }
 
+    /// Takes the line down and its offer out of the arbiter: an offer nobody can see must not hold
+    /// Tab. `invalidate(offerID:)` leaves a newer offer alone.
     private func takeLineDown(exit: TimeInterval) {
         expiryTimer?.invalidate()
         expiryTimer = nil
-        guard shown != nil else { return }
-        shown = nil
+        guard let shown else { return }
+        arbiter.invalidate(offerID: shown.offerID)
+        self.shown = nil
         if overlay.role == .line || overlay.role == .expanded { overlay.hidePanel(exit: exit) }
     }
 
@@ -375,6 +392,11 @@ final class WritingCoordinator {
            let suffix = UTF16Text.slice(claim.offer.fieldValue, start: edit.replace.end, end: UTF16Text.length(claim.offer.fieldValue)) {
             taken = (claim.claimID, writing.alternatives[claim.choice.candidate])
             ownWrite = prefix + edit.replacement + suffix
+            // Every sentence a mark under the edit was checked in, as it will read after the write.
+            let touched = marks.marks.filter { $0.correction.span.overlaps(edit.replace) || edit.replace.contains($0.correction.span) }.map(\.sentence)
+            let start = (touched.map(\.start) + [edit.replace.start]).min() ?? edit.replace.start
+            let end = (touched.map(\.end) + [edit.replace.end]).max() ?? edit.replace.end
+            recheckAfterWrite = UTF16Span(start: start, end: end + UTF16Text.length(edit.replacement) - edit.replace.length)
         }
         // Tab acted: the line goes at once; the result replaces it.
         expiryTimer?.invalidate()
@@ -388,6 +410,15 @@ final class WritingCoordinator {
         guard result.claim.offer.kind.writing != nil else { return }
         let alternative = taken?.claimID == result.claim.claimID ? taken?.alternative : nil
         taken = nil
+        // Focus moved on while the write ran: the result has no field to report on here, and its
+        // ⌘Z must not wait for a key meant for another field.
+        guard let field, field.identity.elementID == result.claim.offer.target.elementID,
+              field.identity.windowID == result.claim.offer.target.windowID, field.identity.pid == result.claim.offer.target.pid
+        else {
+            ownWrite = nil
+            recheckAfterWrite = nil
+            return status.increment("writing.resultForAnotherField")
+        }
         // Under the words the fix put in, when the field gives their bounds.
         var placement = resultPlacement()
         if result.insertion.ok, let edit = result.claim.rangeEdit, let element,
@@ -402,6 +433,7 @@ final class WritingCoordinator {
             scheduleResultEnd(after: Self.resultSeconds)
         } else {
             ownWrite = nil
+            recheckAfterWrite = nil
             if let placement { overlay.showResult(WritingCopy.error(WritingCopy.notFixed(result.reason ?? "")), at: placement, role: .error) }
             scheduleResultEnd(after: Self.errorSeconds)
         }

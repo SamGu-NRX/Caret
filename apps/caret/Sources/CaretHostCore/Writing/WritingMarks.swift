@@ -11,6 +11,9 @@ public struct WritingMarks: Equatable, Sendable {
         public var correction: WritingCorrection
         /// Esc closed its line: it stays underlined in Graphite and is never the active mark again.
         public var declined: Bool
+        /// The sentence the check read. A correction can depend on any of it ("a" before "apple"),
+        /// so an edit anywhere inside it drops the mark until the sentence is checked again.
+        public var sentence: UTF16Span
     }
 
     /// The field, without its content revision.
@@ -52,7 +55,7 @@ public struct WritingMarks: Equatable, Sendable {
         guard checkedValue.utf16.elementsEqual(value.utf16) else { return false }
         let declined = marks.filter { $0.declined && sentence.contains($0.correction.span) }.map { Self.key($0.correction) }
         marks.removeAll { mark in sentence.contains(mark.correction.span) || found.contains { $0.span.overlaps(mark.correction.span) } }
-        marks += found.map { Mark(correction: $0, declined: declined.contains(Self.key($0))) }
+        marks += found.map { Mark(correction: $0, declined: declined.contains(Self.key($0)), sentence: sentence) }
         marks.sort { $0.correction.span.start < $1.correction.span.start }
         return true
     }
@@ -96,9 +99,10 @@ public struct WritingMarks: Equatable, Sendable {
     }
 
     /// Marks carried from `old` to `new`: the text both share at the start and at the end is
-    /// unchanged, so a mark wholly inside either keeps its text (shifted by the length change when
-    /// it comes after the edit). A mark the edit touched is dropped. A mark whose text no longer
-    /// reads the same is dropped too.
+    /// unchanged, so a mark whose checked sentence lies wholly inside either keeps its text (shifted
+    /// by the length change when it comes after the edit). A mark whose sentence the edit touched is
+    /// dropped: "a apple" edited to "a pear" leaves "a" reading the same, and its fix would now be
+    /// wrong. A mark whose text no longer reads the same is dropped too.
     public static func rebase(_ marks: [Mark], from old: String, to new: String) -> [Mark] {
         let a = Array(old.utf16), b = Array(new.utf16)
         var prefix = 0
@@ -110,6 +114,13 @@ public struct WritingMarks: Equatable, Sendable {
         return marks.compactMap { mark in
             var moved = mark
             let span = mark.correction.span
+            let s = mark.sentence
+            // A replacement touches the sentence where the two overlap; a pure insertion only
+            // strictly inside it, so text typed after its end (the next sentence) leaves it be.
+            let touches = oldEnd > prefix ? prefix < s.end && oldEnd > s.start : prefix > s.start && prefix < s.end
+            if touches { return nil }
+            // Untouched, the sentence lies wholly before the edit or wholly after it.
+            if s.start >= oldEnd, s.end > prefix { moved.sentence = s.shifted(by: delta) }
             // Text inserted right against a mark touches it when it continues the word: "teh"
             // typed on to "tehx", or "x" typed in front of "teh".
             if span.end <= prefix {
