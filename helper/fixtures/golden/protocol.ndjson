@@ -57,3 +57,5 @@
 {"type":"planProposal","v":1,"requestId":"ask-4","at":1790000701000,"outcome":"error","offerKey":null,"window":null,"spec":null,"handoff":null,"error":{"code":"unseenWindow","detail":"the reader has not read window 4999 of process 5150"}}
 {"type":"userPress","v":1,"at":1790000800400,"pid":5150,"windowId":"5150-7","key":"dev.caret.fixture/standard/button:send~0","role":"AXButton","label":"Send","via":"return"}
 {"type":"skillOffer","v":1,"id":"skill-offer-3","at":1790000510000,"kind":"promote","taskId":"host-memory-7","routineId":"routine-1a2b3c4d","skillId":"skill-5e6f7a8b","name":"Subject and To into Mail Fixture","says":"Do this one on your own from now on?","detail":"You'll see it happen and can undo it.","actions":[{"id":"accept","label":"Do it on its own"},{"id":"decline","label":"Keep asking"}]}
+{"type":"pageEngine","v":1,"at":1790000900000,"browser":{"pid":6100,"bundleId":"com.google.Chrome","name":"Google Chrome"},"state":"missing"}
+{"type":"pageEngine","v":1,"at":1790000930000,"browser":{"pid":6100,"bundleId":"com.google.Chrome","name":"Google Chrome"},"state":"connected"}

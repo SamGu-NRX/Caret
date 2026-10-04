@@ -1288,8 +1288,25 @@ export const PlanProposal = z
   });
 export type PlanProposal = z.infer<typeof PlanProposal>;
 
+/**
+ * Whether Caret can see the pages of a Chromium browser (browser layer W2, memo section 6). `missing`: the reader
+ * reports the browser frontmost, the user has typed in it since it came to the front, and no Caret page engine is
+ * connected for that process. The host shows "Caret can't see this page yet" at most once per browser per session
+ * (v2/host). `connected`: an engine for that browser said hello, so the host can say "Caret for Chrome is
+ * connected" and drop the ask. Sent on each change of state for a browser process, never repeated while it holds.
+ */
+export const PageEngineState = z.object({
+  type: z.literal("pageEngine"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  browser: AppRef,
+  state: z.enum(["missing", "connected"]),
+});
+export type PageEngineState = z.infer<typeof PageEngineState>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
+  PageEngineState,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -1430,6 +1447,12 @@ export type PageSnapshot = z.infer<typeof PageSnapshot>;
  * The element a mutating page verb acts on, as the last walk named it. `name` is the accessible name the
  * helper planned and judged risk on; the content script re-reads it and refuses on a difference.
  */
+/**
+ * The largest file pageAttachFile carries. Assumed, not measured: resumes and cover letters are a few MB, and the
+ * line stays far under the worker's 32 MB chunk join cap (extension/src/worker/wire.ts Chunks.MAX).
+ */
+export const MAX_ATTACH_BYTES = 10 * 1024 * 1024;
+
 const PageTarget = {
   tabId: z.number().int().nonnegative(),
   frameId: z.number().int().nonnegative(),
@@ -1450,8 +1473,19 @@ const PageTarget = {
  * `pageWrite` sets a text control: `expect` is the value it must hold right before. `pageSelect` picks the
  * option of a native <select> whose value is `value`; `expect` is the selected value before. `pageSetChecked`
  * sets a checkbox or radio. `pagePress` is always a hand-off in v1: the engine names the risk and leaves the press to
- * the user, without touching the page. `pageChooseOption` (custom listbox) and `pageAttachFile` arrive in
- * batch 2 and answer `unsupported` until then.
+ * the user, without touching the page.
+ *
+ * `pageChooseOption` picks an option of a custom listbox (generic ARIA or react-select, memo section 2): `expect` is
+ * the text the control shows before (react-select's chip, an ARIA combobox's own value), `value` the option's name.
+ * The handler opens the control, types `value` as the filter, and picks only an option whose normalized name
+ * equals it; zero or several such options stop it with their names in `choice.matches`. Its mousedown, click and
+ * keys land only on the control it was given and that control's own listbox options: the one exception to "every
+ * page press is a hand-off".
+ *
+ * `pageAttachFile` puts one file into a file input, or drops it on any other control (a dropzone), through
+ * DataTransfer. `file.data` is the whole file, base64; a line over Chrome's 1 MB frame reaches the extension as
+ * pageChunk parts. The worker checks `size` and `sha256` against the bytes before the page sees them. The helper
+ * builds this verb only from the file the user confirmed for the run (engines/attach.ts).
  */
 export const PageVerb = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pageWalk"), tabId: z.number().int().nonnegative().nullable() }),
@@ -1463,7 +1497,17 @@ export const PageVerb = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("pageAttachFile"),
     ...PageTarget,
-    file: z.object({ name: z.string().min(1), type: z.string(), size: z.number().int().nonnegative(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
+    file: z
+      .object({
+        /** The file's own name, no directory: what the page will show. */
+        name: z.string().min(1).max(255).refine((n) => !/[/\\\0]/.test(n), "a file name, not a path"),
+        type: z.string(),
+        size: z.number().int().nonnegative().max(MAX_ATTACH_BYTES),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        /** The bytes, base64. */
+        data: z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/),
+      })
+      .refine((f) => Math.floor((f.data.length * 3) / 4) - (f.data.endsWith("==") ? 2 : f.data.endsWith("=") ? 1 : 0) === f.size, { message: "data holds another number of bytes than size", path: ["data"] }),
   }),
 ]);
 export type PageVerb = z.infer<typeof PageVerb>;
@@ -1493,6 +1537,8 @@ export const PageOutcome = z.enum([
   /** A verb this build does not carry out yet. */
   "unsupported",
   "error",
+  /** The user turned Caret off for this site ("Not on this site", pageSitesOff): nothing was read or done there. */
+  "siteOff",
 ]);
 export type PageOutcome = z.infer<typeof PageOutcome>;
 
@@ -1506,6 +1552,30 @@ export const PageWriteReadings = z.object({
   error: z.string().nullable(),
 });
 export type PageWriteReadings = z.infer<typeof PageWriteReadings>;
+
+/**
+ * What pageChooseOption found and checked. The readings carry the control's shown text (before, after the pick,
+ * after blur). `matches`: the names of the options whose normalized name equals the value, or, when none does,
+ * those that contain it; exactly one exact match is picked, anything else stops with these named. `expanded`:
+ * aria-expanded on the control at the end (null when it has none). `hiddenInput`: react-select's hidden form input
+ * took a new, non-empty value (`set`), did not (`unchanged`), or the control has none (`none`); its value never
+ * leaves the frame, since hidden inputs are never read out.
+ */
+export const PageChoice = z.object({
+  flavor: z.enum(["aria", "reactSelect"]),
+  matches: z.array(z.string()).max(20),
+  expanded: z.boolean().nullable(),
+  hiddenInput: z.enum(["set", "unchanged", "none"]),
+});
+export type PageChoice = z.infer<typeof PageChoice>;
+
+/** What pageAttachFile checked: the input's files[0] (null for a drop), and whether the page now shows the file's name where it did not before. */
+export const PageAttached = z.object({
+  via: z.enum(["input", "drop"]),
+  file: z.object({ name: z.string(), size: z.number().int().nonnegative() }).nullable(),
+  shown: z.boolean(),
+});
+export type PageAttached = z.infer<typeof PageAttached>;
 
 export const PageResult = z
   .object({
@@ -1522,6 +1592,10 @@ export const PageResult = z
      * `submitsForm` are kept for a later build that presses.
      */
     risk: z.enum(["outbound", "destructive", "money", "system", "unclassified", "submitsForm", "pageScript"]).optional(),
+    /** pageChooseOption only. */
+    choice: PageChoice.optional(),
+    /** pageAttachFile only. */
+    attached: PageAttached.optional(),
   })
   .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] });
 export type PageResult = z.infer<typeof PageResult>;
@@ -1597,11 +1671,27 @@ export const PageChunk = z.object({
 });
 export type PageChunk = z.infer<typeof PageChunk>;
 
+/**
+ * Focus moved to another element in a frame of the tab the user is in (the active tab of the focused browser
+ * window, visible, its document focused). Carries nothing about the element: the helper decides whether to walk the
+ * tab (engines/page-focus.ts). The worker sends at most one per tab per 150 ms, and none for a site that is off.
+ */
+export const PageFocusMoved = z.object({ type: z.literal("pageFocus"), v: z.literal(PROTOCOL_VERSION), at: ms, tabId: z.number().int().nonnegative(), frameId: z.number().int().nonnegative() });
+export type PageFocusMoved = z.infer<typeof PageFocusMoved>;
+
+/**
+ * "Not on this site": every origin the user turned Caret off for, the whole list each time (the helper's list
+ * replaces the worker's). The worker then walks no frame and acts in no frame at these origins, a tab whose top
+ * frame is at one answers `siteOff`, and focus there is not reported. The helper sends it after every hello.
+ */
+export const PageSitesOff = z.object({ type: z.literal("pageSitesOff"), v: z.literal(PROTOCOL_VERSION), origins: z.array(z.string().regex(/^https?:\/\/[^/\s]+$/)).max(1000) });
+export type PageSitesOff = z.infer<typeof PageSitesOff>;
+
 /** What the extension sends the helper after the handshake. */
-export const EngineMessage = z.discriminatedUnion("type", [PageHello, PageSnapshot, PageResult, PagePong]);
+export const EngineMessage = z.discriminatedUnion("type", [PageHello, PageSnapshot, PageResult, PagePong, PageFocusMoved]);
 export type EngineMessage = z.infer<typeof EngineMessage>;
 /** What the helper sends the extension after the handshake. ActRevoke is the native one, unchanged. */
-export const HelperToEngine = z.discriminatedUnion("type", [PageCommand, ScopedActGrant, ActRevoke, PagePing]);
+export const HelperToEngine = z.discriminatedUnion("type", [PageCommand, ScopedActGrant, ActRevoke, PagePing, PageSitesOff]);
 export type HelperToEngine = z.infer<typeof HelperToEngine>;
 /** Every message on page.sock or the Native Messaging port, handshake included. */
 export const AnyPageMessage = z.union([EngineMessage, HelperToEngine, EngineChallenge, EngineHello, EngineWelcome, EngineReady, PageChunk]);

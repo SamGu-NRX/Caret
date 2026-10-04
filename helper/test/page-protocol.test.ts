@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ActGrant, AnyMessage, AnyPageMessage, EngineMessage, GRANT_MAX_MS, HelperToEngine, HelperToReader, PageCommand, PageResult, PageSnapshot, ScopedActGrant } from "../src/protocol.ts";
+import { ActGrant, AnyMessage, AnyPageMessage, EngineMessage, GRANT_MAX_MS, HelperToEngine, HelperToReader, MAX_ATTACH_BYTES, PageCommand, PageResult, PageSnapshot, ScopedActGrant } from "../src/protocol.ts";
 
 const GOLDEN = fileURLToPath(new URL("../fixtures/golden/page.ndjson", import.meta.url));
 const lines = readFileSync(GOLDEN, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -15,6 +15,7 @@ describe("page golden lines", () => {
       "pageCommand", "pageSnapshot", "pageResult", "scopedActGrant", "pageCommand", "pageResult", "pageCommand", "pageResult",
       "pageCommand", "pageCommand", "pageResult", "actRevoke", "pageResult", "pageResult", "pageCommand", "pageCommand", "pageResult",
       "pagePing", "pagePong", "pageChunk", "scopedActGrant",
+      "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult",
     ]);
   });
 
@@ -23,8 +24,8 @@ describe("page golden lines", () => {
   });
 
   it("keeps each direction to its own union", () => {
-    const fromEngine = new Set(["pageHello", "pageSnapshot", "pageResult", "pagePong"]);
-    const toEngine = new Set(["pageCommand", "scopedActGrant", "actRevoke", "pagePing"]);
+    const fromEngine = new Set(["pageHello", "pageSnapshot", "pageResult", "pagePong", "pageFocus"]);
+    const toEngine = new Set(["pageCommand", "scopedActGrant", "actRevoke", "pagePing", "pageSitesOff"]);
     for (const l of lines) {
       expect(EngineMessage.safeParse(l).success).toBe(fromEngine.has(l.type as string));
       expect(HelperToEngine.safeParse(l).success).toBe(toEngine.has(l.type as string));
@@ -69,6 +70,37 @@ describe("page verbs", () => {
   it("refuses an attach whose digest is not a sha256", () => {
     const attach = lines[20] as { verb: { file: Record<string, unknown> } };
     expect(PageCommand.safeParse({ ...attach, verb: { ...attach.verb, file: { ...attach.verb.file, sha256: "abc" } } }).success).toBe(false);
+  });
+
+  it("carries the file's bytes, a size they match, a bare name and no more than MAX_ATTACH_BYTES (W2)", () => {
+    const attach = lines[20] as { verb: { file: Record<string, unknown> } };
+    const withFile = (f: Record<string, unknown>) => PageCommand.safeParse({ ...attach, verb: { ...attach.verb, file: { ...attach.verb.file, ...f } } }).success;
+    expect(withFile({})).toBe(true);
+    expect(withFile({ size: 10 })).toBe(false);
+    expect(withFile({ data: "not base64!" })).toBe(false);
+    expect(withFile({ name: "../resume.pdf" })).toBe(false);
+    expect(withFile({ name: "a\\b.pdf" })).toBe(false);
+    expect(withFile({ size: MAX_ATTACH_BYTES + 1 })).toBe(false);
+    const { data: _d, ...noData } = attach.verb.file;
+    expect(PageCommand.safeParse({ ...attach, verb: { ...attach.verb, file: noData } }).success).toBe(false);
+  });
+
+  it("reports what a combobox pick found: the pick, or both names when a filter matches two (W2)", () => {
+    const picked = PageResult.parse(lines[26]);
+    expect(picked.choice).toEqual({ flavor: "reactSelect", matches: ["United States"], expanded: false, hiddenInput: "set" });
+    const both = PageResult.parse(lines[27]);
+    expect(both.outcome).toBe("failed");
+    expect(both.choice?.matches).toEqual(["United States", "United States Minor Outlying Islands"]);
+    expect(both.readings?.afterBlur).toBe(both.readings?.before);
+  });
+
+  it("says Not on this site with a whole list of origins, and answers siteOff (W2)", () => {
+    const off = lines[29] as Record<string, unknown>;
+    expect(HelperToEngine.parse(off)).toEqual(off);
+    expect(HelperToEngine.safeParse({ ...off, origins: ["http://127.0.0.1:4310/form"] }).success).toBe(false);
+    expect(HelperToEngine.safeParse({ ...off, origins: ["javascript:alert(1)"] }).success).toBe(false);
+    expect(PageResult.parse(lines[30]).outcome).toBe("siteOff");
+    expect(EngineMessage.parse(lines[28])).toEqual({ type: "pageFocus", v: 1, at: 1790000004200, tabId: 7, frameId: 0 });
   });
 });
 

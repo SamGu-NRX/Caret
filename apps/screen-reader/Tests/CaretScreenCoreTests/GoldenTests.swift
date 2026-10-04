@@ -52,6 +52,7 @@ private func goldenLines() throws -> [Data] {
             case .skillAnswer: "skillAnswer"
             case .memoryReply: "memoryReply"
             case .userPress: "userPress"
+            case .pageEngine: "pageEngine"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -66,7 +67,20 @@ private func goldenLines() throws -> [Data] {
                           "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
                           "readerCommand", "userPress",
                           "planRequest", "planProposal", "userPress",
-                          "skillOffer"])
+                          "skillOffer", "pageEngine", "pageEngine"])
+    }
+
+    /// W2: the host's signal that Caret cannot see a browser's pages yet, then that it can.
+    @Test func readsThePageEngineState() throws {
+        let lines = try goldenLines()
+        guard case .pageEngine(let missing) = try JSONDecoder().decode(Message.self, from: lines[59]),
+              case .pageEngine(let connected) = try JSONDecoder().decode(Message.self, from: lines[60]) else { Issue.record("lines 60 and 61 are not pageEngine"); return }
+        #expect(missing == PageEngineState(at: 1_790_000_900_000, browser: AppRef(pid: 6100, bundleId: "com.google.Chrome", name: "Google Chrome"), state: .missing))
+        #expect(connected.state == .connected && connected.browser == missing.browser)
+        let line = String(decoding: lines[59], as: UTF8.self)
+        let bad = line.replacingOccurrences(of: #""state":"missing""#, with: #""state":"maybe""#)
+        #expect(bad != line)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
     }
 
     @Test func readsThePressWatch() throws {

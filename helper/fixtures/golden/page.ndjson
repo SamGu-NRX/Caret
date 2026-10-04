@@ -17,10 +17,15 @@
 {"type":"actRevoke","v":1,"taskId":"t1","at":1790000001600}
 {"type":"pageResult","v":1,"id":"c6","at":1790000001700,"outcome":"notAllowed","detail":"no live grant for task t1 in tab 7 frame 0"}
 {"type":"pageResult","v":1,"id":"c7","at":1790000001800,"outcome":"stale","detail":"the frame navigated since the walk (navGen 1, now 2)"}
-{"type":"pageCommand","v":1,"id":"c8","expires":1790000006000,"verb":{"kind":"pageChooseOption","tabId":7,"frameId":0,"documentId":"DOC0","id":"e2","control":"select","name":"Country","taskId":"t2","expect":"","value":"Canada"}}
-{"type":"pageCommand","v":1,"id":"c9","expires":1790000006000,"verb":{"kind":"pageAttachFile","tabId":7,"frameId":0,"documentId":"DOC0","id":"e6","control":"file","name":"Resume","taskId":"t2","file":{"name":"resume.pdf","type":"application/pdf","size":1024,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}}
-{"type":"pageResult","v":1,"id":"c9","at":1790000001900,"outcome":"unsupported","detail":"pageAttachFile arrives in batch 2"}
+{"type":"pageCommand","v":1,"id":"c8","expires":1790000006000,"verb":{"kind":"pageChooseOption","tabId":7,"frameId":0,"documentId":"DOC0","id":"e7","control":"combobox","name":"Country of residence","taskId":"t2","expect":"","value":"United States"}}
+{"type":"pageCommand","v":1,"id":"c9","expires":1790000006000,"verb":{"kind":"pageAttachFile","tabId":7,"frameId":0,"documentId":"DOC0","id":"e6","control":"file","name":"Resume","taskId":"t2","file":{"name":"resume.pdf","type":"application/pdf","size":9,"sha256":"e5c62df5dab5c87b6a015ef3d43597074d1eec433b15f51aec63b8582d0e4ab4","data":"JVBERi0xLjQK"}}}
+{"type":"pageResult","v":1,"id":"c9","at":1790000001900,"outcome":"ok","detail":null,"attached":{"via":"input","file":{"name":"resume.pdf","size":9},"shown":true}}
 {"type":"pagePing","v":1,"id":"p1"}
 {"type":"pagePong","v":1,"id":"p1","at":1790000002000,"instance":"w-81aa","startedAt":1790000000000}
 {"type":"pageChunk","v":1,"id":"k1","index":0,"count":2,"data":"{\"type\":\"pageCommand\","}
 {"type":"scopedActGrant","v":1,"taskId":"t3","scope":{"kind":"native","pid":5150,"windowId":"5150-7"},"at":1790000003000,"expires":1790000013000}
+{"type":"pageResult","v":1,"id":"c8","at":1790000004000,"outcome":"ok","detail":null,"readings":{"before":"","afterInput":"United States","afterBlur":"United States","invalid":false,"error":null},"choice":{"flavor":"reactSelect","matches":["United States"],"expanded":false,"hiddenInput":"set"}}
+{"type":"pageResult","v":1,"id":"c10","at":1790000004100,"outcome":"failed","detail":"'United' matches 2 options: 'United States', 'United States Minor Outlying Islands'; Caret picks only an option named exactly that, so you choose (matching); Caret put the control back and stopped","readings":{"before":"United States","afterInput":"United States","afterBlur":"United States","invalid":false,"error":null},"choice":{"flavor":"reactSelect","matches":["United States","United States Minor Outlying Islands"],"expanded":false,"hiddenInput":"unchanged"}}
+{"type":"pageFocus","v":1,"at":1790000004200,"tabId":7,"frameId":0}
+{"type":"pageSitesOff","v":1,"origins":["http://127.0.0.1:4310","https://jobs.example.test"]}
+{"type":"pageResult","v":1,"id":"c11","at":1790000004300,"outcome":"siteOff","detail":"Caret is off on http://127.0.0.1:4310"}

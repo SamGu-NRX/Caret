@@ -29,12 +29,33 @@ private func goldenLines() throws -> [Data] {
             case .pagePing: "pagePing"
             case .pagePong: "pagePong"
             case .pageChunk: "pageChunk"
+            case .pageFocus: "pageFocus"
+            case .pageSitesOff: "pageSitesOff"
             }
         }
         #expect(kinds == ["engineChallenge", "engineHello", "engineWelcome", "engineReady", "pageHello",
                           "pageCommand", "pageSnapshot", "pageResult", "scopedActGrant", "pageCommand", "pageResult", "pageCommand", "pageResult",
                           "pageCommand", "pageCommand", "pageResult", "actRevoke", "pageResult", "pageResult", "pageCommand", "pageCommand", "pageResult",
-                          "pagePing", "pagePong", "pageChunk", "scopedActGrant"])
+                          "pagePing", "pagePong", "pageChunk", "scopedActGrant",
+                          "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult"])
+    }
+
+    /// W2: the combobox pick and its ambiguous stop, the attach with its bytes, focus, Not on this site.
+    @Test func readsTheW2Messages() throws {
+        let lines = try goldenLines()
+        guard case let .pageCommand(attach) = try JSONDecoder().decode(PageMessage.self, from: lines[20]),
+              case let .attachFile(_, file) = attach.verb else { Issue.record("line 21 is not the attach"); return }
+        #expect(file.size == 9 && Data(base64Encoded: file.data) == Data("%PDF-1.4\n".utf8))
+        guard case let .pageResult(attached) = try JSONDecoder().decode(PageMessage.self, from: lines[21]) else { Issue.record("line 22 is not a result"); return }
+        #expect(attached.attached == PageAttached(via: .input, file: .init(name: "resume.pdf", size: 9), shown: true))
+        guard case let .pageResult(both) = try JSONDecoder().decode(PageMessage.self, from: lines[27]) else { Issue.record("line 28 is not a result"); return }
+        #expect(both.outcome == .failed && both.choice?.matches == ["United States", "United States Minor Outlying Islands"] && both.choice?.hiddenInput == .unchanged)
+        guard case let .pageFocus(f) = try JSONDecoder().decode(PageMessage.self, from: lines[28]),
+              case let .pageSitesOff(off) = try JSONDecoder().decode(PageMessage.self, from: lines[29]),
+              case let .pageResult(siteOff) = try JSONDecoder().decode(PageMessage.self, from: lines[30]) else { Issue.record("lines 29 to 31 are not focus, sites off and siteOff"); return }
+        #expect(f.tabId == 7 && f.frameId == 0)
+        #expect(off.origins == ["http://127.0.0.1:4310", "https://jobs.example.test"])
+        #expect(siteOff.outcome == .siteOff)
     }
 
     @Test func readsTheScopedGrantAndTheWrite() throws {
@@ -133,6 +154,8 @@ private func goldenLines() throws -> [Data] {
         #expect(ok(#"{"type":"scopedActGrant"}"#, .toExtension))
         #expect(!ok(#"{"type":"pageResult"}"#, .toExtension))
         #expect(!ok(#"{"type":"engineWelcome"}"#, .toExtension))
+        #expect(ok(#"{"type":"pageFocus"}"#, .toHelper) && !ok(#"{"type":"pageFocus"}"#, .toExtension))
+        #expect(ok(#"{"type":"pageSitesOff"}"#, .toExtension) && !ok(#"{"type":"pageSitesOff"}"#, .toHelper))
         #expect(!ok("[1]", .toHelper))
         #expect(!ok("{\"type\":\"pageHello\",\n\"x\":1}", .toHelper))
     }

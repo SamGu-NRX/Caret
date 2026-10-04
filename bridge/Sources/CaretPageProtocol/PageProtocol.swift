@@ -75,7 +75,8 @@ public struct PageTarget: Equatable, Sendable {
     public var tabId: Int, frameId: Int, documentId: String, id: String, control: PageControlKind, name: String, taskId: String
 }
 
-public struct PageFile: Codable, Equatable, Sendable { public var name: String, type: String, size: Int, sha256: String }
+/// The file pageAttachFile carries: its bytes in `data`, base64 (W2).
+public struct PageFile: Codable, Equatable, Sendable { public var name: String, type: String, size: Int, sha256: String, data: String }
 
 public enum PageVerb: Codable, Equatable, Sendable {
     case walk(tabId: Int?)
@@ -126,15 +127,36 @@ public enum PageVerb: Codable, Equatable, Sendable {
 
 public struct PageCommand: Codable, Equatable, Sendable { public var v: Int, id: String, expires: Int64, verb: PageVerb }
 
-public enum PageOutcome: String, Codable, Sendable { case ok, alreadyTrue, notAllowed, stale, failed, handoff, noElement, excluded, unsupported, error }
+public enum PageOutcome: String, Codable, Sendable { case ok, alreadyTrue, notAllowed, stale, failed, handoff, noElement, excluded, unsupported, error, siteOff }
 
 public struct PageWriteReadings: Codable, Equatable, Sendable {
     public var before: String, afterInput: String, afterBlur: String, invalid: Bool, error: String?
 }
 
+/// What pageChooseOption found and checked (W2).
+public struct PageChoice: Codable, Equatable, Sendable {
+    public enum Flavor: String, Codable, Sendable { case aria, reactSelect }
+    public enum HiddenInput: String, Codable, Sendable { case set, unchanged, none }
+    public var flavor: Flavor, matches: [String], expanded: Bool?, hiddenInput: HiddenInput
+}
+
+/// What pageAttachFile checked (W2).
+public struct PageAttached: Codable, Equatable, Sendable {
+    public struct File: Codable, Equatable, Sendable { public var name: String, size: Int }
+    public enum Via: String, Codable, Sendable { case input, drop }
+    public var via: Via, file: File?, shown: Bool
+}
+
 public struct PageResult: Codable, Equatable, Sendable {
     public var v: Int, id: String, at: Int64, outcome: PageOutcome, detail: String?, readings: PageWriteReadings?, risk: String?
+    public var choice: PageChoice?, attached: PageAttached?
 }
+
+/// Focus moved in the tab the user is in (W2); nothing about the element.
+public struct PageFocusMoved: Codable, Equatable, Sendable { public var v: Int, at: Int64, tabId: Int, frameId: Int }
+
+/// "Not on this site": every origin Caret is off for, the whole list each time (W2).
+public struct PageSitesOff: Codable, Equatable, Sendable { public var v: Int, origins: [String] }
 
 public struct PageHello: Codable, Equatable, Sendable {
     public var v: Int, extensionId: String, version: String, profile: String, instance: String, startedAt: Int64, capabilities: [String]
@@ -177,6 +199,7 @@ public enum PageMessage: Decodable, Equatable, Sendable {
     case engineChallenge(EngineChallenge), engineHello(EngineHello), engineWelcome(EngineWelcome), engineReady(EngineReady)
     case pageHello(PageHello), pageCommand(PageCommand), pageSnapshot(PageSnapshot), pageResult(PageResult)
     case scopedActGrant(ScopedActGrant), actRevoke(ActRevoke), pagePing(PagePing), pagePong(PagePong), pageChunk(PageChunk)
+    case pageFocus(PageFocusMoved), pageSitesOff(PageSitesOff)
 
     private enum K: String, CodingKey { case type }
     public init(from d: Decoder) throws {
@@ -195,6 +218,8 @@ public enum PageMessage: Decodable, Equatable, Sendable {
         case "pagePing": self = .pagePing(try PagePing(from: d))
         case "pagePong": self = .pagePong(try PagePong(from: d))
         case "pageChunk": self = .pageChunk(try PageChunk(from: d))
+        case "pageFocus": self = .pageFocus(try PageFocusMoved(from: d))
+        case "pageSitesOff": self = .pageSitesOff(try PageSitesOff(from: d))
         default: throw DecodingError.dataCorrupted(.init(codingPath: [K.type], debugDescription: "unknown page message \(type)"))
         }
     }
@@ -209,8 +234,8 @@ public enum Direction: Sendable {
 
     public var allowed: Set<String> {
         switch self {
-        case .toHelper: ["pageHello", "pageSnapshot", "pageResult", "pagePong"]
-        case .toExtension: ["pageCommand", "scopedActGrant", "actRevoke", "pagePing"]
+        case .toHelper: ["pageHello", "pageSnapshot", "pageResult", "pagePong", "pageFocus"]
+        case .toExtension: ["pageCommand", "scopedActGrant", "actRevoke", "pagePing", "pageSitesOff"]
         }
     }
 }
