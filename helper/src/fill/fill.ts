@@ -68,6 +68,19 @@ export function formFields(w: WindowState, triggerKey: string, max = MAX_FIELDS)
   return fields.sort((a, b) => dist(a) - dist(b)).slice(0, max);
 }
 
+/**
+ * Whether any field of the form around `triggerKey` asks for one of `about`, by the name proposeFill offers
+ * memory by (the field's label, else its nearest label, else its placeholder; about.ts fieldAsksFor).
+ */
+export function formAsksFor(w: WindowState, triggerKey: string, about: readonly AboutValue[]): boolean {
+  if (about.length === 0) return false;
+  return formFields(w, triggerKey).some((n) => {
+    const d = describeField(w, n);
+    const name = d.label ?? d.nearest ?? d.placeholder;
+    return about.some((a) => fieldAsksFor(a, name));
+  });
+}
+
 export interface AskField {
   id: string;
   descriptor: string;

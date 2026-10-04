@@ -10,7 +10,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import type { AskJev, JevRequest } from "./fill/jev.ts";
-import { FillError, formFields, proposeFill } from "./fill/fill.ts";
+import { FillError, formAsksFor, formFields, proposeFill } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -44,7 +44,7 @@ import {
   type TaskPhase,
   type TaskState,
 } from "./protocol.ts";
-import type { Change } from "./model.ts";
+import type { Change, WindowState } from "./model.ts";
 import { Executor, type ExecutorDeps, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
 import { MemoryStore } from "./patterns/memory.ts";
@@ -155,7 +155,11 @@ function fillMatches(f: CaretFill, t: Transfer): boolean {
   return Math.abs(t.at - f.at) <= CARET_FILL_MATCH_MS && (f.value.includes(t.value) || t.value.includes(f.value));
 }
 
-/** Re-asking Jev for the same form inside this window returns nothing new. Assumed. */
+/**
+ * Re-asking Jev for the same form inside this window returns nothing new. Assumed. An About entry added
+ * since the form was last asked about is something new, so a form with a field it fits is asked again
+ * inside the window (B21: A14's walk found a form seen in the 30 s before onboarding's Continue got no offer).
+ */
 const FILL_REPEAT_MS = 30_000;
 const PRUNE_EVERY_MS = 10_000;
 
@@ -169,6 +173,10 @@ export class Helper {
   private readonly opts: HelperOptions;
   private readonly lastFill = new Map<string, number>();
   private readonly inflight = new Set<string>();
+  /** When each About entry was added through memoryRequest add, by id: the newer entries a form has not been asked about (B21). */
+  private readonly aboutAddedAt = new Map<string, number>();
+  /** Forms whose fill was in flight when an About entry was added; the focused field is asked about again when that fill ends. */
+  private readonly refillAfter = new Set<string>();
   /** Recent proposals, by id: the window and each proposed field's value, so fillResult can be checked and matched. */
   private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null }>();
   /** Every Jev request goes through this, which records it as a use of "Read and prepare" (B17). Null when Jev is off. */
@@ -694,7 +702,35 @@ export class Helper {
       const ids = m.op === "add" ? reply.entries.map((e) => e.id) : m.id === undefined ? [] : [m.id];
       for (const id of ids) this.withdrawMemoryOffers(id);
     }
+    // A name or email the user just told Caret reaches the form they are on now, without a new focus (B21).
+    if (reply.error === null && m.op === "add") {
+      const at = this.now();
+      for (const e of reply.entries) this.aboutAddedAt.set(e.id, at);
+      this.refillFocused();
+    }
     return reply;
+  }
+
+  /**
+   * Asks again about the field the user is in, as a focus there would: an empty editable field of the
+   * frontmost app's focused window. The form's repeat window still holds unless an entry added since its
+   * last ask fits one of its fields (fill, FILL_REPEAT_MS).
+   */
+  private refillFocused(): void {
+    if (this.mode !== "live") return;
+    const id = this.model.focusedWindowId;
+    const w = id === null ? undefined : this.model.windows.get(id);
+    if (id === null || w === undefined || w.focusedKey === null) return;
+    if (this.model.frontmostPid !== w.app.pid && !this.opts.allowBackgroundFocus) return;
+    const n = w.nodes.get(w.focusedKey);
+    if (n?.editable !== true || (n.value ?? "") !== "") return;
+    void this.fill(id, w.focusedKey, false, true);
+  }
+
+  /** Whether an About entry added at or after `since` fits a field of the form around `key`. */
+  private addedSince(since: number, w: WindowState, key: string): boolean {
+    const fresh = this.aboutValues().filter((a) => (this.aboutAddedAt.get(a.id) ?? -Infinity) >= since);
+    return formAsksFor(w, key, fresh);
   }
 
   private withdrawMemoryOffers(memoryId: string): void {
@@ -935,7 +971,8 @@ export class Helper {
     if (ts.length > 0) this.patterns.onTransfers(ts);
   }
 
-  private async fill(windowId: string, key: string, explicit: boolean): Promise<FillProposal | null> {
+  /** `afterAdd`: asked because an About entry was just added (refillFocused), not because of a focus. */
+  private async fill(windowId: string, key: string, explicit: boolean, afterAdd = false): Promise<FillProposal | null> {
     const ask = this.ask;
     const store = this.opts.store;
     if (ask === null || this.mode === "shadow") {
@@ -963,8 +1000,13 @@ export class Helper {
       this.error(`fill: ${(e as Error).message}`);
       return null;
     }
-    if (this.inflight.has(formKey)) return null;
-    if (!explicit && now - (this.lastFill.get(formKey) ?? -Infinity) < FILL_REPEAT_MS) return null;
+    if (this.inflight.has(formKey)) {
+      // The fill under way read memory before the entry arrived; the form is asked again once it ends.
+      if (afterAdd) this.refillAfter.add(formKey);
+      return null;
+    }
+    const last = this.lastFill.get(formKey);
+    if (!explicit && last !== undefined && now - last < FILL_REPEAT_MS && !this.addedSince(last, w, key)) return null;
     // A pop-up already on offer covers this form, however long ago it was made.
     if (!explicit && [...this.fillPopups.values()].some((f) => f.form === formKey)) return null;
     this.inflight.add(formKey);
@@ -1028,6 +1070,7 @@ export class Helper {
     } finally {
       this.pendingFills.delete(focuses);
       this.inflight.delete(formKey);
+      if (this.refillAfter.delete(formKey)) this.refillFocused();
     }
   }
 

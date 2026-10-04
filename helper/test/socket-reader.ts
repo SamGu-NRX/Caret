@@ -45,7 +45,11 @@ export class LineClient {
     });
   }
 
+  /** Messages this client has sent, of every kind. */
+  sent = 0;
+
   send(m: unknown): void {
+    this.sent++;
     this.s.write(JSON.stringify(m) + "\n");
   }
 
