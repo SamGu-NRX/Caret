@@ -108,6 +108,7 @@ public final class HostRuntime {
     private let coordinator: HostCoordinator
     private let fill: FillCoordinator
     private let surface: SurfaceCoordinator
+    private let writing: WritingCoordinator
     private let helper: HelperClient
     private let activity: ActivityCenter
     private let perch: PerchController
@@ -134,6 +135,9 @@ public final class HostRuntime {
             headless: configuration.surfacesHeadless
         )
         self.surface = surface
+        let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
+        self.writing = writing
+        writing.allowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
         // Every host write asks this right before it acts; pause, stop, take over and the helper's
         // connection closing end it (S1 audit #2).
         let authority = HostAuthority()
@@ -146,11 +150,17 @@ public final class HostRuntime {
                         coordinator.insertionFinished(result)
                         fill.insertionFinished(result)
                         surface.insertionFinished(result)
+                        writing.insertionFinished(result)
                     }
                 }
             },
             onUndone: { result in
-                DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoFinished(result) } }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        fill.undoFinished(result)
+                        writing.undoFinished(result)
+                    }
+                }
             }
         )
         self.executor = executor
@@ -165,6 +175,7 @@ public final class HostRuntime {
                 coordinator.displaced(offer)
                 fill.displaced(offer)
                 surface.displaced(offer)
+                writing.displaced(offer)
             }
         }
         let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding) ?? .off, testHooks: configuration.testHooks)
@@ -271,6 +282,7 @@ public final class HostRuntime {
             // The arbiter has one toast slot: a fill's or a line's toast that held it is gone now.
             surface.toastChanged()
             fill.toastChanged()
+            writing.toastChanged()
         }
         perch.ask.onUndoChanged = { _ in syncAskToast() }
         perch.onListChanged = { _ in syncAskToast() }
@@ -282,7 +294,10 @@ public final class HostRuntime {
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
             gateClient.update(GateSettings(settings, at: Self.nowMs()))
-            if !HostGate.allowsGhostText(settings) { coordinator.gateClosed() }
+            if !HostGate.allowsGhostText(settings) {
+                coordinator.gateClosed()
+                writing.gateClosed()
+            }
             if !settings.gate.allows(family: "fill") { fill.gateClosed() }
             if settings.paused {
                 authority.revokeAll("paused")
@@ -290,9 +305,19 @@ public final class HostRuntime {
             }
         }
         surface.client = helper
-        // The fill line and the fill pop-up share the arbiter's one toast slot.
-        surface.onToastChanged = { fill.toastChanged() }
-        fill.onToastShown = { surface.toastChanged() }
+        // The fill line, the fill pop-up and a writing fix share the arbiter's one toast slot.
+        surface.onToastChanged = {
+            fill.toastChanged()
+            writing.toastChanged()
+        }
+        fill.onToastShown = {
+            surface.toastChanged()
+            writing.toastChanged()
+        }
+        writing.onToastShown = {
+            surface.toastChanged()
+            fill.toastChanged()
+        }
         activity.client = helper
         let pauseClient = helper
         let writesNothing = configuration.surfacesHeadless
@@ -311,6 +336,7 @@ public final class HostRuntime {
                         coordinator.claimed(claim)
                         fill.claimed(claim)
                         surface.claimed(claim)
+                        writing.claimed(claim)
                     }
                 }
             },
@@ -320,6 +346,7 @@ public final class HostRuntime {
                         coordinator.offerChanged(reason, key: key)
                         fill.offerChanged(reason)
                         surface.offerChanged(reason)
+                        writing.offerChanged(reason)
                     }
                 }
             },
@@ -334,12 +361,22 @@ public final class HostRuntime {
                     }
                 } else {
                     executor.submitUndo(grant)
-                    DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoStarted(grant) } }
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            fill.undoStarted(grant)
+                            writing.undoStarted(grant)
+                        }
+                    }
                 }
             },
             keyDown: { status.noteKeyDown($0) },
             navigated: { offerID, ui in
-                DispatchQueue.main.async { MainActor.assumeIsolated { surface.navigated(offerID: offerID, ui: ui) } }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        surface.navigated(offerID: offerID, ui: ui)
+                        writing.navigated(offerID: offerID, ui: ui)
+                    }
+                }
             },
             stopWork: { line in
                 DispatchQueue.main.async { MainActor.assumeIsolated { surface.stopWork(line) } }
@@ -347,7 +384,12 @@ public final class HostRuntime {
             realKey: { pid in pauser.key(pid: pid) },
             mouseDown: { point in pauser.click(at: point) },
             closedOffer: { offerID in
-                DispatchQueue.main.async { MainActor.assumeIsolated { surface.offerClosed(offerID) } }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        surface.offerClosed(offerID)
+                        writing.offerClosed(offerID)
+                    }
+                }
             }
         ))
         let tap = self.tap
@@ -434,8 +476,10 @@ public final class HostRuntime {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
         if !tap.start() { status.increment("tap.createFailed") }
-        focus.onChange = { [coordinator, perch] change in
+        InputMethodState.shared.start()
+        focus.onChange = { [coordinator, perch, writing] change in
             coordinator.handle(change)
+            writing.handle(change)
             perch.focusChanged(caret: change.snapshot?.caretRectAX, element: change.element)
         }
         focus.start()
@@ -477,6 +521,7 @@ public final class HostRuntime {
         helper.stop()
         fill.shutdown()
         surface.shutdown()
+        writing.shutdown()
         perch.shutdown()
         onboarding.close()
         memory.close()
@@ -739,6 +784,7 @@ public final class HostRuntime {
             info.fill = offer.kind.fillOrigin.map {
                 DebugState.FillInfo(proposalId: $0.proposalID, windowId: $0.windowID, fieldKey: $0.fieldKey, source: $0.sourceCaption)
             }
+            info.writing = offer.kind.writing.map(DebugState.WritingOfferInfo.init)
             return info
         }
         var counters = fields.counters
@@ -771,6 +817,7 @@ public final class HostRuntime {
             state.authorityLastRevoke = info.lastReason
         }
         state.ghostFits = fields.ghostFits
+        state.writing = fields.writing
         return state
     }
 }

@@ -134,7 +134,7 @@ public final class NativeChecker {
     )
 
     /// Always accepted once the user writes English at all.
-    static let baseEnglishRegions = ["US", "GB", "CA"]
+    nonisolated static let baseEnglishRegions = ["US", "GB", "CA"]
 
     /// When any language in the user's macOS list is English: US, GB and CA English, plus any other
     /// English region the list names itself (en-AU, en-NZ, en-IN), each where the checker has it.
