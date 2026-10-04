@@ -11,6 +11,11 @@
 //        fixture-ax set-field <pid> <x,y,w,h> <value>  write a text field's AXValue, as typing it would
 //        fixture-ax caret-end <pid> <x,y,w,h>  put the caret after the field's text (AXSelectedTextRange)
 //        fixture-ax close <pid> <window title>                  press the window's close button
+//        fixture-ax raise <pid> <window title>   bring the window to the front of its app (AXRaise)
+//            and make it the app's main window, as a click on its title bar would; no event posted
+//        fixture-ax move <pid> <window title> <x> <y>   put the window's top-left corner there (AXPosition)
+//        fixture-ax visible-frame <pid> <window title>   the visible frame (no menu bar or Dock) of the
+//            screen holding the window's centre, in Accessibility's top-left points
 //        fixture-ax frontmost                 print the frontmost pid (NSWorkspace and lsappinfo)
 //        fixture-ax activate <pid>            ask macOS to activate the fixture (may be refused)
 //        fixture-ax key-if-front <pid> tab|space|return|esc|cmd-z|cmd-a|char <c>
@@ -227,6 +232,30 @@ case "key-window" where args.count == 3:
     RunLoop.current.run(until: Date().addingTimeInterval(0.02))
     emit(["ok": result == .success, "axError": result.rawValue, "focusedBefore": before, "focusedAfter": focusedTitle(),
           "frontBefore": frontBefore, "frontAfter": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1, "lsFront": lsFront() ?? -1])
+case "raise" where args.count == 3:
+    let pid = requirePID(args[1])
+    let w = window(pid: pid, title: args[2])
+    let raised = AXUIElementPerformAction(w, kAXRaiseAction as CFString)
+    let main = AXUIElementSetAttributeValue(w, kAXMainAttribute as CFString, kCFBooleanTrue)
+    emit(["ok": raised == .success && main == .success, "raise": raised.rawValue, "main": main.rawValue])
+case "move" where args.count == 5:
+    let pid = requirePID(args[1])
+    let w = window(pid: pid, title: args[2])
+    guard let x = Double(args[3]), let y = Double(args[4]) else { fail("x and y must be numbers") }
+    var point = CGPoint(x: x, y: y)
+    guard let value = AXValueCreate(.cgPoint, &point) else { fail("cannot make a point") }
+    let result = AXUIElementSetAttributeValue(w, kAXPositionAttribute as CFString, value)
+    let f = frame(w)
+    emit(["ok": result == .success, "axError": result.rawValue, "frame": f.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? NSNull()])
+case "visible-frame" where args.count == 3:
+    let pid = requirePID(args[1])
+    guard let f = frame(window(pid: pid, title: args[2])) else { fail("the window has no frame", code: 4) }
+    // Accessibility's y runs down from the primary screen's top; Cocoa's runs up from its bottom.
+    let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+    let centre = CGPoint(x: f.midX, y: primaryTop - f.midY)
+    guard let screen = NSScreen.screens.first(where: { $0.frame.contains(centre) }) ?? NSScreen.main else { fail("no screen", code: 4) }
+    let v = screen.visibleFrame
+    emit(["frame": [v.minX, primaryTop - v.maxY, v.width, v.height]])
 case "close" where args.count == 3:
     let pid = requirePID(args[1])
     let w = window(pid: pid, title: args[2])

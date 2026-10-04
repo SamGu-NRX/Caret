@@ -316,19 +316,28 @@ final class SurfaceCoordinator {
     /// user once: a skill's run with no Tab starting, and a question under a result or its answer.
     private var announced: String?
     private func announce(_ content: PanelContent) {
-        guard case .line(let line) = content else { return }
-        let words: String?
-        if let q = line.question {
-            let keys = q.hints.map { "\($0.key): \($0.label ?? "")" }.joined(separator: ". ")
-            words = [q.text, q.detail, keys.isEmpty ? nil : keys].compactMap { $0 }.joined(separator: ". ")
-        } else if line.lead == "On its own:" {
-            words = "\(line.lead ?? "") \(line.text). Esc takes over."
-        } else {
-            words = nil
-        }
-        guard let words, words != announced else { return }
+        guard let words = Self.spoken(content), words != announced else { return }
         announced = words
         AccessibilityNotification.Announcement(words).post()
+    }
+
+    /// What VoiceOver hears for a line, or nil when the line is not announced. Each part is a
+    /// sentence of its own, ended once: A16's live log heard "Keep this as …?. Caret will offer it
+    /// when you start it again.." when the parts were joined with ". ".
+    static func spoken(_ content: PanelContent) -> String? {
+        guard case .line(let line) = content else { return nil }
+        let parts: [String]
+        if let q = line.question {
+            let keys = q.hints.map { h in h.label.map { "\(h.key): \($0)" } ?? h.key }
+            parts = [q.text] + (q.detail.map { [$0] } ?? []) + keys
+        } else if line.lead == "On its own:" {
+            parts = ["\(line.lead ?? "") \(line.text)", "Esc takes over"]
+        } else {
+            return nil
+        }
+        return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            .map { [".", "?", "!"].contains($0.last.map(String.init) ?? "") ? $0 : $0 + "." }
+            .joined(separator: " ")
     }
 
     private func clearCaret() {
