@@ -1,0 +1,1 @@
+A key posted to a pid whose app is not active skips AppKit key equivalents: the fixture's default button never ran on posted Return or Enter (0 of 10), Space pressed a focused button 5 of 5. The reader places key presses from cached focus and default button (B21).

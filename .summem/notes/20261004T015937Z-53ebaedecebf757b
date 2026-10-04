@@ -1,0 +1,1 @@
+swift test on a mutated source rebuilds .build/debug/caret-screen; rebuild from the restored source before any GUI eval runs those binaries (B21 caught it by timestamp).

@@ -1,0 +1,1 @@
+B14: load-proof tests fix the generator clock with setGeneratorClock(() => 0) (find exposed ones with a wall clock jumping 1 s per read); a name field is withheld only on namesCut, since counting names prose mentions blanked Full name on Messages sets.
