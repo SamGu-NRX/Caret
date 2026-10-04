@@ -26,8 +26,8 @@ import { LEVELS } from "../offers/settings.ts";
 import { DocumentContent, SealedContent, type Content } from "../memory/content.ts";
 import { MemoryDocumentError, MemoryDocumentStore, type DocumentInfo, type RecordChange } from "../memory/documents.ts";
 import { contentMode, migrateSealedMemory, type MigrationHooks, type MigrationResult } from "../memory/migrate.ts";
-import { recordDigest, type DocId, type MemoryRecord, type Noticed, type RecordKind, type RecordStatus } from "../memory/parse.ts";
-import { refusal, sensitiveKind, valueKind } from "../memory/sensitive.ts";
+import { recordDigest, recordSecret, type DocId, type MemoryRecord, type Noticed, type RecordKind, type RecordStatus } from "../memory/parse.ts";
+import { refusal, valueKind } from "../memory/sensitive.ts";
 import { loadKey, open, seal } from "../sealed.ts";
 import {
   AboutFields,
@@ -145,6 +145,11 @@ const SkillJson = SkillFields.extend({
    * written before B22.
    */
   putBack: z.boolean().optional(),
+  /**
+   * The digest of the skill's file as Caret last wrote or accepted it (M1). A file that no longer matches when Caret
+   * starts was edited while it was stopped, and puts the skill back on Tab.
+   */
+  fileDigest: z.string().optional(),
 });
 export type SkillRecord = z.infer<typeof SkillJson> & { id: string; paused: boolean };
 
@@ -328,6 +333,7 @@ export class MemoryStore {
       this.content = new DocumentContent(docs);
       if (opts.watch === true) docs.watch(() => this.sync("all"));
       this.adopt();
+      this.reconcileSkills();
     } else this.content = new SealedContent(this.db, this.key);
   }
 
@@ -372,8 +378,8 @@ export class MemoryStore {
       this.warn(`memory: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
-    if (!moved) return;
-    this.adopt();
+    if (moved) this.adopt();
+    // Drained whether or not this look moved anything: an earlier read (the memory window's) may have found them.
     const changes = this.content.takeChanges();
     if (changes.length === 0) return;
     this.applyOutside(changes);
@@ -408,15 +414,50 @@ export class MemoryStore {
    */
   private applyOutside(changes: readonly RecordChange[]): void {
     for (const c of changes) {
-      if (c.kind !== "skill") continue;
+      if (c.kind !== "skill") {
+        // The row's pause column follows the file, so the database never shows a state the file contradicts.
+        if (c.after !== null) this.stmt("UPDATE memory SET paused = ? WHERE id = ?").run(c.after.status === "paused" ? 1 : 0, c.id);
+        continue;
+      }
       const r = this.stmt("SELECT * FROM memory WHERE id = ? AND kind = 'skill'").get(c.id) as Row | undefined;
       if (r === undefined) continue;
       const s = SkillJson.parse(JSON.parse(r.fields ?? "null"));
       const text = c.after?.kind === "skill" ? c.after.fields : { name: s.name, trigger: s.trigger };
-      const next = SkillJson.parse({ ...s, ...text, cleanRuns: 0, onItsOwn: false, wrote: [], promote: s.promote === "declined" ? "declined" : null });
+      const fileDigest = c.after === null ? undefined : recordDigest(c.after);
+      const next = SkillJson.parse({ ...s, ...text, cleanRuns: 0, onItsOwn: false, wrote: [], promote: s.promote === "declined" ? "declined" : null, fileDigest });
       this.stmt("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify(next), c.id);
     }
     this.routineCache = null;
+  }
+
+  /**
+   * At start: a skill file edited while Caret was not running is an outside change too. Each skill row remembers the
+   * digest of the file Caret last wrote or accepted (fileDigest); a file that no longer matches puts the skill back on
+   * Tab now, before anything can run it. A row from before M1 has none yet and records the file as it is.
+   */
+  private reconcileSkills(): void {
+    const changes: RecordChange[] = [];
+    for (const r of this.rows("skill")) {
+      const s = SkillJson.parse(JSON.parse(r.fields ?? "null"));
+      const rec = this.record(r);
+      const now = rec === null ? undefined : recordDigest(rec);
+      if (s.fileDigest === undefined) {
+        if (now !== undefined) this.stmt("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify({ ...s, fileDigest: now }), r.id);
+        continue;
+      }
+      if (now !== s.fileDigest) changes.push({ id: r.id, kind: "skill", before: null, after: rec });
+    }
+    if (changes.length === 0) return;
+    this.applyOutside(changes);
+    this.outside.push(...changes);
+  }
+
+  /** Writes a skill's file and remembers its digest beside the protected state, as Caret's own version. */
+  private putSkillFile(rec: MemoryRecord & { kind: "skill" }, expect: string | null): void {
+    this.put(rec, expect);
+    const r = this.stmt("SELECT fields FROM memory WHERE id = ? AND kind = 'skill'").get(rec.id) as { fields: string | null } | undefined;
+    if (r === undefined) return;
+    this.stmt("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify({ ...(JSON.parse(r.fields ?? "{}") as object), fileDigest: recordDigest(rec) }), rec.id);
   }
 
   /** Gives an index row to each record a user wrote with an id of their own, so it is listed and used like any other. */
@@ -453,9 +494,12 @@ export class MemoryStore {
     }
   }
 
+  /** Removes a record's content, only as it was when this call read it: an edit made since is a conflict, not deleted. */
   private removeContent(id: string, kind: RecordKind): void {
+    const r = this.stmt("SELECT * FROM memory WHERE id = ?").get(id) as Row | undefined;
+    const rec = r === undefined ? null : this.record(r);
     try {
-      this.content.remove(id, kind);
+      this.content.remove(id, kind, rec === null ? undefined : recordDigest(rec));
     } catch (e) {
       if (e instanceof MemoryDocumentError) throw new MemoryError(e.message);
       throw e;
@@ -536,13 +580,18 @@ export class MemoryStore {
 
   /** The memory documents, for the host's memory window: each file's path, revision and problems. */
   documents(): DocumentInfo[] {
-    return this.documentStore().documents();
+    const store = this.documentStore();
+    // Through sync, so a change this look finds is applied and handed on like any other.
+    this.sync("all", true);
+    return store.documents();
   }
 
   /** One document's text and revision. */
   readDocument(doc: DocId): { text: string; info: DocumentInfo } {
+    const store = this.documentStore();
+    this.sync("all", true);
     try {
-      return this.documentStore().read(doc);
+      return store.read(doc);
     } catch (e) {
       if (e instanceof MemoryDocumentError) throw new MemoryError(e.message);
       throw e;
@@ -671,7 +720,7 @@ export class MemoryStore {
     } else if (r.kind === "skill") {
       // Pausing always works: a skill whose file cannot be read is already off. Resuming needs the file readable.
       const rec = this.record(r);
-      if (rec !== null) this.put({ ...rec, status: paused ? "paused" : "active" }, recordDigest(rec));
+      if (rec?.kind === "skill") this.putSkillFile({ ...rec, status: paused ? "paused" : "active" }, recordDigest(rec));
       else if (!paused) throw new MemoryError(this.content.why(r.id, "skill"));
     }
     this.stmt("UPDATE memory SET paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
@@ -787,6 +836,8 @@ export class MemoryStore {
     const valid = schema.safeParse(fields);
     if (!valid.success) throw new MemoryError(`not storing a ${kind} entry: ${valid.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
     this.sync(kind);
+    // Where a fact was noticed is screen text: an app name or window title that holds a secret is left out, the fact kept.
+    if (noticed !== null) noticed = { ...noticed, app: noticed.app !== null && valueKind(noticed.app) !== null ? null : noticed.app, window: noticed.window !== null && valueKind(noticed.window) !== null ? null : noticed.window };
     const hit = this.stmt("SELECT * FROM memory WHERE kind = ? AND match = ?").get(kind, match) as Row | undefined;
     if (hit !== undefined) {
       const cur = this.record(hit);
@@ -919,7 +970,7 @@ export class MemoryStore {
         .prepare("INSERT INTO memory (id, kind, match, fields, count, first_seen, last_seen, app) VALUES (?, 'skill', ?, ?, 0, ?, ?, ?)")
         .run(id, routineId, JSON.stringify(json), at, at, routine.steps[0]?.dstApp ?? null);
       this.setRoutineKeep(routineId, "kept");
-      this.put({ id, kind: "skill", status: "active", noticed: null, fields: { name: json.name, trigger: json.trigger } }, null);
+      this.putSkillFile({ id, kind: "skill", status: "active", noticed: null, fields: { name: json.name, trigger: json.trigger } }, null);
     });
     return this.skill(id) as SkillRecord;
   }
@@ -945,7 +996,11 @@ export class MemoryStore {
     const next = SkillJson.parse({ ...cur, ...patch });
     if ((patch.name !== undefined && patch.name !== cur.name) || (patch.trigger !== undefined && patch.trigger !== cur.trigger)) {
       const rec = this.mustRecord(r);
-      if (rec.kind === "skill") this.put({ ...rec, fields: { name: next.name, trigger: next.trigger } }, recordDigest(rec));
+      if (rec.kind === "skill") {
+        const file = { ...rec, fields: { name: next.name, trigger: next.trigger } };
+        this.put(file, recordDigest(rec));
+        next.fileDigest = recordDigest(file);
+      }
     }
     this.routineCache = null;
     this.stmt("UPDATE memory SET fields = ?, last_seen = ?, count = ? WHERE id = ?").run(JSON.stringify(next), at, next.runs, id);
@@ -1160,7 +1215,7 @@ export class MemoryStore {
       }
       case "skill": {
         // `wrote` goes to the host too, for its permissions page (A16); the promote state and putBack stay here.
-        const { promote: _p, putBack: _b, id: _i, paused: skillPaused, ...f } = this.toSkill(r);
+        const { promote: _p, putBack: _b, fileDigest: _d, id: _i, paused: skillPaused, ...f } = this.toSkill(r);
         const status: MemoryStatus = skillPaused ? "paused" : f.onItsOwn ? "active" : "learning";
         const how = skillPaused
           ? "paused"
@@ -1201,15 +1256,8 @@ const TypedPerson = z.strictObject({ alias: PeopleFields.shape.alias, name: Peop
 
 /** Refuses a record holding what Caret never keeps in memory (memory/sensitive.ts), by its label and value. */
 function checkSecret(r: MemoryRecord): void {
-  const s =
-    r.kind === "about"
-      ? sensitiveKind(r.fields.label, r.fields.value)
-      : r.kind === "people"
-        ? (valueKind(r.fields.alias) ?? valueKind(r.fields.name))
-        : r.kind === "skill"
-          ? (valueKind(r.fields.name) ?? valueKind(r.fields.trigger))
-          : null;
-  if (s !== null) throw new MemoryError(refusal(s));
+  const s = recordSecret(r);
+  if (s !== null) throw new MemoryError(refusal(s.kind));
 }
 
 /** The same fields, whatever order their keys are in. */

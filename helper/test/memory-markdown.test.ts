@@ -264,6 +264,43 @@ describe("authority stays in the protected state", () => {
     expect(() => m.setPaused(s.id, false)).toThrow(/skills\/skill-[0-9a-f]+\.md is missing/);
   });
 
+  it("#4 looking at the documents first does not let an edited skill keep its approval", async () => {
+    const s = newSkill();
+    m.updateSkill(s.id, { onItsOwn: true, cleanRuns: 3 }, 3);
+    writeFileSync(skillFile(s.id), readFileSync(skillFile(s.id), "utf8").replace("- When: a Tracker", "- When: any Tracker"));
+    m.documents();
+    m.readDocument(`skills/${s.id}`);
+    expect(m.skill(s.id)).toMatchObject({ onItsOwn: false, cleanRuns: 0, trigger: "any Tracker window opens with Order empty" });
+    await flush();
+    expect(outside).toEqual([[s.id]]);
+  });
+
+  it("#5 a skill file edited while Caret was stopped puts the skill back on Tab at start", () => {
+    const s = newSkill();
+    m.updateSkill(s.id, { onItsOwn: true, cleanRuns: 3 }, 3);
+    m.close();
+    writeFileSync(skillFile(s.id), readFileSync(skillFile(s.id), "utf8").replace("- Name: Copy tracking", "- Name: Copy everything"));
+    m = new MemoryStore(dir);
+    expect(m.skill(s.id)).toMatchObject({ name: "Copy everything", onItsOwn: false, cleanRuns: 0 });
+    expect(m.takeOutsideChanges().map((c) => c.id)).toEqual([s.id]);
+    // Caret's own renames and pauses are not edits: a restart after them changes nothing.
+    m.updateSkill(s.id, { onItsOwn: true, cleanRuns: 3 }, 4);
+    m.edit(s.id, { name: "Copy all" }, 5);
+    m.setPaused(s.id, true);
+    m.setPaused(s.id, false);
+    m.close();
+    m = new MemoryStore(dir);
+    expect(m.skill(s.id)).toMatchObject({ name: "Copy all", onItsOwn: true, cleanRuns: 3 });
+  });
+
+  it("#7 a secret in a preference field or in where a fact was noticed never reaches a file", () => {
+    const pref = m.upsert("preference", "format:phone", { rule: "format", valueKind: "phone", template: "###-###-####" }, 1, null);
+    expect(() => m.edit(pref, { template: "###-###-# sk-proj-abcdefghijklmnopqrstuvwxyzabcdef" }, 2)).toThrow("Caret doesn't keep API keys or tokens in memory");
+    const id = m.upsert("people", "dana", { alias: "Dana", name: "Dana Reyes" }, 3, "Mail", { app: "Mail", window: "Token ghp_abcdefghijklmnopqrstuvwxyz0123456789", at: 3 });
+    expect(m.get(id)).toMatchObject({ status: "noticed", noticed: { app: "Mail", windowTitle: null, at: 3 } });
+    for (const f of ["preferences.md", "people.md"]) expect(readFileSync(join(dir, "Memory", f), "utf8")).not.toMatch(/sk-proj|ghp_/);
+  });
+
   it("refuses to keep a secret from any path: a learned edit, 'remember this', an edit, a correction", () => {
     const hash = (t: string): string => `h:${t}`;
     expect(() => captureEdit(m, hash, { source: "x", written: "x", edited: "4111 1111 1111 1111", kind: null, dstShapeHash: "d", fieldLabel: "Card", app: "Shop" }, 1)).toThrow("Caret doesn't keep card numbers in memory");

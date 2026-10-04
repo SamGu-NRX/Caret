@@ -19,9 +19,11 @@
 // renamed aside, which atomically takes whatever is at the path at that instant; its bytes are compared with the
 // revision the caller started from. On a match the temporary file is linked into place with link(2), which fails
 // if anything created the path in between. Either way a mismatch is a MemoryConflictError and nothing the user
-// wrote is overwritten. What remains: an editor that holds the file open and writes into it in place during the
-// few syscalls between the rename and the compare would write into the aside file, which is then removed. A
-// crash between the rename and the link leaves the aside file, which open() puts back.
+// wrote is overwritten. An editor that writes in place through a descriptor it opened before the rename writes
+// into the aside file instead: its bytes are compared once more before the aside file goes, and if they moved it
+// is kept as "<name> (conflict <time>).md" beside the document and the save reports a conflict. What remains is
+// a write landing between that last compare and the unlink, a few microseconds. A crash between the rename and
+// the link leaves the aside file: open() puts it back, or keeps it as a conflict copy if the path was taken.
 //
 // Change detection: every read checks each file it needs by lstat (inode, size, times), and rereads and hashes
 // a file whose stamp moved; `verify` rehashes regardless, for the check right before acceptance. A record whose
@@ -60,6 +62,7 @@ import {
   newDocument,
   parseDocument,
   recordDigest,
+  recordSecret,
   removeRecord,
   ROOT_DOCS,
   type Diagnostic,
@@ -128,6 +131,10 @@ export interface StoreHooks {
   beforeInstall?: (doc: DocId) => void;
   /** Runs right after the current file is renamed aside, before its bytes are compared: the narrowest window. */
   afterAside?: (doc: DocId) => void;
+  /** Runs after the compare, before the aside file is dropped: an editor writing in place through an open descriptor. */
+  beforeDrop?: (aside: string) => void;
+  /** Runs right after Caret's file is installed, before the cache records it: an editor replacing it at once. */
+  afterInstall?: (doc: DocId) => void;
 }
 
 export const revisionOf = (b: Buffer | string): string => `sha256:${createHash("sha256").update(b).digest("hex")}`;
@@ -248,19 +255,23 @@ export class MemoryDocumentStore {
 
   private mutate(doc: DocId, id: string, expect: string | null | undefined, next: (p: ParsedDocument | null) => string | null): void {
     const file = fileOf(doc);
+    // A retry must still find the record as the first attempt did: a change to it in between is the user's edit.
+    let want = expect;
     for (let attempt = 0; attempt < SAVE_TRIES; attempt++) {
       this.sync([doc], true);
       const l = this.loaded.get(doc) as Loaded;
       if (l.refused !== null) throw new MemoryDocumentError(file, l.refused);
       const now = this.digest(id);
-      if (expect !== undefined && now !== expect) {
+      if (want === undefined) want = now;
+      const expect = want;
+      if (now !== expect) {
         const why = now === null ? "it was removed or has errors" : expect === null ? "a record with this id appeared" : "it was edited";
         throw new MemoryConflictError(file, `${file}: the record ${id} changed outside Caret (${why}); keeping that version`, l.revision);
       }
       if (this.crossDuplicates.has(id)) throw new MemoryConflictError(file, this.disabledWhy(id, docKind(doc)) ?? `${id} is duplicated`, l.revision);
       if (l.parsed?.broken.has(id) === true) throw new MemoryConflictError(file, this.disabledWhy(id, docKind(doc)) ?? `${file}: ${id} has errors`, l.revision);
       const text = next(l.parsed);
-      if (text !== null && l.parsed !== null && text === l.parsed.lines.join(l.parsed.eol)) return;
+      if (text !== null && l.parsed !== null && text === l.parsed.text) return;
       try {
         if (text === null) {
           if (l.revision !== null) this.removeFile(doc, l.revision);
@@ -304,7 +315,7 @@ export class MemoryDocumentStore {
     this.sync([doc], true);
     const l = this.loaded.get(doc) as Loaded;
     if (l.refused !== null) throw new MemoryDocumentError(fileOf(doc), l.refused);
-    return { text: l.parsed?.lines.join(l.parsed.eol) ?? "", info: this.info(doc) };
+    return { text: l.parsed?.text ?? "", info: this.info(doc) };
   }
 
   /**
@@ -337,7 +348,9 @@ export class MemoryDocumentStore {
     if (bytes.length > MAX_FILE_BYTES) throw new MemoryDocumentError(file, `${file} would be ${bytes.length} bytes; the limit is ${MAX_FILE_BYTES}`);
     const target = this.path(doc);
     const dir = resolve(target, "..");
-    checkDir(dir);
+    // A folder the user deleted is made again; a symlink or another user's folder is refused.
+    ensureDir(this.root);
+    ensureDir(dir);
     const tmp = join(dir, `.${baseName(target)}${TEMP_TAG}${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
     const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
@@ -374,10 +387,11 @@ export class MemoryDocumentStore {
           throw new MemoryConflictError(file, `${file} changed outside Caret while it saved; keeping that version`, current);
         }
         if (!tryLink(tmp, target)) {
-          tryUnlink(aside);
+          this.dropAside(aside, current, file);
           throw new MemoryConflictError(file, `${file} was written outside Caret while it saved; keeping that version`, this.revisionNow(target));
         }
-        tryUnlink(aside);
+        this.hooks.afterInstall?.(doc);
+        this.dropAside(aside, current, file);
       }
       syncDir(dir);
       return revisionOf(bytes);
@@ -386,10 +400,31 @@ export class MemoryDocumentStore {
     }
   }
 
+  /**
+   * Removes the file a save renamed aside, unless its bytes changed since they were compared: an editor wrote into it
+   * in place. Then it is kept as a conflict copy beside the document and the change is reported, never dropped.
+   */
+  private dropAside(aside: string, compared: string | null, file: string): void {
+    this.hooks.beforeDrop?.(aside);
+    let now: string | null;
+    try {
+      now = readRegular(aside, file).revision;
+    } catch {
+      now = null;
+    }
+    if (now === compared || now === null) {
+      tryUnlink(aside);
+      return;
+    }
+    const copy = keepAsConflict(aside);
+    throw new MemoryConflictError(file, `${file} was edited outside Caret while it saved; that version is kept as ${copy}`, now);
+  }
+
   private removeFile(doc: DocId, base: string): void {
     const file = fileOf(doc);
     const target = this.path(doc);
     const aside = join(resolve(target, ".."), `.${baseName(target)}${TEMP_TAG}${process.pid}-${randomBytes(6).toString("hex")}.old`);
+    this.hooks.beforeInstall?.(doc);
     try {
       renameSync(target, aside);
     } catch (e) {
@@ -405,10 +440,10 @@ export class MemoryDocumentStore {
     })();
     if (current !== base) {
       renameBackIfFree(aside, target);
-      tryUnlink(aside);
+      if (existsAt(aside)) keepAsConflict(aside);
       throw new MemoryConflictError(file, `${file} changed outside Caret while it was being removed; keeping it`, current);
     }
-    tryUnlink(aside);
+    this.dropAside(aside, current, file);
   }
 
   private revisionNow(path: string): string | null {
@@ -426,21 +461,20 @@ export class MemoryDocumentStore {
       const p = join(dir, name);
       if (name.endsWith(".old")) {
         const target = join(dir, name.slice(1, name.indexOf(TEMP_TAG)));
-        if (!tryLink(p, target)) {
-          // The file exists: the save finished, or the user wrote a newer one. Either way the aside copy is stale.
-        }
-        tryUnlink(p);
+        if (tryLink(p, target)) tryUnlink(p);
+        // The path is taken: the save finished, or the user wrote a newer file. Caret cannot tell whether the aside
+        // copy took an edit before the crash, so it is kept where the user can see it rather than deleted.
+        else if (sameBytes(p, target)) tryUnlink(p);
+        else keepAsConflict(p);
       } else if (name.endsWith(".tmp")) tryUnlink(p);
     }
   }
 
   private skillDocs(): DocId[] {
     const dir = join(this.root, "skills");
-    try {
-      checkDir(dir);
-    } catch {
-      return [];
-    }
+    const loaded = [...this.loaded.keys()].filter((d) => docKind(d) === "skill");
+    // A skills folder that is gone or refused: every skill read before is read again, and so turned off.
+    if (parentProblem(this.root) !== null || parentProblem(dir) !== null) return loaded;
     const out: DocId[] = [];
     for (const name of readdirSync(dir).sort()) {
       if (!name.endsWith(".md") || name.startsWith(".")) continue;
@@ -459,6 +493,15 @@ export class MemoryDocumentStore {
     const prev = this.loaded.get(doc);
     let stamp: string;
     let st: Stats | null = null;
+    // O_NOFOLLOW guards the file's own name only: a folder above it swapped for a symlink is refused here.
+    const parents = docKind(doc) === "skill" ? [this.root, join(this.root, "skills")] : [this.root];
+    const badParent = parents.map(parentProblem).find((x) => x !== null) ?? null;
+    if (badParent !== null) {
+      const refusedNow = badParent === "missing" ? null : badParent;
+      if (prev !== undefined && prev.refused === refusedNow && prev.parsed === null && prev.stamp === `parent:${badParent}`) return false;
+      this.loaded.set(doc, { doc, stamp: `parent:${badParent}`, revision: null, bytes: 0, parsed: null, refused: refusedNow });
+      return true;
+    }
     try {
       st = lstatSync(path);
       stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}:${st.mode}`;
@@ -488,16 +531,12 @@ export class MemoryDocumentStore {
     return true;
   }
 
-  /** What Caret just wrote: the cache follows without reporting it as a change. */
+  /**
+   * What Caret just wrote: the cache follows without reporting it as a change. The stamp matches no file, so the next
+   * read hashes the file: an editor that replaced it right after the install is seen then, not hidden behind it.
+   */
   private setLoaded(doc: DocId, text: string | null): void {
-    const path = this.path(doc);
-    let stamp = "missing";
-    try {
-      const st = lstatSync(path);
-      stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}:${st.mode}`;
-    } catch {
-      // Gone already; the next read sees it.
-    }
+    const stamp = "unverified";
     this.loaded.set(doc, text === null ? { doc, stamp, revision: null, bytes: 0, parsed: null, refused: null } : { doc, stamp, revision: revisionOf(text), bytes: Buffer.byteLength(text), parsed: parseDocument(doc, text), refused: null });
   }
 
@@ -552,19 +591,52 @@ export function sensitiveLine(doc: DocId, text: string): string | null {
   return null;
 }
 
-/** Refuses a record Caret is about to write that holds what it never keeps. */
+/** Refuses a record Caret is about to write that holds what it never keeps, in any field it writes. */
 function checkRecord(r: MemoryRecord): void {
-  const pairs: [string, string, string][] =
-    r.kind === "about"
-      ? [["Value", r.fields.label, r.fields.value]]
-      : r.kind === "people"
-        ? [["Alias", "", r.fields.alias], ["Name", "", r.fields.name]]
-        : r.kind === "skill"
-          ? [["Name", "", r.fields.name], ["When", "", r.fields.trigger]]
-          : [];
-  for (const [field, label, value] of pairs) {
-    const s = label === "" ? valueKind(value) : sensitiveKind(label, value);
-    if (s !== null) throw new MemoryDocumentError(fileOf(docFor(r)), `${field}: ${refusal(s)}`);
+  const bad = recordSecret(r);
+  if (bad !== null) throw new MemoryDocumentError(fileOf(docFor(r)), `${bad.field}: ${refusal(bad.kind)}`);
+}
+
+/** Why a folder on a document's path cannot be used, "missing" when it is not there, or null when it is fine. */
+function parentProblem(dir: string): string | null {
+  try {
+    checkDir(dir);
+    return null;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** Keeps a displaced file beside its document as "<name> (conflict <time>).md"; returns that name. */
+function keepAsConflict(p: string): string {
+  const dir = resolve(p, "..");
+  const name = baseName(p);
+  const stem = name.slice(1, name.indexOf(TEMP_TAG)).replace(/\.md$/, "");
+  const when = new Date().toISOString().replace(/[-:]/g, "").replace("T", " ").slice(0, 15);
+  for (let n = 1; ; n++) {
+    const copy = `${stem} (conflict ${when}${n === 1 ? "" : ` ${n}`}).md`;
+    if (tryLink(p, join(dir, copy))) {
+      tryUnlink(p);
+      return copy;
+    }
+  }
+}
+
+function sameBytes(a: string, b: string): boolean {
+  try {
+    return readRegular(a, baseName(a)).revision === readRegular(b, baseName(b)).revision;
+  } catch {
+    return false;
+  }
+}
+
+function existsAt(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
   }
 }
 

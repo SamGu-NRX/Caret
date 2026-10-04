@@ -1,7 +1,7 @@
 // M1: personal memory as markdown. The parser reads only typed records under a stable comment, the store saves by
 // compare-and-swap and refuses what is not a plain file in its folder, and Caret never writes a secret into it.
 // Every directory is a fresh temporary one; nothing here touches the user's real memory folder.
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -347,11 +347,137 @@ describe("the memory document store", () => {
 
   it("calls the watcher's hint when a file changes", async () => {
     store.put(about("about-aaa", "one"));
-    const hinted = new Promise<void>((resolve) => store.watch(resolve));
+    let hint = false;
+    store.watch(() => (hint = true));
     const path = join(root, "about-me.md");
-    writeFileSync(path, readFileSync(path, "utf8").replace("one", "uno"));
-    await expect(Promise.race([hinted.then(() => "hint"), new Promise((r) => setTimeout(() => r("timeout"), 3000))])).resolves.toBe("hint");
+    const original = readFileSync(path, "utf8");
+    // An FSEvents stream can miss a write made as it starts, so the edit is repeated until a hint comes (5 s at most).
+    for (let n = 0; !hint && n < 25; n++) {
+      writeFileSync(path, original.replace("- Value: one", `- Value: uno ${n}`));
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    expect(hint).toBe(true);
     store.refresh("about");
     expect(store.takeChanges().map((c) => c.id)).toEqual(["about-aaa"]);
+  });
+});
+
+describe("review findings (M1 fresh review)", () => {
+  let dir: string;
+  let root: string;
+  let store: MemoryDocumentStore;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "caret-memdocs-review-"));
+    root = join(dir, "Memory");
+    store = new MemoryDocumentStore(root);
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const about = (id: string, value: string): MemoryRecord => ({ id, kind: "about", status: "active", noticed: null, fields: { label: `L ${id}`, value, source: "typed" } });
+  const path = (): string => join(root, "about-me.md");
+
+  it("#1 an editor writing in place after the compare: its bytes are kept as a conflict copy and the save says so", () => {
+    store.put(about("about-aaa", "one"));
+    const base = revisionOf(readFileSync(path()));
+    store.hooks.beforeDrop = (aside) => writeFileSync(aside, "# About me\n\nwritten in place by the editor\n");
+    expect(() => store.save("about-me", base, "# About me\n\nCaret's\n")).toThrow(/was edited outside Caret while it saved; that version is kept as about-me \(conflict \d{8} \d{6}\)\.md/);
+    const copies = readdirSync(root).filter((f) => f.includes("(conflict"));
+    expect(copies).toHaveLength(1);
+    expect(readFileSync(join(root, copies[0] as string), "utf8")).toBe("# About me\n\nwritten in place by the editor\n");
+    expect(readdirSync(root).filter((f) => f.startsWith("."))).toEqual([]);
+  });
+
+  it("#1 a crash leftover that differs from the installed file is kept, not deleted", () => {
+    store.put(about("about-aaa", "one"));
+    store.close();
+    writeFileSync(join(root, ".about-me.md.caret-1-abcdef.old"), "# About me\n\nan edit that landed in the old file\n");
+    store = new MemoryDocumentStore(root);
+    const copies = readdirSync(root).filter((f) => f.includes("(conflict"));
+    expect(copies.map((c) => readFileSync(join(root, c), "utf8"))).toEqual(["# About me\n\nan edit that landed in the old file\n"]);
+  });
+
+  it("#2 removing a record the user edits meanwhile is a conflict on every attempt, never a deletion of their edit", () => {
+    store.put({ id: "skill-abc1", kind: "skill", status: "active", noticed: null, fields: { name: "Copy", trigger: "a window opens" } });
+    const file = join(root, "skills", "skill-abc1.md");
+    let once = true;
+    store.hooks.beforeInstall = () => {
+      if (!once) return;
+      once = false;
+      writeFileSync(file, readFileSync(file, "utf8").replace("- Name: Copy", "- Name: Copy, renamed by hand"));
+    };
+    expect(() => store.remove("skill-abc1", "skill")).toThrow(/changed outside Caret \(it was edited\)/);
+    expect(readFileSync(file, "utf8")).toContain("- Name: Copy, renamed by hand");
+  });
+
+  it("#6 a skills folder swapped for a symlink, or a memory folder replaced by one, disables what was read through it", () => {
+    store.put({ id: "skill-abc1", kind: "skill", status: "active", noticed: null, fields: { name: "Copy", trigger: "a window opens" } });
+    store.put(about("about-aaa", "one"));
+    const elsewhere = join(dir, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "skill-abc1.md"), readFileSync(join(root, "skills", "skill-abc1.md")));
+    rmSync(join(root, "skills"), { recursive: true });
+    symlinkSync(elsewhere, join(root, "skills"));
+    store.refresh("skill", true);
+    expect(store.record("skill-abc1")).toBeNull();
+    expect(store.info("skills/skill-abc1").diagnostics[0]?.message).toMatch(/skills is a symlink/);
+    // The whole folder swapped for a symlink to a copy of itself.
+    const copy = join(dir, "copy");
+    cpSync(root, copy, { recursive: true, dereference: false });
+    rmSync(root, { recursive: true });
+    symlinkSync(copy, root);
+    store.refresh("about", true);
+    expect(store.record("about-aaa")).toBeNull();
+    expect(store.info("about-me").diagnostics[0]?.message).toMatch(/Memory is a symlink/);
+  });
+
+  it("#8 a broken record still has its secret refused, on save and when read", () => {
+    const text = "# About me\n\n## Bank <!-- caret:id=about-bank kind=about -->\n- Label: Password\n- Value: hunter2\n- Source: typed\n- Status: active\n- Status: active\n";
+    expect(sensitiveLine("about-me", text)).toBe("about-me.md:5: Value: Caret doesn't keep passwords in memory, so this record is not used");
+  });
+
+  it("#9 fences close only with their own marker, at least as long, and nothing after it", () => {
+    const rec = "## Name <!-- caret:id=about-n1 kind=about -->\n- Label: Name\n- Source: typed\n- Status: active\n";
+    for (const fence of ["````\n```\n- Value: FROM_CODE\n````\n", "```\n```not-a-closer\n- Value: FROM_CODE\n```\n", "~~~\n```\n- Value: FROM_CODE\n~~~\n"]) {
+      const p = parseDocument("about-me", `# About me\n\n${rec}${fence}`);
+      expect(p.records, fence).toEqual([]);
+      expect(p.diagnostics.map((d) => d.message), fence).toContain("is missing");
+    }
+  });
+
+  it("#10 an indented heading ends a record, a nested record heading does not lend it fields, and a commented-out record is inactive", () => {
+    const rec = "## Name <!-- caret:id=about-n1 kind=about -->\n- Label: Name\n- Source: typed\n- Status: active\n";
+    for (const tail of ["  ## Unrelated section\n- Value: NOT_MINE\n", "### Nested <!-- caret:id=about-n2 kind=about -->\n- Value: NOT_MINE\n"]) {
+      const p = parseDocument("about-me", `# About me\n\n${rec}${tail}`);
+      expect(p.records.map((r) => r.record.id), tail).toEqual([]);
+    }
+    const commented = `# About me\n\n<!--\n${rec}- Value: Hidden\n-->\n`;
+    expect(parseDocument("about-me", commented).records).toEqual([]);
+  });
+
+  it("#11 an editor replacing the file right after Caret's install is seen by the next plain refresh", () => {
+    store.hooks.afterInstall = () => writeFileSync(path(), readFileSync(path(), "utf8").replace("- Value: two", "- Value: owt"));
+    store.put(about("about-aaa", "one"));
+    store.put(about("about-aaa", "two"));
+    store.hooks.afterInstall = undefined;
+    store.refresh("about");
+    expect((store.record("about-aaa")?.fields as { value: string }).value).toBe("owt");
+    expect(store.takeChanges().map((c) => c.id)).toEqual(["about-aaa"]);
+  });
+
+  it("#12 mixed line endings outside the record survive a patch byte for byte", () => {
+    const head = "# About me\r\n\nmixed\r\nendings\n\n";
+    const text = `${head}${newDocument("about-me", [about("about-aaa", "one")]).split("\n").slice(4).join("\n")}\r\ntrailer\r\n`;
+    const p = parseDocument("about-me", text);
+    const out = applyRecord(p, about("about-aaa", "uno"));
+    expect(out.startsWith(head)).toBe(true);
+    expect(out.endsWith("\r\ntrailer\r\n")).toBe(true);
+    expect(out.replace("- Value: uno", "- Value: one")).toBe(text);
+  });
+
+  it("#13 a secret in an alias is reported on the alias's own line", () => {
+    const text = "# People\n\n## X <!-- caret:id=people-x1 kind=people -->\n- Alias: sk-proj-abcdefghijklmnopqrstuvwxyz012345\n- Name: Dana\n- Status: active\n";
+    expect(parseDocument("people", text).diagnostics.map(formatDiagnostic)).toEqual(["people.md:4: Alias: Caret doesn't keep API keys or tokens in memory, so this record is not used"]);
   });
 });

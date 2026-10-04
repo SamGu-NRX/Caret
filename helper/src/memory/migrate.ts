@@ -22,8 +22,8 @@ import * as z from "zod";
 import { AboutFields, PeopleFields, PreferenceFields } from "../protocol.ts";
 import { open } from "../sealed.ts";
 import { MemoryDocumentStore, revisionOf } from "./documents.ts";
-import { fileOf, formatDiagnostic, newDocument, recordDigest, ROOT_DOCS, SkillText, type DocId, type MemoryRecord } from "./parse.ts";
-import { refusal, sensitiveKind, valueKind } from "./sensitive.ts";
+import { fileOf, formatDiagnostic, newDocument, recordDigest, recordSecret, ROOT_DOCS, SkillText, type DocId, type MemoryRecord } from "./parse.ts";
+import { refusal } from "./sensitive.ts";
 
 export interface MigrationResult {
   /** fresh: nothing to move. done: moved before. migrated / resumed: moved now. failed: the sealed store stays in use. */
@@ -111,14 +111,19 @@ export function migrateSealedMemory(o: { db: DatabaseSync; key: Buffer; dataDir:
     const parsed = schema.safeParse(json);
     if (!parsed.success) return fail(`entry ${r.id} (${r.kind}) does not read as a ${r.kind} entry: ${parsed.error.issues[0]?.message ?? "invalid"}`);
     const rec = legacyRecord(r, parsed.data as never);
-    const secret = rec.kind === "about" ? sensitiveKind(rec.fields.label, rec.fields.value) : rec.kind === "people" ? (valueKind(rec.fields.alias) ?? valueKind(rec.fields.name)) : null;
-    if (secret !== null) excluded.push({ id: r.id, why: refusal(secret) });
+    const secret = recordSecret(rec);
+    if (secret !== null) excluded.push({ id: r.id, why: refusal(secret.kind) });
     else records.push(rec);
   }
+  // A skill whose text holds a secret gets no file; its row stays, and a skill without a readable file is off.
+  const skippedSkills: { id: string; why: string }[] = [];
   for (const r of skillRows) {
     const f = SkillText.safeParse(JSON.parse(r.fields ?? "null"));
     if (!f.success) return fail(`skill ${r.id} has no name and trigger to write out: ${f.error.issues[0]?.message ?? "invalid"}`);
-    records.push({ id: r.id, kind: "skill", status: r.paused !== 0 ? "paused" : "active", noticed: null, fields: f.data });
+    const rec: MemoryRecord = { id: r.id, kind: "skill", status: r.paused !== 0 ? "paused" : "active", noticed: null, fields: f.data };
+    const secret = recordSecret(rec);
+    if (secret !== null) skippedSkills.push({ id: r.id, why: `${refusal(secret.kind)}; the skill stays off until it is renamed` });
+    else records.push(rec);
   }
 
   // The memory folder may exist empty; anything in it would be overwritten or merged, so that is refused.
@@ -170,7 +175,7 @@ export function migrateSealedMemory(o: { db: DatabaseSync; key: Buffer; dataDir:
     o.hooks?.afterRename?.();
     finish(db, marker, o.now);
     unlinkSync(markerPath);
-    return { outcome: "migrated", moved: records.length, excluded, error: null };
+    return { outcome: "migrated", moved: records.length, excluded: [...excluded, ...skippedSkills], error: null };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (!renamed) {

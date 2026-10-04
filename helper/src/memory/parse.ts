@@ -20,7 +20,7 @@
 import { createHash } from "node:crypto";
 import * as z from "zod";
 import { AboutFields, OfferKind, PeopleFields, PreferenceFields } from "../protocol.ts";
-import { refusal, sensitiveKind, valueKind } from "./sensitive.ts";
+import { refusal, sensitiveKind, valueKind, type SensitiveKind } from "./sensitive.ts";
 
 export const RECORD_KINDS = ["about", "people", "preference", "skill"] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
@@ -107,8 +107,14 @@ export interface ParsedRecord {
 export interface ParsedDocument {
   doc: DocId;
   file: string;
+  /** The text as read; Caret's patches keep every byte outside the record they change. */
+  text: string;
   eol: "\n" | "\r\n";
+  /** Lines without their terminators; `starts[i]` is where line i begins in `text`, `starts[lines.length]` its end. */
   lines: string[];
+  starts: number[];
+  /** Lines inside fenced code or an HTML comment: never a heading, never a field. */
+  hidden: Set<number>;
   /** Valid records, in document order. */
   records: ParsedRecord[];
   /** Every block that carries an id, valid or not: Caret never writes over a broken one. */
@@ -202,12 +208,14 @@ function decodeValue(raw: string): { ok: true; value: string } | { ok: false; me
 
 const fieldLine = (k: Key, v: string): string => `- ${KEY_NAMES[k]}: ${encodeValue(v)}`;
 
-/** "- Field: value", "* Field: value" or "+ Field:", unindented. Group 1 the field name, group 2 the value. */
 /** Control characters and the Unicode line and paragraph separators: a value with one is written quoted. */
 const CONTROL = /[\p{Cc}\u2028\u2029]/u;
+/** "- Field: value", "* Field: value" or "+ Field:", unindented. Group 1 the field name, group 2 the value. */
 const FIELD_RE = /^[-*+][ \t]+([A-Za-z][A-Za-z ']{0,30}?)[ \t]*:(?:[ \t]+(.*?))?[ \t]*$/;
-const HEADING_RE = /^(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
-const FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+/** An ATX heading, indented up to three spaces as CommonMark allows. */
+const HEADING_RE = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/;
+/** A fence opening: three or more backticks (no backtick in the info string) or tildes. */
+const FENCE_RE = /^ {0,3}(?:(`{3,})[^`]*|(~{3,}).*)$/;
 const COMMENT_RE = /<!--\s*caret:(.*?)-->/;
 const ATTRS_RE = /^\s*id=(\S+)\s+kind=(\S+)\s*$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
@@ -217,29 +225,42 @@ const ISO_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[
 export function parseDocument(doc: DocId, text: string): ParsedDocument {
   const file = fileOf(doc);
   const eol: "\n" | "\r\n" = text.includes("\r\n") ? "\r\n" : "\n";
-  const lines = text.split(/\r?\n/);
-  const out: ParsedDocument = { doc, file, eol, lines, records: [], blocks: new Map(), broken: new Set(), diagnostics: [] };
+  const { lines, starts } = splitLines(text);
+  const hidden = new Set<number>();
+  const out: ParsedDocument = { doc, file, text, eol, lines, starts, hidden, records: [], blocks: new Map(), broken: new Set(), diagnostics: [] };
   const diag = (line: number, field: string | null, severity: Diagnostic["severity"], message: string, id: string | null = null): void => {
     out.diagnostics.push({ file, line: line + 1, field, severity, message, id });
   };
 
-  // Headings outside fenced code, with their levels.
+  // Headings outside fenced code and HTML comments, with their levels. A fence closes only with its own marker, at
+  // least as long, and nothing after it; a comment that opens without closing on its line hides lines until "-->".
   const headings: { at: number; level: number; text: string }[] = [];
-  const fenced = new Set<number>();
-  let fence: string | null = null;
+  let fence: { char: string; len: number } | null = null;
+  let comment = false;
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i] as string;
     if (l.length > MAX_LINE_CHARS) diag(i, null, "error", `the line is over ${MAX_LINE_CHARS} characters`);
-    const f = FENCE_RE.exec(l);
-    if (f !== null) {
-      const mark = (f[1] as string)[0] as string;
-      if (fence === null) fence = mark;
-      else if (fence === mark) fence = null;
-      fenced.add(i);
+    if (comment) {
+      hidden.add(i);
+      if (l.includes("-->")) comment = false;
       continue;
     }
     if (fence !== null) {
-      fenced.add(i);
+      hidden.add(i);
+      if (closesFence(l, fence)) fence = null;
+      continue;
+    }
+    const f = FENCE_RE.exec(l);
+    if (f !== null) {
+      const mark = (f[1] ?? f[2]) as string;
+      fence = { char: mark[0] as string, len: mark.length };
+      hidden.add(i);
+      continue;
+    }
+    const open = l.lastIndexOf("<!--");
+    if (open >= 0 && !l.includes("-->", open + 4)) {
+      comment = true;
+      hidden.add(i);
       continue;
     }
     const h = HEADING_RE.exec(l);
@@ -255,10 +276,10 @@ export function parseDocument(doc: DocId, text: string): ParsedDocument {
       if (/caret:/.test(h.text)) diag(h.at, null, "error", "this heading mentions caret: but has no <!-- caret:id=… kind=… --> comment Caret can read");
       return;
     }
-    // The block runs to the next heading of level 1 or 2.
+    // The block runs to the next heading of level 1 or 2, or the next heading that names a record of its own.
     let end = lines.length;
     for (const n of headings.slice(hi + 1)) {
-      if (n.level <= 2) {
+      if (n.level <= 2 || n.text.includes("caret:")) {
         end = n.at;
         break;
       }
@@ -288,17 +309,43 @@ export function parseDocument(doc: DocId, text: string): ParsedDocument {
       return;
     }
     seen.set(id, h.at);
-    const r = readRecord(lines, fenced, h.at, end, id, kind as RecordKind, diag);
+    const r = readRecord(lines, hidden, h.at, end, id, kind as RecordKind, diag);
     if (r === null) out.broken.add(id);
     else out.records.push({ record: r, start: h.at, end, digest: recordDigest(r) });
   });
   // A duplicate found later disables the first one too.
   out.records = out.records.filter((p) => !out.broken.has(p.record.id));
   if (fence !== null) diag(lines.length - 1, null, "warning", "a ``` code block is never closed; everything after it is read as code");
+  if (comment) diag(lines.length - 1, null, "warning", "an HTML comment <!-- is never closed; everything after it is hidden");
   return out;
 }
 
-function readRecord(lines: string[], fenced: Set<number>, start: number, end: number, id: string, kind: RecordKind, diag: (line: number, field: string | null, severity: Diagnostic["severity"], message: string, id?: string | null) => void): MemoryRecord | null {
+function closesFence(l: string, f: { char: string; len: number }): boolean {
+  const m = /^ {0,3}(`+|~+)[ \t]*$/.exec(l);
+  return m !== null && (m[1] as string)[0] === f.char && (m[1] as string).length >= f.len;
+}
+
+/** Lines without terminators, and where each begins, so a patch can keep every other byte as it was. */
+function splitLines(text: string): { lines: string[]; starts: number[] } {
+  const lines: string[] = [];
+  const starts: number[] = [];
+  const re = /\r?\n/g;
+  let at = 0;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    starts.push(at);
+    lines.push(text.slice(at, m.index));
+    at = m.index + m[0].length;
+  }
+  starts.push(at);
+  lines.push(text.slice(at));
+  starts.push(text.length);
+  return { lines, starts };
+}
+
+/** The terminator after line i: "\n", "\r\n", or "" for the last line. */
+const lineEnd = (p: ParsedDocument, i: number): string => p.text.slice((p.starts[i] as number) + (p.lines[i] as string).length, p.starts[i + 1] as number);
+
+function readRecord(lines: string[], hidden: Set<number>, start: number, end: number, id: string, kind: RecordKind, diag: (line: number, field: string | null, severity: Diagnostic["severity"], message: string, id?: string | null) => void): MemoryRecord | null {
   const allowed = new Set(KIND_KEYS[kind]);
   const got = new Map<Key, { value: string; line: number }>();
   let ok = true;
@@ -307,7 +354,7 @@ function readRecord(lines: string[], fenced: Set<number>, start: number, end: nu
     ok = false;
   };
   for (let i = start + 1; i < end; i++) {
-    if (fenced.has(i)) continue;
+    if (hidden.has(i)) continue;
     const l = lines[i] as string;
     if (l.length > MAX_LINE_CHARS) {
       ok = false;
@@ -331,6 +378,11 @@ function readRecord(lines: string[], fenced: Set<number>, start: number, end: nu
       continue;
     }
     got.set(key, { value: v.value, line: i });
+  }
+  // What Caret never keeps is flagged even in a record broken for another reason, and on the field that holds it.
+  for (const [k, g] of got) {
+    const s = k === "value" ? sensitiveKind(got.get("label")?.value, g.value) : valueKind(g.value);
+    if (s !== null) err(g.line, KEY_NAMES[k], `${refusal(s)}, so this record is not used`);
   }
   if (!ok) return null;
 
@@ -371,16 +423,12 @@ function readRecord(lines: string[], fenced: Set<number>, start: number, end: nu
       const [label, value, source] = [need("label"), need("value"), need("source")];
       if (label === null || value === null || source === null) break;
       fields = check(AboutFields, { label, value, source }, (p) => (p[0] === "label" ? "label" : p[0] === "value" ? "value" : p[0] === "source" ? "source" : null));
-      const s = sensitiveKind(label, value);
-      if (s !== null) err(at("value"), "Value", `${refusal(s)}, so this record is not used`);
       break;
     }
     case "people": {
       const [alias, name] = [need("alias"), need("name")];
       if (alias === null || name === null) break;
       fields = check(PeopleFields, { alias, name }, (p) => (p[0] === "alias" ? "alias" : p[0] === "name" ? "name" : null));
-      const s = valueKind(alias) ?? valueKind(name);
-      if (s !== null) err(at("name"), "Name", `${refusal(s)}, so this record is not used`);
       break;
     }
     case "preference": {
@@ -425,6 +473,18 @@ function readRecord(lines: string[], fenced: Set<number>, start: number, end: nu
   }
   if (!ok || fields === null || status === null) return null;
   return { id, kind, status: status as RecordStatus, noticed, fields } as MemoryRecord;
+}
+
+/**
+ * The first field of a record that holds what Caret never keeps (sensitive.ts): an About value by its label and shape,
+ * every other string Caret would write by its shape, provenance included. Null when there is none.
+ */
+export function recordSecret(r: MemoryRecord): { field: string; kind: SensitiveKind } | null {
+  for (const [k, v] of fieldPairs(r)) {
+    const s = k === "value" && r.kind === "about" ? sensitiveKind(r.fields.label, v) : valueKind(v);
+    if (s !== null) return { field: KEY_NAMES[k], kind: s };
+  }
+  return null;
 }
 
 const emptyToNull = (s: string | undefined): string | null => (s === undefined || s.trim() === "" ? null : s);
@@ -496,8 +556,7 @@ export function applyRecord(p: ParsedDocument, r: MemoryRecord): string {
   if (p.broken.has(r.id)) throw new Error(`${p.file}: the record ${r.id} has errors; fix it there first`);
   const cur = p.records.find((x) => x.record.id === r.id);
   if (cur === undefined) return appendRecord(p, r);
-  const lines = [...p.lines];
-  const block = lines.slice(cur.start, cur.end);
+  const block = p.lines.slice(cur.start, cur.end);
   // The title follows the record only while it is still the one Caret wrote.
   const h = HEADING_RE.exec(block[0] as string);
   const title = (h?.[2] ?? "").replace(COMMENT_RE, "").trim();
@@ -505,18 +564,11 @@ export function applyRecord(p: ParsedDocument, r: MemoryRecord): string {
   const want = fieldPairs(r);
   const wantKeys = new Set(want.map(([k]) => k));
   const allowed = new Set(KIND_KEYS[r.kind]);
-  // Where each known field is, outside fenced code.
+  // Where each known field is, outside fenced code and comments: the same lines the parser read.
   const at = new Map<Key, number>();
-  let fence: string | null = null;
   for (let i = 1; i < block.length; i++) {
+    if (p.hidden.has(cur.start + i)) continue;
     const l = block[i] as string;
-    const f = FENCE_RE.exec(l);
-    if (f !== null) {
-      const mark = (f[1] as string)[0] as string;
-      fence = fence === null ? mark : fence === mark ? null : fence;
-      continue;
-    }
-    if (fence !== null) continue;
     const m = FIELD_RE.exec(l);
     const key = m === null ? undefined : KEY_BY_NAME.get((m[1] as string).trim().toLowerCase().replace(/\s+/g, " "));
     if (key !== undefined && allowed.has(key)) at.set(key, i);
@@ -536,31 +588,31 @@ export function applyRecord(p: ParsedDocument, r: MemoryRecord): string {
       inserts.set(last, list);
     }
   }
-  const next: string[] = [];
+  // Only the record's changed field lines differ: every other line keeps its bytes and its own line ending, and a
+  // new field line takes the heading's. A line inserted after the file's last, unterminated line gets one first.
+  const eol = lineEnd(p, cur.start) || p.eol;
+  let out = "";
   block.forEach((l, i) => {
-    if (!drop.has(i)) next.push(l);
-    for (const x of inserts.get(i) ?? []) next.push(x);
+    const end = lineEnd(p, cur.start + i);
+    const ins = inserts.get(i) ?? [];
+    if (!drop.has(i)) out += l + (end === "" && ins.length > 0 ? eol : end);
+    ins.forEach((x, j) => (out += x + (j < ins.length - 1 || end !== "" ? (end === "" ? eol : end) : "")));
   });
-  lines.splice(cur.start, cur.end - cur.start, ...next);
-  return lines.join(p.eol);
+  return p.text.slice(0, p.starts[cur.start]) + out + p.text.slice(p.starts[cur.end]);
 }
 
 function appendRecord(p: ParsedDocument, r: MemoryRecord): string {
-  const lines = [...p.lines];
-  while (lines.length > 0 && (lines[lines.length - 1] as string).trim() === "") lines.pop();
-  if (lines.length === 0) return newDocument(p.doc, [r]).replaceAll("\n", p.eol);
-  return [...lines, "", ...renderRecord(r), ""].join(p.eol);
+  const base = p.text.replace(/(?:\r?\n[ \t]*)+$/, "");
+  if (base.trim() === "") return newDocument(p.doc, [r]).replaceAll("\n", p.eol);
+  return `${base}${p.eol}${p.eol}${renderRecord(r).join(p.eol)}${p.eol}`;
 }
 
 /** The document without the record's block: its heading, fields and the prose under it. */
 export function removeRecord(p: ParsedDocument, id: string): string {
   const b = p.blocks.get(id);
-  if (b === undefined) return p.lines.join(p.eol);
-  const lines = [...p.lines];
-  lines.splice(b.start, b.end - b.start);
+  if (b === undefined) return p.text;
+  const blank = (i: number): boolean => i >= 0 && i < p.lines.length && (p.lines[i] as string).trim() === "";
   // One blank line between what was before and after it, not two.
-  if (b.start > 0 && (lines[b.start - 1] ?? "x").trim() === "" && (lines[b.start] ?? "x").trim() === "") lines.splice(b.start, 1);
-  let text = lines.join(p.eol);
-  if (!text.endsWith(p.eol)) text += p.eol;
-  return text;
+  const to = blank(b.start - 1) && blank(b.end) ? (p.starts[b.end + 1] as number) : (p.starts[b.end] as number);
+  return p.text.slice(0, p.starts[b.start]) + p.text.slice(to);
 }

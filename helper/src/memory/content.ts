@@ -25,7 +25,7 @@ export interface Content {
   /** The record for an index row; null when it is not there or cannot be used (an error in its file). */
   get(row: IndexRow): MemoryRecord | null;
   put(r: MemoryRecord, expect?: string | null): void;
-  remove(id: string, kind: RecordKind): void;
+  remove(id: string, kind: RecordKind, expect?: string | null): void;
   /** Checks the files of `kind` (all with "all"); with `verify`, by content rather than by stat. Returns whether anything moved. */
   sync(kind: RecordKind | "all", verify: boolean): boolean;
   /** Every usable record of a kind, for records the user added by hand with an id of their own. */
@@ -50,8 +50,8 @@ export class DocumentContent implements Content {
   put(r: MemoryRecord, expect?: string | null): void {
     this.documents.put(r, expect);
   }
-  remove(id: string, kind: RecordKind): void {
-    this.documents.remove(id, kind);
+  remove(id: string, kind: RecordKind, expect?: string | null): void {
+    this.documents.remove(id, kind, expect);
   }
   sync(kind: RecordKind | "all", verify: boolean): boolean {
     return this.documents.refresh(kind, verify);
