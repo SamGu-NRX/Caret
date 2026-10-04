@@ -35,12 +35,32 @@ public final class NativeChecker {
         case stale
     }
 
-    private let checker: NSSpellChecker
-    private var tags: [FieldKey: Int] = [:]
-    private var generations: [FieldKey: Int] = [:]
+    /// One asynchronous check: the text, the range, the language, the document tag, and where
+    /// to send the results. The default calls `requestChecking`; tests answer it themselves to
+    /// control the order of replies.
+    typealias Request = @MainActor (String, NSRange, String, Int, @escaping ([NSTextCheckingResult]) -> Void) -> Void
 
-    public init(checker: NSSpellChecker = .shared) {
+    private let checker: NSSpellChecker
+    private let request: Request
+    private var tags: [FieldKey: Int] = [:]
+    /// The latest check of each field, by a token never reused, so an answer from before a field
+    /// was closed and reopened cannot pass for the newer check's.
+    private var latest: [FieldKey: Int] = [:]
+    private var nextToken = 0
+
+    public convenience init(checker: NSSpellChecker = .shared) {
+        self.init(checker: checker, request: nil)
+    }
+
+    init(checker: NSSpellChecker, request: Request?) {
         self.checker = checker
+        self.request = request ?? { text, range, language, tag, done in
+            let options: [NSSpellChecker.OptionKey: Any] = [.orthography: NSOrthography.defaultOrthography(forLanguage: language)]
+            let types = NSTextCheckingResult.CheckingType.spelling.rawValue | NSTextCheckingResult.CheckingType.grammar.rawValue
+            _ = checker.requestChecking(of: text, range: range, types: types, options: options, inSpellDocumentWithTag: tag) { _, results, _, _ in
+                done(results)
+            }
+        }
     }
 
     /// Whether the system checker can check `language` ("en", "en_US", "fr") on this Mac.
@@ -62,8 +82,8 @@ public final class NativeChecker {
 
     /// Forgets the field's tag and what was ignored in it.
     public func closeField(_ field: FieldKey) {
+        latest[field] = nil
         guard let tag = tags.removeValue(forKey: field) else { return }
-        generations[field] = nil
         checker.closeSpellDocument(withTag: tag)
     }
 
@@ -75,19 +95,16 @@ public final class NativeChecker {
     /// checker as context; only errors inside `sentence` come back.
     public func check(_ text: String, sentence: UTF16Span, language: String, field: FieldKey) async -> Outcome {
         let tag = tag(for: field)
-        let generation = (generations[field] ?? 0) + 1
-        generations[field] = generation
-        let options: [NSSpellChecker.OptionKey: Any] = [.orthography: NSOrthography.defaultOrthography(forLanguage: language)]
-        let types = NSTextCheckingResult.CheckingType.spelling.rawValue | NSTextCheckingResult.CheckingType.grammar.rawValue
-        let checker = self.checker
+        nextToken += 1
+        let token = nextToken
+        latest[field] = token
+        let request = self.request
         let results: [NSTextCheckingResult] = await withCheckedContinuation { continuation in
-            _ = checker.requestChecking(
-                of: text, range: sentence.nsRange, types: types, options: options, inSpellDocumentWithTag: tag
-            ) { _, results, _, _ in
-                continuation.resume(returning: results)
-            }
+            request(text, sentence.nsRange, language, tag) { continuation.resume(returning: $0) }
         }
-        guard generations[field] == generation else { return .stale }
+        // A newer check, or a close, since this one started.
+        guard latest[field] == token, tags[field] == tag else { return .stale }
+        let checker = self.checker
         let corrections = Self.corrections(from: results, text: text, sentence: sentence) { range in
             let correction = checker.correction(forWordRange: range, in: text, language: language, inSpellDocumentWithTag: tag)
             let guesses = checker.guesses(forWordRange: range, in: text, language: language, inSpellDocumentWithTag: tag) ?? []

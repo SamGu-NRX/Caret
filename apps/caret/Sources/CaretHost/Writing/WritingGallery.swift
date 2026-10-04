@@ -29,7 +29,7 @@ extension Gallery {
         let target = TargetIdentity(pid: 4242, bundleID: "com.apple.TextEdit", windowID: "4242-1", elementID: "body", elementRevision: UTF16Text.digest(text))
         let live = RangeEdit.Live(target: target, value: text, selection: .caret(UTF16Text.length(text)))
         // Synthetic content built from the same values every time; it cannot fail to make an offer.
-        var offer = WritingOffer.correction(marks: writingMarks(), live: live, now: StillClock().now)!
+        var offer = WritingOffer.correction(marks: writingMarks(), checkedRevision: UTF16Text.digest(text), live: live, now: StillClock().now)!
         for _ in 0..<downs { _ = offer.send(.down) }
         return offer
     }

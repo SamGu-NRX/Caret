@@ -94,6 +94,31 @@ final class NativeCheckerTests: XCTestCase {
         XCTAssertEqual(found.map(\.original), ["recieve"])
     }
 
+    /// Replies arrive in the order the test chooses: a check started before its field closed and
+    /// reopened answers last, and must come back stale.
+    func testAnAnswerFromBeforeAFieldReopenedIsStale() async {
+        final class Pending { var replies: [([NSTextCheckingResult]) -> Void] = [] }
+        let pending = Pending()
+        let checker = NativeChecker(checker: .shared) { _, _, _, _, done in pending.replies.append(done) }
+        let text = "Hi. We was here."
+        let sentence = UTF16Span(start: 4, end: 16)
+        let grammar = NSTextCheckingResult.grammarCheckingResult(range: sentence.nsRange, details: [
+            [NSGrammarRange: NSValue(range: NSRange(location: 3, length: 3)), NSGrammarCorrections: ["were"]],
+        ])
+        let field = self.field
+        let old = Task { await checker.check(text, sentence: sentence, language: "en", field: field) }
+        while pending.replies.count < 1 { await Task.yield() }
+        checker.closeField(field)
+        let new = Task { await checker.check(text, sentence: sentence, language: "en", field: field) }
+        while pending.replies.count < 2 { await Task.yield() }
+        pending.replies[0]([grammar])
+        pending.replies[1]([grammar])
+        let a = await old.value, b = await new.value
+        XCTAssertEqual(a, .stale)
+        guard case .corrections(let found) = b else { return XCTFail("the reopened field's own check answers") }
+        XCTAssertEqual(found.map(\.original), ["was"])
+    }
+
     func testEachFieldHasItsOwnDocumentTag() {
         let checker = NativeChecker()
         let other = NativeChecker.FieldKey(pid: 4242, windowID: "4242-1", elementID: "subject")

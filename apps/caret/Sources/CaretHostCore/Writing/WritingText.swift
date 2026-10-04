@@ -14,14 +14,15 @@ public enum WritingText {
         return String.Index(index, within: text) != nil
     }
 
-    /// Bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069), which reorder
-    /// how surrounding text displays, and C0/C1 controls other than tab and newline. A writing
-    /// fix never needs them, and one could make a replacement display differently from what it is.
+    /// Unicode's bidi controls (marks, embeddings, overrides and isolates: U+061C, U+200E,
+    /// U+200F, U+202A to U+202E, U+2066 to U+2069), which change how surrounding text displays,
+    /// and C0/C1 controls other than tab and line endings. New text from a writing fix never needs
+    /// them, and one could make a replacement display differently from what it is.
     public static func hasControlCharacters(_ text: String) -> Bool {
         text.unicodeScalars.contains { scalar in
             let v = scalar.value
-            if v == 0x09 || v == 0x0A { return false }
-            return v < 0x20 || (0x7F...0x9F).contains(v) || (0x202A...0x202E).contains(v) || (0x2066...0x2069).contains(v)
+            if v == 0x09 || v == 0x0A || v == 0x0D { return false }
+            return v < 0x20 || (0x7F...0x9F).contains(v) || scalar.properties.isBidiControl
         }
     }
 

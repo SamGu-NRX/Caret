@@ -41,6 +41,7 @@ final class WritingCheckTests: XCTestCase {
         assertClean("Well, well, look who is here.")
         assertClean("We flew to Walla Walla last May.")
         assertClean("It was very very cold.")
+        assertClean("The police police this area.")
         // A line break between them is a layout, not a typo.
         XCTAssertTrue(fixes("Read the\nthe notes.", whole: true).isEmpty)
     }
@@ -96,6 +97,9 @@ final class WritingCheckTests: XCTestCase {
         assertClean("See section 4. then read on.")
         assertClean("It works. iPhone owners agree.")
         assertClean("Thanks. @dana will send it.")
+        // A quotation and its attribution are one sentence.
+        XCTAssertTrue(fixes(#""Are you ready?" she asked."#).isEmpty)
+        XCTAssertTrue(fixes("“Stop.” he said.").isEmpty)
     }
 
     // MARK: A and an
@@ -125,6 +129,8 @@ final class WritingCheckTests: XCTestCase {
         assertClean("That was a one-off.")
         assertClean("It is an uninformed guess.")
         assertClean("Use a 'apple' token.")
+        assertClean("She drew an Euler diagram.")
+        assertClean("She drew a Euler diagram.")
     }
 
     func testArticleBeforeNumbersAndTwoCapitals() {

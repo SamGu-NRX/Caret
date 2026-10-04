@@ -22,14 +22,14 @@ final class WritingOfferTests: XCTestCase {
     }
 
     func testTheMarkNearestTheCaretIsActive() throws {
-        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         XCTAssertEqual(offer.active.original, "was")
-        let early = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text, caret: 2), now: t0))
+        let early = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text, caret: 2), now: t0))
         XCTAssertEqual(early.active.original, "the the")
     }
 
     func testAlternativesAreTheFixesThenOriginalThenFixAll() throws {
-        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         XCTAssertEqual(offer.alternatives.map(\.kind), [.fix, .fix, .original, .fixAll])
         XCTAssertEqual(offer.alternatives.map(\.label), ["were", "are", "Original", "Fix all in this paragraph"])
         XCTAssertEqual(offer.alternatives[2].detail, "was")
@@ -39,12 +39,12 @@ final class WritingOfferTests: XCTestCase {
 
     func testOriginalIsAlwaysThereEvenAlone() throws {
         let one = [mark("was", in: text, "were")]
-        let offer = try XCTUnwrap(WritingOffer.correction(marks: one, live: live(text), now: t0))
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: one, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         XCTAssertEqual(offer.alternatives.map(\.kind), [.fix, .original], "no Fix all for a single error")
     }
 
     func testFixAllIsOneRangeEditWithItsOwnDiff() throws {
-        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         let fixAll = try XCTUnwrap(offer.alternatives.last)
         XCTAssertEqual(fixAll.diff.map(\.original), ["the the", "was"])
         XCTAssertEqual(fixAll.diff.map(\.replacement), ["the", "were"])
@@ -62,7 +62,7 @@ final class WritingOfferTests: XCTestCase {
 
     func testFixAllIsLeftOutWhileTheCaretSitsInsideItsRange() throws {
         // Between the two errors: one range over both would straddle the caret.
-        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text, caret: 15), now: t0))
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text, caret: 15), now: t0))
         XCTAssertEqual(offer.active.original, "was")
         XCTAssertEqual(offer.alternatives.map(\.kind), [.fix, .fix, .original])
     }
@@ -70,14 +70,14 @@ final class WritingOfferTests: XCTestCase {
     func testFixAllStaysInsideTheParagraph() throws {
         let two = "We was here.\nThey was there."
         let marks = [mark("was", in: two, "were"), mark("was", in: two, "were", after: 8)]
-        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(two), now: t0))
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(two), live: live(two), now: t0))
         XCTAssertFalse(offer.alternatives.contains { $0.kind == .fixAll }, "one error per paragraph")
     }
 
     // MARK: Keys
 
     func testAMarkAloneOwnsNoKeys() throws {
-        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), presentation: .mark, now: t0))
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), presentation: .mark, now: t0))
         XCTAssertFalse(offer.ownsTab)
         XCTAssertEqual(offer.send(.tab), .passThrough)
         XCTAssertEqual(offer.send(.down), .passThrough)
@@ -85,7 +85,7 @@ final class WritingOfferTests: XCTestCase {
     }
 
     func testTheLineOwnsTabAndTabAppliesTheActiveFix() throws {
-        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         XCTAssertTrue(offer.ownsTab)
         XCTAssertEqual(offer.linePreview.text, "we were")
         XCTAssertEqual(offer.lineHints, [Hint(key: "Tab", label: "fix"), Hint(key: "↓", label: "more")])
@@ -97,7 +97,7 @@ final class WritingOfferTests: XCTestCase {
     }
 
     func testDownOpensWithoutChangingWhatTabDoes() throws {
-        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         XCTAssertEqual(offer.send(.down), .handled)
         XCTAssertEqual(offer.presentation, .expanded)
         XCTAssertEqual(offer.current, 0)
@@ -109,14 +109,14 @@ final class WritingOfferTests: XCTestCase {
     }
 
     func testOriginalMakesNoEdit() throws {
-        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         _ = offer.send(.down)
         XCTAssertEqual(offer.send(.commandDigit(3)), .keepOriginal)
         XCTAssertNil(WritingOffer.toast(after: offer.alternatives[2]), "no toast, no undo")
     }
 
     func testCommandDigitsReachOnlyNumberedRows() throws {
-        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         _ = offer.send(.down)
         XCTAssertEqual(offer.alternatives.count, 4)
         XCTAssertEqual(offer.send(.commandDigit(4)), .passThrough)
@@ -126,22 +126,40 @@ final class WritingOfferTests: XCTestCase {
 
     func testAnyChangeOfContextDismisses() throws {
         for presentation in [WritingOffer.Presentation.mark, .line, .expanded] {
-            var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), presentation: presentation, now: t0))
+            var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), presentation: presentation, now: t0))
             XCTAssertEqual(offer.send(.contextChanged), .dismiss)
         }
-        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         XCTAssertEqual(offer.send(.escape), .dismiss)
+    }
+
+    func testMarksFromAnotherRevisionMakeNoOffer() {
+        // "a apple" edited to "a pear": the mark on "a" still matches its text, but not the field.
+        let old = "I ate a apple."
+        let new = "I ate a pear."
+        let article = mark("a", in: old, "an", after: 5)
+        XCTAssertNil(WritingOffer.correction(marks: [article], checkedRevision: UTF16Text.digest(old), live: live(new), now: t0))
+    }
+
+    func testAMarkWhoseTextMovedIsDropped() throws {
+        // A mark for "was" at 3..<6, offered against text where 3..<6 is now "ate".
+        let stale = mark("was", in: "We was here.", "were")
+        let fresh = mark("the the", in: "We ate the the cake.", "the")
+        let text = "We ate the the cake."
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: [stale, fresh], checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
+        XCTAssertEqual(offer.marks.map(\.original), ["the the"])
+        XCTAssertFalse(offer.alternatives.contains { $0.kind == .fixAll })
     }
 
     func testNoOfferWhenTheActiveFixCannotBeMade() {
         // The caret sits inside the error: the edit would straddle the user's caret.
-        XCTAssertNil(WritingOffer.correction(marks: marks, live: live(text, caret: 20), now: t0))
+        XCTAssertNil(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text, caret: 20), now: t0))
     }
 
     // MARK: What it says
 
     func testToastSaysWhatChanged() throws {
-        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         let toast = try XCTUnwrap(WritingOffer.toast(after: offer.alternatives[0]))
         XCTAssertEqual(toast.lead, "Fixed")
         XCTAssertEqual(toast.text, "“was” to “were”")
@@ -150,7 +168,7 @@ final class WritingOfferTests: XCTestCase {
     }
 
     func testVoiceOverHearsReasonOriginalFixAndKeys() throws {
-        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         XCTAssertEqual(offer.spokenLine, "Agreement. Replace “was” with “were”. Tab fixes it, Down Arrow shows more.")
     }
 
@@ -186,7 +204,7 @@ final class WritingOfferTests: XCTestCase {
     }
 
     func testOfferSlotReportsNavigation() throws {
-        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, live: live(text), now: t0))
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
         XCTAssertEqual(offer.slot, WritingOffer.Slot(producer: .correction, ownsTab: true, navigating: false))
         _ = offer.send(.down)
         XCTAssertTrue(offer.slot.navigating)

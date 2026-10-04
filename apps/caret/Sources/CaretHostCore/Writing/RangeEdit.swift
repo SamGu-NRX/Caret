@@ -31,6 +31,9 @@ public struct RangeEdit: Equatable, Sendable {
     public var language: String
     public var createdAt: Date
     public var maxAgeSeconds: Double
+    /// Set only on the undo `verify` returns: it puts back exactly the text that was there, so
+    /// the replacement checks for new text (control and bidi characters) do not apply to it.
+    public private(set) var restoresOriginal = false
 
     public static let defaultMaxAge: Double = 30
 
@@ -87,8 +90,10 @@ public struct RangeEdit: Equatable, Sendable {
         case replacementHasControlCharacters
         /// The replacement equals the original; there is nothing to apply and no undo to record.
         case noChange
-        /// After writing, the field does not hold the expected value.
+        /// After writing, the field does not hold the expected value, unit for unit.
         case writeMismatch
+        /// `verify` was handed another edit's approval.
+        case approvalMismatch
 
         /// Stable short name for logs and the debug socket. Carries no field text.
         public var code: String {
@@ -108,6 +113,7 @@ public struct RangeEdit: Equatable, Sendable {
             case .replacementHasControlCharacters: return "replacementHasControlCharacters"
             case .noChange: return "noChange"
             case .writeMismatch: return "writeMismatch"
+            case .approvalMismatch: return "approvalMismatch"
             }
         }
     }
@@ -184,12 +190,17 @@ public struct RangeEdit: Equatable, Sendable {
         for bound in [replace.start, replace.end] where !WritingText.isCharacterBoundary(bound, in: live.value) {
             return .failure(.rangeSplitsCharacter(offset: bound))
         }
+        // The live text, and the copy kept for the undo, must both be the text the edit was made
+        // for.
         guard let replaced = UTF16Text.slice(live.value, start: replace.start, end: replace.end),
-              UTF16Text.digest(replaced) == originalDigest
+              UTF16Text.digest(replaced) == originalDigest, UTF16Text.digest(original) == originalDigest
         else { return .failure(.originalChanged) }
 
-        guard replacement != replaced else { return .failure(.noChange) }
-        guard !WritingText.hasControlCharacters(replacement) else { return .failure(.replacementHasControlCharacters) }
+        // Unit for unit: Swift's == calls "é" and "e" plus U+0301 equal, and the field does not.
+        guard !replacement.utf16.elementsEqual(replaced.utf16) else { return .failure(.noChange) }
+        guard restoresOriginal || !WritingText.hasControlCharacters(replacement) else {
+            return .failure(.replacementHasControlCharacters)
+        }
 
         guard let prefix = UTF16Text.slice(live.value, start: 0, end: replace.start),
               let suffix = UTF16Text.slice(live.value, start: replace.end, end: total)
@@ -213,20 +224,25 @@ public struct RangeEdit: Equatable, Sendable {
     /// Returns the undo: an edit that puts the original back over exactly the inserted range, bound
     /// to the value Caret wrote, so any later change to the field refuses it.
     public func verify(after live: Live, approved: Approved, now: Date = Date()) -> Result<RangeEdit, Refusal> {
+        guard approved.edit == self else { return .failure(.approvalMismatch) }
         guard !live.secure else { return .failure(.secureField) }
         var expectedIdentity = target, liveIdentity = live.target
         expectedIdentity.elementRevision = ""
         liveIdentity.elementRevision = ""
         guard expectedIdentity == liveIdentity else { return .failure(.targetMoved) }
-        guard live.value == approved.resultingValue else { return .failure(.writeMismatch) }
+        // Unit for unit, not Swift's canonical equality: a field that normalized "é" holds a
+        // different value, and an undo bound to the expected one would never apply.
+        guard live.value.utf16.elementsEqual(approved.resultingValue.utf16) else { return .failure(.writeMismatch) }
         var written = target
         written.elementRevision = UTF16Text.digest(approved.resultingValue)
         let undoSelection = live.selection ?? approved.resultingSelection
-        return .success(RangeEdit(
+        var undo = RangeEdit(
             target: written, observedSelection: undoSelection, replace: approved.inserted,
             originalDigest: UTF16Text.digest(replacement), original: replacement, replacement: original,
             language: language, createdAt: now, maxAgeSeconds: UndoGrant.defaultLifetime
-        ))
+        )
+        undo.restoresOriginal = true
+        return .success(undo)
     }
 
     /// The observed selection after replacing `replace` with `insertedLength` units.

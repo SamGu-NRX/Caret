@@ -29,10 +29,15 @@ public enum WordFinding {
         let protected = WritingText.protectedSpans(in: text)
         var out: [Bracket] = []
         var lineStart = 0
+        // Inside a fenced code block (``` or ~~~), from its opening line through its closing one.
+        var inFence = false
         while lineStart <= ns.length {
             let lineRange = ns.lineRange(for: NSRange(location: lineStart, length: 0))
             let line = ns.substring(with: lineRange)
-            if !WritingText.looksLikeCode(line) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inFence.toggle()
+            } else if !inFence, !WritingText.looksLikeCode(line) {
                 out += bracketsInLine(line, base: lineRange.location, protected: protected)
             }
             let next = lineRange.location + lineRange.length
@@ -63,11 +68,17 @@ public enum WordFinding {
         var i = 0
         while i < units.count {
             guard units[i] == open else { i += 1; continue }
-            // The matching "]" with no "[" in between; a nested or unclosed bracket is ambiguous.
-            var j = i + 1
-            while j < units.count, units[j] != close, units[j] != open { j += 1 }
-            guard j < units.count, units[j] == close else { i = j; continue }
+            // The matching "]". A bracket with another inside it is ambiguous, so the whole outer
+            // bracket is skipped, inner ones included; an unclosed one ends the line's search.
+            var j = i + 1, depth = 1, nested = false
+            while j < units.count {
+                if units[j] == open { depth += 1; nested = true }
+                if units[j] == close { depth -= 1; if depth == 0 { break } }
+                j += 1
+            }
+            guard j < units.count else { break }
             defer { i = j + 1 }
+            if nested { continue }
             let span = UTF16Span(start: base + i, end: base + j + 1)
             guard !protected.contains(where: { $0.overlaps(span) }) else { continue }
             // Wiki links "[[x]]", images "![x]", links "[x](", "[x][", definitions "[x]:", and

@@ -187,6 +187,8 @@ private struct Scan {
         "night", "yum", "oh", "ah", "aw", "bang", "pop", "beep", "ding", "hush", "please", "come", "hurry",
         "quick", "run", "stop", "help", "over", "round", "around", "on", "off", "goody", "tsk", "uh", "um",
         "mm", "hmm", "ho", "hee", "woo", "wow", "yay", "yo", "choo", "ta", "bla", "cha", "rah",
+        // A noun then the same word as a verb: "The police police this area."
+        "police", "buffalo", "fish",
     ]
 
     func doubledWords() -> [WritingCorrection] {
@@ -249,6 +251,7 @@ private struct Scan {
     static let closers: Set<Character> = ["\"", "'", ")", "]", "”", "’", "»"]
     static let openers: Set<Character> = ["\"", "'", "(", "[", "“", "‘", "«"]
     static let terminators: Set<Character> = [".", "!", "?"]
+    static let quoteCloses: Set<Character> = ["\"", "'", "”", "’", "»"]
 
     /// "word ," and "done ." The mark must end something: whitespace, the end, or a closing quote
     /// follows. That leaves alone ".5", ".NET", " ..." and emoticons such as " :)".
@@ -328,10 +331,16 @@ private struct Scan {
         else { return nil }
         // "e.g. this" or "the .com era": a dot touching the word means it is not a plain word.
         if word.to < table.count, chars[word.to] == "." , word.to + 1 < table.count, chars[word.to + 1].isLetter { return nil }
-        // The previous sentence ended with a terminator, and whitespace separates the two.
+        // The previous sentence ended with a terminator, and whitespace separates the two. Quotes
+        // touching the word open it; a quote before the whitespace closed the sentence before.
         var k = word.from
-        while k > 0, chars[k - 1].isWhitespace || Self.openers.contains(chars[k - 1]) { k -= 1 }
-        guard k < word.from, chars[k..<word.from].contains(where: \.isWhitespace), Self.endsSentence(table, before: k) else { return nil }
+        while k > 0, Self.openers.contains(chars[k - 1]) { k -= 1 }
+        let afterSpace = k
+        while k > 0, chars[k - 1].isWhitespace { k -= 1 }
+        guard k > 0, k < afterSpace, Self.endsSentence(table, before: k) else { return nil }
+        // "Are you ready?" she asked: after a closing quote, a lowercase word is the attribution
+        // of the quoted sentence, not a new one.
+        if Self.quoteCloses.contains(chars[k - 1]) { return nil }
         guard previousSentenceStartsWithCapital(endingAt: k) else { return nil }
         let replacement = initial.uppercased() + word.text.dropFirst()
         return WritingCorrection(
@@ -482,7 +491,13 @@ private struct Scan {
         if silentH.contains(where: { head.hasPrefix($0) }) { return .vowel }
         // "one" and "once" start with a "w" sound; "onerous" and "onion" do not.
         if ["one", "ones", "once", "oneself"].contains(head) { return .consonant }
-        if head.hasPrefix("eu") || head.hasPrefix("ewe") || head.hasPrefix("ouija") { return .consonant }
+        // Lowercase "eu" words start with "you" (eulogy, euphoria). A capitalized one may be a
+        // name said otherwise ("an Euler diagram"), so only the known "you" names count.
+        if head.hasPrefix("eu") {
+            guard firstChar.isUppercase else { return .consonant }
+            return ["europ", "euro", "eura", "eucli", "eugen", "eucha"].contains(where: { head.hasPrefix($0) }) ? .consonant : nil
+        }
+        if head.hasPrefix("ewe") || head.hasPrefix("ouija") { return .consonant }
         if initial == "u", youStems.contains(where: { head.hasPrefix($0) }) { return .consonant }
         return "aeiou".contains(initial) ? .vowel : .consonant
     }

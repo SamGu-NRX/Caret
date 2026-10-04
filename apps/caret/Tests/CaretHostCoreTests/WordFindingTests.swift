@@ -37,6 +37,10 @@ final class WordFindingTests: XCTestCase {
             "Run `grep [word for x] file` now.",
             "Visit https://example.com/[word for delay a task] today.",
             "A [word for [nested] thing] here.",
+            "A [note [word for delaying a task] here] too.",
+            "```\n[word for delaying a task]\n```",
+            "Before\n~~~\nlet [word for delaying a task]\n~~~",
+            "An unclosed [ then [word for delaying a task] later.",
             "An unclosed [word for delaying a task",
             "Cite [@smith2020] here.",
             "That was [pauses for a moment] fine.",
@@ -45,6 +49,10 @@ final class WordFindingTests: XCTestCase {
         for text in notRequests {
             XCTAssertEqual(descriptions(text), [], text)
         }
+    }
+
+    func testProseAfterAFenceIsReadAgain() {
+        XCTAssertEqual(descriptions("```\ncode\n```\nI keep [word for delaying a task] it."), ["word for delaying a task"])
     }
 
     func testTheRequestIsTheOneJustClosedAtTheCaret() {

@@ -66,13 +66,22 @@ public struct WritingOffer: Equatable, Sendable {
     /// Builds the offer for `marks` in the field as read, or nil when the active correction's own
     /// fix cannot be made into a valid range edit.
     ///
+    /// `checkedRevision` is `UTF16Text.digest` of the text the marks were found in. Marks from any
+    /// other revision make no offer: "a apple" edited to "a pear" keeps a mark on "a" whose text
+    /// still matches, and its fix would now be wrong. Each mark's original must also be the live
+    /// text at its span, unit for unit.
+    ///
     /// `paragraph` bounds "Fix all"; by default it is the line holding the active correction.
     public static func correction(
-        marks: [WritingCorrection], live: RangeEdit.Live, paragraph: UTF16Span? = nil, language: String = "en",
-        presentation: Presentation = .line, now: Date = Date()
+        marks: [WritingCorrection], checkedRevision: String, live: RangeEdit.Live, paragraph: UTF16Span? = nil,
+        language: String = "en", presentation: Presentation = .line, now: Date = Date()
     ) -> WritingOffer? {
-        guard let selection = live.selection else { return nil }
-        let sorted = marks.sorted { $0.span.start < $1.span.start }
+        guard let selection = live.selection, checkedRevision == UTF16Text.digest(live.value) else { return nil }
+        let sorted = marks
+            .filter { mark in
+                UTF16Text.slice(live.value, start: mark.span.start, end: mark.span.end)?.utf16.elementsEqual(mark.original.utf16) == true
+            }
+            .sorted { $0.span.start < $1.span.start }
         let caret = selection.end
         // Nearest the caret; on a tie, the one before it, which the user has just written.
         guard let active = sorted.min(by: { a, b in

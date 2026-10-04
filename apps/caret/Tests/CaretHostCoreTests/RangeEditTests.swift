@@ -231,7 +231,7 @@ final class RangeEditTests: XCTestCase {
         XCTAssertEqual(undo.replace, approved.inserted)
         XCTAssertEqual(undo.replacement, original)
         let restored = try undo.validate(written, now: t0).get()
-        XCTAssertEqual(restored.resultingValue, field.value)
+        XCTAssertTrue(restored.resultingValue.utf16.elementsEqual(field.value.utf16), "exactly the old value, unit for unit")
         XCTAssertEqual(restored.resultingSelection, field.selection)
     }
 
@@ -245,12 +245,58 @@ final class RangeEditTests: XCTestCase {
         XCTAssertEqual(refusal(undo.validate(written, now: t0.addingTimeInterval(UndoGrant.defaultLifetime + 1)))?.code, "expired")
     }
 
+    func testVerifyComparesUnitsNotCanonicalEquivalence() throws {
+        // Precomposed "é" in the field; the app reads back the decomposed form after the write.
+        let field = live("x caf\u{E9}.")
+        let edit = try RangeEdit.make(live: field, replace: UTF16Span(start: 0, end: 1), replacement: "y", now: t0).get()
+        let approved = try edit.validate(field, now: t0).get()
+        let normalized = live("y cafe\u{301}.")
+        XCTAssertEqual(normalized.value, approved.resultingValue, "Swift calls them equal")
+        guard case .failure(.writeMismatch) = edit.verify(after: normalized, approved: approved, now: t0) else { return XCTFail() }
+        // And a canonically equal replacement still changes the field, so it is not a no-op.
+        XCTAssertNoThrow(try RangeEdit.make(live: field, replace: UTF16Span(start: 4, end: 5), replacement: "e\u{301}", now: t0).get())
+    }
+
+    func testRefusesAnEditWhoseKeptOriginalWasChanged() throws {
+        let field = live("We was here.")
+        var edit = try make(field, "was", "were")
+        edit.original = "are"
+        XCTAssertEqual(refusal(edit.validate(field, now: t0)), .originalChanged)
+    }
+
+    func testVerifyRefusesAnotherEditsApproval() throws {
+        let field = live("We was here.")
+        let one = try make(field, "was", "were")
+        let other = try make(field, "here", "there")
+        let approved = try other.validate(field, now: t0).get()
+        guard case .failure(.approvalMismatch) = one.verify(after: live(approved.resultingValue), approved: approved, now: t0) else { return XCTFail() }
+    }
+
+    func testUndoRestoresLineEndingsAndMarksTheUserHad() throws {
+        // The original holds CRLF and a right-to-left mark; new text may not, the undo must.
+        let field = live("a\r\nb \u{200F}x")
+        let all = UTF16Span(start: 0, end: UTF16Text.length(field.value))
+        let edit = try RangeEdit.make(live: field, replace: all, replacement: "ab x", now: t0).get()
+        let approved = try edit.validate(field, now: t0).get()
+        let written = live(approved.resultingValue, selection: approved.resultingSelection)
+        let undo = try edit.verify(after: written, approved: approved, now: t0).get()
+        XCTAssertTrue(undo.restoresOriginal)
+        let restored = try undo.validate(written, now: t0).get()
+        XCTAssertTrue(restored.resultingValue.utf16.elementsEqual(field.value.utf16))
+    }
+
+    func testRefusesEveryBidiControlInNewText() {
+        for mark in ["\u{200E}", "\u{200F}", "\u{061C}", "\u{202A}", "\u{2067}"] {
+            XCTAssertEqual(makeRefusal(live("We was here."), UTF16Span(start: 3, end: 6), "were" + mark), .replacementHasControlCharacters, mark)
+        }
+    }
+
     func testRefusalCodesAreDistinct() {
         let all: [RangeEdit.Refusal] = [
             .secureField, .composing, .targetMoved, .revisionChanged, .expired(ageSeconds: 1, limit: 0), .selectionUnreadable,
             .selectionMoved(expected: .caret(0), live: .caret(1)), .selectionStraddlesRange,
             .rangeOutsideValue(UTF16Span(start: 0, end: 1), valueLength: 0), .rangeSplitsCharacter(offset: 0), .originalChanged,
-            .replacementJoinsNeighbor, .replacementHasControlCharacters, .noChange, .writeMismatch,
+            .replacementJoinsNeighbor, .replacementHasControlCharacters, .noChange, .writeMismatch, .approvalMismatch,
         ]
         XCTAssertEqual(Set(all.map(\.code)).count, all.count)
     }
