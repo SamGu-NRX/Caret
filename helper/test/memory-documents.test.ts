@@ -165,7 +165,9 @@ describe("what Caret never keeps", () => {
     expect(valueKind("ghp_abcdefghijklmnopqrstuvwxyz0123456789")).toBe("apiKey");
     expect(valueKind("-----BEGIN OPENSSH PRIVATE KEY-----")).toBe("apiKey");
     // Everyday values pass: a name, an email, a phone, a date, an order number, an address.
-    for (const [label, v] of [["Name", "Dana Whitfield"], ["Email", "dana@example.com"], ["Phone", "+1 (512) 555-0142"], ["Date", "2026-10-04"], ["Order", "1234567890"], ["Address", "455 Congress Ave, Austin"], ["Pinned", "yes"]] as const) {
+    expect(labelKind("Bank account number")).toBe("accountNumber");
+    expect(labelKind("One-time code")).toBe("oneTimeCode");
+    for (const [label, v] of [["Name", "Dana Whitfield"], ["Email", "dana@example.com"], ["Phone", "+1 (512) 555-0142"], ["Date", "2026-10-04"], ["Order", "1234567890"], ["Address", "455 Congress Ave, Austin"], ["Pinned", "yes"], ["PIN code reminder", "change yearly"], ["Password hint", "my first cat"], ["Secret Santa", "Dana"], ["Note", "call after 5"]] as const) {
       expect(sensitiveKind(label, v), `${label}: ${v}`).toBeNull();
     }
   });
@@ -518,5 +520,34 @@ describe("fix-check findings (M1 second review)", () => {
     expect(sensitiveLine("about-me", `# About me\n\n${rec}- Label: Note\n- Label: Password\n- Value: hunter2\n- Source: typed\n- Status: active\n`)).toBe("about-me.md:6: Value: Caret doesn't keep passwords in memory, so this record is not used");
     expect(sensitiveLine("about-me", `# About me\n\n${rec}- Label: Note\n- Value: x\n- Password: hunter2\n- Source: typed\n- Status: active\n`)).toBe("about-me.md:6: Password: Caret doesn't keep passwords in memory, so this record is not used");
     expect(sensitiveLine("about-me", "# About me\n\n- PIN: 4821\n")).toBe("about-me.md:3: Caret doesn't keep passwords in memory");
+  });
+});
+
+describe("final fix-check findings (M1 third review)", () => {
+  it("a conflict copy never replaces a file already at its name", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caret-memdocs-final-"));
+    try {
+      const root = join(dir, "Memory");
+      const store = new MemoryDocumentStore(root);
+      store.put({ id: "about-aaa", kind: "about", status: "active", noticed: null, fields: { label: "Name", value: "one", source: "typed" } });
+      const base = revisionOf(readFileSync(join(root, "about-me.md")));
+      store.hooks.beforeDrop = (aside) => {
+        writeFileSync(aside, "edited in place\n");
+        // Another process already holds every name this second could produce for the first two tries.
+        const when = new Date().toISOString().replace(/[-:]/g, "").replace("T", " ").slice(0, 15);
+        writeFileSync(join(root, `about-me (conflict ${when}).md`), "someone else's file\n");
+      };
+      expect(() => store.save("about-me", base, "# About me\n")).toThrow(MemoryConflictError);
+      const copies = readdirSync(root).filter((f) => f.includes("(conflict")).map((f) => readFileSync(join(root, f), "utf8")).sort();
+      expect(copies).toEqual(["edited in place\n", "someone else's file\n"]);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("descriptive prose bullets are not refused; labelled secrets still are", () => {
+    expect(sensitiveLine("about-me", "# About me\n\n- PIN code reminder: change yearly\n- Note: call after 5\n- Password hint: my first cat\n")).toBeNull();
+    expect(sensitiveLine("about-me", "# About me\n\n- Bank PIN: 4821\n")).toBe("about-me.md:3: Caret doesn't keep passwords in memory");
   });
 });

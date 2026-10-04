@@ -613,18 +613,23 @@ function parentProblem(dir: string): string | null {
   }
 }
 
-/** Keeps a displaced file beside its document as "<name> (conflict <time>).md"; returns that name. */
+/**
+ * Keeps a displaced file beside its document as "<name> (conflict <time>).md"; returns that name. The copy is made by
+ * link(2), which never replaces a file already there. Something that is not a plain file (a symlink, a FIFO) cannot be
+ * linked safely, so it is left where it is, under its hidden name, and that name is returned.
+ */
 function keepAsConflict(p: string): string {
   const dir = resolve(p, "..");
   const name = baseName(p);
+  if (!lstatSync(p).isFile()) return name;
   const stem = name.slice(1, name.indexOf(TEMP_TAG)).replace(/\.md$/, "");
   const when = new Date().toISOString().replace(/[-:]/g, "").replace("T", " ").slice(0, 15);
   for (let n = 1; ; n++) {
     const copy = `${stem} (conflict ${when}${n === 1 ? "" : ` ${n}`}).md`;
-    if (existsAt(join(dir, copy))) continue;
-    // A rename keeps whatever the file is, a symlink included, without following it.
-    renameSync(p, join(dir, copy));
-    return copy;
+    if (tryLink(p, join(dir, copy))) {
+      tryUnlink(p);
+      return copy;
+    }
   }
 }
 

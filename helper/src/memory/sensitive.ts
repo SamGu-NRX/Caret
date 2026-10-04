@@ -51,12 +51,19 @@ const IBAN = /\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b/;
 /** Runs of digits with spaces or dashes between, as a card number is written. */
 const DIGIT_RUN = /\d(?:[ -]?\d){12,18}/g;
 
-/** The kind a label names, or null. */
+/** Words a label may end with after the thing it names: "Passport no.", "Bank account number", "One-time code". */
+const TRAILING = new Set(["no", "number", "num", "nr", "code", "id"]);
+
+/**
+ * The kind a label names, or null. The phrase must be what the label is about, its last words, or followed only by
+ * one of TRAILING: "Bank password" and "Passport no." name a secret, "PIN code reminder" and "Password hint" do not.
+ */
 export function labelKind(label: string | null | undefined): SensitiveKind | null {
   const ws = words(label);
   if (ws.length === 0) return null;
+  const heads = TRAILING.has(ws[ws.length - 1] as string) && ws.length > 1 ? [ws, ws.slice(0, -1)] : [ws];
   for (const [kind, phrases] of LABEL_PHRASES) {
-    for (const p of phrases) if (hasPhrase(ws, p)) return kind;
+    for (const p of phrases) if (heads.some((h) => endsWith(h, p))) return kind;
   }
   return null;
 }
@@ -85,12 +92,10 @@ export function sensitiveKind(label: string | null | undefined, value: string): 
 /** The refusal's wording: "Caret doesn't keep card numbers in memory". */
 export const refusal = (kind: SensitiveKind): string => `Caret doesn't keep ${SENSITIVE_SAYS[kind]} in memory`;
 
-function hasPhrase(ws: readonly string[], p: readonly string[]): boolean {
-  outer: for (let i = 0; i + p.length <= ws.length; i++) {
-    for (let j = 0; j < p.length; j++) if (ws[i + j] !== p[j]) continue outer;
-    return true;
-  }
-  return false;
+function endsWith(ws: readonly string[], p: readonly string[]): boolean {
+  if (p.length > ws.length) return false;
+  const at = ws.length - p.length;
+  return p.every((w, j) => ws[at + j] === w);
 }
 
 function luhn(digits: string): boolean {
