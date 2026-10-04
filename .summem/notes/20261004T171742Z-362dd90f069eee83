@@ -1,1 +1,0 @@
-B23: scripts/crash-recovery-eval.ts SIGKILLs a real helper child mid skill run while the script plays reader and host; its 'restarted helper is still running' check is what catches a crash after the last publish (an id collision did exactly that).

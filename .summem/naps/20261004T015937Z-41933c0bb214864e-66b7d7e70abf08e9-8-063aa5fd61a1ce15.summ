@@ -1,1 +1,0 @@
-B21-22: planRequest window by {pid,number,title} or windowId; posted keys skip an inactive app's key equivalents; a consumer connection is a host session (evals call hostConnected); grant revoked on pause/stop; mutation runs: swift test --build-path /tmp.

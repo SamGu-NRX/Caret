@@ -1,0 +1,1 @@
+D2-02: HelperOptions.routing absent keeps producers self-triggering (tests, producer evals); main.ts routes when Jev is on. Routed producers hold offers (engine.release/dropHeld, openApp.showHeld, events.judge); await routing.idle() then routedSettled.
