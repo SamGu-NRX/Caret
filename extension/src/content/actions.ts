@@ -62,6 +62,12 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number): Promi
   if (excluded !== null) return answer("excluded", `the control is one Caret never touches (${excluded})`);
   if (kindOf(el) !== verb.control) return answer("stale", `the element is now a ${String(kindOf(el))}, not a ${verb.control}`);
   if (name !== verb.name) return answer("stale", `the element is now named '${clean(name, 60)}', not '${clean(verb.name, 60)}'`);
+  const a = await actOn(el, name, verb, deadline);
+  // A rebind is the one way an act reaches an element other than the walked object; the receipt says so.
+  return r.rebound && (a.outcome === "ok" || a.outcome === "alreadyTrue") ? { ...a, detail: a.detail === null ? "rebound by its strong key" : `${a.detail}; rebound by its strong key` } : a;
+}
+
+async function actOn(el: Element, name: string, verb: Exclude<ActVerb, { kind: "pageChooseOption" | "pageAttachFile" }>, deadline: number): Promise<ActAnswer> {
   const disabled = (el as HTMLInputElement).disabled === true || el.getAttribute("aria-disabled") === "true" || (el as HTMLInputElement).readOnly === true;
 
   switch (verb.kind) {

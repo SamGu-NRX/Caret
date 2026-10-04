@@ -1,14 +1,12 @@
 {
   "compilerOptions": {
     "target": "es2024",
-    "lib": ["es2024", "dom", "dom.iterable"],
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "types": ["chrome", "node"],
+    "lib": ["es2024"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "allowImportingTsExtensions": true,
@@ -16,5 +14,5 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["accept.ts", "server.ts"]
 }
