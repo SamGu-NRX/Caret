@@ -130,7 +130,7 @@ describe("helper socket", () => {
     // A consumer can also ask directly.
     send(consumer.s, { type: "fillRequest", v: PROTOCOL_VERSION, windowId: FORM, fieldKey: EMAIL });
     expect(((await consumer.next()) as { type: string }).type).toBe("fillProposal");
-    expect(jevCalls).toBe(4); // two asks per proposal
+    expect(jevCalls).toBe(8); // two proposals, each in two stages of two asks (B24: whose details, then values)
     reader.s.destroy();
     consumer.s.destroy();
   });

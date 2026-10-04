@@ -7,6 +7,7 @@ import { ABOUT_SAYS, type AboutValue } from "../fill/about.ts";
 import { PROTOCOL_VERSION, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
 import { nodeText, type ScreenModel } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
+import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
@@ -20,6 +21,14 @@ export type GroundedProposal = Omit<FillProposal, "fields"> & { fields: Grounded
 
 /** An About entry as a fill may use it now, or null when it is gone, paused, not typed or fits no field (the helper reads memory). */
 export type AboutNow = (id: string) => AboutValue | null;
+
+/**
+ * The part of a proposal Caret writes: its text fields. Selects, radio groups, boxes, dates and times are
+ * hand-offs (FillField.handoff) the pop-up does not run, so a form's pop-up is judged on its text fields (B24).
+ */
+export function writtenFields(p: FillProposal): FillProposal {
+  return { ...p, fields: p.fields.filter((f) => f.control === "text") };
+}
 
 /** A pop-up is offered only for two or more fields, each with a value and the window or memory entry it came from. */
 export function fillPopupEligible(p: FillProposal): p is GroundedProposal {
@@ -98,12 +107,13 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal, about: Abou
   for (const f of p.fields) {
     const node = w.nodes.get(f.key);
     if (node === undefined) return `the field ${f.key} is gone`;
-    if (node.editable !== true || (node.value ?? "") !== "") return `the field ${f.key} is no longer empty`;
-    if (describeField(w, node).text !== f.descriptor) return `the field ${f.key} now reads differently`;
+    const input = emptyInput(w, f.key);
+    if (input === null) return `the field ${f.key} is no longer empty`;
+    if (describeInput(w, input) !== f.descriptor) return `the field ${f.key} now reads differently`;
     if (f.source === null) {
       // The label decided which fields the entry was offered to (about.ts), so a renamed entry ends the offer too.
       const now = about(f.memory.id);
-      if (now === null || now.value !== f.value || now.label !== f.memory.label) return `what you told Caret as ${f.memory.label} changed`;
+      if (now === null || memoryValue(now.value, f.memory.part) !== f.value || now.label !== f.memory.label) return `what you told Caret as ${f.memory.label} changed`;
       continue;
     }
     const sw = model.windows.get(f.source.windowId);
@@ -136,7 +146,8 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
     return {
       says: `{{l${i}}} holds {{v${i}}}`,
       // A value from memory is checked against the entry again right before it is written (executor.ts).
-      ...(f.memory === null ? {} : { memory: f.memory.id }),
+      // A part of a remembered name names its part ("about-1#first"), so the check splits the entry the same way.
+      ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory) }),
       end: {
         kind: "valueEquals" as const,
         window: { bundleId: p.bundleId, title: "{{title}}" },

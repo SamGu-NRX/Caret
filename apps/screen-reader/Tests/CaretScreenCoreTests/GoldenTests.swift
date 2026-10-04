@@ -205,6 +205,22 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
     }
 
+    @Test func readsB24ControlsAndRefusesAWrittenControl() throws {
+        let src = #"{"pid":1,"windowId":"1-1","bundleId":"b","appName":"A","windowTitle":"T","nodeKey":"n","kind":"date"}"#
+        let date = Data(#"{"key":"k","control":"date","handoff":{"value":"1991-03-03","display":"Sun, Mar 3, 1991","source":\#(src),"memory":null},"frame":null,"descriptor":"Date field.","choice":"c1","confidence":0.95,"value":null,"source":null,"memory":null,"withheld":null,"asks":[]}"#.utf8)
+        let f = try JSONDecoder().decode(FillField.self, from: date)
+        #expect(f.control == .date && f.handoff?.value == "1991-03-03" && f.value == nil)
+        let vetoed = Data(#"{"key":"k","control":"text","handoff":null,"frame":null,"descriptor":"d","choice":"none","confidence":0,"value":null,"source":null,"memory":null,"withheld":"otherPerson","asks":[]}"#.utf8)
+        #expect(try JSONDecoder().decode(FillField.self, from: vetoed).withheld == .otherPerson)
+        // A helper before B24 sends no control: the field is text.
+        let old = Data(#"{"key":"k","frame":null,"descriptor":"d","choice":"none","confidence":0,"value":null,"source":null,"withheld":"ambiguous","asks":[]}"#.utf8)
+        #expect(try JSONDecoder().decode(FillField.self, from: old).control == .text)
+        let part = Data(#"{"id":"about-1","label":"Name","says":"what you told Caret","part":"first"}"#.utf8)
+        #expect(try JSONDecoder().decode(FillMemory.self, from: part).part == "first")
+        let written = Data(#"{"key":"k","control":"date","handoff":null,"frame":null,"descriptor":"d","choice":"c1","confidence":0.9,"value":"1991-03-03","source":\#(src),"memory":null,"withheld":null,"asks":[]}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(FillField.self, from: written) }
+    }
+
     @Test func readsAFieldWithheldBecauseACutTookItsKind() throws {
         let unasked = Data(#"{"key":"k","frame":null,"descriptor":"Text field. Label: 'Date'.","choice":"none","confidence":0,"value":null,"source":null,"withheld":"sourceCut","asks":[]}"#.utf8)
         let f = try JSONDecoder().decode(FillField.self, from: unasked)

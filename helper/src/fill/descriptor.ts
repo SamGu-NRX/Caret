@@ -26,7 +26,7 @@ const MAX_LABEL_CHARS = 60;
 
 export function describeField(w: WindowState, field: Node): FieldDescriptor {
   // A label or placeholder is a short snippet in the question (privacy.ts): a long one is cut, ellipsis included.
-  const label = cutLabel(clean(field.label));
+  const label = cutLabel(fieldLabelText(field.label));
   const placeholder = cutLabel(clean(field.placeholder));
   const nearest = label === null ? nearestText(w, field) : null;
   const section = sectionOf(w, field);
@@ -128,12 +128,35 @@ function sectionOf(w: WindowState, field: Node): string | null {
   while (key !== null) {
     const n = w.nodes.get(key);
     if (n === undefined) return null;
-    const t = clean(n.label);
-    if (t !== null && n.role !== "AXWebArea" && t.length <= MAX_LABEL_CHARS) return t;
+    // A page's own section ends at its web area: above it is the browser's group named for the window
+    // ("httpbin.org/forms/post - Google Chrome"), which put the window title in every web field's name and
+    // spent the form window's budget on it (B24 capture).
+    if (n.role === "AXWebArea") return null;
+    const t = fieldLabelText(n.label);
+    if (t !== null && t.length <= MAX_LABEL_CHARS) return t;
     key = n.parent;
   }
   return null;
 }
+
+/**
+ * A field's own label without form chrome: a required marker ("Email *", "First Name*", "Phone (required)")
+ * and a trailing colon ("Customer name:"). Chrome names a web field by its whole <label>, marker included, so
+ * plan cards read "Fill Email * in Google Chrome" with the asterisk wrapped onto its own line (Q1 bug 16).
+ * "(optional)" stays: it says something about the field.
+ */
+export function fieldLabelText(s: string | undefined | null): string | null {
+  const t = clean(s);
+  if (t === null) return null;
+  let out = t;
+  for (let prev = ""; prev !== out; ) {
+    prev = out;
+    out = out.replace(REQUIRED_MARK, "").replace(/\s*:\s*$/, "").trim();
+  }
+  return out === "" ? t : out;
+}
+/** A required marker at the end of a label: asterisks, "(required)" or "[required]". */
+const REQUIRED_MARK = /\s*(?:\*+|\(required\)|\[required\])\s*$/iu;
 
 function clean(s: string | undefined | null): string | null {
   if (s === undefined || s === null) return null;

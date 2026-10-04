@@ -19,6 +19,8 @@ import { misfit } from "../fill/kinds.ts";
 
 export class PlannerError extends Error {
   readonly code: PlanErrorCode;
+  /** The window the planner had chosen when it failed, when it had chosen one; the code-mode writer plans there next (B24). */
+  windowId: string | null = null;
   constructor(code: PlanErrorCode, message: string) {
     super(message);
     this.code = code;

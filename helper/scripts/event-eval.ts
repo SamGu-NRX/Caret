@@ -50,7 +50,7 @@ const errors: { id: string; error: string }[] = [];
 let stopped = false;
 for (const s of golden.sentences) {
   if (stopped) break;
-  const c = eventCandidate(s.sentence, s.spans.map((x) => x.text), [], now);
+  const c = eventCandidate(s.sentence, s.spans.map((x) => x.text), [], { now, timeZone: "America/Chicago", locale: "en-US" });
   if (c === null) {
     rows.push({ id: s.id, sentence: s.sentence, want: s.attend, codePasses: false, asks: null, yes: null, agrees: s.attend === null ? true : null });
     continue;

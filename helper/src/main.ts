@@ -20,6 +20,20 @@ import { loadJevKey, makeJevClient } from "./fill/jev.ts";
 import { SocketReaderLink } from "./executor/means.ts";
 import { defaultPageSocket, pageHost, type PageHost } from "./engines/host.ts";
 import { wirePageEngines } from "./engines/wire.ts";
+import { makeWriterPort, type WriterPort } from "./writer/port.ts";
+import { WRITER_ROUTE } from "./writer/config.ts";
+import { readKey } from "./writer/env.ts";
+
+/** The configured plan writer, or null with a warning when its key is missing (the key is read again at each call, never printed). */
+function writerFromEnv(say: (line: string) => void): WriterPort | null {
+  try {
+    readKey(WRITER_ROUTE.keyName);
+  } catch (e) {
+    say(`plan writer off: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+  return makeWriterPort(WRITER_ROUTE);
+}
 
 const { values: args } = parseArgs({
   options: {
@@ -101,6 +115,8 @@ helper = new Helper({
   ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined }),
   // Event cards add to the reader's EventKit adapter, which answers only when started with --calendar-test.
   calendar: "reader",
+  // The code-mode plan writer (B24), when a Groq key is configured; without one, Ask works as before.
+  writer: args["no-jev"] || args.shadow ? null : writerFromEnv(warn),
   warn,
 });
 server = new HelperServer(args.socket, () => helper, warn, secret);
