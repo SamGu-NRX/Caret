@@ -1,0 +1,1 @@
+B24: fill asks in two stages when a field takes a person's details (whose first, then values), so a fill is 4 Jev calls, not 2; tests that count calls use PER_FILL. Groq's qwen3.8 hits 429 token limits within ~20 plans; space writer calls 30 s.
