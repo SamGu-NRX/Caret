@@ -114,9 +114,14 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // which Jev must then confirm (confirmScope): B25's writer gave "can you get this enrollment form done from what I
   // jotted down" an empty list, and the Ask refused it as a field the form does not have (held-07).
   const inferredAll = o.maker.name === "writer" && intent.route === "fill" && intent.scope === "list" && intent.fields.length === 0 && !snap.fields.some(namesField);
+  // A writer's list of every empty field Caret may type is the whole form, and is confirmed as one: B26's held-out-2
+  // run listed all nine fields for "fill out the pizza order from my note", "pizza" named only Pizza Size, and Jev,
+  // asked about each other field alone, said no to eight.
+  const empties = snap.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
+  const listsAll = o.maker.name === "writer" && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   let checked: ReturnType<typeof checkIntent>;
   try {
-    checked = checkIntent(inferredAll ? { ...intent, scope: "all" } : intent, snap);
+    checked = checkIntent(inferredAll || listsAll ? { ...intent, scope: "all" } : intent, snap);
   } catch (e) {
     return refused(e);
   }
@@ -134,7 +139,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // has had since B24, codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
   if (checked.route === "fill" && o.maker.name === "writer") {
     try {
-      checked = await confirmScope(instruction, checked, inferredAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField);
+      checked = await confirmScope(instruction, checked, inferredAll ? "inferred" : listsAll ? "all" : intent.scope, intent.section, snap, askJev, namesField);
     } catch (e) {
       return refused(e);
     }

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import { Snapshot } from "../src/protocol.ts";
-import { fieldWords, namedSources, onlyInSources, restrictsSources, sourcePhrases } from "../src/planner/sources.ts";
+import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, sourcePhrases } from "../src/planner/sources.ts";
 import { personSpans } from "../src/planner/intent.ts";
 import { buildDesk, loadCorpus } from "../scripts/realfill-corpus.ts";
 import { field, snap, text } from "./builders.ts";
@@ -40,6 +40,8 @@ describe("fieldWords", () => {
     "put it in my notes",
     "write the summary in my notes field",
     "Fill out the Northgate application",
+    "use the address I gave you",
+    "the date we mentioned",
   ])("names no source in %s", (instruction) => {
     expect(sourcePhrases(instruction)).toEqual([]);
     expect(fieldWords(instruction)).toBe(instruction);
@@ -108,8 +110,31 @@ describe("namedSources", () => {
 
   it("excludes a source the instruction rules out instead of naming it (B26 review)", () => {
     const { m, form } = desk();
-    expect(namedSources("fill this without using Dana's message", m, form, ["Dana"])).toEqual({ named: [], excluded: ["mail-dana"] });
-    expect(namedSources("not from Dana's message, from my note", m, form, ["Dana"])).toEqual({ named: [{ windowId: "checkout-note", names: [] }], excluded: ["mail-dana"] });
+    expect(namedSources("fill this without using Dana's message", m, form, ["Dana"])).toEqual({ named: [], excluded: ["mail-dana"], missing: false });
+    expect(namedSources("not from Dana's message, from my note", m, form, ["Dana"])).toEqual({ named: [{ windowId: "checkout-note", names: [] }], excluded: ["mail-dana"], missing: false });
+  });
+
+  it.each([
+    ["rsvp for me and bea, everything's in her email", ["bea"]],
+    ["use what dana sent", ["dana"]],
+    ["Dana's numbers please", ["Dana"]],
+    ["will you fill this out", []],
+    ["fill the rest from my note", []],
+  ])("finds the senders %s names, however typed (B26 held-out-2)", (instruction, names) => {
+    const { m, form } = desk();
+    expect(senderNames(instruction, m, form)).toEqual(names);
+  });
+
+  it.each([
+    ["grab my title off my LinkedIn", true],
+    ["fill this from Zed's message", true],
+    ["fill it from my note", false],
+    ["use what Dana mentioned", false],
+    ["fill this, without using my LinkedIn", false],
+    ["fill this out", false],
+  ])("knows whether %s names a source no open window could be", (instruction, missing) => {
+    const { m, form } = desk();
+    expect(namedSources(instruction, m, form, personSpans(instruction)).missing).toBe(missing);
   });
 
   it("names nothing for a kind of source that is not open", () => {

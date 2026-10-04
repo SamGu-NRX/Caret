@@ -82,6 +82,8 @@ export function sourcePhrases(instruction: string): SourcePhrase[] {
     const who = m[1] as string;
     // A sentence's capitalized first word is not a name ("Fill what I jotted down" has no person called Fill).
     if (!PRONOUNS.has(who) && /^(?:Fill|Use|Put|Add|Make|Set|Do|Go|Grab|Copy|Enter|Type|Get|Pick|Book|Choose|Please|Just|Ok|Okay|Can|Could)$/u.test(who)) continue;
+    // "what I mentioned", "the address I gave you": the user's own words to Caret, not a mail (memory, or nothing).
+    if ((who === "I" || who === "we" || who === "you") && m[3] !== undefined) continue;
     const name = PRONOUNS.has(who) ? null : who;
     out.push({ start: m.index, end: m.index + m[0].length, kind: name !== null ? "person" : m[2] !== undefined ? "note" : "mail", noun: null, name, negated: negated(m.index) });
   }
@@ -106,6 +108,32 @@ export function fieldWords(instruction: string): string {
   let s = instruction;
   for (const p of sourcePhrases(instruction)) s = `${s.slice(0, p.start)}${" ".repeat(p.end - p.start)}${s.slice(p.end)}`;
   return s;
+}
+
+/**
+ * Common words that are also first names ("will", "may", "mark"): typed in lower case they are not taken for a sender's
+ * name. Written for this rule, not measured.
+ */
+const COMMON_NAMES = new Set(["will", "may", "mark", "bill", "rose", "art", "grace", "hope", "joy", "june", "april", "august", "sue", "pat", "max", "ray", "rob", "jack", "frank", "drew", "chase", "dawn", "faith", "summer", "page", "lane", "dean", "guy", "don", "jean", "carol", "bob", "ben", "al", "an", "eve"]);
+
+/**
+ * The words of an instruction that name a mail's sender, however they are typed ("bea", "chris"): a word of a
+ * conversation's sender name, or the start of the sender's first name when exactly one sender starts with it. Each is
+ * an exact span of the instruction. B25 and B26's held-out sets type names in lower case ("rsvp for me and bea"), which
+ * the capitalized-name rule (intent.ts personSpans) does not see.
+ */
+export function senderNames(instruction: string, model: ScreenModel, form: WindowState): string[] {
+  const senders = [...model.windows.values()].filter((w) => w !== form && isConversation(w)).map((w) => wordsOf(senderOf(w) ?? ""));
+  const out: string[] = [];
+  for (const m of instruction.matchAll(/(?<![\p{L}'’])\p{L}[\p{L}'’-]*/gu)) {
+    const word = m[0].replace(/['’]s$/u, "");
+    const n = word.toLowerCase();
+    if (n.length < 3 || COMMON_NAMES.has(n) || STOP.has(n) || out.includes(word)) continue;
+    const exact = senders.filter((ws) => ws.includes(n)).length;
+    const prefix = senders.filter((ws) => (ws[0] ?? "").startsWith(n)).length;
+    if (exact > 0 || prefix === 1) out.push(word);
+  }
+  return out;
 }
 
 /** Whether the instruction keeps Caret to its own words or rules out reading other windows. */
@@ -169,17 +197,19 @@ function isNote(w: WindowState): boolean {
  * never a title, and relations ("my wife") name nothing. A phrase the instruction negates ("without using Dana's
  * email") names no window: what it resolves to is excluded.
  */
-export function namedSources(instruction: string, model: ScreenModel, form: WindowState, people: readonly string[]): { named: NamedSource[]; excluded: string[] } {
+export function namedSources(instruction: string, model: ScreenModel, form: WindowState, people: readonly string[]): { named: NamedSource[]; excluded: string[]; missing: boolean } {
   const others = [...model.windows.values()].filter((w) => w !== form);
   const phrases = sourcePhrases(instruction);
   const said = new Set(wordsOf(instruction).filter((x) => !STOP.has(x)));
   const just = model.windowBefore(form.window.windowId);
   const nouns = new Set([...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS]);
   const score = (w: WindowState): number => new Set(wordsOf(w.window.title).filter((x) => !STOP.has(x) && !nouns.has(x) && said.has(x))).size;
+  /** The windows a phrase's kind or noun could mean. */
+  const resolveFits = (p: SourcePhrase): WindowState[] => others.filter((w) => (p.kind === "note" ? isNote(w) : p.kind === "mail" ? isConversation(w) : p.noun !== null && (wordsOf(w.window.title).includes(p.noun) || wordsOf(w.app.name).includes(p.noun))));
   /** The windows one phrase names. */
   const resolve = (p: SourcePhrase): WindowState[] => {
     if (p.name !== null) return byName(p.name, others, true);
-    const fits = others.filter((w) => (p.kind === "note" ? isNote(w) : p.kind === "mail" ? isConversation(w) : p.noun !== null && (wordsOf(w.window.title).includes(p.noun) || wordsOf(w.app.name).includes(p.noun))));
+    const fits = resolveFits(p);
     if (fits.length <= 1) return fits;
     const best = Math.max(...fits.map(score));
     const top = fits.filter((w) => score(w) === best);
@@ -196,10 +226,16 @@ export function namedSources(instruction: string, model: ScreenModel, form: Wind
     out.set(w.window.windowId, { windowId: w.window.windowId, names: had === undefined ? all : [...new Set([...had.names, ...all])] });
   };
   for (const p of phrases) if (!p.negated) for (const w of resolve(p)) add(w, p.name === null ? [] : [p.name]);
+  // A source the instruction names that no open window could be ("off my LinkedIn" with no LinkedIn open). Several
+  // that fit, none picked, is not missing.
+  // A named mail or what someone said is missing when no sender has the name, or starts with it; a note or a titled
+  // source, named or not ("Gary's note" can be the user's note about Gary), when nothing of its kind is open.
+  const senderHas = (name: string): boolean => others.some((w) => isConversation(w) && wordsOf(senderOf(w) ?? "").some((x, i) => x === name.toLowerCase() || (i === 0 && name.length >= 3 && x.startsWith(name.toLowerCase()))));
+  const missing = phrases.some((p) => !p.negated && (p.name !== null && (p.kind === "mail" || p.kind === "person") ? !senderHas(p.name) : resolveFits(p).length === 0));
   const negatedNames = new Set(phrases.filter((p) => p.negated && p.name !== null).map((p) => p.name as string));
   for (const person of people) {
-    if (!/^\p{Lu}/u.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person)) continue;
+    if (/^(?:my|our)\s/iu.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person)) continue;
     for (const w of byName(person, others, false)) add(w, [person]);
   }
-  return { named: [...out.values()], excluded: [...excluded] };
+  return { named: [...out.values()], excluded: [...excluded], missing };
 }

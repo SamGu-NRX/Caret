@@ -116,6 +116,14 @@ export const WRITER_MAX_OUTPUT_TOKENS = 1000;
  * gpt-oss-120b in 40 intents with HTTP 400 "does not match the expected schema" (both a refusal before scope
  * allowed "none"); such an Ask fails as unavailable and is not retried on another model.
  */
+/*
+ * B26 (2026-10-04): qwen3.8-27b against gpt-oss-120b on B24's twenty was not measured. Both models' Groq tokens per
+ * day ran out on the first run of each, though a one-token probe still answered: gpt-oss-120b after 4 of 13 asks
+ * (code at e71a525), qwen3.8-27b after 6 of 7 (code at 82a1ab3). On the asks both answered (ask-01 to ask-04), 120b:
+ * refused, asked a question, right, refused; qwen3.8: partial, asked, right, refused; 0 wrong each
+ * (evidence/screen/b26/asks-b24-120b, asks-b24-qwen run logs). Four asks are no measurement, so the pick stays
+ * gpt-oss-120b. B26's scoreboards ran on gpt-oss-20b instead, which still had tokens, and say so.
+ */
 export const ASK_MAKER: "writer" | "jev" = "writer";
 /** The writer route for intents; a change is explicit configuration and a fresh scoreboard run, never a fallback. */
 export const INTENT_ROUTE: ChatRoute = GROQ_GPT_OSS_120B;

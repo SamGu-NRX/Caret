@@ -18,7 +18,7 @@ import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
-import { namedSources, onlyInSources, restrictsSources, senderOf, type NamedSource } from "./sources.ts";
+import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { SAYS, SaidError, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn } from "./says.ts";
 
@@ -74,6 +74,8 @@ export interface IntentSnapshot {
   named: NamedSource[];
   /** Windows the instruction rules out ("without using Dana's email"): never read for this Ask. */
   excluded: string[];
+  /** The instruction names a source no open window could be ("off my LinkedIn" with no LinkedIn open). */
+  missing: boolean;
   ledger: SnippetLedger;
 }
 
@@ -162,7 +164,8 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   }
   const labels = [...new Set(memory.map((m) => m.label))];
   const memoryLabels = labels.length > 0 && ledger.memory(labels) ? labels : [];
-  const persons = personSpans(instruction);
+  // People the instruction names: capitalized names and relations, and words that are a mail sender's name however typed.
+  const persons = [...new Set([...personSpans(instruction), ...senderNames(instruction, model, w)])];
   const sources = namedSources(instruction, model, w, persons);
   return {
     instruction,
@@ -176,6 +179,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     literals: instructionValues(instruction),
     named: sources.named,
     excluded: sources.excluded,
+    missing: sources.missing,
     ledger,
   };
 }
@@ -238,11 +242,15 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   if (!REASONS.includes(intent.why)) bad(`gives reason '${intent.why}'`);
   // Someone's details by a pronoun, with no one named, is refused whatever the maker said: fill would take the
   // user's own (B25 held-out rule 4).
-  if (snap.persons.length === 0 && PRONOUN_DETAILS.test(snap.instruction)) stop("otherPersonUnnamed", snap);
+  // Read on the field words: "everything's in her email" names where to copy from, not someone's email (B26 held-out-2).
+  if (snap.persons.length === 0 && PRONOUN_DETAILS.test(fieldWords(snap.instruction))) stop("otherPersonUnnamed", snap);
   // An instruction that names a kind Caret never types ("my SSN goes in there too") is refused for that, whatever
   // reason the maker gave: B25's held-out run told the user "Caret stops before payment" for an SSN.
   if ((intent.route === "refuse" || intent.route === "ask") && mentionedKind(snap.instruction) !== null) stop("neverTyped", snap);
   if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap);
+  // A fill from a source that is not open is refused for that, whatever the maker chose: B26's held-out-2 run told
+  // "grab my job title and company off my linkedin" that Caret found nothing to put in Job title.
+  if (intent.route === "fill" && snap.missing) stop("notOnScreen", snap);
   if (intent.route === "plan") return { route: "plan" };
 
   const byRef = new Map(snap.fields.map((f) => [f.ref, f]));
@@ -309,7 +317,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
   // is not whose details go in: the source's words never set the scope. Unless the instruction asks for someone's
   // details by a pronoun ("from Dana's message, with her contact details"): then the source is whose they are.
-  if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(snap.instruction)) person = null;
+  if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
 
   const scope: FillScope = {
     fields: fields.map((f) => f.key),

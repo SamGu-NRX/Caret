@@ -138,7 +138,7 @@ describe("checkIntent", () => {
     expect(codeOf(() => checkIntent(intent({ route: "refuse", why: "pressOrSend" }), snapOf("hit submit")))).toBe("unsupportedStep");
     expect(codeOf(() => checkIntent(intent({ whose: "unnamed", fields: [refOf(his, "Email")] }), his))).toBe("unsure");
     // "her" with someone named is that person: no refusal.
-    const named = snapOf("RSVP for me and Bea, everything's in her email");
+    const named = snapOf("RSVP for me and Bea, use her email address");
     expect(checkIntent(intent({ scope: "all" }), named).route).toBe("fill");
   });
 });
@@ -482,5 +482,41 @@ describe("where an Ask copies from (B26: source words never scope, a named windo
     expect(d.checked.writes.length).toBeGreaterThan(0);
     const no = await planAsk("can you get this done from what I jotted down", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "list", fields: [] }), writer: null, offerKey: "src-3", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect((no as AskRefused).message).toBe(SAYS.whichFields);
+  });
+});
+
+describe("what B26's blind held-out-2 run found", () => {
+  it("does not read a source's pronoun as someone's details, and names a sender typed in lower case", () => {
+    const m = desk();
+    m.apply(snap([text("h1", "From: Ines Lindqvist <ines@example.org>"), text("h2", "To: Theo"), text("b", "my cell is (617) 555-0129")], { at: 950, windowId: "mail-ines", title: "Clinic form", app: { pid: 7009, bundleId: "com.apple.mail", name: "Mail" } }));
+    const s = snapOf("fill the landlord phone, everything's in her email", m);
+    expect(codeOf(() => checkIntent(intent({ fields: [refOf(s, "Landlord phone")] }), s))).toBeNull();
+    // With no mail open, the same instruction names a source Caret cannot see.
+    const none = snapOf("fill the landlord phone, everything's in her email");
+    expect(codeOf(() => checkIntent(intent({ fields: [refOf(none, "Landlord phone")] }), none))).toBe("noWindow");
+    const t = snapOf("emergency contact is ines, use what she sent", m);
+    expect(t.persons.map((p) => p.span)).toContain("ines");
+    expect(t.named.map((n) => n.windowId)).toEqual(["mail-ines"]);
+  });
+
+  it("confirms a writer's list of every empty field as the whole form, with one question", async () => {
+    const pick = (q: string): string | null => (q.includes("'Landlord name'") ? "Gary Pruitt" : q.includes("'Landlord phone'") ? "(512) 555-0193" : null);
+    const jev = jevBy(pick, () => "user", () => "yes");
+    const every = (s: IntentSnapshot): string[] => s.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
+    const d = await planAsk("fill out the landlord application from my note", desk(), memory, about, { askJev: jev.ask, maker: maker((s) => ({ fields: every(s) })), writer: null, offerKey: "h2-1", windowId: "form", now: 2000 });
+    const confirms = jev.seen.filter((r) => Object.values(r.questions).some((q) => "yes" in q.criteria));
+    expect(confirms.every((r) => Object.keys(r.questions).join() === "all")).toBe(true);
+    expect(confirms.length).toBe(2);
+    expect(d.checked.writes.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a fill from a source that is not open with the plain sentence", () => {
+    const s = snapOf("grab the landlord phone off my LinkedIn");
+    try {
+      checkIntent(intent({ fields: [refOf(s, "Landlord phone")] }), s);
+      throw new Error("no refusal");
+    } catch (e) {
+      expect((e as Error).message).toBe(SAYS.notOnScreen);
+    }
   });
 });
