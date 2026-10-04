@@ -1,0 +1,1 @@
+W2: react-select makes its input opacity 0 whenever a value is chosen, so the walker's opacity rule dropped it; walker.visibleReactSelect waives only opacity inside a visible react-select box.

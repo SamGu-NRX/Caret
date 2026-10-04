@@ -766,11 +766,53 @@ export type FillAsk = z.infer<typeof FillAsk>;
  * A value that came from memory rather than a window: an About entry the user typed into Caret (B17,
  * fill/about.ts). `says` is the source line after "from": "what you told Caret".
  */
-export const FillMemory = z.object({ id: z.string().min(1), label: z.string(), says: z.string() });
+export const FillMemory = z.object({
+  id: z.string().min(1),
+  label: z.string(),
+  says: z.string(),
+  /**
+   * The part of a remembered name the value is (B24, fill/derive.ts): "first" for "Riley" from Name "Riley
+   * Okafor". Absent: the value is the whole entry. A check that the entry still holds the value splits it again.
+   */
+  part: z.enum(["first", "middle", "last"]).optional(),
+});
 export type FillMemory = z.infer<typeof FillMemory>;
+
+/**
+ * Why no value was proposed although one might have been. The first three are B11-B13's; B24 added:
+ * "wrongKind": the agreed value is not the kind the field takes (a whole address in Street, kinds.ts misfit);
+ * "otherPerson": both asks said the field wants one person's details and the value is another's, or the field
+ * wants the user's and the asks did not both say the value is the user's;
+ * "ambiguous": code could not read the value without guessing (a single name for First/Last, a date that
+ * could be two days, no option or more than one that the source names).
+ */
+export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "wrongKind", "otherPerson", "ambiguous"]);
+export type FillWithheld = z.infer<typeof FillWithheld>;
+
+/**
+ * What a control is (B24): a text field Caret writes, or a control the user sets from Caret's proposal. Chrome
+ * shows native selects, radio groups, checkboxes and date and time inputs through Accessibility; the executor
+ * writes none of them yet, so their values come as `handoff`. "combobox" is a web page's custom dropdown
+ * (react-select and the like): typing into it does not pick an option, so it is named and left to the user,
+ * with no value, until the browser layer can pick one.
+ */
+export const FillControl = z.enum(["text", "date", "time", "select", "radio", "checkbox", "combobox"]);
+export type FillControl = z.infer<typeof FillControl>;
+
+/**
+ * A value for a control Caret does not write: the option to pick, "checked" for a box to tick, or an ISO date
+ * (YYYY-MM-DD) or time (HH:MM, 24-hour), with what it is read from. `value` stays null for such a control, so a
+ * consumer that does not know this key never writes it. `display` is how the host says it ("Mar 3, 1991").
+ */
+export const FillHandoff = z.object({ value: z.string(), display: z.string(), source: FillSource.nullable(), memory: FillMemory.nullable() });
+export type FillHandoff = z.infer<typeof FillHandoff>;
 
 export const FillField = z.object({
   key: z.string(),
+  /** What the control is; absent from a helper before B24, which read text fields only. */
+  control: FillControl.default("text"),
+  /** For a control other than text: the value the user should set, or null when none is proposed. */
+  handoff: FillHandoff.nullable().default(null),
   /** Where the field is on screen, so a consumer can draw the proposed value in place. */
   frame: Frame.nullable(),
   descriptor: z.string(),
@@ -795,17 +837,22 @@ export const FillField = z.object({
    * field takes or the asks picked ("sourceCut", fill.ts), so the candidates of that kind were a partial
    * set. Null otherwise.
    */
-  withheld: z.enum(["disagree", "lowConfidence", "sourceCut"]).nullable(),
+  withheld: FillWithheld.nullable(),
   /**
    * The first ask, and the second with candidates shuffled and the field reworded. Empty when the field
    * was not asked: withheld as "sourceCut" before any ask, or, with `withheld` null, nothing could be
    * offered for it (no window gave a candidate, and nothing the user told Caret fits it).
    */
   asks: z.union([z.tuple([FillAsk, FillAsk]), z.tuple([])]),
-}).refine((f) => (f.value === null ? f.source === null && f.memory === null : (f.source === null) !== (f.memory === null)), {
-  message: "a value comes with exactly one of source and memory, and no value with neither",
-  path: ["memory"],
-});
+})
+  .refine((f) => (f.value === null ? f.source === null && f.memory === null : (f.source === null) !== (f.memory === null)), {
+    message: "a value comes with exactly one of source and memory, and no value with neither",
+    path: ["memory"],
+  })
+  .refine((f) => (f.control === "text" ? f.handoff === null : f.value === null), {
+    message: "a text field's value is written and never handed off; any other control is never written, its value comes as a handoff",
+    path: ["handoff"],
+  });
 export type FillField = z.infer<typeof FillField>;
 
 export const FillProposal = z.object({
@@ -1040,7 +1087,7 @@ export const SkillFields = z.object({
   handsOff: z.object({ label: z.string().min(1), why: PressRisk }).nullable(),
   /**
    * The write rules its clean runs in a row wrote under, each once: what running it on its own would do unasked. The
-   * host's permissions page lists the skill under each (A16; the host's memory.ndjson host-memory-7). Empty after any
+   * host's permissions page lists the skill under each (A16; the host's memory.ndjson host-memory-9). Empty after any
    * reset.
    */
   wrote: z.array(WriteRule).refine((w) => new Set(w).size === w.length, "wrote names a rule twice"),
@@ -1354,8 +1401,25 @@ export const PlanProposal = z
   });
 export type PlanProposal = z.infer<typeof PlanProposal>;
 
+/**
+ * Whether Caret can see the pages of a Chromium browser (browser layer W2, memo section 6). `missing`: the reader
+ * reports the browser frontmost, the user has typed in it since it came to the front, and no Caret page engine is
+ * connected for that process. The host shows "Caret can't see this page yet" at most once per browser per session
+ * (v2/host). `connected`: an engine for that browser said hello, so the host can say "Caret for Chrome is
+ * connected" and drop the ask. Sent on each change of state for a browser process, never repeated while it holds.
+ */
+export const PageEngineState = z.object({
+  type: z.literal("pageEngine"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  browser: AppRef,
+  state: z.enum(["missing", "connected"]),
+});
+export type PageEngineState = z.infer<typeof PageEngineState>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
+  PageEngineState,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -1367,3 +1431,409 @@ export type HelperMessage = z.infer<typeof HelperMessage>;
 /** Every message that may appear on the socket in either direction. */
 export const AnyMessage = z.union([ReaderMessage, ConsumerMessage, HelperMessage, HelperToReader]);
 export type AnyMessage = z.infer<typeof AnyMessage>;
+
+// MARK: - the page engine (browser layer, W1: ~/.caret-run/plans/browser-layer.md sections 1 and 2)
+//
+// Caret's own MV3 extension is a second reader. Its service worker talks to the helper through the Swift
+// Native Messaging bridge (bridge/) over a socket of its own, page.sock, never the reader's screen.sock. These
+// messages travel only there. They are additions: no shape above changes, and the reader never sees one.
+// The Swift mirror is bridge/Sources/CaretPageProtocol; both sides decode fixtures/golden/page.ndjson.
+
+/**
+ * Where an act grant holds. `native` is a reader window, as ActGrant names it. `page` pins one frame of one
+ * tab in one engine session, at the origin and navigation generation the task was planned against: a
+ * navigation, a new document or another origin in that frame ends the grant's reach there.
+ */
+export const GrantScope = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("native"), pid: z.number().int(), windowId: z.string().min(1) }),
+  z.object({
+    kind: z.literal("page"),
+    /** The engine session the helper gave the extension at its hello (engineWelcome). */
+    engine: z.string().min(1),
+    tabId: z.number().int().nonnegative(),
+    /** Chrome's frame id: 0 for the top frame. */
+    frameId: z.number().int().nonnegative(),
+    /** scheme://host[:port], as the frame's URL had it when walked. */
+    origin: z.string().min(1),
+    navGen: z.number().int().nonnegative(),
+  }),
+]);
+export type GrantScope = z.infer<typeof GrantScope>;
+
+/**
+ * ActGrant with a scope discriminator. The engine acts for `taskId` only inside `scope`, until `expires`, at
+ * most GRANT_MAX_MS after it received the grant. The task's actRevoke ends every scope it holds. A page task
+ * whose form spans frames holds one grant per frame.
+ */
+export const ScopedActGrant = z
+  .object({ type: z.literal("scopedActGrant"), v: z.literal(PROTOCOL_VERSION), taskId: z.string().min(1), scope: GrantScope, at: ms, expires: ms })
+  .refine((g) => g.expires > g.at && g.expires - g.at <= GRANT_MAX_MS, { message: `expires must be after at and at most ${GRANT_MAX_MS} ms after it`, path: ["expires"] });
+export type ScopedActGrant = z.infer<typeof ScopedActGrant>;
+
+/** What a page control is, from its tag, type and ARIA role. */
+export const PageControlKind = z.enum([
+  "text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea",
+  "select", "checkbox", "radio", "combobox", "button", "link", "file", "contenteditable", "range", "color",
+]);
+export type PageControlKind = z.infer<typeof PageControlKind>;
+
+/** [x, y, width, height] in CSS pixels of the frame's own viewport. */
+export const PageRect = z.tuple([z.number(), z.number(), z.number(), z.number()]);
+
+/**
+ * One visible interactive control. Never a password, hidden, credit-card or one-time-code input, nor anything
+ * hidden, zero-size, off-screen or aria-hidden, nor a consent or self-identification group: the content
+ * script drops those before anything leaves the frame and counts them only in PageFrame.excluded.
+ */
+export const PageControl = z.object({
+  /** The frame's registry id for the element: valid only in this document (PageFrame.documentId). */
+  id: z.string().min(1),
+  /** Structural key (ancestors, role, name, ordinal). Fills Node.key; never a basis for rebinding. */
+  key: z.string().min(1),
+  /** JSON array (origin, form, name|id|data-automation-id, kind) when the page author named it; null for a generated or missing identifier. */
+  strongKey: z.string().nullable(),
+  kind: PageControlKind,
+  /** The ARIA role the control has or implies. */
+  role: z.string().min(1),
+  /** The accessible name the user sees. */
+  name: z.string(),
+  value: z.string().optional(),
+  checked: z.boolean().optional(),
+  options: z.array(z.object({ value: z.string(), label: z.string(), selected: z.boolean() })).optional(),
+  /** The form identity the strong key uses; null outside a form. */
+  form: z.string().nullable(),
+  rect: PageRect,
+  required: z.literal(true).optional(),
+  disabled: z.literal(true).optional(),
+  invalid: z.literal(true).optional(),
+  /** Inside a shadow root, and which kind; the walker descends closed roots through chrome.dom. */
+  shadow: z.enum(["open", "closed"]).optional(),
+});
+export type PageControl = z.infer<typeof PageControl>;
+
+/** Why controls were left out, by count only: what they were called or held never leaves the frame. */
+export const PageExclusion = z.enum(["password", "hidden", "payment", "oneTimeCode", "invisible", "ariaHidden", "selfIdentification"]);
+export type PageExclusion = z.infer<typeof PageExclusion>;
+
+export const PageFrame = z.object({
+  frameId: z.number().int().nonnegative(),
+  /** -1 for the top frame. */
+  parentFrameId: z.number().int().min(-1),
+  documentId: z.string().min(1),
+  origin: z.string().min(1),
+  /** The URL's path; the query string and fragment are dropped. */
+  path: z.string(),
+  navGen: z.number().int().nonnegative(),
+  title: z.string(),
+  /** h1 and h2 text, clipped. No body prose. */
+  headings: z.array(z.string()),
+  controls: z.array(PageControl),
+  /** The frame's visible <iframe> elements, origin plus path of src and rect: the worker drops a child frame none of them holds. */
+  iframes: z.array(z.object({ src: z.string(), rect: PageRect })),
+  excluded: z.partialRecord(PageExclusion, z.number().int().positive()),
+  truncated: z.boolean(),
+});
+export type PageFrame = z.infer<typeof PageFrame>;
+
+/**
+ * One tab, composed by the worker from every frame that answered. `id` names the pageWalk it answers; the
+ * pageResult for that command follows it. `missing` lists frames that did not answer, with why.
+ */
+export const PageSnapshot = z.object({
+  type: z.literal("pageSnapshot"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string().min(1),
+  at: ms,
+  tabId: z.number().int().nonnegative(),
+  /** Chrome's window id of the tab. */
+  browserWindowId: z.number().int(),
+  /** The tab is the selected one of its browser window, which may be a background window. */
+  active: z.boolean(),
+  /**
+   * The tab's browser window is the one chrome.windows.getLastFocused names (W3). Only an active tab of that window is
+   * the tab the user is in, and only while the reader reports the browser frontmost: a background window's selected
+   * tab is not the user's.
+   */
+  inFocusedWindow: z.boolean(),
+  title: z.string(),
+  frames: z.array(PageFrame).min(1),
+  missing: z.array(z.object({ frameId: z.number().int().nonnegative(), reason: z.string() })),
+  /** The focused control and its text and selection, when one has focus. */
+  focused: z.object({ frameId: z.number().int().nonnegative(), id: z.string().min(1), selection: z.tuple([z.number().int(), z.number().int()]).nullable() }).nullable(),
+});
+export type PageSnapshot = z.infer<typeof PageSnapshot>;
+
+/**
+ * The element a mutating page verb acts on, as the last walk named it. `name` is the accessible name the
+ * helper planned and judged risk on; the content script re-reads it and refuses on a difference.
+ */
+/**
+ * The largest file pageAttachFile carries. Assumed, not measured: resumes and cover letters are a few MB, and the
+ * line stays far under the worker's 32 MB chunk join cap (extension/src/worker/wire.ts Chunks.MAX).
+ */
+export const MAX_ATTACH_BYTES = 10 * 1024 * 1024;
+
+const PageTarget = {
+  tabId: z.number().int().nonnegative(),
+  frameId: z.number().int().nonnegative(),
+  documentId: z.string().min(1),
+  id: z.string().min(1),
+  /** The control's kind as walked (PageControl.kind); a different kind now is stale. */
+  control: PageControlKind,
+  name: z.string(),
+  /** Mutating page verbs always name their task: there is no fixture bypass for pages. */
+  taskId: z.string().min(1),
+  /**
+   * `false`: act only on the element the walk retained, alive and in this document; a replaced element is
+   * `notSameElement`, never rebound by its strong key. Undo sends it (W3): a restore must reach the element Caret
+   * wrote, not a re-rendered one that took its identifier. Absent: a strong-key rebind is allowed.
+   */
+  rebind: z.literal(false).optional(),
+};
+
+/**
+ * The helper asks the engine to read or act. `pageWalk` reads a tab (null: the active tab of the focused
+ * browser window) and answers with a pageSnapshot, then a pageResult. Every other verb acts on one element
+ * under a live ScopedActGrant for its task, after the worker's check (task, tab, frame, origin, navGen,
+ * expiry, revocation) and the content script's (element alive or strongly rebound, kind, name, value before).
+ * `pageWrite` sets a text control: `expect` is the value it must hold right before. `pageSelect` picks the
+ * option of a native <select> whose value is `value`; `expect` is the selected value before. `pageSetChecked`
+ * sets a checkbox or radio. `pagePress` is always a hand-off in v1: the engine names the risk and leaves the press to
+ * the user, without touching the page.
+ *
+ * `pageChooseOption` picks an option of a custom listbox (generic ARIA or react-select, memo section 2): `expect` is
+ * the text the control shows before (react-select's chip, an ARIA combobox's own value), `value` the option's name.
+ * The handler opens the control, types `value` as the filter, and picks only an option whose normalized name
+ * equals it; zero or several such options stop it with their names in `choice.matches`. Its mousedown, click and
+ * keys land only on the control it was given and that control's own listbox options: the one exception to "every
+ * page press is a hand-off".
+ *
+ * `pageAttachFile` puts one file into a file input, or drops it on any other control (a dropzone), through
+ * DataTransfer. `file.data` is the whole file, base64; a line over Chrome's 1 MB frame reaches the extension as
+ * pageChunk parts. The worker checks `size` and `sha256` against the bytes before the page sees them. The helper
+ * builds this verb only from the file the user confirmed for the run (engines/attach.ts).
+ */
+export const PageVerb = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("pageWalk"), tabId: z.number().int().nonnegative().nullable() }),
+  z.object({ kind: z.literal("pageWrite"), ...PageTarget, expect: z.string(), value: z.string() }),
+  z.object({ kind: z.literal("pagePress"), ...PageTarget }),
+  z.object({ kind: z.literal("pageSelect"), ...PageTarget, expect: z.string(), value: z.string() }),
+  z.object({ kind: z.literal("pageChooseOption"), ...PageTarget, expect: z.string(), value: z.string() }),
+  z.object({ kind: z.literal("pageSetChecked"), ...PageTarget, checked: z.boolean() }),
+  z.object({
+    kind: z.literal("pageAttachFile"),
+    ...PageTarget,
+    file: z
+      .object({
+        /** The file's own name, no directory: what the page will show. */
+        name: z.string().min(1).max(255).refine((n) => !/[/\\\0]/.test(n), "a file name, not a path"),
+        type: z.string(),
+        size: z.number().int().nonnegative().max(MAX_ATTACH_BYTES),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        /** The bytes, base64. */
+        data: z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/),
+      })
+      .refine((f) => Math.floor((f.data.length * 3) / 4) - (f.data.endsWith("==") ? 2 : f.data.endsWith("=") ? 1 : 0) === f.size, { message: "data holds another number of bytes than size", path: ["data"] }),
+  }),
+]);
+export type PageVerb = z.infer<typeof PageVerb>;
+export type PageActVerb = Exclude<PageVerb, { kind: "pageWalk" }>;
+
+/** A page verb with the readerCommand envelope: the engine must not act after `expires`. */
+export const PageCommand = z.object({ type: z.literal("pageCommand"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1), expires: ms, verb: PageVerb });
+export type PageCommand = z.infer<typeof PageCommand>;
+
+export const PageOutcome = z.enum([
+  /** Done and verified: for a write, both readings (after input, after blur) hold the value. */
+  "ok",
+  /** The end state already held, so nothing was done. */
+  "alreadyTrue",
+  /** No live grant covers this task, tab, frame, origin and navigation generation; `detail` says which. */
+  "notAllowed",
+  /** The page moved on since the walk: a navigation, another document, a value or name that differs from the walk's. */
+  "stale",
+  /** Caret acted and the page did not take it: a value that returned to `before` is "the page kept the old value". */
+  "failed",
+  /** A press Caret leaves to the user: in v1, every page press. */
+  "handoff",
+  /** The element is gone and no strong key rebinds it. */
+  "noElement",
+  /** A verb with `rebind: false` found its element replaced: nothing was done (W3, undo). */
+  "notSameElement",
+  /** The element is one Caret never reads or writes (PageExclusion). */
+  "excluded",
+  /** A verb this build does not carry out yet. */
+  "unsupported",
+  "error",
+  /** The user turned Caret off for this site ("Not on this site", pageSitesOff): nothing was read or done there. */
+  "siteOff",
+]);
+export type PageOutcome = z.infer<typeof PageOutcome>;
+
+/** The two readings a write is judged on, and what the page said about the field after blur. */
+export const PageWriteReadings = z.object({
+  before: z.string(),
+  afterInput: z.string(),
+  afterBlur: z.string(),
+  invalid: z.boolean(),
+  /** The error text aria-describedby or aria-errormessage pointed at after blur, clipped; null when none. */
+  error: z.string().nullable(),
+});
+export type PageWriteReadings = z.infer<typeof PageWriteReadings>;
+
+/**
+ * What pageChooseOption found and checked. The readings carry the control's shown text (before, after the pick,
+ * after blur). `matches`: the names of the options whose normalized name equals the value, or, when none does,
+ * those that contain it; exactly one exact match is picked, anything else stops with these named. `expanded`:
+ * aria-expanded on the control at the end (null when it has none). `hiddenInput`: react-select's hidden form input
+ * took a new, non-empty value (`set`), did not (`unchanged`), or the control has none (`none`); its value never
+ * leaves the frame, since hidden inputs are never read out.
+ */
+export const PageChoice = z.object({
+  flavor: z.enum(["aria", "reactSelect"]),
+  matches: z.array(z.string()).max(20),
+  expanded: z.boolean().nullable(),
+  hiddenInput: z.enum(["set", "unchanged", "none"]),
+});
+export type PageChoice = z.infer<typeof PageChoice>;
+
+/** What pageAttachFile checked: the input's files[0] (null for a drop), and whether the page now shows the file's name where it did not before. */
+export const PageAttached = z.object({
+  via: z.enum(["input", "drop"]),
+  file: z.object({ name: z.string(), size: z.number().int().nonnegative() }).nullable(),
+  shown: z.boolean(),
+});
+export type PageAttached = z.infer<typeof PageAttached>;
+
+export const PageResult = z
+  .object({
+    type: z.literal("pageResult"),
+    v: z.literal(PROTOCOL_VERSION),
+    id: z.string().min(1),
+    at: ms,
+    outcome: PageOutcome,
+    detail: z.string().nullable(),
+    readings: PageWriteReadings.optional(),
+    /**
+     * On a handoff: the risk class the visible name reads as. `pageScript`: a page press whose name reads as no risk;
+     * every page press is a hand-off in v1, since the button runs the page's own script. `unclassified` and
+     * `submitsForm` are kept for a later build that presses.
+     */
+    risk: z.enum(["outbound", "destructive", "money", "system", "unclassified", "submitsForm", "pageScript"]).optional(),
+    /** pageChooseOption only. */
+    choice: PageChoice.optional(),
+    /** pageAttachFile only. */
+    attached: PageAttached.optional(),
+  })
+  .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] });
+export type PageResult = z.infer<typeof PageResult>;
+
+/** The worker's first message once the bridge says the engine is ready. One per worker instance and connection. */
+export const PageHello = z.object({
+  type: z.literal("pageHello"),
+  v: z.literal(PROTOCOL_VERSION),
+  extensionId: z.string().regex(/^[a-p]{32}$/),
+  version: z.string().min(1),
+  /** A random id the extension keeps per browser profile, so two profiles of one browser are two engines. */
+  profile: z.string().min(1),
+  /** A random id per service-worker start: a new one means the worker restarted. */
+  instance: z.string().min(1),
+  startedAt: ms,
+  capabilities: z.array(z.string()),
+});
+export type PageHello = z.infer<typeof PageHello>;
+
+/** Liveness check with no side effect; the answer names the worker instance so a restart cannot pass for the same one. */
+export const PagePing = z.object({ type: z.literal("pagePing"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1) });
+export type PagePing = z.infer<typeof PagePing>;
+export const PagePong = z.object({ type: z.literal("pagePong"), v: z.literal(PROTOCOL_VERSION), id: z.string().min(1), at: ms, instance: z.string().min(1), startedAt: ms });
+export type PagePong = z.infer<typeof PagePong>;
+
+// The bridge's handshake. The helper writes the launch's page key, derived from the launch secret (engines/auth.ts),
+// readable by the user only. Each side proves it holds the key with an HMAC over both nonces, so a process that took
+// over the socket path learns nothing and a peer without the key is refused before any page message. The helper's
+// proof also names its pid, which the bridge requires to be its socket's peer (B23's rule for the reader).
+
+const Nonce = z.string().regex(/^[0-9a-f]{64}$/);
+const Proof = z.string().regex(/^[0-9a-f]{64}$/);
+
+/** Helper to bridge, first line on every page.sock connection. */
+export const EngineChallenge = z.object({ type: z.literal("engineChallenge"), v: z.literal(PROTOCOL_VERSION), nonce: Nonce });
+export type EngineChallenge = z.infer<typeof EngineChallenge>;
+
+/**
+ * Bridge to helper. `proof` is HMAC-SHA256(key, "caret-page-bridge\n" + challenge nonce + "\n" + nonce), hex.
+ * `browser` is the bridge's parent process, the browser that launched it. `extensionId` comes from the origin
+ * Chrome passed the bridge.
+ */
+export const EngineHello = z.object({
+  type: z.literal("engineHello"),
+  v: z.literal(PROTOCOL_VERSION),
+  role: z.literal("page"),
+  browser: AppRef,
+  extensionId: z.string().regex(/^[a-p]{32}$/),
+  bridgeVersion: z.string().min(1),
+  nonce: Nonce,
+  proof: Proof,
+});
+export type EngineHello = z.infer<typeof EngineHello>;
+
+/**
+ * Helper to bridge after a valid hello. `proof` is HMAC-SHA256(key, "caret-page-helper\n" + bridge nonce + "\n" +
+ * challenge nonce + "\n" + pid), hex; `pid` is the helper's own, which the bridge checks against its socket's peer.
+ */
+export const EngineWelcome = z.object({ type: z.literal("engineWelcome"), v: z.literal(PROTOCOL_VERSION), engine: z.string().min(1), proof: Proof, pid: z.number().int().positive() });
+export type EngineWelcome = z.infer<typeof EngineWelcome>;
+
+/** Bridge to extension once the helper proved itself: the engine session id, nothing secret. */
+export const EngineReady = z.object({ type: z.literal("engineReady"), v: z.literal(PROTOCOL_VERSION), engine: z.string().min(1) });
+export type EngineReady = z.infer<typeof EngineReady>;
+
+/**
+ * Part of a helper line too long for one Native Messaging frame (Chrome caps host-to-extension messages at
+ * 1 MB). The bridge splits; the worker joins parts by `id` in order and parses the whole.
+ */
+export const PageChunk = z.object({
+  type: z.literal("pageChunk"),
+  v: z.literal(PROTOCOL_VERSION),
+  id: z.string().min(1),
+  index: z.number().int().nonnegative(),
+  count: z.number().int().min(2),
+  data: z.string(),
+});
+export type PageChunk = z.infer<typeof PageChunk>;
+
+/**
+ * Focus moved to another element in a frame of the tab the user is in (the active tab of the focused browser
+ * window, visible, its document focused). Carries nothing about the element: the helper decides whether to walk the
+ * tab (engines/page-focus.ts). The worker sends at most one per tab per 150 ms, and none for a site that is off.
+ */
+export const PageFocusMoved = z.object({ type: z.literal("pageFocus"), v: z.literal(PROTOCOL_VERSION), at: ms, tabId: z.number().int().nonnegative(), frameId: z.number().int().nonnegative() });
+export type PageFocusMoved = z.infer<typeof PageFocusMoved>;
+
+/**
+ * "Not on this site": every origin the user turned Caret off for, the whole list each time (the helper's list
+ * replaces the worker's). The worker then walks no frame and acts in no frame at these origins, a tab whose top
+ * frame is at one answers `siteOff`, and focus there is not reported. The helper sends it after every hello.
+ */
+export const PageSitesOff = z.object({ type: z.literal("pageSitesOff"), v: z.literal(PROTOCOL_VERSION), origins: z.array(z.string().regex(/^https?:\/\/[^/\s]+$/)).max(1000) });
+export type PageSitesOff = z.infer<typeof PageSitesOff>;
+
+/**
+ * The user's own pointer or key press in a frame that holds a live grant (W3): an event the browser marks trusted
+ * (`isTrusted`), which page scripts and Caret's own synthetic events cannot produce. Nothing about the element or the
+ * key travels. The worker drops the frame's grants at once and sends this; the helper pauses every task acting in the
+ * tab, as it does for the reader's userInput.
+ */
+export const PageInput = z.object({ type: z.literal("pageInput"), v: z.literal(PROTOCOL_VERSION), at: ms, tabId: z.number().int().nonnegative(), frameId: z.number().int().nonnegative(), kind: z.enum(["key", "mouse"]) });
+export type PageInput = z.infer<typeof PageInput>;
+
+/** What the extension sends the helper after the handshake. */
+export const EngineMessage = z.discriminatedUnion("type", [PageHello, PageSnapshot, PageResult, PagePong, PageFocusMoved, PageInput]);
+export type EngineMessage = z.infer<typeof EngineMessage>;
+/** What the helper sends the extension after the handshake. ActRevoke is the native one, unchanged. */
+export const HelperToEngine = z.discriminatedUnion("type", [PageCommand, ScopedActGrant, ActRevoke, PagePing, PageSitesOff]);
+export type HelperToEngine = z.infer<typeof HelperToEngine>;
+/** Every message on page.sock or the Native Messaging port, handshake included. */
+export const AnyPageMessage = z.union([EngineMessage, HelperToEngine, EngineChallenge, EngineHello, EngineWelcome, EngineReady, PageChunk]);
+export type AnyPageMessage = z.infer<typeof AnyPageMessage>;

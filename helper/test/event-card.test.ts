@@ -14,14 +14,16 @@ import { FakeCalendar } from "../src/executor/means.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { HelperMessage, PROTOCOL_VERSION, type AppRef, type OfferAction, type ReaderMessage, type TypedValue } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { DEFAULT_MINUTES, resolveEventTime } from "../src/offers/event-time.ts";
-import { eventCandidate, eventTitle, MAX_PENDING_EVENT_ASKS, personIn, sentences, spansIn } from "../src/offers/event-card.ts";
+import { DURATION_CHOICES, resolveEventTime } from "../src/offers/event-time.ts";
+import { EventCards, eventCandidate, eventTitle, MAX_PENDING_EVENT_ASKS, personIn, sentences, spansIn, withZones } from "../src/offers/event-card.ts";
+import { ScreenModel } from "../src/model.ts";
+import { DEFAULT_SETTINGS, OfferGate } from "../src/offers/settings.ts";
 import type { WindowState } from "../src/model.ts";
 import { snap, text } from "./builders.ts";
 
 interface Golden {
   now: string;
-  sentences: { id: string; sentence: string; spans: { kind: "date" | "time"; text: string }[]; attend: "yes" | "no" | null; expect: { title: string; start: string; end: string } | null }[];
+  sentences: { id: string; sentence: string; spans: { kind: "date" | "time"; text: string }[]; attend: "yes" | "no" | null; expect: { title: string; start: string; end: string } | { title: string; choices: { start: string; end: string }[] } | null }[];
 }
 const GOLDEN = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/golden/event-sentences.json", import.meta.url)), "utf8")) as Golden;
 const NOW = Date.parse(GOLDEN.now);
@@ -36,63 +38,106 @@ afterAll(() => {
   else process.env.TZ = zone;
 });
 
+const CLOCK = { now: new Date(NOW), timeZone: "America/Chicago", locale: "en-US" };
+const at = (spans: string[], source: "typed" | "conversation" = "typed") => resolveEventTime(spans, CLOCK, source);
+/** A card's stated time, or null when it asks or makes no card. */
+const stated = (spans: string[]) => {
+  const w = at(spans);
+  return w?.kind === "resolved" ? w.time : null;
+};
+const choices = (spans: string[], source: "typed" | "conversation" = "typed") => {
+  const w = at(spans, source);
+  return w?.kind === "ask" ? w.choices.map((c) => `${c.start}/${c.end}`) : null;
+};
+
 describe("event times", () => {
-  const at = (spans: string[]) => resolveEventTime(spans, new Date(NOW));
-  it("reads weekdays, relative days, month days and numeric dates against now", () => {
-    expect(at(["Thu 3:00"])).toEqual({ start: "2026-10-08T15:00:00-05:00", end: "2026-10-08T15:30:00-05:00", says: "Thu 3:00 to 3:30 PM" });
-    expect(at(["tomorrow at noon"])?.start).toBe("2026-10-06T12:00:00-05:00");
-    expect(at(["Oct 16 at 6pm"])?.start).toBe("2026-10-16T18:00:00-05:00");
-    expect(at(["Oct 16 at 6pm"])?.says).toBe("Oct 16 6:00 to 6:30 PM");
-    expect(at(["10/12 at 2:30 PM"])?.start).toBe("2026-10-12T14:30:00-05:00");
-    expect(at(["16 Oct 9am"])?.start).toBe("2026-10-16T09:00:00-05:00");
-    expect(at(["Sep 3 at 9am"])?.start).toBe("2027-09-03T09:00:00-05:00");
+  it("states a time only when the text gives its start, end, and half of the day", () => {
+    expect(stated(["Thu 3:00 to 3:45 PM"])).toMatchObject({ start: "2026-10-08T15:00:00-05:00", end: "2026-10-08T15:45:00-05:00", says: "Thu 3:00 to 3:45 PM" });
+    expect(stated(["Friday 3-4pm"])).toMatchObject({ start: "2026-10-09T15:00:00-05:00", end: "2026-10-09T16:00:00-05:00" });
+    expect(stated(["Oct 16 6pm to 7pm"])).toMatchObject({ start: "2026-10-16T18:00:00-05:00", says: "Oct 16 6:00 to 7:00 PM" });
+    expect(stated(["10/12 at 2:30 PM to 3:30 PM"])?.start).toBe("2026-10-12T14:30:00-05:00");
+    expect(stated(["Friday 15:00 to 16:00"])?.start).toBe("2026-10-09T15:00:00-05:00");
+    expect(stated(["Oct 16 2027 6pm to 7pm"])?.start).toBe("2027-10-16T18:00:00-05:00");
   });
 
-  it("reads hours without AM or PM by the stated rule, and tonight as evening", () => {
-    expect(at(["Friday at 3"])?.start).toBe("2026-10-09T15:00:00-05:00");
-    expect(at(["tomorrow at 10:30"])?.start).toBe("2026-10-06T10:30:00-05:00");
-    expect(at(["tonight at 8"])?.start).toBe("2026-10-05T20:00:00-05:00");
-    expect(at(["Sunday at 12"])?.start).toBe("2026-10-11T12:00:00-05:00");
-    expect(at(["Friday at 15:00"])?.start).toBe("2026-10-09T15:00:00-05:00");
+  it("asks how long when the text gives no end, offering both lengths and adding neither on its own", () => {
+    expect(DURATION_CHOICES).toEqual([30, 60]);
+    expect(choices(["tomorrow at noon"])).toEqual(["2026-10-06T12:00:00-05:00/2026-10-06T12:30:00-05:00", "2026-10-06T12:00:00-05:00/2026-10-06T13:00:00-05:00"]);
+    expect(at(["tomorrow at noon"])).toMatchObject({ kind: "ask", question: expect.stringMatching(/How long/) });
   });
 
-  it("keeps a weekday or time still ahead today, and moves one already past on", () => {
-    expect(at(["Monday at 3pm"])?.start).toBe("2026-10-05T15:00:00-05:00");
-    expect(at(["Monday at 9am"])?.start).toBe("2026-10-12T09:00:00-05:00");
-    expect(at(["4:30 PM"])?.start).toBe("2026-10-05T16:30:00-05:00");
-    expect(at(["9:30 AM"])?.start).toBe("2026-10-06T09:30:00-05:00");
+  it("asks AM or PM instead of guessing, and drops a choice already past", () => {
+    expect(choices(["Friday 10am to 2"])).toEqual(["2026-10-09T10:00:00-05:00/2026-10-09T14:00:00-05:00", "2026-10-09T10:00:00-05:00/2026-10-10T02:00:00-05:00"]);
+    expect(choices(["at 4 today"])).toEqual(["2026-10-05T16:00:00-05:00/2026-10-05T16:30:00-05:00", "2026-10-05T16:00:00-05:00/2026-10-05T17:00:00-05:00"]);
+    // Two halves of the day times two lengths is four, more than the card's picker holds: no card.
+    expect(at(["Thu 3:00"])).toBeNull();
+    expect(at(["Friday at 3"])).toBeNull();
+    expect(at(["Friday 3 to 4"])).toBeNull();
   });
 
-  it("takes an end from a range, and lasts the default otherwise", () => {
-    expect(at(["Thu 3:00 to 3:45"])?.end).toBe("2026-10-08T15:45:00-05:00");
-    expect(at(["Friday 3-4pm"])).toMatchObject({ start: "2026-10-09T15:00:00-05:00", end: "2026-10-09T16:00:00-05:00" });
-    expect(at(["Friday 11 to 12:30"])?.end).toBe("2026-10-09T12:30:00-05:00");
-    expect(DEFAULT_MINUTES).toBe(30);
+  it("makes no card from a day alone, a bare number, the past, or a time that cannot be", () => {
+    for (const spans of [["Friday"], ["Oct 16"], ["3"], ["yesterday at 3pm"], ["6pm last Friday"], ["today at 9am"], ["25:00"], ["13pm"], ["Feb 30 at 3pm"], [], ["Oct 16, 2025 at 6pm"]]) expect(at(spans), spans[0]).toBeNull();
   });
 
-  it("makes no event from a day alone, a bare number, the past, or a time that cannot be", () => {
-    for (const spans of [["Friday"], ["Oct 16"], ["3"], ["yesterday at 3"], ["6pm last Friday"], ["today at 9am"], ["25:00"], ["13pm"], ["Feb 30 at 3pm"], []]) expect(at(spans)).toBeNull();
+  it("reads a stated zone and shows the source zone, the destination zone and both offsets", () => {
+    const pt = stated(["Oct 20 3:00 to 4:00 PM PT"]);
+    expect(pt).toMatchObject({ start: "2026-10-20T17:00:00-05:00", end: "2026-10-20T18:00:00-05:00", says: "Oct 20 5:00 to 6:00 PM" });
+    expect(pt?.zones).toBe("Oct 20, 3:00 to 4:00 PM PT (America/Los_Angeles, UTC-07:00) / 5:00 to 6:00 PM America/Chicago (UTC-05:00)");
+    const plus2 = stated(["Oct 21 15:00 to 16:00 UTC+2"]);
+    expect(plus2).toMatchObject({ start: "2026-10-21T08:00:00-05:00", end: "2026-10-21T09:00:00-05:00" });
+    expect(plus2?.zones).toBe("Oct 21, 3:00 to 4:00 PM UTC+2 (UTC+02:00) / 8:00 to 9:00 AM America/Chicago (UTC-05:00)");
+    expect(stated(["Thu 3:00 to 3:45 PM"])?.zones).toBe("Oct 8, 3:00 to 3:45 PM America/Chicago (UTC-05:00), your time zone");
   });
 
-  it("writes the offset of the event's own date across a daylight-saving change, and offers no time the clocks skip", () => {
-    expect(at(["Nov 2 at 10am"])?.start).toBe("2026-11-02T10:00:00-06:00");
-    expect(at(["Mar 14 at 2:30am"])).toBeNull();
+  it("asks with the real instants for a time the clocks skip or repeat, and for an ambiguous abbreviation", () => {
+    expect(choices(["Nov 1 1:30 to 2:30 AM PT"])?.length).toBeGreaterThanOrEqual(2);
+    expect(at(["Mar 14 2027 at 2:30am to 3:30am"])?.kind).toBe("ask");
+    // IST is India, Ireland or Israel; Israel is on IDT on Oct 9, so two remain, each with both ends in one zone.
+    expect(choices(["Friday 3pm to 4pm IST"])).toEqual(["2026-10-09T04:30:00-05:00/2026-10-09T05:30:00-05:00", "2026-10-09T09:00:00-05:00/2026-10-09T10:00:00-05:00"]);
   });
 
-  it("keeps a stated year, and makes no event from a stated date already past", () => {
-    expect(at(["Oct 16 2027 at 6pm"])?.start).toBe("2027-10-16T18:00:00-05:00");
-    expect(at(["Oct 16, 2027 at 6pm"])?.start).toBe("2027-10-16T18:00:00-05:00");
-    expect(at(["10/12/2027 at 9am"])?.start).toBe("2027-10-12T09:00:00-05:00");
-    expect(at(["Oct 16, 2025 at 6pm"])).toBeNull();
+  it("tells apart choices that read the same because the clocks repeat an hour", () => {
+    const w = resolveEventTime(["2026-11-01 00:30 to 01:30 PT"], { ...CLOCK, timeZone: "America/Los_Angeles" });
+    expect(w?.kind).toBe("ask");
+    const says = w?.kind === "ask" ? w.choices.map((c) => c.says) : [];
+    expect(says).toEqual(["Nov 1 12:30 to 1:30 AM (UTC-07:00 to UTC-07:00)", "Nov 1 12:30 to 1:30 AM (UTC-07:00 to UTC-08:00)"]);
+    // Two readings that end on the same offset still differ in the offset they start on.
+    const both = resolveEventTime(["2026-11-01 01:15 to 02:15 PT"], { ...CLOCK, timeZone: "America/Los_Angeles" });
+    const labels = both?.kind === "ask" ? both.choices.map((c) => c.says) : [];
+    expect(labels.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(labels).size).toBe(labels.length);
   });
 
-  it("makes no event from a time in another zone or a time that cannot be", () => {
-    for (const spans of [["tomorrow at 3pm UTC"], ["tomorrow at 3pm -07:00"], ["Friday at 9am PST"], ["Friday at 9am CET"], ["Friday at 3:99"], ["Friday at 3:5pm"], ["Friday at 3:000pm"], ["today at 0pm"], ["Friday at 13pm"], ["Friday at 24:10"]]) expect(at(spans), spans[0]).toBeNull();
+  it("names each end's own zone when a range starts and ends in different zones", () => {
+    expect(stated(["2026-10-21 09:00 PT to 13:00 ET"])?.zones).toBe("Oct 21, 9:00 AM PT (America/Los_Angeles, UTC-07:00) to 1:00 PM ET (America/New_York, UTC-04:00) / 11:00 AM to 12:00 PM America/Chicago (UTC-05:00)");
   });
 
-  it("refuses a sentence that names a zone outside the reader's span, but not a name that looks like one", () => {
-    expect(eventCandidate("Coffee with Dana tomorrow at 3pm UTC.", ["tomorrow at 3pm"], [], new Date(NOW))).toBeNull();
-    expect(eventCandidate("Coffee at 3pm with Dana Best tomorrow.", ["3pm", "tomorrow"], [], new Date(NOW))?.time.start).toBe("2026-10-06T15:00:00-05:00");
+  it("shows seconds when the time has them, as it will be added", () => {
+    expect(stated(["2026-10-21T15:01:37Z to 2026-10-21T15:01:58Z"])).toMatchObject({ start: "2026-10-21T10:01:37-05:00", end: "2026-10-21T10:01:58-05:00", says: "Oct 21 10:01:37 to 10:01:58 AM" });
+  });
+
+  it("counts nothing from now in a conversation line: relative days make no card, and an unzoned time asks", () => {
+    expect(at(["tomorrow at 3pm to 4pm"], "conversation")).toBeNull();
+    expect(at(["Oct 16 6pm to 7pm"], "conversation")).toBeNull();
+    expect(choices(["Oct 16, 2026 6pm to 7pm"], "conversation")).toEqual(["2026-10-16T18:00:00-05:00/2026-10-16T19:00:00-05:00"]);
+    expect(stated(["Oct 16, 2026 6pm to 7pm"])).not.toBeNull();
+    expect(at(["Oct 16, 2026 6pm to 7pm PT"], "conversation")?.kind).toBe("resolved");
+  });
+
+  it("takes a zone named right after the reader's span, and makes no card when a zone is named elsewhere", () => {
+    expect(withZones("Coffee with Dana tomorrow at 3pm UTC.", ["tomorrow at 3pm"])).toEqual(["tomorrow at 3pm UTC"]);
+    expect(withZones("Call with Dana 3pm (PT) Friday.", ["3pm"])).toEqual(["3pm PT"]);
+    expect(withZones("Coffee at 3pm with Dana Best tomorrow.", ["3pm", "tomorrow"])).toEqual(["3pm", "tomorrow"]);
+    expect(withZones("UTC: coffee with Dana tomorrow at 3pm.", ["tomorrow at 3pm"])).toBeNull();
+    expect(eventCandidate("Coffee with Dana tomorrow from 3pm to 4pm UTC.", ["tomorrow", "3pm to 4pm"], [], CLOCK)?.time).toMatchObject({ kind: "resolved", time: { start: "2026-10-06T10:00:00-05:00" } });
+    expect(eventCandidate("UTC: coffee with Dana tomorrow at 3pm.", ["tomorrow at 3pm"], [], CLOCK)).toBeNull();
+    // A zone the resolver does not know, left out of the span, must not let the time be read as local.
+    expect(withZones("Coffee with Dana on Oct 20, 2026 from 15:00 to 16:00 AWST.", ["Oct 20, 2026", "15:00 to 16:00"])).toBeNull();
+    expect(eventCandidate("Coffee with Dana on Oct 20, 2026 from 15:00 to 16:00 AWST.", ["Oct 20, 2026", "15:00 to 16:00"], [], CLOCK)).toBeNull();
+    expect(withZones("Sync with IT and Dana at 3pm to 4pm.", ["3pm to 4pm"])).toEqual(["3pm to 4pm"]);
+    // A capitalized word away from the time is a word, not a zone.
+    expect(eventCandidate("Meet Dana at MIT tomorrow from 3pm to 4pm.", ["tomorrow", "3pm to 4pm"], [], CLOCK)?.time.kind).toBe("resolved");
+    expect(withZones("Coffee with Dana, JUST NOT before GPT demo, tomorrow 3pm to 4pm.", ["tomorrow 3pm to 4pm"])).toEqual(["tomorrow 3pm to 4pm"]);
   });
 });
 
@@ -119,13 +164,13 @@ describe("person, title and sentences", () => {
     const w = { values: [{ kind: "date", text: "tomorrow", nodeKey: "k" }, { kind: "time", text: "3:00", nodeKey: "k" }, { kind: "time", text: "4:00pm", nodeKey: "k" }, { kind: "time", text: "9:00", nodeKey: "other" }] } as unknown as WindowState;
     const s = "Lunch with Dana tomorrow 3:00 to 4:00pm.";
     expect(spansIn(w, "k", s)).toEqual(["tomorrow 3:00 to 4:00pm"]);
-    expect(resolveEventTime(spansIn(w, "k", s), new Date(NOW))).toMatchObject({ start: "2026-10-06T15:00:00-05:00", end: "2026-10-06T16:00:00-05:00" });
+    expect(stated(spansIn(w, "k", s))).toMatchObject({ start: "2026-10-06T15:00:00-05:00", end: "2026-10-06T16:00:00-05:00" });
     expect(spansIn(w, "none", s)).toEqual([]);
     // Words between two spans that are not a range's connector are left out: a room number is not a time.
     const room = { values: [{ kind: "date", text: "Friday", nodeKey: "k" }, { kind: "time", text: "3pm", nodeKey: "k" }] } as unknown as WindowState;
     const r = "Meeting with Dana Friday in room 2 at 3pm.";
     expect(spansIn(room, "k", r)).toEqual(["Friday 3pm"]);
-    expect(resolveEventTime(spansIn(room, "k", r), new Date(NOW))?.start).toBe("2026-10-09T15:00:00-05:00");
+    expect(choices(spansIn(room, "k", r))?.[0]).toBe("2026-10-09T15:00:00-05:00/2026-10-09T15:30:00-05:00");
   });
 
   it("leaves out a last sentence still being typed", () => {
@@ -196,8 +241,8 @@ describe("event cards through the helper", () => {
 
   const spansOf = (s: Golden["sentences"][number]): TypedValue[] => s.spans.map((x) => ({ kind: x.kind, text: x.text, nodeKey: BODY }));
 
-  it("offers exactly the 20 events, asks only where code found a person and a time ahead, and offers none of the 20 distractors", async () => {
-    const results: { id: string; got: { title: string; start: string; end: string } | null }[] = [];
+  it("offers the 15 events whose time can be settled on the card, asks only where code found a person and a time ahead, and offers none of the 20 distractors", async () => {
+    const results: { id: string; got: Record<string, unknown> | null }[] = [];
     const asked: string[] = [];
     for (const s of GOLDEN.sentences) {
       close();
@@ -206,29 +251,61 @@ describe("event cards through the helper", () => {
       const o = offers();
       expect(o.length, s.id).toBeLessThanOrEqual(1);
       const shown = helper.events.shown().find((e) => e.offerKey === o[0]?.offerKey);
-      results.push({ id: s.id, got: shown === undefined ? null : { title: shown.title, start: shown.start, end: shown.end } });
+      results.push({ id: s.id, got: shown === undefined ? null : { title: shown.title, ...shown.when } });
       asked.push(...jev.asked);
     }
     expect(results).toEqual(GOLDEN.sentences.map((s) => ({ id: s.id, got: s.expect })));
     expect(asked.sort()).toEqual(GOLDEN.sentences.filter((s) => s.attend !== null).flatMap((s) => [s.sentence, s.sentence]).sort());
-    expect(results.filter((r) => r.id.startsWith("s") && r.got !== null)).toHaveLength(20);
+    // s01, s07, s13, s15 and s19 give no AM or PM and no end: four possible times, more than the card's picker holds.
+    expect(results.filter((r) => r.id.startsWith("s") && r.got !== null)).toHaveLength(15);
     expect(results.filter((r) => r.id.startsWith("d") && r.got !== null)).toHaveLength(0);
   });
 
   it("shows the offer as a Calendar line with the card behind it, and adds the event when taken", async () => {
-    const s = GOLDEN.sentences[0] as Golden["sentences"][number];
-    await type(s.sentence, spansOf(s));
+    jev = attendJev(() => "yes");
+    const sentence = "Coffee with Dana Thu 3:00 to 3:30 PM.";
+    await type(sentence, [{ kind: "date", text: "Thu 3:00 to 3:30 PM", nodeKey: BODY }]);
     const o = offers()[0] as OfferAction;
     expect(o.endState.text).toBe("Coffee with Dana, Thu 3:00 to 3:30 PM");
     expect(o.field).toMatchObject({ windowId: COMPOSE, key: BODY });
+    expect(o.variants?.figure).toBe("offering");
     expect(o.variants?.blocks.map((b) => b.type)).toEqual(["header", "facts", "source", "actions"]);
-    expect(o.endState.ref).toEqual({ rule: "eventCard", derived: [{ node: `${COMPOSE}/${BODY}`, quote: s.sentence }] });
+    expect(o.variants?.blocks[1]).toMatchObject({ rows: [{ label: "When" }, { label: "Time zones", value: { text: "Oct 8, 3:00 to 3:30 PM America/Chicago (UTC-05:00), your time zone" } }, { label: "Calendar" }] });
+    expect(o.endState.ref).toEqual({ rule: "eventCard", derived: [{ node: `${COMPOSE}/${BODY}`, quote: sentence }] });
     const r = await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: o.offerKey, actionId: "add", overrides: {}, at: clock });
     expect(r).toMatchObject({ outcome: "done", acted: 1 });
     expect([...calendar.events.values()]).toEqual([expect.objectContaining({ calendar: "Caret", title: "Coffee with Dana", start: "2026-10-08T15:00:00-05:00", end: "2026-10-08T15:30:00-05:00" })]);
     const undone = await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: o.offerKey, action: "undo" });
     expect(undone).toMatchObject({ restored: 1 });
     expect(calendar.events.size).toBe(0);
+  });
+
+  it("makes a card that asks when the text gives no end, and adds only the length the user picked", async () => {
+    const s = GOLDEN.sentences[1] as Golden["sentences"][number];
+    await type(s.sentence, spansOf(s));
+    const o = offers()[0] as OfferAction;
+    expect(o.endState.text).toBe("Lunch with Priya, pick a time (2 possible)");
+    expect(o.variants?.figure).toBe("needsYou");
+    expect(o.variants?.blocks.map((b) => b.type)).toEqual(["header", "facts", "choices", "source", "actions"]);
+    expect(o.variants?.blocks[2]).toMatchObject({ type: "choices", rows: [{ label: { text: "Tue 12:00 to 12:30 PM" } }, { label: { text: "Tue 12:00 to 1:00 PM" } }] });
+    const r = await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: o.offerKey, actionId: "add", overrides: { variants: 1 }, at: clock });
+    expect(r).toMatchObject({ outcome: "done", acted: 1 });
+    expect([...calendar.events.values()]).toEqual([expect.objectContaining({ title: "Lunch with Priya", start: "2026-10-06T12:00:00-05:00", end: "2026-10-06T13:00:00-05:00" })]);
+  });
+
+  it("adds nothing when a card that asks is taken without a picked time, and offers it again so a pick can follow", async () => {
+    const s = GOLDEN.sentences[1] as Golden["sentences"][number];
+    await type(s.sentence, spansOf(s));
+    const o = offers()[0] as OfferAction;
+    expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: o.offerKey, actionId: "add", overrides: {}, at: clock })).toBeNull();
+    expect(calendar.events.size).toBe(0);
+    expect(calendar.calls).toEqual([]);
+    const again = offers()[1] as OfferAction;
+    expect(again.offerKey).not.toBe(o.offerKey);
+    expect(again.variants?.blocks[2]).toEqual(o.variants?.blocks[2]);
+    expect(published.some((m) => m.type === "offerWithdrawn" && m.id === o.offerKey && m.reason === "reoffered" && m.replacedBy === again.offerKey)).toBe(true);
+    expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: again.offerKey, actionId: "add", overrides: { variants: 0 }, at: clock })).toMatchObject({ outcome: "done" });
+    expect([...calendar.events.values()]).toEqual([expect.objectContaining({ start: "2026-10-06T12:00:00-05:00", end: "2026-10-06T12:30:00-05:00" })]);
   });
 
   it("asks about a sentence once, withdraws the offer when the sentence is edited away, and refuses a stale accept", async () => {
@@ -273,26 +350,27 @@ describe("event cards through the helper", () => {
     send(snap(history, { at: clock, windowId: chat, app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" }, title: "Kofi" }));
     clock += 1000;
     send(
-      snap([...history, text(line, "Lunch with Kofi tomorrow at noon?")], {
+      snap([...history, text(line, "Lunch with Kofi Oct 6, 2026 at noon CT?")], {
         at: clock,
         windowId: chat,
         app: { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" },
         title: "Kofi",
-        values: [{ kind: "date", text: "tomorrow at noon", nodeKey: line }],
+        values: [{ kind: "date", text: "Oct 6, 2026 at noon CT", nodeKey: line }],
       }),
     );
     await helper.eventsSettled;
     const o = offers();
     expect(o).toHaveLength(1);
     expect(o[0]?.field).toMatchObject({ windowId: COMPOSE, key: BODY });
-    expect(o[0]?.endState.text).toBe("Lunch with Kofi, Tue 12:00 to 12:30 PM");
+    // A conversation line's send time is not on screen, so it names its date and zone; it gives no end, so the card asks how long.
+    expect(o[0]?.endState.text).toBe("Lunch with Kofi, pick a time (2 possible)");
     clock += 10 * 60 * 1000;
     helper.tick(clock);
     expect(published.some((m) => m.type === "offerWithdrawn" && m.id === o[0]?.offerKey && m.reason === "expired")).toBe(true);
   });
 
   it("drops an answer to a question asked before the reader restarted", async () => {
-    const s = GOLDEN.sentences[0] as Golden["sentences"][number];
+    const s = GOLDEN.sentences[1] as Golden["sentences"][number];
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => (release = r));
     const inner = jev;
@@ -318,9 +396,9 @@ describe("event cards through the helper", () => {
     const history = Array.from({ length: 30 }, (_, i) => text(`dev.caret.chat/standard/statictext:h${i}~0`, `Kofi: an earlier message about the deck, number ${i}`));
     send(snap(history, { at: clock, windowId: chat, app, title: "Kofi" }));
     clock += 1000;
-    const lines = ["Lunch with Kofi tomorrow at noon?", "Coffee with Priya Friday at 3pm?", "Dinner with Marcus Saturday at 7pm?", "Breakfast with Ines Sunday at 9am?"];
+    const lines = ["Lunch with Kofi Oct 6, 2026 at noon CT?", "Coffee with Priya Oct 9, 2026 at 3pm CT?", "Dinner with Marcus Oct 10, 2026 at 7pm CT?", "Breakfast with Ines Oct 11, 2026 at 9am CT?"];
     const keys = lines.map((_, i) => `dev.caret.chat/standard/statictext:n${i}~0`);
-    const spans = ["tomorrow at noon", "Friday at 3pm", "Saturday at 7pm", "Sunday at 9am"];
+    const spans = ["Oct 6, 2026 at noon CT", "Oct 9, 2026 at 3pm CT", "Oct 10, 2026 at 7pm CT", "Oct 11, 2026 at 9am CT"];
     send(snap([...history, ...lines.map((t, i) => text(keys[i] as string, t))], { at: clock, windowId: chat, app, title: "Kofi", values: spans.map((t, i) => ({ kind: "date" as const, text: t, nodeKey: keys[i] as string })) }));
     const settled = helper.eventsSettled;
     release();
@@ -339,16 +417,107 @@ describe("event cards through the helper", () => {
     expect(calendar.events.size).toBe(0);
   });
 
-  it("finds an event card in a first look and adds it when taken", async () => {
-    const s = GOLDEN.sentences[5] as Golden["sentences"][number];
+  it("finds an event card in a first look and adds it when taken, and leaves out a card that would ask", async () => {
     jev = attendJev(() => "no");
-    await type(s.sentence, spansOf(s));
+    const sentence = "Drinks with Keiko on Oct 16 from 6pm to 8pm.";
+    await type(sentence, [{ kind: "date", text: "Oct 16", nodeKey: BODY }, { kind: "time", text: "6pm to 8pm", nodeKey: BODY }]);
     jev = attendJev(() => "yes");
     helper.events.readerRestarted();
     const reply = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "look-1", at: clock, families: ["event"], level: "balanced", deadlineMs: 4000 });
     expect(reply).toMatchObject({ outcome: "found", found: { kind: "action", family: "event", offerKey: "look-1.0", window: { windowId: COMPOSE } } });
     expect(reply.found?.spec.blocks[0]).toMatchObject({ type: "header", title: { text: "Drinks with Keiko" } });
     expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "look-1.0", actionId: "add", overrides: {}, at: clock })).toMatchObject({ outcome: "done" });
-    expect([...calendar.events.values()][0]).toMatchObject({ title: "Drinks with Keiko", start: "2026-10-16T18:00:00-05:00" });
+    expect([...calendar.events.values()][0]).toMatchObject({ title: "Drinks with Keiko", start: "2026-10-16T18:00:00-05:00", end: "2026-10-16T20:00:00-05:00" });
+
+    // A first look's card is taken without a picker row, so a sentence whose card would ask is not offered.
+    close();
+    await fresh();
+    const s = GOLDEN.sentences[5] as Golden["sentences"][number];
+    jev = attendJev(() => "no");
+    await type(s.sentence, spansOf(s));
+    jev = attendJev(() => "yes");
+    helper.events.readerRestarted();
+    const none = await helper.handleFirstLook({ type: "firstLook", v: PROTOCOL_VERSION, requestId: "look-2", at: clock, families: ["event"], level: "balanced", deadlineMs: 4000 });
+    expect(none.found ?? null).toBeNull();
+    expect(jev.asked).toHaveLength(0);
+  });
+
+  it("reads a mail's PT and UTC+2 times into the Mac's zone, shows both zones and offsets, and adds each to the fake calendar", async () => {
+    // Synthetic mail lines; expected instants worked out by hand: Oct 20 3:00 PM PDT (UTC-7) is 22:00Z, 5:00 PM in
+    // Chicago (CDT, UTC-5); Oct 21 15:00 at UTC+2 is 13:00Z, 8:00 AM in Chicago.
+    jev = attendJev(() => "yes");
+    const mail = "6161-1";
+    const app = { pid: 6161, bundleId: "com.apple.mail", name: "Mail" };
+    const history = ["From: Dana Whitfield", "To: me", "Subject: two calls this month", "Hi, a couple of things to put in the diary.", "Thanks!"].map((t, i) => text(`com.apple.mail/standard/statictext:h${i}~0`, t));
+    send(snap(history, { at: clock, windowId: mail, app, title: "two calls this month" }));
+    const lines = [
+      { key: "com.apple.mail/standard/statictext:m1~0", sentence: "Call with Dana on Oct 20, 2026 from 3:00 to 4:00 PM PT.", values: ["Oct 20, 2026", "3:00 to 4:00 PM PT"] },
+      { key: "com.apple.mail/standard/statictext:m2~0", sentence: "Sync with Priya on Oct 21, 2026 from 15:00 to 16:00 UTC+2.", values: ["Oct 21, 2026", "15:00 to 16:00"] },
+    ];
+    clock += 1000;
+    send(
+      snap([...history, ...lines.map((l) => text(l.key, l.sentence))], {
+        at: clock,
+        windowId: mail,
+        app,
+        title: "two calls this month",
+        values: lines.flatMap((l) => l.values.map((v, i) => ({ kind: i === 0 ? ("date" as const) : ("time" as const), text: v, nodeKey: l.key }))),
+      }),
+    );
+    await helper.eventsSettled;
+    const o = offers();
+    expect(o.map((x) => x.endState.text).sort()).toEqual(["Call with Dana, Oct 20 5:00 to 6:00 PM", "Sync with Priya, Oct 21 8:00 to 9:00 AM"]);
+    const card = (title: string) => o.find((x) => x.endState.text.startsWith(title)) as OfferAction;
+    const zones = (x: OfferAction) => (x.variants?.blocks[1] as { rows: { label?: string; value: { text: string } }[] }).rows.find((r) => r.label === "Time zones")?.value.text;
+    expect(zones(card("Call with Dana"))).toBe("Oct 20, 3:00 to 4:00 PM PT (America/Los_Angeles, UTC-07:00) / 5:00 to 6:00 PM America/Chicago (UTC-05:00)");
+    expect(zones(card("Sync with Priya"))).toBe("Oct 21, 3:00 to 4:00 PM UTC+2 (UTC+02:00) / 8:00 to 9:00 AM America/Chicago (UTC-05:00)");
+    for (const x of o) expect(await helper.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: x.offerKey, actionId: "add", overrides: {}, at: clock })).toMatchObject({ outcome: "done", acted: 1 });
+    const added = [...calendar.events.values()].map((e) => ({ title: e.title, start: e.start, end: e.end, startUtc: new Date(e.start).toISOString(), endUtc: new Date(e.end).toISOString() }));
+    expect(added.sort((a, b) => a.start.localeCompare(b.start))).toEqual([
+      { title: "Call with Dana", start: "2026-10-20T17:00:00-05:00", end: "2026-10-20T18:00:00-05:00", startUtc: "2026-10-20T22:00:00.000Z", endUtc: "2026-10-20T23:00:00.000Z" },
+      { title: "Sync with Priya", start: "2026-10-21T08:00:00-05:00", end: "2026-10-21T09:00:00-05:00", startUtc: "2026-10-21T13:00:00.000Z", endUtc: "2026-10-21T14:00:00.000Z" },
+    ]);
+  });
+});
+
+describe("judging a batch of changes (CodeRabbit on PR #5)", () => {
+  it("asks whether a window is a conversation once per window per batch, however many of its nodes changed", async () => {
+    const model = new ScreenModel();
+    const nodes = Array.from({ length: 200 }, (_, i) => text(`notes/line${i}`, `Line ${i} of a long note`));
+    model.apply(snap([], { at: 1000, windowId: "notes", title: "Notes" }));
+    const changes = model.apply(snap(nodes, { at: 2000, windowId: "notes", title: "Notes" }));
+    expect(changes.filter((c) => c.kind === "added")).toHaveLength(200);
+    let calls = 0;
+    const cards = new EventCards({
+      model,
+      askJev: null,
+      publish: () => true,
+      run: () => Promise.reject(new Error("nothing runs")),
+      gate: new OfferGate(DEFAULT_SETTINGS),
+      people: () => [],
+      calendar: "Caret",
+      live: () => true,
+      now: () => 2000,
+      isConversation: () => (calls++, false),
+    });
+    await cards.onChanges(changes);
+    expect(calls).toBe(1);
+  });
+});
+
+describe("Q1 bug 9: the dogfood's sentence with PT", () => {
+  it("makes a card that shows the time in PT and in the Mac's zone, and asks how long since the text gives no end", () => {
+    const sentence = "Also, let's set up a call with Priya Thursday 3pm PT to go over the budget.";
+    const clock = { now: new Date("2026-10-04T16:00:00Z"), timeZone: "America/Chicago", locale: "en-US" };
+    // The reader typed the whole span in the capture (evidence/screen/b24/capture-2); the zone is found either way.
+    for (const spans of [["Thursday 3pm PT"], ["Thursday", "3pm"]]) {
+      const c = eventCandidate(sentence, spans, [{ id: "p1", label: "Priya", text: "Priya Raman" }], clock, "typed");
+      expect(c?.title).toBe("Call with Priya");
+      if (c?.time.kind !== "ask") throw new Error("expected a card that asks how long");
+      expect(c.time.choices.map((t) => t.zones)).toEqual([
+        "Oct 8, 3:00 to 3:30 PM PT (America/Los_Angeles, UTC-07:00) / 5:00 to 5:30 PM America/Chicago (UTC-05:00)",
+        "Oct 8, 3:00 to 4:00 PM PT (America/Los_Angeles, UTC-07:00) / 5:00 to 6:00 PM America/Chicago (UTC-05:00)",
+      ]);
+    }
   });
 });

@@ -1,0 +1,1 @@
+I1 golden order: protocol.ndjson lines 60-66 are B23's (hello/helperAuth/marks), 67-68 W2's pageEngine; tests index them 0-based in protocol.test.ts and GoldenTests.swift.

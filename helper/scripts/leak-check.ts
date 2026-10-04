@@ -15,6 +15,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { scanText, SeenSet, type LeakHit, type SeenFile } from "../src/leak-check.ts";
+import { addedLines } from "./added-lines.ts";
 
 const { values: a, positionals } = parseArgs({
   allowPositionals: true,
@@ -39,11 +40,7 @@ const walk = (p: string): void => {
 for (const p of positionals) walk(p);
 if (a.diff !== undefined && a.repo !== undefined) {
   const diff = execFileSync("git", ["-C", a.repo, "diff", "--unified=0", "--no-color", `${a.diff}..HEAD`], { encoding: "utf8", maxBuffer: 1 << 28 });
-  let file = "";
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("+++ ")) file = `diff:${line.slice(6)}`;
-    else if (line.startsWith("+") && file !== "") targets.set(file, `${targets.get(file) ?? ""}${line.slice(1)}\n`);
-  }
+  for (const [file, text] of addedLines(diff)) targets.set(file, `${targets.get(file) ?? ""}${text}`);
 }
 
 const hits = new Map<string, { hit: LeakHit; files: Set<string> }>();

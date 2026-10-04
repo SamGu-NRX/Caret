@@ -6,25 +6,30 @@
 // within the window's budget) and in B6's (up to 50 lines of the window's text), REPS times each. B4's
 // fixture job windows follow, in both forms.
 //
-//   CARET_ENV_FILE=/path/to/.env node scripts/pending-agent-eval.ts --out DIR [--reps N]
+//   CARET_ENV_FILE=/path/to/.env node scripts/pending-agent-eval.ts --out DIR [--reps N] [--max-usd 0.20]
 //
-// Writes results.json and summary.md. The key is read when a request is made and never printed.
+// Writes results.json and summary.md. The key is read when a request is made and never printed. Live Jev stops
+// before spending more than --max-usd (scripts/spend.ts); the questions past it are rows with got "error".
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveInt, positiveNumber } from "./flags.ts";
+import { capJev, DEFAULT_MAX_USD } from "./spend.ts";
 import { loadJevKey, makeJevClient, type JevRequest } from "../src/fill/jev.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef, Node, TaskState } from "../src/protocol.ts";
 import { buildPendingRequest, mask, readPendingAnswer, stateFor, watchLines, windowMarkers, type Marker } from "../src/tasks/pending.ts";
 import { agentSnap, BROWSER, browserChat, CODEX, codexWindow, T3, t3Window, type AgentWindow } from "../test/agent-fixtures.ts";
 
-const { values: a } = parseArgs({ options: { out: { type: "string" }, reps: { type: "string", default: "2" } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, reps: { type: "string", default: "2" }, "max-usd": { type: "string", default: DEFAULT_MAX_USD } } });
 if (a.out === undefined) throw new Error("--out is required");
 const OUT = a.out;
-const REPS = Number(a.reps);
+const REPS = positiveInt("reps", a.reps);
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 mkdirSync(OUT, { recursive: true });
 loadJevKey(); // fail now, not at the first question
-const ask = makeJevClient(() => loadJevKey());
+const jev = capJev(makeJevClient(() => loadJevKey()), MAX_USD);
+const ask = jev.ask;
 
 type Build = (o: AgentWindow) => Node[];
 const APPS: { name: string; app: AppRef; build: Build }[] = [
@@ -181,7 +186,7 @@ for (const c of JOB_CASES) {
   }
 }
 
-writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), reps: REPS, rows }, null, 2)}\n`);
+writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toISOString(), reps: REPS, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, rows }, null, 2)}\n`);
 const right = (form: "b10" | "b6", id?: string): string => {
   const rs = rows.filter((r) => r.form === form && (id === undefined || r.case === id || (id === "agent" && r.app !== "Fixture job window")));
   return `${rs.filter((r) => r.got === r.expect).length} of ${rs.length}`;
@@ -190,7 +195,7 @@ const lat = rows.map((r) => r.latencyMs).filter((x) => x > 0).sort((x, y) => x -
 const md = [
   "# Live Jev on agent-thread watches (synthetic windows)",
   "",
-  `\`node scripts/pending-agent-eval.ts --reps ${REPS}\`, ${new Date().toISOString().slice(0, 16)}Z. Synthetic trees from test/agent-fixtures.ts for ${APPS.map((x) => x.name).join(", ")}, each left mid-turn behind a ${LINES}-line transcript, so the composer and the newest lines are past the first 400 lines. Every case was asked ${REPS} times in each form. Latency p50 ${lat[Math.floor(lat.length / 2)] ?? "-"} ms, max ${lat.at(-1) ?? "-"} ms.`,
+  `\`node scripts/pending-agent-eval.ts --reps ${REPS}\`, ${new Date().toISOString().slice(0, 16)}Z. Synthetic trees from test/agent-fixtures.ts for ${APPS.map((x) => x.name).join(", ")}, each left mid-turn behind a ${LINES}-line transcript, so the composer and the newest lines are past the first 400 lines. Every case was asked ${REPS} times in each form. Jev: ${jev.calls()} calls, $${jev.usd().toFixed(5)} (budget $${MAX_USD}). Latency p50 ${lat[Math.floor(lat.length / 2)] ?? "-"} ms, max ${lat.at(-1) ?? "-"} ms.`,
   "",
   "- *B10 form*: snippets only: the window's name, at most 6 changed lines and 4 marker lines then and now, each cut to 120 characters, within the window's budget (src/privacy.ts).",
   "- *B6 form*: up to 20 lines from when the user left and 30 from now, and the markers then and now.",

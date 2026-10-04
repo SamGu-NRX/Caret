@@ -1452,6 +1452,143 @@
                   "key": {
                     "type": "string"
                   },
+                  "control": {
+                    "default": "text",
+                    "type": "string",
+                    "enum": [
+                      "text",
+                      "date",
+                      "time",
+                      "select",
+                      "radio",
+                      "checkbox",
+                      "combobox"
+                    ]
+                  },
+                  "handoff": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "display": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "pid": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "windowId": {
+                                    "type": "string"
+                                  },
+                                  "bundleId": {
+                                    "type": "string"
+                                  },
+                                  "appName": {
+                                    "type": "string"
+                                  },
+                                  "windowTitle": {
+                                    "type": "string"
+                                  },
+                                  "nodeKey": {
+                                    "type": "string"
+                                  },
+                                  "kind": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "date",
+                                          "time",
+                                          "email",
+                                          "phone",
+                                          "url",
+                                          "address",
+                                          "amount",
+                                          "id"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "pid",
+                                  "windowId",
+                                  "bundleId",
+                                  "appName",
+                                  "windowTitle",
+                                  "nodeKey",
+                                  "kind"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "memory": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "label": {
+                                    "type": "string"
+                                  },
+                                  "says": {
+                                    "type": "string"
+                                  },
+                                  "part": {
+                                    "type": "string",
+                                    "enum": [
+                                      "first",
+                                      "middle",
+                                      "last"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "label",
+                                  "says"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "value",
+                          "display",
+                          "source",
+                          "memory"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "frame": {
                     "anyOf": [
                       {
@@ -1571,6 +1708,14 @@
                           },
                           "says": {
                             "type": "string"
+                          },
+                          "part": {
+                            "type": "string",
+                            "enum": [
+                              "first",
+                              "middle",
+                              "last"
+                            ]
                           }
                         },
                         "required": [
@@ -1592,7 +1737,10 @@
                         "enum": [
                           "disagree",
                           "lowConfidence",
-                          "sourceCut"
+                          "sourceCut",
+                          "wrongKind",
+                          "otherPerson",
+                          "ambiguous"
                         ]
                       },
                       {
@@ -1667,6 +1815,8 @@
                 },
                 "required": [
                   "key",
+                  "control",
+                  "handoff",
                   "frame",
                   "descriptor",
                   "choice",
@@ -6527,6 +6677,62 @@
             "says",
             "detail",
             "actions"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pageEngine"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "browser": {
+              "type": "object",
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "bundleId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pid",
+                "bundleId",
+                "name"
+              ],
+              "additionalProperties": false
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "missing",
+                "connected"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "browser",
+            "state"
           ],
           "additionalProperties": false
         }

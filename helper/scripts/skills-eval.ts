@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveNumber } from "./flags.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../src/fill/jev.ts";
@@ -27,7 +28,7 @@ if (a.out === undefined) throw new Error("--out is required");
 if (a.jev !== "fake" && a.jev !== "live") throw new Error("--jev is fake or live");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
-const MAX_USD = Number(a["max-usd"]);
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 
 const live = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
 let spent = 0;

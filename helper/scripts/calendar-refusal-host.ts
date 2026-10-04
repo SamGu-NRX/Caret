@@ -47,6 +47,8 @@ reader.stderr.setEncoding("utf8");
 sendSecret(reader, launchSecret);
 reader.stderr.on("data", (d: string) => (readerLog += d));
 process.on("exit", () => reader.kill("SIGTERM"));
+// Node runs exit handlers on a signal only when the signal has a listener; without one, the children outlive the script.
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => process.exit(143));
 const t0 = Date.now();
 while (!helper.hasReader) {
   if (Date.now() - t0 > 20_000) throw new Error("the reader did not connect");
@@ -57,8 +59,12 @@ const plan = { id: "event", title: "Add Coffee with Dana", slots: {}, steps: [{ 
 const r = await helper.executor.run("event-1", plan, {});
 const last = published.filter((m): m is TaskProgress => m.type === "taskProgress").at(-1);
 const probeAfter = JSON.parse(execFileSync(BIN, ["--calendar-probe"], { encoding: "utf8" })) as { calendar: string };
-reader.kill("SIGTERM");
-await new Promise((res) => reader.once("exit", res));
+// A reader that already exited (a crash during the run) has fired its exit event; waiting for it would hang.
+if (reader.exitCode === null && reader.signalCode === null) {
+  const exited = new Promise((res) => reader.once("exit", res));
+  reader.kill("SIGTERM");
+  await exited;
+}
 await server.close();
 store.close();
 

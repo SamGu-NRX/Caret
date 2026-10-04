@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveNumber } from "./flags.ts";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
@@ -29,6 +30,28 @@ import { fixtureExecutable } from "./fixture-path.ts";
 import { newLaunchSecret, sendSecret } from "../src/launch.ts";
 /** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
 const launchSecret = newLaunchSecret();
+import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
+import { WRITER_ROUTE } from "../src/writer/config.ts";
+
+/** The configured writer, one call at least 15 s after the last (Groq allows qwen3.8 1,000 output tokens a minute). */
+function spacedWriter(): WriterPort {
+  const port = makeWriterPort(WRITER_ROUTE);
+  let last = 0;
+  return {
+    route: port.route,
+    async write(req) {
+      const wait = last + 15_000 - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      last = Date.now();
+      const r = await port.write(req);
+      writerCalls++;
+      writerUsd += r.costUsd;
+      return r;
+    },
+  };
+}
+let writerCalls = 0;
+let writerUsd = 0;
 
 const { values: a } = parseArgs({
   options: {
@@ -39,13 +62,16 @@ const { values: a } = parseArgs({
     "max-usd": { type: "string", default: "0.10" },
     cases: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "planner-eval.sock") },
+    // B24: the code-mode writer (writer/config.ts) for instructions the planner cannot ground, as the helper
+    // runs it when a Groq key is configured; calls are spaced 15 s apart for Groq's per-minute output limit.
+    writer: { type: "boolean", default: false },
   },
 });
 if (a.bin === undefined || a.out === undefined) throw new Error("--bin and --out are required");
 if (a.jev !== "fake" && a.jev !== "live") throw new Error("--jev is fake or live");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
-const MAX_USD = Number(a["max-usd"]);
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 const TITLE = "Caret Fixture — Executor";
 
 // MARK: - the cases
@@ -166,6 +192,7 @@ const helper = new Helper({
   },
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
   plannerHooks: { beforeCheck: () => hooks.beforeCheck?.() ?? Promise.resolve() },
+  ...(a.writer === true ? { writer: spacedWriter() } : {}),
 });
 server = new HelperServer(a.socket, () => helper, (l) => errors.push(l), launchSecret);
 await server.listen();
@@ -351,6 +378,7 @@ md.push(`- Achievable plans verified through the executor: ${achievable.filter((
 md.push(`- Hand-off plans that ended in a hand-off with their writes verified: ${rows.filter((r) => r.id.startsWith("h") && r.verified === true).length} of ${rows.filter((r) => r.id.startsWith("h")).length}`);
 md.push(`- Send, Delete or Pay presses the fixture saw: ${presses}`);
 md.push(`- Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}${a.jev === "live" ? ` (budget $${MAX_USD})` : " (fake)"}; helper errors: ${errors.length}; taskProgress messages: ${grants.length}`, "");
+if (a.writer === true) md.push(`- Code-mode writer (${WRITER_ROUTE.model}): ${writerCalls} calls, $${writerUsd.toFixed(5)}`, "");
 md.push("| Case | Instruction | Expected | Proposal | As expected | Run | Verified by the fixture | Jev calls |", "| --- | --- | --- | --- | --- | --- | --- | --- |");
 for (const r of rows) {
   md.push(`| ${r.id} | ${r.instruction} | ${r.expected} | ${r.outcome}${r.code === null ? "" : ` ${r.code}`}${r.handoff === null ? "" : ` (${r.handoff.why}: ${r.handoff.label})`} | ${r.proposalOk ? "yes" : `no: ${r.proposalProblem}`} | ${r.run ?? "-"} | ${r.verified === null ? "-" : r.verified ? "yes" : `no: ${r.verifyProblem}`} | ${r.jevCalls} |`);

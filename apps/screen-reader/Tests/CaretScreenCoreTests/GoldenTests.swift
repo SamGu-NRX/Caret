@@ -53,6 +53,7 @@ private func goldenLines() throws -> [Data] {
             case .memoryReply: "memoryReply"
             case .userPress: "userPress"
             case .helperAuth: "helperAuth"
+            case .pageEngine: "pageEngine"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -68,7 +69,8 @@ private func goldenLines() throws -> [Data] {
                           "readerCommand", "userPress",
                           "planRequest", "planProposal", "userPress",
                           "skillOffer",
-                          "hello", "helperAuth", "hello", "readerCommand", "verbResult", "readerCommand", "verbResult"])
+                          "hello", "helperAuth", "hello", "readerCommand", "verbResult", "readerCommand", "verbResult",
+                          "pageEngine", "pageEngine"])
     }
 
     @Test func readsB23sHelloFieldsProofMarksAndRefusals() throws {
@@ -111,6 +113,19 @@ private func goldenLines() throws -> [Data] {
         let long = String(repeating: "\u{1F469}\u{200D}\u{1F4BB}", count: 17)
         #expect(long.count == 17 && long.utf16.count == 85)
         let bad = line.replacingOccurrences(of: #""name":"\#(offer.name)""#, with: #""name":"\#(long)""#)
+        #expect(bad != line)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+    }
+
+    /// W2: the host's signal that Caret cannot see a browser's pages yet, then that it can.
+    @Test func readsThePageEngineState() throws {
+        let lines = try goldenLines()
+        guard case .pageEngine(let missing) = try JSONDecoder().decode(Message.self, from: lines[66]),
+              case .pageEngine(let connected) = try JSONDecoder().decode(Message.self, from: lines[67]) else { Issue.record("lines 67 and 68 are not pageEngine"); return }
+        #expect(missing == PageEngineState(at: 1_790_000_900_000, browser: AppRef(pid: 6100, bundleId: "com.google.Chrome", name: "Google Chrome"), state: .missing))
+        #expect(connected.state == .connected && connected.browser == missing.browser)
+        let line = String(decoding: lines[66], as: UTF8.self)
+        let bad = line.replacingOccurrences(of: #""state":"missing""#, with: #""state":"maybe""#)
         #expect(bad != line)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
     }
@@ -188,6 +203,22 @@ private func goldenLines() throws -> [Data] {
         #expect(p.fields.last?.memory == FillMemory(id: "about-9f8e7d6c", label: "Name", says: "what you told Caret") && p.fields.last?.source == nil)
         let badState = Data(#"{"type":"taskControl","v":1,"taskId":"t","action":"cancel"}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: badState) }
+    }
+
+    @Test func readsB24ControlsAndRefusesAWrittenControl() throws {
+        let src = #"{"pid":1,"windowId":"1-1","bundleId":"b","appName":"A","windowTitle":"T","nodeKey":"n","kind":"date"}"#
+        let date = Data(#"{"key":"k","control":"date","handoff":{"value":"1991-03-03","display":"Sun, Mar 3, 1991","source":\#(src),"memory":null},"frame":null,"descriptor":"Date field.","choice":"c1","confidence":0.95,"value":null,"source":null,"memory":null,"withheld":null,"asks":[]}"#.utf8)
+        let f = try JSONDecoder().decode(FillField.self, from: date)
+        #expect(f.control == .date && f.handoff?.value == "1991-03-03" && f.value == nil)
+        let vetoed = Data(#"{"key":"k","control":"text","handoff":null,"frame":null,"descriptor":"d","choice":"none","confidence":0,"value":null,"source":null,"memory":null,"withheld":"otherPerson","asks":[]}"#.utf8)
+        #expect(try JSONDecoder().decode(FillField.self, from: vetoed).withheld == .otherPerson)
+        // A helper before B24 sends no control: the field is text.
+        let old = Data(#"{"key":"k","frame":null,"descriptor":"d","choice":"none","confidence":0,"value":null,"source":null,"withheld":"ambiguous","asks":[]}"#.utf8)
+        #expect(try JSONDecoder().decode(FillField.self, from: old).control == .text)
+        let part = Data(#"{"id":"about-1","label":"Name","says":"what you told Caret","part":"first"}"#.utf8)
+        #expect(try JSONDecoder().decode(FillMemory.self, from: part).part == "first")
+        let written = Data(#"{"key":"k","control":"date","handoff":null,"frame":null,"descriptor":"d","choice":"c1","confidence":0.9,"value":"1991-03-03","source":\#(src),"memory":null,"withheld":null,"asks":[]}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(FillField.self, from: written) }
     }
 
     @Test func readsAFieldWithheldBecauseACutTookItsKind() throws {
@@ -539,7 +570,7 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[48], #""srcApps":["#, #""wrote":[],"srcApps":["#)) }
     }
 
-    /// The host's contract line for its permissions page (v2/host memory.ndjson host-memory-7, the last line of
+    /// The host's contract line for its permissions page (v2/host memory.ndjson host-memory-9, the last line of
     /// helper/fixtures/golden/memory.ndjson): a skill's fields carry `wrote`.
     @Test func readsTheHostsSkillLineWithWrote() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

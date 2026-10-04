@@ -77,7 +77,13 @@ export function focus(windowId: string, key: string | null, at: number, o: { emp
  * although the second ask shuffles and renumbers the candidates. `pick` returns the text to choose,
  * or null for none. `whose` answers each whose-details question; the user's by default.
  */
-export function jevPickingText(pick: (fieldId: string, instructions: string) => string | null, confidence = 0.9, whose: (instructions: string) => Whose = () => "user"): AskJev {
+export function jevPickingText(
+  pick: (fieldId: string, instructions: string) => string | null,
+  confidence = 0.9,
+  whose: (instructions: string) => Whose = () => "user",
+  /** Answers each whose-value question (fill.ts ownerId) by the value's description; the user's by default. */
+  owner: (instructions: string) => Whose = () => "user",
+): AskJev {
   return async (req) => ({
     model: "jev-test",
     answers: Object.fromEntries(
@@ -85,6 +91,7 @@ export function jevPickingText(pick: (fieldId: string, instructions: string) => 
         const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
         // A whose-details question (fill.ts whoseId) asked beside a field offered a value from memory.
         if (id.endsWith("_whose")) return [id, { choice: whose(ins), confidence }];
+        if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence }];
         const want = pick(id, ins);
         const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
         return [id, { choice: hit?.[0] ?? "none", confidence }];

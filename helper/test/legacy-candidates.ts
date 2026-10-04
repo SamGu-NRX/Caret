@@ -5,7 +5,7 @@
 import type { Frame, Node, ValueKind } from "../src/protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../src/model.ts";
 import { isLabelLike } from "../src/fill/descriptor.ts";
-import { MAX_CANDIDATES, RECENT_MS, type Candidate, type Recency } from "../src/fill/candidates.ts";
+import { labelledSpan, MAX_CANDIDATES, RECENT_MS, type Candidate, type Recency } from "../src/fill/candidates.ts";
 
 const MAX_CONTEXT_CHARS = 60;
 const MIN_LINE = 2;
@@ -34,6 +34,8 @@ export function legacyGenerateCandidates(model: ScreenModel, targetWindowId: str
       text,
       kind,
       context,
+      // B24's fact about the span, worked out as the generator does; the ranking under test is unchanged.
+      labelled: labelledSpan(node, text, context),
       section: sectionAround(w, node),
       blockHead: blockHead(w, node, text),
       recency: recency(w),
@@ -93,7 +95,9 @@ function sectionAround(w: WindowState, node: Node): string | null {
   while (key !== null) {
     const n = w.nodes.get(key);
     if (n === undefined) return null;
-    if (n.role !== "AXWebArea" && n.label !== undefined) {
+    // B24: a section ends at the page's web area, as the generator's does.
+    if (n.role === "AXWebArea") return null;
+    if (n.label !== undefined) {
       const t = short(n.label);
       if (t !== null) return t;
     }

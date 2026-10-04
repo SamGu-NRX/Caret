@@ -374,7 +374,7 @@ describe("pattern engine in the helper", () => {
       expect(ask("list", { kind: "routine" }).entries[0]?.fields).toMatchObject({ silent: { hits: 0, misses: 4 } });
     });
 
-    it("scores a copy the user then replaced from another row as a miss", () => {
+    it("scores a copy the user then typed over as a miss", () => {
       occurrence(1);
       for (let d = 2; d <= 4; d++) {
         desk.at += DAY;
@@ -384,15 +384,44 @@ describe("pattern engine in the helper", () => {
         const c = compose(d);
         desk.showGrid(c);
         for (let i = 0; i < 3; i++) desk.fill(c, 0, i, cal.lines[i]!);
-        // The subject was wrong: the user replaces it with the room line.
+        // The subject was wrong: the user types a room over it, text no window shows.
         c.values.delete(cellKey(c, 0, 0));
         desk.showGrid(c);
-        desk.fill(c, 0, 0, cal.lines[3] ?? `Room ${d}`);
+        desk.fill(c, 0, 0, `Room ${d}`);
         desk.close(c.windowId);
       }
       expect(offers("routine")).toEqual([]);
       const r = ask("list", { kind: "routine" }).entries.find((e) => e.kind === "routine" && e.fields.silent.hits + e.fields.silent.misses > 0);
       expect(r?.fields).toMatchObject({ silent: { hits: 0 } });
+    });
+
+    it("scores a copy the user then replaced from another row as a miss, and takes the replacement as the step", () => {
+      occurrence(1);
+      const id = ask("list", { kind: "routine" }).entries[0]!.id;
+      // Where each step copies from, by the field it fills.
+      const sources = (): Record<string, number> => Object.fromEntries((helper.memory.routine(id)?.steps ?? []).map((st) => [st.dstTemplateHash, st.srcPos]));
+      const learned = sources();
+      /** A day whose event has a fourth line, the room, in the same list; the user copies three lines, then replaces the subject with the room. */
+      const replaced = (d: number): void => {
+        desk.at += DAY;
+        const cal = { ...calendar(d), lines: [...calendar(d).lines, `Room ${d}B, Building C`] };
+        desk.showList(cal);
+        desk.advance(1000);
+        const c = compose(d);
+        desk.showGrid(c);
+        for (let i = 0; i < 3; i++) desk.fill(c, 0, i, cal.lines[i]!);
+        c.values.delete(cellKey(c, 0, 0));
+        desk.showGrid(c);
+        desk.fill(c, 0, 0, cal.lines[3]!);
+        desk.close(c.windowId);
+      };
+      replaced(2);
+      expect(helper.memory.routine(id)).toMatchObject({ hits: 0, misses: 1 });
+      // The routine now takes the subject from the room line, so the next such day is predicted right.
+      const now = sources();
+      expect(Object.keys(now).filter((k) => now[k] !== learned[k])).toHaveLength(1);
+      replaced(3);
+      expect(helper.memory.routine(id)).toMatchObject({ hits: 1, misses: 1 });
     });
 
     it("a first look finds a proven routine for a window that was already open, and its key runs it", async () => {

@@ -1,0 +1,1 @@
+W2: the worker's result() forwards only named fields of ActAnswer; a new field (choice, attached) must be added there or it silently never reaches the helper.

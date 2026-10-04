@@ -196,6 +196,16 @@ type Fit = "email" | "phone" | "url" | "city" | "street" | "address" | "name" | 
 const CITY = /\b(?:city|town)\b/;
 const STREET = /\bstreet\b|\baddress line\b/;
 const PERSON_NAME = /\bname\b/;
+/** Fields that ask for one part of a date, by their whole label, and the values that part can be. */
+const DATE_PART: ReadonlyMap<string, RegExp> = new Map([
+  // A day of the month, or a weekday: a scheduling form's Day can take "Monday" (fix-check review).
+  ["day", /^(?:0?[1-9]|[12]\d|3[01]|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)$/iu],
+  ["month", /^(?:0?[1-9]|1[0-2]|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)$/iu],
+  ["year", /^\d{4}$/u],
+]);
+const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
+/** A company's name: up to eight words with no brackets, @ or sentence punctuation ("Ridgeline Outdoor Co", "Acme, Inc.", "3M"). */
+const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^()[\]{}@<>;:!?]+$/u;
 /** Kinds of value that have their own shape: none of them is a city, a street line or a name. */
 const SHAPED: ReadonlySet<TextKind> = new Set(["email", "url", "phone", "amount", "address", "street"]);
 
@@ -207,13 +217,92 @@ const TAKES: Record<Fit, (k: TextKind, value: string) => boolean> = {
   // A city has no digits: "Austin" fits, "Austin, TX 78701" and a whole address do not.
   city: (k, v) => k === "text" && !/\d/.test(v),
   street: (k) => k === "street" || k === "text",
-  address: (k) => k === "address" || k === "street" || k === "text",
+  // Plain text in an address field holds a number ("PO Box 12"): "in my note" from "her address is in my note"
+  // went into Address (B24 Ask scoreboard, asks-dev-3).
+  address: (k, v) => k === "address" || k === "street" || (k === "text" && /\d/.test(v)),
   name: (k) => !SHAPED.has(k),
-  // "10-08-2026" reads as a phone number by its characters, so a date field takes those too.
-  date: (k) => !SHAPED.has(k) || k === "phone",
-  time: (k) => !SHAPED.has(k),
+  // A date or time field takes a value code reads as one (B24, Q1 bug 4: a plan wrote "Seattle on 11/12/2026 on
+  // this Alaska Airlines page in Chrome" into two date fields). "10-08-2026" reads as a phone number by its
+  // characters, so it is checked by shape, not kind.
+  date: (_k, v) => dateShaped(v),
+  time: (_k, v) => timeShaped(v),
   amount: (k) => k === "amount" || k === "text",
 };
+
+const MONTH_OR_DAY_NAME = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|today|tomorrow|yesterday)\.?,?$/iu;
+/** Words that join a date's parts but say nothing by themselves ("the 3rd of May at 3 PM"). */
+const DATE_JOINER = /^(?:next|last|this|of|the|at|on|st|nd|rd|th)\.?,?$/iu;
+/**
+ * Whether a whole value reads as a date or a part of one: digits and date separators ("11/12/2026", "05/2027",
+ * "12", "1990"), or words that are only month and day names among numbers ("March 3, 1991", "Thu Oct 8").
+ * Anything else, a place or a sentence, is not a date.
+ */
+export function dateShaped(value: string): boolean {
+  const v = value.trim();
+  if (v === "") return false;
+  const numeric = /^(\d{1,4})(?:[/.\-](\d{1,4}))?(?:[/.\-](\d{1,4}))?$/u.exec(v);
+  if (numeric !== null) return numericDate(numeric.slice(1).filter((x): x is string => x !== undefined).map(Number));
+  const ws = v.split(/[\s,]+/u).filter((w) => w !== "");
+  if (ws.length > 8) return false;
+  // Each word read as what it is: a month or day name, a year, a day of the month, a clock time, or a joiner.
+  // Joiners say nothing alone ("at" is not a date), and the parts must make a real day: "2026-02-31", "99 May
+  // 2026" and "at 99:99 PM" are not dates (fix-check review).
+  let month: number | null = null;
+  let day: number | null = null;
+  let year: number | null = null;
+  let evidence = false;
+  for (const w of ws) {
+    const m = MONTH_INDEX.findIndex((re) => re.test(w));
+    if (m >= 0) {
+      if (month !== null) return false;
+      month = m + 1;
+      evidence = true;
+    } else if (MONTH_OR_DAY_NAME.test(w)) evidence = true;
+    else if (/^\d{4}[.,]?$/u.test(w)) {
+      if (year !== null) return false;
+      year = Number.parseInt(w, 10);
+      evidence = true;
+    } else if (/^\d{1,2}(?:st|nd|rd|th)?[.,]?$/iu.test(w)) {
+      const n = Number.parseInt(w, 10);
+      if (day !== null || n < 1 || n > 31) return false;
+      day = n;
+      evidence = true;
+    } else if (/^\d{1,2}:\d{2}(?:[ap]\.?m\.?)?$/iu.test(w) || /^[ap]\.?m\.?$/iu.test(w)) {
+      if (/\d/.test(w) && !timeShaped(w.replace(/([ap])/iu, " $1"))) return false;
+    } else if (!DATE_JOINER.test(w)) return false;
+  }
+  return evidence && (month === null || day === null || day <= daysIn(month, year));
+}
+
+const MONTH_INDEX: readonly RegExp[] = ["jan(?:uary)?", "feb(?:ruary)?", "mar(?:ch)?", "apr(?:il)?", "may", "june?", "july?", "aug(?:ust)?", "sep(?:t(?:ember)?)?", "oct(?:ober)?", "nov(?:ember)?", "dec(?:ember)?"].map((x) => new RegExp(`^${x}\\.?,?$`, "iu"));
+
+/** Days in a month; February has 29 when the year is unknown or a leap year. */
+function daysIn(month: number, year: number | null): number {
+  if (month === 2) return year === null || (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)) ? 29 : 28;
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+/**
+ * Whether numbers joined by date separators can be a date or a part of one: a day (1-31) or a year (four
+ * digits) alone; month and year ("05/2027"); or three parts with a four-digit year first or last and the other
+ * two a month and a day in either order ("2026-10-08", "10/08/2026", "08.10.2026"). "9999-99-99" is not.
+ */
+function numericDate(ns: readonly number[]): boolean {
+  const year = (n: number): boolean => n >= 1000 && n <= 9999;
+  const md = (a: number, b: number): boolean => (a >= 1 && a <= 12 && b >= 1 && b <= 31) || (b >= 1 && b <= 12 && a >= 1 && a <= 31);
+  if (ns.length === 1) return year(ns[0] as number) || ((ns[0] as number) >= 1 && (ns[0] as number) <= 31);
+  if (ns.length === 2) return (year(ns[1] as number) && (ns[0] as number) >= 1 && (ns[0] as number) <= 12) || md(ns[0] as number, ns[1] as number);
+  const [a, b, c] = ns as [number, number, number];
+  // Month and day in either order, and the day within that month: "2026-02-31" is no date.
+  const real = (m: number, d: number, y: number | null): boolean => m >= 1 && m <= 12 && d >= 1 && d <= daysIn(m, y);
+  const either = (x: number, y2: number, yr: number | null): boolean => real(x, y2, yr) || real(y2, x, yr);
+  return (year(a) && real(b, c, a)) || (year(c) && either(a, b, c)) || (c >= 0 && c <= 99 && either(a, b, null));
+}
+
+/** Whether a whole value reads as a clock time: "3:00 PM", "15:00", "3pm", "noon"; an hour with am or pm is 1 to 12 ("23pm" is not a time). */
+export function timeShaped(value: string): boolean {
+  return /^(?:(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*[ap]\.?\s*m\.?|(?:[01]?\d|2[0-3])(?::[0-5]\d)?|noon|midnight)$/iu.test(value.trim());
+}
 
 const KIND_SAYS: Record<TextKind, string> = {
   email: "an email address",
@@ -255,9 +344,23 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
     fits.delete("address");
   }
   if (PERSON_NAME.test(s)) fits.add("name");
-  if (fits.size === 0) return null;
-  const k = textKind(value);
   const v = value.trim();
+  // A field for one part of a date takes only that part: the B24 corpus's "Day" (under Date of birth) took a
+  // whole "04/12/1990" (evidence/screen/b24/after).
+  // The field's own label decides (a placeholder "DD" beside "Day" must not hide it; fix-check review).
+  const own = words(labelWords.find((w): w is string => typeof w === "string" && w.trim() !== "") ?? "").join(" ");
+  const part = DATE_PART.get(own);
+  if (part !== undefined && !part.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is not one ${own}, and the field takes only that part of a date`;
+  // A company or employer field takes a name, not a sentence about one: the B24 corpus's "Current company" took
+  // "Junior Analyst at Ridgeline Outdoor Co (since 2024)" from a note's line (evidence/screen/b24/dev-4).
+  // Only a field for the organization's name: "Company email" or "Employer phone" takes an email or a phone,
+  // checked below (review). Digits are allowed: "3M", "Studio 54".
+  if (ORGANIZATION.test(s) && [...fits].every((f) => f === "name") && !ORG_NAME.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is more than a name, and the field takes a company or organization name`;
+  // A bare clock time goes only in a field that takes a time: the B24 Ask scoreboard's planner wrote "8:15" into
+  // Delivery instructions for "actually make the delivery 8:15 instead", whose time field is a control Caret
+  // does not write (asks-dev-1).
+  if (fits.size === 0) return timeShaped(v) && /:\d{2}|\d\s*[ap]\.?\s*m\b/iu.test(v) ? `'${v}' is a time, and the field does not take one` : null;
+  const k = textKind(value);
   if ([...fits].some((f) => TAKES[f](k, v))) return null;
   const said = k === "text" && fits.has("city") && /\d/.test(v) ? "text with digits" : KIND_SAYS[k];
   return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is ${said}, and the field takes ${[...fits].map((f) => FIT_SAYS[f]).join(" or ")}`;

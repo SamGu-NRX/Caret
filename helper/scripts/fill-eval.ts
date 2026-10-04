@@ -7,11 +7,12 @@
 // windows and nothing else. Field keys are found by matching the fixture's gold frames against
 // the recorded snapshots. For each form it sends one fillRequest per round, and it also records any
 // proposal that a focus event produced on its own. Scores exact match against the gold values.
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveInt } from "./flags.ts";
 import { FillProposal, PROTOCOL_VERSION, Snapshot, type Frame } from "../src/protocol.ts";
 
 const { values: a } = parseArgs({
@@ -25,6 +26,9 @@ const { values: a } = parseArgs({
   },
 });
 if (a.gold === undefined || a.record === undefined || a.out === undefined) throw new Error("--gold, --record and --out are required");
+const rounds = positiveInt("rounds", a.rounds);
+// Before any request: a missing directory would otherwise throw at the first write, after Jev was paid.
+mkdirSync(a.out, { recursive: true });
 
 interface GoldField { label: string; gold: string | null; frame: Frame }
 interface GoldForm { window: string; fields: GoldField[] }
@@ -105,7 +109,6 @@ const ask = (t: Target): Promise<FillProposal | null> =>
     }, 20_000);
   });
 
-const rounds = Number(a.rounds);
 for (let r = 0; r < rounds; r++) {
   for (const t of targets) {
     const p = await ask(t);

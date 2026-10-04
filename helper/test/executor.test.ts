@@ -56,6 +56,7 @@ describe("executor", () => {
   afterEach(() => {
     // Every progress any test published is valid: a stop always says why, and nothing else does.
     for (const m of published) if (m.type === "taskProgress") TaskProgress.parse(m);
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });

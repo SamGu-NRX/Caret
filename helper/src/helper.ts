@@ -10,7 +10,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import type { AskJev, JevRequest } from "./fill/jev.ts";
-import { FillError, formAsksFor, formFields, proposeFill } from "./fill/fill.ts";
+import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -54,7 +54,7 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
@@ -66,6 +66,13 @@ import { expired } from "./offers/lifetimes.ts";
 import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
+import { planWithCode } from "./planner/codeplan.ts";
+import { splitName } from "./fill/derive.ts";
+import type { WriterPort } from "./writer/port.ts";
+import type { PlanErrorCode } from "./protocol.ts";
+
+/** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
+const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
 
@@ -86,6 +93,16 @@ export interface HelperOptions {
   sendToReader?: (m: HelperToReader) => boolean;
   /** Replaces the socket link to the reader, for tests that simulate the reader in process. */
   readerLink?: ReaderLink;
+  /**
+   * The reader's socket link when `readerLink` wraps it (the page engines' RoutedReaderLink, main.ts): the reader's
+   * verbResults are answered here, and a reader counts as connected only from its hello, as without `readerLink`.
+   */
+  readerAnswers?: SocketReaderLink;
+  /**
+   * Whether a page engine is connected for this browser process (engines/registry.ts forBrowser). A reader focus in
+   * such a browser then asks for no fill: that browser's pages are filled from the page engine (engines/page-focus.ts).
+   */
+  pageCovers?: (pid: number) => boolean;
   /**
    * Where calendar end states are written: a port, "reader" for the reader's EventKit adapter over the
    * same link the executor acts through (ReaderCalendar), or null for none.
@@ -109,6 +126,11 @@ export interface HelperOptions {
   eventCalendar?: string;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
+  /**
+   * The code-mode plan writer (writer/, B24). When set, an instruction the deterministic planner cannot ground
+   * (unsure or nothing to do) goes to it (planner/codeplan.ts). Absent: those instructions fail as before.
+   */
+  writer?: WriterPort | null;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Replaces the level's offers per hour (OfferGate), for fixture evaluations that make dozens of offers in minutes. Never set in normal use. */
@@ -184,6 +206,8 @@ export class Helper {
   private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null }>();
   /** Every Jev request goes through this, which records it as a use of "Read and prepare" (B17). Null when Jev is off. */
   private readonly ask: AskJev | null;
+  /** The configured plan writer, wrapped so each request is recorded (recordRead). */
+  private readonly writer: WriterPort | null;
   /** What the last "Read and prepare" use's request declared, so the two asks of one question, which declare the same text, count once. */
   private lastRead: { declared: string; at: number } | null = null;
   /** Offers already recorded as a use of "Show in Caret's UI", by key; bounded. */
@@ -270,7 +294,7 @@ export class Helper {
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) }, opts.offersPerHour ?? null);
-    this.readerConnected = opts.readerLink !== undefined;
+    this.readerConnected = opts.readerLink !== undefined && opts.readerAnswers === undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
     // Recorded once the request has gone and been answered, or as failed: a client that throws before
@@ -288,6 +312,25 @@ export class Helper {
               throw e;
             }
           };
+    // The plan writer's requests are recorded as Jev's are, from the declarations the planner attached, whether
+    // the plan then succeeds or not (fix-check review).
+    const writer = opts.writer ?? null;
+    this.writer =
+      writer === null
+        ? null
+        : {
+            route: writer.route,
+            write: async (req) => {
+              try {
+                const r = await writer.write(req);
+                this.recordRead({ snippets: req.disclosed ?? [] }, "done", "the plan writer");
+                return r;
+              } catch (e) {
+                this.recordRead({ snippets: req.disclosed ?? [] }, "failed", "the plan writer");
+                throw e;
+              }
+            },
+          };
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
@@ -303,7 +346,16 @@ export class Helper {
       onTask: (e) => this.onTaskEvent(e),
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
-      memoryHolds: (id, value) => this.memory.text(id) === value,
+      // A plan may write a first, middle or last name code split from a remembered name (B24): the entry must
+      // still give exactly that part, by the same split, not any substring.
+      memoryHolds: (ref, value) => {
+        const { id, part } = parseMemoryRef(ref);
+        const text = this.memory.text(id);
+        if (text === null || text === undefined) return false;
+        // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
+        // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
+        return memoryValue(text, part) === value;
+      },
       authorize: (a) => this.authorize(a),
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
       // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
@@ -474,9 +526,18 @@ export class Helper {
     return null;
   }
 
+  private readonly readerListeners = new Set<(m: ReaderMessage) => void>();
+
+  /** Sees every reader message before the helper handles it (the page engines' presence signal, main.ts). Returns the way to stop. */
+  onReaderMessage(l: (m: ReaderMessage) => void): () => void {
+    this.readerListeners.add(l);
+    return () => this.readerListeners.delete(l);
+  }
+
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
   handleReader(m: ReaderMessage): Promise<FillProposal | null> | null {
     const store = this.opts.store;
+    for (const l of this.readerListeners) l(m);
     switch (m.type) {
       case "hello":
         // A new reader numbers windows from scratch and walks everything again, so the old session's
@@ -553,7 +614,9 @@ export class Helper {
           this.openApp.onFocus(m);
           this.onFillFocus(m);
         }
-        const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus);
+        // A browser with a page engine is filled from the engine's own page window, not from Accessibility's view of it.
+        const pageCovered = !m.windowId.startsWith("page:") && this.opts.pageCovers?.(m.app.pid) === true;
+        const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus) && !pageCovered;
         if (!triggers || m.key === null) return null;
         return this.fill(m.windowId, m.key, false);
       }
@@ -583,7 +646,7 @@ export class Helper {
         store.count("reader.pasteboard_change", 1, m.at);
         return null;
       case "verbResult":
-        this.socketLink?.answer(m);
+        (this.socketLink ?? this.opts.readerAnswers)?.answer(m);
         return null;
       case "userInput":
         this.executor.onUserInput(m);
@@ -716,8 +779,8 @@ export class Helper {
     const out: MemoryValue[] = [];
     for (const e of [...this.memory.list("about"), ...this.memory.list("people")]) {
       if (e.status === "paused") continue;
-      if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value });
-      else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name });
+      if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value, whose: "user" });
+      else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name, whose: "other" });
     }
     return out;
   }
@@ -753,8 +816,22 @@ export class Helper {
         ...this.opts.plannerHooks,
       });
     } catch (e) {
-      if (e instanceof PlannerError) return fail(e.code, e.message);
-      throw e;
+      if (!(e instanceof PlannerError)) throw e;
+      // An instruction the planner could not ground goes to the code-mode writer, when one is configured (B24).
+      // The plan it builds is checked by the same validatePlan and offered the same way; on failure the
+      // planner's own error stands, with the writer's reason added.
+      const writer = this.writer;
+      const windowId = CODE_PLAN_AFTER.has(e.code) && writer !== null ? (e.windowId ?? requestedWindow(this.model, m)) : null;
+      if (writer === null || windowId === null) return fail(e.code, e.message);
+      store.count("plan.codeMode", 1);
+      try {
+        draft = await planWithCode(m.instruction, this.model, { values: () => this.plannerMemory() }, { writer, askJev: ask, offerKey, windowId, now: this.now() });
+        store.count("plan.codeModeProposed", 1);
+      } catch (e2) {
+        if (!(e2 instanceof PlannerError)) throw e2;
+        store.count(`plan.codeMode_${e2.code}`, 1);
+        return fail(e.code, `${e.message}; the plan writer did not help either: ${e2.message}`);
+      }
     }
     // Window ids start over with a new reader; a plan drafted in the old session names other windows now.
     if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
@@ -1244,14 +1321,16 @@ export class Helper {
       // no per-field insert for a fillResult to report, and the proposal is not kept for one. An
       // explicit fillRequest asks for the proposal itself (scripts/fill-eval.ts reads its fields), so it
       // always gets one.
-      if (!explicit && fillPopupEligible(p)) {
-        if (this.fillOverBeforeShown(p, formKey, focuses) !== null) {
+      // The pop-up runs the fields Caret writes; a form's selects, boxes, dates and times are hand-offs (B24).
+      const written = writtenFields(p);
+      if (!explicit && fillPopupEligible(written)) {
+        if (this.fillOverBeforeShown(written, formKey, focuses) !== null) {
           store.count("fill.popup_stale", 1, now);
           return p;
         }
         store.count("fill.popup", 1, now);
-        if (this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p))) {
-          this.fillPopups.set(p.id, { p, form: formKey });
+        if (this.publish(buildFillPopup(this.model, written), () => this.acceptFill(written))) {
+          this.fillPopups.set(written.id, { p: written, form: formKey });
           // The hour runs from when the offer is shown, not from when it was asked for.
           this.gate.spoke(this.now());
         }
@@ -1292,13 +1371,17 @@ export class Helper {
     const trigger = w?.nodes.get(p.triggerKey);
     if (w === undefined || trigger === undefined || (trigger.value ?? "") !== "") return null;
     const fields = p.fields.filter((f) => {
-      const n = w.nodes.get(f.key);
-      if (n === undefined || (n.value ?? "") !== "" || describeField(w, n).text !== f.descriptor) return false;
-      if (f.memory !== null) {
-        const now = this.aboutNow(f.memory.id);
-        return now !== null && now.value === f.value && now.label === f.memory.label;
+      // Read the way proposeFill read it, so a control is judged by its own rules (B24 review).
+      const input = emptyInput(w, f.key);
+      if (input === null || describeInput(w, input) !== f.descriptor) return false;
+      const memory = f.memory ?? f.handoff?.memory ?? null;
+      const value = f.value ?? f.handoff?.value ?? null;
+      if (memory !== null) {
+        const now = this.aboutNow(memory.id);
+        return now !== null && memoryValue(now.value, memory.part) === value && now.label === memory.label;
       }
-      return f.source === null || this.model.windows.has(f.source.windowId);
+      const source = f.source ?? f.handoff?.source ?? null;
+      return source === null || this.model.windows.has(source.windowId);
     });
     return { ...p, fields };
   }
@@ -1408,13 +1491,13 @@ export class Helper {
    * snippets), and what the user told Caret. The second ask of a question declares the same text and is
    * not counted again; the comparison is kept in memory only.
    */
-  private recordRead(req: JevRequest, outcome: "done" | "failed"): void {
+  private recordRead(req: Pick<JevRequest, "snippets">, outcome: "done" | "failed", to = "Jev"): void {
     const apps = [...new Set(req.snippets.flatMap((x) => (x.windowId === MEMORY_SNIPPETS || x.windowId === "plan" ? [] : [this.model.windows.get(x.windowId)?.app.name ?? "a closed window"])))];
     const told = req.snippets.some((x) => x.windowId === MEMORY_SNIPPETS);
     const planned = req.snippets.some((x) => x.windowId === "plan");
     const parts = [...(apps.length === 0 ? [] : [`snippets from ${andList(apps)}`]), ...(told ? ["what you told Caret"] : []), ...(planned ? ["your instruction"] : [])];
     const what = parts.length === 0 ? "a question with no screen text" : andList(parts);
-    const says = outcome === "done" ? (parts.length === 0 ? `Asked Jev ${what}` : `Sent ${what} to Jev`) : `Tried to send ${what} to Jev; the request failed`;
+    const says = outcome === "done" ? (parts.length === 0 ? `Asked ${to} ${what}` : `Sent ${what} to ${to}`) : `Tried to send ${what} to ${to}; the request failed`;
     const at = this.now();
     const declared = `${outcome}\u0002${req.snippets.map((x) => `${x.windowId}\u0000${x.text}`).sort().join("\u0001")}`;
     if (this.lastRead !== null && this.lastRead.declared === declared && at - this.lastRead.at < READ_REPEAT_MS) return;

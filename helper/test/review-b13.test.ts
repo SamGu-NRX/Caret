@@ -110,7 +110,9 @@ describe("B13 review: no wrong fill from a partial set", () => {
     const m = new ScreenModel();
     const times = Array.from({ length: 79 }, (_, i) => `${10 + Math.floor(i / 60)}:${String(i % 60).padStart(2, "0")}`);
     const nodes = times.map((t, i) => text(`${CHAT}/t${i}`, t));
-    const pad = Array.from({ length: 20 }, (_, i) => text(`${CHAT}/p${i}`, `a longer filler message, number ${i}, about where to have lunch today`));
+    // Enough filler that the note is large (privacy.ts): a short note held to half its text is read by relevance
+    // since B24, which leaves the times out as a group rather than letting the cap stop partway.
+    const pad = Array.from({ length: 40 }, (_, i) => text(`${CHAT}/p${i}`, `a longer filler message, number ${i}, about where to have lunch today`));
     const values = times.map((t, i) => value("time", t, `${CHAT}/t${i}`));
     nodes.push(text(`${CHAT}/d`, `Review on ${MEETING}`));
     values.push(value("date", MEETING, `${CHAT}/d`));

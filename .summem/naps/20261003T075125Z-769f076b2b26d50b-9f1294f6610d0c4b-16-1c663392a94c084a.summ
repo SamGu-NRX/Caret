@@ -1,0 +1,1 @@
+B13-B17: ledger charges text to every window showing it; Jev replays vary ~3 fields; fix generator clock in load tests; acts need an actGrant; Chrome AX late, ignores AXSelectedText; rerun bundle-fixture.sh after builds; Balanced = 4 offers/hour.
