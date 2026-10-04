@@ -194,55 +194,21 @@ private func goldenLines() throws -> [Data] {
     }
 }
 
-@Suite struct SecretAndPeer {
-    private func tempDir() throws -> String {
-        let d = NSTemporaryDirectory() + "caret-bridge-\(UUID().uuidString)"
-        try FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        return d
-    }
-
-    private func write(_ path: String, _ text: String, mode: Int) throws {
-        FileManager.default.createFile(atPath: path, contents: Data(text.utf8), attributes: [.posixPermissions: mode])
-    }
-
-    @Test func readsAPrivateSecret() throws {
-        let d = try tempDir(); defer { try? FileManager.default.removeItem(atPath: d) }
-        let hex = String(repeating: "ab", count: 32)
-        try write(d + "/page.sock.key", hex, mode: 0o600)
-        #expect(try SecretFile.read(path: d + "/page.sock.key").hex == hex)
-    }
-
-    @Test func refusesASecretOthersCouldRead() throws {
-        let d = try tempDir(); defer { try? FileManager.default.removeItem(atPath: d) }
-        try write(d + "/page.sock.key", String(repeating: "ab", count: 32), mode: 0o644)
-        #expect(throws: PeerError.self) { try SecretFile.read(path: d + "/page.sock.key") }
-    }
-
-    @Test func refusesASymlinkedSecret() throws {
-        let d = try tempDir(); defer { try? FileManager.default.removeItem(atPath: d) }
-        try write(d + "/real", String(repeating: "ab", count: 32), mode: 0o600)
-        try FileManager.default.createSymbolicLink(atPath: d + "/page.sock.key", withDestinationPath: d + "/real")
-        #expect(throws: PeerError.self) { try SecretFile.read(path: d + "/page.sock.key") }
-    }
-
-    @Test func refusesADirectoryOthersCanWrite() throws {
-        let d = try tempDir(); defer { try? FileManager.default.removeItem(atPath: d) }
-        try write(d + "/page.sock.key", String(repeating: "ab", count: 32), mode: 0o600)
-        chmod(d, 0o777)
-        #expect(throws: PeerError.self) { try SecretFile.read(path: d + "/page.sock.key") }
-    }
-
-    @Test func refusesATruncatedSecret() throws {
-        let d = try tempDir(); defer { try? FileManager.default.removeItem(atPath: d) }
-        try write(d + "/page.sock.key", "abcd", mode: 0o600)
-        #expect(throws: PeerError.self) { try SecretFile.read(path: d + "/page.sock.key") }
-    }
-
+@Suite struct Peers {
     @Test func readsThePeersUidOnALocalSocket() throws {
         var fds: [Int32] = [0, 0]
         #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
         defer { close(fds[0]); close(fds[1]) }
         #expect(try Peer.uid(of: fds[0]) == getuid())
         #expect(try Peer.pid(of: fds[0]) == getpid())
+    }
+
+    /// W3: the page key both the helper and the host derive from the launch secret, never a file (auth.ts pageKey).
+    @Test func derivesThePageKeyAsTheHelperDoes() throws {
+        let v = try JSONSerialization.jsonObject(with: Data(contentsOf: authVector)) as? [String: Any]
+        guard let launch = (v?["launchSecret"] as? String).flatMap({ Data(hex: $0) }), let key = v?["secret"] as? String else {
+            Issue.record("page-auth.json has no launchSecret and secret"); return
+        }
+        #expect(Handshake.pageKey(launchSecret: launch).hex == key)
     }
 }

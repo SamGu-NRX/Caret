@@ -32,7 +32,11 @@ public enum Relay {
         guard origin.hasPrefix(prefix) else { return nil }
         var id = String(origin.dropFirst(prefix.count))
         if id.hasSuffix("/") { id.removeLast() }
-        guard id.count == 32, id.utf8.allSatisfy({ $0 >= 97 && $0 <= 112 }) else { return nil }
-        return id
+        return isExtensionId(id) ? id : nil
+    }
+
+    /// A Chrome extension id: 32 letters a to p.
+    public static func isExtensionId(_ id: String) -> Bool {
+        id.utf8.count == 32 && id.utf8.allSatisfy { $0 >= 97 && $0 <= 112 }
     }
 }

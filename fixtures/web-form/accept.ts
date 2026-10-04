@@ -1,11 +1,19 @@
 // The page engine's acceptance (browser layer memo, section 7: batch 1, and batch 2 from W2), as one command:
 //
-//   node fixtures/web-form/accept.ts [--skip-build] [--electron DIR] [--no-reader] [--nm-probe] [--idle SECONDS] [--memory-tabs N] [--dump-walk] [--evidence DIR]
+//   node fixtures/web-form/accept.ts --sign-identity SHA1 [--other-identity SHA1] [--skip-build] [--electron DIR] [--no-reader] [--nm-probe] [--idle SECONDS] [--memory-tabs N] [--dump-walk] [--evidence DIR]
+//
+// --sign-identity  the Apple Development identity (certificate SHA-1, `security find-identity -v -p codesigning`) of the
+//              team in BridgeTrust.teamId. The run signs caret-bridge as dev.caret.bridge and the test host as
+//              dev.caret.host with it (W3: the bridge reaches the host over XPC, and each holds the other to its signature).
+// --other-identity  an identity of another team: the run also signs a bridge and a host with it, and an ad hoc bridge,
+//              and expects each refused.
 //
 // It builds the extension and the bridge, installs the pinned Chrome for Testing with @puppeteer/browsers, writes
 // the bridge's Native Messaging manifest into Chrome for Testing's own directory (never Chrome's or Helium's),
 // starts the fixture site on 127.0.0.1 and the helper in fixture mode in this process (canned Jev answers, page.sock
-// in a temporary directory), launches headless Chrome for Testing on a temporary profile with --load-extension, waits
+// in a temporary directory), starts the signed test host as a temporary launchd job in this user's GUI domain (it
+// owns a Mach service named for this run, is handed this run's launch secret, and is booted out at the end),
+// launches headless Chrome for Testing on a temporary profile with --load-extension, waits
 // for the engine's hello, and runs every batch 1 check through the helper's EngineRegistry. It removes the manifest,
 // the profile and the sockets, and stops every process it started, whatever happened. Exit 0 only when every check
 // passed.
@@ -27,11 +35,19 @@
 // site", the host's presence signal, and the reader's AXManualAccessibility log. /submitted still reads 0.
 // A caller that already holds the heavy lock sets CARET_HEAVY_LOCK_HELD=1, so the bridge build does not wait on it.
 //
-// Browser control is the page's own script taking commands from the fixture server (fixture.js); no debugger or CDP
-// connection is made, so nothing here keeps the worker alive but the port under test.
+// Browser control is the page's own script taking commands from the fixture server (fixture.js). The one exception
+// (W3): a DevTools pipe (--remote-debugging-pipe) to this run's own headless browser, for what a page script cannot
+// make: a trusted click, and focus moved between two browser windows. It attaches to no extension target, so it
+// keeps nothing alive but the port under test.
+//
+// Batch 3 (W3) adds: an undo's rebind: false refused as notSameElement on a re-rendered field; a trusted click in a
+// page under a grant ending the grant and reaching the executor; a revoke landing between a write's stages stopping
+// it there (holds.html); a pick a revoke cut short reported as "may have landed"; a native select written through the
+// executor's path; and only the focused window's tab counted as the user's.
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
 import { randomBytes } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,7 +61,7 @@ import type { EngineSession } from "../../helper/src/engines/session.ts";
 import { pageWindowId } from "../../helper/src/engines/windows.ts";
 import { wirePageEngines } from "../../helper/src/engines/wire.ts";
 import { ConfirmedFiles } from "../../helper/src/engines/attach.ts";
-import type { PageEngineLink } from "../../helper/src/engines/page-link.ts";
+import { toVerbOutcome, type PageEngineLink } from "../../helper/src/engines/page-link.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
 import type { AskJev } from "../../helper/src/fill/jev.ts";
 import type { HelperMessage, PageControl, PageFrame, PageResult, PageSnapshot, PageVerb } from "../../helper/src/protocol.ts";
@@ -56,6 +72,7 @@ const ROOT = join(HERE, "..", "..");
 const EXT = join(ROOT, "extension");
 const BRIDGE_PKG = join(ROOT, "bridge");
 const BRIDGE = join(BRIDGE_PKG, ".build", "release", "caret-bridge");
+const TESTHOST = join(BRIDGE_PKG, ".build", "release", "caret-bridge-testhost");
 const READER_PKG = join(ROOT, "apps", "screen-reader");
 const READER = join(READER_PKG, ".build", "debug", "caret-screen");
 /** Chrome for Testing stable on 2026-10-04 (resolveBuildId "stable"); pinned so every run tests the same browser. */
@@ -71,13 +88,15 @@ const FORBIDDEN_NM = [join(SUPPORT, "Google", "Chrome", "NativeMessagingHosts"),
 const { values: args } = parseArgs({
   options: {
     "skip-build": { type: "boolean", default: false },
+    "sign-identity": { type: "string" },
+    "other-identity": { type: "string" },
     "nm-probe": { type: "boolean", default: false },
     idle: { type: "string", default: "0" },
     "memory-tabs": { type: "string", default: "0" },
     "dump-walk": { type: "boolean", default: false },
     electron: { type: "string" },
     "no-reader": { type: "boolean", default: false },
-    evidence: { type: "string", default: join(homedir(), ".caret-run", "evidence", "browser", "w2") },
+    evidence: { type: "string", default: join(homedir(), ".caret-run", "evidence", "browser", "w3") },
   },
 });
 
@@ -107,7 +126,7 @@ function preflight(): void {
 
 function build(): void {
   if (args["skip-build"]) {
-    if (!existsSync(BRIDGE) || !existsSync(join(EXT, "dist", "manifest.json")) || (!args["no-reader"] && !existsSync(READER))) throw new Error("--skip-build, but the bridge, the reader or extension/dist is missing");
+    if (!existsSync(BRIDGE) || !existsSync(TESTHOST) || !existsSync(join(EXT, "dist", "manifest.json")) || (!args["no-reader"] && !existsSync(READER))) throw new Error("--skip-build, but the bridge, the test host, the reader or extension/dist is missing");
     return;
   }
   say("building the extension");
@@ -123,6 +142,7 @@ function build(): void {
     }
   };
   swift("the bridge (release)", ["swift", "build", "-c", "release", "--package-path", BRIDGE_PKG, "--product", "caret-bridge"]);
+  swift("the bridge's test host (release)", ["swift", "build", "-c", "release", "--package-path", BRIDGE_PKG, "--product", "caret-bridge-testhost"]);
   if (!args["no-reader"]) swift("the reader (debug)", ["swift", "build", "--package-path", READER_PKG, "--product", "caret-screen"]);
 }
 
@@ -135,15 +155,15 @@ async function chrome(): Promise<string> {
   return exe;
 }
 
-/** Writes the bridge manifest into `dir`, creating what is missing, and registers its removal. */
-function writeManifest(dir: string, extensionId: string): void {
+/** Writes the manifest for `bridge` into `dir`, creating what is missing, and registers its removal. */
+function writeManifest(dir: string, extensionId: string, bridge: string): void {
   if (FORBIDDEN_NM.includes(dir)) throw new Error(`refusing to write ${dir}`);
   const created: string[] = [];
   for (let d = dir; !existsSync(d); d = join(d, "..")) created.unshift(d);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${HOST_NAME}.json`);
   if (existsSync(file)) throw new Error(`${file} already exists; not overwriting something this run did not write`);
-  writeFileSync(file, `${JSON.stringify({ name: HOST_NAME, description: "Caret page bridge (W1 acceptance)", path: BRIDGE, type: "stdio", allowed_origins: [`chrome-extension://${extensionId}/`] }, null, 2)}\n`);
+  writeFileSync(file, `${JSON.stringify({ name: HOST_NAME, description: "Caret page bridge (acceptance)", path: bridge, type: "stdio", allowed_origins: [`chrome-extension://${extensionId}/`] }, null, 2)}\n`);
   undo.push({
     what: file,
     fn: () => {
@@ -153,14 +173,134 @@ function writeManifest(dir: string, extensionId: string): void {
   });
 }
 
+/**
+ * Copies `bin` to `dest` and signs it as `identifier` with `identity` (a certificate SHA-1, or "-" for ad hoc), with
+ * the hardened runtime so no library can be injected into it. Returns `dest`.
+ */
+function signedCopy(bin: string, dest: string, identifier: string, identity: string): string {
+  copyFileSync(bin, dest);
+  execFileSync("codesign", ["--force", "--sign", identity, "--identifier", identifier, "--options", "runtime", "--timestamp=none", dest], { stdio: "pipe" });
+  return dest;
+}
+
+/** `codesign -d -r-`'s designated requirement of a signed path. */
+function designated(path: string): string {
+  const out = execFileSync("codesign", ["-d", "-r-", path], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const m = /designated => (.*)/.exec(out);
+  if (m?.[1] === undefined) throw new Error(`no designated requirement for ${path}`);
+  return m[1].trim();
+}
+
+const xml = (s: string): string => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+
+/**
+ * Starts `program` as a temporary launchd job in this user's GUI domain that owns Mach service `service`, from a plist
+ * in this run's private directory; it is booted out at cleanup. Resolves once its log says it is listening.
+ */
+async function launchdJob(dir: string, label: string, service: string, program: string[], log: string): Promise<void> {
+  const plist = join(dir, `${label}.plist`);
+  writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${xml(label)}</string>
+<key>ProgramArguments</key><array>${program.map((a) => `<string>${xml(a)}</string>`).join("")}</array>
+<key>MachServices</key><dict><key>${xml(service)}</key><true/></dict>
+<key>RunAtLoad</key><true/>
+<key>StandardErrorPath</key><string>${xml(log)}</string>
+</dict></plist>
+`, { mode: 0o600 });
+  const domain = `gui/${process.getuid?.() ?? 501}`;
+  execFileSync("launchctl", ["bootstrap", domain, plist], { stdio: "pipe" });
+  undo.push({
+    what: `launchd job ${label}`,
+    fn: () => {
+      try {
+        execFileSync("launchctl", ["bootout", `${domain}/${label}`], { stdio: "ignore" });
+      } catch {
+        /* already gone */
+      }
+    },
+  });
+  for (let i = 0; i < 100; i++) {
+    if (existsSync(log) && readFileSync(log, "utf8").includes("listening on")) return;
+    await sleep(100);
+  }
+  throw new Error(`the launchd job ${label} did not start listening: ${tail(log)}`);
+}
+
+/** Runs a bridge by itself, as a process that is not a browser would, until it exits (15 s at most). */
+async function bridgeAlone(bridge: string, service: string, extensionId: string): Promise<{ code: number | null; err: string }> {
+  const p = spawn(bridge, [`chrome-extension://${extensionId}/`], { env: { ...process.env, CARET_BRIDGE_SERVICE: service }, stdio: ["pipe", "pipe", "pipe"] });
+  undo.push({ what: `bridge pid ${p.pid}`, fn: () => void p.kill("SIGKILL") });
+  let err = "";
+  p.stderr?.setEncoding("utf8").on("data", (d: string) => (err += d));
+  const code = await new Promise<number | null>((resolve) => {
+    const timer = setTimeout(() => (p.kill("SIGKILL"), resolve(null)), 15_000);
+    p.once("exit", (c) => (clearTimeout(timer), resolve(c)));
+  });
+  return { code, err: err.trim() };
+}
+
 interface Running {
   proc: ChildProcess;
   stop: () => Promise<void>;
+  /** The DevTools pipe, when launched with one. */
+  cdp: Cdp | null;
+}
+
+/** The Chrome DevTools Protocol over --remote-debugging-pipe: requests on fd 3, answers on fd 4, each NUL-terminated. */
+class Cdp {
+  private next = 1;
+  private buf = "";
+  private readonly pending = new Map<number, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
+  private readonly out: Writable;
+  constructor(out: Writable, inp: Readable) {
+    this.out = out;
+    inp.setEncoding("utf8");
+    inp.on("data", (d: string) => {
+      this.buf += d;
+      for (let i = this.buf.indexOf("\0"); i >= 0; i = this.buf.indexOf("\0")) {
+        const m = JSON.parse(this.buf.slice(0, i)) as { id?: number; result?: Record<string, unknown>; error?: { message: string } };
+        this.buf = this.buf.slice(i + 1);
+        const p = m.id === undefined ? undefined : this.pending.get(m.id);
+        if (p === undefined || m.id === undefined) continue;
+        this.pending.delete(m.id);
+        if (m.error !== undefined) p.reject(new Error(m.error.message));
+        else p.resolve(m.result ?? {});
+      }
+    });
+  }
+
+  send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Record<string, unknown>> {
+    const id = this.next++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => (this.pending.delete(id), reject(new Error(`${method} got no answer within 10 s`))), 10_000);
+      this.pending.set(id, { resolve: (r) => (clearTimeout(timer), resolve(r)), reject: (e) => (clearTimeout(timer), reject(e)) });
+      this.out.write(`${JSON.stringify({ id, method, params, ...(sessionId === undefined ? {} : { sessionId }) })}\0`);
+    });
+  }
+
+  /** The page target whose URL starts with `prefix`, and a flat session attached to it. */
+  async page(prefix: string): Promise<{ targetId: string; sessionId: string }> {
+    const { targetInfos } = (await this.send("Target.getTargets")) as { targetInfos: { targetId: string; type: string; url: string }[] };
+    const t = targetInfos.find((x) => x.type === "page" && x.url.startsWith(prefix));
+    if (t === undefined) throw new Error(`no page target at ${prefix}: ${targetInfos.map((x) => `${x.type} ${x.url}`).join(", ")}`);
+    const { sessionId } = (await this.send("Target.attachToTarget", { targetId: t.targetId, flatten: true })) as { sessionId: string };
+    return { targetId: t.targetId, sessionId };
+  }
+
+  /** A real (trusted) left click at the centre of `selector`'s box; the box is read with one evaluate. */
+  async click(sessionId: string, selector: string): Promise<void> {
+    const r = (await this.send("Runtime.evaluate", { expression: `(() => { const b = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2]; })()`, returnByValue: true }, sessionId)) as { result: { value: [number, number] } };
+    const [x, y] = r.result.value;
+    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }, sessionId);
+    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, sessionId);
+  }
 }
 
 /** Headless Chrome for Testing on `profile`; its own process group, so stopping it stops every helper process too. */
 /** `extension`: the unpacked extension directory to load, or null for none. */
-function launch(exe: string, profile: string, urls: string[], env: NodeJS.ProcessEnv, extension: string | null, log: string, extra: string[] = []): Running {
+function launch(exe: string, profile: string, urls: string[], env: NodeJS.ProcessEnv, extension: string | null, log: string, extra: string[] = [], devtools = false): Running {
   const flags = [
     "--headless=new",
     `--user-data-dir=${profile}`,
@@ -173,9 +313,11 @@ function launch(exe: string, profile: string, urls: string[], env: NodeJS.Proces
     "--disable-component-update",
     ...(extension !== null ? [`--load-extension=${extension}`, `--disable-extensions-except=${extension}`, "--disable-features=DisableLoadExtensionCommandLineSwitch"] : []),
     ...extra,
+    ...(devtools ? ["--remote-debugging-pipe"] : []),
     ...urls,
   ];
-  const proc = spawn(exe, flags, { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const proc = spawn(exe, flags, { env, detached: true, stdio: devtools ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"] });
+  const cdp = devtools ? new Cdp(proc.stdio[3] as Writable, proc.stdio[4] as Readable) : null;
   const out = createWriteStream(log, { flags: "a" });
   proc.stdout?.pipe(out);
   proc.stderr?.pipe(out);
@@ -196,7 +338,7 @@ function launch(exe: string, profile: string, urls: string[], env: NodeJS.Proces
     }
   };
   undo.push({ what: `Chrome for Testing pid ${pid}`, fn: stop });
-  return { proc, stop };
+  return { proc, stop, cdp };
 }
 
 /** The frontmost app's display name, by LaunchServices; the run aborts if Chrome for Testing ever takes it. */
@@ -253,6 +395,7 @@ interface Engine {
   helper: Helper;
   session: EngineSession;
   tabId: number;
+  cdp: Cdp | null;
 }
 
 async function walk(e: Engine): Promise<PageSnapshot> {
@@ -650,6 +793,241 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
   });
 }
 
+// ---- W3: the bridge's trust over XPC ----
+
+/**
+ * Who the host and the bridge refuse, each by its code signature, and that no key sits beside page.sock. The team's
+ * bridge launched by Chrome for Testing is the engine the other checks use; here the same bridge started by this
+ * process (not a browser), a bridge signed by another team, an ad hoc bridge, and the team's bridge facing a host
+ * signed by another team must each end without an engine.
+ */
+async function trustChecks(o: { bridge: string; service: string; hostLog: string; extensionId: string; tmp: string; sockPath: string; registry: PageHost["registry"]; testHost: string }): Promise<void> {
+  const engines = (): number => o.registry.list().length;
+
+  await check("W3 2: no page key file sits beside page.sock, and the test host deleted the secret it was handed", async () => {
+    const dir = join(o.sockPath, "..");
+    const files = readdirSync(dir).sort();
+    expect(files.join() === "page.sock", `the socket directory holds ${files.join(", ")}`);
+    return `socket directory: ${files.join(", ")}`;
+  });
+
+  await check("W3 2: the team's bridge started by a process that is not a browser is refused by the host before page.sock", async () => {
+    const before = engines();
+    const r = await bridgeAlone(o.bridge, o.service, o.extensionId);
+    expect(r.code === 1 && /not a browser Caret knows/.test(r.err), `exit ${r.code}: ${r.err}`);
+    expect(engines() === before, "an engine registered");
+    return r.err.split("\n").at(-1) ?? "";
+  });
+
+  const other = args["other-identity"];
+  if (other === undefined) {
+    results.push({ name: "W3 2: bridges signed by another team, or ad hoc, are refused", pass: false, ms: 0, detail: "no --other-identity given" });
+    return;
+  }
+  for (const [label, identity] of [["another team", other], ["ad hoc (no identity)", "-"]] as const) {
+    await check(`W3 2: a bridge signed ${label} is refused by the host's requirement before it can open an engine`, async () => {
+      const bad = signedCopy(BRIDGE, join(o.tmp, "bin", `caret-bridge-${identity === "-" ? "adhoc" : "other"}`), "dev.caret.bridge", identity);
+      const logBefore = readFileSync(o.hostLog, "utf8").length;
+      const before = engines();
+      const r = await bridgeAlone(bad, o.service, o.extensionId);
+      await sleep(300);
+      const hostSaid = readFileSync(o.hostLog, "utf8").slice(logBefore);
+      expect(r.code === 1 && /relaying nothing/.test(r.err) && !/refused:/.test(r.err), `exit ${r.code}: ${r.err}`);
+      expect(/ended before it opened an engine/.test(hostSaid) && !/engine .* open for/.test(hostSaid), `host log: ${hostSaid.trim()}`);
+      expect(engines() === before, "an engine registered");
+      return `${designated(bad)}; bridge: ${r.err.split("\n").at(-1)}; host: ${hostSaid.trim().split("\n").at(-1)}`;
+    });
+  }
+
+  await check("W3 2: the team's bridge refuses a host signed by another team on its service", async () => {
+    const badHost = signedCopy(TESTHOST, join(o.tmp, "bin", "caret-bridge-testhost-other"), "dev.caret.host", other);
+    const service2 = `${o.service}.other`;
+    const log2 = join(o.tmp, "testhost-other.log");
+    const secret2 = join(o.tmp, "bin", "secret-other");
+    writeFileSync(secret2, randomBytes(32).toString("hex"), { mode: 0o600 });
+    await launchdJob(o.tmp, service2, service2, [badHost, "--service", service2, "--socket", o.sockPath, "--secret-file", secret2, "--browser-requirement", "anchor apple"], log2);
+    const r = await bridgeAlone(o.bridge, service2, o.extensionId);
+    const hostSaid = readFileSync(log2, "utf8");
+    expect(r.code === 1 && /not the Caret host|no Caret host answered|did not answer/.test(r.err), `exit ${r.code}: ${r.err}`);
+    expect(!/engine .* open for/.test(hostSaid), `the other host opened an engine: ${hostSaid}`);
+    return `${designated(badHost)}; bridge: ${r.err.split("\n").at(-1)}`;
+  });
+}
+
+// ---- batch 3 (W3): the merge review's findings ----
+
+function need<T>(x: T | null, what: string): T {
+  if (x === null) throw new Error(`no ${what}`);
+  return x;
+}
+
+/** Navigates the tab to `path` and walks it once a control named `name` is in it. */
+async function openPage(e: Engine, site: FixtureSite, path: string, name: string): Promise<PageSnapshot> {
+  const since = Date.now();
+  await site.command({ cmd: "navigate", url: `${site.mainOrigin}${path}` });
+  await site.waitForLoad((h) => h.endsWith(path), since);
+  let s = await walk(e);
+  for (let i = 0; i < 40 && !s.frames.some((f) => f.controls.some((c) => c.name === name)); i++) {
+    await sleep(250);
+    s = await walk(e);
+  }
+  return s;
+}
+
+async function dataset(site: FixtureSite, selector: string, name: string): Promise<string | undefined> {
+  return (await site.command({ cmd: "dataset", selector, name })).value;
+}
+
+/**
+ * Sends `verb`, waits until the page stops at hold `tag` (its own handler, mid-act), revokes `taskId` while it is
+ * stopped there, gives the revoke 300 ms to reach the worker, then lets the page go on. `held` is false when the page
+ * never reached the hold within 5 s; the revoke is then not sent.
+ */
+async function revokeAtHold(e: Engine, site: FixtureSite, tag: string, taskId: string, verb: PageVerb): Promise<{ r: PageResult; held: boolean }> {
+  const h = site.armHold(tag);
+  const pending = e.session.command(verb, 10_000);
+  const held = await Promise.race([h.arrived.then(() => true), sleep(5000).then(() => false)]);
+  if (held) {
+    revoke(e, taskId);
+    await sleep(300);
+  }
+  h.release();
+  return { r: (await pending).result, held };
+}
+
+async function batch3(e: Engine, site: FixtureSite): Promise<void> {
+  let s = await freshForm(e, site);
+  const windowId = pageWindowId(e.session.info.engine, e.tabId);
+  const pid = e.session.info.browser.pid;
+
+  await check("W3 1a: an undo's write (rebind: false) to a re-rendered field is notSameElement and writes nothing", async () => {
+    grant(e, "t-w3a");
+    const t = target(s, "First name", "t-w3a");
+    await site.command({ cmd: "replace", selector: "#first_name" });
+    const r = await run(e, { kind: "pageWrite", ...t, rebind: false, expect: "", value: "Undo target" });
+    expect(r.outcome === "notSameElement", outcome(r));
+    expect((await read(site, "#first_name")) === "", "the replacement field changed");
+    return outcome(r);
+  });
+
+  await check("W3 1a: a rebind acts on the replacement but never gives it the replaced element's id, so an undo mark on that id stops matching", async () => {
+    const t = target(s, "First name", "t-w3a");
+    const r = await run(e, { kind: "pageWrite", ...t, expect: "", value: "Robin" });
+    expect(r.outcome === "ok" && (r.detail ?? "").includes("rebound"), outcome(r));
+    s = await walk(e);
+    const now = control(s, "First name").c.id;
+    expect(now !== t.id, `the replacement took the walked element's id ${t.id}`);
+    revoke(e, "t-w3a");
+    return `${outcome(r)}; walked id ${t.id}, the replacement's ${now}`;
+  });
+
+  await check("W3 1e: a native select is editable in the model, and the executor's write path sets it by label, verified by selectedOptions", async () => {
+    expect((await e.host.link.run({ kind: "walk", pid, windowId })).outcome === "ok", "walk");
+    const node = [...(e.helper.model.windows.get(windowId)?.nodes.values() ?? [])].find((n) => n.label === "Country");
+    expect(node?.editable === true, `the Country select is ${JSON.stringify(node)}`);
+    const now = Date.now();
+    e.host.link.grant({ type: "actGrant", v: 1, taskId: "t-w3e", pid, windowId, at: now, expires: now + 60_000 });
+    const r = await e.host.link.run({ kind: "write", pid, windowId, key: node!.key, role: node!.role, attribute: "value", expect: node!.value ?? "", value: "Mexico", taskId: "t-w3e" });
+    e.host.link.grant({ type: "actRevoke", v: 1, taskId: "t-w3e", at: Date.now() });
+    expect(r.outcome === "ok", `write ${r.outcome} ${r.detail ?? ""}`);
+    const page = await read(site, "#country");
+    const model = e.helper.model.windows.get(windowId)?.nodes.get(node!.key)?.value;
+    expect(page === "mx" && model === "Mexico", `page ${page}, model ${model}`);
+    return `node ${node!.key} editable; page #country ${page}; model '${model}'`;
+  });
+
+  s = await openPage(e, site, "/holds", "Click here");
+
+  await check("W3 1b: a trusted click in a frame under a grant ends the grant at once and reaches the executor; a script's presses and a click with no grant do not", async () => {
+    const cdp = need(e.cdp, "DevTools pipe");
+    const seen: { windowId: string; kind: string }[] = [];
+    const was = e.helper.executor.onPageInput.bind(e.helper.executor);
+    e.helper.executor.onPageInput = (w, k) => {
+      seen.push({ windowId: w, kind: k });
+      was(w, k);
+    };
+    try {
+      const { sessionId } = await cdp.page(`${site.mainOrigin}/holds`);
+      grant(e, "t-w3b");
+      await sleep(300);
+      await site.command({ cmd: "synthPress", selector: "#h_click" });
+      await sleep(500);
+      expect(seen.length === 0, `a script's press counted as the user's: ${JSON.stringify(seen)}`);
+      const live = await run(e, { kind: "pageWrite", ...target(s, "Click here", "t-w3b"), expect: "", value: "x" });
+      expect(live.outcome === "ok", `the grant did not survive a script's press: ${outcome(live)}`);
+      await cdp.click(sessionId, "#h_click");
+      for (let i = 0; i < 40 && seen.length === 0; i++) await sleep(50);
+      expect(seen.length === 1 && seen[0]?.windowId === windowId && seen[0].kind === "mouse", `seen ${JSON.stringify(seen)}`);
+      const after = await run(e, { kind: "pageWrite", ...target(s, "Click here", "t-w3b"), expect: "x", value: "y" });
+      expect(after.outcome === "notAllowed", `a write after the click: ${outcome(after)}`);
+      await cdp.click(sessionId, "#h_click");
+      await sleep(500);
+      expect(seen.length === 1, `a click with no grant counted: ${JSON.stringify(seen)}`);
+      return `script press: nothing; trusted click: ${JSON.stringify(seen[0])}, then a write is ${after.outcome}; a click with no grant: nothing`;
+    } finally {
+      e.helper.executor.onPageInput = was;
+    }
+  });
+
+  await check("W3 1c: a revoke while the page holds a write mid-stage stops it there: text at focus, text after input (no change event), a select at focus, a checkbox at focus", async () => {
+    s = await walk(e);
+    grant(e, "t-w3c");
+    const focus = await revokeAtHold(e, site, "focus", "t-w3c", { kind: "pageWrite", ...target(s, "Hold on focus", "t-w3c"), expect: "", value: "Never" });
+    expect(focus.held && focus.r.outcome === "notAllowed", `text at focus: held ${focus.held}, ${outcome(focus.r)}`);
+    expect((await read(site, "#h_focus")) === "" && (await dataset(site, "#h_focus", "input")) === "(none)", "text at focus: the value went in after the revoke");
+    grant(e, "t-w3c");
+    const input = await revokeAtHold(e, site, "input", "t-w3c", { kind: "pageWrite", ...target(s, "Hold on input", "t-w3c"), expect: "", value: "Landed" });
+    expect(input.held && input.r.outcome === "failed" && input.r.readings === undefined && /grant ended/.test(input.r.detail ?? ""), `text after input: held ${input.held}, ${outcome(input.r)}, readings ${JSON.stringify(input.r.readings)}`);
+    expect(toVerbOutcome(input.r).outcome === "axError", "the helper does not read it as may-have-landed");
+    expect((await read(site, "#h_input")) === "Landed" && (await dataset(site, "#h_input", "change")) === "(none)", "text after input: change ran after the revoke");
+    grant(e, "t-w3c");
+    const sel = await revokeAtHold(e, site, "select", "t-w3c", { kind: "pageSelect", ...target(s, "Hold select", "t-w3c"), expect: "", value: "l" });
+    expect(sel.held && sel.r.outcome === "notAllowed" && (await read(site, "#h_select")) === "", `select at focus: held ${sel.held}, ${outcome(sel.r)}`);
+    grant(e, "t-w3c");
+    const box = await revokeAtHold(e, site, "check", "t-w3c", { kind: "pageSetChecked", ...target(s, "Hold checkbox", "t-w3c"), checked: true });
+    expect(box.held && box.r.outcome === "notAllowed" && (await read(site, "#h_check")) === "false", `checkbox at focus: held ${box.held}, ${outcome(box.r)}`);
+    return `focus ${focus.r.outcome}; input ${input.r.outcome} (${input.r.detail}); select ${sel.r.outcome}; checkbox ${box.r.outcome}`;
+  });
+
+  await check("W3 1d: a revoke right after a combobox pick reports the pick as possibly landed (failed, no readings), which the executor records for undo", async () => {
+    s = await walk(e);
+    grant(e, "t-w3d");
+    const p = await revokeAtHold(e, site, "pick", "t-w3d", { kind: "pageChooseOption", ...target(s, "Hold department", "t-w3d"), expect: "", value: "Research" });
+    expect(p.held && p.r.outcome === "failed" && p.r.readings === undefined && /pick went in/.test(p.r.detail ?? "") && /grant ended/.test(p.r.detail ?? ""), `held ${p.held}, ${outcome(p.r)}, readings ${JSON.stringify(p.r.readings)}`);
+    expect(toVerbOutcome(p.r).outcome === "axError", "the helper does not read it as may-have-landed");
+    const v = await read(site, "#hdept");
+    expect(v === "Research", `#hdept holds ${v}`);
+    return `${outcome(p.r)}; the page holds ${v}`;
+  });
+
+  // Last of the checks that use the page's control channel: two tabs would both poll it. A new window takes focus
+  // (headless Chrome moves focus to a window CDP creates, and Target.activateTarget does not move it back), which
+  // leaves this run's tab the selected tab of a background window: exactly the tab that must not count as the user's.
+  await check("W3 1f: only the focused window's tab is the user's: a background window's selected tab says inFocusedWindow false, is not focused in the model and is not the user's window", async () => {
+    const cdp = need(e.cdp, "DevTools pipe");
+    const since = Date.now();
+    const { targetId: other } = (await cdp.send("Target.createTarget", { url: `${site.mainOrigin}/form2`, newWindow: true })) as { targetId: string };
+    try {
+      await site.waitForLoad((h) => h.endsWith("/form2"), since);
+      await sleep(500);
+      const a = await e.session.command({ kind: "pageWalk", tabId: null });
+      const otherTab = a.snapshot?.tabId;
+      expect(otherTab !== undefined && otherTab !== e.tabId && a.snapshot?.inFocusedWindow === true && a.snapshot.browserWindowId !== undefined, `the new window's tab: ${otherTab} (this run's ${e.tabId}), inFocusedWindow ${a.snapshot?.inFocusedWindow}`);
+      const bg = await e.session.command({ kind: "pageWalk", tabId: e.tabId });
+      expect(bg.snapshot?.active === true && bg.snapshot.inFocusedWindow === false && bg.snapshot.browserWindowId !== a.snapshot?.browserWindowId, `this run's tab: active ${bg.snapshot?.active}, inFocusedWindow ${bg.snapshot?.inFocusedWindow}, window ${bg.snapshot?.browserWindowId} vs ${a.snapshot?.browserWindowId}`);
+      const mine = pageWindowId(e.session.info.engine, e.tabId);
+      const theirs = pageWindowId(e.session.info.engine, otherTab!);
+      expect(e.helper.model.windows.get(mine)?.focused === false, `the model holds the background window's tab as focused: ${e.helper.model.windows.get(mine)?.focused}`);
+      // The reader would say the browser is frontmost (batch 2 said so): its focused window's tab is the user's, the background one is not.
+      const user = e.helper.model.userWindow()?.window.windowId;
+      expect(user === theirs, `the user's window is ${user}, not the focused window's tab ${theirs}`);
+      return `focused window ${a.snapshot?.browserWindowId}: tab ${otherTab}, the user's window; background window ${bg.snapshot?.browserWindowId}: tab ${e.tabId}, active but inFocusedWindow false and unfocused in the model`;
+    } finally {
+      await cdp.send("Target.closeTarget", { targetId: other }).catch(() => undefined);
+    }
+  });
+}
+
 /**
  * The reader's AXManualAccessibility log (W2): caret-screen reads only this run's processes (--only-pids), headless
  * Chrome for Testing and, with --electron, a windowless Electron app; its log must show no attempt on the Chromium
@@ -795,6 +1173,7 @@ async function memory(exe: string, site: FixtureSite, tabs: number, tmp: string)
 }
 
 async function main(): Promise<number> {
+  if (args["sign-identity"] === undefined) throw new Error("--sign-identity is required: the bridge and the test host are signed with it (W3)");
   preflight();
   build();
   const exe = await chrome();
@@ -841,7 +1220,8 @@ async function main(): Promise<number> {
   // Assigned right below; the host needs a way to reach it before it exists.
   let helper: Helper;
   // One launch secret for this run, as src/launch.ts makes; the bridge reads the page key derived from it.
-  const host = pageHost({ path: sockPath, secret: newLaunchSecret(), reader: noReader, apply: (m) => void helper.handleReader(m), warn });
+  const launchSecret = newLaunchSecret();
+  const host = pageHost({ path: sockPath, secret: launchSecret, reader: noReader, apply: (m) => void helper.handleReader(m), warn });
   const published: HelperMessage[] = [];
   helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => void published.push(m), warn });
   wirePageEngines({ host, helper, publish: (m) => void published.push(m), warn });
@@ -855,28 +1235,43 @@ async function main(): Promise<number> {
       store.close();
     },
   });
-  const env = { ...process.env, CARET_PAGE_SOCKET: sockPath };
+  // W3: the bridge and the host it trusts, signed by the team (and, for the refusal checks, by another and ad hoc).
+  const sign = args["sign-identity"] as string;
+  const bin = join(tmp, "bin");
+  mkdirSync(bin, { mode: 0o700 });
+  const bridge = signedCopy(BRIDGE, join(bin, "caret-bridge"), "dev.caret.bridge", sign);
+  const testHost = signedCopy(TESTHOST, join(bin, "caret-bridge-testhost"), "dev.caret.host", sign);
+  const cftApp = exe.slice(0, exe.indexOf(".app/") + 4);
+  const service = `dev.caret.w3test.${randomBytes(4).toString("hex")}`;
+  const hostLog = join(tmp, "testhost.log");
+  // Harness only: the helper runs in this process, so the test host is handed the launch secret in a file in the
+  // private socket directory, which it deletes on start. Caret.app makes the secret itself and never writes it.
+  const secretFile = join(sockDir, "launch-secret");
+  writeFileSync(secretFile, launchSecret.toString("hex"), { mode: 0o600 });
+  await launchdJob(tmp, service, service, [testHost, "--service", service, "--socket", sockPath, "--secret-file", secretFile, "--browser-requirement", designated(cftApp)], hostLog);
+  say(`test host on ${service}: ${designated(testHost)}`);
+  const env = { ...process.env, CARET_BRIDGE_SERVICE: service };
   const url = `${site.mainOrigin}/form`;
 
   /** Puts the manifest in `nmDir` only, launches on `profile`, and waits for this launch's engine. */
-  const connect = async (nmDir: string, waitMs: number, profile: string): Promise<{ session: EngineSession | null; stop: () => Promise<void> }> => {
-    writeManifest(nmDir, extensionId);
+  const connect = async (nmDir: string, waitMs: number, profile: string, devtools = false): Promise<{ session: EngineSession | null; stop: () => Promise<void>; cdp: Cdp | null }> => {
+    writeManifest(nmDir, extensionId, bridge);
     const manifest = join(nmDir, `${HOST_NAME}.json`);
     const removeManifest = async (): Promise<void> => {
       const u = undo.findIndex((x) => x.what === manifest);
       if (u >= 0) await undo.splice(u, 1)[0]?.fn();
     };
     const since = Date.now();
-    const c = launch(exe, profile, [url], env, join(EXT, "dist"), log);
+    const c = launch(exe, profile, [url], env, join(EXT, "dist"), log, [], devtools);
     const stop = async (): Promise<void> => {
       await c.stop();
       await removeManifest();
     };
     try {
-      return { session: await host.registry.waitForEngine((s) => s.info.extensionId === extensionId && s.info.connectedAt >= since, waitMs), stop };
+      return { session: await host.registry.waitForEngine((s) => s.info.extensionId === extensionId && s.info.connectedAt >= since, waitMs), stop, cdp: c.cdp };
     } catch {
       await stop();
-      return { session: null, stop };
+      return { session: null, stop, cdp: null };
     }
   };
 
@@ -894,13 +1289,15 @@ async function main(): Promise<number> {
   }
   // The checks run with the manifest in the temporary profile, which goes away with it.
   const profile = join(tmp, "profile");
-  const { session } = await connect(join(profile, "NativeMessagingHosts"), 30_000, profile);
+  const { session, cdp } = await connect(join(profile, "NativeMessagingHosts"), 30_000, profile, true);
   if (session === null) {
     results.push({ name: "the engine says hello", pass: false, ms: 0, detail: `no engine within the wait; Chrome log tail: ${tail(log)}` });
     return report(front0, { nmProbe, warnings });
   }
   results.push({ name: "the engine says hello", pass: true, ms: Date.now() - session.info.connectedAt, detail: `engine ${session.info.engine}, browser ${session.info.browser.bundleId} pid ${session.info.browser.pid}, worker ${session.hello?.instance}` });
   say(`engine ${session.info.engine} from ${session.info.browser.name} (${session.info.browser.bundleId}, pid ${session.info.browser.pid})`);
+
+  await trustChecks({ bridge, service, hostLog, extensionId, tmp, sockPath, registry: host.registry, testHost });
 
   await site.waitForLoad((h) => h.endsWith("/form"), 0);
   // The first walk may come before the frames' scripts are in; try for up to 10 s.
@@ -913,7 +1310,7 @@ async function main(): Promise<number> {
     results.push({ name: "the active tab can be walked", pass: false, ms: 0, detail: outcome(first.result) });
     return report(front0, { nmProbe, warnings });
   }
-  const e: Engine = { host, helper, session, tabId: first.snapshot.tabId };
+  const e: Engine = { host, helper, session, tabId: first.snapshot.tabId, cdp };
   if (args["dump-walk"]) {
     say(JSON.stringify({ frames: first.snapshot.frames.map((f) => ({ frameId: f.frameId, parent: f.parentFrameId, origin: f.origin, path: f.path, iframes: f.iframes, controls: f.controls.length })), missing: first.snapshot.missing }));
     return report(front0);
@@ -923,6 +1320,8 @@ async function main(): Promise<number> {
 
   await checks(e, site);
   await batch2(e, site, tmp, published);
+  // Batch 3 before the decoy page, which has no control channel to navigate away from.
+  await batch3(e, site);
   await decoyCheck(e, site);
   if (!args["no-reader"]) await readerCheck(session.info.browser.pid, tmp);
   await check("/submitted still reads 0 after every batch 2 check", async () => {

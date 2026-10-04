@@ -51,23 +51,24 @@
     document.body.append(list);
     dept.setAttribute("aria-expanded", "true");
   };
-  dept.addEventListener("focus", open);
-  dept.addEventListener("blur", close);
+  // Other pages (holds.html) load this script for its control channel only.
+  dept?.addEventListener("focus", open);
+  dept?.addEventListener("blur", close);
 
-  document.getElementById("more").addEventListener("click", () => {
+  document.getElementById("more")?.addEventListener("click", () => {
     const s = document.getElementById("more-state");
     s.textContent = s.textContent === "collapsed" ? "expanded" : "collapsed";
   });
 
   // The page's own rendering of a chosen file, as an upload widget shows one.
-  document.getElementById("resume").addEventListener("change", (e) => {
+  document.getElementById("resume")?.addEventListener("change", (e) => {
     const f = e.target.files?.[0];
     document.getElementById("resume-name").textContent = f ? `${f.name} (${f.size} bytes)` : "";
   });
 
   const dz = document.getElementById("dropzone");
-  dz.addEventListener("dragover", (e) => e.preventDefault());
-  dz.addEventListener("drop", (e) => {
+  dz?.addEventListener("dragover", (e) => e.preventDefault());
+  dz?.addEventListener("drop", (e) => {
     e.preventDefault();
     const f = e.dataTransfer?.files?.[0];
     // The name split across inline elements, as some upload widgets render it.
@@ -81,7 +82,7 @@
     }
   });
 
-  document.getElementById("apply").addEventListener("submit", (e) => {
+  document.getElementById("apply")?.addEventListener("submit", (e) => {
     e.preventDefault();
     fetch("/submit", { method: "POST" });
   });
@@ -114,6 +115,16 @@
       case "text": return { ok: true, value: document.querySelector(c.selector)?.textContent ?? "(none)" };
       case "focus": document.querySelector(c.selector).focus(); return { ok: true, value: String(document.hasFocus()) };
       case "pushState": history.pushState({}, "", c.path); return { ok: true };
+      case "dataset": return { ok: true, value: document.querySelector(c.selector)?.dataset[c.name] ?? "(none)" };
+      case "synthPress": {
+        // A script's pointer and key presses: untrusted, so they must never count as the user's input (W3).
+        const el = document.querySelector(c.selector);
+        el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, composed: true }));
+        el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+        el.click();
+        return { ok: true };
+      }
       case "navigate": setTimeout(() => location.assign(c.url), 50); return { ok: true };
       default: return { ok: false, error: `unknown command ${c.cmd}` };
     }

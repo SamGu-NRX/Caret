@@ -1,27 +1,21 @@
-// The page bridge's handshake (protocol.ts EngineChallenge, EngineHello, EngineWelcome), on B23's scheme: the
-// launch secret both the helper and the reader got from the launcher (src/launch.ts), and a helper proof bound to the
-// helper's process id, which the bridge requires to be its socket's peer (LOCAL_PEERPID), so a process that relays the
-// bridge's handshake to the real helper is refused. The bridge is launched by the browser, not by Caret, so the secret
-// cannot reach it on an inherited descriptor the way the reader's does. The helper writes a page key beside page.sock
-// instead: HMAC-SHA256(launch secret, PAGE_KEY_LABEL), so the file never holds the secret that authenticates the
-// helper to the reader. It is a regular file only the user can read, in a directory only the user can write; the
-// bridge refuses anything else. Every start of one launch writes the same key, so a bridge that read it just before a
-// crash restart still matches. Neither side sends the key: each proves it holds it with an HMAC over both nonces.
-// Node cannot read a Unix socket peer's uid or pid, so the helper's side of the peer check is the filesystem: the
-// socket is 0600 in that directory. The bridge checks the helper's uid with getpeereid and its pid with LOCAL_PEERPID
-// (bridge/Sources/CaretPageProtocol/Peer.swift). W3 replaces the key file with XPC and a code-signing requirement.
+// page.sock's handshake (protocol.ts EngineChallenge, EngineHello, EngineWelcome), on B23's scheme: the launch secret
+// the launcher gave the helper and the reader, and a helper proof bound to the helper's process id, which the
+// connecting side requires to be its socket's peer (LOCAL_PEERPID), so a process that relays the handshake to the real
+// helper is refused. The key is pageKey(launch secret), HMAC-SHA256(secret, PAGE_KEY_LABEL), so a proof never exposes
+// the secret that authenticates the helper to the reader. Neither side sends the key: each proves it holds it with an
+// HMAC over both nonces.
+//
+// Since W3 the side that connects is the Caret host, relaying for a caret-bridge it verified over XPC with a
+// code-signing requirement (bridge/Sources/CaretBridgeXPC). The host holds the launch secret in memory, so the key is
+// never written anywhere: the `<socket>.key` file W1 wrote for the bridge is gone, because any process running as the
+// user could read it (W1 review #1). Node cannot read a Unix socket peer's uid or pid, so the helper's side of the peer
+// check is the filesystem: the socket is 0600 in a directory only the user can write.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, unlinkSync, writeSync } from "node:fs";
-import { dirname } from "node:path";
+import { lstatSync, unlinkSync } from "node:fs";
 
 const BRIDGE_LABEL = "caret-page-bridge";
 const HELPER_LABEL = "caret-page-helper";
 const PAGE_KEY_LABEL = "caret-page-key";
-
-/** The secret file that goes with a page socket. */
-export function secretPathFor(socketPath: string): string {
-  return `${socketPath}.key`;
-}
 
 export function newNonce(): string {
   return randomBytes(32).toString("hex");
@@ -66,32 +60,12 @@ export function checkPrivateDir(dir: string): void {
 }
 
 /**
- * Writes this launch's page key (pageKey) beside the socket, replacing any earlier file. The file is created
- * exclusively with mode 0600 after the old one is removed, so it never exists with wider permissions, and is never
- * followed through a symlink.
+ * Removes a `<socket>.key` an earlier build wrote beside page.sock (W1 to I1), so no page key is left readable on disk.
+ * Only that exact name is touched, and a missing file is fine.
  */
-export function writeSecret(socketPath: string, key: Buffer): void {
-  const path = secretPathFor(socketPath);
-  checkPrivateDir(dirname(path));
+export function removeOldKeyFile(socketPath: string): void {
   try {
-    unlinkSync(path);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try {
-    writeSync(fd, key.toString("hex"));
-    const st = fstatSync(fd);
-    if ((st.mode & 0o777) !== 0o600) throw new Error(`secret file came out with mode ${(st.mode & 0o777).toString(8)}`);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/** Removes this run's secret, if it is still there. */
-export function removeSecret(socketPath: string): void {
-  try {
-    unlinkSync(secretPathFor(socketPath));
+    unlinkSync(`${socketPath}.key`);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }

@@ -35,6 +35,8 @@ export class FixtureSite {
   private readonly pollers: ServerResponse[] = [];
   private readonly acks = new Map<number, (a: Ack) => void>();
   private nextId = 1;
+  /** Holds the run armed (holds.html): each answers its page's synchronous request only when released. */
+  private readonly holds = new Map<string, { arrived: () => void; res: ServerResponse | null }>();
   private main: Server | null = null;
   private embed: Server | null = null;
   mainOrigin = "";
@@ -73,6 +75,23 @@ export class FixtureSite {
     });
   }
 
+  /**
+   * Arms the hold `tag`: the page's next /hold?tag request is kept open until `release`, or 15 s pass. `arrived`
+   * resolves when the page made it, with the page's main thread now waiting on it.
+   */
+  armHold(tag: string): { arrived: Promise<void>; release: () => void } {
+    let arrived = (): void => {};
+    const p = new Promise<void>((r) => (arrived = r));
+    const h = { arrived, res: null as ServerResponse | null };
+    this.holds.set(tag, h);
+    const release = (): void => {
+      if (this.holds.get(tag) === h) this.holds.delete(tag);
+      if (h.res !== null && !h.res.writableEnded) send(h.res, "application/json", "{}");
+    };
+    setTimeout(release, 15_000).unref();
+    return { arrived: p, release };
+  }
+
   /** Resolves when a page load whose address matches has said hello since `since`. */
   async waitForLoad(match: (href: string) => boolean, since: number, ms = 10_000): Promise<string> {
     const end = Date.now() + ms;
@@ -107,6 +126,17 @@ export class FixtureSite {
         return html(res, read("form.html").replaceAll("__EMBED_ORIGIN__", this.embedOrigin));
       case "GET /frame/same":
         return html(res, read("frame.html").replaceAll("__TITLE__", "Referral").replaceAll("__ID__", "referral").replaceAll("__NAME__", "referral_code").replaceAll("__LABEL__", "Referral code"));
+      case "GET /holds":
+        return html(res, read("holds.html"));
+      case "GET /holds.js":
+        return send(res, "text/javascript", read("holds.js"));
+      case "GET /hold": {
+        const h = this.holds.get(url.searchParams.get("tag") ?? "");
+        if (h === undefined || h.res !== null) return send(res, "application/json", "{}");
+        h.res = res;
+        h.arrived();
+        return;
+      }
       case "GET /decoy":
         return html(res, read("decoy.html"));
       case "GET /frame/offscreen":
@@ -141,8 +171,12 @@ export class FixtureSite {
         return send(res, "application/json", "{}");
       }
       case "GET /control/next":
-        // Long poll: held until a command comes or 20 s pass.
+        // Long poll: held until a command comes or 20 s pass. A tab that closes drops its poll, so no command goes to it.
         this.pollers.push(res);
+        res.once("close", () => {
+          const i = this.pollers.indexOf(res);
+          if (i >= 0) this.pollers.splice(i, 1);
+        });
         setTimeout(() => {
           const i = this.pollers.indexOf(res);
           if (i >= 0) {

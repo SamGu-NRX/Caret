@@ -2,11 +2,18 @@ import CryptoKit
 import Foundation
 import Security
 
-/// The bridge's half of the page.sock handshake (helper/src/engines/auth.ts has the other). The key is the launch's
-/// page key, derived by the helper from the launch secret (B23's scheme). Neither side sends it; each proves it holds
-/// it with HMAC-SHA256 over both nonces under its own label, and the helper's proof also names its pid, which the
-/// bridge requires to be its socket's peer (Peer.pid), so a relay to the real helper is refused.
+/// The connecting side of the page.sock handshake (helper/src/engines/auth.ts has the other). Since W3 that side is the
+/// Caret host, relaying for a bridge it verified over XPC (CaretBridgeXPC); the bridge itself never reaches page.sock.
+/// The key is the launch's page key, HMAC-SHA256(launch secret, "caret-page-key") (`pageKey`), held in memory by both
+/// the helper and the host, never written to a file. Neither side sends it; each proves it holds it with HMAC-SHA256
+/// over both nonces under its own label, and the helper's proof also names its pid, which the connecting side requires
+/// to be its socket's peer (Peer.pid), so a relay to the real helper is refused.
 public enum Handshake {
+    /// The launch's page key, derived from the 32-byte launch secret, as the helper derives it (auth.ts pageKey).
+    public static func pageKey(launchSecret: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: Data("caret-page-key".utf8), using: SymmetricKey(data: launchSecret)))
+    }
+
     public static func bridgeProof(secret: Data, challenge: String, nonce: String) -> String {
         hmac(secret, "caret-page-bridge\n\(challenge)\n\(nonce)")
     }

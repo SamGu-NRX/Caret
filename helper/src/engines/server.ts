@@ -1,15 +1,15 @@
-// page.sock: the page engines' own socket, apart from the reader's screen.sock. Every connection is a bridge.
-// The helper speaks first with a challenge; the bridge must answer with an engineHello whose HMAC proves it holds
-// this launch's page key (auth.ts), within HANDSHAKE_MS, or the connection closes having received nothing else. Only
-// then does the helper prove itself in turn, bound to its own pid, issue the engine session id and hand the session
-// to the registry.
+// page.sock: the page engines' own socket, apart from the reader's screen.sock. Every connection is one bridge's,
+// relayed by the Caret host (W3: the bridge reaches the host over XPC, never this socket). The helper speaks first
+// with a challenge; the host must answer with an engineHello whose HMAC proves it holds this launch's page key
+// (auth.ts), within HANDSHAKE_MS, or the connection closes having received nothing else. Only then does the helper
+// prove itself in turn, bound to its own pid, issue the engine session id and hand the session to the registry.
 // Lines after that are EngineMessages; an invalid one is logged and dropped, never acted on.
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { dirname } from "node:path";
 import { EngineHello, EngineMessage, PROTOCOL_VERSION, type EngineChallenge, type EngineWelcome, type HelperToEngine } from "../protocol.ts";
-import { bridgeProof, checkPrivateDir, helperProof, newNonce, pageKey, proofMatches, removeSecret, writeSecret } from "./auth.ts";
+import { bridgeProof, checkPrivateDir, helperProof, newNonce, pageKey, proofMatches, removeOldKeyFile } from "./auth.ts";
 import type { EngineRegistry } from "./registry.ts";
 import { EngineSession } from "./session.ts";
 
@@ -47,9 +47,9 @@ export class EngineServer {
       if (await isAlive(this.opts.path)) throw new Error(`another helper is already listening on ${this.opts.path}`);
       unlinkSync(this.opts.path);
     }
-    const key = pageKey(this.opts.launchSecret);
-    writeSecret(this.opts.path, key);
-    this.secret = key;
+    // The key stays in memory: the host derives the same one from the launch secret it holds (W3).
+    removeOldKeyFile(this.opts.path);
+    this.secret = pageKey(this.opts.launchSecret);
     const server = createServer((s) => this.accept(s));
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -63,7 +63,6 @@ export class EngineServer {
     for (const s of this.sockets) s.destroy();
     await new Promise<void>((r) => (this.server === null ? r() : this.server.close(() => r())));
     if (existsSync(this.opts.path)) unlinkSync(this.opts.path);
-    removeSecret(this.opts.path);
     this.secret = null;
   }
 

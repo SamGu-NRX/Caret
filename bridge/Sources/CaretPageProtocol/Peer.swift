@@ -69,31 +69,48 @@ public enum Peer {
     }
 }
 
-/// The launch's page key (helper/src/engines/auth.ts pageKey, written by writeSecret), read only from a file and
-/// directory that nobody but this user could have written.
-public enum SecretFile {
-    public static func path(forSocket socket: String) -> String { socket + ".key" }
+/// NDJSON lines over a connected socket, read with a deadline during a handshake and without one after.
+public final class LineSocket: @unchecked Sendable {
+    public let fd: Int32
+    private var buffer = Data()
+    private let writeLock = NSLock()
+    public init(fd: Int32) { self.fd = fd }
 
-    public static func read(path: String) throws -> Data {
-        let dir = (path as NSString).deletingLastPathComponent
-        var ds = stat()
-        guard lstat(dir, &ds) == 0 else { throw PeerError.socket("lstat \(dir)", errno) }
-        guard ds.st_mode & S_IFMT == S_IFDIR else { throw PeerError.unsafe("\(dir) is not a directory") }
-        guard ds.st_uid == getuid() else { throw PeerError.unsafe("\(dir) belongs to uid \(ds.st_uid)") }
-        guard ds.st_mode & 0o022 == 0 else { throw PeerError.unsafe("\(dir) is writable by group or others") }
-        let fd = open(path, O_RDONLY | O_NOFOLLOW)
-        guard fd >= 0 else { throw PeerError.socket("open \(path)", errno) }
-        defer { close(fd) }
-        var fs = stat()
-        guard fstat(fd, &fs) == 0 else { throw PeerError.socket("fstat \(path)", errno) }
-        guard fs.st_mode & S_IFMT == S_IFREG else { throw PeerError.unsafe("\(path) is not a regular file") }
-        guard fs.st_uid == getuid() else { throw PeerError.unsafe("\(path) belongs to uid \(fs.st_uid)") }
-        guard fs.st_mode & 0o777 == 0o600 else { throw PeerError.unsafe("\(path) has mode \(String(fs.st_mode & 0o777, radix: 8)), not 600") }
-        var buf = [UInt8](repeating: 0, count: 128)
-        let n = Darwin.read(fd, &buf, buf.count)
-        guard n == 64, let secret = Data(hex: String(decoding: buf[0..<n], as: UTF8.self)), secret.count == 32 else {
-            throw PeerError.unsafe("\(path) does not hold a 32-byte hex secret")
+    /// The next line without its newline; nil at end of stream, on error, or when `timeout` (seconds) passes first.
+    public func next(timeout: Int32? = nil) -> Data? {
+        while true {
+            if let nl = buffer.firstIndex(of: 0x0A) {
+                let line = Data(buffer[buffer.startIndex..<nl])
+                buffer = Data(buffer[(nl + 1)...])
+                return line
+            }
+            if let t = timeout {
+                var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                if poll(&p, 1, t * 1000) <= 0 { return nil }
+            }
+            var chunk = [UInt8](repeating: 0, count: 65536)
+            let n = read(fd, &chunk, chunk.count)
+            if n <= 0 { return nil }
+            buffer.append(contentsOf: chunk[0..<n])
+            if buffer.count > 64 * 1024 * 1024 { return nil }
         }
-        return secret
     }
+
+    /// Writes one line and its newline, whole, from any thread.
+    public func write(line: Data) -> Bool {
+        writeLock.lock(); defer { writeLock.unlock() }
+        var d = line
+        d.append(0x0A)
+        return d.withUnsafeBytes { raw -> Bool in
+            var off = 0
+            while off < raw.count {
+                let n = Darwin.write(fd, raw.baseAddress! + off, raw.count - off)
+                if n < 0 { if errno == EINTR { continue }; return false }
+                off += n
+            }
+            return true
+        }
+    }
+
+    public func close() { shutdown(fd, SHUT_RDWR) }
 }

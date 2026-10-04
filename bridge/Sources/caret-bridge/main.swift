@@ -1,20 +1,22 @@
 // caret-bridge: the Native Messaging host Chrome (or Chrome for Testing, or Helium) launches for Caret's extension.
-// Chrome runs it with the calling extension's origin as its first argument and talks to it over stdin and stdout
-// in Native Messaging frames. It connects to the helper's page.sock, refuses a listener that is not this user
-// (getpeereid), proves it holds the launch's page key and requires the helper to prove the same, bound to the
-// helper's pid, which must be the socket's peer (LOCAL_PEERPID; CaretPageProtocol/Auth.swift), then relays: frames from the extension become NDJSON lines to the helper, lines
-// from the helper become frames, split into pageChunk parts past Chrome's 1 MB. Each direction passes only its own
-// message types. It exits when either side closes, and writes nothing to stdout before the helper proved itself.
+// Chrome runs it with the calling extension's origin as its first argument and talks to it over stdin and stdout in
+// Native Messaging frames. Since W3 it never touches page.sock or any key: it connects to the Caret host's XPC
+// service, which holds it to the bridge's code-signing requirement while it holds the host to the host's
+// (CaretBridgeXPC/Trust.swift), asks the host to open an engine for the extension, then relays: frames from the
+// extension become lines to the host, lines from the host become frames, split into pageChunk parts past Chrome's
+// 1 MB. Each direction passes only its own message types, here and again at the host. It exits when either side
+// closes, and writes nothing to stdout before the host opened the engine.
 //
-//   CARET_PAGE_SOCKET  the helper's page.sock (default ~/.caret-run/sockets/page.sock); the page key is beside it, <socket>.key
-import AppKit
+//   CARET_BRIDGE_SERVICE  the host's Mach service (default BridgeTrust.machService); a test host's name in tests.
+//                         The name grants nothing: whatever answers must satisfy the host requirement.
+import CaretBridgeXPC
 import CaretPageProtocol
 import Darwin
 import Foundation
 
-let bridgeVersion = "0.1.0"
-/// Time the helper has to challenge and then welcome. Assumed: both come from memory within milliseconds.
-let handshakeSeconds: Int32 = 5
+let bridgeVersion = "0.2.0"
+/// Time the host has to open the engine, its helper handshake included. Assumed: well under a second when the host runs.
+let openSeconds: TimeInterval = 10
 
 func log(_ s: String) {
     FileHandle.standardError.write(Data("[caret-bridge] \(s)\n".utf8))
@@ -25,68 +27,47 @@ func fail(_ s: String) -> Never {
     exit(1)
 }
 
-/// The browser that launched this host: its parent process. LaunchServices does not know a headless browser, so the
-/// bundle is also found from the executable's path (".../Name.app/Contents/MacOS/Name").
-func browserRef() -> BrowserRef {
-    let ppid = getppid()
-    let app = NSRunningApplication(processIdentifier: ppid)
-    var path = ""
-    var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-    if proc_pidpath(ppid, &buf, UInt32(buf.count)) > 0 { path = String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
-    var bundle: Bundle?
-    if let r = path.range(of: ".app/Contents/MacOS/", options: .backwards) { bundle = Bundle(path: String(path[..<r.lowerBound]) + ".app") }
-    let bundleId = app?.bundleIdentifier ?? bundle?.bundleIdentifier ?? "unknown"
-    var name = app?.localizedName ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? ""
-    if name.isEmpty { name = (path as NSString).lastPathComponent }
-    return BrowserRef(pid: ppid, bundleId: bundleId, name: name.isEmpty ? "unknown" : name)
-}
-
-/// Lines from the helper's socket, read with a deadline during the handshake and without one after.
-final class LineSocket: @unchecked Sendable {
-    let fd: Int32
-    private var buffer = Data()
-    init(fd: Int32) { self.fd = fd }
-
-    /// The next line without its newline; nil at end of stream, on error, or when `timeout` (seconds) passes first.
-    func next(timeout: Int32? = nil) -> Data? {
-        while true {
-            if let nl = buffer.firstIndex(of: 0x0A) {
-                let line = Data(buffer[buffer.startIndex..<nl])
-                buffer = Data(buffer[(nl + 1)...])
-                return line
-            }
-            if let t = timeout {
-                var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-                if poll(&p, 1, t * 1000) <= 0 { return nil }
-            }
-            var chunk = [UInt8](repeating: 0, count: 65536)
-            let n = read(fd, &chunk, chunk.count)
-            if n <= 0 { return nil }
-            buffer.append(contentsOf: chunk[0..<n])
-            if buffer.count > 64 * 1024 * 1024 { return nil }
-        }
-    }
-
-    func write(line: Data) -> Bool {
-        var d = line
-        d.append(0x0A)
-        return d.withUnsafeBytes { raw -> Bool in
-            var off = 0
-            while off < raw.count {
-                let n = Darwin.write(fd, raw.baseAddress! + off, raw.count - off)
-                if n < 0 { if errno == EINTR { continue }; return false }
-                off += n
-            }
-            return true
-        }
-    }
-}
-
-/// Writes frames to Chrome; one writer at a time.
+/// Writes frames to Chrome; one writer at a time. Lines from the host wait until the engine is open, so engineReady
+/// is always the extension's first message.
 final class FrameOut: @unchecked Sendable {
     private let lock = NSLock()
+    private var open = false
+    private var held: [Data] = []
+    private var chunkSeq = 0
+
     func send(_ payload: Data) {
         lock.lock(); defer { lock.unlock() }
+        write(payload)
+    }
+
+    /// Sends engineReady, then any host lines that came first.
+    func ready(_ payload: Data) {
+        lock.lock(); defer { lock.unlock() }
+        write(payload)
+        open = true
+        for l in held { frame(l) }
+        held = []
+    }
+
+    /// One helper line, chunked past Chrome's cap.
+    func line(_ line: Data) {
+        lock.lock(); defer { lock.unlock() }
+        if open { frame(line) } else { held.append(line) }
+    }
+
+    private func frame(_ line: Data) {
+        switch Relay.admit(line, .toExtension) {
+        case let .failure(why): log("dropped a host line: \(why)")
+        case .success:
+            do {
+                for p in try Chunker.payloads(for: line, id: { chunkSeq += 1; return "k\(chunkSeq)" }()) { write(p) }
+            } catch {
+                log("dropped a host line that cannot be framed: \(error)")
+            }
+        }
+    }
+
+    private func write(_ payload: Data) {
         // The throwing write: Chrome closing the pipe ends the bridge quietly instead of raising an exception.
         do { try FileHandle.standardOutput.write(contentsOf: NativeFrame.encode(payload)) } catch {
             log("the extension's port is gone")
@@ -95,77 +76,44 @@ final class FrameOut: @unchecked Sendable {
     }
 }
 
+/// A flag set once, read from any thread.
+final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
+}
+
 func run() -> Never {
     let args = CommandLine.arguments
     guard args.count >= 2, let extensionId = Relay.extensionId(fromOrigin: args[1]) else {
         fail("expected the calling extension's origin, chrome-extension://<id>/, as the first argument")
     }
     signal(SIGPIPE, SIG_IGN)
-    let socketPath = ProcessInfo.processInfo.environment["CARET_PAGE_SOCKET"]
-        ?? (NSHomeDirectory() as NSString).appendingPathComponent(".caret-run/sockets/page.sock")
-
-    let secret: Data
-    let fd: Int32
-    let peerPid: pid_t
-    do {
-        fd = try Peer.connect(path: socketPath)
-        peerPid = try Peer.pid(of: fd)
-        // Read after connecting, so the key is the one the listener this bridge reached wrote.
-        secret = try SecretFile.read(path: SecretFile.path(forSocket: socketPath))
-    } catch {
-        fail("cannot reach the helper: \(error)")
+    let service = ProcessInfo.processInfo.environment["CARET_BRIDGE_SERVICE"] ?? BridgeTrust.machService
+    let out = FrameOut()
+    // Before the engine opens, a closed connection is open's failure, reported below with exit 1; after, a normal end.
+    let opened = Flag()
+    let link = XPCHostLink(service: service, hostRequirement: BridgeTrust.hostRequirement,
+                           onLine: { out.line($0) },
+                           onClose: { why in
+                               guard opened.isSet else { return }
+                               log(why)
+                               exit(0)
+                           })
+    let engine: String
+    switch link.open(extensionId: extensionId, bridgeVersion: bridgeVersion, timeout: openSeconds) {
+    case let .failure(why): fail("relaying nothing: \(why)")
+    case let .success(e): engine = e
     }
-    let helper = LineSocket(fd: fd)
-    let decoder = JSONDecoder()
+    opened.set()
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+    guard let ready = try? encoder.encode(EngineReady(engine: engine)) else { fail("cannot encode engineReady") }
+    out.ready(ready)
+    log("engine \(engine) ready for \(extensionId) through \(service)")
 
-    guard let challengeLine = helper.next(timeout: handshakeSeconds),
-          case let .engineChallenge(challenge)? = try? decoder.decode(PageMessage.self, from: challengeLine) else {
-        fail("the helper sent no challenge")
-    }
-    let nonce = Handshake.nonce()
-    let hello = EngineHello(browser: browserRef(), extensionId: extensionId, bridgeVersion: bridgeVersion, nonce: nonce,
-                            proof: Handshake.bridgeProof(secret: secret, challenge: challenge.nonce, nonce: nonce))
-    guard let helloLine = try? encoder.encode(hello), helper.write(line: helloLine) else { fail("cannot send the hello") }
-    guard let welcomeLine = helper.next(timeout: handshakeSeconds),
-          case let .engineWelcome(welcome)? = try? decoder.decode(PageMessage.self, from: welcomeLine) else {
-        fail("the helper did not welcome this bridge")
-    }
-    // The proof names the helper's own process, which must be this socket's peer: a relay's peer is itself.
-    guard welcome.pid == Int(peerPid) else {
-        fail("the helper's proof names process \(welcome.pid), but the socket's peer is \(peerPid); relaying nothing")
-    }
-    guard Handshake.matches(Handshake.helperProof(secret: secret, challenge: challenge.nonce, nonce: nonce, pid: welcome.pid), welcome.proof) else {
-        fail("the listener on \(socketPath) could not prove it holds the helper's secret; relaying nothing")
-    }
-
-    let out = FrameOut()
-    guard let ready = try? encoder.encode(EngineReady(engine: welcome.engine)) else { fail("cannot encode engineReady") }
-    out.send(ready)
-    log("engine \(welcome.engine) ready for \(extensionId)")
-
-    // Helper to extension.
-    let fromHelper = Thread {
-        var chunkSeq = 0
-        while let line = helper.next() {
-            switch Relay.admit(line, .toExtension) {
-            case .failure(let why):
-                log("dropped a helper line: \(why)")
-            case .success:
-                do {
-                    for p in try Chunker.payloads(for: line, id: { chunkSeq += 1; return "k\(chunkSeq)" }()) { out.send(p) }
-                } catch {
-                    log("dropped a helper line that cannot be framed: \(error)")
-                }
-            }
-        }
-        log("the helper closed the connection")
-        exit(0)
-    }
-    fromHelper.start()
-
-    // Extension to helper, on this thread until Chrome closes stdin.
+    // Extension to host, on this thread until Chrome closes stdin.
     var frames = FrameReader()
     let input = FileHandle.standardInput
     while true {
@@ -175,13 +123,13 @@ func run() -> Never {
         do { payloads = try frames.feed(data) } catch { fail("corrupt frame from the extension: \(error)") }
         for p in payloads {
             switch Relay.admit(p, .toHelper) {
-            case .failure(let why): log("dropped an extension message: \(why)")
-            case .success: if !helper.write(line: p) { fail("the helper's socket closed") }
+            case let .failure(why): log("dropped an extension message: \(why)")
+            case .success: link.send(p)
             }
         }
     }
     log("the extension closed the port")
-    close(fd)
+    link.close()
     exit(0)
 }
 

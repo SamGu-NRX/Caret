@@ -1,12 +1,12 @@
 // W1: the helper's side of the page engine: page.sock's handshake, engine sessions, the registry and the routed link.
-import { mkdtempSync, rmSync, statSync, readFileSync, chmodSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, readdirSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION, type ActGrant, type HelperToEngine, type PageSnapshot, type ReaderVerb, type Snapshot, type VerbResult, type WindowClosed } from "../src/protocol.ts";
 import { RoutedReaderLink, type ReaderLink } from "../src/executor/means.ts";
-import { bridgeProof, helperProof, newNonce, pageKey, secretPathFor, writeSecret } from "../src/engines/auth.ts";
+import { bridgeProof, helperProof, newNonce, pageKey } from "../src/engines/auth.ts";
 import { pageHost, type PageHost } from "../src/engines/host.ts";
 import { EngineSession } from "../src/engines/session.ts";
 import { PageEngineLink, toVerbOutcome, toWindowSnapshot } from "../src/engines/page-link.ts";
@@ -33,37 +33,15 @@ function snapshot(id: string, tabId = 7, navGen = 1): PageSnapshot {
   };
 }
 
-describe("secret file", () => {
-  let dir: string;
-  beforeEach(() => (dir = mkdtempSync(join(tmpdir(), "caret-page-"))));
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
-
-  it("holds the launch's page key, 0600, the same for every start of one launch, never the launch secret itself", () => {
-    const sock = join(dir, "page.sock");
+describe("page key", () => {
+  it("is derived from the launch secret, the same for every start of one launch, and never the secret itself", () => {
     const launch = randomBytes(32);
     const a = pageKey(launch);
-    writeSecret(sock, a);
-    expect(statSync(secretPathFor(sock)).mode & 0o777).toBe(0o600);
-    expect(readFileSync(secretPathFor(sock), "utf8")).toBe(a.toString("hex"));
-    expect(readFileSync(secretPathFor(sock), "utf8")).not.toContain(launch.toString("hex"));
+    expect(a.length).toBe(32);
+    expect(a.equals(launch)).toBe(false);
     expect(pageKey(launch).equals(a)).toBe(true);
     expect(pageKey(randomBytes(32)).equals(a)).toBe(false);
     expect(() => pageKey(Buffer.alloc(16))).toThrow(/32 bytes/);
-  });
-
-  it("refuses a directory that group or others can write", () => {
-    const loose = join(dir, "loose");
-    mkdirSync(loose);
-    chmodSync(loose, 0o777);
-    expect(() => writeSecret(join(loose, "page.sock"), pageKey(randomBytes(32)))).toThrow(/writable by group or others/);
-  });
-
-  it("replaces a planted file rather than writing through it", () => {
-    const sock = join(dir, "page.sock");
-    writeFileSync(secretPathFor(sock), "planted", { mode: 0o644 });
-    writeSecret(sock, pageKey(randomBytes(32)));
-    expect(statSync(secretPathFor(sock)).mode & 0o777).toBe(0o600);
-    expect(readFileSync(secretPathFor(sock), "utf8")).not.toBe("planted");
   });
 });
 
@@ -86,8 +64,8 @@ describe("page.sock handshake", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const secret = (): Buffer => Buffer.from(readFileSync(secretPathFor(join(dir, "page.sock")), "utf8"), "hex");
   const LAUNCH = randomBytes(32);
+  const secret = (): Buffer => pageKey(LAUNCH);
 
   async function bridge(key: Buffer = secret()): Promise<{ c: LineClient; welcome: Record<string, unknown> | null; nonce: string; challenge: string }> {
     const c = await LineClient.connect(join(dir, "page.sock"));
@@ -98,6 +76,15 @@ describe("page.sock handshake", () => {
     const welcome = await c.waitFor((m) => m.type === "engineWelcome", 1000).catch(() => null);
     return { c, welcome, nonce, challenge };
   }
+
+  it("writes no key beside the socket, and removes one an earlier build left there (W3)", async () => {
+    await host.server.close();
+    writeFileSync(join(dir, "page.sock.key"), "an earlier build's key", { mode: 0o600 });
+    host = pageHost({ path: join(dir, "page.sock"), secret: LAUNCH, reader: nullReader, apply: (m) => applied.push(m), warn: (l) => warnings.push(l) });
+    await host.server.listen();
+    expect(readdirSync(dir).sort()).toEqual(["page.sock"]);
+    expect(statSync(join(dir, "page.sock")).mode & 0o777).toBe(0o600);
+  });
 
   it("welcomes a bridge that holds the secret, proves itself back, and registers the engine at its hello", async () => {
     const { c, welcome, nonce, challenge } = await bridge();
