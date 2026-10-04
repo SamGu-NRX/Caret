@@ -1,0 +1,488 @@
+// What a Jev request may carry from the screen. The host's onboarding promises: "To decide what to
+// offer, Caret sends short snippets to a cloud model, such as a field's label and the values it might
+// fill. Never a whole document or conversation." Every request builder declares each piece of screen text it puts in a
+// request as a Snippet (a field descriptor or a candidate value, and the window it came from) and takes
+// it through a SnippetLedger, which holds each window to its budget. test/privacy.test.ts records every
+// request the producers make over the synthetic sessions and checks the request text against the
+// declarations and these bounds.
+import type { WindowState } from "./model.ts";
+import type { Node } from "./protocol.ts";
+import { isConversation } from "./conversation.ts";
+
+/**
+ * Distinct characters of one window's text that one request may carry. The bound comes from the
+ * question shapes. The pending question shows Jev at most 4 marker lines and 6 changed lines of
+ * SNIPPET_CHARS each, which is 1,200. The fill question's densest source window in the synthetic
+ * calibration recordings (~/.caret-run/evidence/screen/fill-distractors-v2, 21 recordings) gives 589
+ * distinct characters over 21 candidates, so 1,200 leaves twice that before a window's values are cut.
+ * A window with more text than this never goes out whole.
+ */
+export const WINDOW_CHARS = 1200;
+/** The longest screen line the pending and first-look questions quote, cut with an ellipsis past it. */
+export const SNIPPET_CHARS = 120;
+/**
+ * A window whose every line is at most CARD_LINE_CHARS long (the fill generator's longest candidate) and
+ * that has at most CARD_LINES lines is a card of values: a contact card, an order confirmation, a meeting
+ * block. Its lines are themselves the values a fill might copy, so a request may carry all of it, up to
+ * WINDOW_CHARS. Any other window keeps more than half of its text back. 24 is assumed: just above the
+ * calibration fixture's largest source window, 21 lines.
+ */
+export const CARD_LINES = 24;
+export const CARD_LINE_CHARS = 80;
+/**
+ * Distinct characters one request may take from a conversation (conversation.ts), which also always
+ * keeps more than half of its text back, however short it is: a conversation is what people mean by
+ * private, and a short chat of 24 lines would otherwise pass as a card and go out whole. 600 is half of
+ * WINDOW_CHARS and is assumed, not measured; the live replay (scripts/live-replay.ts) measures what it
+ * costs fill when the source windows are chats.
+ */
+export const CONVERSATION_CHARS = 600;
+
+/** The window id under which a request declares values the user told Caret (SnippetLedger.memory). */
+export const MEMORY_SNIPPETS = "memory";
+
+export interface Snippet {
+  windowId: string;
+  /** A field descriptor (a label, placeholder, section or window title that says what something is) or a candidate value with its facts. */
+  kind: "descriptor" | "candidate";
+  text: string;
+}
+
+/** A request's screen text as its ledger took it, and the characters charged to each window (JevRequest). */
+export interface Declared {
+  snippets: readonly Snippet[];
+  charged: Readonly<Record<string, number>>;
+}
+
+/** Collapses whitespace as every request builder does before it quotes a line. */
+/** Whitespace flat() would change: a run, a tab or line break, or space at either end. Testing first spares the copy for most lines. */
+const UNCLEAN = /\s\s|[^\S ]|^\s|\s$/;
+export const flat = (s: string): string => (UNCLEAN.test(s) ? s.replace(/\s+/g, " ").trim() : s);
+
+/** A line cut to SNIPPET_CHARS, ellipsis included. */
+export function cut(s: string, max = SNIPPET_CHARS): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
+/** Lines shorter than this are not charged when a taken text contains them: a letter or two is in most texts. */
+const CONTAINED_MIN = 3;
+
+/**
+ * A window's text as the ledger reads it, whatever the conversation rule says: its distinct lines, and
+ * an index of them for finding the lines a taken text holds and whether a line holds a text.
+ *
+ * A window's text is its title and every line of its nodes' labels, values and placeholders, each
+ * distinct line counted once. Reading a window of 5,000 lines from scratch and searching it took a
+ * ledger's first take 15 to 20 ms on eight such windows (B14 bench, ~/.caret-run/evidence/screen/b14).
+ * So one table follows each window id from snapshot to snapshot: the model gives every snapshot a new
+ * WindowState, and the table moves to the newest state it is asked about by changing only the lines of
+ * nodes whose text differs. A table belongs to one state at a time; asking about an earlier state (a
+ * task's kept source window) moves it back the same way, so every answer is about the state asked.
+ */
+class LineTable {
+  owner: WindowState;
+  /** Each distinct line, and how many of the title's and the nodes' lines read it. */
+  private readonly counts = new Map<string, number>();
+  /** Characters of the distinct lines. */
+  chars = 0;
+  /** Distinct lines longer than CARD_LINE_CHARS. */
+  private long = 0;
+  /** Distinct lines of CONTAINED_MIN or more characters by their first CONTAINED_MIN: their lengths, each with how many lines have it. */
+  private readonly starts = new Map<string, Map<number, number>>();
+  /** Texts asked about, and whether a line of the window holds them; kept right as lines come and go. */
+  private readonly inside = new Map<string, boolean>();
+  /** The lines of CONTAINED_MIN or more characters joined by NUL, which no screen text holds; null until a search needs it again. */
+  private joined: string | null = null;
+
+  constructor(w: WindowState) {
+    this.owner = w;
+    this.addField(w.window.title);
+    for (const n of w.nodes.values()) this.addNode(n);
+  }
+
+  get card(): boolean {
+    return this.counts.size <= CARD_LINES && this.long === 0;
+  }
+
+  /** Moves the table to another state of the same window, changing the lines of the nodes and title that differ. */
+  moveTo(w: WindowState): void {
+    const before = this.owner;
+    this.owner = w;
+    if (before.window.title !== w.window.title) {
+      this.removeField(before.window.title);
+      this.addField(w.window.title);
+    }
+    let kept = 0;
+    for (const [k, n] of w.nodes) {
+      const o = before.nodes.get(k);
+      if (o !== undefined) kept++;
+      if (o === n || (o !== undefined && o.label === n.label && o.value === n.value && o.placeholder === n.placeholder)) continue;
+      if (o !== undefined) this.removeNode(o);
+      this.addNode(n);
+    }
+    if (kept < before.nodes.size) for (const [k, o] of before.nodes) if (!w.nodes.has(k)) this.removeNode(o);
+  }
+
+  /** Whether some line of the window holds `t`, which is CONTAINED_MIN or more characters long. */
+  holds(t: string): boolean {
+    let r = this.inside.get(t);
+    if (r !== undefined) return r;
+    if (this.counts.has(t)) r = true;
+    else {
+      this.joined ??= `\u0000${[...this.counts.keys()].filter((l) => l.length >= CONTAINED_MIN).join("\u0000")}\u0000`;
+      r = this.joined.includes(t);
+    }
+    // Bounded, since every candidate a request prices is asked about. No measurement behind the number.
+    if (this.inside.size >= INSIDE_CACHE) this.inside.clear();
+    this.inside.set(t, r);
+    return r;
+  }
+
+  /** Every distinct line of the window that `t` holds, by where it starts in `t`; each line once. */
+  linesIn(t: string, out: Set<string>): void {
+    for (let i = 0; i + CONTAINED_MIN <= t.length; i++) {
+      const lens = this.starts.get(t.slice(i, i + CONTAINED_MIN));
+      if (lens === undefined) continue;
+      for (const len of lens.keys()) {
+        if (i + len > t.length) continue;
+        const l = len === t.length ? t : t.slice(i, i + len);
+        if (this.counts.has(l)) out.add(l);
+      }
+    }
+  }
+
+  private addNode(n: Node): void {
+    this.addField(n.label);
+    this.addField(n.value);
+    this.addField(n.placeholder);
+  }
+
+  private removeNode(n: Node): void {
+    this.removeField(n.label);
+    this.removeField(n.value);
+    this.removeField(n.placeholder);
+  }
+
+  private addField(raw: string | undefined): void {
+    if (raw === undefined || raw === "") return;
+    if (!raw.includes("\n")) return this.addLine(flat(raw));
+    for (const line of raw.split("\n")) this.addLine(flat(line));
+  }
+
+  private removeField(raw: string | undefined): void {
+    if (raw === undefined || raw === "") return;
+    if (!raw.includes("\n")) return this.removeLine(flat(raw));
+    for (const line of raw.split("\n")) this.removeLine(flat(line));
+  }
+
+  private addLine(t: string): void {
+    if (t === "") return;
+    const c = this.counts.get(t);
+    this.counts.set(t, (c ?? 0) + 1);
+    if (c !== undefined) return;
+    this.chars += t.length;
+    if (t.length > CARD_LINE_CHARS) this.long++;
+    if (t.length < CONTAINED_MIN) return;
+    const p = t.slice(0, CONTAINED_MIN);
+    let lens = this.starts.get(p);
+    if (lens === undefined) this.starts.set(p, (lens = new Map()));
+    lens.set(t.length, (lens.get(t.length) ?? 0) + 1);
+    if (this.joined !== null) this.joined = null;
+    for (const [s, held] of this.inside) if (!held && t.includes(s)) this.inside.set(s, true);
+  }
+
+  private removeLine(t: string): void {
+    if (t === "") return;
+    const c = this.counts.get(t);
+    if (c === undefined) throw new Error(`the line table of window ${this.owner.window.windowId} lost count of a line`);
+    if (c > 1) return void this.counts.set(t, c - 1);
+    this.counts.delete(t);
+    this.chars -= t.length;
+    if (t.length > CARD_LINE_CHARS) this.long--;
+    if (t.length < CONTAINED_MIN) return;
+    const lens = this.starts.get(t.slice(0, CONTAINED_MIN)) as Map<number, number>;
+    const k = lens.get(t.length) as number;
+    if (k > 1) lens.set(t.length, k - 1);
+    else if (lens.size > 1) lens.delete(t.length);
+    else this.starts.delete(t.slice(0, CONTAINED_MIN));
+    if (this.joined !== null) this.joined = null;
+    // Another line may hold the same texts, so they are asked again.
+    for (const [s, held] of this.inside) if (held && t.includes(s)) this.inside.delete(s);
+  }
+}
+
+/** Texts each window's table remembers asking about. Assumed. */
+const INSIDE_CACHE = 4096;
+/** Windows whose tables are kept after their state was last asked about; the oldest goes first. Assumed: more windows than a screen usually has open. */
+const TABLES_KEPT = 64;
+
+/** The table of each window id, most recently used last. */
+const tables = new Map<string, LineTable>();
+
+function windowText(w: WindowState): LineTable {
+  const id = w.window.windowId;
+  let t = tables.get(id);
+  if (t !== undefined) {
+    tables.delete(id);
+    if (t.owner !== w) t.moveTo(w);
+  } else {
+    t = new LineTable(w);
+    if (tables.size >= TABLES_KEPT) tables.delete(tables.keys().next().value as string);
+  }
+  tables.set(id, t);
+  return t;
+}
+
+/**
+ * Brings the window's line table up to this state. The helper calls it as each snapshot arrives, so a
+ * window is read from scratch once, when it first arrives, and after that only its changed nodes are,
+ * instead of every window a request could reveal at the request's first take.
+ */
+export function readWindow(w: WindowState): void {
+  windowText(w);
+}
+
+/** Lets go of a closed window's table. A state of it that a task kept is read from scratch if asked about. */
+export function forgetWindow(windowId: string): void {
+  tables.delete(windowId);
+}
+
+/** Lets go of every table, for a new reader session whose window ids start over. */
+export function forgetWindows(): void {
+  tables.clear();
+}
+
+interface WindowShare {
+  budget: number;
+}
+
+let budgets = new WeakMap<WindowState, WindowShare>();
+let conversationCap = true;
+
+/**
+ * Turns the conversation rule off or back on, for the live replay's comparison of fill with and
+ * without it (scripts/live-replay.ts). The helper never calls it; the rule is on from start.
+ */
+export function setConversationCap(on: boolean): void {
+  conversationCap = on;
+  budgets = new WeakMap();
+}
+
+/**
+ * The characters a request may take from this window. A conversation gives just under half its text, and
+ * at most CONVERSATION_CHARS. Any other window gives WINDOW_CHARS when it is a card of values or has more
+ * than twice that much text, else just under half its text. Overlapping texts each count in
+ * full, so outside a card the budget holds a request under half the window with room to spare. A window's
+ * text is its title and every line of its nodes' labels, values and placeholders, each counted once
+ * (LineTable); the budget is cached per window state, which the model replaces on every snapshot.
+ */
+export function windowBudget(w: WindowState): number {
+  return windowShare(w).budget;
+}
+
+function windowShare(w: WindowState): WindowShare {
+  const cached = budgets.get(w);
+  if (cached !== undefined) return cached;
+  // Every line is read, however large the window. B10 stopped at 2 * WINDOW_CHARS, where the budget no
+  // longer changes, but then had no lines to charge a containing text for, so a parent's label that
+  // joins its children's went out uncharged for them (B13 review: 907 characters of a Messages window
+  // covered on a 595 charge).
+  const text = windowText(w);
+  // A card's budget is not its size: a request quotes a value both as a span and inside its labelled line
+  // ("Priya Raman <priya@…>" and "priya@…"), so the texts taken can add up to more than the card holds
+  // while covering no more of it.
+  const half = Math.max(0, Math.floor((text.chars - 1) / 2));
+  const large = text.chars >= 2 * WINDOW_CHARS;
+  const budget = heldAsConversation(w) ? Math.min(CONVERSATION_CHARS, half) : large || text.card ? WINDOW_CHARS : Math.min(WINDOW_CHARS, half);
+  const share = { budget };
+  budgets.set(w, share);
+  return share;
+}
+
+/** Whether the conversation rule holds this window: it is a conversation, and the rule is on. */
+export function heldAsConversation(w: WindowState): boolean {
+  return conversationCap && isConversation(w);
+}
+
+interface Priced {
+  fresh: string[];
+  adds: Map<string, { cost: number; covered: Set<string> }>;
+}
+
+interface Entry {
+  texts: Set<string>;
+  covered: Set<string>;
+  chars: number;
+  share: WindowShare;
+}
+
+/**
+ * The screen text one request takes, window by window. `take` adds a group of texts (one candidate with
+ * its facts, one field's descriptor) only when every new text in it fits, so a group goes out whole or
+ * not at all; texts already taken from that window cost nothing again. A text also pays for every line
+ * it contains, in whichever window shows that line: accessibility trees repeat text, a group's label
+ * holding its children's, so taking "Alice, meet Bob at 3:41 PM" reveals the lines "Bob" and "3:41 PM"
+ * as well; and a value copied into a card, "Dana Whitfield", reveals the chat line that reads the same.
+ * Every window so charged must stay within its own budget, or nothing is taken. The ledger is built over
+ * every window a request could reveal (the screen model's), since a line of a window the request never
+ * takes from is still revealed when a taken text contains it; privacy.test.ts measures the same.
+ */
+export class SnippetLedger {
+  private readonly entries = new Map<string, Entry>();
+  private readonly known = new Map<string, WindowState>();
+  /**
+   * What each text reveals, worked out once per ledger: the lines it holds, with their windows, and the
+   * windows that show it inside a line. The generator prices each kind of a conversation again after
+   * every take, and takes the one it priced, so the same texts are looked up many times (B13 review:
+   * 25 to 29 ms per pricing of 40 texts over eight windows of 5,000 lines).
+   */
+  private readonly reveals = new Map<string, { lines: [string, string[]][]; shownBy: string[] }>();
+  readonly snippets: Snippet[] = [];
+
+  /** `windows`: every window whose lines a request's text could reveal, normally all of the screen model's. */
+  constructor(windows: Iterable<WindowState>) {
+    for (const w of windows) this.known.set(w.window.windowId, w);
+  }
+
+  private entry(w: WindowState): Entry {
+    const id = w.window.windowId;
+    let e = this.entries.get(id);
+    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), chars: 0, share: windowShare(w) }));
+    return e;
+  }
+
+  /** A window a take names that the ledger was not built over (a closed source a task kept) is known from then on. */
+  private know(w: WindowState): void {
+    if (this.known.has(w.window.windowId)) return;
+    this.known.set(w.window.windowId, w);
+    this.reveals.clear();
+  }
+
+  private revealed(t: string): { lines: [string, string[]][]; shownBy: string[] } {
+    let r = this.reveals.get(t);
+    if (r !== undefined) return r;
+    const shownBy: string[] = [];
+    const lines = new Map<string, string[]>();
+    const found = new Set<string>();
+    for (const [wid, w] of this.known) {
+      const table = windowText(w);
+      if (t.length >= CONTAINED_MIN && table.holds(t)) shownBy.push(wid);
+      // Every line of this window the text holds, with the windows that show it.
+      found.clear();
+      table.linesIn(t, found);
+      for (const l of found) {
+        const ids = lines.get(l);
+        if (ids === undefined) lines.set(l, [wid]);
+        else ids.push(wid);
+      }
+    }
+    r = { lines: [...lines], shownBy };
+    this.reveals.set(t, r);
+    return r;
+  }
+
+  /**
+   * What taking these texts would add, window by window: the characters, and the lines they cover. A text
+   * taken from a window (`from`) is charged to it in full, a line of it or not; plan text (`from` null)
+   * only pays for the lines it holds. Null when a window would go over its budget.
+   */
+  private price(from: WindowState | null, texts: readonly (string | null | undefined)[]): Priced | null {
+    const own = from === null ? null : (this.know(from), this.entry(from));
+    const fresh = [...new Set(texts.filter((t): t is string => t !== null && t !== undefined && t !== "" && own?.texts.has(t) !== true))];
+    const adds = new Map<string, { cost: number; covered: Set<string> }>();
+    const charge = (wid: string, line: string): void => {
+      const w = this.known.get(wid);
+      if (w === undefined) return;
+      const e = this.entry(w);
+      let a = adds.get(wid);
+      if (a === undefined) adds.set(wid, (a = { cost: 0, covered: new Set() }));
+      if (e.covered.has(line) || a.covered.has(line)) return;
+      a.covered.add(line);
+      a.cost += line.length;
+    };
+    for (const t of fresh) {
+      if (from !== null) charge(from.window.windowId, t);
+      const r = this.revealed(t);
+      // Every line the text holds, in whichever window shows it.
+      for (const [l, ids] of r.lines) for (const wid of ids) charge(wid, l);
+      // And every other window that shows the text inside a line: a value taken from a card that a chat
+      // message also quotes reveals that much of the chat.
+      for (const wid of r.shownBy) if (wid !== from?.window.windowId) charge(wid, t);
+    }
+    for (const [wid, a] of adds) {
+      const e = this.entries.get(wid) as Entry;
+      if (e.chars + a.cost > e.share.budget) return null;
+    }
+    return { fresh, adds };
+  }
+
+  private commit(p: Priced, windowId: string, kind: Snippet["kind"], own: Entry | null): void {
+    for (const t of p.fresh) {
+      own?.texts.add(t);
+      this.snippets.push({ windowId, kind, text: t });
+    }
+    for (const [wid, a] of p.adds) {
+      const e = this.entries.get(wid) as Entry;
+      for (const l of a.covered) e.covered.add(l);
+      e.chars += a.cost;
+      // Text no window gave (a plan's or an instruction's, or what the user told Caret) declares each line it
+      // reveals under the window that shows it, so the request names every window whose text it carries:
+      // an instruction that quotes a line of private notes names the notes (B17 privacy test, planner desk).
+      if (own === null) for (const l of a.covered) this.snippets.push({ windowId: wid, kind: "candidate", text: l });
+    }
+  }
+
+  take(w: WindowState, kind: Snippet["kind"], texts: readonly (string | null | undefined)[]): boolean {
+    const p = this.price(w, texts);
+    if (p === null) return false;
+    this.commit(p, w.window.windowId, kind, this.entry(w));
+    return true;
+  }
+
+  /** What taking these texts from `w` would charge `w`, or null when some window would go over its budget. Takes nothing. */
+  cost(w: WindowState, texts: readonly (string | null | undefined)[]): number | null {
+    const p = this.price(w, texts);
+    return p === null ? null : (p.adds.get(w.window.windowId)?.cost ?? 0);
+  }
+
+  /**
+   * Declares text a request carries that a plan wrote rather than a window shows: an executor step's goal
+   * and target, under window id "plan". The caller cuts each to SNIPPET_CHARS. A plan's values were copied
+   * from windows, so each line of a known window the text holds is charged to that window, as `take` does;
+   * false, declaring nothing, when one would go over its budget.
+   */
+  plan(texts: readonly string[]): boolean {
+    const p = this.price(null, texts);
+    if (p === null) return false;
+    this.commit(p, "plan", "candidate", null);
+    return true;
+  }
+
+  /**
+   * Declares a value the user told Caret (a typed About entry, fill/about.ts) under window id "memory".
+   * No window shows it, so none is charged for it, except a window whose lines it holds or that shows it
+   * inside a line, as for `plan`: sending the value reveals that much of that window. False, declaring
+   * nothing, when such a window would go over its budget.
+   */
+  memory(texts: readonly string[]): boolean {
+    const p = this.price(null, texts);
+    if (p === null) return false;
+    this.commit(p, MEMORY_SNIPPETS, "candidate", null);
+    return true;
+  }
+
+  /** Characters charged to each window so far, by window id. */
+  charges(): Record<string, number> {
+    return Object.fromEntries([...this.entries].filter(([, e]) => e.chars > 0).map(([id, e]) => [id, e.chars]));
+  }
+
+  /** What a request built from this ledger declares: its screen text, and what each window was charged. */
+  declared(): Declared {
+    return { snippets: this.snippets, charged: this.charges() };
+  }
+
+  /** Characters taken from a window so far. */
+  chars(windowId: string): number {
+    return this.entries.get(windowId)?.chars ?? 0;
+  }
+}

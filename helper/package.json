@@ -1,0 +1,24 @@
+{
+  "name": "@caret/helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Caret v2 helper: screen model, transfer log, shadow logger and grounded fill over the reader's socket.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && vitest run",
+    "schema": "node src/export-schema.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  }
+}
