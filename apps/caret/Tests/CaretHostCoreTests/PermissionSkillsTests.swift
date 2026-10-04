@@ -50,20 +50,20 @@ final class PermissionSkillsTests: XCTestCase {
 
     /// The block's title and sentence for every setting of both write rules.
     private static let words: [HelperMemory.ActionType: [HelperMemory.Rule: (String, String)]] = {
-        let undo = "Each run shows where you are, and ⌘Z undoes it."
+        let atCaret = "Each run shows at your caret, and ⌘Z undoes it."
         let heldTitle = "Skills this setting holds back"
         return [
             .writeHere: [
-                .ask: ("Skills that skip Ask first here", "You let these run on their own, so they fill the window you're in without Tab. \(undo)"),
-                .act: ("Skills that run on their own here", "They fill the window you're in without Tab. \(undo)"),
+                .ask: ("Skills that skip Ask first here", "You let these run on their own, so they fill the window you're in without Tab. \(atCaret)"),
+                .act: ("Skills that run on their own here", "They fill the window you're in without Tab. \(atCaret)"),
                 .handoff: (heldTitle, "You let these run on their own in the window you're in. At Hand off Caret leaves them to you there. Choose Ask first or Act to let them run, or put them back on Tab."),
                 .actIfApproved: (heldTitle, "You let these run on their own in the window you're in. At Act if approved they wait for Tab there. Choose Ask first or Act to let them run, or put them back on Tab."),
             ],
             .writeElsewhere: [
-                .actIfApproved: ("Skills you approved for other apps", "They change windows in other apps without Tab. \(undo)"),
-                .ask: (heldTitle, "You let these run on their own in other apps. At Ask first they wait for Tab there. Choose Act if approved to let them run, or put them back on Tab."),
-                .handoff: (heldTitle, "You let these run on their own in other apps. At Hand off Caret leaves them to you there. Choose Act if approved to let them run, or put them back on Tab."),
-                .act: (heldTitle, "You let these run on their own in other apps. At Act they wait for Tab there. Choose Act if approved to let them run, or put them back on Tab."),
+                .actIfApproved: ("Skills you approved for other windows", "They change windows you're not in, without Tab. Each run is in Caret's activity list, with Undo."),
+                .ask: (heldTitle, "You let these run on their own in windows you're not in. At Ask first they wait for Tab there. Choose Act if approved to let them run, or put them back on Tab."),
+                .handoff: (heldTitle, "You let these run on their own in windows you're not in. At Hand off Caret leaves them to you there. Choose Act if approved to let them run, or put them back on Tab."),
+                .act: (heldTitle, "You let these run on their own in windows you're not in. At Act they wait for Tab there. Choose Act if approved to let them run, or put them back on Tab."),
             ],
         ]
     }()
@@ -179,5 +179,10 @@ final class PermissionSkillsTests: XCTestCase {
         let bad = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[\#(skill("s", wrote: .here).replacingOccurrences(of: "writeHere", with: "outbound"))]}"#.utf8))
         XCTAssertEqual(bad.entries, [])
         XCTAssertEqual(bad.unreadable.count, 1, "a skill's runs write only here or elsewhere")
+        let misplaced = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[{"kind":"about","id":"a","status":"active","says":"x","evidence":{"count":1,"lastSeen":0,"app":null},"fields":{"label":"Name","value":"Dana","source":"typed","wrote":["writeHere"]}}]}"#.utf8))
+        XCTAssertEqual(misplaced.entries, [])
+        XCTAssertEqual(misplaced.unreadable.count, 1, "only skills say where they wrote")
+        let unknownKind = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[{"kind":"habit","id":"h","status":"active","says":"x","evidence":{"count":1,"lastSeen":0,"app":null},"fields":{"wrote":["writeHere"]}}]}"#.utf8))
+        XCTAssertEqual(unknownKind.entries.map(\.id), ["h"], "a newer helper's kind is kept whatever its fields hold")
     }
 }

@@ -81,22 +81,42 @@ function hidIdle(): number {
   const m = /"HIDIdleTime" = (\d+)/.exec(out);
   return m?.[1] === undefined ? 0 : Number(m[1]) / 1e9;
 }
+/** Sam is presenting or in a call. A file that is empty or unreadable (being rewritten) counts as quiet. */
 function quietNow(): boolean {
   const path = join(process.env.HOME ?? "", ".long-run", "QUIET-UNTIL");
   if (!existsSync(path)) return false;
-  const first = Number(readFileSync(path, "utf8").trim().split(/\s+/)[0]);
-  return !Number.isFinite(first) || first > Date.now() / 1000;
-}
-function guiLockHeld(): boolean {
+  let first = "";
   try {
-    execFileSync("/usr/bin/lockf", ["-t", "0", join(process.env.HOME ?? "", ".long-run", "locks", "gui.lock"), "true"], { stdio: "ignore" });
+    first = readFileSync(path, "utf8").trim().split(/\s+/)[0] ?? "";
+  } catch {
+    return true;
+  }
+  const until = Number(first);
+  return first === "" || !Number.isFinite(until) || until > Date.now() / 1000;
+}
+const GUI_LOCK = join(process.env.HOME ?? "", ".long-run", "locks", "gui.lock");
+/**
+ * gui.lock is held, and by this walk's own launcher: some ancestor process is `lockf ... gui.lock`.
+ * A held lock alone could be another run's, which must not share the desktop with this one.
+ */
+function guiLockHeldByUs(): boolean {
+  try {
+    execFileSync("/usr/bin/lockf", ["-t", "0", GUI_LOCK, "true"], { stdio: "ignore" });
     return false;
   } catch (e) {
-    return (e as { status?: number }).status === 75;
+    if ((e as { status?: number }).status !== 75) return false;
   }
+  for (let pid = process.ppid, hops = 0; pid > 1 && hops < 8; hops++) {
+    const line = execFileSync("ps", ["-o", "ppid=,command=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    const m = /^(\d+)\s+(.*)$/.exec(line);
+    if (m === null) return false;
+    if (/\blockf\b/.test(m[2]!) && m[2]!.includes(GUI_LOCK)) return true;
+    pid = Number(m[1]);
+  }
+  return false;
 }
 if (DRAWN !== null) {
-  const why = !guiLockHeld() ? "refused: run under lockf -k ~/.long-run/locks/gui.lock" : quietNow() ? "deferred: quiet window" : hidIdle() < 300 ? `deferred: user active (idle ${Math.round(hidIdle())} s)` : null;
+  const why = !guiLockHeldByUs() ? "refused: run under lockf -k ~/.long-run/locks/gui.lock" : quietNow() ? "deferred: quiet window" : hidIdle() < 300 ? `deferred: user active (idle ${Math.round(hidIdle())} s)` : null;
   if (why !== null) {
     console.log(why);
     process.exit(75);
@@ -201,16 +221,30 @@ const frontPoll = setInterval(() => {
   }
   if (activatedAt !== null && foreground === null && !ours(f.pid)) {
     foreground = f;
-    stoppedBy = `deferred: foreground (${f.name} ${f.pid} took the front)`;
+    // Someone else's app came forward: leave it there, close ours.
+    stopNow(`deferred: foreground (${f.name} ${f.pid} took the front)`);
   }
 }, 100);
-/** Drawn: the walk posts no input, so HID input under 5 s old after the start is a person's. */
-const walkStart = Date.now();
+/**
+ * Drawn: the walk posts no input, and it started after 300 s without any, so HID input under 5 s old is
+ * a person's. It stops the walk at once: the fixture is killed (taking its windows) and every later step
+ * refuses (`guard`).
+ */
 const idleWatch = setInterval(() => {
   if (DRAWN === null || stoppedBy !== null) return;
   const idle = hidIdle();
-  if (idle < 5 && Date.now() - idle * 1000 > walkStart + 500) stoppedBy = `deferred: user active (input ${idle.toFixed(1)} s ago)`;
+  if (idle < 5) stopNow(`deferred: user active (input ${idle.toFixed(1)} s ago)`);
+  else if (quietNow()) stopNow("deferred: quiet window began");
 }, 200);
+function stopNow(why: string): void {
+  if (stoppedBy !== null) return;
+  stoppedBy = why;
+  stopAll();
+}
+/** Every step that touches the host, the fixture or the screen checks this first. */
+function guard(): void {
+  if (stoppedBy !== null) throw new Error(stoppedBy);
+}
 /** Each fixture command waits for its reply line; all of them fail at once if the fixture goes. */
 const replies: { ok: (o: Record<string, unknown>) => void; fail: (e: Error) => void }[] = [];
 const failReplies = (why: string): void => {
@@ -235,6 +269,7 @@ fixture.stdout.on("data", (d: string) => {
 /** One fixture command and its reply, within 10 s; replies come back in the order commands went. */
 const fx = (cmd: string): Promise<Record<string, unknown>> =>
   new Promise((res, rej) => {
+    if (stoppedBy !== null && !cmd.startsWith("quit ")) return rej(new Error(stoppedBy));
     const entry = {
       ok: (o: Record<string, unknown>) => (clearTimeout(t), res(o)),
       fail: (e: Error) => (clearTimeout(t), rej(e)),
@@ -261,6 +296,7 @@ async function until<T>(what: string, f: () => T | null | undefined | false | Pr
 
 function hostCommand(command: string): Promise<Record<string, unknown>> {
   return new Promise((res, rej) => {
+    if (stoppedBy !== null) return rej(new Error(stoppedBy));
     const c = createConnection(HOST_SOCK);
     let b = "";
     const t = setTimeout(() => (c.destroy(), rej(new Error(`no answer to '${command}'`))), 5000);
@@ -342,7 +378,7 @@ const dump = async (): Promise<Record<string, string>> => ((await fx("form dump 
 // MARK: - drawn: the form where the user is, and pictures of it
 
 const ax = (...args: string[]): Record<string, unknown> =>
-  JSON.parse(execFileSync(FIXTURE_AX, args, { encoding: "utf8", env: { ...process.env, CARET_TEST_PIDS: String(fixturePid) } })) as Record<string, unknown>;
+  (guard(), JSON.parse(execFileSync(FIXTURE_AX, args, { encoding: "utf8", env: { ...process.env, CARET_TEST_PIDS: String(fixturePid) } })) as Record<string, unknown>);
 /** The form window Caret is filling, by title, for the pictures. */
 let formTitle = "";
 /**
@@ -405,13 +441,18 @@ const shots: Record<string, string | null> = {};
  */
 async function shot(name: string): Promise<void> {
   if (DRAWN === null) return;
+  guard();
   const dir = join(OUT, "shots");
   mkdirSync(dir, { recursive: true });
-  const listed = JSON.parse(execFileSync("cua-driver", ["list_windows", JSON.stringify({ pid: fixturePid })], { encoding: "utf8" })) as { windows: { window_id: number; title: string; bounds: { x: number; y: number; width: number; height: number } }[] };
-  const base = listed.windows.find((w) => w.title === formTitle);
-  if (base === undefined) {
+  type Listed = { windows: { window_id: number; title: string; bounds: { x: number; y: number; width: number; height: number } }[] };
+  // The window list can lag a just-raised window: tried for a second, then the walk fails without the picture.
+  const base = await until(`the ${formTitle} window to picture`, () => {
+    const listed = JSON.parse(execFileSync("cua-driver", ["list_windows", JSON.stringify({ pid: fixturePid })], { encoding: "utf8" })) as Listed;
+    return listed.windows.find((w) => w.title === formTitle) ?? null;
+  }, 1000, 100).catch(() => null);
+  if (base === null) {
     shots[name] = null;
-    return;
+    throw new Error(`no picture of ${name}: ${formTitle} is not in the window list`);
   }
   const layers: string[] = [];
   const basePath = join(dir, `${name}-window.png`);
@@ -455,14 +496,22 @@ async function placements(ms: number): Promise<Placement[]> {
 const overlaps = (p: number[], q: number[]): boolean =>
   p.length === 4 && q.length === 4 && p[0]! < q[0]! + q[2]! && q[0]! < p[0]! + p[2]! && p[1]! < q[1]! + q[3]! && q[1]! < p[1]! + p[3]!;
 /** The panel before the question (the toast alone) and with it: taller, where it went, and clear of the field. */
-function replacement(placed: Placement[]): Record<string, unknown> {
+const inside = (p: number[], q: number[]): boolean =>
+  p.length === 4 && q.length === 4 && p[0]! >= q[0]! && p[1]! >= q[1]! && p[0]! + p[2]! <= q[0]! + q[2]! && p[1]! + p[3]! <= q[1]! + q[3]!;
+/**
+ * The panel with the question: clear of the field and inside `bounds` (the screen's visible frame, or the
+ * narrowed placement bounds). The toast alone is recorded when a sample caught it; the question usually
+ * arrives with the run's ending, so the panel is mostly first seen already grown.
+ */
+function replacement(placed: Placement[], bounds: number[]): Record<string, unknown> {
   const before = placed.find((p) => p.frame !== null && p.question === null) ?? null;
   const after = [...placed].reverse().find((p) => p.frame !== null && p.question !== null) ?? null;
   return {
-    before, after,
+    before, after, bounds,
     taller: before !== null && after !== null ? after.frame![3]! > before.frame![3]! : null,
     moved: before !== null && after !== null ? before.frame![1] !== after.frame![1] || before.spot !== after.spot : null,
-    clearOfField: after?.frame != null && after.field != null ? !overlaps(after.frame, after.field) : null,
+    clearOfField: after?.frame != null && after.field != null ? !overlaps(after.frame, after.field) : false,
+    insideBounds: after?.frame != null ? inside(after.frame, bounds) : false,
   };
 }
 
@@ -609,9 +658,10 @@ try {
   let r = await caretRun(intakeOf(await nextOrder()), { answer: "tab", shot: "keep", low: true });
   if (DRAWN !== null) {
     result.keepPlaced = r.placed;
-    const replaced = replacement(r.placed);
+    const replaced = replacement(r.placed, ((result.lowBounds as { bounds?: number[] } | undefined)?.bounds) ?? []);
     result.keepReplacement = replaced;
     checks.keepQuestionPanelClearOfTheField = replaced.clearOfField === true;
+    checks.keepQuestionPanelInsideTheNarrowedBounds = replaced.insideBounds === true;
   }
   checks.firstRunTakenWithTabAtTheHost = r.run.tab && r.run.hostShown && r.run.outcome === "done" && r.run.verified;
   checks.keepQuestionUnderTheToast = r.run.skillOffers.includes("keep") && (r.run.question ?? "").startsWith("Keep this as ") && r.run.toast !== null;
@@ -627,9 +677,11 @@ try {
     r = await caretRun(intakeOf(await nextOrder()), { answer: i === PROMOTE_AFTER ? "tab" : undefined, shot: i === PROMOTE_AFTER ? "promote" : undefined });
     if (i === PROMOTE_AFTER && DRAWN !== null) {
       result.promotePlaced = r.placed;
-      const replaced = replacement(r.placed);
+      const visible = (ax("visible-frame", String(fixturePid), formTitle).frame ?? []) as number[];
+      const replaced = replacement(r.placed, visible);
       result.promoteReplacement = replaced;
       checks.promoteQuestionPanelClearOfTheField = replaced.clearOfField === true;
+      checks.promoteQuestionPanelOnScreen = replaced.insideBounds === true;
     }
     if (i < PROMOTE_AFTER && r.offers.length > 0) early++;
     if (i === PROMOTE_AFTER) promoteQuestion = r.run.question;
@@ -714,8 +766,13 @@ try {
   clearInterval(frontPoll);
   clearInterval(idleWatch);
   fronts.push(front());
-  // Drawn: the front goes back to the app that had it, and the fixture exits.
-  if (DRAWN !== null && fixturePid > 0) await fx(`quit ${fronts[0]?.pid ?? 0}`).catch(() => null);
+  // Drawn: the front goes back to the app that had it, and the fixture exits; unless someone else's app
+  // came forward meanwhile, which is left where it is. What happened is recorded.
+  if (DRAWN !== null && fixturePid > 0 && stoppedBy === null) {
+    const reply = await fx(`quit ${fronts[0]?.pid ?? 0}`).catch((e: unknown) => ({ error: String(e) }));
+    await sleep(500);
+    result.handBack = { to: fronts[0] ?? null, reply, frontAfter: front() };
+  }
   stopAll();
   await server.close();
   helper.memory.close();
@@ -782,14 +839,15 @@ result.fromHost = fromHost.map((x) => `${x.type} ${x.detail}`);
 result.memoryReplies = memoryReplies;
 result.log = log.slice(-20);
 result.hostLog = hostLog.split("\n").slice(-10);
-result.ok = ok && foreign.length === 0;
+result.ok = ok && foreign.length === 0 && stoppedBy === null;
 // Drawn: VoiceOver's words for the three moments, as the host posted them (no VoiceOver needed).
 if (DRAWN !== null) {
   const said = (start: string) => announced.some((x) => (x.text ?? "").startsWith(start));
   checks.announcedTheKeepQuestion = said("Keep this as ");
   checks.announcedThePromoteQuestion = said("Do this one on your own from now on?");
   checks.announcedOnItsOwn = said("On its own: ");
-  result.ok = result.ok === true && checks.announcedTheKeepQuestion && checks.announcedThePromoteQuestion && checks.announcedOnItsOwn;
+  checks.everyPictureTaken = ["keep", "promote", "on-its-own", "on-its-own-2", "took-over"].every((n) => typeof shots[n] === "string");
+  result.ok = result.ok === true && checks.announcedTheKeepQuestion && checks.announcedThePromoteQuestion && checks.announcedOnItsOwn && checks.everyPictureTaken;
 }
 writeFileSync(join(OUT, "skills-walk.json"), JSON.stringify(result, null, 2) + "\n");
 console.log(JSON.stringify({ ok: result.ok, error: result.error ?? null, checks, runs: runs.length }, null, 1));

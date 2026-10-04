@@ -397,6 +397,10 @@ extension HelperMemory.Entry: Decodable {
             fields = .noticed(kind: wireKind)
         }
         let kind = fields.kind
+        // `wrote` belongs to skills; on another known kind it is a helper bug, not something to drop.
+        if known != nil, kind != .skill, try c.nestedContainer(keyedBy: AnyKey.self, forKey: .fields).contains(AnyKey("wrote")) {
+            throw ProtocolError("wrote on a \(kind.rawValue) entry; only skills have it")
+        }
         uses = try c.decodeIfPresent([HelperMemory.Use].self, forKey: .uses)
         if uses != nil, kind != .permission {
             throw ProtocolError("uses on a \(kind.rawValue) entry; only permissions have uses")

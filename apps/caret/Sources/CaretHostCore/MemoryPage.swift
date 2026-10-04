@@ -376,14 +376,17 @@ public enum MemoryPage {
     /// The block's title and sentence for a write rule at a setting. Only three settings let a skill
     /// start without Tab (`PermissionPolicy.skillRunsUnasked`); at any other the block names the clash.
     public static func exceptionWords(_ action: HelperMemory.ActionType, _ rule: HelperMemory.Rule, runs: Bool) -> (title: String, detail: String) {
-        let undo = "Each run shows where you are, and ⌘Z undoes it."
+        // A run in the window you're in is drawn at your caret with a ⌘Z toast; one in a window you're
+        // not in is left to the perch and the activity list (SurfaceMachine.startUnprompted), whose row
+        // has Undo. "Elsewhere" is any window you're not in, the same app's too (engine.ts writeAction).
         let here = action == .writeHere
         guard !runs else {
-            if !here { return ("Skills you approved for other apps", "They change windows in other apps without Tab. \(undo)") }
-            if rule == .ask { return ("Skills that skip Ask first here", "You let these run on their own, so they fill the window you're in without Tab. \(undo)") }
-            return ("Skills that run on their own here", "They fill the window you're in without Tab. \(undo)")
+            let atCaret = "Each run shows at your caret, and ⌘Z undoes it."
+            if !here { return ("Skills you approved for other windows", "They change windows you're not in, without Tab. Each run is in Caret's activity list, with Undo.") }
+            if rule == .ask { return ("Skills that skip Ask first here", "You let these run on their own, so they fill the window you're in without Tab. \(atCaret)") }
+            return ("Skills that run on their own here", "They fill the window you're in without Tab. \(atCaret)")
         }
-        let place = here ? "in the window you're in" : "in other apps"
+        let place = here ? "in the window you're in" : "in windows you're not in"
         let held = rule == .handoff ? "Caret leaves them to you" : "they wait for Tab"
         let allowing = here ? "Ask first or Act" : "Act if approved"
         return (
