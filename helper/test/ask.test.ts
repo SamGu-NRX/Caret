@@ -510,6 +510,13 @@ describe("what B26's blind held-out-2 run found", () => {
     expect(d.checked.writes.length).toBeGreaterThan(0);
   });
 
+  it("says a missing source is not on screen when the maker asked where to copy from", () => {
+    const s = snapOf("grab my company and title off my LinkedIn");
+    expect(() => checkIntent(intent({ route: "ask", why: "whichSource", scope: "none" }), s)).toThrow(SAYS.notOnScreen);
+    // A specific refusal keeps its own sentence.
+    expect(() => checkIntent(intent({ route: "refuse", why: "payment", scope: "none" }), snapOf("pay with the card off my LinkedIn"))).toThrow(SAYS.payment);
+  });
+
   it("refuses a fill from a source that is not open with the plain sentence", () => {
     const s = snapOf("grab the landlord phone off my LinkedIn");
     try {
