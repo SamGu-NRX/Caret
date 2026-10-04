@@ -1,0 +1,1 @@
+Swift String == is canonical equivalence (precomposed é equals e+U+0301): guards comparing field values must use .utf16.elementsEqual or digests, or a normalizing app passes a mismatched write (T1 RangeEdit.verify).
