@@ -364,7 +364,8 @@ export class Skills {
 }
 
 /** When a kept routine is offered, as a clause: "a Tracker window opens with Order, Carrier and Tracking empty". */
-function trigger(f: RoutineFacts): string {
+export function trigger(f: RoutineFacts): string {
   const fields = f.dstLabels.length === 0 ? "its fields" : list(f.dstLabels.slice(0, 4));
-  return f.dstApp === "" ? `a window opens with ${fields} empty` : `a ${f.dstApp} window opens with ${fields} empty`;
+  // "an Electron window" (B20); a name that starts with a vowel letter takes "an". Names read aloud otherwise ("an MCP") are rare enough to leave.
+  return f.dstApp === "" ? `a window opens with ${fields} empty` : `${/^[aeiou]/i.test(f.dstApp) ? "an" : "a"} ${f.dstApp} window opens with ${fields} empty`;
 }

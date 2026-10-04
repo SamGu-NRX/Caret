@@ -10,7 +10,7 @@ import { ScreenModel } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { HelperMessage, PROTOCOL_VERSION, ConsumerMessage, type MemoryEntry, type MemoryReply, type PatternOffer, type SkillOffer, type TaskProgress } from "../src/protocol.ts";
 import { checkName, fallbackName, nameCandidates, nameRoutine, safeFacts, type RoutineFacts } from "../src/patterns/naming.ts";
-import { cleanRun, handedPress, mayRunUnasked, PROMOTE_AFTER } from "../src/patterns/skills.ts";
+import { cleanRun, handedPress, mayRunUnasked, PROMOTE_AFTER, trigger } from "../src/patterns/skills.ts";
 import { PRESS_ENDS_MS } from "../src/patterns/routines.ts";
 import { dontOfferMatch } from "../src/patterns/memory.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
@@ -184,6 +184,12 @@ describe("the skill messages", () => {
     expect(HelperMessage.safeParse({ ...offer, kind: "promote" }).success).toBe(false);
     expect(HelperMessage.safeParse({ ...offer, actions: [offer.actions[1], offer.actions[0]] }).success).toBe(false);
     expect(ConsumerMessage.safeParse(offer).success).toBe(false);
+  });
+  it("says a keep offer's trigger with the article its app's name takes", () => {
+    const facts = (dstApp: string) => ({ routineId: "r", dstApp, dstWindow: null, dstLabels: ["Name", "Email"], srcApps: [], srcLabels: [], count: 3, values: [] });
+    expect(trigger(facts("Electron"))).toBe("an Electron window opens with Name and Email empty");
+    expect(trigger(facts("Google Chrome"))).toBe("a Google Chrome window opens with Name and Email empty");
+    expect(trigger(facts(""))).toBe("a window opens with Name and Email empty");
   });
   it("takes an answer from the host and an unprompted mark on progress, true or absent", () => {
     expect(ConsumerMessage.parse({ type: "skillAnswer", v: 1, id: "skill-offer-1", answer: "decline", at: 2 })).toMatchObject({ answer: "decline" });
