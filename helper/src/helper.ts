@@ -65,6 +65,12 @@ import { expired } from "./offers/lifetimes.ts";
 import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
+import { planWithCode } from "./planner/codeplan.ts";
+import type { WriterPort } from "./writer/port.ts";
+import type { PlanErrorCode } from "./protocol.ts";
+
+/** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
+const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
 
@@ -106,6 +112,11 @@ export interface HelperOptions {
   eventCalendar?: string;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
+  /**
+   * The code-mode plan writer (writer/, B24). When set, an instruction the deterministic planner cannot ground
+   * (unsure or nothing to do) goes to it (planner/codeplan.ts). Absent: those instructions fail as before.
+   */
+  writer?: WriterPort | null;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Replaces the level's offers per hour (OfferGate), for fixture evaluations that make dozens of offers in minutes. Never set in normal use. */
@@ -678,8 +689,22 @@ export class Helper {
         ...this.opts.plannerHooks,
       });
     } catch (e) {
-      if (e instanceof PlannerError) return fail(e.code, e.message);
-      throw e;
+      if (!(e instanceof PlannerError)) throw e;
+      // An instruction the planner could not ground goes to the code-mode writer, when one is configured (B24).
+      // The plan it builds is checked by the same validatePlan and offered the same way; on failure the
+      // planner's own error stands, with the writer's reason added.
+      const writer = this.opts.writer ?? null;
+      const windowId = CODE_PLAN_AFTER.has(e.code) && writer !== null ? (e.windowId ?? requestedWindow(this.model, m)) : null;
+      if (writer === null || windowId === null) return fail(e.code, e.message);
+      store.count("plan.codeMode", 1);
+      try {
+        draft = await planWithCode(m.instruction, this.model, { values: () => this.plannerMemory() }, { writer, askJev: ask, offerKey, windowId, now: this.now() });
+        store.count("plan.codeModeProposed", 1);
+      } catch (e2) {
+        if (!(e2 instanceof PlannerError)) throw e2;
+        store.count(`plan.codeMode_${e2.code}`, 1);
+        return fail(e.code, `${e.message}; the plan writer did not help either: ${e2.message}`);
+      }
     }
     // Window ids start over with a new reader; a plan drafted in the old session names other windows now.
     if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");

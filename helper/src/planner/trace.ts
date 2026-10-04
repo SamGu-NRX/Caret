@@ -3,6 +3,7 @@
 // the source; nothing derived (a reformatted date, a sum, a guess) traces, so it is refused.
 import { nodeText, type ScreenModel } from "../model.ts";
 import { flat } from "../privacy.ts";
+import { splitName } from "../fill/derive.ts";
 
 /** A memory entry's value as the planner may use it: an About value or a person's name. */
 export interface MemoryValue {
@@ -57,6 +58,12 @@ export function traceValue(value: string, model: ScreenModel, memory: readonly M
     }
   }
   for (const m of memory) if (flat(m.text) === v) return { from: "memory", id: m.id };
+  // A first, middle or last name code split from a remembered name (fill/derive.ts, B24): "Riley" for First
+  // name from Name "Riley Okafor". Only those parts, never another substring of a memory value.
+  for (const m of memory) {
+    const s = splitName(flat(m.text));
+    if (s.kind === "split" && [s.first, s.middle, s.last].includes(v)) return { from: "memory", id: m.id };
+  }
   if (occursBounded(flat(instruction), v)) return { from: "instruction" };
   return null;
 }

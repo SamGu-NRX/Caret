@@ -17,6 +17,8 @@ import { addressParts, misfit, textKind, type TextKind } from "../src/fill/kinds
 import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
 import { asksToFillForm, byRelevance, namesShortLabel, planTask, requestedWindow, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
+import { WRITER_ROUTE } from "../src/writer/config.ts";
+import type { WriterRequest } from "../src/writer/port.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
 import { executorWindow, FakeApp, K, TITLE, WIN, WIN_NUMBER, wireButtons } from "./fake-app.ts";
 
@@ -564,6 +566,41 @@ describe("planRequest through the helper", () => {
     expect(published.some((m) => m.type === "offerWithdrawn" && m.id === "plan-1-r1" && m.reason === "taken")).toBe(true);
     // An offer runs once.
     expect(await accept("plan-1-r1")).toBeNull();
+  });
+
+  it("sends an instruction the planner cannot ground to the code-mode writer, checks its plan, and runs it only when accepted (B24)", async () => {
+    // The planner's Jev keeps every field, so the planner finds nothing to do; the writer's program fills Name.
+    const base = plannerJev({});
+    const checks: AskJev = async (req) => {
+      const yesNo = Object.values(req.questions).some((q) => "yes" in q.criteria || "user" in q.criteria);
+      if (!yesNo) return base(req);
+      const answers = Object.fromEntries(Object.entries(req.questions).map(([id, q]) => [id, { choice: "yes" in q.criteria ? "yes" : "user", confidence: 0.9 }]));
+      return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+    };
+    const program = `async function main(caret: CaretPlanAPI): Promise<PlanRef> {
+  const form = await caret.readWindow();
+  const src = await caret.readWindow("w2" as WindowRef);
+  const t = form.targets.find((x) => x.label === "Name");
+  const v = src.values.find((x) => x.display.startsWith('"Dana Whitfield"'));
+  const steps: StepRef[] = t !== undefined && v !== undefined ? [caret.fill(t.ref, v.ref)] : [];
+  return caret.plan({ basedOn: form.snapshot, steps });
+}`;
+    const writes: string[] = [];
+    const writer = { route: WRITER_ROUTE, write: async (req: WriterRequest) => (writes.push(req.disclosureId), { model: "fake", provider: "groq", output: { program, reply: program }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 }) };
+    const withWriter = new Helper({ store, memory, askJev: checks, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, now: () => clock, writer });
+    app.helper = withWriter;
+    app.show();
+    void withWriter.handleReader(referenceWindow());
+    const r = await withWriter.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "w1", at: clock, instruction: "put the customer's name in" });
+    expect(PlanProposal.parse(r)).toMatchObject({ outcome: "proposed", error: null });
+    expect(writes).toEqual([r.offerKey]);
+    // Proposed, not run: nothing is written until the host accepts.
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
+    const res = await withWriter.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: r.offerKey ?? "", actionId: "run", overrides: {}, at: clock });
+    expect(res).toMatchObject({ outcome: "done", acted: 1 });
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana Whitfield");
+    // With no writer the same instruction fails as before.
+    expect(await request("put the customer's name in")).toMatchObject({ outcome: "error", error: { code: "nothingToDo" } });
   });
 
   it("hands Send back without pressing it", async () => {

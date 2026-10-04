@@ -24,6 +24,8 @@ import { FILL_CUTOFF, FILLABLE_ROLES, shuffled } from "../fill/fill.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts, misfit } from "../fill/kinds.ts";
+import { fieldPart, splitAddress, splitName } from "../fill/derive.ts";
+import { inWebArea } from "../fill/controls.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { instructionValues } from "./spans.ts";
@@ -85,7 +87,7 @@ interface Option {
   describe: string;
 }
 
-interface Field {
+export interface Field {
   id: string;
   node: Node;
   name: string;
@@ -116,6 +118,27 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   };
 
   const w = await chooseWindow(instruction, model, o, rand, cutoff, ask, answers);
+  try {
+    return await planIn(w, instruction, model, memory, o, rand, cutoff, ask, answers, jev);
+  } catch (e) {
+    if (e instanceof PlannerError && e.windowId === null) e.windowId = w.window.windowId;
+    throw e;
+  }
+}
+
+/** planTask's work once the window is chosen. */
+async function planIn(
+  w: WindowState,
+  instruction: string,
+  model: ScreenModel,
+  memory: PlannerMemory,
+  o: PlanTaskOptions,
+  rand: (n: number) => number,
+  cutoff: number,
+  ask: (a: JevRequest, b: JevRequest) => Promise<[JevResult, JevResult]>,
+  answers: Record<string, AskPair>,
+  jev: PlanDraft["jev"],
+): Promise<PlanDraft> {
   const fields = writableFields(w);
   const buttons = labelledButtons(w);
   const ledger = new SnippetLedger(model.windows.values());
@@ -268,7 +291,10 @@ export function asksToFillForm(instruction: string): boolean {
     // "the form field Name" names one field, so "form" followed by "field" is not the whole form.
     /\b(?:fill|complete)(?:\s+(?:in|out|up))?\s+(?:(?:the|this|that|my|whole|entire|rest|of|remaining|other|all)\s+)*(?:form(?!\s+field\b)|fields|everything)\b/.test(s) ||
     /\bfill\s+(?:it|them|everything)\s+(?:all\s+)?(?:in|out)\b/.test(s) ||
-    /\bfill\s+(?:in|out)\s+(?:all|everything)\b/.test(s)
+    /\bfill\s+(?:in|out)\s+(?:all|everything)\b/.test(s) ||
+    // B24's blind instructions: "fill the rest of this from my note", "fill in whatever you know about me".
+    /\bfill\s+(?:(?:in|out)\s+)?(?:the\s+)?rest\b/.test(s) ||
+    /\bfill\s+(?:(?:in|out)\s+)?(?:whatever|what)\s+you\s+(?:can|know)\b/.test(s)
   );
 }
 
@@ -314,11 +340,13 @@ export function fieldName(w: WindowState, n: Node): string {
   return [d.section, d.label ?? d.nearest ?? d.placeholder].filter((x) => x !== null).join(" ") || "field";
 }
 
-function writableFields(w: WindowState): Field[] {
+export function writableFields(w: WindowState): Field[] {
   const out: Field[] = [];
   for (const n of w.nodes.values()) {
     if (out.length >= MAX_PLAN_FIELDS) break;
     if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure")) continue;
+    // A web page's combobox (react-select) takes a pick from its list, not typed text: a named hand-off (B24).
+    if (n.role === "AXComboBox" && inWebArea(w, n)) continue;
     const d = describeField(w, n);
     out.push({ id: `f${out.length + 1}`, node: n, name: fieldName(w, n), section: d.section, label: d.label ?? d.nearest ?? d.placeholder ?? "field", descriptor: d.text });
   }
@@ -388,13 +416,33 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   const spans = instructionValues(instruction);
   if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`);
   for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`);
+  // A remembered name's first and last parts, split by code (fill/derive.ts, B24), for First and Last name
+  // fields: "fill my name and email" on a form with split name fields found no value for either (Q1 bug 11).
+  for (const m of memory) {
+    // Only for an entry whose text went into the question above, so the part's description declares nothing new.
+    if (!/\bname\b/i.test(m.label) || !seen.has(m.text)) continue;
+    const s = splitName(m.text);
+    if (s.kind !== "split") continue;
+    for (const [part, text] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) {
+      if (text !== null) add(text, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`);
+    }
+  }
   const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
   for (const c of cands) add(c.text, describeCandidate(c));
   // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
   // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
   // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
   // budget after the values above, so a screen of addresses cannot push out its other values.
+  // A form with its own Apt / Unit field gets the street line without the unit, and the unit, state and ZIP code
+  // apart (fill/derive.ts splitAddress, B24): the corpus's rental form took "4410 Speedway Apt 2" in Street
+  // address beside an empty Apt / Unit field (asks-dev-3).
+  const unitField = writableFields(w).some((f) => fieldPart(f.label) === "unit");
   for (const c of cands) {
+    const split = unitField ? splitAddress(c.text) : null;
+    if (split !== null) {
+      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+      continue;
+    }
     const parts = addressParts(c.text);
     if (parts === null) continue;
     add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
