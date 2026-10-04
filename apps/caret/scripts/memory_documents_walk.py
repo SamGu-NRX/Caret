@@ -20,7 +20,8 @@ window's buttons; each step is then checked on disk, where the helper keeps the 
   4. Not right on a noticed fact: a correction makes the About value active with the typed text; a
      forget removes the noticed person.
 
-Nothing here posts input or opens a window. Writes go only to the temporary directory, which is
+The debug state leaves out a key whose value is nil (an editor that closed, no conflict), so those
+are read with .get. Nothing here posts input or opens a window. Writes go only to the temporary directory, which is
 removed at the end unless --keep.
 """
 import argparse
@@ -179,44 +180,44 @@ def main() -> int:
         # 2. edit through save with a base revision
         base = docs["about-me"]
         mem("open about-me")
-        opened = wait(lambda: (m := mem())["files"]["editing"] == "about-me" and m, 5)
-        walk.check("Edit reads the file into the editor at its revision", bool(opened) and opened["files"]["base"] == base, files=opened and opened["files"])
+        opened = wait(lambda: (m := mem())["files"].get("editing") == "about-me" and m, 5)
+        walk.check("Edit reads the file into the editor at its revision", bool(opened) and opened["files"].get("base") == base, files=opened and opened["files"])
         current = disk("about-me.md")
         edited = current.replace("Dana Whitfield", "Dana R. Whitfield")
         mem("text " + edited.replace("\n", "\\n"))
         r = mem("savefile")
         walk.check("Save is sent", r.get("sent") is True, files=r.get("files"))
         walk.check("Save names the revision it read", f"save:about-me:{base}" in r["files"]["sent"], sent=r["files"]["sent"])
-        saved = wait(lambda: (m := mem())["files"]["editing"] is None and m, 5)
+        saved = wait(lambda: (m := mem())["files"].get("editing") is None and m, 5)
         walk.check("the save closed the editor and the file holds the new text", bool(saved) and "Dana R. Whitfield" in disk("about-me.md"), disk=disk("about-me.md")[:300])
         walk.check("the file's revision moved", bool(saved) and saved["files"]["documents"]["about-me"] not in (base, "none"))
 
         # 3. a forced conflict
         mem("open about-me")
-        opened = wait(lambda: (m := mem())["files"]["editing"] == "about-me" and m, 5)
-        read_base = opened["files"]["base"] if opened else None
+        opened = wait(lambda: (m := mem())["files"].get("editing") == "about-me" and m, 5)
+        read_base = opened["files"].get("base") if opened else None
         theirs = disk("about-me.md").replace("Dana R. Whitfield", "Dana Whitfield-Reyes")
         with open(os.path.join(memory, "about-me.md"), "w") as f:
             f.write(theirs)
         mine = theirs.replace("Dana Whitfield-Reyes", "Dana Mine")
         mem("text " + mine.replace("\n", "\\n"))
         mem("savefile")
-        conflicted = wait(lambda: (m := mem())["files"]["conflict"] and m, 5)
+        conflicted = wait(lambda: (m := mem())["files"].get("conflict") and m, 5)
         walk.check("a save over a file changed on disk is refused as a conflict", bool(conflicted), files=conflicted and conflicted["files"])
         walk.check("nothing was written over their change", "Dana Whitfield-Reyes" in disk("about-me.md"))
-        walk.check("the conflict names a newer revision than the one read", bool(conflicted) and conflicted["files"]["conflict"] not in (read_base, None))
+        walk.check("the conflict names a newer revision than the one read", bool(conflicted) and conflicted["files"].get("conflict") not in (read_base, None))
         mem("reload")
-        reloaded = wait(lambda: (m := mem())["files"]["conflict"] is None and m["files"]["saving"] is False and m, 5)
+        reloaded = wait(lambda: (m := mem())["files"].get("conflict") is None and m["files"].get("saving") is False and m, 5)
         walk.check("Reload takes the file as it is now", bool(reloaded) and reloaded["files"]["textLength"] == len(theirs.encode("utf-16-le")) // 2, files=reloaded and reloaded["files"])
         # A second conflict, answered with Keep my text.
         with open(os.path.join(memory, "about-me.md"), "w") as f:
             f.write(theirs.replace("Dana Whitfield-Reyes", "Dana Whitfield-Ortiz"))
         mem("text " + mine.replace("\n", "\\n"))
         mem("savefile")
-        wait(lambda: mem()["files"]["conflict"], 5)
+        wait(lambda: mem()["files"].get("conflict"), 5)
         r = mem("keepmine")
         walk.check("Keep my text is sent over the revision now", r.get("sent") is True and r["files"]["sent"][-1].startswith("save:about-me:sha256:"), sent=r["files"]["sent"][-3:])
-        kept = wait(lambda: (m := mem())["files"]["editing"] is None and m, 5)
+        kept = wait(lambda: (m := mem())["files"].get("editing") is None and m, 5)
         walk.check("Keep my text saves the typing over the newer file", bool(kept) and "Dana Mine" in disk("about-me.md"), disk=disk("about-me.md")[:300])
 
         # 4. Not right on a noticed fact
