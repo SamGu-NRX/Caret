@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Caret for Chrome",
+  "version": "0.1.0",
+  "description": "Lets Caret on your Mac read the fields of the form you are in and fill them when you accept. Nothing leaves your Mac from here.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuUmdUBq2FFIS/hh4MVp42CikvbMYagMsgXW+BcfoC3G9IAyGLobAwtavIrRLoDxqfsdXNLQpeIP1WGByy6hMlfz9O3SXI9btX9UoI2vIsI8jU72j1Sa83dON/MtkBj2hT7R8KvlUXM1/F5rQZMHKwkq1vJxhju619SjuOwk/lWlwUjONqw4JGErWuTCRNNskZVSTEuu4FiAjq8nwp4hn5FVKS/LFIJ0RUME5xQQDkxPxYOJneRHBxQ6RgpBEnt2WbNKZzTfIcJcE9MuPz7KU49/vkaWXtgHljankd1rEXr9AmGstQrn9QNUY+l3qXJYmnmqsNOX2fh9np0GXsu7gywIDAQAB",
+  "minimum_chrome_version": "116",
+  "background": { "service_worker": "worker.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "all_frames": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "permissions": ["scripting", "tabs", "webNavigation", "nativeMessaging", "storage"],
+  "optional_permissions": ["debugger"]
+}
