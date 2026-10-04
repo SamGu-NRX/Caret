@@ -1,3 +1,4 @@
+import CaretScreenCore
 import Foundation
 
 /// The host's side of memory and permissions: the helper's entries as last listed, the requests in
@@ -16,7 +17,20 @@ public final class MemoryBook {
     /// activity list's control timeout.
     public static let answerTimeout: TimeInterval = 3
 
-    public enum Op: String, Codable, Sendable { case list, edit, rule, pause, resume, forget, add, backOnTab }
+    public enum Op: String, Codable, Sendable { case list, edit, rule, pause, resume, forget, add, backOnTab, onItsOwn }
+
+    /// The helper's offer to let a skill run on its own, asked for from the skill's row ("Let it run
+    /// on its own…", B22): shown on that row until the user answers it or the helper takes it back.
+    public struct OnItsOwnQuestion: Equatable, Sendable {
+        /// The helper's `skillOffer` id, named by the answer.
+        public var offerId: String
+        public var says: String
+        public var detail: String
+        public var accept: String
+        public var decline: String
+        /// The user said yes and the helper has not confirmed it yet.
+        public var answering = false
+    }
 
     /// A value the user typed for the helper to keep (onboarding's name and email). Held here, in
     /// memory only, until the helper confirms it; sent again on each connect until then.
@@ -76,6 +90,11 @@ public final class MemoryBook {
         /// The last list reply said the helper keeps typed values (`HelperMemory.Reply.acceptsAdd`).
         /// Kept across a dropped connection: the helper that comes back is the same build.
         public var acceptsAdd = false
+        /// The last list reply said the helper offers running on its own when a skill's row asks
+        /// (`HelperMemory.Reply.offersOnItsOwn`). Kept across a dropped connection, as `acceptsAdd`.
+        public var offersOnItsOwn = false
+        /// Open offers to let a skill run on its own, by the skill's entry id.
+        public var questions: [String: OnItsOwnQuestion] = [:]
 
         public init() {}
     }
@@ -100,6 +119,11 @@ public final class MemoryBook {
     let clock: SurfaceClock
     private let prefix: String
     private var pending: [String: Pending] = [:]
+    /// The skill each "Let it run on its own…" request was for, by request id: the helper's offer
+    /// names the request as its `taskId`, and may arrive before or after the reply.
+    private var asked: [String: String] = [:]
+    /// Writes the user's answer to an offer; false when it is not connected.
+    public var sendAnswer: (SkillAnswer) -> Bool = { _ in false }
     private var requests = 0
     private var typedCount = 0
     /// The last requests sent, "op:id", for the debug state.
@@ -125,6 +149,9 @@ public final class MemoryBook {
             state.busy.removeAll()
             state.loaded = false
             state.editor?.saving = false
+            // The helper's open offers end with the connection; an answer could reach no one.
+            asked.removeAll()
+            state.questions.removeAll()
             for i in state.typed.indices where state.typed[i].phase.isSending { state.typed[i].phase = .waiting }
         }
         changed()
@@ -153,10 +180,12 @@ public final class MemoryBook {
             state.entries = reply.entries
             state.unreadable = reply.unreadable.count
             state.acceptsAdd = reply.acceptsAdd
+            state.offersOnItsOwn = reply.offersOnItsOwn
             state.loaded = true
             state.listProblem = nil
             let ids = Set(reply.entries.map(\.id))
             state.problems = state.problems.filter { ids.contains($0.key) }
+            state.questions = state.questions.filter { ids.contains($0.key) }
             if let e = state.editor, !ids.contains(e.entryId) { state.editor = nil }
             if let f = state.confirmingForget, !ids.contains(f) { state.confirmingForget = nil }
         case .edit, .rule, .pause, .resume, .backOnTab:
@@ -181,6 +210,9 @@ public final class MemoryBook {
             for entry in reply.entries { onEntryChanged(entry.id) }
             state.typed.removeAll { $0.id == p.typedId }
             requestList()
+        case .onItsOwn:
+            // The skill comes back unchanged; the offer is the helper's `skillOffer` (`claim`).
+            break
         }
         changed()
     }
@@ -197,6 +229,12 @@ public final class MemoryBook {
             // the debug state.
             state.problems[id] = MemoryCheck.backOnTabRefused
             state.refusals[id] = error
+        case .onItsOwn:
+            // skills.ts requestPromote's reasons are sentences for people ("Order to Tracker is
+            // paused; resume it first"), so the row shows them as they are.
+            asked = asked.filter { $0.value != p.entryId }
+            guard let id = p.entryId else { return }
+            state.problems[id] = MemoryCheck.sentence(error)
         case .edit, .rule, .pause, .resume, .forget:
             guard let id = p.entryId else { return }
             state.problems[id] = error
@@ -217,9 +255,12 @@ public final class MemoryBook {
             // Today's helper refuses `add` without naming the request, so silence is the usual
             // answer: the value waits for the next connection.
             if let i = state.typed.firstIndex(where: { $0.id == p.typedId }) { state.typed[i].phase = .waiting }
-        case .edit, .rule, .pause, .resume, .forget, .backOnTab:
+        case .edit, .rule, .pause, .resume, .forget, .backOnTab, .onItsOwn:
             guard let id = p.entryId else { break }
             state.busy[id] = nil
+            // An offer that came without its reply still stands; one that never came is not waited for.
+            if p.op == .onItsOwn, state.questions[id] != nil { break }
+            if p.op == .onItsOwn { asked = asked.filter { $0.value != id } }
             state.problems[id] = message
             if state.editor?.entryId == id {
                 state.editor?.problem = message
@@ -402,6 +443,81 @@ public final class MemoryBook {
         return post(HelperMemory.Request(requestId: nextId(), op: .edit, id: id, fields: ["onItsOwn": .bool(false)]), op: .backOnTab, entryId: id)
     }
 
+    /// "Let it run on its own…" on a skill on Tab: asks the helper for its offer to let the skill run
+    /// without Tab (memoryRequest `offerOnItsOwn`, B22). The offer shows on the row (`claim`), and only
+    /// the user's yes to it changes the skill. False when nothing was sent: not connected, busy, the
+    /// helper does not offer this, or the skill is paused, on its own, hands a press to the user or
+    /// already has the question open.
+    @discardableResult
+    public func letRunOnItsOwn(_ id: String) -> Bool {
+        guard let e = ready(id), MemoryPage.mayAskOnItsOwn(e, state) else { return false }
+        state.problems[id] = nil
+        defer { changed() }
+        let request = HelperMemory.Request(requestId: nextId(), op: .offerOnItsOwn, id: id)
+        guard post(request, op: .onItsOwn, entryId: id) else { return false }
+        asked[request.requestId] = id
+        return true
+    }
+
+    /// A `skillOffer`. True when it answers this book's "Let it run on its own…" request, which the
+    /// row then shows; false leaves it to the line under a run (`SurfaceMachine.skillOffer`).
+    public func claim(_ offer: SkillOffer) -> Bool {
+        guard offer.kind == .promote, let id = asked.removeValue(forKey: offer.taskId), offer.skillId == id else { return false }
+        let accept = offer.actions.first { $0.id == "accept" }?.label ?? "Yes"
+        let decline = offer.actions.first { $0.id == "decline" }?.label ?? "No"
+        state.questions[id] = OnItsOwnQuestion(offerId: offer.id, says: offer.says, detail: offer.detail, accept: accept, decline: decline)
+        state.problems[id] = nil
+        changed()
+        return true
+    }
+
+    /// The user's answer on the row. A no closes the question at once; a yes waits for the helper
+    /// to take the offer (`withdrawn`), and the list read after it shows the skill on its own.
+    @discardableResult
+    public func answerOnItsOwn(_ id: String, accept: Bool) -> Bool {
+        guard var q = state.questions[id], !q.answering else { return false }
+        defer { changed() }
+        guard sendAnswer(SkillAnswer(id: q.offerId, answer: accept ? .accept : .decline, at: Int64(clock.now.timeIntervalSince1970 * 1000))) else {
+            state.problems[id] = MemoryCheck.offline
+            return false
+        }
+        guard accept else {
+            state.questions[id] = nil
+            return true
+        }
+        q.answering = true
+        state.questions[id] = q
+        state.busy[id] = .onItsOwn
+        let offerId = q.offerId
+        // The helper's `taken` normally comes at once; if it never does, the list says what it holds.
+        _ = clock.schedule(after: Self.answerTimeout, repeats: false) { [weak self] in
+            guard let self, self.state.questions[id]?.offerId == offerId else { return }
+            self.state.questions[id] = nil
+            self.state.busy[id] = nil
+            self.requestList()
+            self.changed()
+        }
+        return true
+    }
+
+    /// An `offerWithdrawn`. True when it ends a row's question: taken after a yes reads the list
+    /// again; any other ending before an answer closes the question and says so.
+    @discardableResult
+    public func withdrawn(_ w: OfferWithdrawn) -> Bool {
+        guard let open = state.questions.first(where: { $0.value.offerId == w.id }) else { return false }
+        let (id, q) = (open.key, open.value)
+        state.questions[id] = nil
+        state.busy[id] = nil
+        if q.answering || w.reason == .taken {
+            state.changed = id
+            requestList()
+        } else if w.reason != .dismissed {
+            state.problems[id] = MemoryCheck.onItsOwnEnded
+        }
+        changed()
+        return true
+    }
+
     // MARK: - Permissions
 
     /// Changes an action type's rule. A rule the table does not allow is refused here and never
@@ -507,6 +623,10 @@ public final class MemoryBook {
         public var onTheirOwn: [String]
         /// What the permissions page shows under each write rule that lists a skill.
         public var underRules: [RuleSkills]
+        /// The helper offers "Let it run on its own…" (B22).
+        public var offersOnItsOwn: Bool
+        /// Open offers to let a skill run on its own, by entry id: `asked`, or `answering` after a yes.
+        public var questions: [String: String]
 
         public struct RuleSkills: Codable, Equatable, Sendable {
             public var action: String
@@ -550,7 +670,9 @@ public final class MemoryBook {
                 MemoryPage.exceptions(state, under: action).map { x in
                     DebugInfo.RuleSkills(action: action.rawValue, rule: x.rule.rawValue, runs: x.runs, title: x.title, skills: x.skills.map(\.name))
                 }
-            }
+            },
+            offersOnItsOwn: state.offersOnItsOwn,
+            questions: state.questions.mapValues { $0.answering ? "answering" : "asked" }
         )
     }
 
@@ -627,6 +749,18 @@ public enum MemoryCheck {
     /// The helper would not put a skill back on Tab. B19's helper refuses every skill edit but its
     /// name, so this is today's answer: the user is told what still works, never left guessing.
     public static let backOnTabRefused = "This version of Caret can't put a skill back on Tab yet. Pause it to stop it running, or Forget it."
+
+    /// The helper took back its offer to let a skill run on its own before the user answered:
+    /// it expired, or Caret was paused.
+    public static let onItsOwnEnded = "The offer to let it run on its own ended before you answered. Ask again from here."
+
+    /// The helper's refusal as a sentence: capitalized, with a final period.
+    static func sentence(_ text: String) -> String {
+        let t = text.trimmed
+        guard let first = t.first else { return t }
+        let capped = first.uppercased() + t.dropFirst()
+        return capped.hasSuffix(".") ? capped : capped + "."
+    }
 
     public static func ruleRefused(_ action: HelperMemory.ActionType, _ rule: HelperMemory.Rule) -> String {
         "\(MemoryPage.actionTitle(action)) can't be set to \(MemoryPage.ruleTitle(rule))."

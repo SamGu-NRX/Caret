@@ -187,6 +187,7 @@ public final class HostRuntime {
             switch message {
             case .alternatives, .action, .popup: if let offer = HelperOffer(message) { surface.receive(offer) }
             case .offerWithdrawn(let withdrawn):
+                memory.book.withdrawn(withdrawn)
                 surface.withdrawn(withdrawn)
                 onboarding.receive(withdrawn)
                 perch.ask.withdrawn(withdrawn)
@@ -195,7 +196,8 @@ public final class HostRuntime {
                 onboarding.receive(progress)
                 perch.ask.receive(progress)
             case .planProposal(let proposal): perch.ask.receive(proposal)
-            case .skillOffer(let offer): surface.skillOffer(offer)
+            // An offer the memory row asked for ("Let it run on its own…") is shown there, not at the caret.
+            case .skillOffer(let offer): if !memory.book.claim(offer) { surface.skillOffer(offer) }
             case .firstLookReply(let reply): onboarding.receive(reply)
             default: break
             }
@@ -224,6 +226,7 @@ public final class HostRuntime {
         // Weak across the client: its callbacks hold the memory controller.
         let memoryClient = helper
         memory.send = { [weak memoryClient] in memoryClient?.send($0) ?? false }
+        memory.book.sendAnswer = { [weak memoryClient] in memoryClient?.send($0) ?? false }
         onboarding.onRemember = { [weak memory] in memory?.remember($0) }
         onboarding.onForgetTyped = { [weak memory] in memory?.forgetTyped(labels: $0) }
         onboarding.knowAvailable = { [weak memory] in memory?.book.state.acceptsAdd ?? false }

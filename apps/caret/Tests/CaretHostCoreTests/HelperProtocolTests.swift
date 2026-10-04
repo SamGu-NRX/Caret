@@ -89,6 +89,37 @@ final class HelperProtocolGoldenTests: XCTestCase {
         XCTAssertEqual(try HelperInbound.decode(lines[33]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_131_000, id: "fill-2", reason: .settings)), "line 34")
     }
 
+    /// B21's unseenWindow refusal has its own sentence, and B22's requested promote offer is the
+    /// memory row's, not a line under a run.
+    func testTheB21AndB22LinesReachTheirPlaces() throws {
+        let lines = try goldenLines()
+        guard case .planProposal(let refused) = try HelperInbound.decode(lines[56]) else { return XCTFail("line 57") }
+        XCTAssertEqual(refused.error?.code, .unseenWindow)
+        XCTAssertEqual(AskCopy.planError(refused.error), "I haven't read that window, so I can't plan in it. Click into it and ask again.")
+        guard case .skillOffer(let offer) = try HelperInbound.decode(lines[58]) else { return XCTFail("line 59") }
+        let book = MemoryBook(clock: ManualClock(), prefix: "host-memory")
+        var sent: [HelperMemory.Request] = []
+        book.send = { sent.append($0); return true }
+        book.linkChanged(true)
+        var list = try HelperMemoryTests.reply(1)
+        list.requestId = sent.last!.requestId
+        let skill = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-6", "memoryReply")).entries[0]
+        list.entries.append(skill)
+        book.receive(list)
+        XCTAssertTrue(book.state.offersOnItsOwn)
+        XCTAssertTrue(book.letRunOnItsOwn(skill.id))
+        var asked = try XCTUnwrap(sent.last)
+        XCTAssertEqual(asked.op, .offerOnItsOwn)
+        asked.requestId = offer.taskId
+        XCTAssertEqual(try object(asked.line()), try object(HelperMemoryTests.line("host-memory-7", "memoryRequest")))
+        var claimed = offer
+        claimed.taskId = try XCTUnwrap(sent.last).requestId
+        XCTAssertTrue(book.claim(claimed))
+        XCTAssertEqual(book.state.questions[skill.id]?.offerId, "skill-offer-3")
+    }
+
+    private func object(_ data: Data) throws -> NSDictionary { try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary) }
+
     /// B10's settings message, from the host's own settings: golden lines 32 and 33.
     func testTheHostsSettingsEncodeToTheGoldenLines() throws {
         let lines = try goldenLines()

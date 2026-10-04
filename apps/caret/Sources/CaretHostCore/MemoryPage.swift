@@ -9,7 +9,7 @@ import Foundation
 /// plain words: the title says what Caret remembers, the secondary line says where it came from
 /// and how sure Caret is. The helper's own sentence (`says`) is left to the debug state.
 public enum MemoryPage {
-    public enum Control: String, Codable, Sendable { case edit, pause, resume, forget, backOnTab }
+    public enum Control: String, Codable, Sendable { case edit, pause, resume, forget, backOnTab, onItsOwn }
 
     public struct Row: Equatable, Sendable, Identifiable {
         public enum Status: Equatable, Sendable {
@@ -33,6 +33,8 @@ public enum MemoryPage {
         public var problem: String?
         /// A value typed by hand, held by the host until the helper keeps it.
         public var typed: Bool
+        /// The helper's offer to let this skill run on its own, asked for from the row.
+        public var question: MemoryBook.OnItsOwnQuestion? = nil
     }
 
     public struct Section: Equatable, Sendable, Identifiable {
@@ -114,14 +116,24 @@ public enum MemoryPage {
         var controls: [Control] = []
         if !MemoryBook.editable(e).isEmpty { controls.append(.edit) }
         if e.skill?.onItsOwn == true, e.status != .paused { controls.append(.backOnTab) }
+        if mayAskOnItsOwn(e, s) { controls.append(.onItsOwn) }
         // Something this host cannot name: it shows the helper's sentence and can only be forgotten.
         if e.kind != .noticed { controls.append(e.status == .paused ? .resume : .pause) }
         controls.append(.forget)
         let words = wording(e, entries: s.entries, now: now, calendar: calendar, locale: locale)
         return Row(
             id: e.id, kind: e.kind, title: words.title, secondary: words.secondary,
-            status: status, controls: controls, busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id], typed: false
+            status: status, controls: controls, busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id], typed: false,
+            question: s.questions[e.id]
         )
+    }
+
+    /// Whether a skill's row offers "Let it run on its own…": a skill on Tab, not paused, that hands
+    /// no press to the user (the helper never lets one run on its own), with no question open, from
+    /// a helper that offers it. The helper checks again and may still refuse, saying why.
+    public static func mayAskOnItsOwn(_ e: HelperMemory.Entry, _ s: MemoryBook.State) -> Bool {
+        guard s.offersOnItsOwn, let f = e.skill, !f.onItsOwn, f.handsOff == nil, e.status != .paused else { return false }
+        return s.questions[e.id] == nil
     }
 
     static func typedRow(_ t: MemoryBook.Typed) -> Row {
@@ -310,6 +322,7 @@ public enum MemoryPage {
         case .resume: return "Resume"
         case .forget: return "Forget"
         case .backOnTab: return "Put back on Tab"
+        case .onItsOwn: return "Let it run on its own\u{2026}"
         }
     }
 

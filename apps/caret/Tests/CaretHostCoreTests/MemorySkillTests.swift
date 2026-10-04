@@ -130,6 +130,142 @@ final class MemorySkillTests: XCTestCase {
         XCTAssertNil(b.state.busy["skill-5e6f7a8b"])
     }
 
+    // MARK: - Let it run on its own… (B22)
+
+    /// A book holding `entries` from a helper whose list names `offerOnItsOwn` among its ops, and
+    /// what it sent: requests and answers.
+    private func offeringBook(_ entries: [String]) throws -> (MemoryBook, () -> [HelperMemory.Request], () -> [SkillAnswer]) {
+        let book = MemoryBook(clock: ManualClock())
+        var sent: [HelperMemory.Request] = []
+        var answers: [SkillAnswer] = []
+        book.send = { sent.append($0); return true }
+        book.sendAnswer = { answers.append($0); return true }
+        book.linkChanged(true)
+        var r = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[\#(entries.joined(separator: ","))],"ops":["list","edit","pause","resume","forget","add","offerOnItsOwn"]}"#.utf8))
+        r.requestId = sent.last!.requestId
+        book.receive(r)
+        return (book, { sent }, { answers })
+    }
+
+    /// The helper's promote offer for a request (skills.ts offerPromote's words).
+    private func promoteOffer(id: String = "skill-offer-1", taskId: String, skillId: String) throws -> SkillOffer {
+        try JSONDecoder().decode(SkillOffer.self, from: Data(#"{"type":"skillOffer","v":1,"id":"\#(id)","at":1790000500000,"kind":"promote","taskId":"\#(taskId)","routineId":"routine-1","skillId":"\#(skillId)","name":"Order to Tracker","says":"Do this one on your own from now on?","detail":"You'll see it happen and can undo it.","actions":[{"id":"accept","label":"Do it on its own"},{"id":"decline","label":"Keep asking"}]}"#.utf8))
+    }
+
+    private func row(_ b: MemoryBook, _ id: String) throws -> MemoryPage.Row {
+        try XCTUnwrap(MemoryPage.sections(b.state, now: Date()).flatMap(\.rows).first { $0.id == id })
+    }
+
+    func testOnlyASkillOnTabThatCouldRunOnItsOwnOffersToLetItRunOnItsOwn() throws {
+        let (b, _, _) = try offeringBook([
+            entry("skill", id: "s-tab", status: "learning", fields: skillFields(onItsOwn: false, cleanRuns: 2)),
+            entry("skill", id: "s-own", status: "active", fields: skillFields(onItsOwn: true)),
+            entry("skill", id: "s-send", status: "learning", fields: skillFields(onItsOwn: false, handsOff: #"{"label":"Send","why":"outbound"}"#)),
+            entry("skill", id: "s-allow", status: "learning", fields: skillFields(onItsOwn: false, handsOff: #"{"label":"Allow","why":"system"}"#)),
+            entry("skill", id: "s-paused", status: "paused", fields: skillFields(onItsOwn: false)),
+        ])
+        XCTAssertEqual(try row(b, "s-tab").controls, [.edit, .onItsOwn, .pause, .forget], "asked for at any clean count: the user is asking now")
+        XCTAssertEqual(try row(b, "s-own").controls, [.edit, .backOnTab, .pause, .forget])
+        XCTAssertEqual(try row(b, "s-send").controls, [.edit, .pause, .forget], "a press left to the user never runs on its own")
+        XCTAssertEqual(try row(b, "s-paused").controls, [.edit, .resume, .forget])
+        XCTAssertEqual(try row(b, "s-allow").secondary, "On Tab, you press Allow in the system prompt yourself · when a Tracker window opens with Order and Carrier empty · ran 11 times")
+        XCTAssertEqual(MemoryPage.controlTitle(.onItsOwn, kind: .skill), "Let it run on its own\u{2026}")
+        XCTAssertFalse(b.letRunOnItsOwn("s-own"))
+        XCTAssertFalse(b.letRunOnItsOwn("s-send"))
+        XCTAssertFalse(b.letRunOnItsOwn("s-paused"))
+
+        // A helper that does not name the op: no control, and nothing is sent.
+        let (older, sent) = try book([entry("skill", id: "s-tab", status: "learning", fields: skillFields(onItsOwn: false))])
+        let before = sent().count
+        XCTAssertFalse(older.letRunOnItsOwn("s-tab"))
+        XCTAssertEqual(sent().count, before)
+        XCTAssertEqual(MemoryPage.sections(older.state, now: Date()).flatMap(\.rows).first?.controls, [.edit, .pause, .forget])
+    }
+
+    /// The host's request is the golden host-memory-7 line; the offer, which the helper publishes
+    /// before its reply, shows on the row; a yes is the offer's answer, and the helper's `taken`
+    /// reads the list again.
+    func testLetItRunOnItsOwnSendsTheContractRequestShowsTheOfferAndAnswersIt() throws {
+        let id = "skill-5e6f7a8b"
+        let (b, sent, answers) = try offeringBook([entry("skill", id: id, status: "learning", fields: skillFields(onItsOwn: false, cleanRuns: 0))])
+        XCTAssertTrue(b.letRunOnItsOwn(id))
+        var request = try XCTUnwrap(sent().last)
+        let requestId = request.requestId
+        request.requestId = "host-memory-7"
+        XCTAssertEqual(
+            try JSONSerialization.jsonObject(with: request.line()) as? NSDictionary,
+            try JSONSerialization.jsonObject(with: HelperMemoryTests.line("host-memory-7", "memoryRequest")) as? NSDictionary
+        )
+        XCTAssertEqual(b.state.busy[id], .onItsOwn)
+        XCTAssertFalse(b.letRunOnItsOwn(id), "one request at a time")
+
+        XCTAssertFalse(b.claim(try promoteOffer(taskId: "task-9", skillId: id)), "an offer after a run is the caret's")
+        XCTAssertTrue(b.claim(try promoteOffer(taskId: requestId, skillId: id)))
+        var reply = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-7", "memoryReply"))
+        reply.requestId = requestId
+        b.receive(reply)
+        let shown = try row(b, id)
+        XCTAssertEqual(shown.question, MemoryBook.OnItsOwnQuestion(offerId: "skill-offer-1", says: "Do this one on your own from now on?", detail: "You'll see it happen and can undo it.", accept: "Do it on its own", decline: "Keep asking"))
+        XCTAssertFalse(shown.busy)
+        XCTAssertFalse(shown.controls.contains(.onItsOwn), "no second ask while the offer shows")
+        XCTAssertEqual(b.debugInfo().questions, [id: "asked"])
+
+        XCTAssertTrue(b.answerOnItsOwn(id, accept: true))
+        XCTAssertEqual(answers().map(\.id), ["skill-offer-1"])
+        XCTAssertEqual(answers().map(\.answer), [.accept])
+        XCTAssertTrue(try row(b, id).busy, "waits for the helper to take it")
+        XCTAssertFalse(b.answerOnItsOwn(id, accept: true), "answered once")
+        let lists = sent().filter { $0.op == .list }.count
+        XCTAssertTrue(b.withdrawn(OfferWithdrawn(at: 1, id: "skill-offer-1", reason: .taken)))
+        XCTAssertNil(b.state.questions[id])
+        XCTAssertEqual(sent().filter { $0.op == .list }.count, lists + 1, "the list says it now runs on its own")
+        XCTAssertEqual(b.state.changed, id)
+        XCTAssertNil(b.state.problems[id])
+    }
+
+    func testNoClosesTheOfferAndAnOfferThatEndsUnansweredSaysSo() throws {
+        let (b, sent, answers) = try offeringBook([
+            entry("skill", id: "s-1", status: "learning", fields: skillFields(onItsOwn: false)),
+            entry("skill", id: "s-2", status: "learning", fields: skillFields(name: "Reply to Mail", onItsOwn: false)),
+        ])
+        for id in ["s-1", "s-2"] {
+            XCTAssertTrue(b.letRunOnItsOwn(id))
+            XCTAssertTrue(b.claim(try promoteOffer(id: "o-\(id)", taskId: sent().last!.requestId, skillId: id)))
+        }
+        XCTAssertTrue(b.answerOnItsOwn("s-1", accept: false))
+        XCTAssertNil(b.state.questions["s-1"])
+        XCTAssertEqual(answers().map(\.answer), [.decline])
+        XCTAssertFalse(b.withdrawn(OfferWithdrawn(at: 1, id: "o-s-1", reason: .dismissed)), "already closed")
+        XCTAssertNil(b.state.problems["s-1"])
+
+        XCTAssertTrue(b.withdrawn(OfferWithdrawn(at: 1, id: "o-s-2", reason: .expired)))
+        XCTAssertNil(b.state.questions["s-2"])
+        XCTAssertEqual(b.state.problems["s-2"], MemoryCheck.onItsOwnEnded)
+        XCTAssertTrue(try row(b, "s-2").controls.contains(.onItsOwn), "it can be asked for again")
+    }
+
+    func testTheHelpersRefusalShowsOnTheRowAndALateOfferForItIsNotTaken() throws {
+        let (b, sent, _) = try offeringBook([entry("skill", id: "s-1", status: "learning", fields: skillFields(onItsOwn: false))])
+        XCTAssertTrue(b.letRunOnItsOwn("s-1"))
+        let requestId = sent().last!.requestId
+        b.receive(HelperMemory.Reply(requestId: requestId, error: "Caret is paused or your settings turn routines off", entries: []))
+        XCTAssertEqual(b.state.problems["s-1"], "Caret is paused or your settings turn routines off.")
+        XCTAssertNil(b.state.busy["s-1"])
+        XCTAssertFalse(b.claim(try promoteOffer(taskId: requestId, skillId: "s-1")))
+    }
+
+    func testTheOfferEndsWithTheConnectionAndAnUnsentAnswerSaysSo() throws {
+        let (b, sent, _) = try offeringBook([entry("skill", id: "s-1", status: "learning", fields: skillFields(onItsOwn: false))])
+        XCTAssertTrue(b.letRunOnItsOwn("s-1"))
+        XCTAssertTrue(b.claim(try promoteOffer(taskId: sent().last!.requestId, skillId: "s-1")))
+        b.sendAnswer = { _ in false }
+        XCTAssertFalse(b.answerOnItsOwn("s-1", accept: true))
+        XCTAssertEqual(b.state.problems["s-1"], MemoryCheck.offline)
+        XCTAssertNotNil(b.state.questions["s-1"], "still answerable once the link is back")
+        b.linkChanged(false)
+        XCTAssertEqual(b.state.questions, [:])
+    }
+
     func testOnlyASkillOnItsOwnCanBePutBackOnTab() throws {
         let (b, sent) = try book([
             entry("skill", id: "s-tab", status: "learning", fields: skillFields(onItsOwn: false)),

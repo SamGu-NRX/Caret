@@ -15,6 +15,8 @@ enum MemoryAction: Equatable {
     case retry
     /// A confirmed change's wash has played.
     case washed
+    /// The user's answer to the offer on a skill's row ("Let it run on its own…").
+    case answer(String, accept: Bool)
 }
 
 /// "What Caret knows": the four kinds of memory, and what Caret may do per kind of action. Caret's
@@ -286,7 +288,11 @@ struct MemoryRowView: View {
     /// place in the key loop, so keyboard focus reaching one shows them; VoiceOver gets the same
     /// controls as the row's own actions, whatever is drawn. A trailing menu was the other choice;
     /// it puts every action two clicks away, and Pause is the one people use most.
-    private var revealed: Bool { forceReveal || hovering || focused != nil || confirming || row.problem != nil }
+    private var revealed: Bool { forceReveal || hovering || focused != nil || waiting || row.problem != nil }
+
+    /// The row waits for the user's answer: a Forget to confirm, or the helper's offer to let a
+    /// skill run on its own.
+    private var waiting: Bool { confirming || row.question != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -300,6 +306,16 @@ struct MemoryRowView: View {
                         Text(MemoryPage.forgetQuestion(row.kind))
                             .font(.system(size: 12))
                             .foregroundStyle(Color(token: Tokens.ink))
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if let question = row.question {
+                        // The helper's own words for its offer (skills.ts offerPromote).
+                        Text(question.says)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(token: Tokens.ink))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(question.detail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color(token: Tokens.secondary))
                             .fixedSize(horizontal: false, vertical: true)
                     } else if !row.secondary.isEmpty {
                         Text(row.secondary)
@@ -329,9 +345,9 @@ struct MemoryRowView: View {
             ZStack(alignment: .leading) {
                 // The row the controls belong to: a faint fill (the hairline's own tone), so the
                 // buttons never seem to float free of their row.
-                Rectangle().fill(Color(token: Tokens.border)).opacity(revealed && !confirming ? 0.6 : 0)
+                Rectangle().fill(Color(token: Tokens.border)).opacity(revealed && !waiting ? 0.6 : 0)
                     .animation(animated ? Self.pointerFade : nil, value: hovering)
-                if confirming {
+                if waiting {
                     // Waiting for the user: the Carrot wash and 2 pt edge (SURFACES.md 4).
                     Rectangle().fill(Color(token: Tokens.carrotWash))
                     Rectangle().fill(Color(token: Tokens.carrot)).frame(width: 2).padding(.vertical, 6)
@@ -342,7 +358,7 @@ struct MemoryRowView: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
-        .modifier(RowActions(row: row, enabled: editor == nil && !confirming, send: send))
+        .modifier(RowActions(row: row, enabled: editor == nil && !waiting, send: send))
         .onChange(of: washed) { _, now in
             guard now else { return }
             // A color change, not movement: it plays under Reduce Motion too.
@@ -360,6 +376,13 @@ struct MemoryRowView: View {
             if confirming {
                 Button("Keep") { send(.keep) }.buttonStyle(RowButtonStyle(primary: false))
                 Button("Forget") { send(.confirmForget) }.buttonStyle(RowButtonStyle(primary: true))
+            } else if let question = row.question {
+                Button(question.decline) { send(.answer(row.id, accept: false)) }
+                    .buttonStyle(RowButtonStyle(primary: false))
+                    .disabled(row.busy)
+                Button(question.accept) { send(.answer(row.id, accept: true)) }
+                    .buttonStyle(RowButtonStyle(primary: true))
+                    .disabled(row.busy)
             } else {
                 ForEach(row.controls, id: \.self) { control in
                     Button(row.typed && control == .forget ? "Remove" : MemoryPage.controlTitle(control, kind: row.kind)) {

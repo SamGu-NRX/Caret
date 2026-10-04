@@ -110,7 +110,9 @@ final class MemoryController {
             case .resume: book.resume(id)
             case .forget: book.askToForget(id)
             case .backOnTab: book.backOnTab(id)
+            case .onItsOwn: book.letRunOnItsOwn(id)
             }
+        case .answer(let id, let accept): book.answerOnItsOwn(id, accept: accept)
         case .confirmForget: book.confirmForget()
         case .keep: book.keep()
         case .draft(let key, let text): book.updateDraft(key, text)
@@ -144,6 +146,8 @@ final class MemoryController {
     ///   memory forget <id>                        ask, as Forget does; then memory confirm | memory keep
     ///   memory rule <action> <rule>               pick a rule on the permissions list
     ///   memory backontab <id>                     Put back on Tab, on a skill row or its permissions exception
+    ///   memory onitsown <id>                      Let it run on its own…, on a skill row on Tab
+    ///   memory answer <id> yes|no                 answer the offer that shows on that row
     ///   memory remember <label> <value...>        what onboarding's Continue hands over
     ///   memory remove <typedId>                   drop a typed value not kept yet
     ///   memory show | memory close                the window itself, as the menu opens it (foreground runs only)
@@ -178,6 +182,10 @@ final class MemoryController {
         case ("confirm", 1): return reply(["sent": book.confirmForget()])
         case ("keep", 1): book.keep()
         case ("backontab", 2): return reply(["sent": book.backOnTab(rest[1])])
+        case ("onitsown", 2): return reply(["sent": book.letRunOnItsOwn(rest[1])])
+        case ("answer", 3):
+            guard ["yes", "no"].contains(rest[2]) else { return #"{"error":"usage: memory answer <id> yes|no"}"# }
+            return reply(["sent": book.answerOnItsOwn(rest[1], accept: rest[2] == "yes")])
         case ("rule", 3):
             guard let action = HelperMemory.ActionType(rawValue: rest[1]), let rule = HelperMemory.Rule(rawValue: rest[2]) else {
                 return #"{"error":"usage: memory rule read|show|writeHere|writeElsewhere|outbound|destructive|sensitive act|actIfApproved|ask|handoff"}"#
