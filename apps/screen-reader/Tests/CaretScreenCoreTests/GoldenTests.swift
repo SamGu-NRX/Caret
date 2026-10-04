@@ -570,7 +570,7 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[48], #""srcApps":["#, #""wrote":[],"srcApps":["#)) }
     }
 
-    /// The host's contract line for its permissions page (v2/host memory.ndjson host-memory-7, the last line of
+    /// The host's contract line for its permissions page (v2/host memory.ndjson host-memory-9, the last line of
     /// helper/fixtures/golden/memory.ndjson): a skill's fields carry `wrote`.
     @Test func readsTheHostsSkillLineWithWrote() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

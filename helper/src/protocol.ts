@@ -1087,7 +1087,7 @@ export const SkillFields = z.object({
   handsOff: z.object({ label: z.string().min(1), why: PressRisk }).nullable(),
   /**
    * The write rules its clean runs in a row wrote under, each once: what running it on its own would do unasked. The
-   * host's permissions page lists the skill under each (A16; the host's memory.ndjson host-memory-7). Empty after any
+   * host's permissions page lists the skill under each (A16; the host's memory.ndjson host-memory-9). Empty after any
    * reset.
    */
   wrote: z.array(WriteRule).refine((w) => new Set(w).size === w.length, "wrote names a rule twice"),
