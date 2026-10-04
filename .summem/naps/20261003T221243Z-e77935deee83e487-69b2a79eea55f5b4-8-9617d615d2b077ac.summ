@@ -1,1 +1,0 @@
-B19-B21: undoing a skill run resets its clean count; posted clicks reach only a --foreground caret-fixture; pid-posted input resets HIDIdleTime (log last post); a closing window can arrive fieldless; drop ELECTRON_RUN_AS_NODE for Electron; non-key WKWebView: focusValue.
