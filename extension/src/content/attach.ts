@@ -31,16 +31,19 @@ function shownScope(el: Element, via: Attached["via"]): Element {
   return via === "drop" ? el : (composedParent(el) ?? el);
 }
 
-/** Occurrences of `name` in the scope's text nodes that a person could see (walker.visible on each one's element). */
+/**
+ * Occurrences of `name` in the scope's visible text: the text nodes whose element a person could see (walker.visible),
+ * joined in order, so a name the page splits across inline elements ("<b>resume</b>.pdf") still counts (W2 review 3).
+ */
 function occurrences(scope: Element, name: string): number {
-  let n = 0;
+  let text = "";
   const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
   for (let t = walker.nextNode(); t !== null; t = walker.nextNode()) {
-    const text = t.textContent ?? "";
     const parent = t.parentElement;
-    if (!text.includes(name) || parent === null || !visible(parent)) continue;
-    for (let i = text.indexOf(name); i >= 0; i = text.indexOf(name, i + name.length)) n++;
+    if (parent !== null && visible(parent)) text += t.textContent ?? "";
   }
+  let n = 0;
+  for (let i = text.indexOf(name); i >= 0; i = text.indexOf(name, i + name.length)) n++;
   return n;
 }
 

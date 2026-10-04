@@ -70,7 +70,15 @@
   dz.addEventListener("drop", (e) => {
     e.preventDefault();
     const f = e.dataTransfer?.files?.[0];
-    document.getElementById("dropped").textContent = f ? f.name : "";
+    // The name split across inline elements, as some upload widgets render it.
+    const out = document.getElementById("dropped");
+    out.textContent = "";
+    if (f) {
+      const dot = f.name.lastIndexOf(".");
+      const stem = document.createElement("b");
+      stem.textContent = dot > 0 ? f.name.slice(0, dot) : f.name;
+      out.append(stem, dot > 0 ? f.name.slice(dot) : "");
+    }
   });
 
   document.getElementById("apply").addEventListener("submit", (e) => {
