@@ -6,13 +6,17 @@ import XCTest
 
 /// What Caret knows as VoiceOver and Full Keyboard Access reach it: every control a person needs is
 /// a button with a name, and pressing it through accessibility does what a click does. The window is
-/// ordered in far off every display, never key and never shown, since SwiftUI builds no accessibility
-/// tree for a view that is in no window on screen (U1). Tab order between the buttons needs a key
-/// window, which needs Caret frontmost; that walk runs on screen or in the VM, not here.
+/// never key and Caret never comes forward. By default it is ordered in far off every display, where
+/// SwiftUI builds no accessibility tree on this Mac (U1), so the tests skip; with
+/// `CARET_AX_ONSCREEN=1` it is put on the main display, for a run under the gui lease while the Mac is
+/// idle (the shared-Mac rules). Tab order between the buttons needs a key window, which needs Caret
+/// frontmost; that walk is not here.
 @MainActor
 final class KnowsAccessibilityTests: XCTestCase {
     private func tree(_ view: some View) -> (NSWindow, [any NSAccessibilityProtocol]) {
-        let window = NSWindow(contentRect: NSRect(x: -30000, y: -30000, width: MemoryView.size.width, height: MemoryView.size.height),
+        let onScreen = ProcessInfo.processInfo.environment["CARET_AX_ONSCREEN"] == "1"
+        let origin = onScreen ? NSPoint(x: 80, y: 80) : NSPoint(x: -30000, y: -30000)
+        let window = NSWindow(contentRect: NSRect(origin: origin, size: MemoryView.size),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: view)
