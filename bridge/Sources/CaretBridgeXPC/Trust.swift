@@ -83,13 +83,21 @@ public enum ProcessTrust {
     /// exited meanwhile reparents the bridge (to launchd, pid 1), and a different number is refused. The bridge itself
     /// is alive throughout (it is waiting on open's reply), so its own pid cannot be reused. The XPC peer's audit token
     /// would bind this tighter, but NSXPCConnection exposes it only through private API (W3 review #14).
-    public static func launchingBrowser(of pid: pid_t, requirements: [String]) -> Result<BrowserRef, BridgeRefusal> {
-        guard let ppid = parent(of: pid), ppid > 1 else { return .failure(.parent("the bridge has no parent process (its browser exited)")) }
-        guard requirements.contains(where: { satisfies(pid: ppid, requirement: $0) }) else {
+    ///
+    /// `parentOf`, `check` and `describe` are the process lookups; tests replace them to play a parent that exits
+    /// between the signature check and the second read (W4).
+    public static func launchingBrowser(
+        of pid: pid_t, requirements: [String],
+        parentOf: (pid_t) -> pid_t? = { parent(of: $0) },
+        check: (pid_t, String) -> Bool = { satisfies(pid: $0, requirement: $1) },
+        describe: (pid_t) -> BrowserRef = { browserRef(pid: $0) }
+    ) -> Result<BrowserRef, BridgeRefusal> {
+        guard let ppid = parentOf(pid), ppid > 1 else { return .failure(.parent("the bridge has no parent process (its browser exited)")) }
+        guard requirements.contains(where: { check(ppid, $0) }) else {
             return .failure(.parent("the bridge's parent, process \(ppid), is not a browser Caret knows by its signature"))
         }
-        let browser = browserRef(pid: ppid)
-        guard parent(of: pid) == ppid else { return .failure(.parent("the bridge's parent changed while Caret checked it")) }
+        let browser = describe(ppid)
+        guard parentOf(pid) == ppid else { return .failure(.parent("the bridge's parent changed while Caret checked it")) }
         return .success(browser)
     }
 }

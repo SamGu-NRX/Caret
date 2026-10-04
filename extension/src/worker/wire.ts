@@ -17,8 +17,9 @@ export function parseVerb(x: unknown): PageVerb | null {
   switch (v.kind) {
     case "pageWrite":
     case "pageSelect":
-    case "pageChooseOption":
       return str(v.expect) && str(v.value) ? (v as unknown as ActVerb) : null;
+    case "pageChooseOption":
+      return str(v.expect) && str(v.value) && (v.question === undefined || str(v.question)) ? (v as unknown as ActVerb) : null;
     case "pagePress":
       return v as unknown as ActVerb;
     case "pageSetChecked":

@@ -20,7 +20,7 @@ import { randomInt } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
-import { FILL_CUTOFF, FILLABLE_ROLES, shuffled } from "../fill/fill.ts";
+import { FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts, misfit } from "../fill/kinds.ts";
@@ -79,6 +79,10 @@ export interface PlanDraft {
   /** Fields (and `press`) left as they are because the asks disagreed or agreed below the cutoff. */
   withheld: { name: string; why: "disagree" | "lowConfidence" }[];
   jev: { calls: number; costUsd: number; latencyMs: number };
+  /** Form controls an Ask leaves to the user with the value to set (ask.ts); the pop-up lists them. Absent for the planner's own plans. */
+  controls?: readonly { key: string; name: string; value: string; display: string }[];
+  /** Fields an Ask left to the user because Caret never types them, as a sentence (ask.ts); null or absent for none. */
+  leftToYou?: string | null;
 }
 
 interface Option {
@@ -124,6 +128,28 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
     if (e instanceof PlannerError && e.windowId === null) e.windowId = w.window.windowId;
     throw e;
   }
+}
+
+/**
+ * The window an instruction is about, as planTask chooses it: the one the host names, the only window with a
+ * field or a button, or Jev's choice among their titles (both asks agreeing at the cutoff). For Ask (ask.ts).
+ */
+export async function taskWindow(instruction: string, model: ScreenModel, o: Pick<PlanTaskOptions, "askJev" | "windowId" | "rand" | "cutoff">): Promise<{ window: WindowState; jev: PlanDraft["jev"] }> {
+  const jev = { calls: 0, costUsd: 0, latencyMs: 0 };
+  const ask = async (a: JevRequest, b: JevRequest): Promise<[JevResult, JevResult]> => {
+    let r: [JevResult, JevResult];
+    try {
+      r = await Promise.all([o.askJev(a), o.askJev(b)]);
+    } catch (e) {
+      throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+    }
+    jev.calls += 2;
+    jev.costUsd += r[0].costUsd + r[1].costUsd;
+    jev.latencyMs += Math.max(r[0].latencyMs, r[1].latencyMs);
+    return r;
+  };
+  const w = await chooseWindow(instruction, model, { ...o, offerKey: "" }, o.rand ?? randomInt, o.cutoff ?? PLAN_CUTOFF, ask, {});
+  return { window: w, jev };
 }
 
 /** planTask's work once the window is chosen. */
@@ -352,7 +378,8 @@ export function writableFields(w: WindowState): Field[] {
   const out: Field[] = [];
   for (const n of w.nodes.values()) {
     if (out.length >= MAX_PLAN_FIELDS) break;
-    if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure")) continue;
+    // A field Caret never types (an SSN, a card number, a password or a code) is the user's, as fill leaves it (B25).
+    if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure") || neverTypedNode(w, n) !== null) continue;
     // A web page's combobox (react-select) takes a pick from its list, not typed text: a named hand-off (B24).
     if (n.role === "AXComboBox" && inWebArea(w, n)) continue;
     const d = describeField(w, n);

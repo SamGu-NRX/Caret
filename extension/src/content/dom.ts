@@ -72,6 +72,31 @@ export function pressEvents(el: Element): void {
   el.dispatchEvent(new MouseEvent("click", { ...base, buttons: 0 }));
 }
 
+/**
+ * pressEvents for a toggle (W4, press.ts): pointerdown, mousedown, pointerup, mouseup, then `beforeClick` is asked again
+ * (a page handler on the earlier events may have turned the button into a submit button or moved it into a form) and
+ * only on true the click goes, with its default action cancelled by a listener of Caret's own on the button, so the
+ * browser itself neither submits a form nor follows a link from it whatever the page did meanwhile. The page's own
+ * click listeners still run. Returns whether the click went.
+ */
+export function pressToggle(el: Element, beforeClick: () => boolean): boolean {
+  const at = centre(el);
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, ...at };
+  el.dispatchEvent(new PointerEvent("pointerdown", { ...base, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+  el.dispatchEvent(new MouseEvent("mousedown", { ...base, buttons: 1 }));
+  el.dispatchEvent(new PointerEvent("pointerup", { ...base, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+  el.dispatchEvent(new MouseEvent("mouseup", { ...base, buttons: 0 }));
+  if (!beforeClick()) return false;
+  const cancel = (e: Event): void => e.preventDefault();
+  el.addEventListener("click", cancel);
+  try {
+    el.dispatchEvent(new MouseEvent("click", { ...base, buttons: 0 }));
+  } finally {
+    el.removeEventListener("click", cancel);
+  }
+  return true;
+}
+
 const KEY_CODES = { Escape: 27, Enter: 13 } as const;
 
 /** keydown then keyup of one named key. */

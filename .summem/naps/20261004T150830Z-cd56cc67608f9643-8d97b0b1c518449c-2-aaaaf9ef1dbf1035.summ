@@ -1,0 +1,1 @@
+B22: --act-pids needs CARET_SCREEN_FIXTURE_ACTS=fixture-only; window ids are opaque to the helper. Presses only whole SAFE_PRESSES labels, never in a system prompt; change risk.ts, RiskTable.safePresses and press-risk.json together.

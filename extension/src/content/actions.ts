@@ -21,15 +21,18 @@
 //
 // Presses are hand-offs in v1, whatever the control is called: a page button runs the page's own script, so a safe
 // name ("Next", or an aria-label over destructive text) is no evidence it sends nothing (W1 review #2; memo lead
-// decision on buttons that send data). The one exception is the combobox handler (combobox.ts), which presses only
-// the control it was given and that control's own listbox options, and verifies the pick.
+// decision on buttons that send data). The exceptions are the combobox handler (combobox.ts), which presses only
+// the control it was given and that control's own listbox options, and verifies the pick; and (W4) one option of a
+// Yes/No question built from toggle buttons (press.ts), which the page must show pressed afterwards.
 import type { ActAnswer, ActVerb, WriteReadings } from "../shared/messages.ts";
 import { classifyPress } from "../shared/risk.ts";
 import { navigationEntry, type Entry, type Registry } from "./registry.ts";
-import { accessibleName, clean } from "./names.ts";
+import { clean } from "./names.ts";
+import { controlName } from "./question.ts";
 import { checkedOf, exclusionOf, kindOf } from "./walker.ts";
 import { errorText, invalidNow, setterFor, settle } from "./dom.ts";
 import { chooseOption } from "./combobox.ts";
+import { pressOption } from "./press.ts";
 import { attachFile } from "./attach.ts";
 
 const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Partial<ActAnswer> = {}): ActAnswer => ({ outcome, detail, ...extra });
@@ -37,15 +40,15 @@ const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Par
 type Mutating = Exclude<ActVerb, { kind: "pageChooseOption" | "pageAttachFile" | "pagePress" }>;
 
 /** Why the act must not go on now, or null. */
-function ineligible(el: Element, verb: ActVerb, entry: Entry | undefined, deadline: number): ActAnswer | null {
+function ineligible(el: Element, verb: ActVerb, entry: Entry | undefined, deadline: number, opts: { name: boolean } = { name: true }): ActAnswer | null {
   if (!el.isConnected || el.ownerDocument !== document) return answer("stale", "the element left the document");
   if (entry !== undefined && entry.href !== location.href) return answer("stale", "the page's address changed since the walk");
   if (entry !== undefined && entry.nav !== navigationEntry()) return answer("stale", "the page moved in history since the walk");
-  const name = accessibleName(el);
+  const name = controlName(el, kindOf(el) ?? "");
   const excluded = exclusionOf(el, name);
   if (excluded !== null) return answer("excluded", `the control is one Caret never touches (${excluded})`);
   if (kindOf(el) !== verb.control) return answer("stale", `the element is now a ${String(kindOf(el))}, not a ${verb.control}`);
-  if (name !== verb.name) return answer("stale", `the element is now named '${clean(name, 60)}', not '${clean(verb.name, 60)}'`);
+  if (opts.name && name !== verb.name) return answer("stale", `the element is now named '${clean(name, 60)}', not '${clean(verb.name, 60)}'`);
   if (Date.now() >= deadline) return answer("notAllowed", "the grant or command expired");
   return null;
 }
@@ -74,9 +77,11 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
   if (verb.mark !== undefined) reg.mark(verb.mark, r.el);
   let a: ActAnswer;
   if (verb.kind === "pageChooseOption") {
-    a = verb.control === "combobox" ? await chooseOption(r.el, verb, check, alive) : answer("unsupported", `a ${verb.control} is not a custom listbox; a native select takes pageSelect`);
+    a = verb.control === "combobox" ? await chooseOption(r.el, verb, check, alive) : verb.control === "button" ? await pressOption(r.el, verb, check, alive) : answer("unsupported", `a ${verb.control} is not a custom listbox; a native select takes pageSelect`);
   } else if (verb.kind === "pageAttachFile") {
-    a = await attachFile(r.el, verb, check, alive);
+    // Once the file is in, an upload widget often writes its name or a status line into the field's label (Lever,
+    // Ashby): after that point the name may change and the element is still the one Caret wrote (W4 review #6).
+    a = await attachFile(r.el, verb, check, alive, () => ineligible(r.el, verb, entry, deadline, { name: false }));
   } else {
     a = await actOn(r.el, verb, check, alive);
   }

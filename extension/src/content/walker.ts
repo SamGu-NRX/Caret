@@ -4,8 +4,9 @@
 // code, before anything leaves the frame: such controls are counted by reason and never named or read.
 import type { PageControl, PageControlKind, PageExclusion, Rect } from "../shared/messages.ts";
 import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
-import { accessibleName, clean, composedParent, groupNames } from "./names.ts";
+import { clean, composedParent, groupNames } from "./names.ts";
 import { flavorOf, shownValue } from "./flavor.ts";
+import { controlName, fileOwner, pressGroup, radioPeers, radioQuestion, radioQuestions } from "./question.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -96,9 +97,26 @@ export function exclusionOf(el: Element, name: string): PageExclusion | null {
   if (ac !== null) return ac;
   if ((el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) && PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
   if (ariaHidden(el)) return "ariaHidden";
-  if (!visible(el) && !visibleReactSelect(el)) return "invisible";
+  if (!visible(el) && !visibleReactSelect(el) && !ownedFileInput(el)) return "invisible";
   if (SELF_IDENTIFICATION.test(name) || groupNames(el).some((g) => SELF_IDENTIFICATION.test(g))) return "selfIdentification";
+  // A question around a radio group or a press group asks it too, when no legend does (W4: Greenhouse's EEO section
+  // and Lever's custom questions put the question in a sibling element).
+  // Every text the question could be read from is tested, not only the nearest, so readable text a page puts close to
+  // the buttons cannot hide a sensitive question further out (W4 review #3).
+  if ((el instanceof HTMLInputElement && el.type === "radio") || el.getAttribute("role") === "radio") {
+    if (radioQuestions(el).some((t) => SELF_IDENTIFICATION.test(t))) return "selfIdentification";
+  }
+  const press = pressGroup(el);
+  if (press !== null && press.texts.some((t) => SELF_IDENTIFICATION.test(t))) return "selfIdentification";
   return null;
+}
+
+/**
+ * A hidden file input that a visible attach control owns (question.ts fileOwner): Greenhouse's Attach button, Ashby's
+ * visible label, Lever's transparent input under its label. The file goes to the input that control opens (W4).
+ */
+export function ownedFileInput(el: Element): boolean {
+  return el instanceof HTMLInputElement && el.type === "file" && fileOwner(el) !== null;
 }
 
 /**
@@ -244,7 +262,7 @@ export function* candidates(root: Document | ShadowRoot = document, shadow: "ope
   for (const el of root.querySelectorAll("*")) {
     if (el.matches(CANDIDATE)) {
       const kind = kindOf(el);
-      if (kind !== null) yield { el, kind, name: accessibleName(el), shadow };
+      if (kind !== null) yield { el, kind, name: controlName(el, kind), shadow };
     }
     const sr = shadowRootOf(el);
     if (sr !== null) yield* candidates(sr, sr.mode);
@@ -298,8 +316,19 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
       ...(value === undefined ? {} : { value }),
       ...(checked === undefined ? {} : { checked }),
       form,
-      rect: rectOf(f.el),
+      // An owned file input is where its owner is (W4).
+      rect: rectOf(f.el instanceof HTMLInputElement && f.kind === "file" && !visible(f.el) ? (fileOwner(f.el) ?? f.el) : f.el),
     };
+    if (f.kind === "radio") {
+      const peers = f.el instanceof HTMLInputElement ? radioPeers(f.el) : [f.el];
+      const name = radioQuestion(f.el);
+      if (name !== "") c.group = { id: idOf(peers[0] ?? f.el), name };
+    }
+    const press = f.kind === "button" ? pressGroup(f.el) : null;
+    if (press !== null) {
+      c.group = { id: idOf(press.container), name: press.question };
+      c.pressed = f.el.getAttribute("aria-pressed") === "true";
+    }
     if (f.el instanceof HTMLSelectElement) c.options = [...f.el.options].slice(0, MAX_OPTIONS).map((o) => ({ value: o.value, label: clean(o.label || o.text, 120), selected: o.selected }));
     if ((f.el as HTMLInputElement).required === true || f.el.getAttribute("aria-required") === "true") c.required = true;
     if ((f.el as HTMLInputElement).disabled === true || f.el.getAttribute("aria-disabled") === "true") c.disabled = true;

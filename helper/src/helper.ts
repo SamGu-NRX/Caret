@@ -74,6 +74,8 @@ import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
+import { planAsk } from "./planner/ask.ts";
+import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
 import type { PlanErrorCode } from "./protocol.ts";
@@ -145,6 +147,11 @@ export interface HelperOptions {
    * (unsure or nothing to do) goes to it (planner/codeplan.ts). Absent: those instructions fail as before.
    */
   writer?: WriterPort | null;
+  /**
+   * How an Ask's instruction becomes an intent (B25, planner/ask.ts): Jev's staged questions, or the writer's
+   * strict JSON through this port. Absent or null: Ask runs the planner, then the code-mode writer, as before B25.
+   */
+  ask?: { maker: "jev" } | { maker: "writer"; writer: WriterPort } | null;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Replaces the level's offers per hour (OfferGate), for fixture evaluations that make dozens of offers in minutes. Never set in normal use. */
@@ -227,6 +234,8 @@ export class Helper {
   private readonly ask: AskJev | null;
   /** The configured plan writer, wrapped so each request is recorded (recordRead). */
   private readonly writer: WriterPort | null;
+  /** How an Ask makes its intent; the writer's port is wrapped like the plan writer's. Null: the planner as before B25. */
+  private readonly askConfig: { maker: "jev" } | { maker: "writer"; writer: WriterPort } | null;
   /** What the last "Read and prepare" use's request declared, so the two asks of one question, which declare the same text, count once. */
   private lastRead: { declared: string; at: number } | null = null;
   /** Offers already recorded as a use of "Show in Caret's UI", by key; bounded. */
@@ -333,23 +342,23 @@ export class Helper {
           };
     // The plan writer's requests are recorded as Jev's are, from the declarations the planner attached, whether
     // the plan then succeeds or not (fix-check review).
+    const recorded = (writer: WriterPort, who: string): WriterPort => ({
+      route: writer.route,
+      write: async (req) => {
+        try {
+          const r = await writer.write(req);
+          this.recordRead({ snippets: req.disclosed ?? [] }, "done", who);
+          return r;
+        } catch (e) {
+          this.recordRead({ snippets: req.disclosed ?? [] }, "failed", who);
+          throw e;
+        }
+      },
+    });
     const writer = opts.writer ?? null;
-    this.writer =
-      writer === null
-        ? null
-        : {
-            route: writer.route,
-            write: async (req) => {
-              try {
-                const r = await writer.write(req);
-                this.recordRead({ snippets: req.disclosed ?? [] }, "done", "the plan writer");
-                return r;
-              } catch (e) {
-                this.recordRead({ snippets: req.disclosed ?? [] }, "failed", "the plan writer");
-                throw e;
-              }
-            },
-          };
+    this.writer = writer === null ? null : recorded(writer, "the plan writer");
+    const askOpt = opts.ask ?? null;
+    this.askConfig = askOpt === null || askOpt.maker === "jev" ? askOpt : { maker: "writer", writer: recorded(askOpt.writer, "the intent writer") };
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
@@ -835,7 +844,20 @@ export class Helper {
     while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${m.requestId}`;
     const session = this.readerSession;
     let draft: PlanDraft;
-    try {
+    const askConfig = this.askConfig;
+    if (askConfig !== null) {
+      // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
+      try {
+        const windowId = requestedWindow(this.model, m);
+        const maker = askConfig.maker === "jev" ? jevIntentMaker(ask) : writerIntentMaker(askConfig.writer, () => offerKey);
+        const d = await planAsk(m.instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), ...(windowId === null ? {} : { windowId }), ...this.opts.plannerHooks });
+        store.count(`plan.ask_${d.route}`, 1);
+        draft = d;
+      } catch (e) {
+        if (!(e instanceof PlannerError)) throw e;
+        return fail(e.code, e.message);
+      }
+    } else try {
       const windowId = requestedWindow(this.model, m);
       draft = await planTask(m.instruction, this.model, { values: () => this.plannerMemory() }, {
         askJev: ask,

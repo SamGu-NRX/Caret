@@ -18,40 +18,62 @@ function byIds(el: Element, ids: string): Element[] {
 function labelText(label: Element, control: Element): string {
   if (!label.contains(control)) return label.textContent ?? "";
   const clone = label.cloneNode(true) as Element;
+  // `control` may be an element around the control (W4: an upload widget inside its label): its text goes too. Found
+  // in the clone by its path of child indices, taken before anything is removed.
+  if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement || control instanceof HTMLButtonElement)) {
+    const path: number[] = [];
+    for (let n: Element = control; n !== label && n.parentElement !== null; n = n.parentElement) path.unshift([...n.parentElement.children].indexOf(n));
+    let at: Element | undefined = clone;
+    for (const i of path) at = at?.children[i];
+    if (at !== clone) at?.remove();
+  }
   for (const c of clone.querySelectorAll("input, select, textarea, button")) c.remove();
   return clone.textContent ?? "";
 }
 
 export function accessibleName(el: Element): string {
+  return named(el).name;
+}
+
+/** Where an accessible name came from: "placeholder" or "none" are the ones a field's question may stand in for (W4). */
+export type NameSource = "labelledby" | "label" | "labels" | "value" | "title" | "placeholder" | "text" | "none";
+
+/** The accessible name and which source gave it. */
+export function named(el: Element): { name: string; from: NameSource } {
   const labelledby = el.getAttribute("aria-labelledby");
   if (labelledby !== null) {
     const t = clean(byIds(el, labelledby).map((e) => e.textContent ?? "").join(" "));
-    if (t !== "") return t;
+    if (t !== "") return { name: t, from: "labelledby" };
   }
   const aria = clean(el.getAttribute("aria-label"));
-  if (aria !== "") return aria;
+  if (aria !== "") return { name: aria, from: "label" };
   if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement || el instanceof HTMLButtonElement) {
     const labels = el.labels;
     if (labels !== null && labels.length > 0) {
       const t = clean([...labels].map((l) => labelText(l, el)).join(" "));
-      if (t !== "") return t;
+      if (t !== "") return { name: t, from: "labels" };
     }
   }
   if (el instanceof HTMLInputElement && (el.type === "submit" || el.type === "button" || el.type === "reset")) {
     const t = clean(el.value || (el.type === "submit" ? "Submit" : ""));
-    if (t !== "") return t;
+    if (t !== "") return { name: t, from: "value" };
   }
   const title = clean(el.getAttribute("title"));
-  if (title !== "") return title;
+  if (title !== "") return { name: title, from: "title" };
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
     const ph = clean(el.placeholder);
-    if (ph !== "") return ph;
+    if (ph !== "") return { name: ph, from: "placeholder" };
   }
   const role = el.getAttribute("role");
   if (el instanceof HTMLButtonElement || el instanceof HTMLAnchorElement || role === "button" || role === "link" || role === "checkbox" || role === "radio" || role === "switch" || role === "option") {
-    return clean(el.textContent);
+    return { name: clean(el.textContent), from: "text" };
   }
-  return "";
+  return { name: "", from: "none" };
+}
+
+/** A label's text without the control's own text, for a label the caller already holds. */
+export function textOfLabel(label: Element, control: Element): string {
+  return clean(labelText(label, control));
 }
 
 /**

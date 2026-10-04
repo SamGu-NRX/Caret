@@ -16,9 +16,21 @@ export interface ChoiceQuestion {
   criteria: Record<string, string | null>;
 }
 
+/** A yes/no question; Jev answers with the probability of yes (docs.typesafe.ai/api, "Noul"), and no confidence. */
+export interface NoulQuestion {
+  type: "noul";
+  instructions: string | Record<string, unknown>;
+  criteria?: { true: string; false: string };
+}
+
 export interface JevRequest {
   state: string | Record<string, unknown>;
   questions: Record<string, ChoiceQuestion>;
+  /**
+   * Yes/no questions sent beside `questions` in the same request, by id (B25). Kept apart so every caller that
+   * reads a choice's criteria and confidence stays as it was; ids must not repeat a choice question's.
+   */
+  nouls?: Record<string, NoulQuestion>;
   /**
    * Every piece of screen text in `state` and `questions`, with its window, as the builder took it through
    * a SnippetLedger (privacy.ts). Never sent: the client posts `state` and `questions` only.
@@ -32,15 +44,18 @@ export interface JevRequest {
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number() }).loose();
+const NoulAnswer = z.object({ type: z.literal("noul"), noul: z.number().min(0).max(1) }).loose();
 const JevResponse = z.object({
   model: z.string(),
-  answers: z.record(z.string(), ChoiceAnswer),
+  answers: z.record(z.string(), z.union([NoulAnswer, ChoiceAnswer])),
   usage: z.object({ input_tokens: z.number() }).loose(),
 });
 
 export interface JevResult {
   model: string;
   answers: Record<string, { choice: string; confidence: number }>;
+  /** The probability of yes for each of the request's `nouls`, by id; absent when it asked none. */
+  nouls?: Record<string, number>;
   inputTokens: number;
   latencyMs: number;
   costUsd: number;
@@ -67,7 +82,9 @@ export function loadJevKey(env: NodeJS.ProcessEnv = process.env): string {
 
 export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
   return async (req) => {
-    const body = JSON.stringify({ state: req.state, model: JEV_MODEL, questions: req.questions });
+    const ids = Object.keys(req.nouls ?? {});
+    if (ids.some((id) => id in req.questions)) throw new Error(`Jev request repeats a question id between its choices and its yes/no questions`);
+    const body = JSON.stringify({ state: req.state, model: JEV_MODEL, questions: { ...req.questions, ...req.nouls } });
     for (let attempt = 0; ; attempt++) {
       const t0 = performance.now();
       const res = await fetch(JEV_URL, {
@@ -88,9 +105,24 @@ export function makeJevClient(key: () => string, timeoutMs = 10_000): AskJev {
         throw new Error(`Jev HTTP ${res.status}: ${detail}`);
       }
       const parsed = JevResponse.parse(await res.json());
+      const answers: JevResult["answers"] = {};
+      const nouls: Record<string, number> = {};
+      for (const [k, a] of Object.entries(parsed.answers)) {
+        const asked = req.nouls?.[k] !== undefined;
+        const yes = NoulAnswer.safeParse(a);
+        if (yes.success) {
+          if (!asked) throw new Error(`Jev answered ${k} with a yes/no, which was asked as a choice`);
+          nouls[k] = yes.data.noul;
+          continue;
+        }
+        const c = ChoiceAnswer.parse(a);
+        if (asked) throw new Error(`Jev answered ${k} with a choice, which was asked as a yes/no`);
+        answers[k] = { choice: c.choice, confidence: c.confidence };
+      }
       return {
         model: parsed.model,
-        answers: Object.fromEntries(Object.entries(parsed.answers).map(([k, a]) => [k, { choice: a.choice, confidence: a.confidence }])),
+        answers,
+        ...(ids.length === 0 ? {} : { nouls }),
         inputTokens: parsed.usage.input_tokens,
         latencyMs,
         costUsd: parsed.usage.input_tokens * JEV_USD_PER_INPUT_TOKEN,

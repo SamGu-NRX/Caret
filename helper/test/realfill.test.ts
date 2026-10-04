@@ -1,7 +1,7 @@
 // B24: fill on real forms. The deterministic parts (name and address parts, dates and times, the form
 // controls, required markers) have one right answer each and are tested in isolation; then proposeFill with a
 // stand-in Jev for the anchor, the derived values, the controls and the owner veto. All text is synthetic.
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { describeInput, emptyInput, memoryRefOf, memoryValue, parseMemoryRef, proposeFill } from "../src/fill/fill.ts";
 import { fieldPart, joinName, partFits, splitAddress, splitName } from "../src/fill/derive.ts";
@@ -12,9 +12,14 @@ import type { FillProposal, Node } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { field, jevPickingText, MAIL_APP, node, snap, text, value } from "./builders.ts";
 import { MESSAGES } from "./desks.ts";
-import { collectCandidates } from "../src/fill/candidates.ts";
+import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
 import { SnippetLedger } from "../src/privacy.ts";
 import { fieldTerms, misfit } from "../src/fill/kinds.ts";
+
+// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and change an
+// answer these tests check (candidates.ts setGeneratorClock); B25's full suite failed two of them under load.
+beforeAll(() => setGeneratorClock(() => 0));
+afterAll(() => setGeneratorClock(null));
 
 describe("splitName", () => {
   it.each([
@@ -205,13 +210,14 @@ describe("formControls", () => {
 });
 
 /** A note the user just left, an unrelated draft too long for its budget, and the page, focused on Customer name. */
-function desk(noteText: string, extra: Node[] = []): ScreenModel {
+function desk(noteText: string, extra: Node[] = [], draftExtra: readonly string[] = []): ScreenModel {
   const m = new ScreenModel();
   const draft = [
     "Notes for Thursday",
     "Could we go over the intro and examples before the review? The examples feel a bit thin in section two, and we still owe Priya a reply.",
     "Also, let's set up a call with Priya Thursday 3pm PT to go over the budget.",
     "Dana said the venue deposit is due next week.",
+    ...draftExtra,
   ].join("\n");
   m.apply(snap([field("te/draft", draft, { role: "AXTextArea" })], { at: 100, windowId: "draft", title: "Draft.txt", app: { pid: 7000, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: [value("time", "3pm", "te/draft")] }));
   m.apply(snap([field("te/note", noteText, { role: "AXTextArea" })], { at: 900, windowId: "note", title: "Order note.txt", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: [value("phone", "(512) 555-0147", "te/note")] }));
@@ -230,7 +236,8 @@ describe("proposeFill on a real-shaped form (B24)", () => {
 
   it("reads what a cut window that is no conversation left out, instead of treating all of it as unread", () => {
     // B13 set cutAll for any such window, which withheld every name and every field whose label names no kind.
-    const m = desk(NOTE);
+    // Since B25 a mixed note's short lines all fit its budget, so this draft runs past WINDOW_CHARS with agenda lines.
+    const m = desk(NOTE, [], Array.from({ length: 30 }, (_, i) => `Agenda item ${i + 1}: slide ${i + 3} and the open questions from week ${i + 1}`));
     const g = collectCandidates(m, "form", { now: 2000, ledger: new SnippetLedger(m.windows.values()), fields: [fieldTerms(["Customer name"]), fieldTerms(["Delivery instructions"])] });
     expect(g.cut).toContain("draft");
     expect(g.cutAll).toBe(false);
@@ -357,6 +364,18 @@ describe("B24 review fixes", () => {
     expect(misfit("3M", ["Employer"])).toBeNull();
     expect(misfit("jo@acme.example", ["Company email"])).toBeNull();
     expect(misfit("Junior Analyst at Ridgeline Outdoor Co (since 2024)", ["Current company"])).not.toBeNull();
+    // A list after a comma is not a name (B25), a legal suffix is.
+    expect(misfit("Brightline Dental Labs, lab technician, $5,200/mo gross", ["Current employer"])).not.toBeNull();
+    expect(misfit("Brightline Dental Labs, lab technician", ["Current employer"])).not.toBeNull();
+    for (const v of ["Acme, Inc.", "Ridgeline Outdoor, LLC", "Brightline Dental Labs", "Studio 54"]) expect(misfit(v, ["Current employer"])).toBeNull();
+    // A label that spells out a date format takes that format only (B25).
+    for (const [v, label] of [["08/2022", "Moved in (MM/YYYY)"], ["8/2022", "Moved in (MM/YYYY)"], ["05/2027", "Graduation Date (MM/YYYY)"], ["2027-01-04", "Start (YYYY-MM-DD)"], ["04.01.2027", "Start (DD.MM.YYYY)"]] as const) expect(misfit(v, [label])).toBeNull();
+    for (const [v, label] of [["Aug 2022", "Moved in (MM/YYYY)"], ["moved in Aug 2022, rent $1,450/mo", "Moved in (MM/YYYY)"], ["2022", "Moved in (MM/YYYY)"], ["01/04/2027", "Start (YYYY-MM-DD)"]] as const) expect(misfit(v, [label])).not.toBeNull();
+    // A field that shows its currency takes the bare number.
+    expect(misfit("$1,450", ["Monthly rent ($)"])).not.toBeNull();
+    expect(misfit("€90", ["Deposit (EUR)"])).not.toBeNull();
+    for (const v of ["1,450", "5200"]) expect(misfit(v, ["Monthly rent ($)"])).toBeNull();
+    expect(misfit("$1,450", ["Monthly rent"])).toBeNull();
     for (const v of ["at", "9999-99-99", "13/13/2026"]) expect(misfit(v, ["Date"])).not.toBeNull();
     for (const v of ["11/12/2026", "05/2027", "12", "March 3, 1991", "October 8, 2026 at 3:00 PM"]) expect(misfit(v, ["Date"])).toBeNull();
     expect(misfit("23pm", ["Time"])).not.toBeNull();

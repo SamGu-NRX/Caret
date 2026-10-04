@@ -86,7 +86,7 @@ function walk(reg: Registry): FrameReport {
 function isToContent(m: unknown): m is ToContent {
   if (typeof m !== "object" || m === null) return false;
   const x = m as Record<string, unknown>;
-  return x.caret === 1 && (x.op === "walk" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
+  return x.caret === 1 && (x.op === "walk" || x.op === "viewport" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
 }
 
 if (globalThis.__caretContent === undefined) {
@@ -107,6 +107,10 @@ if (globalThis.__caretContent === undefined) {
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
       reply(walk(reg));
+      return false;
+    }
+    if (m.op === "viewport") {
+      reply([window.innerWidth, window.innerHeight]);
       return false;
     }
     if (m.op === "guard") {

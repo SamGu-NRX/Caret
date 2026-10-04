@@ -18,6 +18,7 @@ describe("page golden lines", () => {
       "pagePing", "pagePong", "pageChunk", "scopedActGrant",
       "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult",
       "pageCommand", "pageResult", "pageInput",
+      "pageSnapshot", "pageCommand", "pageResult",
     ]);
   });
 
@@ -156,5 +157,20 @@ describe("W3 page messages", () => {
     expect(HelperToEngine.safeParse(lines[33]).success).toBe(false);
     const { inFocusedWindow: _f, ...older } = lines[6] as Record<string, unknown>;
     expect(PageSnapshot.safeParse(older).success).toBe(false);
+  });
+});
+
+describe("W4 page lines", () => {
+  it("carries a radio group's question, a press group's options and the press that names its question", () => {
+    const snap = PageSnapshot.parse(lines[34]);
+    const [yes, no, pressYes, pressNo] = snap.frames[0]!.controls;
+    expect(yes?.group).toEqual({ id: "e20", name: "Are you authorized to work here?" });
+    expect(no?.group?.id).toBe(yes?.group?.id);
+    expect(pressYes?.pressed === false && pressNo?.pressed === true && pressYes.group?.name === "Do you have seven years of experience?").toBe(true);
+    const cmd = PageCommand.parse(lines[35]);
+    expect(cmd.verb.kind === "pageChooseOption" && cmd.verb.control === "button" && cmd.verb.question === "Do you have seven years of experience?").toBe(true);
+    expect(PageResult.parse(lines[36]).choice?.flavor).toBe("pressGroup");
+    // An empty question or group name is not one.
+    expect(PageCommand.safeParse({ ...cmd, verb: { ...cmd.verb, question: "" } }).success).toBe(false);
   });
 });

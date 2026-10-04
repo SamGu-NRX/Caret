@@ -56,6 +56,12 @@
 // page under a grant ending the grant and reaching the executor; a revoke landing between a write's stages stopping
 // it there (holds.html); a pick a revoke cut short reported as "may have landed"; a native select written through the
 // executor's path; and only the focused window's tab counted as the user's.
+//
+// Batch 4 (W4) adds, on local replicas of Greenhouse's, Ashby's and Lever's widgets (public/replica): a hidden file
+// input owned by an Attach button, a visible label or a transparent overlay taking the confirmed file; a Yes/No question
+// built from aria-pressed buttons answered by one verified press, and the cases that are refused; question names for
+// radio groups, unlabelled selects and placeholder-only fields; a walk that reads its tab again after a tab switch; and
+// a tab open before install refusing acts until reloaded. --sites also saves each page's markup and walk.
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { randomBytes } from "node:crypto";
@@ -383,6 +389,17 @@ function frontmost(): string {
     return /"LSDisplayName"="([^"]*)"/.exec(execFileSync("lsappinfo", ["info", "-only", "name", asn], { encoding: "utf8" }))?.[1] ?? "?";
   } catch {
     return "?";
+  }
+}
+
+/** The frontmost app's pid, by LaunchServices, or null. */
+function frontmostPid(): number | null {
+  try {
+    const asn = execFileSync("lsappinfo", ["front"], { encoding: "utf8" }).trim();
+    const m = /"pid"=(\d+)/.exec(execFileSync("lsappinfo", ["info", "-only", "pid", asn], { encoding: "utf8" }));
+    return m?.[1] === undefined ? null : Number(m[1]);
+  } catch {
+    return null;
   }
 }
 
@@ -828,6 +845,217 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
   });
 }
 
+// ---- W4: what real application forms need (replicas built from the saved real-site markup) ----
+
+const Q_YEARS = "Do you have a minimum of 7 years of experience building software?";
+
+/** Every control of the snapshot, with its frame. */
+const allControls = (s: PageSnapshot): PageControl[] => s.frames.flatMap((f) => f.controls);
+
+async function batch4(e: Engine, site: FixtureSite, tmp: string): Promise<void> {
+  const windowId = pageWindowId(e.session.info.engine, e.tabId);
+  const pid = e.session.info.browser.pid;
+  const link = e.host.registry.engineFor(windowId) as PageEngineLink;
+  const files = new ConfirmedFiles();
+  const fileName = "Robin-Example-CV.pdf";
+  const filePath = join(tmp, fileName);
+  writeFileSync(filePath, Buffer.concat([Buffer.from("%PDF-1.4\n% synthetic, made by accept.ts (W4)\n"), randomBytes(40_000)]));
+  const fileSize = readFileSync(filePath).length;
+  const attach = async (taskId: string, name: string): Promise<{ r: PageResult | null; detail: string }> => {
+    grant(e, taskId);
+    files.confirm(taskId, filePath);
+    const a = await link.attachFile(windowId, nodeKey(e, name), taskId, files);
+    return { r: a.page, detail: a.page === null ? `${a.verb.outcome} ${a.verb.detail ?? ""}` : `${outcome(a.page)} ${JSON.stringify(a.page.attached)}` };
+  };
+  const attachedOk = (r: PageResult | null): boolean => r?.outcome === "ok" && r.attached?.via === "input" && r.attached.file?.name === fileName && r.attached.file.size === fileSize && r.attached.shown === true;
+
+  await check("W4 1: Greenhouse replica: the hidden resume input behind Attach is walked as a file control named by its group, where Attach is, and takes the confirmed file (files[0], and the page's own file name)", async () => {
+    const s = await openPage(e, site, "/replica/greenhouse", "Resume/CV*");
+    const fileControls = allControls(s).filter((c) => c.kind === "file");
+    expect(fileControls.map((c) => c.name).join("|") === "Resume/CV*|Cover Letter", `file controls: ${JSON.stringify(fileControls.map((c) => c.name))} (the decoys beside 'Subscribe to updates' and 'Upload photo' must not be ones)`);
+    const attachButton = allControls(s).find((c) => c.kind === "button" && c.name === "Attach");
+    expect(JSON.stringify(fileControls[0]?.rect) === JSON.stringify(attachButton?.rect), `the resume control is at ${JSON.stringify(fileControls[0]?.rect)}, Attach at ${JSON.stringify(attachButton?.rect)}`);
+    await link.run({ kind: "walk", pid, windowId });
+    const { r, detail } = await attach("t-w4-gh", "Resume/CV*");
+    expect(attachedOk(r), detail);
+    const shown = await text(site, "#resume-filename");
+    const other = await text(site, "#cover_letter-filename");
+    expect(shown === fileName && other === "", `the page shows '${shown}' for the resume and '${other}' for the cover letter`);
+    return `${detail}; the page shows '${shown}'`;
+  });
+
+  await check("W4 1: Ashby replica: the clipped input under the resume dropzone is named by its visible label and takes the confirmed file, though the label then names the file too", async () => {
+    const s = await openPage(e, site, "/replica/ashby", "Resume");
+    const c = control(s, "Resume").c;
+    expect(c.kind === "file", `'Resume' is a ${c.kind}`);
+    await link.run({ kind: "walk", pid, windowId });
+    const { r, detail } = await attach("t-w4-ashby", "Resume");
+    expect(attachedOk(r), detail);
+    const shown = await text(site, "#ashby-filename");
+    expect(shown === fileName, `the page shows '${shown}'`);
+    return `${detail}; the page shows '${shown}'`;
+  });
+
+  await check("W4 4: Ashby replica: a combobox named only by its placeholder takes its question's name", async () => {
+    const s = await walk(e);
+    const boxes = allControls(s).filter((c) => c.kind === "combobox").map((c) => c.name);
+    expect(boxes.join("|") === "Where do you plan on working from?", `comboboxes: ${JSON.stringify(boxes)}`);
+    return `combobox '${boxes[0]}'`;
+  });
+
+  await check("W4 2: Ashby replica: a write of 'Yes' to a Yes/No question presses only that option, verified by aria-pressed; the page's own checkbox follows; the model holds the answer", async () => {
+    await link.run({ kind: "walk", pid, windowId });
+    const w = e.helper.model.windows.get(windowId);
+    const group = [...(w?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === Q_YEARS);
+    expect(group?.editable === true && group.value === "", `the question's node: ${JSON.stringify(group)}`);
+    grant(e, "t-w4-yes");
+    const r = await e.host.link.run({ kind: "write", pid, windowId, key: group!.key, role: group!.role, attribute: "value", expect: "", value: "Yes", taskId: "t-w4-yes" });
+    revoke(e, "t-w4-yes");
+    expect(r.outcome === "ok", `write ${r.outcome} ${r.detail ?? ""}`);
+    const yes = await attr(site, '#q-years button[data-option="yes"]', "aria-pressed");
+    const no = await attr(site, '#q-years button[data-option="no"]', "aria-pressed");
+    const box = await read(site, '#q-years input[type="checkbox"]');
+    const model = e.helper.model.windows.get(windowId)?.nodes.get(group!.key)?.value;
+    expect(yes === "true" && no === "false" && box === "true" && model === "Yes", `page: yes ${yes}, no ${no}, checkbox ${box}; model '${model}'`);
+    return `aria-pressed yes ${yes}, no ${no}; checkbox ${box}; model '${model}'`;
+  });
+
+  await check("W4 2: Ashby replica: a toggle the page never marks is failed, one whose mousedown moves it into a form is never clicked, a question whose name changed is stale, a veteran question (with unreadable text beside it) and buttons in a form or a disabled fieldset are no press group, and pagePress stays a hand-off", async () => {
+    const s = await walk(e);
+    const w = e.helper.model.windows.get(windowId);
+    const groups = [...(w?.nodes.values() ?? [])].filter((n) => n.role === "AXGroup" && n.subrole === "AXFieldset").map((n) => n.label);
+    // The veteran question stays out though unreadable text sits beside its buttons; buttons in a form or a disabled fieldset are no press group.
+    expect(groups.includes("Do you hold a current security clearance?") && !groups.includes("Are you a protected veteran?") && !groups.includes("Are you willing to relocate?") && !groups.includes("Can you work night shifts?") && !groups.some((g) => (g ?? "").includes("pizza")), `question groups: ${JSON.stringify(groups)}`);
+    const broken = [...(w?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === "Do you hold a current security clearance?");
+    grant(e, "t-w4-broken");
+    const r = await e.host.link.run({ kind: "write", pid, windowId, key: broken!.key, role: broken!.role, attribute: "value", expect: "", value: "Yes", taskId: "t-w4-broken" });
+    expect(r.outcome !== "ok", `the unmarked toggle answered ${r.outcome}`);
+    const stillNo = await attr(site, '#q-clearance button[data-option="yes"]', "aria-pressed");
+    expect(stillNo === "false", `the unmarked toggle shows aria-pressed ${stillNo}`);
+    // The same option named with another question: the content script refuses before pressing.
+    const opt = allControls(s).find((c) => c.kind === "button" && c.name === "No" && c.group?.name === Q_YEARS);
+    const t = { tabId: s.tabId, frameId: s.frames[0]!.frameId, documentId: s.frames[0]!.documentId, id: opt!.id, control: opt!.kind, name: opt!.name, taskId: "t-w4-broken" };
+    const wrong = await runSlow(e, { kind: "pageChooseOption", ...t, expect: "Yes", value: "No", question: "Do you have a minimum of 2 years of experience?" });
+    const press = await run(e, { kind: "pagePress", ...t });
+    revoke(e, "t-w4-broken");
+    const yesNow = await attr(site, '#q-years button[data-option="yes"]', "aria-pressed");
+    expect(wrong.outcome === "stale" && press.outcome === "handoff" && yesNow === "true", `wrong question ${outcome(wrong)}; pagePress ${outcome(press)}; Yes still pressed: ${yesNow}`);
+    // A toggle whose mousedown moves the button into a form is never clicked (W4 review #1).
+    const visa = [...(w?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === "Will you need a visa?");
+    grant(e, "t-w4-visa");
+    const trapped = await e.host.link.run({ kind: "write", pid, windowId, key: visa!.key, role: visa!.role, attribute: "value", expect: "", value: "Yes", taskId: "t-w4-visa" });
+    revoke(e, "t-w4-visa");
+    const visaYes = await attr(site, '#q-visa button[data-option="yes"]', "aria-pressed");
+    expect(trapped.outcome !== "ok" && (trapped.detail ?? "").includes("did not click") && visaYes === "false", `the trapped toggle: ${trapped.outcome} ${trapped.detail ?? ""}; aria-pressed ${visaYes}`);
+    const vet = s.frames[0]!.excluded.selfIdentification ?? 0;
+    expect(vet >= 2, `excluded ${JSON.stringify(s.frames[0]!.excluded)}`);
+    const count = ((await (await fetch(`${site.mainOrigin}/submitted`)).json()) as { count: number }).count;
+    expect(count === 0, `/submitted reads ${count}`);
+    return `unmarked toggle ${r.outcome} (${r.detail ?? ""}); trapped toggle ${trapped.outcome}; wrong question ${wrong.outcome}; pagePress ${press.outcome}; excluded ${JSON.stringify(s.frames[0]!.excluded)}; /submitted ${count}`;
+  });
+
+  await check("W4 4: Lever replica: a radio group takes its question from the text beside it, an unlabelled select its question and shows its placeholder as no value, a placeholder-only field its question, and the transparent resume input takes the file", async () => {
+    const s = await openPage(e, site, "/replica/lever", "How did you hear about this job?");
+    const radios = allControls(s).filter((c) => c.kind === "radio");
+    const q = "Are you legally authorized to work in the country for which you are applying? ✱";
+    expect(radios.length === 2 && radios.every((c) => c.group?.name === q), `radios: ${JSON.stringify(radios.map((c) => [c.name, c.group]))}`);
+    expect((s.frames[0]!.excluded.selfIdentification ?? 0) >= 2, `the gender question's radios were not excluded: ${JSON.stringify(s.frames[0]!.excluded)}`);
+    const text0 = allControls(s).find((c) => c.kind === "text");
+    expect(text0?.name === "Name Pronunciation | How do you pronounce your name?", `the placeholder-only field is named '${text0?.name}'`);
+    await link.run({ kind: "walk", pid, windowId });
+    const nodes = [...(e.helper.model.windows.get(windowId)?.nodes.values() ?? [])];
+    const sel = nodes.find((n) => n.label === "How did you hear about this job?");
+    const grp = nodes.find((n) => n.role === "AXGroup" && n.label === q);
+    expect(sel?.value === "" && grp !== undefined, `select node ${JSON.stringify(sel)}; radio group ${JSON.stringify(grp)}`);
+    const resume = allControls(s).find((c) => c.kind === "file");
+    expect(resume !== undefined && resume.name.startsWith("Resume/CV"), `file control ${JSON.stringify(resume?.name)}`);
+    const { r, detail } = await attach("t-w4-lever", resume!.name);
+    expect(attachedOk(r), detail);
+    const shown = await text(site, "#lever-filename");
+    expect(shown === fileName, `the page shows '${shown}'`);
+    return `radio group '${grp?.label}'; select value '${sel?.value}'; text '${text0?.name}'; file '${resume?.name}': ${detail}`;
+  });
+
+  await check("W4 5: a walk reads its tab again after the frames answer: a tab opened while the page keeps the walk waiting makes the snapshot say the walked tab is not the user's", async () => {
+    const cdp = need(e.cdp, "DevTools pipe");
+    await openPage(e, site, "/busy", "Busy field");
+    const { targetInfos } = (await cdp.send("Target.getTargets")) as { targetInfos: { targetId: string; type: string; url: string }[] };
+    const mine = targetInfos.find((t) => t.type === "page" && t.url.endsWith("/busy"));
+    // Not awaited: the page answers the command only once its busy second is over.
+    const busy = site.command({ cmd: "busy", ms: 1000 });
+    await sleep(150);
+    const started = Date.now();
+    const walking = e.session.command({ kind: "pageWalk", tabId: e.tabId }, 10_000);
+    await sleep(200);
+    const { targetId: other } = (await cdp.send("Target.createTarget", { url: "about:blank", newWindow: false })) as { targetId: string };
+    await cdp.send("Target.activateTarget", { targetId: other }).catch(() => undefined);
+    try {
+      const a = await walking;
+      expect(a.snapshot !== null, `walk ${outcome(a.result)}`);
+      const s = a.snapshot!;
+      const took = Date.now() - started;
+      expect(!(s.active && s.inFocusedWindow), `the snapshot says the walked tab is active ${s.active}, in the focused window ${s.inFocusedWindow} (the walk took ${took} ms)`);
+      expect(e.helper.model.windows.get(windowId)?.focused === false, "the model holds the walked tab as focused");
+      await busy;
+      return `the walk took ${took} ms; after the switch: active ${s.active}, inFocusedWindow ${s.inFocusedWindow}; the model's tab is not focused`;
+    } finally {
+      await cdp.send("Target.closeTarget", { targetId: other }).catch(() => undefined);
+      if (mine !== undefined) await cdp.send("Target.activateTarget", { targetId: mine.targetId }).catch(() => undefined);
+    }
+  });
+}
+
+/**
+ * W4 (W3 review #5, untested there): a tab open before the extension was installed gets the content script late, from
+ * onInstalled, and takes walks but no act until it is reloaded. A second browser on its own profile opens the form with
+ * no extension, then the extension is installed into it through the DevTools pipe (Extensions.loadUnpacked).
+ */
+async function lateCheck(o: { exe: string; env: NodeJS.ProcessEnv; bridge: string; extensionId: string; tmp: string; host: PageHost; helper: Helper; site: FixtureSite; log: string }): Promise<void> {
+  await check("W4 5: a tab open before install is walked but refuses every act until reloaded; after a reload the same write lands", async () => {
+    const profile = join(o.tmp, "late-profile");
+    mkdirSync(profile);
+    writeManifest(join(profile, "NativeMessagingHosts"), o.extensionId, o.bridge);
+    const since = Date.now();
+    const b = launch(o.exe, profile, [`${o.site.mainOrigin}/form2`], o.env, null, o.log, ["--enable-unsafe-extension-debugging"], true);
+    try {
+      const cdp = need(b.cdp, "DevTools pipe");
+      await o.site.waitForLoad((h) => h.endsWith("/form2"), since);
+      const loaded = (await cdp.send("Extensions.loadUnpacked", { path: join(EXT, "dist") })) as { id: string };
+      expect(loaded.id === o.extensionId, `installed as ${loaded.id}`);
+      const session = await o.host.registry.waitForEngine((s) => s.info.extensionId === o.extensionId && s.info.connectedAt >= since, 30_000);
+      let s: PageSnapshot | null = null;
+      for (let i = 0; i < 40 && (s === null || !s.frames.some((f) => f.controls.some((c) => c.name === "First name"))); i++) {
+        await sleep(250);
+        s = (await session.command({ kind: "pageWalk", tabId: null })).snapshot;
+      }
+      expect(s !== null, "the late tab was never walked");
+      const e: Engine = { host: o.host, helper: o.helper, session, tabId: s!.tabId, cdp };
+      grant(e, "t-w4-late");
+      const r = await run(e, { kind: "pageWrite", ...target(s!, "First name", "t-w4-late"), expect: "", value: "Late" });
+      expect(r.outcome === "notAllowed" && (r.detail ?? "").includes("before Caret was installed"), `the late tab's write: ${outcome(r)}`);
+      const { sessionId } = await cdp.page(`${o.site.mainOrigin}/form2`);
+      const still = ((await cdp.send("Runtime.evaluate", { expression: "document.getElementById('first_name').value", returnByValue: true }, sessionId)) as { result: { value: string } }).result.value;
+      expect(still === "", `the late tab's field holds '${still}'`);
+      const reloaded = Date.now();
+      await cdp.send("Page.reload", {}, sessionId);
+      await o.site.waitForLoad((h) => h.endsWith("/form2"), reloaded);
+      let s2: PageSnapshot | null = null;
+      for (let i = 0; i < 40 && (s2 === null || !s2.frames.some((f) => f.controls.some((c) => c.name === "First name"))); i++) {
+        await sleep(250);
+        s2 = (await session.command({ kind: "pageWalk", tabId: e.tabId })).snapshot;
+      }
+      grant(e, "t-w4-late2");
+      const r2 = await run(e, { kind: "pageWrite", ...target(s2!, "First name", "t-w4-late2"), expect: "", value: "Late" });
+      const { sessionId: sid2 } = await cdp.page(`${o.site.mainOrigin}/form2`);
+      const now = ((await cdp.send("Runtime.evaluate", { expression: "document.getElementById('first_name').value", returnByValue: true }, sid2)) as { result: { value: string } }).result.value;
+      expect(r2.outcome === "ok" && now === "Late", `after the reload: ${outcome(r2)}; the field holds '${now}'`);
+      return `before the reload: ${outcome(r)}, field '${still}'; after: ${r2.outcome}, field '${now}'`;
+    } finally {
+      await b.stop();
+    }
+  });
+}
+
 // ---- W3: the read-only pass over real pages ----
 
 /**
@@ -842,11 +1070,33 @@ const CENSUS = `(() => {
   const all = []; const hosts = []; const stack = [document];
   while (stack.length) { const root = stack.pop(); for (const el of root.querySelectorAll("*")) { all.push(el); if (el.shadowRoot) { hosts.push(el.tagName.toLowerCase()); stack.push(el.shadowRoot); } } }
   const sel = "input:not([type=hidden]):not([type=submit]):not([type=button]), select, textarea, [role=combobox], [role=textbox], [contenteditable=''], [contenteditable=true], [role=radio], [role=checkbox], [role=listbox], [role=switch]";
-  const fields = all.filter((el) => el.matches(sel) && vis(el)).map((el) => ({ kind: el.tagName.toLowerCase() + (el.getAttribute("type") ? ":" + el.getAttribute("type") : "") + (el.getAttribute("role") ? "[" + el.getAttribute("role") + "]" : ""), label: label(el), inShadow: el.getRootNode() !== document }));
+  const fields = all.filter((el) => el.matches(sel) && vis(el)).map((el) => ({ kind: el.tagName.toLowerCase() + (el.getAttribute("type") ? ":" + el.getAttribute("type") : "") + (el.getAttribute("role") ? "[" + el.getAttribute("role") + "]" : ""), label: label(el), inShadow: el.getRootNode() !== document, rect: ((b) => [b.x, b.y, b.width, b.height])(el.getBoundingClientRect()) }));
   const iframes = [...document.querySelectorAll("iframe")].map((f) => ({ src: (f.getAttribute("src") || "").replace(/[?#].*$/, "").slice(0, 120), visible: vis(f), size: [f.clientWidth, f.clientHeight] }));
   const buttons = all.filter((el) => el.matches("button, [role=button], input[type=submit]") && vis(el)).map((b) => text(b.innerText || b.value || b.getAttribute("aria-label"))).filter(Boolean);
   const listboxes = all.filter((el) => el.matches("[role=listbox]")).length;
   return { title: document.title.slice(0, 120), at: location.origin + location.pathname, ready: document.readyState, fields, hosts: [...new Set(hosts)], shadowCount: hosts.length, iframes, buttons: [...new Set(buttons)].slice(0, 30), listboxes };
+})()`;
+
+/**
+ * W4: the page's markup, for building local replicas of its widgets. Read through the DevTools pipe and only reads: the
+ * document is cloned, each form-ish element of the clone is annotated with the original's computed display, visibility,
+ * opacity, size, position and clip (data-w4), and scripts, styles, links, meta and SVG bodies are dropped from the clone.
+ * The live page is never changed. Field values are not in the markup beyond the value attributes the page wrote.
+ */
+const MARKUP = `(() => {
+  const want = "input, select, textarea, button, label, iframe, form, fieldset, legend, [role], [contenteditable], [aria-pressed], [aria-checked], [aria-selected], [class*=drop i], [class*=upload i], [class*=file i], [class*=attach i], [class*=yes i]";
+  const src = [...document.documentElement.querySelectorAll("*")];
+  const clone = document.documentElement.cloneNode(true);
+  const dst = [...clone.querySelectorAll("*")];
+  if (src.length === dst.length) for (let i = 0; i < src.length; i++) {
+    const el = src[i];
+    if (!el.matches(want)) continue;
+    const cs = getComputedStyle(el); const r = el.getBoundingClientRect();
+    dst[i].setAttribute("data-w4", [cs.display, cs.visibility, cs.opacity, Math.round(r.width) + "x" + Math.round(r.height), cs.position, cs.clipPath, cs.clip, Math.round(r.x) + "," + Math.round(r.y + scrollY)].join("|"));
+  }
+  for (const x of clone.querySelectorAll("script, style, noscript, link, meta")) x.remove();
+  for (const x of clone.querySelectorAll("svg")) x.replaceChildren();
+  return "<!doctype html>\\n<!-- " + location.origin + location.pathname + " -->\\n" + clone.outerHTML;
 })()`;
 
 const sitesFound: Record<string, unknown>[] = [];
@@ -864,7 +1114,7 @@ async function sitesPass(session: EngineSession | null, cdp: Cdp, sites: { name:
       for (let i = 0; i < 60 && (await evaluate<string>("document.readyState").catch(() => "loading")) !== "complete"; i++) await sleep(500);
       // Single-page apps (Ashby, Workday, Lever's apply) render their forms after load.
       await sleep(6000);
-      const census = await evaluate<{ title: string; at: string; fields: { kind: string; label: string; inShadow: boolean }[]; hosts: string[]; shadowCount: number; iframes: { src: string; visible: boolean; size: [number, number] }[]; buttons: string[]; listboxes: number }>(CENSUS);
+      const census = await evaluate<{ title: string; at: string; fields: { kind: string; label: string; inShadow: boolean; rect: [number, number, number, number] }[]; hosts: string[]; shadowCount: number; iframes: { src: string; visible: boolean; size: [number, number] }[]; buttons: string[]; listboxes: number }>(CENSUS);
       let snap: PageSnapshot | null = null;
       let walkNote = "no engine";
       if (session !== null) {
@@ -881,12 +1131,22 @@ async function sitesPass(session: EngineSession | null, cdp: Cdp, sites: { name:
       const png = (await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: w, height: h, scale: 1 } }, sessionId)) as { data: string };
       const shot = join(shots, `${s.name}.png`);
       writeFileSync(shot, Buffer.from(png.data, "base64"));
+      // W4: the markup (for replicas) and the walk (for the offline fill replay), beside the screenshot.
+      writeFileSync(join(shots, `${s.name}.html`), await evaluate<string>(MARKUP));
+      if (snap !== null) writeFileSync(join(shots, `${s.name}.snapshot.json`), `${JSON.stringify(snap, null, 1)}\n`);
       const controls = snap?.frames.flatMap((f) => f.controls.map((c) => ({ ...c, frame: `${f.origin}${f.path}` }))) ?? [];
       const byKind: Record<string, number> = {};
       for (const c of controls) byKind[c.kind] = (byKind[c.kind] ?? 0) + 1;
       const walked = new Set(controls.map((c) => norm(c.name)));
       // Fields the page shows in its top document that no walked control is named like; cross-origin frames are walked but not in the census.
       const missed = census.fields.filter((f) => f.label !== "" && !walked.has(norm(f.label)) && ![...walked].some((n) => n !== "" && (n.startsWith(norm(f.label)) || norm(f.label).startsWith(n))));
+      // W4: the same question by place, which does not depend on names (W4 names fields by their question, which W3's
+      // name match counts as missed): a top-document field whose centre no walked top-frame control's box holds.
+      const topRects = snap?.frames.filter((f) => f.parentFrameId < 0).flatMap((f) => f.controls.map((c) => c.rect)) ?? [];
+      const missedByPlace = census.fields.filter((f) => {
+        const [x, y] = [f.rect[0] + f.rect[2] / 2, f.rect[1] + f.rect[3] / 2];
+        return !topRects.some(([rx, ry, rw, rh]) => x >= rx - 2 && x <= rx + rw + 2 && y >= ry - 2 && y <= ry + rh + 2);
+      });
       const row = {
         name: s.name,
         url: s.url,
@@ -901,11 +1161,12 @@ async function sitesPass(session: EngineSession | null, cdp: Cdp, sites: { name:
         files: controls.filter((c) => c.kind === "file").map((c) => c.name),
         census: { fields: census.fields.length, kinds: census.fields.reduce<Record<string, number>>((m, f) => ((m[f.kind] = (m[f.kind] ?? 0) + 1), m), {}), inShadow: census.fields.filter((f) => f.inShadow).length, shadowHosts: census.hosts, shadowCount: census.shadowCount, iframes: census.iframes, listboxes: census.listboxes, buttons: census.buttons },
         missed: missed.map((f) => `${f.kind} '${f.label}'`),
+        missedByPlace: missedByPlace.map((f) => `${f.kind} '${f.label}'`),
         walkedNames: controls.map((c) => `${c.kind} '${c.name}'`),
         screenshot: shot,
       };
       sitesFound.push(row);
-      return `walk ${walkNote}: ${controls.length} controls ${JSON.stringify(byKind)} in ${row.frames.length} frames (${row.missingFrames.length} missing); census ${census.fields.length} visible fields, ${census.iframes.length} iframes, ${census.shadowCount} shadow hosts; missed ${missed.length}`;
+      return `walk ${walkNote}: ${controls.length} controls ${JSON.stringify(byKind)} in ${row.frames.length} frames (${row.missingFrames.length} missing); census ${census.fields.length} visible fields, ${census.iframes.length} iframes, ${census.shadowCount} shadow hosts; missed ${missed.length} by name, ${missedByPlace.length} by place`;
     });
   }
 }
@@ -1551,7 +1812,9 @@ async function main(): Promise<number> {
   await batch2(e, site, tmp, published);
   // Batch 3 before the decoy page, which has no control channel to navigate away from.
   await batch3(e, site);
+  await batch4(e, site, tmp);
   await decoyCheck(e, site);
+  await lateCheck({ exe, env, bridge, extensionId, tmp, host, helper, site, log });
   if (!args["no-reader"]) await readerCheck(session.info.browser.pid, tmp);
   await check("/submitted still reads 0 after every batch 2 check", async () => {
     const count = ((await (await fetch(`${site.mainOrigin}/submitted`)).json()) as { count: number }).count;
@@ -1560,7 +1823,9 @@ async function main(): Promise<number> {
   });
   const idle = Number(args.idle);
   if (idle > 0) await idleCheck(e, idle);
-  if (frontmost() !== front0 && /Chrome for Testing|Helium/.test(frontmost())) results.push({ name: "the browser never took the front", pass: false, ms: 0, detail: frontmost() });
+  // By pid (W4): Sam's own Helium in front is not this run's browser, which the display name alone could not tell.
+  const front = frontmostPid();
+  if (front !== null && processTree(session.info.browser.pid).some((p) => p.pid === front)) results.push({ name: "the browser never took the front", pass: false, ms: 0, detail: `${frontmost()} (pid ${front})` });
   return report(front0, { nmProbe, warnings, jevCalls, engineHello: session.hello, pageEngine: published.filter((m) => m.type === "pageEngine") });
 }
 

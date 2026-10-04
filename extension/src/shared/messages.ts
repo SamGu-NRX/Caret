@@ -26,6 +26,13 @@ export interface PageControl {
   disabled?: true;
   invalid?: true;
   shadow?: "open" | "closed";
+  /**
+   * The question a radio or a press-group option answers, and an id for its group (W4): a radio's fieldset legend or
+   * the text around its group; for a toggle button of a Yes/No question (content/question.ts pressGroup), that question.
+   */
+  group?: { id: string; name: string };
+  /** A press-group option's aria-pressed (W4). */
+  pressed?: boolean;
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";
@@ -41,7 +48,7 @@ export interface WriteReadings {
 
 /** pageChooseOption's findings (protocol.ts PageChoice). */
 export interface Choice {
-  flavor: "aria" | "reactSelect";
+  flavor: "aria" | "reactSelect" | "pressGroup";
   matches: string[];
   expanded: boolean | null;
   hiddenInput: "set" | "unchanged" | "none";
@@ -83,7 +90,8 @@ export type ActVerb =
   | ({ kind: "pageWrite"; expect: string; value: string } & TargetFields)
   | ({ kind: "pagePress" } & TargetFields)
   | ({ kind: "pageSelect"; expect: string; value: string } & TargetFields)
-  | ({ kind: "pageChooseOption"; expect: string; value: string } & TargetFields)
+  /** `question` (W4): for a press-group option, the question the plan names; the content script requires it unchanged. */
+  | ({ kind: "pageChooseOption"; expect: string; value: string; question?: string } & TargetFields)
   | ({ kind: "pageSetChecked"; checked: boolean } & TargetFields)
   | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string; data: string } } & TargetFields);
 
@@ -112,6 +120,8 @@ export interface FrameReport {
  */
 export type ToContent =
   | { caret: 1; op: "walk" }
+  /** The frame's viewport only, [innerWidth, innerHeight]: asked of a captcha frame, which is never walked (W4). */
+  | { caret: 1; op: "viewport" }
   | { caret: 1; op: "act"; verb: ActVerb; deadline: number; guardUntil: number }
   | { caret: 1; op: "guard"; until: number };
 

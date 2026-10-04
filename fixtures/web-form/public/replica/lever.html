@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Replica: Lever application</title>
+<!-- W4: the structure of Lever's apply form (saved read-only on 2026-10-04): the resume input is transparent over an
+     ATTACH RESUME/CV link inside the label, custom questions put their text in a sibling div with no legend and no
+     label, an unlabelled select whose placeholder option (value "") reads like an answer, and a text field named only
+     by its placeholder. Every name and value here is invented; the page's script is the fixture's own (replica.js). -->
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  ul { list-style: none; padding: 0; }
+  .application-question { margin: 14px 0; }
+  .postings-btn { position: relative; display: inline-block; width: 230px; height: 40px; border: 1px solid #888; }
+  .invisible-resume-upload { position: absolute; top: 0; left: 0; width: 230px; height: 40px; opacity: 0; }
+</style>
+</head>
+<body>
+<h1>Replica: Lever application</h1>
+<form id="application-form">
+  <ul>
+    <li class="application-question resume"><label><div class="application-label">Resume/CV <span class="required">✱</span></div>
+      <div class="application-field"><a href="#" class="postings-btn"><span class="filename" id="lever-filename"></span><span class="default-label">ATTACH RESUME/CV</span><input class="invisible-resume-upload" id="resume-upload-input" name="resume" tabindex="-1" type="file"></a></div></label></li>
+    <li class="application-question"><div><div class="application-label"><div class="text">Are you legally authorized to work in the country for which you are applying?<span class="required">✱</span></div></div>
+      <div class="application-field"><ul data-qa="multiple-choice"><li><label><input type="radio" name="cards[c1][field0]" value="Yes"><span>Yes</span></label></li><li><label><input type="radio" name="cards[c1][field0]" value="No"><span>No</span></label></li></ul></div></div></li>
+    <li class="application-question"><div><div class="application-label"><div class="text">How did you hear about this job?</div></div>
+      <div class="application-field"><select name="cards[c2][field0]"><option value="">Click Here (If you encounter an issue, make sure your browser is updated)</option><option value="Referral">Referral</option><option value="LinkedIn">LinkedIn</option></select></div></div></li>
+    <li class="application-question"><div><div class="application-label"><div class="text">Name Pronunciation | How do you pronounce your name?</div></div>
+      <div class="application-field"><input type="text" placeholder="Type your response" name="cards[c3][field2]"></div></div></li>
+    <li class="application-question"><div><div class="application-label"><div class="text">What is your gender?</div></div>
+      <div class="application-field"><ul><li><label><input type="radio" name="eeo[gender]" value="a"><span>Option A</span></label></li><li><label><input type="radio" name="eeo[gender]" value="b"><span>Option B</span></label></li></ul></div></div></li>
+  </ul>
+  <button type="submit">SUBMIT APPLICATION</button>
+</form>
+<script src="/fixture.js"></script>
+<script src="/replica/replica.js"></script>
+</body>
+</html>

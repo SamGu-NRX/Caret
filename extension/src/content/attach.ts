@@ -4,10 +4,15 @@
 // input (react-dropzone's root, Greenhouse's resume box), and no other control is ever handed a file (W2 review #4).
 // Verified by input.files[0]'s name and size (an input) and by the page newly showing the file's name in rendered
 // text near the control (both); an input whose page renders no name is reported with shown false.
+//
+// W4: a hidden file input that a visible attach control owns (question.ts fileOwner: its visible label, or the one
+// Attach or Upload button beside it) takes the file through input.files like a visible one; the walk reported it at
+// its owner's place under its owner's label, and the eligibility check re-derives the owner before the file goes in.
 import type { ActAnswer, ActVerb, Attached } from "../shared/messages.ts";
 import { composedParent } from "./names.ts";
 import { dropEvents, settle, until } from "./dom.ts";
 import { shadowRootOf, visible } from "./walker.ts";
+import { fileOwner, fileScope } from "./question.ts";
 
 /** How long the page may take to show the file's name. Assumed: an upload widget renders it within a second. */
 const SHOWN_WAIT_MS = 1500;
@@ -28,7 +33,11 @@ export function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
  * taken as the widget showing it (W2 review 2 #7).
  */
 function shownScope(el: Element, via: Attached["via"]): Element {
-  return via === "drop" ? el : (composedParent(el) ?? el);
+  if (via === "drop") return el;
+  // A hidden input a visible attach control owns (W4): the page shows the name in the group around the two.
+  const owner = el instanceof HTMLInputElement && !visible(el) ? fileOwner(el) : null;
+  if (owner !== null) return fileScope(el as HTMLInputElement, owner);
+  return composedParent(el) ?? el;
 }
 
 /**
@@ -58,7 +67,7 @@ function holdsFileInput(el: Element): boolean {
   return own !== null && own.querySelector('input[type="file"]') !== null;
 }
 
-export async function attachFile(el: Element, verb: AttachVerb, check: () => ActAnswer | null, alive: () => Promise<boolean>): Promise<ActAnswer> {
+export async function attachFile(el: Element, verb: AttachVerb, check: () => ActAnswer | null, alive: () => Promise<boolean>, checkAfter: () => ActAnswer | null = check): Promise<ActAnswer> {
   const { name, size, type } = verb.file;
   // Always attached anew: a file already there with the same name and size may hold other bytes.
   const via: Attached["via"] = el instanceof HTMLInputElement && el.type === "file" ? "input" : "drop";
@@ -87,7 +96,7 @@ export async function attachFile(el: Element, verb: AttachVerb, check: () => Act
   }
   await settle();
   const shown = (await until(() => (occurrences(scope, name) > shownBefore ? true : null), SHOWN_WAIT_MS)) === true;
-  const after = check();
+  const after = checkAfter();
   if (after !== null) return answer("failed", `the file went in, then ${after.detail ?? after.outcome}; Caret stopped there`);
   if (via === "drop") {
     const attached: Attached = { via, file: null, shown };

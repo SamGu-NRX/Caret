@@ -1,0 +1,1 @@
+B25: the job form marks required labels with U+2731; realfill normLabel strips it, and B24's scoreboards counted those four fields as not found.

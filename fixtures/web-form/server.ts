@@ -153,6 +153,15 @@ export class FixtureSite {
         return send(res, "application/json", "{}");
       case "GET /tab":
         return html(res, read("tab.html").replaceAll("__N__", url.searchParams.get("i") ?? "0"));
+      // W4: local replicas of real application forms' widgets (public/replica), built from W4's saved markup.
+      case "GET /replica/greenhouse":
+      case "GET /replica/ashby":
+      case "GET /replica/lever":
+        return html(res, read(`replica/${url.pathname.slice("/replica/".length)}.html`));
+      case "GET /replica/replica.js":
+        return send(res, "text/javascript", read("replica/replica.js"));
+      case "GET /busy":
+        return html(res, read("busy.html"));
       case "GET /fixture.js":
         return send(res, "text/javascript", read("fixture.js"));
       case "GET /app.bundle.js":

@@ -207,7 +207,7 @@ describe("W3 page findings, helper side", () => {
 
   describe("1e: a native select reaches the value write", () => {
     it("shows the select as editable and writes it by option label, verified by the selected option", async () => {
-      expect(helper.model.windows.get(WIN)?.nodes.get(KEY.country)).toMatchObject({ role: "AXPopUpButton", editable: true, value: "Choose one" });
+      expect(helper.model.windows.get(WIN)?.nodes.get(KEY.country)).toMatchObject({ role: "AXPopUpButton", editable: true, value: "" });
       const r = await helper.executor.run("t1", plan([step(KEY.country, "Canada")]), {}, undefined, { grant: true });
       expect(r.outcome).toBe("done");
       expect(page.verbs.find((v) => v.kind === "pageSelect")).toMatchObject({ expect: "", value: "ca" });
@@ -224,18 +224,18 @@ describe("W3 page findings, helper side", () => {
 
     it("picks the option labelled the value, never one whose value merely equals it", async () => {
       await setOptions([{ value: "", label: "Choose one", selected: true }, { value: "Canada", label: "United States", selected: false }, { value: "ca", label: "Canada", selected: false }]);
-      expect((await write("Canada", "Choose one")).outcome).toBe("ok");
+      expect((await write("Canada", "")).outcome).toBe("ok");
       expect(page.verbs.filter((v) => v.kind === "pageSelect")).toEqual([expect.objectContaining({ expect: "", value: "ca" })]);
     });
 
     it("refuses two options with the label, and a select that no longer shows the expected label, sending the page nothing", async () => {
       await setOptions([{ value: "", label: "Choose one", selected: true }, { value: "a", label: "Canada", selected: false }, { value: "b", label: "Canada", selected: false }]);
-      expect((await write("Canada", "Choose one")).outcome).toBe("noElement");
+      expect((await write("Canada", "")).outcome).toBe("noElement");
       await setOptions([{ value: "", label: "Choose one", selected: false }, { value: "us", label: "United States", selected: true }, { value: "ca", label: "Canada", selected: false }]);
-      expect((await write("Canada", "Choose one")).outcome).toBe("changed");
+      expect((await write("Canada", "")).outcome).toBe("changed");
       // Two labels, one value: setting the value would pick the first of them.
       await setOptions([{ value: "", label: "Choose one", selected: true }, { value: "x", label: "Canada", selected: false }, { value: "x", label: "Mexico", selected: false }]);
-      expect((await write("Mexico", "Choose one")).outcome).toBe("noElement");
+      expect((await write("Mexico", "")).outcome).toBe("noElement");
       expect(page.verbs.filter((v) => v.kind === "pageSelect")).toEqual([]);
     });
   });

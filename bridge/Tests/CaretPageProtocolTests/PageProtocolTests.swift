@@ -39,7 +39,24 @@ private func goldenLines() throws -> [Data] {
                           "pageCommand", "pageCommand", "pageResult", "actRevoke", "pageResult", "pageResult", "pageCommand", "pageCommand", "pageResult",
                           "pagePing", "pagePong", "pageChunk", "scopedActGrant",
                           "pageResult", "pageResult", "pageFocus", "pageSitesOff", "pageResult",
-                          "pageCommand", "pageResult", "pageInput"])
+                          "pageCommand", "pageResult", "pageInput",
+                          "pageSnapshot", "pageCommand", "pageResult"])
+    }
+
+    /// W4: a radio group's question, a press group's options, and the press that names its question.
+    @Test func readsTheW4Messages() throws {
+        let lines = try goldenLines()
+        guard case let .pageSnapshot(snap) = try JSONDecoder().decode(PageMessage.self, from: lines[34]),
+              case let .pageCommand(cmd) = try JSONDecoder().decode(PageMessage.self, from: lines[35]),
+              case let .chooseOption(t, expect, value, question) = cmd.verb,
+              case let .pageResult(res) = try JSONDecoder().decode(PageMessage.self, from: lines[36]) else { Issue.record("lines 35 to 37"); return }
+        let controls = snap.frames[0].controls
+        #expect(controls[0].group == PageGroup(id: "e20", name: "Are you authorized to work here?"))
+        #expect(controls[2].pressed == false && controls[3].pressed == true)
+        #expect(t.control == .button && expect == "No" && value == "Yes" && question == "Do you have seven years of experience?")
+        #expect(res.choice?.flavor == .pressGroup)
+        let again = try JSONDecoder().decode(PageVerb.self, from: JSONEncoder().encode(cmd.verb))
+        #expect(again == cmd.verb)
     }
 
     /// W3: an undo's verb carries rebind false and is refused as notSameElement; the user's input; the focused-window flag.
