@@ -86,7 +86,7 @@ describe("quickjs-emscripten 0.32.0 limits", () => {
     });
     await w.terminate();
     expect(out).toEqual(["InternalError: stack overflow", expect.stringMatching(/^InternalError: (stack overflow|out of memory)$/), "SyntaxError: stack overflow"]);
-  });
+  }, 30_000); // three fresh modules and a million-object loop; took over 5 s with the Mac at load 26
 
   test("interrupt handler stops an infinite loop", async () => {
     const qjs = await moduleWithCap(64 * MiB);
