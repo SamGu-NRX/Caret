@@ -195,11 +195,36 @@ export class Skills {
    * write under still allows it.
    */
   runsOnItsOwn(routineId: string, action: WriteAction, plan: Plan): boolean {
-    const s = this.activeSkill(routineId);
-    if (s === null || !s.onItsOwn || s.handsOff !== null) return false;
-    if (this.deps.memory.routine(routineId)?.finish != null) return false;
-    if (handedPress(plan) !== null) return false;
-    return mayRunUnasked(action, this.deps.memory.permission(action));
+    return handedPress(plan) === null && this.whyNotOnItsOwn(this.deps.memory.skillFor(routineId), action) === null;
+  }
+
+  /**
+   * Why a run with no Tab of this skill may not act now, or null: asked before each of its acts and after
+   * every change to what it depends on (S1 audit #4). `action` is the permission its next act falls under,
+   * judged from where the user is now; null asks only what does not depend on one.
+   */
+  whyNotOnItsOwn(s: SkillRecord | null, action: WriteAction | null): string | null {
+    const memory = this.deps.memory;
+    if (s === null) return "you forgot the skill";
+    if (s.paused) return `you paused ${s.name}`;
+    if (!s.onItsOwn) return `${s.name} is back on Tab`;
+    if (s.handsOff !== null) return `${s.name} ends in a press Caret leaves to you`;
+    const routine = memory.routine(s.routineId);
+    if (routine === null) return "you forgot the routine the skill was made from";
+    if (routine.paused) return "you paused the routine the skill was made from";
+    if (routine.finish != null) return `${s.name} ends in a press Caret leaves to you`;
+    if (this.deps.shadow() || this.deps.gate.holds("routine", this.clock).some((h) => h !== "hourlyBudget")) return "your settings no longer let Caret run routines";
+    if (action !== null && !mayRunUnasked(action, memory.permission(action))) {
+      return action === "writeHere" ? "Write where you are does not let a skill write unasked" : "Reversible write elsewhere is not set to act if pre-approved, and the window is not the one you are in";
+    }
+    return null;
+  }
+
+  /** Why the run with this task id, started by a skill with no Tab, may not act now; see whyNotOnItsOwn. */
+  whyRunMayNotAct(taskId: string, action: WriteAction | null): string | null {
+    const run = this.runs.get(taskId);
+    if (run === undefined) return "Caret has no record of the skill that started this run";
+    return this.whyNotOnItsOwn(this.deps.memory.skill(run.skillId), action);
   }
 
   /** A run of a skill started; its result and any undo of it are counted against the skill. */

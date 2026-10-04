@@ -47,6 +47,31 @@ export interface ExecutorDeps {
   onUse?: (u: TaskUse) => void;
   /** Whether memory entry `id` still holds `value` (Step.memory). Without it, a step that names an entry is refused. */
   memoryHolds?: (id: string, value: string) => boolean;
+  /**
+   * Whether the task may still act, asked right before every write, press, raise and calendar add, and by
+   * `recheck` for every live task: what it depends on (Caret not paused, its skill still on its own, the
+   * permission for the action it is about to take, the host session that started it) may have changed
+   * since it started (S1 audit #4, #5). `action` is null for the checks that do not depend on one. Without
+   * it every act is allowed, as in tests that predate B22.
+   */
+  authorize?: (a: Authorization) => Revocation | null;
+}
+
+/** What `authorize` is asked about: a task, whether a skill started it with no Tab, and the permission its next act falls under. */
+export interface Authorization {
+  taskId: string;
+  unprompted: boolean;
+  action: ActionType | null;
+}
+
+/**
+ * Why a task may no longer act. `you`: the user changed something it depended on (a permission, Caret's
+ * pause, the skill, a memory entry, the settings); the run stops as stopped by you. `host`: the host
+ * session that started it is gone; the run stops as an error Caret reports.
+ */
+export interface Revocation {
+  why: string;
+  by: "you" | "host";
 }
 
 /** One use of a permission by a run: its action type, what it did as a sentence, the app, and how it ended. */
@@ -94,11 +119,15 @@ export interface TaskEvent {
   window: { app: AppRef; windowId: string; title: string; frame: Frame | null } | null;
 }
 
-/** Why a run must stop at its next step boundary. `takeOver` is a pause that hands the run back to the user. */
+/**
+ * Why a run must stop at its next step boundary. `takeOver` is a pause that hands the run back to the user.
+ * `revoked`: a stop because something the task depended on changed (Executor.revoke), said in the stop's detail.
+ */
 interface Interrupt {
   kind: "pause" | "stop";
   by: "input" | "control" | "takeOver";
   why: string;
+  revoked?: Revocation;
 }
 
 export interface TaskResult {
@@ -379,6 +408,90 @@ export class Executor {
     this.revokeGrant(task);
   }
 
+  /**
+   * Ends a task because something it depended on changed (S1 audit #4, #5): its grant now, so an act
+   * already on its way is refused, and the run at its next step boundary, as stopped with `r.why`. A paused
+   * task stops now; an undo under way stops its remaining restores, as a stop does. A finished task holds no
+   * grant and is left as it is.
+   */
+  revoke(taskId: string, r: Revocation): void {
+    const task = this.tasks.get(taskId);
+    if (task === undefined) return;
+    if (task.undoing) return this.stopUndo(task);
+    if (task.finished === "paused") {
+      task.finished = "stopped";
+      releaseSources(task);
+      this.stoppedBy(task, r);
+      this.reportUses(task, "stopped");
+      return;
+    }
+    if (task.finished !== null || task.interrupt?.kind === "stop") return;
+    task.interrupt = { kind: "stop", by: "control", why: r.why, revoked: r };
+    this.revokeGrant(task);
+  }
+
+  /**
+   * Asks `authorize` again about every task that may still act, after a change to what tasks depend on (the
+   * user's settings, a permission, a skill or memory entry, a host session): Caret's general checks, the
+   * permission of every window its remaining steps act in, as that window stands to the user now, and every
+   * memory entry a remaining step copies. A task that fails any of them is revoked.
+   */
+  recheck(): void {
+    for (const task of this.tasks.values()) {
+      if (task.undoing || (task.finished !== null && task.finished !== "paused")) continue;
+      const r = this.dependencyBroken(task);
+      if (r !== null) this.revoke(task.id, r);
+    }
+  }
+
+  private dependencyBroken(task: Task): Revocation | null {
+    const authorize = this.deps.authorize;
+    const ask = (action: ActionType | null): Revocation | null => authorize?.({ taskId: task.id, unprompted: task.unprompted, action }) ?? null;
+    const general = ask(null);
+    if (general !== null) return general;
+    for (const step of task.plan.steps.slice(task.next)) {
+      const end = step.end;
+      if (end.kind === "calendarEvent") {
+        const r = ask("writeElsewhere");
+        if (r !== null) return r;
+        continue;
+      }
+      const windowId = task.windows.get(JSON.stringify(end.window));
+      if (windowId !== undefined) {
+        const r = ask(this.actionIn(windowId));
+        if (r !== null) return r;
+      }
+      if (step.memory !== undefined && end.kind === "valueEquals" && this.deps.memoryHolds?.(step.memory, end.value) !== true) {
+        return { why: `what you told Caret for '${step.says}' changed or is gone`, by: "you" };
+      }
+    }
+    return null;
+  }
+
+  /** The permission an act in this window falls under now: "Write where you are" in the window the user is in, "Reversible write elsewhere" anywhere else. */
+  private actionIn(windowId: string | null): ActionType {
+    return windowId !== null && windowId === this.userWindow() ? "writeHere" : "writeElsewhere";
+  }
+
+  /**
+   * Asked right before an act is dispatched: a task whose dependency broke since the last check (the user
+   * moved to another window, turning a write where they are into a write elsewhere, or changed a permission)
+   * is revoked, and the run stops here rather than acting.
+   */
+  private authorizeAct(task: Task, windowId: string | null): void {
+    const r = this.deps.authorize?.({ taskId: task.id, unprompted: task.unprompted, action: this.actionIn(windowId) }) ?? null;
+    if (r === null) return;
+    this.revoke(task.id, r);
+    throw new Interrupted();
+  }
+
+  /** The stopped phase of a revoked task: who caused it, and why in the detail. */
+  private stoppedBy(task: Task, r: Revocation): string {
+    const detail = `stopped ${this.boundary(task)}: ${r.why}`;
+    this.stopped(task, this.stepAt(task), detail, r.by === "you" ? "you" : "caret", r.by === "you" ? "you" : "error");
+    return detail;
+  }
+
   /** Ends an undo under way: its grant now, so a restore already sent is refused, and the rest are not tried. */
   private stopUndo(task: Task): void {
     task.undoStopped = true;
@@ -515,9 +628,12 @@ export class Executor {
         task.interrupt = null;
         const at = this.stepAt(task);
         if (it.kind === "stop") {
-          const detail = `stopped by you ${this.boundary(task)}`;
           task.finished = "stopped";
-          this.stopped(task, at, detail, "you", "you");
+          let detail: string;
+          if (it.revoked === undefined) {
+            detail = `stopped by you ${this.boundary(task)}`;
+            this.stopped(task, at, detail, "you", "you");
+          } else detail = this.stoppedBy(task, it.revoked);
           this.reportUses(task, "stopped");
           return this.result(task, "stopped", at, detail);
         }
@@ -738,6 +854,7 @@ export class Executor {
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `add event '${end.title}' to ${end.calendar}; expect it to be found there`);
     this.checkSession(task);
+    this.authorizeAct(task, null);
     // Only a task from an accepted offer gets one; without it the reader refuses the add.
     this.issueCalendarGrant(task);
     let ev: Awaited<ReturnType<CalendarPort["add"]>>;
@@ -768,6 +885,7 @@ export class Executor {
     this.checkSession(task);
     // The last boundary: a pause or stop that arrived while the step published or prepared its act.
     this.checkInterrupt(task);
+    if (verb.kind === "write" || verb.kind === "press" || verb.kind === "raise") this.authorizeAct(task, windowId);
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === windowId) seen.push(c);

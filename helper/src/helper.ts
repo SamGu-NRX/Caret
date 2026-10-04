@@ -45,7 +45,7 @@ import {
   type TaskState,
 } from "./protocol.ts";
 import type { Change, WindowState } from "./model.ts";
-import { Executor, type ExecutorDeps, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
+import { Executor, type Authorization, type ExecutorDeps, type Revocation, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
 import { MemoryStore } from "./patterns/memory.ts";
 import { PatternEngine } from "./patterns/engine.ts";
@@ -277,6 +277,7 @@ export class Helper {
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
       memoryHolds: (id, value) => this.memory.text(id) === value,
+      authorize: (a) => this.authorize(a),
       onChanges: (l) => {
         this.changeListeners.add(l);
         return () => this.changeListeners.delete(l);
@@ -360,6 +361,25 @@ export class Helper {
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
+  }
+
+  /**
+   * Whether a task may act now (Executor.authorize). Caret paused stops every task, the one the user
+   * accepted too: a pause means Caret does nothing. A run a skill started with no Tab also needs its skill
+   * still on its own and the permission for where its next act lands, as the user stands now
+   * (Skills.whyNotOnItsOwn). A run the user accepted answered "ask" for its writes; it needs only that the
+   * permission is not one Caret always hands off.
+   */
+  private authorize(a: Authorization): Revocation | null {
+    if (this.gate.settings.paused) return { why: "you paused Caret", by: "you" };
+    if (a.unprompted) {
+      const action = a.action === "writeHere" || a.action === "writeElsewhere" ? a.action : null;
+      if (a.action !== null && action === null) return { why: `a skill with no Tab never acts under ${a.action}`, by: "you" };
+      const why = this.patterns.skills.whyRunMayNotAct(a.taskId, action);
+      return why === null ? null : { why, by: "you" };
+    }
+    if (a.action !== null && this.memory.permission(a.action) === "handoff") return { why: `your rule for ${a.action} hands it to you`, by: "you" };
+    return null;
   }
 
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
@@ -510,6 +530,8 @@ export class Helper {
     if (!m.roles.includes("watch")) this.pending.stopAll("you turned off watching");
     // Watches ask nothing while Caret is paused; once it is not, a window that changed meanwhile is asked about.
     else if (this.gate.enabled("pending")) this.pending.resumeAsks();
+    // A pause, or routines turned off, ends the work that depended on them now, not at its next act (S1 audit #4).
+    this.executor.recheck();
   }
 
   /** Whether a reader is connected, as the first look sees it. */
@@ -702,6 +724,9 @@ export class Helper {
       const ids = m.op === "add" ? reply.entries.map((e) => e.id) : m.id === undefined ? [] : [m.id];
       for (const id of ids) this.withdrawMemoryOffers(id);
     }
+    // A permission changed, a skill put back on Tab, paused or forgotten, or an entry a run copies edited or
+    // forgotten: every task that depended on it is revoked now (S1 audit #4).
+    if (reply.error === null && m.op !== "list") this.executor.recheck();
     // A name or email the user just told Caret reaches the form they are on now, without a new focus (B21).
     if (reply.error === null && m.op === "add") {
       const at = this.now();

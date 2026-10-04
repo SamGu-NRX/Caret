@@ -95,12 +95,12 @@ describe("taking control back (B22)", () => {
   });
 
   /** Resets the form, runs the two-field plan under a grant, and takes control back while step 2's write is queued. */
-  async function race(taskId: string, takeBack: ((taskId: string) => void | Promise<void>) | null): Promise<TaskResult> {
+  async function race(taskId: string, takeBack: ((taskId: string) => void | Promise<void>) | null, p: Plan = two()): Promise<TaskResult> {
     reader.setValue(FORM, NAME, "");
     reader.setValue(FORM, EMAIL, "old@example.com");
     await until(() => helper.model.windows.get(FORM)?.nodes.get(EMAIL)?.value === "old@example.com" && helper.model.windows.get(FORM)?.nodes.get(NAME)?.value === undefined);
     whileQueued = takeBack;
-    return helper.executor.run(taskId, two(), {}, undefined, { grant: true });
+    return helper.executor.run(taskId, p, {}, undefined, { grant: true });
   }
 
   /** The time the reader received the task's first revoke, or Infinity. */
@@ -126,6 +126,21 @@ describe("taking control back (B22)", () => {
     ["take over from the host", control("takeOver"), "paused"],
     ["stop from the host", control("stop"), "stopped"],
   ];
+
+  // S1 audit #4: a change to what a run the user accepted depends on.
+  sources.push(["Caret paused from the host's settings", () => host.send({ type: "settings", v: PROTOCOL_VERSION, at: 1, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "balanced", paused: true }), "stopped"]);
+
+  it("no act reaches the app after the revoke: the user forgets the memory entry the queued write copies", async () => {
+    const added = helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "a", op: "add", kind: "about", fields: { label: "Email", value: "d@example.com", source: "typed" } });
+    const id = added.entries[0]!.id;
+    const p = two();
+    p.steps[1] = { ...p.steps[1]!, memory: id };
+    const r = await race("t1", () => host.send({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "f", op: "forget", id }), p);
+    expect(r).toMatchObject({ outcome: "stopped", step: 1 });
+    expect(r.detail).toMatch(/what you told Caret/);
+    expect(actsAfter("t1", revokedAt("t1"))).toEqual([]);
+    expect(reader.value(FORM, EMAIL)).toBe("old@example.com");
+  });
 
   for (const [name, takeBack, outcome] of sources) {
     it(`no act reaches the app after the revoke: ${name}`, async () => {

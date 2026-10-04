@@ -509,6 +509,63 @@ describe("skills in the helper", () => {
     expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
   });
 
+  /**
+   * Runs one occurrence on its own and calls `change` once, as the run's first write answers. Returns the run,
+   * whether the grant was revoked by the change itself (before any later verb), and how many values landed.
+   */
+  const changeMidRun = async (change: () => void): Promise<{ own: CaretRun; revokedAtOnce: boolean; landed: number }> => {
+    let revokedAtOnce = false;
+    desk.afterWrite = (v) => {
+      desk.afterWrite = null;
+      const before = desk.grants.log.length;
+      change();
+      revokedAtOnce = desk.grants.log.slice(before).some((g) => g.type === "actRevoke" && g.taskId === v.taskId);
+    };
+    const own = await caretRun();
+    desk.afterWrite = null;
+    finish(own);
+    return { own, revokedAtOnce, landed: values(own.window).filter((x) => x !== "").length };
+  };
+  const settings = (s: { roles?: ("fill" | "repeat" | "watch" | "calendar" | "words")[]; paused?: boolean }): void =>
+    helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: s.roles ?? ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: s.paused ?? false });
+
+  // S1 audit #4: before B22 these changes withdrew offers but let a run already going write every field.
+  for (const [name, change] of [
+    ["the user puts it back on Tab", () => expect(ask("edit", { id: skills()[0]!.id, fields: { onItsOwn: false } }).error).toBeNull()],
+    ["the user pauses the skill", () => expect(ask("pause", { id: skills()[0]!.id }).error).toBeNull()],
+    ["the user forgets the skill", () => expect(ask("forget", { id: skills()[0]!.id }).error).toBeNull()],
+    ["the user sets Reversible write elsewhere back to ask first", () => setRule("writeElsewhere", "ask")],
+    ["the user turns routines off", () => settings({ roles: ["fill", "watch", "calendar", "words"] })],
+    ["the user pauses Caret", () => settings({ paused: true })],
+  ] as const) {
+    it(`revokes a run with no Tab at once when ${name}, and writes nothing more`, async () => {
+      await promoted();
+      const { own, revokedAtOnce, landed } = await changeMidRun(change);
+      expect(own.offer).toBeNull();
+      expect(revokedAtOnce).toBe(true);
+      expect(landed).toBe(1);
+      expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "you", unprompted: true });
+    });
+  }
+
+  it("rechecks the permission before each write as the user moves: a write where they were becomes a write elsewhere, which needs its own permission", async () => {
+    // Promoted while the user works in Mail, with Reversible write elsewhere left at ask first.
+    frontmost = "mail";
+    await keep();
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    expect(skills()[0]!.fields.onItsOwn).toBe(true);
+    // The user switches to another app as the first write answers: nothing tells the helper but the switch itself.
+    const { own, landed } = await changeMidRun(() => void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: desk.at, from: MAIL_APP, to: FIXTURE_APP }));
+    expect(own.offer).toBeNull();
+    expect(landed).toBe(1);
+    expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "you", unprompted: true });
+    expect(own.progress.at(-1)?.detail).toMatch(/Reversible write elsewhere/);
+  });
+
   it("resets on a take over, and never offers again after a declined promote offer", async () => {
     frontmost = "mail";
     await keep();
