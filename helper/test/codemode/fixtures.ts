@@ -43,7 +43,7 @@ export const MAIL: PlanningSnapshot = {
 };
 
 /** A writer's program for "sign me up for the workshop from the email", as the writer would return it. */
-export const CANNED_PROGRAM = `async function main(caret: CaretPlanAPI): Promise<DraftPlan> {
+export const CANNED_PROGRAM = `async function main(caret: CaretPlanAPI): Promise<PlanRef> {
   const form = await caret.readWindow();
   const mail = await caret.readWindow("win:mail" as WindowRef);
   const field = (label: string) => form.targets.find((t) => t.label === label)!;
