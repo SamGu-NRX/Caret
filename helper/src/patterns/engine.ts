@@ -86,6 +86,27 @@ export interface EngineDeps {
    * process, so a new offer must not take it (B23).
    */
   taken?: (id: string) => boolean;
+  /**
+   * Routing is on (routing/coordinator.ts): an offer that passed the speak-now gate is held, not shown, and `held` is
+   * called. The router shows it (release) or lets it go (dropHeld). A skill the user already let run on its own still
+   * starts from its trigger: routing neither grants nor takes away that approval.
+   */
+  routed?: { held: () => void };
+}
+
+/** A pattern offer held for the router (EngineDeps.routed): what it is, for the router's list. */
+export interface HeldPatternOffer {
+  id: string;
+  kind: OfferKind;
+  windowId: string;
+  says: string;
+  /** The routine's skill, when the user kept it as one. */
+  skill: boolean;
+  /** The pattern's matched predictions, the router's relevance among workflows. */
+  hits: number;
+  /** Values it would write, and the apps it copies them from. */
+  values: number;
+  from: string[];
 }
 
 type Cell = LoopCell | RoutineCell;
@@ -249,6 +270,49 @@ export class PatternEngine {
     let id = `offer-${++this.seq}`;
     while (this.deps.taken?.(id) === true) id = `offer-${++this.seq}`;
     return id;
+  }
+
+  /** Offers held for the router, by id, with what showing them adds (a loopNext's alternatives). */
+  private readonly held = new Map<string, { o: OfferState; hits: number; after: (() => void) | null }>();
+
+  /** The offers held for the router in this window. */
+  heldOffers(windowId: string): HeldPatternOffer[] {
+    return [...this.held.values()].flatMap(({ o, hits }) =>
+      o.msg.windowId !== windowId
+        ? []
+        : [{ id: o.msg.id, kind: o.msg.kind, windowId: o.msg.windowId, says: o.msg.says, skill: this.skills.activeSkill(o.routineId) !== null, hits, values: o.cells.length, from: [...new Set(o.msg.cells.map((c) => c.source.appName))] }],
+    );
+  }
+
+  /** Every held offer's id, in any window. */
+  heldIds(): string[] {
+    return [...this.held.keys()];
+  }
+
+  /**
+   * The router chose a held offer: it is shown now, with its hourly budget unit, unless what it copies or fills
+   * changed while it waited.
+   */
+  release(id: string): void {
+    const h = this.held.get(id);
+    if (h === undefined) return;
+    this.held.delete(id);
+    const stale = this.recheck(h.o);
+    if (stale !== null) {
+      this.log(h.o.msg.kind, h.o.msg.patternId, h.o.msg.windowId, { speak: false, reasons: ["ungrounded"], showProbability: h.o.msg.showProbability });
+      return;
+    }
+    this.deps.gate.spoke(this.clock);
+    this.show(h.o);
+    h.after?.();
+  }
+
+  /** The router did not choose a held offer: it goes without being shown. */
+  dropHeld(id: string): void {
+    const h = this.held.get(id);
+    if (h === undefined) return;
+    this.held.delete(id);
+    this.log(h.o.msg.kind, h.o.msg.patternId, h.o.msg.windowId, { speak: false, reasons: ["routedOut"], showProbability: h.o.msg.showProbability });
   }
 
   /** Unprompted runs started and not yet finished, for tests and evaluations to await. */
@@ -557,6 +621,7 @@ export class PatternEngine {
 
   /** A new reader numbers windows from scratch: every open bundle closes, and every offer is stale. */
   readerRestarted(): void {
+    this.held.clear();
     this.routines.flush();
     // The new reader watches no presses; the next occurrence sends its window again.
     this.pressWatch = "";
@@ -792,7 +857,10 @@ export class PatternEngine {
     switch (ev.type) {
       case "predict": {
         const o = this.offer("loopNext", ev.loop.id, { loopId: ev.loop.id, routineId: null }, ev.cells, { hits: 1, misses: 0, paused: false, grounded: true });
-        if (o !== null) this.offerAlternatives(o, ev.alternatives, ev.repeats);
+        if (o === null) return;
+        const h = this.held.get(o.msg.id);
+        if (h !== undefined) h.after = () => this.offerAlternatives(o, ev.alternatives, ev.repeats);
+        else this.offerAlternatives(o, ev.alternatives, ev.repeats);
         return;
       }
       case "confirmed":
@@ -865,12 +933,19 @@ export class PatternEngine {
       return d;
     });
     if (!decision.speak) return null;
-    this.deps.gate.spoke(this.clock);
     const o = this.create(kind, patternId, ids, cells, w.window.windowId, decision.showProbability, false, finish);
     if (ids.routineId !== null && this.deps.hostConnected() && this.skills.runsOnItsOwn(ids.routineId, this.writeAction(windowId), o.plan)) {
+      this.deps.gate.spoke(this.clock);
       this.startUnprompted(o);
       return o;
     }
+    const routed = this.deps.routed;
+    if (routed !== undefined) {
+      this.held.set(o.msg.id, { o, hits: evidence.hits, after: null });
+      routed.held();
+      return o;
+    }
+    this.deps.gate.spoke(this.clock);
     return this.show(o);
   }
 

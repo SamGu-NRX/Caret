@@ -24,7 +24,9 @@ export type HoldReason =
   | "unproven"
   | "ungrounded"
   /** Another routine already spoke for this window. Added by the engine, not by decide(). */
-  | "outranked";
+  | "outranked"
+  /** Routing was on and the router did not choose it for the moment (routing/coordinator.ts). Added by the engine. */
+  | "routedOut";
 
 export interface GateInput {
   offerKind: OfferKind;

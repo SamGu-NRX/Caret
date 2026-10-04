@@ -30,6 +30,7 @@ import {
   type MemoryProvenance,
   type MemoryReply,
   type MemoryRequest,
+  type Node,
   type OfferAccept,
   type OfferControl,
   type OfferStop,
@@ -84,6 +85,28 @@ import type { PlanErrorCode } from "./protocol.ts";
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
+import { AskRefused } from "./planner/ask.ts";
+import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
+import { ASK_ROUTES, type RouteCandidate } from "./routing/routes.ts";
+import type { RoutingContext } from "./routing/context.ts";
+import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
+import { sentences, type EventCandidate } from "./offers/event-card.ts";
+import { nodeText } from "./model.ts";
+import { createHash } from "node:crypto";
+
+/**
+ * The router above the producers (routing/coordinator.ts). With it, no producer makes an ambient offer on its own: a
+ * focus, a finished sentence, a heard conversation line, a held pattern offer or a resolved watch is a candidate the
+ * router decides about once per context.
+ */
+export interface RoutingOptions {
+  /** Whether a connected host consumes write decisions; write is not a legal outcome until one does. */
+  hostWrites?: () => boolean;
+  /** Replaces setTimeout for the routers' cooldown, for tests and evaluations with a fake clock. */
+  setTimer?: (fn: () => void, ms: number) => () => void;
+  /** Sees every decision, for evaluations. */
+  onDecision?: (d: Decision) => void;
+}
 
 export interface HelperOptions {
   store: Store;
@@ -160,6 +183,11 @@ export interface HelperOptions {
   newId?: () => string;
   /** The helper's clock for message times, fill proposals and the task feed. Tests pass a fake one. */
   now?: () => number;
+  /**
+   * The router (routing/coordinator.ts). Absent or null: each producer triggers itself, as before D2-02; unit tests and
+   * producer evaluations use that to measure one producer alone. main.ts routes whenever Jev is on.
+   */
+  routing?: RoutingOptions | null;
   publish: (m: HelperMessage) => void;
   warn?: (line: string) => void;
 }
@@ -316,6 +344,8 @@ export class Helper {
    * or its skill, revokes it, a run the user accepted with Tab included.
    */
   private readonly taskDeps = new Map<string, { family: Family | null; routineId: string | null }>();
+  /** Decides once per moment which producer, if any, makes an offer; null when producers trigger themselves. */
+  readonly routing: RoutingCoordinator | null;
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
@@ -360,6 +390,14 @@ export class Helper {
     const askOpt = opts.ask ?? null;
     this.askConfig = askOpt === null || askOpt.maker === "jev" ? askOpt : { maker: "writer", writer: recorded(askOpt.writer, "the intent writer") };
     this.mode = opts.shadow ? "shadow" : "live";
+    const routed = opts.routing != null && this.ask !== null;
+    // A producer's candidate arrived outside the user's own field (a held pattern offer, a resolved watch, a heard line):
+    // the router reads the moment again once the producer's own work has returned, never in the middle of it.
+    const candidatesChanged = (): void => {
+      this.routing?.candidatesChanged();
+      queueMicrotask(() => this.routing?.observe());
+    };
+    const heldForRouter = routed ? { held: candidatesChanged } : undefined;
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
     this.socketLink = opts.readerLink === undefined ? new SocketReaderLink(opts.sendToReader ?? (() => false)) : null;
@@ -444,6 +482,7 @@ export class Helper {
       askJev: this.ask,
       shadow: () => this.mode === "shadow",
       gate: this.gate,
+      routed: heldForRouter,
       enteredByUser: (id) => {
         if (this.tasks.get(id)?.state === "ready") this.tasks.update(id, { state: "done", cause: "you", detail: "you entered the values yourself" });
       },
@@ -467,7 +506,7 @@ export class Helper {
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
     // The open-app line runs only from the host's offerAccept.
-    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.runFrom("pending", taskId, plan, slots), gate: this.gate, now: this.now });
+    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.runFrom("pending", taskId, plan, slots), gate: this.gate, now: this.now, routed: heldForRouter });
     this.events = new EventCards({
       model: this.model,
       askJev: this.ask,
@@ -481,6 +520,10 @@ export class Helper {
       live: () => this.mode === "live",
       now: this.now,
       count: (name) => opts.store.count(name, 1),
+      routed: routed ? { heard: candidatesChanged } : undefined,
+      onJudged: (work) => {
+        this.eventsSettled = Promise.all([this.eventsSettled, work]).then(() => undefined);
+      },
     });
     this.firstLookRunner = new FirstLookRunner({
       model: this.model,
@@ -505,6 +548,26 @@ export class Helper {
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
+    const ro = opts.routing ?? null;
+    this.routing =
+      ro === null || this.ask === null
+        ? null
+        : new RoutingCoordinator({
+            model: this.model,
+            // Through the recording wrapper: a router's request carries screen text, so it is a "Read and prepare" use.
+            askJev: this.ask,
+            candidates: (ctx) => this.routeCandidates(ctx),
+            hostWrites: ro.hostWrites ?? (() => false),
+            wordsOn: () => this.gate.settings.roles.includes("words"),
+            paused: () => this.gate.settings.paused,
+            live: () => this.mode === "live",
+            readerSession: () => this.readerSession,
+            now: this.now,
+            ...(ro.setTimer === undefined ? {} : { setTimer: ro.setTimer }),
+            count: (m, n) => opts.store.count(m, n ?? 1),
+            ...(ro.onDecision === undefined ? {} : { onDecision: ro.onDecision }),
+            ...(opts.warn === undefined ? {} : { warn: opts.warn }),
+          });
     this.recoverInterrupted();
   }
 
@@ -598,6 +661,7 @@ export class Helper {
         this.audit?.readerRestarted(this.now());
         this.firstLooks.clear();
         this.planOffers.clear();
+        this.routing?.readerRestarted();
         this.readerConnected = true;
         if (m.mode === "shadow") this.mode = "shadow";
         store.count(`reader.hello_${m.mode}`, 1);
@@ -636,6 +700,7 @@ export class Helper {
         if (prevFocused !== null && moved) this.left(prevFocused, m.at);
         // Where the user is decides a write's permission: a run with no Tab whose next write is no longer where they are is revoked now (B22 review).
         if (moved) this.executor.recheck();
+        this.routing?.observe();
         return null;
       }
       case "focus": {
@@ -652,6 +717,12 @@ export class Helper {
           this.openApp.onFocus(m);
           this.onFillFocus(m);
         }
+        if (this.routing !== null) {
+          // Routed, a focus is a breakpoint: the router lists fill among the candidates and decides (routeCandidates).
+          if (m.frontmost || this.opts.allowBackgroundFocus) this.routing.onFocus({ windowId: m.windowId, key: m.key, role: m.role, editable: m.editable });
+          this.routing.observe();
+          return null;
+        }
         // A browser with a page engine is filled from the engine's own page window, not from Accessibility's view of it.
         const pageCovered = !m.windowId.startsWith("page:") && this.opts.pageCovers?.(m.app.pid) === true;
         const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus) && !pageCovered;
@@ -665,6 +736,7 @@ export class Helper {
         if (m.from !== null) for (const w of this.model.windows.values()) if (w.app.pid === m.from.pid && w.focused) this.left(w.window.windowId, m.at);
         this.executor.recheck();
         store.count("reader.app_switch", 1, m.at);
+        this.routing?.observe();
         return null;
       case "windowClosed": {
         this.record(this.transfers.flush(m.windowId));
@@ -678,6 +750,8 @@ export class Helper {
         this.model.close(m.windowId, m.at);
         forgetWindow(m.windowId);
         this.checkFills(m.windowId);
+        this.routing?.candidatesChanged();
+        this.routing?.observe();
         return null;
       }
       case "pasteboard":
@@ -729,6 +803,8 @@ export class Helper {
     else if (this.gate.enabled("pending")) this.pending.resumeAsks();
     // A pause, or routines turned off, ends the work that depended on them now, not at its next act (S1 audit #4).
     this.executor.recheck();
+    this.routing?.settingsChanged();
+    this.routing?.observe();
   }
 
   /** Whether a task id is in use by a run or an activity record: new offer ids skip these (B23). */
@@ -852,9 +928,11 @@ export class Helper {
         const maker = askConfig.maker === "jev" ? jevIntentMaker(ask) : writerIntentMaker(askConfig.writer, () => offerKey);
         const d = await planAsk(m.instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), ...(windowId === null ? {} : { windowId }), ...this.opts.plannerHooks });
         store.count(`plan.ask_${d.route}`, 1);
+        this.countAskRoute(d.route);
         draft = d;
       } catch (e) {
         if (!(e instanceof PlannerError)) throw e;
+        if (e instanceof AskRefused && e.intent !== null) this.countAskRoute(e.intent.route);
         return fail(e.code, e.message);
       }
     } else try {
@@ -904,6 +982,15 @@ export class Helper {
     store.count("plan.proposed", 1);
     if (draft.checked.handoff !== null) store.count(`plan.handoff_${draft.checked.handoff.why}`, 1);
     return reply;
+  }
+
+  /**
+   * The user's Ask skips Router 1 (they asked, so it is act), and B25's intent maker is its Router 2: its route is
+   * logged in Router 2's words (routing/routes.ts ASK_ROUTES), so Ask and ambient decisions share one vocabulary.
+   */
+  private countAskRoute(route: keyof typeof ASK_ROUTES): void {
+    const r = ASK_ROUTES[route];
+    this.opts.store.count(`route.ask_${r.outcome === "ask" ? "ask" : r.kind}`, 1);
   }
 
   /**
@@ -1016,6 +1103,8 @@ export class Helper {
     for (const c of changes) this.withdrawMemoryOffers(c.id);
     this.patterns.memoryChanged(changes);
     this.executor.recheck();
+    this.routing?.memoryChanged();
+    this.routing?.observe();
   }
 
   /** "Not right" on an offer, about one fact it used (memoryNotRight, lead decision 3). The reply goes to the asker only. */
@@ -1147,7 +1236,11 @@ export class Helper {
     }
     // A permission changed, a skill put back on Tab, paused or forgotten, or an entry a run copies edited or
     // forgotten: every task that depended on it is revoked now (S1 audit #4).
-    if (reply.error === null && m.op !== "list") this.executor.recheck();
+    if (reply.error === null && m.op !== "list") {
+      this.executor.recheck();
+      this.routing?.memoryChanged();
+      this.routing?.observe();
+    }
     // A name or email the user just told Caret reaches the form they are on now, without a new focus (B21).
     if (reply.error === null && m.op === "add") {
       const at = this.now();
@@ -1164,6 +1257,12 @@ export class Helper {
    */
   private refillFocused(): void {
     if (this.mode !== "live") return;
+    // Routed, the router decides again: the fill candidate's legality reads the entries added since the form was asked.
+    if (this.routing !== null) {
+      this.routing.candidatesChanged();
+      this.routing.observe();
+      return;
+    }
     // The frontmost app's focused window: focusedWindowId can name a background app's window after a request walk.
     // Tests that allow background focus take the latest focus in any app, as their focus events do.
     const background = this.opts.allowBackgroundFocus && this.model.focusedWindowId !== null ? this.model.windows.get(this.model.focusedWindowId) : undefined;
@@ -1472,10 +1571,7 @@ export class Helper {
       if (afterAdd) this.refillAfter.add(formKey);
       return null;
     }
-    const last = this.lastFill.get(formKey);
-    if (!explicit && last !== undefined && now - last < FILL_REPEAT_MS && !this.addedSince(last, w, key)) return null;
-    // A pop-up already on offer covers this form, however long ago it was made.
-    if (!explicit && [...this.fillPopups.values()].some((f) => f.form === formKey)) return null;
+    if (!explicit && this.fillCovered(formKey, w, key, now)) return null;
     this.inflight.add(formKey);
     const session = this.readerSession;
     const focuses: { windowId: string; key: string }[] = [];
@@ -1541,6 +1637,164 @@ export class Helper {
       this.inflight.delete(formKey);
       if (this.refillAfter.delete(formKey)) this.refillFocused();
     }
+  }
+
+  /**
+   * Whether a fill of this form would bring nothing new now: it was asked within FILL_REPEAT_MS and no About entry that
+   * fits it was added since, or a pop-up already on offer covers it, however long ago it was made.
+   */
+  private fillCovered(formKey: string, w: WindowState, key: string, now: number): boolean {
+    const last = this.lastFill.get(formKey);
+    if (last !== undefined && now - last < FILL_REPEAT_MS && !this.addedSince(last, w, key)) return true;
+    return [...this.fillPopups.values()].some((f) => f.form === formKey);
+  }
+
+  /** Work a routed decision started (a fill, an event's asks), for tests and evaluations to await. */
+  routedSettled: Promise<void> = Promise.resolve();
+
+  private startRouted(work: Promise<unknown>): void {
+    this.routedSettled = Promise.all([this.routedSettled, work]).then(() => undefined);
+  }
+
+  /**
+   * What each producer could do for the user's moment, listed by code with no model call (routing/coordinator.ts):
+   *   - fillAll: an empty fillable field in the frontmost app, when fill would ask now (its settings, its repeat window,
+   *     no pop-up covering the form) and some other window or a fitting About entry could give a value;
+   *   - the event card for the field's last finished sentence, or for a conversation line heard while the user typed,
+   *     when code finds a person and a time ahead in it; a time the sentence leaves open is the one question;
+   *   - "Open <app>" for a watch that resolved while the user was elsewhere, when they are in a field of another window;
+   *   - a loop or routine offer the recognizers held for this window. Held offers for other windows are let go.
+   * Each candidate's `run` is the producer's unrouted path from the same point, with all of its own checks.
+   */
+  private routeCandidates(ctx: RoutingContext): RouteCandidate[] {
+    const out: RouteCandidate[] = [];
+    const w = this.model.windows.get(ctx.windowId);
+    for (const id of this.patterns.heldIds()) if (w === undefined || !this.patterns.heldOffers(ctx.windowId).some((h) => h.id === id)) this.patterns.dropHeld(id);
+    if (w === undefined) return out;
+    const f = ctx.field;
+    const node = f === null ? undefined : w.nodes.get(f.key);
+    const now = this.now();
+    if (f !== null && node !== undefined && f.editable && !f.secure) {
+      const fill = this.fillCandidate(w, f.key, node, now);
+      if (fill !== null) out.push(fill);
+      if (ctx.sentences > 0 && this.gate.holds("event", now).length === 0) {
+        const last = sentences(node.value ?? "", false).at(-1);
+        if (last !== undefined && !this.events.isJudged(w.window.windowId, last)) {
+          const c = this.events.candidate(w, f.key, last, "typed");
+          if (c !== null) {
+            const key = f.key;
+            out.push({
+              id: `event:${w.window.windowId}:${shortHash(last)}`,
+              kind: "workflow",
+              workflow: "event",
+              says: `Add to Calendar the event this sentence the user just finished arranges: "${last}"`,
+              plain: "Add to Calendar the event in the sentence the user just finished",
+              quotes: [{ window: w, kind: "candidate", texts: [last] }],
+              relevance: 2,
+              ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the sentence means, since it leaves the start open" } } : {}),
+              run: () => this.startRouted(this.events.judge(w, key, last, offerField(w, key), "typed")),
+            });
+          }
+        }
+      }
+      for (const l of this.events.heard()) {
+        if (l.field.windowId !== w.window.windowId || l.field.key !== f.key || !this.model.windows.has(l.w.window.windowId)) {
+          this.events.forgetHeard(l);
+          continue;
+        }
+        const c = this.events.candidate(l.w, l.key, l.sentence, "conversation");
+        if (c === null) {
+          this.events.forgetHeard(l);
+          continue;
+        }
+        out.push({
+          id: `event:${l.w.window.windowId}:${shortHash(l.sentence)}`,
+          kind: "workflow",
+          workflow: "event",
+          says: `Add to Calendar the event this line just heard in ${l.w.app.name} arranges: "${l.sentence}"`,
+          plain: `Add to Calendar the event in a line just heard in ${l.w.app.name}`,
+          quotes: [{ window: l.w, kind: "candidate", texts: [l.sentence] }],
+          relevance: 1,
+          ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the line means, since it leaves the start open" } } : {}),
+          run: () => {
+            this.events.forgetHeard(l);
+            this.startRouted(this.events.judge(l.w, l.key, l.sentence, l.field, "conversation"));
+          },
+          drop: () => this.events.forgetHeard(l),
+        });
+      }
+      if (this.gate.holds("pending", now).length === 0) {
+        for (const h of this.openApp.heldOffers()) {
+          const watched = this.model.windows.get(h.windowId);
+          if (watched === undefined || h.windowId === w.window.windowId) continue;
+          const key = f.key;
+          out.push({
+            id: `openApp:${h.offerKey}`,
+            kind: "workflow",
+            workflow: "openApp",
+            says: `Open ${h.app}, whose window the user was waiting on now says "${h.status}"`,
+            plain: `Open ${h.app}, whose window the user was waiting on changed`,
+            quotes: [{ window: watched, kind: "candidate", texts: [h.status] }],
+            relevance: 0,
+            run: () => this.openApp.showHeld(h.offerKey, offerField(w, key)),
+          });
+        }
+      }
+    }
+    for (const h of this.patterns.heldOffers(w.window.windowId)) {
+      const from = h.from.join(" and ");
+      const plain = h.skill
+        ? `Run the user's saved skill "${h.says}" here`
+        : h.kind === "loopNext"
+          ? `Offer the next row of what the user is copying from ${from}`
+          : h.kind === "loopFinish"
+            ? `Finish the rest of what the user is copying from ${from} (${h.values} values)`
+            : `Fill ${h.values} fields from ${from} the way the user did before`;
+      out.push({
+        id: `pattern:${h.id}`,
+        kind: "workflow",
+        workflow: h.skill ? "skill" : h.kind === "routine" ? "routine" : "loop",
+        says: plain,
+        plain,
+        quotes: [],
+        // A kept skill first, then the pattern that matched most often.
+        relevance: 10 + (h.skill ? 1000 : 0) + h.hits,
+        run: () => this.patterns.release(h.id),
+        drop: () => this.patterns.dropHeld(h.id),
+      });
+    }
+    return out;
+  }
+
+  /** The fill candidate for the focused field, or null when a focus-triggered fill would not ask (fill's own checks). */
+  private fillCandidate(w: WindowState, key: string, node: Node, now: number): RouteCandidate | null {
+    if (!FILLABLE_ROLES.has(node.role) || (node.value ?? "") !== "" || this.gate.holds("fill", now).length > 0) return null;
+    // A browser with a page engine is filled from the engine's own page window, not from Accessibility's view of it.
+    if (!w.window.windowId.startsWith("page:") && this.opts.pageCovers?.(w.app.pid) === true) return null;
+    let fields: Node[];
+    try {
+      fields = formFields(w, key);
+    } catch (e) {
+      if (e instanceof FillError) return null;
+      throw e;
+    }
+    const formKey = `${w.window.windowId}|${fields.map((n) => n.key).sort().join(",")}`;
+    if (this.inflight.has(formKey) || this.fillCovered(formKey, w, key, now)) return null;
+    const fillable = fields.filter((n) => neverTypedNode(w, n) === null).length;
+    if (fillable === 0) return null;
+    const otherText = [...this.model.windows.values()].some((o) => o.window.windowId !== w.window.windowId && [...o.nodes.values()].some((n) => nodeText(n).trim() !== ""));
+    const told = formAsksFor(w, key, this.aboutValues());
+    if (!otherText && !told) return null;
+    const says = `Fill the ${fillable === 1 ? "empty field" : `${fillable} empty fields`} of this form with values from ${otherText ? "other open windows" : ""}${otherText && told ? " and " : ""}${told ? "what the user told Caret" : ""}`;
+    return {
+      id: "fillAll",
+      kind: "fillAll",
+      says,
+      plain: says,
+      quotes: [],
+      relevance: 0,
+      run: () => this.startRouted(this.fill(w.window.windowId, key, false)),
+    };
   }
 
   /**
@@ -1753,6 +2007,20 @@ export class Helper {
 const READ_REPEAT_MS = 5000;
 /** Offer keys kept to count each shown offer once; past this the set starts over. Assumed. */
 const SHOWN_KEYS = 500;
+
+/**
+ * Whether an event's start is the one fact Caret must ask (the router's ask outcome): its possible times start at
+ * different moments (AM or PM, which day, a repeated hour). A start that is known with only the length open is the
+ * event route itself: the card offers the lengths in its own picker and adds nothing until one is chosen (D2-03).
+ */
+function startOpen(c: EventCandidate): boolean {
+  return c.time.kind === "ask" && new Set(c.time.choices.map((t) => t.start)).size > 1;
+}
+
+/** A short digest of a sentence for a candidate's id: the id must not carry screen text into the logs. */
+function shortHash(s: string): string {
+  return createHash("sha256").update(s).digest("hex").slice(0, 12);
+}
 
 /** "A", "A and B", "A, B and C". */
 function andList(xs: readonly string[]): string {
