@@ -5,6 +5,7 @@ import type { ReaderLink } from "../src/executor/means.ts";
 import { isCalendarVerb, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
 import { FakeGrants } from "./fake-grants.ts";
+import { FakeMarks } from "./fake-marks.ts";
 
 export const PEOPLE = [
   "Dana Whitfield",
@@ -71,6 +72,8 @@ export class Desk implements ReaderLink {
   readonly verbs: ReaderVerb[] = [];
   /** Every grant and revoke the executor sent. */
   readonly grants = new FakeGrants();
+  /** The elements writes were recorded under, as the reader keeps them (B23). */
+  readonly marks = new FakeMarks();
   /** Refuses write and press without a live act grant, as caret-screen without --act-pids does. */
   enforceGrants = false;
   /** Rewrites the next written value once, as an app that reformats input does, so the write's check fails. */
@@ -124,6 +127,8 @@ export class Desk implements ReaderLink {
     if (verb.kind === "raise") return answer("notAllowed", "the desk does not raise windows");
     const cells = new Set(Array.from({ length: g.rows }, (_, r) => g.columns.map((_, c) => cellKey(g, r, c))).flat());
     if (!cells.has(verb.key)) return answer("noElement", verb.key);
+    const notSame = this.marks.check(verb);
+    if (notSame !== null) return answer("notSameElement", notSame);
     if (verb.attribute !== "value") return answer("ok");
     const now = g.values.get(verb.key) ?? "";
     if (now !== verb.expect) return answer("changed", `value is '${now}'`);

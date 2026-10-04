@@ -433,7 +433,49 @@ describe("executor", () => {
   it("refuses to undo or resume across a reader restart, since window ids start over", async () => {
     await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
     void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "t" });
-    await expect(helper.executor.undo("t1")).rejects.toThrow(/earlier reader session/);
+    await expect(helper.executor.undo("t1")).rejects.toThrow(/reader that has since restarted/);
+  });
+
+  it("restores only the element it wrote: a sibling that took over the field's key, role and value is refused by name (S1 audit #6)", async () => {
+    await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "dana@example.com")]), {});
+    // The app replaces the Name field with an identical sibling: same key, role, label, and the value Caret wrote.
+    app.marks.replace(WIN, K("textfield:name~0"));
+    const u = await helper.executor.undo("t1");
+    expect(u.restored).toBe(1);
+    expect(u.notRestored).toEqual([{ step: 0, reason: expect.stringMatching(/^the field Caret wrote is no longer the element at that place, so Caret left it alone \(another element now has this key\)$/) }]);
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+    // Each forward write named a mark of its own; each restore named its write's mark back.
+    const writes = app.verbs.filter((v) => v.kind === "write" && v.attribute === "value");
+    const marks = writes.slice(0, 2).map((v) => (v.kind === "write" ? v.mark : undefined));
+    expect(marks.every((m) => typeof m === "string") && new Set(marks).size === 2).toBe(true);
+    expect(writes.slice(2).map((v) => (v.kind === "write" ? v.sameAs : undefined))).toEqual([marks[1], marks[0]]);
+  });
+
+  it("keeps undo across a reconnect of the same reader, and refuses it under a reader launched since (B23)", async () => {
+    const hello = (session: string) => void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "t", session });
+    hello("reader-launch-1");
+    app.show();
+    await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    hello("reader-launch-1");
+    app.show();
+    expect(await helper.executor.undo("t1")).toEqual({ restored: 1, notRestored: [], notUndoable: 0 });
+    await helper.executor.run("t2", plan([write(K("textfield:name~0"), "Dana")], "p2"), {});
+    hello("reader-launch-2");
+    app.show();
+    await expect(helper.executor.undo("t2")).rejects.toThrow(/ran under a reader that has since restarted/);
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+  });
+
+  it("hands the field off, plainly, when focus moves away from it as the reader focuses it, and writes nothing (S1 audit #14)", async () => {
+    app.focusMovesOn = new Set(["value"]);
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0, detail: "focus moved away from the Name field when Caret focused it, so Caret did not write it; it is yours to fill" });
+    expect(progress("t1").at(-1)).toMatchObject({ phase: "handoff" });
+    expect(app.node(K("textfield:name~0"))?.value).toBeUndefined();
+    expect(helper.executor.ledger("t1")).toEqual([]);
+    // No fallback write was tried after it.
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(1);
   });
 
   describe("an ambiguous target", () => {

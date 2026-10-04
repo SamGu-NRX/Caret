@@ -8,6 +8,7 @@ import { createConnection, type Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { HelperToReader, isCalendarVerb, PROTOCOL_VERSION, ReaderMessage, type CalendarVerb, type ReaderCommand, type ReaderVerb, type Snapshot, type VerbResult } from "../src/protocol.ts";
 import { FakeGrants } from "./fake-grants.ts";
+import { FakeMarks } from "./fake-marks.ts";
 
 /** A line-oriented client: every message received is kept in order, and a test can wait for one. */
 export class LineClient {
@@ -100,6 +101,8 @@ export class SocketReader {
   frontmostPid: number | null = null;
   /** Every act grant and revoke the helper sent on the socket, applied in socket order before later commands. */
   readonly grants = new FakeGrants();
+  /** The elements writes were recorded under, as caret-screen keeps them (B23). */
+  readonly marks = new FakeMarks();
   /** Refuses write, press and raise without a live grant, as caret-screen without --act-pids does. Off by default. */
   enforceGrants = false;
   /** Plays caret-screen's EventKit adapter for calendar verbs; null answers as a reader without --calendar-test does. */
@@ -135,7 +138,7 @@ export class SocketReader {
         this.onCommand?.(cmd.verb);
         if (this.serial) this.turn = this.turn.then(() => this.answer(cmd));
         else void this.answer(cmd);
-      } else {
+      } else if (msg.data.type !== "helperAuth") {
         this.grantTimes.push({ type: msg.data.type, taskId: msg.data.taskId, at: performance.now() });
         this.grants.receive(msg.data);
       }
@@ -263,6 +266,8 @@ export class SocketReader {
         const n = w.nodes.find((x) => x.key === verb.key);
         if (n === undefined) return reply("noElement", verb.key);
         if (n.role !== verb.role) return reply("changed", `role is ${n.role}`);
+        const notSame = this.marks.check(verb);
+        if (notSame !== null) return reply("notSameElement", notSame);
         if (verb.attribute === "focused") w.focusedKey = verb.key;
         else if ((n.value ?? "") !== verb.expect) return reply("changed", "the value differs from what was expected");
         else if (verb.value === "") delete n.value;

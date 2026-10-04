@@ -215,6 +215,8 @@ describe("skills in the helper", () => {
   let takeOverAtAct: string | null;
   /** While set, the namer's answer waits for it, as a slow network would. */
   let namingHeld: Promise<void> | null;
+  /** Set to leave any run hanging, for good, right before its act at this step: a helper that died there. */
+  let hangAtStep: number | null;
 
   const namer: AskJev = async (req) => {
     asked.push(req);
@@ -313,6 +315,7 @@ describe("skills in the helper", () => {
     frontmost = "other";
     takeOverAtAct = null;
     namingHeld = null;
+    hangAtStep = null;
     desk = new Desk();
     desk.enforceGrants = true;
     helper = makeHelper();
@@ -330,7 +333,8 @@ describe("skills in the helper", () => {
       readerLink: desk,
       settings: { roles: ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: false },
       executorHooks: {
-        beforeAct: async (taskId) => {
+        beforeAct: async (taskId, step) => {
+          if (hangAtStep !== null && step === hangAtStep) await new Promise<void>(() => undefined);
           if (takeOverAtAct === taskId) await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action: "takeOver" });
         },
       },
@@ -510,8 +514,50 @@ describe("skills in the helper", () => {
     void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "restarted" });
     const errors = sent.length;
     expect(await undoOf(own.progress[0]!.taskId)).toBeNull();
-    expect(since("error", errors)[0]?.message).toMatch(/earlier reader session/);
+    expect(since("error", errors)[0]?.message).toMatch(/reader that has since restarted/);
     expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+  });
+
+  // S1 audit #11: before B23 a crash lost the run's undo, and the skill stayed promoted.
+  it("recovers a run with no Tab that a crash cut off between its writes: back on Tab, listed as stopped, and undo restores what it wrote", async () => {
+    const skillId = await promoted();
+    hangAtStep = 1;
+    const at = sent.length;
+    const c = open();
+    for (let i = 0; i < 500 && !since("taskProgress", at).some((p) => p.phase === "verified" && p.step === 0); i++) await new Promise((r) => setImmediate(r));
+    expect(values(c)).toEqual([calendar(day).lines[0], "", ""]);
+    expect(skills()[0]!.fields.onItsOwn).toBe(true);
+    // The helper dies here. A new one starts on the same data; the reader, still running, sends the screen again.
+    hangAtStep = null;
+    helper = makeHelper();
+    desk.attach(helper);
+    desk.showList(calendar(day));
+    desk.showGrid(c);
+    expect(skills()[0]).toMatchObject({ id: skillId, status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+    const row = helper.handleActivity({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" }).tasks.find((t) => t.detail?.startsWith("Stopped when Caret restarted") === true);
+    expect(row).toMatchObject({ state: "failed", cause: "caret", detail: "Stopped when Caret restarted, at step 2 of 3", step: 1, steps: 3, undoable: true, windowId: c.windowId });
+    expect(await undoOf(row!.id)).toMatchObject({ restored: 1, notRestored: [], notUndoable: 0 });
+    expect(values(c)).toEqual(["", "", ""]);
+    expect(helper.journal.load(Date.now()).records).toEqual([]);
+    // Nothing of it runs again, and the next trigger asks for Tab.
+    finish({ offer: null, result: null, progress: [], skillOffers: [], window: c });
+    const next = await caretRun();
+    finish(next);
+    expect(next.offer).not.toBeNull();
+  });
+
+  it("keeps a run's saved row sealed: no value it wrote is in the journal's file in the clear", async () => {
+    await promoted();
+    hangAtStep = 2;
+    const at = sent.length;
+    const c = open();
+    for (let i = 0; i < 500 && !since("taskProgress", at).some((p) => p.phase === "verified" && p.step === 1); i++) await new Promise((r) => setImmediate(r));
+    const rows = helper.journal.rawRows();
+    expect(rows).toHaveLength(1);
+    const bytes = Buffer.from(rows[0]!.sealed).toString("latin1");
+    for (const v of calendar(day).lines) expect(bytes.includes(v), v).toBe(false);
+    expect(helper.journal.load(Date.now()).records[0]).toMatchObject({ next: 2, pending: null, skillId: skills()[0]!.id, ledger: [expect.objectContaining({ step: 0 }), expect.objectContaining({ step: 1 })] });
+    void c;
   });
 
   /**
@@ -589,6 +635,23 @@ describe("skills in the helper", () => {
     expect(landed).toBe(1);
     expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "error", unprompted: true });
     expect(own.progress.at(-1)?.detail).toMatch(/the host that started it disconnected/);
+  });
+
+  // B23 (Sol #6 on B22): before the hello's host flag every consumer counted as a host and a run bound to all of them.
+  it("binds a run with no Tab to the host alone: another consumer closing leaves it running, and that consumer never counts as a host", async () => {
+    helper.consumerConnected("eval-script");
+    await promoted();
+    const { own, revokedAtOnce } = await changeMidRun(() => helper.hostDisconnected("eval-script"));
+    expect(own.offer).toBeNull();
+    expect(revokedAtOnce).toBe(false);
+    expect(own.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+    // With only a non-host consumer connected, the skill is offered with Tab.
+    helper.consumerConnected("eval-script-2");
+    helper.hostDisconnected(HOST);
+    expect(helper.hostPresent).toBe(false);
+    const tab = await caretRun();
+    finish(tab);
+    expect(tab.offer).not.toBeNull();
   });
 
   it("starts no run on its own while no host is connected: the skill is offered with Tab, and runs on its own again once a host is back", async () => {

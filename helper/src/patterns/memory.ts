@@ -12,13 +12,14 @@
 // they are stored in the clear.
 //
 // The same database holds the gate's decision log and the user's reactions to offers.
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import * as z from "zod";
 import { fieldKinds } from "../fill/kinds.ts";
 import { LEVELS } from "../offers/settings.ts";
+import { loadKey, open, seal } from "../sealed.ts";
 import {
   AboutFields,
   PeopleFields,
@@ -903,34 +904,6 @@ function toSkill(r: Row): SkillRecord {
 export const dontOfferMatch = (offerKind: OfferKind, bundleId: string): string => `dontOffer:${offerKind}:${bundleId}`;
 
 const times = (n: number): string => (n === 1 ? "once" : `${n} times`);
-
-function seal(key: Buffer, text: string): Buffer {
-  const iv = randomBytes(12);
-  const c = createCipheriv("aes-256-gcm", key, iv);
-  const body = Buffer.concat([c.update(text, "utf8"), c.final()]);
-  return Buffer.concat([iv, c.getAuthTag(), body]);
-}
-
-function open(key: Buffer, b: Buffer): string {
-  const d = createDecipheriv("aes-256-gcm", key, b.subarray(0, 12));
-  d.setAuthTag(b.subarray(12, 28));
-  return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString("utf8");
-}
-
-function loadKey(path: string): Buffer {
-  if (!existsSync(path)) {
-    try {
-      // Exclusive create: two helpers starting at once must not each write a different key.
-      writeFileSync(path, randomBytes(32), { mode: 0o600, flag: "wx" });
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-    }
-  }
-  chmodSync(path, 0o600);
-  const b = readFileSync(path);
-  if (b.length !== 32) throw new Error(`memory key ${path} is ${b.length} bytes, expected 32; refusing to use it`);
-  return b;
-}
 
 export function localDay(at: number): string {
   const d = new Date(at);

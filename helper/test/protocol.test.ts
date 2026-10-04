@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { AnyMessage, ConsumerMessage, GRANT_MAX_MS, HelperMessage, HelperToReader, Node, ReaderMessage, StopReason } from "../src/protocol.ts";
 import { PLAN_SCHEMA_PATH, renderPlanJsonSchema, renderProtocolJsonSchema, SCHEMA_PATH } from "../src/export-schema.ts";
+import { helperProof } from "../src/server.ts";
 import { Plan } from "../src/executor/schema.ts";
 
 const GOLDEN = fileURLToPath(new URL("../fixtures/golden/protocol.ndjson", import.meta.url));
@@ -32,7 +33,27 @@ describe("golden protocol fixture", () => {
       "readerCommand", "userPress",
       "planRequest", "planProposal", "userPress",
       "skillOffer",
+      "hello", "helperAuth", "hello", "readerCommand", "verbResult", "readerCommand", "verbResult",
     ]);
+  });
+
+  it("carries B23's hello fields, the helper's proof, a write's mark and an undo's sameAs, and the two new refusals", () => {
+    const [reader, auth, host, write, moved, restore, notSame] = lines.slice(59, 66).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(ReaderMessage.parse(reader)).toMatchObject({ role: "reader", session: "reader-3f9a6c21d4e8" });
+    expect(ConsumerMessage.parse(host)).toMatchObject({ role: "consumer", host: true });
+    // The proof is the HMAC of the reader's challenge under the launch secret: Emitter.swift checks the same line.
+    const secret = Buffer.from("caret-b23-golden-launch-secret!!");
+    expect(HelperToReader.parse(auth)).toEqual({ type: "helperAuth", v: 1, proof: helperProof(secret, String(reader?.challenge)) });
+    expect(HelperToReader.parse(write)).toMatchObject({ verb: { kind: "write", mark: "8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60" } });
+    expect(HelperToReader.parse(restore)).toMatchObject({ verb: { kind: "write", sameAs: "8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60" } });
+    expect(ReaderMessage.parse(moved)).toMatchObject({ outcome: "focusMoved" });
+    expect(ReaderMessage.parse(notSame)).toMatchObject({ outcome: "notSameElement" });
+    // Each field belongs to one role, and a write records a mark or checks one, never both.
+    expect(ConsumerMessage.safeParse({ ...reader, role: "consumer" }).success).toBe(false);
+    expect(ReaderMessage.safeParse({ ...host, role: "reader" }).success).toBe(false);
+    const verb = (write as { verb: Record<string, unknown> }).verb;
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, sameAs: "x" } }).success).toBe(false);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, mark: "" } }).success).toBe(false);
   });
 
   it("carries B21's planRequest window, named as a host knows it, and the error for a window the reader has not read", () => {

@@ -12,12 +12,13 @@
 // the value it replaced.
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
 import { classifyPress, type RiskClass } from "./risk.ts";
+import type { JournalPort, JournalRecord, LedgerEntry, PendingAct } from "./journal.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
 
@@ -55,7 +56,15 @@ export interface ExecutorDeps {
    * it every act is allowed, as in tests that predate B22.
    */
   authorize?: (a: Authorization) => Revocation | null;
+  /**
+   * Where each task is saved before every write, press and calendar add and after each lands, so a helper
+   * that crashes mid-run leaves its undo behind (B23, S1 audit #11; journal.ts). Without it nothing is saved.
+   */
+  journal?: JournalPort;
 }
+
+/** What the executor saves of a task; the helper adds the skill it counts for (journal.ts JournalRecord.skillId). */
+export type TaskSnapshot = Omit<JournalRecord, "skillId">;
 
 /** What `authorize` is asked about: a task, whether a skill started it with no Tab, and the permission its next act falls under. */
 export interface Authorization {
@@ -146,10 +155,7 @@ export interface TaskResult {
 /** The numbers a done or undone taskProgress carries beside its sentence, and a calendar hand-off's reason. */
 type ProgressCounts = Pick<TaskProgress, "written" | "restored" | "notRestored" | "notUndoablePresses"> & { blocked?: CalendarBlock };
 
-export type LedgerEntry =
-  | { kind: "write"; step: number; pid: number; windowId: string; key: string; role: string; before: string; after: string }
-  | { kind: "calendar"; step: number; eventId: string; calendar: string; title: string; start: string; end: string }
-  | { kind: "press"; step: number; label: string; windowId: string };
+export type { LedgerEntry } from "./journal.ts";
 
 export interface UndoResult {
   restored: number;
@@ -216,6 +222,14 @@ interface Task {
   reported: Set<LedgerEntry>;
   /** The press or field a hand-off left to the user, with the permission it falls under; null when none. */
   handedOff: { action: ActionType; what: string; windowId: string } | null;
+  /**
+   * The reader's launch id when the task last acted (Hello.session). Its marks and window ids hold only in that
+   * reader, so undo is refused under another (B23).
+   */
+  readerId: string | null;
+  startedAt: number;
+  /** The journal holds a row for it (ExecutorDeps.journal). */
+  journaled: boolean;
 }
 
 /**
@@ -254,12 +268,21 @@ class StepStop extends Error {
 /** Thrown at a step boundary when the task has a pending interrupt. */
 class Interrupted extends Error {}
 
+/** The reader focused a web field for a focus-first write and focus was then elsewhere; it wrote nothing (verbResult focusMoved). */
+class FocusMoved extends Error {}
+
 export class Executor {
   private readonly tasks = new Map<string, Task>();
   /** Every Jev target question this executor asked, for evaluation. Holds element keys, not screen text. */
   readonly targetChoices: { taskId: string; step: number; chose: string | null; jev: JevTrace }[] = [];
-  /** Bumped when a new reader connects: window ids start over, so older tasks may no longer act or undo. */
+  /** Bumped on every reader connection: a running task stops at its next act when it changes. */
   private session = 0;
+  /**
+   * The connected reader's launch id (Hello.session), or a fresh one per connection from a reader that sends
+   * none; null for an in-process reader link. Undo is allowed only under the reader a task acted in (B23).
+   */
+  private readerId: string | null = null;
+  private anonymousReaders = 0;
   /** The pid set the reader was last asked to watch, as a sorted list. */
   private watching = "";
   private readonly deps: ExecutorDeps;
@@ -270,9 +293,14 @@ export class Executor {
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
-  /** A new reader numbers windows from scratch; every existing task's window ids now mean nothing. */
-  readerRestarted(): void {
+  /**
+   * A reader connected. Running tasks stop at their next act whatever it is. A reconnect of the same reader
+   * (`readerId`, its launch id) keeps its window ids and the elements it recorded, so finished tasks stay
+   * undoable; another reader numbers windows from scratch, so their undo is refused.
+   */
+  readerRestarted(readerId?: string): void {
     this.session++;
+    this.readerId = readerId ?? `connection-${++this.anonymousReaders}`;
     // The reader dropped every grant with the old connection.
     for (const t of this.tasks.values()) {
       t.grant = null;
@@ -333,6 +361,9 @@ export class Executor {
       userWindow: this.userWindow(),
       reported: new Set(),
       handedOff: null,
+      readerId: this.readerId,
+      startedAt: Date.now(),
+      journaled: false,
     };
     for (const [windowId, values] of Object.entries(expect ?? {})) task.expected.set(windowId, new Map(Object.entries(values)));
     this.tasks.set(taskId, task);
@@ -369,7 +400,13 @@ export class Executor {
     if (task === undefined) return `no task ${taskId}`;
     if (task.finished === null) return `task ${taskId} is still running`;
     if (task.undoing) return `task ${taskId} is already being undone`;
-    if (task.session !== this.session) return `task ${taskId} ran under an earlier reader session; its window ids no longer apply, so nothing is restored`;
+    // The reader that acted for it, as its launch id says, is the only one that knows its windows and the elements
+    // it wrote: a reconnect of that reader keeps them, a new reader does not (B23).
+    if (task.readerId !== this.readerId) {
+      return this.readerId === null
+        ? `no reader is connected yet, so nothing of task ${taskId} is restored now`
+        : `task ${taskId} ran under a reader that has since restarted; its window ids and fields no longer apply, so nothing is restored`;
+    }
     const r = this.undoBlocked(task);
     return r === null ? null : `nothing was restored: ${r.why}`;
   }
@@ -584,6 +621,8 @@ export class Executor {
     releaseSources(task);
     task.undoing = true;
     task.undoStopped = null;
+    // From here a reconnect of the reader, even the same one, stops the restores not yet made.
+    task.session = this.session;
     // The user's input in the task's windows stops the undo, so the reader watches them before the first restore.
     try {
       await this.updateWatch();
@@ -627,6 +666,11 @@ export class Executor {
     } finally {
       task.undoing = false;
       this.revokeGrant(task);
+      // A run a crash interrupted keeps its row until its undo has restored what it could; what is left is kept for another try.
+      if (task.journaled) {
+        if (task.ledger.some((e) => e.kind !== "press")) this.journalSave(task, null);
+        else this.journalDrop(task);
+      }
       // The watch for this undo ends with it; a failure here only leaves a watch on, which the next run replaces.
       await this.updateWatch().catch(() => undefined);
     }
@@ -660,6 +704,8 @@ export class Executor {
         await this.updateWatch();
         await this.runStep(task, i, step);
         task.next = i + 1;
+        // The saved row names the first step not yet verified, so a crash from here on reports the right one.
+        if (task.journaled) this.journalSave(task, null);
       }
       // A take over, pause or stop that came in while the last act was on its way: the act landed and stays
       // in the ledger for undo, but the run ends as the user asked rather than as done (B19 review: a skill
@@ -701,6 +747,10 @@ export class Executor {
       return this.result(task, outcome, i, detail);
     } finally {
       if (task.finished !== null && task.finished !== "paused") releaseSources(task);
+      // A paused run keeps its row, now with nothing on its way; an ended one leaves undo to the executor's memory.
+      if (task.finished === "paused") {
+        if (task.journaled) this.journalSave(task, null);
+      } else if (task.finished !== null) this.journalDrop(task);
       // Done, handed off, stopped or paused: nothing more is done for the task until the user resumes it.
       if (task.finished !== null) this.revokeGrant(task);
       await this.updateWatch();
@@ -768,7 +818,9 @@ export class Executor {
     const prediction = attribute === "value" ? `${node.key}: '${clip(before)}' becomes '${clip(value)}'` : `${node.key} becomes focused`;
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `write ${attribute}; expect ${prediction}`);
-    const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value, taskId: task.id };
+    // The reader keeps the element it writes under this mark, so undo can require that same element (S1 audit #6).
+    const mark = attribute === "value" ? randomUUID() : undefined;
+    const verb: ReaderVerb = { kind: "write", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, attribute, expect: before, value, taskId: task.id, ...(mark === undefined ? {} : { mark }) };
     await this.deps.beforeAct?.(task.id, i);
     const sent = async (v: ReaderVerb): Promise<Change[]> => {
       // A value from memory must still be what its entry holds at each dispatch, the insert fallback's
@@ -779,10 +831,17 @@ export class Executor {
       try {
         return await this.act(task, v, w.window.windowId);
       } catch (e) {
+        // A page handler moved focus off the field once the reader focused it, so it wrote nothing (S1 audit #14).
+        if (e instanceof FocusMoved) {
+          const label = (node.label ?? "").trim();
+          const field = label === "" ? "this field" : `the ${label} field`;
+          task.handedOff = { action: w.window.windowId === task.userWindow ? "writeHere" : "writeElsewhere", what: field, windowId: w.window.windowId };
+          throw StepStop.handoff(`focus moved away from ${field} when Caret focused it, so Caret did not write it; it is yours to fill`);
+        }
         // An axError may come after the value was set (a timeout while the reader settles and re-walks),
         // so the write is recorded as if it happened. Undo restores it only if the field holds `value`.
         if (attribute === "value" && e instanceof StepStop && e.message.includes("axError")) {
-          task.ledger.push({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value });
+          this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null });
         }
         throw e;
       }
@@ -829,7 +888,7 @@ export class Executor {
       // The reader wrote, so the write goes in the ledger before it is judged: an app that reformats
       // the value fails the comparison but must still be undoable. `after` is what the field holds now.
       if (now !== undefined && (now.value ?? "") !== before) {
-        task.ledger.push({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: now.value ?? "" });
+        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: now.value ?? "", mark: mark ?? null });
       }
       // A field the walk lost and then found again (B15's WebKit window) comes back as an added node holding the value.
       const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);
@@ -863,7 +922,7 @@ export class Executor {
     this.progress(task, "acting", i, `press '${label}'; expect: ${step.says}`);
     await this.deps.beforeAct?.(task.id, i);
     const seen = await this.act(task, { kind: "press", pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, label, taskId: task.id }, w.window.windowId);
-    task.ledger.push({ kind: "press", step: i, label, windowId: w.window.windowId });
+    this.addLedger(task, { kind: "press", step: i, label, windowId: w.window.windowId });
     await this.awaitEffect(task, i, step, w.window.windowId, seen);
     this.checkUnexpected(seen, null);
     await this.verified(task, i, step);
@@ -914,6 +973,7 @@ export class Executor {
     this.authorizeAct(task, null);
     // Only a task from an accepted offer gets one; without it the reader refuses the add.
     this.issueCalendarGrant(task);
+    this.journalSave(task, { kind: "calendar", step: i, calendar: end.calendar, title: end.title, start: end.start, end: end.end });
     let ev: Awaited<ReturnType<CalendarPort["add"]>>;
     try {
       ev = await cal.add(end.calendar, end.title, end.start, end.end, task.id);
@@ -923,12 +983,12 @@ export class Executor {
       // other refusal (an identical event another task added) means this task added nothing.
       if (e instanceof CalendarRefused && e.outcome === "axError") {
         const late = await cal.find(end.calendar, end.title, end.start, end.end).catch(() => null);
-        if (late !== null) task.ledger.push({ kind: "calendar", step: i, eventId: late.id, calendar: late.calendar, title: late.title, start: late.start, end: late.end });
+        if (late !== null) this.addLedger(task, { kind: "calendar", step: i, eventId: late.id, calendar: late.calendar, title: late.title, start: late.start, end: late.end });
       }
       throw e;
     }
     // In the ledger before it is checked, so undo can remove an event that fails the check.
-    task.ledger.push({ kind: "calendar", step: i, eventId: ev.id, calendar: ev.calendar, title: ev.title, start: ev.start, end: ev.end });
+    this.addLedger(task, { kind: "calendar", step: i, eventId: ev.id, calendar: ev.calendar, title: ev.title, start: ev.start, end: ev.end });
     const found = await cal.find(end.calendar, end.title, end.start, end.end);
     if (found === null || found.id !== ev.id) throw StepStop.stop("mismatch", "mismatch: the added event is not found by the same query");
     task.acted++;
@@ -943,6 +1003,10 @@ export class Executor {
     // The last boundary: a pause or stop that arrived while the step published or prepared its act.
     this.checkInterrupt(task);
     if (verb.kind === "write" || verb.kind === "press" || verb.kind === "raise") this.authorizeAct(task, windowId);
+    // Saved before the reader gets it: a crash while it is on its way leaves a row that says what may have landed.
+    if (verb.kind === "write" && verb.mark !== undefined) {
+      this.journalSave(task, { kind: "write", step: task.next, pid: verb.pid, windowId: verb.windowId, key: verb.key, role: verb.role, before: verb.expect, value: verb.value, mark: verb.mark });
+    } else if (verb.kind === "press") this.journalSave(task, { kind: "press", step: task.next, label: verb.label, windowId: verb.windowId });
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === windowId) seen.push(c);
@@ -953,11 +1017,92 @@ export class Executor {
       // the grant, so the reader refused). The reader acted on none of these outcomes, so the run ends as the
       // user asked, not as a reader failure. An axError may follow an act that landed, so it keeps its path.
       if (r.outcome !== "ok" && r.outcome !== "axError" && task.interrupt !== null) throw new Interrupted();
+      if (r.outcome === "focusMoved") throw new FocusMoved(r.detail ?? "focus moved");
       if (r.outcome !== "ok") throw StepStop.stop("reader", `the reader refused: ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
     } finally {
       off();
     }
     return seen;
+  }
+
+  // MARK: - the recovery journal (B23, S1 audit #11)
+
+  /** Adds a ledger entry and saves the task with nothing on its way. */
+  private addLedger(task: Task, e: LedgerEntry): void {
+    task.ledger.push(e);
+    this.journalSave(task, null);
+  }
+
+  /** Saves the task to the journal: its ledger, the step it stands before, and what it is about to dispatch. */
+  private journalSave(task: Task, pending: PendingAct | null): void {
+    const j = this.deps.journal;
+    if (j === undefined) return;
+    const bound = [...task.windows.values()].map((id) => this.deps.model.windows.get(id)).find((w) => w !== undefined);
+    j.save({
+      taskId: task.id,
+      startedAt: task.startedAt,
+      savedAt: Date.now(),
+      plan: task.plan,
+      unprompted: task.unprompted,
+      granted: task.granted,
+      readerId: task.readerId,
+      next: task.next,
+      ledger: task.ledger,
+      pending,
+      window: bound === undefined ? null : { app: bound.app, windowId: bound.window.windowId, title: bound.window.title, frame: bound.window.frame },
+    });
+    task.journaled = true;
+  }
+
+  private journalDrop(task: Task): void {
+    if (!task.journaled) return;
+    this.deps.journal?.drop(task.id);
+    task.journaled = false;
+  }
+
+  /**
+   * Takes back a run a crash interrupted, from its journal row, as a stopped task whose undo restores what the row
+   * says it wrote. A write that was on its way joins the ledger as unconfirmed: undo restores it only if the field
+   * holds what it was writing, through the element the reader recorded. A press on its way counts as a press;
+   * a calendar add on its way is looked up by its slot at undo. Nothing runs again.
+   */
+  recover(r: JournalRecord): void {
+    if (this.tasks.has(r.taskId)) throw new PlanError(`task ${r.taskId} already exists`);
+    const ledger: LedgerEntry[] = [...r.ledger];
+    const p = r.pending;
+    if (p?.kind === "write") ledger.push({ kind: "write", step: p.step, pid: p.pid, windowId: p.windowId, key: p.key, role: p.role, before: p.before, after: p.value, mark: p.mark, unconfirmed: true });
+    else if (p?.kind === "press") ledger.push({ kind: "press", step: p.step, label: p.label, windowId: p.windowId });
+    else if (p?.kind === "calendar") ledger.push({ kind: "calendar", step: p.step, eventId: null, calendar: p.calendar, title: p.title, start: p.start, end: p.end });
+    const windows = new Map<string, string>();
+    for (const e of ledger) if (e.kind !== "calendar") windows.set(`recovered:${e.windowId}`, e.windowId);
+    this.tasks.set(r.taskId, {
+      id: r.taskId,
+      plan: r.plan,
+      windows,
+      expected: new Map(),
+      next: r.next,
+      ledger,
+      interrupt: null,
+      acted: 0,
+      skipped: 0,
+      jevCalls: 0,
+      finished: "stopped",
+      resolved: new Map(),
+      session: this.session,
+      undoing: false,
+      undoStopped: null,
+      sourced: [],
+      granted: r.granted,
+      unprompted: r.unprompted,
+      grant: null,
+      calendarGranted: false,
+      userWindow: null,
+      reported: new Set(ledger),
+      handedOff: null,
+      readerId: r.readerId,
+      startedAt: r.startedAt,
+      journaled: true,
+    });
   }
 
   // MARK: - act grants
@@ -1161,13 +1306,16 @@ export class Executor {
   // MARK: - undo
 
   private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null> {
+    // Only the element the reader recorded as written may be restored (S1 audit #6): without its mark, a sibling that
+    // took the field's key, role and value would pass every other check.
+    if (e.mark === null) return "Caret did not record which element it wrote, so it cannot be sure the field is the same one";
     const w = this.deps.model.windows.get(e.windowId);
     if (w === undefined) return "the window closed";
     // The reader acts only on an element it saw in a walk the executor asked for, so undo reads first.
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
     if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
     if (task.undoStopped !== null) return task.undoStopped;
-    const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id };
+    const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id, sameAs: e.mark };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === e.windowId) seen.push(c);
@@ -1194,7 +1342,7 @@ export class Executor {
     } finally {
       off();
     }
-    if (r.outcome !== "ok") return r.outcome === "changed" ? `the field changed after Caret wrote it (${r.detail ?? "no detail"})` : `${r.outcome}: ${r.detail ?? ""}`;
+    if (r.outcome !== "ok") return undoRefused(e, r);
     const now = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (now === undefined) return "after the restore the field is gone";
     if ((now.value ?? "") !== e.before) return `after the restore the field holds '${clip(now.value ?? "")}'`;
@@ -1212,13 +1360,22 @@ export class Executor {
   private async undoCalendarEvent(task: Task, e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
     const cal = this.deps.calendar;
     if (cal === null) return "no calendar is configured";
-    const ev = await cal.get(e.eventId);
+    // An add a crash cut off before its answer: the event, if it was saved, is found by its slot. The reader removes it
+    // only if this task added it (CalendarAdapter ownership).
+    let eventId = e.eventId;
+    if (eventId === null) {
+      const found = await cal.find(e.calendar, e.title, e.start, e.end);
+      if (found === null) return "Caret stopped while adding this event, and the calendar does not hold it";
+      eventId = found.id;
+    }
+    const ev = await cal.get(eventId);
     if (ev === null) return "the event is already gone";
     if (ev.title !== e.title || ev.calendar !== e.calendar || Date.parse(ev.start) !== Date.parse(e.start) || Date.parse(ev.end) !== Date.parse(e.end)) {
       return "the event changed after Caret added it";
     }
-    await cal.remove(e.eventId, task.id);
-    return (await cal.get(e.eventId)) === null ? null : "the event is still there after removal";
+    await cal.remove(eventId, task.id);
+    // A read that fails throws (S1 audit #16): only a read that succeeds and finds nothing counts as removed.
+    return (await cal.get(eventId)) === null ? null : "the event is still there after removal";
   }
 
   // MARK: - reporting
@@ -1334,6 +1491,23 @@ function editableValues(w: WindowState): Map<string, string> {
 
 function contains(f: [number, number, number, number], p: [number, number]): boolean {
   return p[0] >= f[0] && p[0] <= f[0] + f[2] && p[1] >= f[1] && p[1] <= f[1] + f[3];
+}
+
+/** Why the reader refused a restore, in words for the activity row. */
+function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult): string {
+  const detail = r.detail === null ? "" : ` (${r.detail})`;
+  switch (r.outcome) {
+    case "notSameElement":
+      return `the field Caret wrote is no longer the element at that place, so Caret left it alone${detail}`;
+    case "focusMoved":
+      return `focus moved away from the field when Caret focused it, so Caret did not write it${detail}`;
+    case "changed":
+      return e.unconfirmed === true
+        ? `Caret stopped while writing this field, and the field does not hold what it was writing${detail}`
+        : `the field changed after Caret wrote it${detail}`;
+    default:
+      return `${r.outcome}: ${r.detail ?? ""}`;
+  }
 }
 
 /** "Name", "Name and Email", or "3 fields" past two. */

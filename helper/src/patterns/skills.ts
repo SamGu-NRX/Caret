@@ -289,6 +289,21 @@ export class Skills {
     );
   }
 
+  /** The skill a run started by `runStarted` counts for, or null: the in-progress marker the recovery journal saves (B23). */
+  skillOf(taskId: string): string | null {
+    return this.runs.get(taskId)?.skillId ?? null;
+  }
+
+  /**
+   * A run of this skill was under way when the helper stopped, as its recovery journal row says (B23, S1 audit #11):
+   * it did not end clean, so the skill goes back on Tab and its count starts again, as for any run that fails.
+   */
+  interrupted(skillId: string, at: number): void {
+    this.clock = Math.max(this.clock, at);
+    const s = this.deps.memory.skill(skillId);
+    if (s !== null) this.reset(s, at);
+  }
+
   /**
    * The user undid a run, or changed a value it wrote: a skill's run resets its count, and a promote offer
    * that run brought is withdrawn.

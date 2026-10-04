@@ -38,6 +38,18 @@
             },
             "version": {
               "type": "string"
+            },
+            "host": {
+              "type": "boolean",
+              "const": true
+            },
+            "session": {
+              "type": "string",
+              "minLength": 8
+            },
+            "challenge": {
+              "type": "string",
+              "minLength": 16
             }
           },
           "required": [
@@ -567,7 +579,9 @@
                 "changed",
                 "secure",
                 "axError",
-                "blocked"
+                "blocked",
+                "notSameElement",
+                "focusMoved"
               ]
             },
             "detail": {
@@ -786,6 +800,18 @@
             },
             "version": {
               "type": "string"
+            },
+            "host": {
+              "type": "boolean",
+              "const": true
+            },
+            "session": {
+              "type": "string",
+              "minLength": 8
+            },
+            "challenge": {
+              "type": "string",
+              "minLength": 16
             }
           },
           "required": [
@@ -7044,6 +7070,14 @@
                     "taskId": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "mark": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sameAs": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "required": [
@@ -7477,6 +7511,29 @@
             "taskId",
             "at",
             "expires"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "helperAuth"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "proof": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "proof"
           ],
           "additionalProperties": false
         }

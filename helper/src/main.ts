@@ -1,5 +1,7 @@
 // caret-helper: listens on the screen socket for caret-screen and for consumers.
-//   node src/main.ts [--socket PATH] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
+//   node src/main.ts --auth-fd N [--socket PATH] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
+// --auth-fd names an inherited descriptor holding the 32-byte launch secret, which caret-screen also got from the
+// launcher (src/launch.ts); the helper answers the reader's challenge with it. It never comes on argv or in the environment.
 //   node src/main.ts --audit-out FILE --audit-seen FILE --socket PATH --data-dir DIR [--audit-probe-every SECONDS]
 // The second form is the read-only audit (src/audit.ts): shadow mode, Jev off, counts written to
 // --audit-out every minute and at exit, the seen-text hashes to --audit-seen at exit. With
@@ -8,7 +10,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { writeFileSync } from "node:fs";
+import { closeSync, readFileSync, writeFileSync } from "node:fs";
 import { Helper } from "./helper.ts";
 import { HelperServer } from "./server.ts";
 import { Store } from "./store.ts";
@@ -26,6 +28,7 @@ const { values: args } = parseArgs({
     "audit-out": { type: "string" },
     "audit-seen": { type: "string" },
     "audit-probe-every": { type: "string" },
+    "auth-fd": { type: "string" },
   },
 });
 
@@ -46,6 +49,19 @@ if (auditOut !== undefined) {
 
 if (!args["no-jev"] && !args.shadow) loadJevKey(); // fail at start, not at the first focus, when no key is configured
 
+/** The launch secret from an inherited descriptor, read to its end and closed; null without --auth-fd. */
+function launchSecret(fdArg: string | undefined): Buffer | null {
+  if (fdArg === undefined) return null;
+  const fd = Number(fdArg);
+  if (!Number.isInteger(fd) || fd < 0 || fd === 1 || fd === 2) throw new Error(`--auth-fd ${fdArg} is not an inherited input descriptor (0, or 3 and above)`);
+  const secret = readFileSync(fd);
+  closeSync(fd);
+  if (secret.length !== 32) throw new Error(`the launch secret on descriptor ${fd} is ${secret.length} bytes, expected 32`);
+  return secret;
+}
+const secret = launchSecret(args["auth-fd"]);
+if (secret === null) warn("no --auth-fd: caret-screen asks the helper to prove itself and will refuse this helper; start both with src/launch.ts");
+
 const store = new Store(args["data-dir"]);
 let server: HelperServer | null = null;
 const helper = new Helper({
@@ -62,7 +78,7 @@ const helper = new Helper({
   calendar: "reader",
   warn,
 });
-server = new HelperServer(args.socket, () => helper, warn);
+server = new HelperServer(args.socket, () => helper, warn, secret);
 await server.listen();
 warn(`listening on ${args.socket}; data in ${args["data-dir"]}; mode ${helper.mode}`);
 
@@ -95,6 +111,7 @@ const stop = async (signal: string): Promise<void> => {
   }
   await server?.close();
   helper.memory.close();
+  helper.journal.close();
   store.close();
   warn(`stopped on ${signal}`);
   process.exit(0);

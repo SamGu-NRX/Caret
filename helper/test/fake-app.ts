@@ -6,6 +6,7 @@ import type { Helper } from "../src/helper.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
 import { FIXTURE_APP, snap } from "./builders.ts";
 import { FakeGrants } from "./fake-grants.ts";
+import { FakeMarks } from "./fake-marks.ts";
 
 export const WIN = "5150-7";
 /** The fake window's window-server number (B21: a planRequest names its window by number). Invented. */
@@ -31,6 +32,11 @@ export class FakeApp implements ReaderLink {
   /** Leaves the field out of the walk right after a write of this kind and back in the next one, as B15's WebKit window did. */
   vanishAfter: "value" | "focusValue" | "insert" | null = null;
   private vanished: Node | null = null;
+  /**
+   * Answers a write of these kinds focusMoved and writes nothing, as caret-screen does when a page's focus handler
+   * moves focus off the field it just focused (B23, S1 audit #14).
+   */
+  focusMovesOn = new Set<string>();
   /** Sets the value but answers axError, as a reader that timed out while settling does. */
   timeoutAfterWrite = false;
   /** Answers this many walks with axError first, as a walk cut short by a busy app is. */
@@ -43,6 +49,8 @@ export class FakeApp implements ReaderLink {
   beforeVerb: ((app: FakeApp, v: ReaderVerb) => void) | null = null;
   /** Every grant and revoke the executor sent. */
   readonly grants = new FakeGrants();
+  /** The elements writes were recorded under, as the reader keeps them (B23). */
+  readonly marks = new FakeMarks();
   /** Refuses write, press and raise without a live grant, as caret-screen without --act-pids does. Off by default. */
   enforceGrants = false;
   /** Other windows a test sent itself, which walks re-read as unchanged; the fake acts in none of them. */
@@ -104,7 +112,10 @@ export class FakeApp implements ReaderLink {
     if (n === undefined) return { outcome: "noElement", detail: verb.key };
     if (n.role !== verb.role) return { outcome: "changed", detail: `role is ${n.role}` };
     if (verb.kind === "write") {
+      const notSame = this.marks.check(verb);
+      if (notSame !== null) return { outcome: "notSameElement", detail: notSame };
       if (n.states?.includes("secure")) return { outcome: "secure", detail: null };
+      if (this.focusMovesOn.has(verb.attribute)) return { outcome: "focusMoved", detail: "focus is on another field of the window" };
       if (verb.attribute === "value" || verb.attribute === "focusValue" || verb.attribute === "insert") {
         if ((n.value ?? "") !== verb.expect) return { outcome: "changed", detail: `value is '${n.value ?? ""}'` };
         if (verb.attribute !== "value") this.focusedKey = verb.key;
