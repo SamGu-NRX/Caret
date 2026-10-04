@@ -204,6 +204,7 @@ describe("the skill messages", () => {
 // MARK: - in the helper
 
 describe("skills in the helper", () => {
+  const HOST = "test-host";
   let dir: string;
   let store: Store;
   let helper: Helper;
@@ -319,8 +320,8 @@ describe("skills in the helper", () => {
     desk.grants.now = () => Date.now();
   });
   /** A helper on this test's store and desk; called again to stand for a restart. */
-  const makeHelper = (): Helper =>
-    new Helper({
+  const makeHelper = (): Helper => {
+    const h = new Helper({
       store,
       askJev: namer,
       shadow: false,
@@ -334,6 +335,10 @@ describe("skills in the helper", () => {
         },
       },
     });
+    // The host these tests play, in process: a run with no Tab starts only while a host session is connected (S1 audit #5).
+    h.hostConnected(HOST);
+    return h;
+  };
   afterEach(() => {
     helper.memory.close();
     store.close();
@@ -548,6 +553,32 @@ describe("skills in the helper", () => {
       expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "you", unprompted: true });
     });
   }
+
+  // S1 audit #5: before B22 nothing tied a run to a host that could show it.
+  it("revokes a run with no Tab at once when the host disconnects, as Caret's own stop", async () => {
+    await promoted();
+    const { own, revokedAtOnce, landed } = await changeMidRun(() => helper.hostDisconnected(HOST));
+    expect(own.offer).toBeNull();
+    expect(revokedAtOnce).toBe(true);
+    expect(landed).toBe(1);
+    expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "error", unprompted: true });
+    expect(own.progress.at(-1)?.detail).toMatch(/the host that started it disconnected/);
+  });
+
+  it("starts no run on its own while no host is connected: the skill is offered with Tab, and runs on its own again once a host is back", async () => {
+    await promoted();
+    helper.hostDisconnected(HOST);
+    const tab = await caretRun();
+    finish(tab);
+    expect(tab.offer).not.toBeNull();
+    expect(tab.progress.length).toBeGreaterThan(0);
+    expect(tab.progress.every((p) => p.unprompted === undefined)).toBe(true);
+    helper.hostConnected("another-host");
+    const own = await caretRun();
+    finish(own);
+    expect(own.offer).toBeNull();
+    expect(own.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+  });
 
   it("rechecks the permission before each write as the user moves: a write where they were becomes a write elsewhere, which needs its own permission", async () => {
     // Promoted while the user works in Mail, with Reversible write elsewhere left at ask first.

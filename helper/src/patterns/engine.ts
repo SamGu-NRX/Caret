@@ -72,6 +72,11 @@ export interface EngineDeps {
    * watchPresses): the windows with a routine occurrence under way, where a press may end it (B20).
    */
   watchPresses?: (windows: { pid: number; windowId: string }[]) => void;
+  /**
+   * Whether a host session is connected to show a run with no Tab, its toast, undo and take over (S1 audit
+   * #5). While none is, a skill that would run on its own is offered with Tab instead.
+   */
+  hostConnected: () => boolean;
 }
 
 type Cell = LoopCell | RoutineCell;
@@ -603,7 +608,8 @@ export class PatternEngine {
    * not shown: it exists so the run, its rechecks and the edits it watches work as for a taken offer. The
    * run starts once the reader event that triggered it has been handled, never in the middle of it, and
    * everything that allowed it is checked again then: the user may have paused Caret or the skill,
-   * changed a permission, or moved to another window, and a source may have changed. If the skill may no
+   * changed a permission, or moved to another window, the host may have disconnected, and a source may
+   * have changed. If the skill may no
    * longer run on its own but the offer still holds, it is offered with Tab instead.
    */
   private startUnprompted(o: OfferState): void {
@@ -616,7 +622,7 @@ export class PatternEngine {
         const held = this.deps.shadow() || this.deps.gate.holds("routine", this.clock).some((h) => h !== "hourlyBudget");
         const routine = o.routineId === null ? null : this.deps.memory.routine(o.routineId);
         const live = stale === null && !held && routine !== null && !routine.paused && !routine.skillPaused;
-        if (live && o.routineId !== null && this.skills.runsOnItsOwn(o.routineId, this.writeAction(o.msg.windowId), o.plan)) {
+        if (live && o.routineId !== null && this.deps.hostConnected() && this.skills.runsOnItsOwn(o.routineId, this.writeAction(o.msg.windowId), o.plan)) {
           const r = await this.runOffer(o, o.msg.id, true);
           if (cleanRun(o.plan, r)) for (const c of o.cells) this.watch(c, o.msg.id);
           return;
@@ -822,7 +828,7 @@ export class PatternEngine {
     if (!decision.speak) return null;
     this.deps.gate.spoke(this.clock);
     const o = this.create(kind, patternId, ids, cells, w.window.windowId, decision.showProbability, false, finish);
-    if (ids.routineId !== null && this.skills.runsOnItsOwn(ids.routineId, this.writeAction(windowId), o.plan)) {
+    if (ids.routineId !== null && this.deps.hostConnected() && this.skills.runsOnItsOwn(ids.routineId, this.writeAction(windowId), o.plan)) {
       this.startUnprompted(o);
       return o;
     }

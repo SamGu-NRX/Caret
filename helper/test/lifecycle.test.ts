@@ -5,14 +5,15 @@
 // back while it waits. No act may reach the app after the revoke. The boundary is the reader's last grant
 // check: an AX call the reader has already dispatched cannot be called back, so these tests hold the act
 // in the queue, before that check.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
-import { PROTOCOL_VERSION } from "../src/protocol.ts";
+import { PROTOCOL_VERSION, type OfferAction } from "../src/protocol.ts";
 import type { Plan, Step } from "../src/executor/schema.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
 import { field, FIXTURE_APP, snap } from "./builders.ts";
@@ -139,6 +140,25 @@ describe("taking control back (B22)", () => {
     expect(r).toMatchObject({ outcome: "stopped", step: 1 });
     expect(r.detail).toMatch(/what you told Caret/);
     expect(actsAfter("t1", revokedAt("t1"))).toEqual([]);
+    expect(reader.value(FORM, EMAIL)).toBe("old@example.com");
+  });
+
+  // S1 audit #5: before B22 a consumer's close only took it out of the consumer set.
+  it("no act reaches the app after the revoke: the host session that accepted the task disconnects", async () => {
+    // An action line as the host is shown one (protocol.ndjson's), recorded with a run under a grant, as a producer records its offers.
+    const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/protocol.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const action = { ...golden.find((l) => l.type === "action" && l.offerKey === "offer-5"), offerKey: "accept-1" } as unknown as OfferAction;
+    helper.offers.record(action, () => helper.executor.run("accept-1", two(), {}, undefined, { grant: true }));
+    reader.setValue(FORM, NAME, "");
+    reader.setValue(FORM, EMAIL, "old@example.com");
+    await until(() => helper.model.windows.get(FORM)?.nodes.get(EMAIL)?.value === "old@example.com" && helper.model.windows.get(FORM)?.nodes.get(NAME)?.value === undefined);
+    whileQueued = () => host.close();
+    host.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "accept-1", actionId: "finish", overrides: {}, at: 1 });
+    await until(() => helper.executor.has("accept-1") && !helper.executor.live("accept-1"), 3000);
+    expect(helper.tasks.get("accept-1")).toMatchObject({ state: "failed", cause: "caret" });
+    expect(helper.tasks.get("accept-1")?.detail).toMatch(/the host that started it disconnected/);
+    expect(actsAfter("accept-1", revokedAt("accept-1"))).toEqual([]);
+    expect(reader.acted.filter((a) => a.verb.kind === "write" && a.verb.taskId === "accept-1")).toHaveLength(1);
     expect(reader.value(FORM, EMAIL)).toBe("old@example.com");
   });
 

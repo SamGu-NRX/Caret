@@ -237,6 +237,18 @@ export class Helper {
   private planSeq = 0;
   /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
   private readerConnected: boolean;
+  /**
+   * Host sessions connected now (S1 audit #5): each consumer connection, as the server names it, and any
+   * in-process session a test or evaluation registers. A consumer's hello does not say whether it is the
+   * host, so every consumer counts as one.
+   */
+  private readonly hosts = new Set<string>();
+  /**
+   * The host sessions each task is bound to, by task id: the session that accepted, took, ran, resumed or
+   * undid it, or for a run a skill started with no Tab, every session connected when it started. If any of
+   * them disconnects, the task is revoked. A task with no entry was started in process, outside a session.
+   */
+  private readonly taskHosts = new Map<string, ReadonlySet<string>>();
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
@@ -298,7 +310,13 @@ export class Helper {
       },
       // Every pattern run starts from an accepted offer (offerControl take or the host's offerAccept), or
       // from a skill the user agreed to let run on its own (B19), which is the approval its grant rests on.
-      run: (taskId, plan, slots, expect, opts) => this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true }),
+      // A run with no Tab is bound to every host session connected as it starts (S1 audit #5); with none,
+      // authorize refuses its first act. The engine does not start one while no host is connected.
+      run: (taskId, plan, slots, expect, opts) => {
+        if (opts?.unprompted === true) this.taskHosts.set(taskId, new Set(this.hosts));
+        return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true });
+      },
+      hostConnected: () => this.hosts.size > 0,
       askJev: this.ask,
       shadow: () => this.mode === "shadow",
       gate: this.gate,
@@ -371,6 +389,9 @@ export class Helper {
    * permission is not one Caret always hands off.
    */
   private authorize(a: Authorization): Revocation | null {
+    const bound = this.taskHosts.get(a.taskId);
+    if (bound !== undefined && [...bound].some((h) => !this.hosts.has(h))) return { why: "the host that started it disconnected", by: "host" };
+    if (a.unprompted && (bound === undefined || bound.size === 0)) return { why: "no host was connected to show it", by: "host" };
     if (this.gate.settings.paused) return { why: "you paused Caret", by: "you" };
     if (a.unprompted) {
       const action = a.action === "writeHere" || a.action === "writeElsewhere" ? a.action : null;
@@ -544,6 +565,31 @@ export class Helper {
     this.readerConnected = false;
   }
 
+  /**
+   * A host session connected: a consumer on the socket (HelperServer), or an in-process caller that plays
+   * the host, such as an evaluation that answers offers itself. Runs with no Tab start only while one is.
+   */
+  hostConnected(session: string): void {
+    this.hosts.add(session);
+  }
+
+  /**
+   * A host session closed (S1 audit #5): every task bound to it is revoked now, its grant first, so an act
+   * already queued in the reader is refused; a run stops at its next step boundary, a paused one at once.
+   */
+  hostDisconnected(session: string): void {
+    if (!this.hosts.delete(session)) return;
+    // The binding stays, naming a session that is gone, so authorize also refuses a task whose run has not begun.
+    for (const [taskId, bound] of [...this.taskHosts]) {
+      if (bound.has(session)) this.executor.revoke(taskId, { why: "the host that started it disconnected", by: "host" });
+    }
+  }
+
+  /** Binds a task to the session that just accepted, took, ran, resumed or undid it; in process (no session), nothing. */
+  private bind(taskId: string, session: string | undefined): void {
+    if (session !== undefined) this.taskHosts.set(taskId, new Set([session]));
+  }
+
   /** The host's first look: the best offer across the windows open now, answered to the asker only. */
   async handleFirstLook(m: FirstLook): Promise<FirstLookReply> {
     this.opts.store.count("firstLook.request", 1);
@@ -669,8 +715,12 @@ export class Helper {
     if (refused !== null) this.error(refused);
   }
 
-  /** Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. */
-  handleOffer(m: OfferControl): Promise<TaskResult | null> {
+  /**
+   * Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. `session`: the
+   * host session it came from (HelperServer), which a taken offer's run is bound to; absent in process.
+   */
+  handleOffer(m: OfferControl, session?: string): Promise<TaskResult | null> {
+    if (m.action === "take") this.bind(m.offerId, session);
     return this.patterns.control(m);
   }
 
@@ -678,9 +728,10 @@ export class Helper {
    * The host took an action of an action line or pop-up. The offer must be live, not yet accepted, and
    * the action and overrides must be ones the host was shown; then the offer's producer runs it as the
    * task whose id is the offerId. Any refusal publishes an error and, unless a run already has that id,
-   * a terminal taskProgress, so the host's working line ends.
+   * a terminal taskProgress, so the host's working line ends. The run is bound to `session`, the host
+   * session that accepted it (S1 audit #5).
    */
-  async handleOfferAccept(m: OfferAccept): Promise<TaskResult | null> {
+  async handleOfferAccept(m: OfferAccept, session?: string): Promise<TaskResult | null> {
     if (this.mode !== "live") return this.refuseAccept(m.offerId, "the helper is in shadow mode and does not act");
     const r = this.offers.get(m.offerId);
     if (r === undefined) return this.refuseAccept(m.offerId, "no such offer, or it expired");
@@ -689,6 +740,7 @@ export class Helper {
     if (why !== null) return this.refuseAccept(m.offerId, why);
     if (r.accept === null) return this.refuseAccept(m.offerId, "the offer has nothing to run");
     r.accepted = true;
+    this.bind(m.offerId, session);
     let out: AcceptResult;
     try {
       out = await r.accept(m);
@@ -837,6 +889,8 @@ export class Helper {
   /** An executor phase becomes a task record: created on the run's first phase, updated on every later one. */
   private onTaskEvent(e: TaskEvent): void {
     const state = PHASE_STATE[e.phase];
+    // A task that can no longer act needs no host binding; an undo binds it again to the session asking.
+    if (state !== "running" && state !== "paused") this.taskHosts.delete(e.taskId);
     const cause: TaskCause | null = e.cause ?? (state === "running" ? null : state === "undone" ? "you" : "caret");
     const fields = {
       state,
@@ -892,7 +946,8 @@ export class Helper {
   }
 
   /** Runs a plan or controls a task. Errors in the request itself are published, not thrown. */
-  async handleTask(m: RunPlan | TaskControl): Promise<TaskResult | UndoResult | null> {
+  /** `session`: the host session it came from; a run, resume or undo is bound to it (S1 audit #5). */
+  async handleTask(m: RunPlan | TaskControl, session?: string): Promise<TaskResult | UndoResult | null> {
     if (this.mode !== "live") {
       this.error(`task ${m.taskId}: the helper is in shadow mode and does not act`);
       return null;
@@ -901,6 +956,7 @@ export class Helper {
       if (m.type === "runPlan") {
         // A task id names one piece of work in the activity feed; a run may not take over another's record.
         if (this.tasks.get(m.taskId) !== undefined) throw new Error(`task id ${m.taskId} is already in use`);
+        this.bind(m.taskId, session);
         // No act grant: a consumer's plan is not an offer the user accepted, so the reader acts for it
         // only in --act-pids processes, which only tests start.
         return await this.executor.run(m.taskId, m.plan, m.slots);
@@ -912,12 +968,14 @@ export class Helper {
       }
       switch (m.action) {
         case "resume":
+          this.bind(m.taskId, session);
           return await this.executor.resume(m.taskId);
         case "undo":
           // Asking to undo a skill's run resets its clean runs and puts it back on Tab (B19), before the restore
           // is awaited: a restore that is refused or fails (a reader restart since the run, S1 audit #15) must
           // not leave the skill running on its own.
           this.patterns.skills.reversed(m.taskId, this.now());
+          this.bind(m.taskId, session);
           return await this.executor.undo(m.taskId);
         case "pause":
         case "takeOver":

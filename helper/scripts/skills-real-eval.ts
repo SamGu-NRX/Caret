@@ -169,6 +169,8 @@ helper = new Helper({
   warn: (l) => log.push(l),
 });
 server = new HelperServer(join(sockDir, "s.sock"), () => helper, (l) => log.push(l));
+// This script answers offers itself, in process, so it is the host session a run with no Tab is bound to (B22, S1 audit #5).
+helper.hostConnected("eval");
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
