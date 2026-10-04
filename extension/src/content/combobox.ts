@@ -67,32 +67,43 @@ function namedListbox(el: Element): Element | null {
   return null;
 }
 
-/** The ids a control is known by: its own id, its labels' ids, and the ids aria-labelledby names. */
-function controlIds(el: Element): Set<string> {
-  const ids = new Set<string>();
-  if (el.id !== "") ids.add(el.id);
-  for (const id of (el.getAttribute("aria-labelledby") ?? "").split(/\s+/)) if (id !== "") ids.add(id);
+/** The elements that name a control: itself, its <label>s, and what its aria-labelledby resolves to in its own tree. */
+function namingElements(el: Element): Set<Element> {
+  const out = new Set<Element>([el]);
   const labels = (el as HTMLInputElement).labels;
-  if (labels !== undefined && labels !== null) for (const l of labels) if (l.id !== "") ids.add(l.id);
-  return ids;
+  if (labels !== undefined && labels !== null) for (const l of labels) out.add(l);
+  const root = el.getRootNode() as Document | ShadowRoot;
+  for (const id of (el.getAttribute("aria-labelledby") ?? "").split(/\s+/)) {
+    const n = id === "" ? null : root.getElementById(id);
+    if (n !== null) out.add(n);
+  }
+  return out;
+}
+
+/** The elements a listbox's aria-labelledby resolves to, in the listbox's own tree (ids are per tree, W2 review 2 #1). */
+function labelledBy(lb: Element): Element[] {
+  const root = lb.getRootNode() as Document | ShadowRoot;
+  return (lb.getAttribute("aria-labelledby") ?? "").split(/\s+/).flatMap((id) => {
+    const n = id === "" ? null : root.getElementById(id);
+    return n === null ? [] : [n];
+  });
 }
 
 /**
  * A listbox that became visible after the control opened and is shown to belong to it, when aria-controls and
- * aria-owns name none: it sits inside react-select's own container, it is labelled by the control or the control's
- * label, or the control's aria-activedescendant is one of its options. Exactly one such listbox, or null: a list
- * another widget opened is never taken for this control's (W2 review #1).
+ * aria-owns name none: it sits inside react-select's own container, its aria-labelledby resolves to the control or an
+ * element that names the control, or the control's aria-activedescendant is one of its options. Exactly one such
+ * listbox, or null: a list another widget opened is never taken for this control's (W2 review #1).
  */
 function associatedNewListbox(el: Element, f: Flavor, before: ReadonlySet<Element>): Element | null {
-  const ids = controlIds(el);
+  const names = namingElements(el);
   const active = el.getAttribute("aria-activedescendant");
-  const root = el.getRootNode() as Document | ShadowRoot;
-  const activeEl = active === null || active === "" ? null : (root.getElementById(active) ?? document.getElementById(active));
+  const activeEl = active === null || active === "" ? null : (el.getRootNode() as Document | ShadowRoot).getElementById(active);
   const found: Element[] = [];
   for (const lb of deepAll('[role="listbox"]')) {
     if (before.has(lb) || !visible(lb)) continue;
     const inside = f.kind === "reactSelect" && within(lb, f.container);
-    const labelled = (lb.getAttribute("aria-labelledby") ?? "").split(/\s+/).some((id) => ids.has(id));
+    const labelled = labelledBy(lb).some((n) => names.has(n));
     const holdsActive = activeEl !== null && within(activeEl, lb);
     if (inside || labelled || holdsActive) found.push(lb);
   }
@@ -149,12 +160,19 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
     pressEvents(target);
   };
 
-  /** Puts the filter text back, closes the list with Escape on the control, and blurs it. */
+  /**
+   * Puts the filter text back, closes the list with Escape on the control, and blurs it, rechecking the control after
+   * each step: a handler that makes it ineligible (a password field, gone, renamed) ends the tidying there (W2 review 2 #3).
+   */
   const restore = async (): Promise<void> => {
-    if (textField !== null && filterBefore !== null && textField.value !== filterBefore) typeInto(textField, filterBefore);
+    if (textField !== null && filterBefore !== null && textField.value !== filterBefore) {
+      typeInto(textField, filterBefore);
+      if (check() !== null) return;
+    }
     if (expandedOf(el) === true) {
       assertOwned(el);
       keyEvents(el, "Escape");
+      if (check() !== null) return;
     }
     (el as HTMLElement).blur();
     await settle();

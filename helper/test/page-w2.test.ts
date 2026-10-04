@@ -3,6 +3,7 @@
 // path while a covered browser's Accessibility focus does not. Every name, address and file here is invented.
 import { mkdtempSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -120,6 +121,12 @@ describe("confirmed files", () => {
     unlinkSync(p);
     symlinkSync(file("secret.txt", Buffer.from("cv")), p);
     expect(files.read("t")).toEqual({ refused: "the confirmed file cannot be opened" });
+  });
+
+  it("refuses a FIFO at once instead of waiting on it", () => {
+    const fifo = join(dir, "resume.pdf");
+    execFileSync("mkfifo", [fifo]);
+    expect(new ConfirmedFiles().confirm("t", fifo)).toEqual({ refused: "the confirmed path is not a file" });
   });
 
   it("follows an alias at confirmation and gives the page the name the user saw", () => {

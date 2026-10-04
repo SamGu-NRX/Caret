@@ -53,7 +53,8 @@ type Opened = { bytes: Buffer; st: Stats } | { refused: string };
 function readWhole(path: string): Opened {
   let fd: number;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK: a FIFO or device put at the path cannot hold the helper in open(); it is refused below as not a file.
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
     return { refused: "the confirmed file cannot be opened" };
   }
