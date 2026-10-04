@@ -305,6 +305,7 @@ export class Helper {
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
       memoryHolds: (id, value) => this.memory.text(id) === value,
       authorize: (a) => this.authorize(a),
+      ...(opts.warn === undefined ? {} : { warn: opts.warn }),
       // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
       journal: {
         save: (r) => this.journal.save({ ...r, skillId: this.patterns.skills.skillOf(r.taskId) }),

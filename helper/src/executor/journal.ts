@@ -91,6 +91,7 @@ export class RecoveryJournal {
 
   constructor(dir: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
     this.key = loadKey(join(dir, "memory.key"));
     const path = join(dir, "recovery.sqlite");
     this.db = new DatabaseSync(path);

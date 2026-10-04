@@ -32,6 +32,10 @@ const { values: args } = parseArgs({
   },
 });
 
+const statusMs = Number(args["status-every"]) * 1000;
+// Node runs any delay outside 1 ms to TIMEOUT_MAX every millisecond, which would flood the log (CodeRabbit on PR #5).
+if (!Number.isFinite(statusMs) || statusMs <= 0) throw new Error(`--status-every must be a positive number of seconds, not '${args["status-every"]}'`);
+
 const warn = (line: string): void => {
   process.stderr.write(`[caret-helper ${new Date().toISOString()}] ${line}\n`);
 };
@@ -83,7 +87,6 @@ await server.listen();
 warn(`listening on ${args.socket}; data in ${args["data-dir"]}; mode ${helper.mode}`);
 
 const tick = setInterval(() => helper.tick(), 250);
-const statusMs = Number(args["status-every"]) * 1000;
 const status = setInterval(() => {
   const mem = process.memoryUsage();
   warn(

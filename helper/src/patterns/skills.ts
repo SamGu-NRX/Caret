@@ -463,6 +463,13 @@ export class Skills {
         this.close(o, "stale");
         return `skill offer ${m.id}: its skill was forgotten`;
       }
+      // Asked again on accept: a finish press learned, or a permission changed, while the offer was out would otherwise
+      // give the skill onItsOwn with a hand-off, which no entry may hold (CodeRabbit on PR #5).
+      const no = m.answer === "accept" ? this.promoteRefusal(s) : null;
+      if (no !== null) {
+        this.close(o, "stale");
+        return `skill offer ${m.id}: ${no}`;
+      }
       memory.updateSkill(s.id, m.answer === "accept" ? { onItsOwn: true, promote: null } : { promote: "declined" }, at);
     }
     this.close(o, m.answer === "accept" ? "taken" : "dismissed", true);

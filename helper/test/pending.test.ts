@@ -127,6 +127,24 @@ describe("pending-state watch", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // CodeRabbit on PR #5: the watch's reader promise had no rejection handler, so a link that rejects ended the helper.
+  it("survives a reader link that rejects the watch, and says so", async () => {
+    helper.shutdown();
+    helper.memory.close();
+    const warnings: string[] = [];
+    const failing: ReaderLink = {
+      run: async (v) => {
+        if (v.kind === "watchWindows") throw new Error("the reader's connection is gone");
+        return reader.run(v);
+      },
+    };
+    helper = new Helper({ store, askJev: jev.ask, shadow: false, allowBackgroundFocus: false, publish: (m) => sent.push(m), readerLink: failing, warn: (l) => warnings.push(l) });
+    leaveJob("Running tests… 12 of 48");
+    await new Promise((r) => setImmediate(r));
+    expect(warnings).toContain("pending: watchWindows failed: the reader's connection is gone");
+    expect(last()).toMatchObject({ state: "running" });
+  });
+
   it("watches a left job window, asks nothing while only its counter moves, and reports done when it finishes", async () => {
     leaveJob("Running tests… 12 of 48");
     expect(last()).toMatchObject({ state: "running", windowId: JOB, says: "Watching 'Test run' in Caret Fixture", pending: { markedBy: "Running tests… 12 of 48", asks: 0 } });

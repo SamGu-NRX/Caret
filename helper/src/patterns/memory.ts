@@ -330,7 +330,9 @@ export class MemoryStore {
         break;
       }
       case "routine": {
-        const e = parseEdit(z.strictObject({ name: z.string().min(1).max(80).nullable() }), raw);
+        // The same check as a skill's name (CodeRabbit on PR #5): a routine's name becomes the skill's when it is kept.
+        const e = parseEdit(z.strictObject({ name: z.string().trim().min(1).max(80).nullable() }), raw);
+        if (e.name !== null && ONE_LINE_BREAKS.test(e.name)) throw new MemoryError("invalid edit: a routine's name must be one line of text");
         next = { ...(fields as RoutineJson), name: e.name, nameBy: e.name === null ? null : "you" };
         break;
       }

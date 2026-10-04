@@ -218,6 +218,8 @@ describe("skills in the helper", () => {
   let namingHeld: Promise<void> | null;
   /** Set to leave any run hanging, for good, right before its act at this step: a helper that died there. */
   let hangAtStep: number | null;
+  /** What the helper said through `warn`. */
+  let warnings: string[];
 
   const namer: AskJev = async (req) => {
     asked.push(req);
@@ -317,6 +319,7 @@ describe("skills in the helper", () => {
     takeOverAtAct = null;
     namingHeld = null;
     hangAtStep = null;
+    warnings = [];
     desk = new Desk();
     desk.enforceGrants = true;
     helper = makeHelper();
@@ -333,6 +336,7 @@ describe("skills in the helper", () => {
       publish: (m) => sent.push(HelperMessage.parse(m)),
       readerLink: desk,
       settings: { roles: ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: false },
+      warn: (l) => warnings.push(l),
       executorHooks: {
         beforeAct: async (taskId, step) => {
           if (hangAtStep !== null && step === hangAtStep) await new Promise<void>(() => undefined);
@@ -1085,16 +1089,46 @@ describe("skills in the helper", () => {
     desk.close(c.windowId);
   });
 
-  it("resets a skill whose run ends in an error rather than a result", async () => {
+  // CodeRabbit on PR #5: before, the reader refusing to drop the input watch after the last step turned the finished,
+  // verified run into a rejection, which the engine counted as a failure.
+  it("keeps a finished run's result when the reader will not drop its input watch afterwards, and says so", async () => {
     setRule("writeElsewhere", "actIfApproved");
     await promote();
     desk.refuseLastWatch = true;
-    const at = sent.length;
     const r = await caretRun();
     desk.refuseLastWatch = false;
     finish(r);
-    expect(since("error", at).some((e) => e.message.includes("cannot watch for input"))).toBe(true);
-    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+    expect(r.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+    expect(warnings.some((w) => w.includes("cannot watch for input"))).toBe(true);
+    expect(skills()[0]).toMatchObject({ status: "active", fields: { onItsOwn: true } });
+  });
+
+  // CodeRabbit on PR #5: accepting checked nothing again, so a press learned while the offer was out gave the skill onItsOwn with a hand-off.
+  it("refuses a promote offer accepted after the skill learned a press it leaves to the user", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await keep();
+    let promote: SkillOffer | undefined;
+    for (let i = 1; i <= PROMOTE_AFTER && promote === undefined; i++) {
+      const r = await caretRun();
+      finish(r);
+      promote = r.skillOffers.find((o) => o.kind === "promote");
+    }
+    expect(promote).toBeDefined();
+    // While the offer is out, the routine learns the press its windows end with, as recordRoutine does.
+    helper.memory.updateSkill(skillId, { handsOff: { label: "Send", why: "outbound" }, onItsOwn: false }, desk.at);
+    const errors = sent.length;
+    answer(promote!, "accept");
+    expect(since("error", errors)[0]?.message).toMatch(/ends in a press Caret leaves to you/);
+    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, handsOff: { label: "Send" } } });
+  });
+
+  // CodeRabbit on PR #5: a routine's name, which becomes its skill's, skipped the skill name's checks.
+  it("holds a routine's name to the skill name's checks: one line, trimmed", () => {
+    for (let i = 0; i < 2; i++) byHand();
+    const id = routines()[0]!.id;
+    expect(ask("edit", { id, fields: { name: "Order details\ninto Tracker" } }).error).toMatch(/one line/);
+    expect(ask("edit", { id, fields: { name: "   " } }).error).toMatch(/invalid edit/);
+    expect(ask("edit", { id, fields: { name: "  Order details into Tracker  " } }).entries[0]).toMatchObject({ fields: { name: "Order details into Tracker" } });
   });
 
   it("does not count a run the user took over while its last write was answering", async () => {

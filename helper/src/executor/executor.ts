@@ -61,6 +61,8 @@ export interface ExecutorDeps {
    * that crashes mid-run leaves its undo behind (B23, S1 audit #11; journal.ts). Without it nothing is saved.
    */
   journal?: JournalPort;
+  /** Where a failure that does not change a task's result is said: the watch a finished run cannot drop. */
+  warn?: (line: string) => void;
 }
 
 /** What the executor saves of a task; the helper adds the skill it counts for (journal.ts JournalRecord.skillId). */
@@ -762,7 +764,9 @@ export class Executor {
       } else if (task.finished !== null) this.journalDrop(task);
       // Done, handed off, stopped or paused: nothing more is done for the task until the user resumes it.
       if (task.finished !== null) this.revokeGrant(task);
-      await this.updateWatch();
+      // The run's result stands: a reader that will not drop the input watch now only leaves a watch on, which the
+      // next run's updateWatch replaces. A throw here would turn a finished run into a rejection (CodeRabbit on PR #5).
+      await this.updateWatch().catch((e: unknown) => this.deps.warn?.(`executor: after task ${task.id}, ${e instanceof Error ? e.message : String(e)}`));
     }
   }
 
