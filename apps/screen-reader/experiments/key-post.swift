@@ -1,7 +1,7 @@
 // B21 part 3: posts one key, down then up, to a process the evaluation started, so the reader's press watch can
 // be tested on Return, keypad Enter and Space. The key goes to that pid alone (CGEventPostToPid), never through
 // the HID or session tap, so it cannot land in a window someone else is using. The process is checked to be
-// running immediately before each event.
+// running immediately before each event, and with CARET_REQUIRE_FRONT=1 that it is the frontmost app.
 //
 //   key-post PID KEYCODE    -> one JSON line
 import AppKit
@@ -26,7 +26,17 @@ func markPosting(_ busy: Bool) {
     try? (busy ? "busy \(ms + 5000)" : "\(ms)").write(toFile: f, atomically: true, encoding: .utf8)
 }
 
+/// With CARET_REQUIRE_FRONT=1, LaunchServices must name PID frontmost immediately before each event.
+let requireFront = ProcessInfo.processInfo.environment["CARET_REQUIRE_FRONT"] == "1"
+func frontPid() -> Int {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    return Int(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1)
+}
 func post(_ down: Bool) -> Bool {
+    if requireFront, frontPid() != Int(pid) {
+        markPosting(false)
+        out(["ok": false, "error": "deferred: foreground (frontmost is \(frontPid()), not \(pid))"])
+    }
     guard NSRunningApplication(processIdentifier: pid) != nil,
           let e = CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState), virtualKey: code, keyDown: down) else { return false }
     e.flags = code == 76 ? .maskNumericPad : []

@@ -12,10 +12,13 @@
 //   space-text       focus in Note, Space                      -> no press reported
 //   return-unwatched focus in Keys other, Return               -> no press reported (not watched)
 //
-// --foreground starts the fixture with the accessory policy, so its windows can be key and a posted key reaches
-// its buttons; it still never activates itself.
+// --foreground starts the fixture with the accessory policy; it still never activates itself, so its windows are
+// never key and AppKit runs no key equivalent (Return on a default button) for a posted key. --front (implies
+// --foreground) activates the fixture so its window is key, as the user's app is when they press Return:
+// LaunchServices must name the fixture frontmost before every key (here and in the poster), or the run ends as
+// deferred: foreground, and at the end the fixture hands activation back to the app that had it.
 //
-//   gui.sh 10 env CARET_GUI_LOCK=held node scripts/key-press-eval.ts --bin ../apps/screen-reader/.build/debug --poster PATH --out DIR [--runs 5] [--foreground]
+//   gui.sh 10 env CARET_GUI_LOCK=held node scripts/key-press-eval.ts --bin ../apps/screen-reader/.build/debug --poster PATH --out DIR [--runs 5] [--foreground | --front]
 import { execFile, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,7 +33,7 @@ import { userInput } from "./synthetic-input.ts";
 
 const run = promisify(execFile);
 const { values: a } = parseArgs({
-  options: { bin: { type: "string" }, poster: { type: "string" }, out: { type: "string" }, runs: { type: "string", default: "5" }, foreground: { type: "boolean", default: false } },
+  options: { bin: { type: "string" }, poster: { type: "string" }, out: { type: "string" }, runs: { type: "string", default: "5" }, foreground: { type: "boolean", default: false }, front: { type: "boolean", default: false } },
 });
 if (a.bin === undefined || a.out === undefined || a.poster === undefined) throw new Error("--bin, --poster and --out are required");
 if (process.env.CARET_GUI_LOCK !== "held") throw new Error("run under the GUI wrapper: gui.sh 10 env CARET_GUI_LOCK=held node scripts/key-press-eval.ts ...");
@@ -38,6 +41,18 @@ const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
 const POSTER = resolve(a.poster);
 const RUNS = Number(a.runs);
+const FRONT = a.front === true;
+/** The frontmost app's pid as LaunchServices has it (`lsappinfo`), or null when it cannot be read. */
+async function lsFrontPid(): Promise<number | null> {
+  try {
+    const asn = (await run("/usr/bin/lsappinfo", ["front"])).stdout.trim();
+    const m = /"pid"=(\d+)/.exec((await run("/usr/bin/lsappinfo", ["info", "-only", "pid", asn])).stdout);
+    return m?.[1] === undefined ? null : Number(m[1]);
+  } catch {
+    return null;
+  }
+}
+class Deferred extends Error {}
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const sent: HelperMessage[] = [];
@@ -68,7 +83,8 @@ helper.handleReader = (m) => {
 server = new HelperServer(join(sockDir, "s.sock"), () => helper, (l) => log.push(l));
 await server.listen();
 
-const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(a.bin), ["--windows", "keys", "--duration", "900", ...(a.foreground === true ? ["--foreground"] : [])]);
+const fixture: ChildProcessWithoutNullStreams = spawn(fixtureExecutable(a.bin), ["--windows", "keys", "--duration", "900", ...(a.foreground === true || FRONT ? ["--foreground"] : [])]);
+let handBackTo: number | null = null;
 let reader: ChildProcessWithoutNullStreams | null = null;
 process.on("exit", () => {
   reader?.kill("SIGTERM");
@@ -156,7 +172,7 @@ interface Row {
   ok: boolean;
 }
 const rows: Row[] = [];
-const result: Record<string, unknown> = { foreground: a.foreground === true, runs: RUNS };
+const result: Record<string, unknown> = { foreground: a.foreground === true, front: FRONT, runs: RUNS };
 let ok = false;
 let readerErr = "";
 try {
@@ -172,6 +188,16 @@ try {
     const r = await helper.readerVerb({ kind: "watchPresses", windows: [{ pid: fixturePid, windowId: main.window.windowId }] });
     if (r.outcome !== "ok") throw new Error(`watchPresses: ${r.outcome} ${r.detail ?? ""}`);
   };
+  if (FRONT) {
+    handBackTo = await lsFrontPid();
+    await fx("activate legacy");
+    const t0 = Date.now();
+    while ((await lsFrontPid()) !== fixturePid) {
+      if (Date.now() - t0 > 5000) throw new Deferred(`deferred: foreground (LaunchServices names pid ${await lsFrontPid()} frontmost, not the fixture ${fixturePid})`);
+      await sleep(100);
+    }
+    result.frontFrom = handBackTo;
+  }
   for (const c of CASES) {
     for (let r = 0; r < RUNS; r++) {
       await fx("keys reset");
@@ -181,9 +207,11 @@ try {
       // Let the reader read the new focus before the key goes down, as a person's typing would follow it.
       await sleep(600);
       const before = presses.length;
-      const { stdout } = await run(POSTER, [String(fixturePid), String(c.code)], { timeout: 10_000 });
-      const posted = JSON.parse(stdout) as { ok: boolean };
-      if (!posted.ok) throw new Error(`key-post: ${stdout}`);
+      if (FRONT && (await lsFrontPid()) !== fixturePid) throw new Deferred(`deferred: foreground (the fixture lost the front before ${c.name} ${r})`);
+      const env = FRONT ? { ...process.env, CARET_REQUIRE_FRONT: "1" } : process.env;
+      const { stdout } = await run(POSTER, [String(fixturePid), String(c.code)], { timeout: 10_000, env });
+      const posted = JSON.parse(stdout) as { ok: boolean; error?: string };
+      if (!posted.ok) throw (posted.error ?? "").startsWith("deferred: foreground") ? new Deferred(String(posted.error)) : new Error(`key-post: ${stdout}`);
       await sleep(1000);
       const dump = (await fx("keys dump")) as { pressed: Record<string, number> };
       const reported = presses.slice(before).map((p) => ({ label: p.label, via: p.via, role: p.role, keyed: p.key !== null, windowId: p.windowId }));
@@ -197,8 +225,13 @@ try {
   }
   ok = rows.every((x) => x.ok);
 } catch (e) {
-  result.error = e instanceof Error ? (e.stack ?? e.message) : String(e);
+  result.error = e instanceof Deferred ? e.message : e instanceof Error ? (e.stack ?? e.message) : String(e);
 } finally {
+  if (FRONT && handBackTo !== null) {
+    // The fixture hands activation back to the app that had it (caret-fixture `quit PID`), then exits.
+    fixture.stdin.write(`quit ${handBackTo}\n`);
+    await sleep(600);
+  }
   reader?.kill("SIGTERM");
   fixture.kill("SIGTERM");
   await server.close();
@@ -211,7 +244,7 @@ const table = CASES.map((c) => {
   return `| ${c.name} | ${c.want === null ? "none" : `${c.want.label} by ${c.want.via}`} | ${xs.length} | ${xs.filter((x) => x.ok).length} | ${xs.reduce((n, x) => n + x.reported.length, 0)} | ${appRan} (${[...new Set(xs.flatMap((x) => Object.keys(x.appPressed)))].join(", ") || "none"}) |`;
 });
 const md = [
-  `# Presses by key on caret-fixture (${a.foreground === true ? "accessory fixture, windows key without activation" : "background-only fixture"})`,
+  `# Presses by key on caret-fixture (${FRONT ? "fixture activated and frontmost, its window key" : a.foreground === true ? "accessory fixture, not active" : "background-only fixture"})`,
   "",
   "Reported is what the reader sent as userPress; App ran is how many runs had any fixture button action run, as AppKit decided from the posted key.",
   "",
