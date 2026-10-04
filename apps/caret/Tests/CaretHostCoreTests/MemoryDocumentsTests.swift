@@ -172,6 +172,16 @@ final class MemoryDocumentsTests: XCTestCase {
         XCTAssertThrowsError(try MemoryDocumentReply.decode(Data(line.utf8)))
     }
 
+    /// Review finding 9: what protocol.ts refuses, the host refuses too.
+    func testValuesTheHelpersSchemaRefusesAreRefused() throws {
+        let negative = #"{"type":"memoryProvenance","v":1,"at":-1,"offerKey":"k","facts":[{"memoryId":"m","kind":"about","label":"x","says":"y","noticed":{"app":null,"windowTitle":null,"at":1}}]}"#
+        XCTAssertThrowsError(try MemoryProvenance.decode(Data(negative.utf8)))
+        let emptyMessage = #"{"type":"memoryDocumentReply","v":1,"requestId":"r","error":null,"conflict":null,"folder":"/f","documents":[{"doc":"people","file":"people.md","path":"/f/people.md","revision":null,"bytes":0,"diagnostics":[{"line":1,"field":null,"severity":"error","message":""}]}],"text":null}"#
+        XCTAssertThrowsError(try MemoryDocumentReply.decode(Data(emptyMessage.utf8)))
+        let nullNoticed = #"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[{"kind":"about","id":"a-1","status":"active","says":"x","evidence":{"count":1,"lastSeen":1,"app":null},"noticed":null,"fields":{"label":"Guest","value":"V","source":"edit"}}]}"#
+        XCTAssertEqual(try HelperMemory.Reply.decode(Data(nullNoticed.utf8)).unreadable.count, 1)
+    }
+
     func testAMissingNullableKeyIsRefused() {
         let line = #"{"type":"memoryDocumentReply","v":1,"requestId":"r","error":null,"folder":"/f","documents":[],"text":null}"#
         XCTAssertThrowsError(try MemoryDocumentReply.decode(Data(line.utf8)), "conflict must be present, null when there is none")

@@ -180,6 +180,52 @@ final class MemoryFilesTests: XCTestCase {
         for kind in [HelperMemory.Kind.routine, .skill, .permission, .unrecognized] { XCTAssertNil(MemoryFiles.doc(for: kind)) }
     }
 
+    /// Review finding 1: a save's late reply must not close an editor opened since. Save A, close,
+    /// open A again and type; then the first save's reply arrives.
+    func testALateSaveReplyLeavesANewerEditorAlone() {
+        let r = Rig()
+        r.open()
+        r.files.updateText("first\n")
+        r.files.save()
+        let firstSave = r.sent.last!.requestId
+        r.files.close()
+        r.open()
+        r.files.updateText("second\n")
+        r.files.receive(MemoryDocumentReply(requestId: firstSave, error: nil, conflict: nil, folder: Self.folder, documents: [r.doc("about-me", "sha256:a2")], text: nil))
+        XCTAssertEqual(r.state.editor?.text, "second\n", "the newer typing stays")
+        XCTAssertEqual(r.state.document("about-me")?.revision, "sha256:a2", "the file's revision is still recorded")
+    }
+
+    /// Review finding 1: opening another file closes an untouched one at once, so nothing can be
+    /// typed into it while the other is read, and a late read of the first changes nothing.
+    func testOpeningAnotherFileClosesTheUntouchedOneFirst() {
+        let r = Rig()
+        r.open()
+        XCTAssertTrue(r.files.open("people"))
+        XCTAssertNil(r.state.editor)
+        XCTAssertEqual(r.state.opening, "people")
+    }
+
+    func testASuccessfulSaveAsksForTheFactsAgain() {
+        let r = Rig()
+        var saved = 0
+        r.files.onSaved = { saved += 1 }
+        r.open()
+        r.files.updateText("x\n")
+        r.files.save()
+        r.reply(documents: [r.doc("about-me", "sha256:a2")])
+        XCTAssertEqual(saved, 1)
+    }
+
+    /// Review finding 7: a file that could not be opened says so on its section.
+    func testAFileThatWontOpenSaysWhy() {
+        let r = Rig()
+        r.files.open("people")
+        r.clock.advance(by: MemoryFiles.answerTimeout + 0.1)
+        XCTAssertEqual(r.state.openProblems["people"], "Caret didn't answer. Try again.")
+        XCTAssertNil(r.state.opening)
+    }
+
     func testOfflineNothingIsSentAndNothingWaits() {
         let r = Rig()
         r.files.linkChanged(false)

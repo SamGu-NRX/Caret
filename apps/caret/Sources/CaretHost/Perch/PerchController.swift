@@ -96,6 +96,8 @@ final class PerchController {
     private var locateTimer: Timer?
     private var blinkTimer: Timer?
     private var fadeWork: DispatchWorkItem?
+    /// The rim, perch and caption are on their way out.
+    private var leaving = false
     private var clickMonitor: Any?
     private(set) var listOpen = false
     /// Pages of Done rows the open desk shows; "and N more" adds one, closing the desk resets it.
@@ -197,8 +199,11 @@ final class PerchController {
                 break
             }
             let key = p.offerKey
-            let sent = sendNotRight(fact.memoryId, key, forget ? nil : text) { [weak self] problem in
-                guard let self, var now = self.askModel.notRight, self.ask.shownProvenance?.offerKey == key || problem == nil else { return }
+            let memoryId = fact.memoryId
+            let sent = sendNotRight(memoryId, key, forget ? nil : text) { [weak self] problem in
+                // Only the plan it was said on: a newer card's row is not this answer's (review finding 3).
+                guard let self, var now = self.askModel.notRight, let shown = self.ask.shownProvenance,
+                      shown.offerKey == key, shown.facts.first?.memoryId == memoryId else { return }
                 if let problem {
                     now.phase = .correcting
                     now.problem = problem
@@ -280,7 +285,9 @@ final class PerchController {
         scheduleExpiry(now: now)
         if next?.taskId != subject?.taskId { target = nil }
         subject = next
-        let nowLit = next.map { [.working, .waiting, .needsYou].contains($0.mood) } ?? false
+        // Lit while any task runs, waits or needs the user, not only the one the perch reports on: a
+        // newer finished task must not put the glyph out while an older one still runs (review finding 5).
+        let nowLit = center.records.contains { r in Perch.mood(for: r.state).map { [.working, .waiting, .needsYou].contains($0) } ?? false }
         if nowLit != lit {
             lit = nowLit
             onLitChanged?(nowLit)
@@ -293,6 +300,8 @@ final class PerchController {
             startTimers()
         } else {
             leave(stopped: false)
+            // Nothing left to follow: the window-list and blink timers stop (review finding 8).
+            stopTimers()
         }
         if listOpen { renderList() }
     }
@@ -352,13 +361,15 @@ final class PerchController {
             // Done: the figure hops off, the ring goes with it (the slip at the caret says Added).
             leave(stopped: false)
         case .error:
-            leave(stopped: true)
+            // The ring goes Graphite and fades where the user can see it; anywhere else it goes at once.
+            leave(stopped: seen.isClear && showsHere)
         }
     }
 
     private func show(at window: CGRect, subject: Perch.Subject) {
         fadeWork?.cancel()
         fadeWork = nil
+        leaving = false
         let visible = Screen.axVisibleFrame(around: window)
         let layout = Rim.layout(window: window, perchHeight: PerchModel.figureHeight, visible: visible)
         let moved = layout != self.layout
@@ -387,6 +398,11 @@ final class PerchController {
             if entersNow { caption.enter() }
         }
         rimModel.graphite = false
+        if !entering, !model.presented {
+            // Work came back while the rim was on its way out: the figure returns as well.
+            panel.orderFrontRegardless()
+            withAnimation(Motion.reduceMotion ? .linear(duration: Motion.Duration.reduced) : Motion.curve(Motion.easeOut, Motion.Duration.figureEnter)) { model.presented = true }
+        }
         guard entering else { return }
         stats.shows += 1
         let reduce = Motion.reduceMotion
@@ -401,7 +417,15 @@ final class PerchController {
     /// Takes everything down. `stopped`: the run ended badly or was stopped, so the ring turns
     /// Graphite over 220 ms and fades after 900 ms while the figure hops off at once.
     private func leave(stopped: Bool) {
+        // Once on its way out it is left alone: the window list is read four times a second, and each
+        // read asking again would push the fade back for good (review finding 4). A stopped ring whose
+        // window became covered meanwhile goes at once.
+        if leaving {
+            if !stopped, rimModel.graphite { finishLeaving() }
+            return
+        }
         guard rimModel.shown || model.presented || caption.isVisible else { return }
+        leaving = true
         stats.leaves += 1
         let reduce = Motion.reduceMotion
         withAnimation(reduce ? .linear(duration: Motion.Duration.reduced) : Motion.curve(Motion.easeOut, Motion.Duration.figureLeave)) { model.presented = false }
@@ -417,20 +441,26 @@ final class PerchController {
         }
         fadeWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.rimModel.shown = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                    MainActor.assumeIsolated {
-                        guard let self, !self.rimModel.shown else { return }
-                        self.rimPanel.orderOut(nil)
-                        self.panel.orderOut(nil)
-                    }
-                }
-            }
+            MainActor.assumeIsolated { self?.finishLeaving() }
         }
         fadeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: work)
+    }
+
+    /// The ring fades (its 220 ms), then the panels go, unless something was shown again meanwhile.
+    private func finishLeaving() {
+        fadeWork?.cancel()
+        fadeWork = nil
+        rimModel.shown = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, !self.rimModel.shown else { return }
+                self.leaving = false
+                self.rimModel.graphite = false
+                self.rimPanel.orderOut(nil)
+                self.panel.orderOut(nil)
+            }
+        }
     }
 
     /// While there is a subject: the window list four times a second (the rim follows a dragged
@@ -537,8 +567,9 @@ final class PerchController {
     }
 
     private func renderList() {
-        // A new root view loses the field's keyboard focus; give it back if it had it.
-        let fieldHadFocus = list.panel.isKeyWindow && list.panel.firstResponder is NSTextView
+        // A new root view loses the field's keyboard focus; give it back if it had it. An open "Not
+        // right" holds its own field, which takes focus as it appears; the ask field must not take it.
+        let fieldHadFocus = list.panel.isKeyWindow && list.panel.firstResponder is NSTextView && askModel.notRight?.phase != .correcting
         defer { if fieldHadFocus { askModel.focusToken &+= 1 } }
         let page = center.page(pages: donePages)
         drawnAsk = ask.phase

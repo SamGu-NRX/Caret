@@ -144,6 +144,10 @@ struct MemoryView: View {
             Notice(text: problem, action: ("Try again", { send(.retry) })).padding(.top, 14)
         } else if !state.loaded, state.entries.isEmpty {
             Notice(text: Self.reading).padding(.top, 14)
+        } else if files.loaded, let problem = files.listProblem {
+            // The files were listed on this connection and a later list failed. A helper that never
+            // lists them (one from before M1) shows no notice: it simply has no Edit.
+            Notice(text: problem, action: ("Try again", { send(.retry) })).padding(.top, 14)
         }
     }
 
@@ -160,6 +164,9 @@ struct MemoryView: View {
                     ForEach(MemoryFiles.problemLines(d), id: \.self) { line in
                         ProblemLine(text: line)
                     }
+                }
+                if let doc, let problem = files.openProblems[doc] {
+                    ProblemLine(text: "Caret couldn't open \(doc).md: \(problem)")
                 }
                 if let doc, let editor = files.editor, editor.doc == doc {
                     DocumentEditor(editor: editor, editorApp: editorApp, send: send)
@@ -380,6 +387,13 @@ private struct DocumentEditor: View {
                         .font(Tokens.Font.chromeSmall)
                         .foregroundStyle(Color(token: Tokens.ink2))
                         .fixedSize(horizontal: false, vertical: true)
+                    // A Reload or Keep my text that failed says so beside the choice it leaves open.
+                    if let problem = editor.problem {
+                        Text(problem)
+                            .font(Tokens.Font.chromeSmall)
+                            .foregroundStyle(Color(token: Tokens.ink))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Reload") { send(.reloadFile) }

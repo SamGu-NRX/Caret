@@ -422,11 +422,15 @@ private struct StepMark: View {
         case .pending:
             Circle().strokeBorder(Color(token: Tokens.ink3), lineWidth: 1).frame(width: 7, height: 7)
         case .running:
+            // The light is a ring around the dot, clear of it, so the dot stands on the card (3:1 as a
+            // mark; on its own glow it fell to 2.9). Only the ring's opacity pulses (1.6 s, the spec's
+            // "lit step"): nothing is laid out or re-blurred per frame. Still under Reduce Motion.
             let pulses = animated && !reduceMotion
-            Circle().fill(Color(token: Tokens.carrot)).frame(width: 7, height: 7)
-                .phaseAnimator(pulses ? [1.0, 2.2] : [1.0]) { dot, glow in
-                    dot.shadow(color: Color(token: Tokens.glow), radius: 2.5 * glow)
-                } animation: { _ in .easeInOut(duration: 0.8) }
+            ZStack {
+                Circle().strokeBorder(Color(token: Tokens.glow), lineWidth: 2).frame(width: 14, height: 14).blur(radius: 0.8)
+                    .phaseAnimator(pulses ? [0.35, 1.0] : [1.0]) { glow, strength in glow.opacity(strength) } animation: { _ in .easeInOut(duration: 0.8) }
+                Circle().fill(Color(token: Tokens.carrot)).frame(width: 7, height: 7)
+            }
         case .done:
             Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color(token: Tokens.ink2))
         case .failed:

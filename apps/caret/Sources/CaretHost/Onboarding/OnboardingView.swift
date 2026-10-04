@@ -139,7 +139,8 @@ struct ScreenTitle: View {
     }
 }
 
-/// 6 pt dots, one per step: the current one Carrot, the rest Ink 3 (a mark, 3.8:1 on the window).
+/// One dot per step: the current one Carrot and larger (7 pt against 5, so it does not rest on
+/// color alone), the rest Ink 3 (a mark, 3.8:1 on the window).
 struct StepDots: View {
     var current: Int
     var count: Int
@@ -149,7 +150,7 @@ struct StepDots: View {
             ForEach(0..<count, id: \.self) { i in
                 Circle()
                     .fill(Color(token: i == current ? Tokens.carrot : Tokens.ink3))
-                    .frame(width: 6, height: 6)
+                    .frame(width: i == current ? 7 : 5, height: i == current ? 7 : 5)
             }
         }
         .accessibilityElement()
@@ -193,7 +194,9 @@ struct WelcomeScreen: View {
     static let line = "It offers the next words, and sometimes the next step. Tab takes it. Typing says no."
 
     enum Beat { case before, entered, looking, bowing, rest }
-    @State private var beat: Beat = .before
+    @State private var beat: Beat = Self.performed ? .rest : .before
+    /// The performance happens once per launch: Back to this screen finds the figure already there.
+    @MainActor static var performed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -230,6 +233,7 @@ struct WelcomeScreen: View {
         .padding(.top, 12)
         .task {
             guard !still, beat == .before else { return }
+            Self.performed = true
             withAnimation(Motion.curve(Motion.easeOut, Motion.Duration.figureEnter)) { beat = .entered }
             try? await Task.sleep(for: .milliseconds(420))
             beat = .looking

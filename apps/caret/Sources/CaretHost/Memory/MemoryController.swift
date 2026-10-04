@@ -48,6 +48,8 @@ final class MemoryController {
             guard let self else { return }
             self.model.files = self.files.state
         }
+        // A saved file can change, add or remove facts: the rows read them again.
+        files.onSaved = { [weak self] in self?.book.requestList() }
     }
 
     // MARK: - From the helper
@@ -108,12 +110,13 @@ final class MemoryController {
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
         closeObserver = nil
         window = nil
-        // An edit, a pending Forget or an open Not right does not outlive the window. An open file
-        // with typing in it does not either; the window is the only place it could be saved.
+        // An edit, a pending Forget or an open Not right does not outlive the window. A file with
+        // typing in it does: the draft waits in the editor for the window's next opening, so closing
+        // the window never throws away what was typed (review finding 2). One with nothing typed closes.
         book.cancelEdit()
         book.cancelNotRight()
         book.keep()
-        files.close()
+        if files.state.editor?.edited != true { files.close() }
     }
 
     var windowShown: Bool { window?.isVisible ?? false }

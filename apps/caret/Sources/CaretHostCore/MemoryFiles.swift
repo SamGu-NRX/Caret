@@ -57,6 +57,8 @@ public final class MemoryFiles {
         /// The document being read for the editor.
         public var opening: String?
         public var editor: Editor?
+        /// Why a file could not be opened, by document, until it is opened again.
+        public var openProblems: [String: String] = [:]
 
         public init() {}
 
@@ -70,14 +72,21 @@ public final class MemoryFiles {
     private struct Pending {
         var op: Op
         var timer: SurfaceTimer
+        /// The editor session the request belongs to: a reply for an editor since closed or replaced
+        /// changes nothing it did not ask about (review finding 1).
+        var session: Int
     }
 
     public private(set) var state = State()
     /// Writes one request; false when the helper is not connected.
     public var send: (MemoryDocumentRequest) -> Bool = { _ in false }
     public var onChange: () -> Void = {}
+    /// A save went through: the facts in the file may have changed, so memory is read again.
+    public var onSaved: () -> Void = {}
 
     private let clock: SurfaceClock
+    /// Bumped whenever the editor opens, closes or gives way to another file.
+    private var session = 0
     private let prefix: String
     private var pending: [String: Pending] = [:]
     private var requests = 0
@@ -125,6 +134,11 @@ public final class MemoryFiles {
                 return false
             }
         }
+        // The open file had nothing typed in it: it closes now, so nothing can be typed into it
+        // while the other file is read.
+        state.editor = nil
+        session += 1
+        state.openProblems[doc] = nil
         let sent = post(.read(doc: doc), op: .read(doc))
         if sent { state.opening = doc }
         onChange()
@@ -138,11 +152,13 @@ public final class MemoryFiles {
         onChange()
     }
 
-    /// Close the editor. Typing not saved is dropped: the window asks first (`MemoryView`).
+    /// Close the editor, dropping what was typed: Cancel, or Save with nothing changed. Closing the
+    /// window keeps a draft instead (`MemoryController`).
     public func close() {
         guard state.editor != nil || state.opening != nil else { return }
         state.editor = nil
         state.opening = nil
+        session += 1
         onChange()
     }
 
@@ -199,6 +215,7 @@ public final class MemoryFiles {
         for d in reply.documents {
             if let i = state.documents.firstIndex(where: { $0.doc == d.doc }) { state.documents[i] = d } else { state.documents.append(d) }
         }
+        let current = p.session == session
         switch p.op {
         case .list:
             if let error = reply.error {
@@ -209,9 +226,10 @@ public final class MemoryFiles {
             state.loaded = true
             state.listProblem = nil
         case .read(let doc), .reload(let doc):
+            guard current else { return }
             if case .read = p.op { state.opening = nil }
             if let error = reply.error {
-                if case .read = p.op { state.listProblem = MemoryCheck.sentence(error) } else {
+                if case .read = p.op { state.openProblems[doc] = MemoryCheck.sentence(error) } else {
                     state.editor?.saving = false
                     state.editor?.problem = MemoryCheck.sentence(error)
                 }
@@ -221,15 +239,18 @@ public final class MemoryFiles {
             let text = reply.text ?? ""
             state.editor = Editor(doc: doc, file: d?.file ?? "\(doc).md", base: d?.revision, text: text, original: text)
         case .save(let doc):
-            guard state.editor?.doc == doc else { return }
+            if reply.error == nil { onSaved() }
+            guard current, state.editor?.doc == doc else { return }
             state.editor?.saving = false
             if let conflict = reply.conflict, let error = reply.error {
                 state.editor?.conflict = Conflict(revision: conflict, message: MemoryCheck.sentence(error))
+                state.editor?.problem = nil
             } else if let error = reply.error {
                 // A refusal names the line: Caret never keeps a password or a card number, say.
                 state.editor?.problem = MemoryCheck.sentence(error)
             } else {
                 state.editor = nil
+                session += 1
             }
         }
     }
@@ -237,10 +258,17 @@ public final class MemoryFiles {
     private func timedOut(_ requestId: String) {
         guard let p = pending.removeValue(forKey: requestId) else { return }
         let message = "Caret didn't answer. Try again."
-        switch p.op {
-        case .list: state.listProblem = message
-        case .read: state.opening = nil
+        // A list belongs to no editor; anything else only to the editor that asked.
+        if case .list = p.op {
             state.listProblem = message
+            return onChange()
+        }
+        guard p.session == session else { return onChange() }
+        switch p.op {
+        case .list: break
+        case .read(let doc):
+            state.opening = nil
+            state.openProblems[doc] = message
         case .save, .reload:
             state.editor?.saving = false
             state.editor?.problem = message
@@ -263,7 +291,7 @@ public final class MemoryFiles {
         sentLog.append(label)
         if sentLog.count > 30 { sentLog.removeFirst(sentLog.count - 30) }
         let id = request.requestId
-        pending[id] = Pending(op: kind, timer: clock.schedule(after: Self.answerTimeout, repeats: false) { [weak self] in self?.timedOut(id) })
+        pending[id] = Pending(op: kind, timer: clock.schedule(after: Self.answerTimeout, repeats: false) { [weak self] in self?.timedOut(id) }, session: session)
         return true
     }
 
@@ -297,6 +325,7 @@ public final class MemoryFiles {
         public var saving: Bool?
         public var editProblem: String?
         public var conflict: String?
+        public var openProblems: [String: String]
         public var sent: [String]
     }
 
@@ -307,7 +336,7 @@ public final class MemoryFiles {
             problems: state.documents.flatMap(Self.problemLines), listProblem: state.listProblem, opening: state.opening,
             editing: state.editor?.doc, base: state.editor?.base, textLength: state.editor.map { $0.text.utf16.count },
             edited: state.editor?.edited, saving: state.editor?.saving, editProblem: state.editor?.problem,
-            conflict: state.editor?.conflict.map { $0.revision ?? "removed" }, sent: sentLog
+            conflict: state.editor?.conflict.map { $0.revision ?? "removed" }, openProblems: state.openProblems, sent: sentLog
         )
     }
 }

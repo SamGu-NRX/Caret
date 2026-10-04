@@ -67,6 +67,7 @@ public enum HelperMemory {
             app = try FirstLookWire.nullable(c, String.self, .app)
             windowTitle = try FirstLookWire.nullable(c, String.self, .windowTitle)
             at = try c.decode(Int64.self, forKey: .at)
+            guard at >= 0 else { throw ProtocolError("noticed at a negative time") }
         }
     }
 
@@ -442,6 +443,8 @@ extension HelperMemory.Entry: Decodable {
         let kind = fields.kind
         // The helper's rules (protocol.ts MemoryEntry): only about, people and preference entries are
         // noticed, and a noticed entry says where. A known kind breaking them is a helper bug.
+        // protocol.ts has `noticed` optional, not nullable: absent, or where Caret noticed it.
+        if c.contains(.noticed), try c.decodeNil(forKey: .noticed) { throw ProtocolError("noticed is absent or a source, never null") }
         noticed = try c.decodeIfPresent(HelperMemory.Noticed.self, forKey: .noticed)
         if known != nil {
             let noticeable: Set<HelperMemory.Kind> = [.about, .people, .preference]

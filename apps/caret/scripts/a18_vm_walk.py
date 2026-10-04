@@ -36,6 +36,9 @@ if not os.environ.get("RIG_JOB"):
 p = argparse.ArgumentParser()
 for name in ("caret", "keys", "hidkey", "compose", "replay", "mid", "tab", "screen", "out"):
     p.add_argument("--" + name, required=True)
+# U2: part 2 alone (the desk over a TextEdit window, one real Esc), so a VM pass of the desk does not
+# hold the VM and heavy leases for the whole walk.
+p.add_argument("--only-ask", action="store_true")
 A = p.parse_args()
 OUT = A.out
 os.makedirs(os.path.join(OUT, "shots"), exist_ok=True)
@@ -209,43 +212,44 @@ def golden(name):
 results = {}
 h = start_host("surfaces", ["--no-ghost"])
 try:
-    lines = "\n".join(f"Line {i}: notes from the planning session, nothing to act on here." for i in range(1, 41))
-    full = {"x": 0, "y": 30, "width": SCREEN_W, "height": SCREEN_H - 120}
-    pid, wid = textedit("plan.txt", lines, full)
-    keys(pid, "type", "Coffee with Dana on Thursday at 3 ")
-    time.sleep(0.6)
-    window = bounds(pid, wid)
-    check("TextEdit's window spans the screen", window and window[2] >= SCREEN_W - 40, window=window)
-    for kind, payload, expect in (
-        ("action", {"kind": "action", "pid": pid, "offerKey": "line-1", "app": "Calendar",
-                    "endState": {"text": "Coffee with Dana, Thu 3:00 to 3:30", "ref": {"node": "te/plan/body", "quote": "Coffee with Dana on Thursday at 3"}},
-                    "actions": [{"id": "add", "label": "Add", "key": "tab"}]}, "Coffee with Dana"),
-        ("event-card", {"kind": "popup", "pid": pid, "offerKey": "card-1", "spec": golden("eventCard")}, None),
-    ):
-        before = host()
-        reply = host("inject " + json.dumps(payload, separators=(",", ":")))
-        time.sleep(0.5)
-        s = host()
-        sf = s.get("surface") or {}
-        panel = sf.get("panel")
-        check(f"{kind}: drawn in the full-window document, not held", reply.get("ok") and panel and not sf.get("held"),
-              reply=reply, held=sf.get("held"), unshown=sf.get("lastUnshown"))
-        if panel:
-            check(f"{kind}: the panel lies inside TextEdit's window", inside(panel["frame"], window), panel=panel["frame"], window=window,
-                  placement=sf.get("panelPlacement"))
-            if expect:
-                check(f"{kind}: it says what it offers", expect in (panel.get("text") or ""), text=panel.get("text"))
-        results[kind] = {
-            "placement": sf.get("panelPlacement"),
-            "compact": counter(s, "surface.compact.action") + counter(s, "surface.compact.popup") > counter(before, "surface.compact.action") + counter(before, "surface.compact.popup"),
-            "caretLine": counter(s, "surface.placed.caretLine") - counter(before, "surface.placed.caretLine"),
-            "shot": shot(kind, pid, wid, [panel]) if panel else None,
-        }
-        check(f"{kind}: no offer was held for want of a clear spot", counter(s, "surface.held.noClearSpot") == counter(before, "surface.held.noClearSpot"))
-        keys(pid, "key", "escape")
-        time.sleep(0.4)
-        check(f"{kind}: a real Esc takes it down", not (host().get("surface") or {}).get("panel"))
-    close(pid)
+    if not A.only_ask:
+        lines = "\n".join(f"Line {i}: notes from the planning session, nothing to act on here." for i in range(1, 41))
+        full = {"x": 0, "y": 30, "width": SCREEN_W, "height": SCREEN_H - 120}
+        pid, wid = textedit("plan.txt", lines, full)
+        keys(pid, "type", "Coffee with Dana on Thursday at 3 ")
+        time.sleep(0.6)
+        window = bounds(pid, wid)
+        check("TextEdit's window spans the screen", window and window[2] >= SCREEN_W - 40, window=window)
+        for kind, payload, expect in (
+            ("action", {"kind": "action", "pid": pid, "offerKey": "line-1", "app": "Calendar",
+                        "endState": {"text": "Coffee with Dana, Thu 3:00 to 3:30", "ref": {"node": "te/plan/body", "quote": "Coffee with Dana on Thursday at 3"}},
+                        "actions": [{"id": "add", "label": "Add", "key": "tab"}]}, "Coffee with Dana"),
+            ("event-card", {"kind": "popup", "pid": pid, "offerKey": "card-1", "spec": golden("eventCard")}, None),
+        ):
+            before = host()
+            reply = host("inject " + json.dumps(payload, separators=(",", ":")))
+            time.sleep(0.5)
+            s = host()
+            sf = s.get("surface") or {}
+            panel = sf.get("panel")
+            check(f"{kind}: drawn in the full-window document, not held", reply.get("ok") and panel and not sf.get("held"),
+                  reply=reply, held=sf.get("held"), unshown=sf.get("lastUnshown"))
+            if panel:
+                check(f"{kind}: the panel lies inside TextEdit's window", inside(panel["frame"], window), panel=panel["frame"], window=window,
+                      placement=sf.get("panelPlacement"))
+                if expect:
+                    check(f"{kind}: it says what it offers", expect in (panel.get("text") or ""), text=panel.get("text"))
+            results[kind] = {
+                "placement": sf.get("panelPlacement"),
+                "compact": counter(s, "surface.compact.action") + counter(s, "surface.compact.popup") > counter(before, "surface.compact.action") + counter(before, "surface.compact.popup"),
+                "caretLine": counter(s, "surface.placed.caretLine") - counter(before, "surface.placed.caretLine"),
+                "shot": shot(kind, pid, wid, [panel]) if panel else None,
+            }
+            check(f"{kind}: no offer was held for want of a clear spot", counter(s, "surface.held.noClearSpot") == counter(before, "surface.held.noClearSpot"))
+            keys(pid, "key", "escape")
+            time.sleep(0.4)
+            check(f"{kind}: a real Esc takes it down", not (host().get("surface") or {}).get("panel"))
+        close(pid)
 
     # Ask, near a window at the left of the screen.
     left = {"x": 40, "y": 160, "width": 640, "height": 520}
@@ -299,97 +303,100 @@ finally:
     stop(h)
 
 # 3 and 4: ghost text from the recorded outcomes.
-h = start_host("ghost", ["--ghost-replay", A.replay])
-try:
-    mids = json.load(open(A.mid))
-    shown = silent = wrong = 0
-    for i, case in enumerate(mids):
-        before, after = case["before"], case["after"]
-        expected = replay_for(before, after)
-        if not check(f"mid {i + 1}: the replay file has the model's outcome for it", expected is not None, before=before, after=after):
-            wrong += 1
-            continue
-        pid, wid = textedit(f"mid-{i + 1}.txt", before + after, {"x": 200, "y": 200, "width": 900, "height": 420})
-        # Every caret position on the way is a context too, with no recorded outcome; only the
-        # last one must find its entry.
-        if len(before) > 1:
-            keys(pid, "key", "right", len(before) - 1)
-        time.sleep(0.8)
-        missing0 = counter(host(), "suppressed.replayMissing")
-        keys(pid, "key", "right", 1)
-        time.sleep(1.5)
-        s = host()
-        missing = counter(s, "suppressed.replayMissing") - missing0
-        offer = s.get("offer") if (s.get("offer") or {}).get("pid") == pid else None
-        fits = s.get("ghostFits") or []
-        last = fits[-1] if fits else {}
-        want = expected.get("text") if expected else None
-        if want:
-            capsule = last.get("capsule")
-            window = bounds(pid, wid)
-            ok = offer and offer.get("text") == want and last.get("outcome") != "declined" and capsule and inside(capsule, window)
-            shown += 1 if ok else 0
-            wrong += 0 if ok else 1
-            check(f"mid {i + 1}: offers the model's fit, in a capsule inside the window", ok, offer=offer, fit=last, window=window,
-                  shot=shot(f"mid-{i + 1}", pid, wid))
-        else:
-            ok = offer is None
-            silent += 1 if ok else 0
-            wrong += 0 if ok else 1
-            ok = ok and missing == 0
-            check(f"mid {i + 1}: silent, as the model run was ({expected.get('reason')})", ok, offer=offer, replayMissing=missing)
-        close(pid)
-    results["mid"] = {"cases": len(mids), "offeredAndFit": shown, "silent": silent, "wrong": wrong}
-
-    tabs = json.load(open(A.tab))
-    taken = []
-    runs = []
-    for i, case in enumerate(tabs):
-        expected = (replay_for(case["before"], "") or {}).get("text")
-        if expected:
-            runs.append((i + 1, case["before"], expected, False))
-    multi = next((r for r in runs if len(r[2].split()) > 1), None)
-    if multi:
-        runs.append((multi[0], multi[1], multi[2], True))
-    check("the recorded Tab cases include a phrase of more than one word", multi is not None, runs=[r[2] for r in runs])
-    for number, before, expected, word in runs:
-        name = f"tab-{number}{'-word' if word else ''}"
-        pid, wid = textedit(f"{name}.txt", "", {"x": 200, "y": 200, "width": 900, "height": 420})
-        keys(pid, "type", before)
-        offer = None
-        s = {}
-        for _ in range(40):
+if not A.only_ask:
+    h = start_host("ghost", ["--ghost-replay", A.replay])
+    try:
+        mids = json.load(open(A.mid))
+        shown = silent = wrong = 0
+        for i, case in enumerate(mids):
+            before, after = case["before"], case["after"]
+            expected = replay_for(before, after)
+            if not check(f"mid {i + 1}: the replay file has the model's outcome for it", expected is not None, before=before, after=after):
+                wrong += 1
+                continue
+            pid, wid = textedit(f"mid-{i + 1}.txt", before + after, {"x": 200, "y": 200, "width": 900, "height": 420})
+            # Every caret position on the way is a context too, with no recorded outcome; only the
+            # last one must find its entry.
+            if len(before) > 1:
+                keys(pid, "key", "right", len(before) - 1)
+            time.sleep(0.8)
+            missing0 = counter(host(), "suppressed.replayMissing")
+            keys(pid, "key", "right", 1)
+            time.sleep(1.5)
             s = host()
-            if (s.get("offer") or {}).get("pid") == pid and s["offer"].get("ageMs", 0) > 150:
-                offer = s["offer"]
-                break
-            time.sleep(0.1)
-        if not check(f"{name}: the recorded phrase is offered", offer and offer.get("text") == expected, offer=offer, expected=expected):
+            missing = counter(s, "suppressed.replayMissing") - missing0
+            offer = s.get("offer") if (s.get("offer") or {}).get("pid") == pid else None
+            fits = s.get("ghostFits") or []
+            last = fits[-1] if fits else {}
+            want = expected.get("text") if expected else None
+            if want:
+                capsule = last.get("capsule")
+                window = bounds(pid, wid)
+                ok = offer and offer.get("text") == want and last.get("outcome") != "declined" and capsule and inside(capsule, window)
+                shown += 1 if ok else 0
+                wrong += 0 if ok else 1
+                check(f"mid {i + 1}: offers the model's fit, in a capsule inside the window", ok, offer=offer, fit=last, window=window,
+                      shot=shot(f"mid-{i + 1}", pid, wid))
+            else:
+                ok = offer is None
+                silent += 1 if ok else 0
+                wrong += 0 if ok else 1
+                ok = ok and missing == 0
+                check(f"mid {i + 1}: silent, as the model run was ({expected.get('reason')})", ok, offer=offer, replayMissing=missing)
             close(pid)
-            continue
-        keys(pid, "key", "opt-right" if word else "tab")
-        time.sleep(0.8)
-        after_state = host()
-        got = value(pid, wid)
-        lead = expected[: len(expected) - len(expected.lstrip())]
-        want = before + (lead + expected.split()[0] if word else expected)
-        tap0, tap1 = s.get("tap", {}), after_state.get("tap", {})
-        claim = after_state.get("lastClaim") or {}
-        ok = check(f"{name}: a real {'Option-Right takes one word' if word else 'Tab takes the whole phrase'}", got == want,
-                   got=got, want=want, wordOnly=claim.get("wordOnly"))
-        check(f"{name}: the tap and the arbiter count the accept",
-              tap1.get("consumed", 0) - tap0.get("consumed", 0) == 1
-              and counter(after_state, "offers.claimed") - counter(s, "offers.claimed") == 1
-              and (tap1.get("tabs", 0) - tap0.get("tabs", 0)) == (0 if word else 1),
-              consumed=[tap0.get("consumed"), tap1.get("consumed")], tabs=[tap0.get("tabs"), tap1.get("tabs")],
-              claimed=[counter(s, "offers.claimed"), counter(after_state, "offers.claimed")])
-        taken.append({"case": number, "word": word, "ok": ok, "phrase": expected, "shot": shot(name, pid, wid)})
-        close(pid)
-    results["tab"] = taken
-finally:
-    stop(h)
-    for pid in list(LAUNCHED):
-        close(pid)
+        results["mid"] = {"cases": len(mids), "offeredAndFit": shown, "silent": silent, "wrong": wrong}
+
+        tabs = json.load(open(A.tab))
+        taken = []
+        runs = []
+        for i, case in enumerate(tabs):
+            expected = (replay_for(case["before"], "") or {}).get("text")
+            if expected:
+                runs.append((i + 1, case["before"], expected, False))
+        multi = next((r for r in runs if len(r[2].split()) > 1), None)
+        if multi:
+            runs.append((multi[0], multi[1], multi[2], True))
+        check("the recorded Tab cases include a phrase of more than one word", multi is not None, runs=[r[2] for r in runs])
+        for number, before, expected, word in runs:
+            name = f"tab-{number}{'-word' if word else ''}"
+            pid, wid = textedit(f"{name}.txt", "", {"x": 200, "y": 200, "width": 900, "height": 420})
+            keys(pid, "type", before)
+            offer = None
+            s = {}
+            for _ in range(40):
+                s = host()
+                if (s.get("offer") or {}).get("pid") == pid and s["offer"].get("ageMs", 0) > 150:
+                    offer = s["offer"]
+                    break
+                time.sleep(0.1)
+            if not check(f"{name}: the recorded phrase is offered", offer and offer.get("text") == expected, offer=offer, expected=expected):
+                close(pid)
+                continue
+            keys(pid, "key", "opt-right" if word else "tab")
+            time.sleep(0.8)
+            after_state = host()
+            got = value(pid, wid)
+            lead = expected[: len(expected) - len(expected.lstrip())]
+            want = before + (lead + expected.split()[0] if word else expected)
+            tap0, tap1 = s.get("tap", {}), after_state.get("tap", {})
+            claim = after_state.get("lastClaim") or {}
+            ok = check(f"{name}: a real {'Option-Right takes one word' if word else 'Tab takes the whole phrase'}", got == want,
+                       got=got, want=want, wordOnly=claim.get("wordOnly"))
+            check(f"{name}: the tap and the arbiter count the accept",
+                  tap1.get("consumed", 0) - tap0.get("consumed", 0) == 1
+                  and counter(after_state, "offers.claimed") - counter(s, "offers.claimed") == 1
+                  and (tap1.get("tabs", 0) - tap0.get("tabs", 0)) == (0 if word else 1),
+                  consumed=[tap0.get("consumed"), tap1.get("consumed")], tabs=[tap0.get("tabs"), tap1.get("tabs")],
+                  claimed=[counter(s, "offers.claimed"), counter(after_state, "offers.claimed")])
+            taken.append({"case": number, "word": word, "ok": ok, "phrase": expected, "shot": shot(name, pid, wid)})
+            close(pid)
+        results["tab"] = taken
+    finally:
+        stop(h)
+        for pid in list(LAUNCHED):
+            close(pid)
+for pid in list(LAUNCHED):
+    close(pid)
 
 passed = sum(c["ok"] for c in CHECKS)
 summary = {"passed": passed, "failed": len(CHECKS) - passed, "results": results, "checks": CHECKS}

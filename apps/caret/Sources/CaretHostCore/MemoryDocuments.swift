@@ -99,7 +99,9 @@ public struct MemoryProvenance: Equatable, Sendable {
             let offerKey = try c.decode(String.self, forKey: .offerKey)
             guard !offerKey.isEmpty else { throw ProtocolError("provenance without an offerKey") }
             guard !facts.isEmpty else { throw ProtocolError("provenance with no facts") }
-            value = MemoryProvenance(at: try c.decode(Int64.self, forKey: .at), offerKey: offerKey, facts: facts)
+            let at = try c.decode(Int64.self, forKey: .at)
+            guard at >= 0 else { throw ProtocolError("provenance with a negative time") }
+            value = MemoryProvenance(at: at, offerKey: offerKey, facts: facts)
         }
     }
 }
@@ -207,6 +209,7 @@ public struct MemoryDiagnostic: Codable, Equatable, Sendable {
         field = try FirstLookWire.nullable(c, String.self, .field)
         severity = try c.decode(Severity.self, forKey: .severity)
         message = try c.decode(String.self, forKey: .message)
+        guard !message.isEmpty else { throw ProtocolError("a diagnostic says what is wrong") }
     }
 }
 
