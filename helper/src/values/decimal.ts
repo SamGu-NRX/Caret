@@ -26,47 +26,39 @@ const APOSTROPHE_POINT: NumberStyle = { group: ["'", "’"], decimal: ".", group
 const INDIAN: NumberStyle = { group: [","], decimal: ".", grouping: "indian" };
 
 /**
- * Separators by exact locale tag, then by language when every region of that language in common use
- * agrees. From CLDR's number symbols as commonly published; French and Russian group with spaces, and the
- * three space characters (plain, no-break, narrow no-break) are all accepted because text copied from
- * different apps carries different ones.
+ * The language and region of a BCP 47 tag, canonicalized ("en-US-u-ca-gregory" and "en-Latn-US" are both
+ * "en-US"); null when the tag is malformed or names no region.
  */
-const BY_TAG: Record<string, NumberStyle> = {
-  "en-IN": INDIAN,
-  "hi-IN": INDIAN,
+export function languageRegion(tag: string): string | null {
+  try {
+    const l = new Intl.Locale(tag);
+    return l.region === undefined ? null : `${l.language}-${l.region}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Separators by language and region, from CLDR's number symbols as commonly published. Only regions are
+ * listed, never a whole language: Spanish in Mexico groups with commas and in Spain with points, and
+ * English in South Africa groups with spaces. A locale not listed is refused. French and Russian group
+ * with spaces, and the three space characters (plain, no-break, narrow no-break) are all accepted because
+ * text copied from different apps carries different ones.
+ */
+const BY_REGION: Record<string, NumberStyle> = {
+  "en-US": COMMA_POINT, "en-GB": COMMA_POINT, "en-AU": COMMA_POINT, "en-CA": COMMA_POINT, "en-NZ": COMMA_POINT, "en-IE": COMMA_POINT, "en-SG": COMMA_POINT,
+  "es-MX": COMMA_POINT, "es-US": COMMA_POINT, "ja-JP": COMMA_POINT, "zh-CN": COMMA_POINT, "zh-TW": COMMA_POINT, "ko-KR": COMMA_POINT,
+  "en-IN": INDIAN, "hi-IN": INDIAN,
+  "de-DE": POINT_COMMA, "es-ES": POINT_COMMA, "es-AR": POINT_COMMA, "es-CO": POINT_COMMA, "es-CL": POINT_COMMA, "it-IT": POINT_COMMA, "nl-NL": POINT_COMMA, "nl-BE": POINT_COMMA,
+  "pt-BR": POINT_COMMA, "id-ID": POINT_COMMA, "tr-TR": POINT_COMMA, "da-DK": POINT_COMMA,
+  "fr-FR": SPACE_COMMA, "fr-CA": SPACE_COMMA, "fr-BE": SPACE_COMMA, "de-AT": SPACE_COMMA, "pt-PT": SPACE_COMMA, "ru-RU": SPACE_COMMA, "uk-UA": SPACE_COMMA, "pl-PL": SPACE_COMMA,
+  "cs-CZ": SPACE_COMMA, "sv-SE": SPACE_COMMA, "nb-NO": SPACE_COMMA, "fi-FI": SPACE_COMMA,
   "de-CH": APOSTROPHE_POINT,
-  "fr-CH": APOSTROPHE_POINT,
-  "it-CH": APOSTROPHE_POINT,
-  "pt-PT": SPACE_COMMA,
-  "pt-BR": POINT_COMMA,
-};
-const BY_LANGUAGE: Record<string, NumberStyle> = {
-  en: COMMA_POINT,
-  ja: COMMA_POINT,
-  zh: COMMA_POINT,
-  ko: COMMA_POINT,
-  de: POINT_COMMA,
-  es: POINT_COMMA,
-  it: POINT_COMMA,
-  nl: POINT_COMMA,
-  id: POINT_COMMA,
-  tr: POINT_COMMA,
-  da: POINT_COMMA,
-  fr: SPACE_COMMA,
-  ru: SPACE_COMMA,
-  uk: SPACE_COMMA,
-  pl: SPACE_COMMA,
-  cs: SPACE_COMMA,
-  sv: SPACE_COMMA,
-  nb: SPACE_COMMA,
-  fi: SPACE_COMMA,
 };
 
 export function numberStyle(locale: string): NumberStyle | null {
-  const exact = BY_TAG[locale];
-  if (exact !== undefined) return exact;
-  const lang = locale.split("-")[0]?.toLowerCase() ?? "";
-  return BY_LANGUAGE[lang] ?? null;
+  const key = languageRegion(locale);
+  return key === null ? null : (BY_REGION[key] ?? null);
 }
 
 const SIGNS = /^[-−+]/;

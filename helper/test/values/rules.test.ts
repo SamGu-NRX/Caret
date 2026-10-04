@@ -166,6 +166,54 @@ describe("numbers and units", () => {
   });
 });
 
+describe("review findings (D2-03 review)", () => {
+  it("asks when a range's end falls in a skipped hour, even when only one reading is after the start", () => {
+    const x = r.interval("2026-03-08 01:45 to 02:30 PT", CTX);
+    expect(x.kind).toBe("ask");
+    expect(x.kind === "ask" && x.question).toMatch(/skip/);
+  });
+
+  it("applies every zone a range states at its end, so a conflict there asks", () => {
+    expect(r.interval("2026-03-08 01:30 to 03:30 PT UTC-8", CTX).kind).toBe("ask");
+    expect(r.interval("2026-10-20 13:00 to 14:00 PT UTC-7", CTX)).toMatchObject({ kind: "resolved", value: { start: { instant: "2026-10-20T20:00:00Z" }, end: { instant: "2026-10-20T21:00:00Z" } } });
+  });
+
+  it("refuses an ISO time out of range instead of wrapping it, and keeps seconds", () => {
+    expect(r.moment("2026-10-20T25:99Z", CTX).kind).toBe("unsupported");
+    expect(r.moment("2026-10-20T15:00:45Z", CTX)).toMatchObject({ kind: "resolved", value: { instant: "2026-10-20T15:00:45Z", local: "2026-10-20T15:00:45" } });
+    expect(r.moment("Oct 20, 2026 15:00:99 UTC", CTX).kind).toBe("unsupported");
+    expect(r.moment("Oct 20, 2026 3:00:30 PM UTC", CTX)).toMatchObject({ kind: "resolved", value: { instant: "2026-10-20T15:00:30Z" } });
+  });
+
+  it("refuses a written time that contradicts a day-part word", () => {
+    expect(r.moment("2026-10-20 15:00 morning", CTX).kind).toBe("unsupported");
+    expect(r.moment("tonight at 9:00 AM", CTX).kind).toBe("unsupported");
+    expect(r.moment("tomorrow afternoon at 2:00 PM", CTX)).toMatchObject({ kind: "resolved", value: { local: "2026-10-06T14:00" } });
+  });
+
+  it("reads numbers and dates by canonical language and region, and refuses a region it has no rules for", () => {
+    const num = (t: string, l: string) => {
+      const x = r.number(t, { ...CTX, sourceLocale: l });
+      return x.kind === "resolved" ? decimalString(x.value) : x.kind;
+    };
+    expect(num("1,234", "es-MX")).toBe("1234");
+    expect(num("1,234", "es-ES")).toBe("1.234");
+    expect(num("1,234", "es")).toBe("unsupported");
+    expect(num("1 234,5", "en-ZA")).toBe("unsupported");
+    expect(num("1,234.5", "en-US-u-nu-latn")).toBe("1234.5");
+    expect(r.date("03/04/2026", { ...CTX, sourceLocale: "en-US-u-ca-gregory" })).toMatchObject({ kind: "resolved", value: "2026-03-04" });
+    expect(r.date("03/04/2026", { ...CTX, sourceLocale: "en-Latn-US" })).toMatchObject({ kind: "resolved", value: "2026-03-04" });
+    expect(r.date("03/04/2026", { ...CTX, sourceLocale: "en" }).kind).toBe("ask");
+  });
+
+  it("matches unit symbols by case, so a megalitre is never read as a millilitre", () => {
+    expect(r.convert("1 ML", "L", CTX).kind).toBe("unsupported");
+    expect(r.convert("1 mL", "L", CTX)).toMatchObject({ kind: "resolved", value: { unit: "L" } });
+    expect(r.convert("1 Kilometre", "m", CTX)).toMatchObject({ kind: "resolved", value: { unit: "m" } });
+    expect(r.convert("1 KM", "m", CTX).kind).toBe("unsupported");
+  });
+});
+
 describe("provenance", () => {
   it("keeps the span it read and the resolver version on every resolved value", () => {
     const x = r.moment({ quote: "Oct 20, 2026 3:00 PM PT", node: "w1/k" }, CTX);

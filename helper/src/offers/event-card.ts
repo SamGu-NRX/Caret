@@ -19,7 +19,7 @@ import type { TaskResult } from "../executor/executor.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { occursBounded } from "../planner/trace.ts";
 import { macClock, resolveEventTime, type EventClock, type EventTime, type EventWhen, type TimeSource } from "./event-time.ts";
-import { ZONE_SOURCE } from "../values/zones.ts";
+import { ZONE_SOURCE, zoneToken } from "../values/zones.ts";
 import type { AcceptHandler, AcceptResult } from "./registry.ts";
 import { offerField } from "./field.ts";
 import { expired } from "./lifetimes.ts";
@@ -64,6 +64,13 @@ function lastStart(c: EventCandidate): number {
 }
 
 const ZONE_ANYWHERE = new RegExp(`(?<![A-Za-z0-9])(?:${ZONE_SOURCE})`, "g");
+/**
+ * Words shaped like a zone abbreviation (capitals ending in T, as AWST or SGT, and a few others such as
+ * MSK). One the resolver does not know cannot be read, and must not be dropped either: the time would be
+ * read in the wrong zone. "IT" and "AT" are words, not zones.
+ */
+const ZONE_LIKE = /(?<![A-Za-z0-9])(?:[A-Z]{1,4}T|MSK|WIB|WITA)(?![A-Za-z])/g;
+const NOT_ZONES = new Set(["IT", "AT"]);
 
 /**
  * The spans with any zone the sentence names right after them ("3pm UTC", "4:00 PM (PT)"), which the
@@ -72,6 +79,7 @@ const ZONE_ANYWHERE = new RegExp(`(?<![A-Za-z0-9])(?:${ZONE_SOURCE})`, "g");
  */
 export function withZones(sentence: string, spans: readonly string[]): string[] | null {
   const joined = spans.join(" ");
+  for (const m of sentence.matchAll(ZONE_LIKE)) if (!NOT_ZONES.has(m[0]) && zoneToken(m[0]) === null) return null;
   const extra: string[] = [];
   for (const m of sentence.matchAll(ZONE_ANYWHERE)) {
     if (joined.includes(m[0])) continue;
@@ -267,6 +275,8 @@ interface Entry {
   /** The node the sentence is in. */
   key: string;
   candidate: EventCandidate;
+  /** The field the offer belongs to, kept so a card that asks can be offered again. */
+  field: OfferField;
   /** When it was shown, for its lifetime (lifetimes.ts). */
   at: number;
 }
@@ -398,7 +408,12 @@ export class EventCards {
     this.show(w, key, c, field);
   }
 
-  private show(w: WindowState, key: string, c: EventCandidate, field: OfferField): void {
+  /**
+   * Publishes the card. `replaces`: the key of a card that asks which was taken without a pick; the same
+   * card comes back under a new key (the host marks an offer used once taken), without spending the
+   * hourly offer budget again, and the old one is withdrawn as replaced by it.
+   */
+  private show(w: WindowState, key: string, c: EventCandidate, field: OfferField, replaces?: string): void {
     const offerKey = `event-${++this.seq}`;
     const from = { node: `${w.window.windowId}/${key}`, quote: c.sentence };
     const msg: OfferAction = {
@@ -412,9 +427,15 @@ export class EventCards {
       actions: [{ id: "add", label: "Add", key: "tab" }],
       variants: eventCardSpec(offerKey, c, this.deps.calendar, w.window.windowId, key),
     };
-    const entry: Entry = { offerKey, windowId: w.window.windowId, key, candidate: c, at: msg.at };
+    const entry: Entry = { offerKey, windowId: w.window.windowId, key, candidate: c, field, at: msg.at };
     if (!this.deps.publish(msg, (m) => this.accept(offerKey, m.overrides.variants))) return;
     this.entries.set(offerKey, entry);
+    if (replaces !== undefined) {
+      this.entries.delete(replaces);
+      this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.deps.now(), id: replaces, reason: "reoffered", replacedBy: offerKey });
+      this.deps.count?.("event.reoffered");
+      return;
+    }
     this.deps.gate.spoke(this.deps.now());
     this.deps.count?.("event.offered");
   }
@@ -436,7 +457,11 @@ export class EventCards {
       return { refused: "the event's time has come; nothing was added" };
     }
     const time = chosenTime(e.candidate, row);
-    if (typeof time === "string") return { refused: time };
+    if (typeof time === "string") {
+      const w = this.deps.model.windows.get(e.windowId);
+      if (row === undefined && w !== undefined) this.show(w, e.key, e.candidate, e.field, offerKey);
+      return { refused: time };
+    }
     if (Date.parse(time.start) <= this.deps.now()) {
       this.withdraw(offerKey, "stale");
       return { refused: "that time has come; nothing was added" };

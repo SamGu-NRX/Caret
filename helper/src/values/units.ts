@@ -100,9 +100,14 @@ const ALIASES: Record<string, string> = {
 
 const CURRENCY = /[$€£¥₹]|\b(?:USD|EUR|GBP|JPY|INR|CAD|AUD|CHF)\b/i;
 
+/**
+ * The unit `text` names. Symbols match exactly, since case changes magnitude ("ML" is a megalitre, not a
+ * millilitre); only spelled-out names ("Kilometres") match without regard to case.
+ */
 export function unitFor(text: string): Unit | null {
   const t = text.trim().replace(/\s+/g, " ");
-  const symbol = UNITS.some((u) => u.symbol === t) ? t : ALIASES[t] ?? ALIASES[t.toLowerCase()];
+  const spelled = /^[a-z]{4,}$/i.test(t) ? ALIASES[t.toLowerCase()] : undefined;
+  const symbol = UNITS.some((u) => u.symbol === t) ? t : (ALIASES[t] ?? spelled);
   return UNITS.find((u) => u.symbol === symbol) ?? null;
 }
 
@@ -156,7 +161,7 @@ export function convertQuantity(span: ValueRef, to: string, sourceLocale: string
   if (target === null) return unsupported(`"${to}" is not a unit Caret converts`);
   if (from.dimension !== target.dimension) return unsupported(`${from.symbol} is a ${from.dimension} and ${target.symbol} a ${target.dimension}; they do not convert`);
   let amount: Decimal | string;
-  if (/^[-−+]?\d+$/.test(parts.number)) amount = readDecimal(parts.number, numberStyle("en") as NonNullable<ReturnType<typeof numberStyle>>);
+  if (/^[-−+]?\d+$/.test(parts.number)) amount = readDecimal(parts.number, numberStyle("en-US") as NonNullable<ReturnType<typeof numberStyle>>);
   else if (sourceLocale === undefined) return unsupported(`"${parts.number}" has separators, and the source's locale is unknown`);
   else {
     const style = numberStyle(sourceLocale);

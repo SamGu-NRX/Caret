@@ -80,12 +80,26 @@ function sayWhen(start: Temporal.ZonedDateTime, end: Temporal.ZonedDateTime, now
   return a.meridiem === b.meridiem && nextDay === "" ? `${day} ${a.text} to ${b.text} ${b.meridiem}` : `${day} ${a.text} ${a.meridiem} to ${b.text} ${b.meridiem}${nextDay}`;
 }
 
-/** "PT (America/Los_Angeles, UTC-07:00)": the zone as written, what it was read as, and its offset. */
-function zoneName(m: Moment): string {
+/** "UTC-07:00", or "UTC-07:00 to UTC-08:00" when the clocks change between start and end. */
+function offsets(a: string, b: string): string {
+  return a === b ? `UTC${a}` : `UTC${a} to UTC${b}`;
+}
+
+/** "PT (America/Los_Angeles, UTC-07:00)": the zone as written, what it was read as, and its offsets. */
+function zoneName(m: Moment, endOffset: string): string {
+  const o = offsets(m.offset, endOffset);
   const region = US_REGIONS[m.label];
-  if (region !== undefined) return `${m.label} (${region}, UTC${m.offset})`;
-  if (m.label !== m.zone && m.zone.includes("/")) return `${m.label} (${m.zone}, UTC${m.offset})`;
-  return m.label === m.zone && m.zone.includes("/") ? `${m.zone} (UTC${m.offset})` : `${m.label} (UTC${m.offset})`;
+  if (region !== undefined) return `${m.label} (${region}, ${o})`;
+  if (m.label !== m.zone && m.zone.includes("/")) return `${m.label} (${m.zone}, ${o})`;
+  return m.label === m.zone && m.zone.includes("/") ? `${m.zone} (${o})` : `${m.label} (${o})`;
+}
+
+/** "3:00 to 4:00 PM", "10:00 PM to 2:00 AM (Oct 21)": a range of wall times, naming the end's day when it differs. */
+function sayRange(a: Temporal.PlainDateTime | Temporal.ZonedDateTime, b: Temporal.PlainDateTime | Temporal.ZonedDateTime): string {
+  const x = clock(a);
+  const y = clock(b);
+  const day = a.toPlainDate().equals(b.toPlainDate()) ? "" : ` (${SHORT_MONTHS[b.month - 1]} ${b.day})`;
+  return x.meridiem === y.meridiem && day === "" ? `${x.text} to ${y.text} ${y.meridiem}` : `${x.text} ${x.meridiem} to ${y.text} ${y.meridiem}${day}`;
 }
 
 function eventTime(i: Interval & { end: Moment }, clockNow: EventClock, assumptions: string[], resolverVersion: string): EventTime {
@@ -93,13 +107,18 @@ function eventTime(i: Interval & { end: Moment }, clockNow: EventClock, assumpti
   const start = Temporal.Instant.from(i.start.instant).toZonedDateTimeISO(dest);
   const end = Temporal.Instant.from(i.end.instant).toZonedDateTimeISO(dest);
   const src = Temporal.PlainDateTime.from(i.start.local);
+  const srcEnd = Temporal.PlainDateTime.from(i.end.local);
   const srcDate = `${SHORT_MONTHS[src.month - 1]} ${src.day}`;
   const destDate = `${SHORT_MONTHS[start.month - 1]} ${start.day}`;
   const sameZone = i.start.zone === dest && i.end.zone === dest;
-  const zones = sameZone
-    ? `${srcDate}, ${sayClock(src)} ${dest} (UTC${start.offset}), your time zone`
-    : `${srcDate}, ${sayClock(src)} ${zoneName(i.start)} / ${destDate === srcDate ? "" : `${destDate}, `}${sayClock(start)} ${dest} (UTC${start.offset})`;
+  const here = `${sayRange(start, end)} ${dest} (${offsets(start.offset, end.offset)})`;
+  const zones = sameZone ? `${srcDate}, ${here}, your time zone` : `${srcDate}, ${sayRange(src, srcEnd)} ${zoneName(i.start, i.end.offset)} / ${destDate === srcDate ? "" : `${destDate}, `}${here}`;
   return { start: iso(start), end: iso(end), says: sayWhen(start, end, clockNow.now), zones, assumptions, resolverVersion };
+}
+
+/** Choices whose lines read the same (a repeated hour) are told apart by the offset they end on. */
+function distinct(choices: EventTime[]): EventTime[] {
+  return choices.map((c) => (choices.filter((d) => d.says === c.says).length > 1 ? { ...c, says: `${c.says} (ends UTC${c.end.slice(-6)})` } : c));
 }
 
 /** The end each length gives, in the start's own zone, so a daylight-saving change in between is counted. */
@@ -137,6 +156,7 @@ export function resolveEventTime(spans: readonly string[], clockNow: EventClock,
   const openEnd = intervals.some((i) => i.end === null);
   if (r.kind === "resolved" && !openEnd) return { kind: "resolved", time: choices[0] as EventTime };
   if (choices.length > MAX_CHOICES) return null;
+  const shown = distinct(choices);
   const questions = [r.kind === "ask" ? r.question : "", openEnd ? "How long is it? The text gives no end." : ""].filter((q) => q !== "");
-  return { kind: "ask", question: questions.join(" "), choices };
+  return { kind: "ask", question: questions.join(" "), choices: shown };
 }

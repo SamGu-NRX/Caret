@@ -139,7 +139,7 @@ export interface Moment {
 }
 
 function moment(z: Temporal.ZonedDateTime, zone: string, label: string): Moment {
-  return { instant: z.toInstant().toString(), zone, label, local: z.toPlainDateTime().toString({ smallestUnit: "minute" }), offset: z.offset };
+  return { instant: z.toInstant().toString(), zone, label, local: z.toPlainDateTime().toString({ smallestUnit: z.second === 0 ? "minute" : "second" }), offset: z.offset };
 }
 
 /** The wall time in a region: one moment, or the two real readings of a skipped or repeated time. */

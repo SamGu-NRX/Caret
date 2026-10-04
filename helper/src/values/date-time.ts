@@ -17,6 +17,7 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { ask, resolved, unsupported, type Resolution, type ResolveContext, type ValueRef } from "./resolve.ts";
 import { contextZone, placeWall, US_REGIONS, ZONE_SOURCE, zoneToken, type Moment, type ZoneToken } from "./zones.ts";
+import { languageRegion } from "./decimal.ts";
 
 export type { Moment } from "./zones.ts";
 
@@ -38,6 +39,7 @@ type DateTok =
 interface TimeTok {
   h: number;
   m: number;
+  s: number;
   /** "12h" carries a meridiem; "bare" is a 1-12 hour without one. */
   form: "24h" | "12h" | "bare" | "noon" | "midnight";
   meridiem: "am" | "pm" | null;
@@ -94,16 +96,16 @@ function meridiem(x: string | undefined): "am" | "pm" | null {
 }
 
 /** A clock time's form: a meridiem makes it 12-hour; 13-23, 0, or a leading zero make it 24-hour. */
-function clockTime(hText: string, m: number, mer: "am" | "pm" | null): TimeTok | string {
+function clockTime(hText: string, m: number, mer: "am" | "pm" | null, s = 0): TimeTok | string {
   const h = Number(hText);
-  if (m > 59) return `${hText}:${m} is not a time`;
+  if (m > 59 || s > 59) return `${hText}:${String(m).padStart(2, "0")}${s === 0 ? "" : `:${s}`} is not a time`;
   if (mer !== null) {
     if (h < 1 || h > 12) return `${h} ${mer.toUpperCase()} is not a time`;
-    return { h, m, form: "12h", meridiem: mer };
+    return { h, m, s, form: "12h", meridiem: mer };
   }
   if (h > 23) return `${hText}:${String(m).padStart(2, "0")} is not a time`;
-  if (h === 0 || h >= 13 || (hText.length === 2 && hText.startsWith("0"))) return { h, m, form: "24h", meridiem: null };
-  return { h, m, form: "bare", meridiem: null };
+  if (h === 0 || h >= 13 || (hText.length === 2 && hText.startsWith("0"))) return { h, m, s, form: "24h", meridiem: null };
+  return { h, m, s, form: "bare", meridiem: null };
 }
 
 function tokenize(text: string): Tok[] | string {
@@ -127,9 +129,11 @@ function tokenize(text: string): Tok[] | string {
     const wasAt = afterAt;
     afterAt = false;
     if ((m = at(RX.isoDateTime)) !== null) {
-      const [, y, mo, d, h, mi, , off, bracket] = m;
+      const [, y, mo, d, h, mi, sec, off, bracket] = m;
+      // An ISO time is 24-hour whatever its hour; each part must be in range, never wrapped.
+      if (Number(h) > 23 || Number(mi) > 59 || Number(sec ?? "0") > 59) return `"${m[0]}" is not a time`;
       push({ t: "date", date: { kind: "ymd", y: Number(y), m: Number(mo), d: Number(d) }, text: m[0] }, 0);
-      out.push({ t: "time", time: { h: Number(h), m: Number(mi), form: "24h", meridiem: null }, text: m[0] });
+      out.push({ t: "time", time: { h: Number(h), m: Number(mi), s: Number(sec ?? "0"), form: "24h", meridiem: null }, text: m[0] });
       if (off !== undefined) {
         const z = off === "Z" ? zoneToken("UTC") : zoneToken(off.replace("\u2212", "-"));
         if (z === null) return `"${off}" is not an offset`;
@@ -185,11 +189,11 @@ function tokenize(text: string): Tok[] | string {
       continue;
     }
     if ((m = at(RX.noon)) !== null) {
-      push({ t: "time", time: { h: 12, m: 0, form: "noon", meridiem: "pm" }, text: m[0] }, m[0].length);
+      push({ t: "time", time: { h: 12, m: 0, s: 0, form: "noon", meridiem: "pm" }, text: m[0] }, m[0].length);
       continue;
     }
     if ((m = at(RX.midnight)) !== null) {
-      push({ t: "time", time: { h: 0, m: 0, form: "midnight", meridiem: null }, text: m[0] }, m[0].length);
+      push({ t: "time", time: { h: 0, m: 0, s: 0, form: "midnight", meridiem: null }, text: m[0] }, m[0].length);
       continue;
     }
     // A bare offset ("+02:00") counts only after a space, so the dash of "10:00-11:00" stays a range.
@@ -200,7 +204,7 @@ function tokenize(text: string): Tok[] | string {
       continue;
     }
     if ((m = at(RX.clock)) !== null) {
-      const tok = clockTime(m[1] as string, Number(m[2]), meridiem(m[4]));
+      const tok = clockTime(m[1] as string, Number(m[2]), meridiem(m[4]), Number(m[3] ?? "0"));
       if (typeof tok === "string") return tok;
       push({ t: "time", time: tok, text: m[0] }, m[0].length);
       continue;
@@ -288,14 +292,19 @@ function referenceDate(ctx: ResolveContext): Temporal.PlainDate | string {
   }
 }
 
-/** Day-first, month-first, or unknown, for numeric dates in `locale`. */
+/**
+ * Day-first, month-first, or unknown, for numeric dates in `locale`, by its canonical language and region
+ * ("en-US-u-ca-gregory" is en-US). A tag with no region, or a region where both orders are common (Canada),
+ * is unknown and asks.
+ */
 function dateOrder(locale: string | undefined): "dmy" | "mdy" | null {
   if (locale === undefined) return null;
-  if (/^en-(US|PH|AS|GU|MP|PR|UM|VI)$/i.test(locale) || /^es-US$/i.test(locale)) return "mdy";
-  if (/^en-CA$/i.test(locale) || /^fr-CA$/i.test(locale)) return null; // Both orders are in common use in Canada.
-  const lang = locale.split("-")[0]?.toLowerCase();
-  if (lang === "en" && locale.includes("-")) return "dmy";
-  if (["de", "fr", "es", "it", "nl", "pt", "ru", "pl", "sv", "da", "nb", "fi", "cs", "uk", "tr", "id"].includes(lang ?? "")) return "dmy";
+  const key = languageRegion(locale);
+  if (key === null) return null;
+  if (["en-US", "en-PH", "en-AS", "en-GU", "en-MP", "en-PR", "en-UM", "en-VI", "es-US"].includes(key)) return "mdy";
+  if (key === "en-CA" || key === "fr-CA") return null;
+  const lang = key.split("-")[0] as string;
+  if (["en", "de", "fr", "es", "it", "nl", "pt", "ru", "pl", "sv", "da", "nb", "fi", "cs", "uk", "tr", "id"].includes(lang)) return "dmy";
   return null;
 }
 
@@ -388,27 +397,35 @@ interface WallTime {
   dayShift: number;
 }
 
-const wall = (h: number, m: number, dayShift = 0): WallTime => ({ time: Temporal.PlainTime.from({ hour: h, minute: m }), dayShift });
+const wall = (h: number, m: number, dayShift = 0, s = 0): WallTime => ({ time: Temporal.PlainTime.from({ hour: h, minute: m, second: s }, { overflow: "reject" }), dayShift });
 
 function sayClock(t: Temporal.PlainTime): string {
   const h = t.hour % 12 === 0 ? 12 : t.hour % 12;
-  return `${h}:${String(t.minute).padStart(2, "0")} ${t.hour < 12 ? "AM" : "PM"}`;
+  return `${h}:${String(t.minute).padStart(2, "0")}${t.second === 0 ? "" : `:${String(t.second).padStart(2, "0")}`} ${t.hour < 12 ? "AM" : "PM"}`;
 }
+
+/** Hours each day-part word allows; a written time outside them contradicts the text. */
+const PART_HOURS: Record<DayPart, (h: number) => boolean> = {
+  morning: (h) => h <= 11,
+  afternoon: (h) => h >= 12 && h <= 17,
+  evening: (h) => h >= 17,
+};
 
 /** The readings of one time token, with the day part a word in the text gives, if any. */
 function timeChoices(tok: TimeTok, text: string, part: DayPart | null): Choice<WallTime> {
+  const fits = (w: WallTime): Choice<WallTime> => (part === null || PART_HOURS[part](w.time.hour) ? one(w) : none(`"${text}" is not in the ${part}, as the text says`));
   switch (tok.form) {
     case "24h":
-      return one(wall(tok.h, tok.m));
+      return fits(wall(tok.h, tok.m, 0, tok.s));
     case "noon":
-      return one(wall(12, 0));
+      return fits(wall(12, 0));
     case "12h":
-      return one(wall(tok.meridiem === "pm" ? (tok.h % 12) + 12 : tok.h % 12, tok.m));
+      return fits(wall(tok.meridiem === "pm" ? (tok.h % 12) + 12 : tok.h % 12, tok.m, 0, tok.s));
     case "midnight":
       return many(`"${text}": the start of that day or its end?`, [wall(0, 0), wall(0, 0, 1)]);
     case "bare": {
-      const am = wall(tok.h % 12, tok.m);
-      const pm = wall((tok.h % 12) + 12, tok.m);
+      const am = wall(tok.h % 12, tok.m, 0, tok.s);
+      const pm = wall((tok.h % 12) + 12, tok.m, 0, tok.s);
       // A word for the half of the day settles hours that fall in it; "tonight at 12" still asks.
       if (part === "morning" && tok.h >= 5 && tok.h <= 11) return one(am, [`AM: the text says morning`]);
       if (part === "afternoon" && (tok.h === 12 || tok.h <= 6)) return one(pm, [`PM: the text says afternoon`]);
@@ -542,8 +559,8 @@ export function parseMoment(span: ValueRef, ctx: ResolveContext): Resolution<Mom
 function rangeTimes(a: Extract<Tok, { t: "time" }>, b: Extract<Tok, { t: "time" }>, aPart: DayPart | null, bPart: DayPart | null): { start: Choice<WallTime>; end: Choice<WallTime> } {
   const end = timeChoices(b.time, b.text, bPart ?? aPart);
   if (a.time.form === "bare" && b.time.form === "12h" && aPart === null && end.kind === "one") {
-    const same = wall(b.time.meridiem === "pm" ? (a.time.h % 12) + 12 : a.time.h % 12, a.time.m);
-    const other = wall(b.time.meridiem === "pm" ? a.time.h % 12 : (a.time.h % 12) + 12, a.time.m);
+    const same = wall(b.time.meridiem === "pm" ? (a.time.h % 12) + 12 : a.time.h % 12, a.time.m, 0, a.time.s);
+    const other = wall(b.time.meridiem === "pm" ? a.time.h % 12 : (a.time.h % 12) + 12, a.time.m, 0, a.time.s);
     if (Temporal.PlainTime.compare(same.time, end.value.time) < 0) return { start: one(same, [`${b.time.meridiem?.toUpperCase()} for the start, from the end "${b.text}"`]), end };
     if (Temporal.PlainTime.compare(other.time, end.value.time) < 0) return { start: one(other, [`${b.time.meridiem === "pm" ? "AM" : "PM"} for the start, so it comes before the end "${b.text}"`]), end };
   }
@@ -580,29 +597,38 @@ export function parseInterval(span: ValueRef, ctx: ResolveContext, openEnd: bool
   if (starts.kind === "none") return unsupported(starts.reason);
   const pairs: Interval[] = [];
   let overnight = false;
+  /** Questions the end's own placement raised (a skipped or repeated hour, a zone conflict at the end). */
+  const endQuestions = new Set<string>();
   const after = (e: Moment, s: Moment): boolean => Temporal.Instant.compare(Temporal.Instant.from(e.instant), Temporal.Instant.from(s.instant)) > 0;
+  const placeEnd = (d: Choice<Temporal.PlainDate>, t: Choice<WallTime>, zones: readonly ZoneToken[]): Choice<Moment> => {
+    const c = place(d, t, zones, ctx);
+    if (c.kind === "many") endQuestions.add(c.question);
+    return c;
+  };
   const shared = right.zones.length === 0 || left.zones.length === 0;
   for (const s of valuesOf(starts)) {
     const sDate = Temporal.PlainDateTime.from(s.local).toPlainDate();
-    // One zone written for the whole range is read the same way at both ends: the zone the start was read
-    // in, so an ambiguous "IST" cannot pair a Kolkata start with a Dublin end.
-    const endZones: ZoneToken[] = shared ? [s.zone.includes("/") ? { kind: "region", id: s.zone, label: s.label } : { kind: "offset", offset: s.zone, label: s.label }] : rightZones;
+    // One zone written for the whole range is read at the end with every constraint it states, so a
+    // conflict at the end asks. When the start itself is a question, each start reading pins the end to
+    // its own zone, so an ambiguous "IST" cannot pair a Kolkata start with a Dublin end.
+    const pinned: ZoneToken = s.zone.includes("/") ? { kind: "region", id: s.zone, label: s.label } : { kind: "offset", offset: s.zone, label: s.label };
+    const endZones: readonly ZoneToken[] = !shared ? rightZones : starts.kind === "one" ? leftZones : [pinned];
     if (ownEndDate) {
-      const ends = place(endDate, endTimes, endZones, ctx);
+      const ends = placeEnd(endDate, endTimes, endZones);
       if (ends.kind === "none") return unsupported(ends.reason);
       for (const e of valuesOf(ends)) if (after(e, s)) pairs.push({ start: s, end: e });
       continue;
     }
     // Each end reading on the start's date; only a reading that is not after the start moves to the next day.
     for (const t of valuesOf(endTimes)) {
-      const same = place(one(sDate), one(t), endZones, ctx);
+      const same = placeEnd(one(sDate), one(t), endZones);
       if (same.kind === "none") return unsupported(same.reason);
       const sameEnds = valuesOf(same).filter((e) => after(e, s));
       if (sameEnds.length > 0) {
         for (const e of sameEnds) pairs.push({ start: s, end: e });
         continue;
       }
-      const next = place(one(sDate.add({ days: 1 })), one(t), endZones, ctx);
+      const next = placeEnd(one(sDate.add({ days: 1 })), one(t), endZones);
       for (const n of valuesOf(next)) {
         if (after(n, s)) {
           pairs.push({ start: s, end: n });
@@ -612,10 +638,12 @@ export function parseInterval(span: ValueRef, ctx: ResolveContext, openEnd: bool
     }
   }
   if (pairs.length === 0) return unsupported(`"${span.quote}" ends before it starts`);
-  const single = pairs.length === 1 && !overnight && starts.kind === "one" && endTimes.kind === "one" && endDate.kind === "one";
+  // Resolved only when nothing along the way was a question: a single surviving reading of an end the
+  // clocks skip is still the answer to a question, not a fact the text states.
+  const single = pairs.length === 1 && !overnight && endQuestions.size === 0 && starts.kind === "one" && endTimes.kind === "one" && endDate.kind === "one";
   if (single) return resolved(pairs[0] as Interval, sayInterval(pairs[0] as Interval), [span], [...starts.assumptions, ...endTimes.assumptions]);
-  const questions = [starts.kind === "many" ? starts.question : "", endTimes.kind === "many" ? endTimes.question : "", overnight ? `Does "${span.quote}" end the next day? The text does not say.` : ""];
-  return ask(questions.filter((q) => q !== "").join(" ") || `Which time does "${span.quote}" mean?`, pairs);
+  const questions = [starts.kind === "many" ? starts.question : "", endTimes.kind === "many" ? endTimes.question : "", ...endQuestions, overnight ? `Does "${span.quote}" end the next day? The text does not say.` : ""];
+  return ask([...new Set(questions.filter((q) => q !== ""))].join(" ") || `Which time does "${span.quote}" mean?`, pairs);
 }
 
 /** The US regional names, for a preview that shows what PT, ET, CT or MT was read as. */
