@@ -164,16 +164,20 @@ public enum FillSelection {
     public static let frameTolerance = 1.0
 
     /// `changedMemory`: memory entries edited, paused or forgotten since this proposal arrived.
+    /// `bound`: each proposed field's element, by field key (`FillMachine.bind`); the focused
+    /// element is matched there first, and by frame only when no bound field is it.
     public static func select(
         _ proposal: FillProposal,
         focusedFrame: Frame?,
         focusedValue: String,
         secure: Bool,
         suppressed: Set<String> = [],
-        changedMemory: Set<String> = []
+        changedMemory: Set<String> = [],
+        focusedElementID: String? = nil,
+        bound: [String: String] = [:]
     ) -> Result {
         guard !secure, let focusedFrame else { return .skip(.unsuitableField) }
-        guard let field = proposal.fields.first(where: { $0.frame.map { matches($0, focusedFrame) } ?? false }) else {
+        guard let field = field(in: proposal, focusedFrame: focusedFrame, focusedElementID: focusedElementID, bound: bound) else {
             return .skip(.noFieldAtFocus)
         }
         guard focusedValue.isEmpty else { return .skip(.fieldNotEmpty) }
@@ -195,6 +199,16 @@ public enum FillSelection {
         }
         let origin = FillOrigin(proposalID: proposal.id, windowID: proposal.windowId, fieldKey: field.key, source: from, proposedAtMs: proposal.at)
         return .offer(field: field, origin: origin)
+    }
+
+    /// The proposed field the focused element is: by the element bound to it, else by frame, as
+    /// before binding existed. The frame stays a fallback because a page that re-renders a field
+    /// gives it a new element at the same place.
+    static func field(in proposal: FillProposal, focusedFrame: Frame, focusedElementID: String?, bound: [String: String]) -> FillField? {
+        if let focusedElementID, let byElement = proposal.fields.first(where: { bound[$0.key] == focusedElementID }) {
+            return byElement
+        }
+        return proposal.fields.first { $0.frame.map { matches($0, focusedFrame) } ?? false }
     }
 
     public static func matches(_ a: Frame, _ b: Frame) -> Bool {

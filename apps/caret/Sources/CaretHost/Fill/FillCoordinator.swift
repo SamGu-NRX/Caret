@@ -144,6 +144,40 @@ private final class FillWorldAdapter: FillWorld {
 
     nonisolated func bundleID(pid: Int32) -> String? { NSRunningApplicationBundle.id(of: pid) }
 
+    nonisolated var frontmostPID: Int32? {
+        MainActor.assumeIsolated { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+    }
+
+    /// Hit-tests each frame's center in the app, at most `bindBudget` in all.
+    nonisolated func elementIDs(pid: Int32, at frames: [String: Frame]) -> [String: String] {
+        MainActor.assumeIsolated {
+            let app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, ObstacleProbe.messagingTimeout)
+            let deadline = DispatchTime.now().uptimeNanoseconds + Self.bindBudget
+            var found: [String: String] = [:]
+            for (key, frame) in frames {
+                guard DispatchTime.now().uptimeNanoseconds < deadline else { break }
+                var hit: AXUIElement?
+                guard AXUIElementCopyElementAtPosition(app, Float(frame.x + frame.width / 2), Float(frame.y + frame.height / 2), &hit) == .success,
+                      var element = hit, AXRead.pid(of: element) == pid else { continue }
+                for _ in 0..<3 {
+                    if let at = AXRead.frame(of: element),
+                       FillSelection.matches(frame, Frame(x: at.minX, y: at.minY, width: at.width, height: at.height)) {
+                        found[key] = AXRead.token(element)
+                        break
+                    }
+                    guard let parent = AXRead.element(kAXParentAttribute, on: element) else { break }
+                    element = parent
+                }
+            }
+            return found
+        }
+    }
+
+    /// Main-thread time for binding one proposal's fields. Assumed: A10 measured 1 to 10 ms per
+    /// hit-test in the claim form, so a 30-field form fits; a slower app binds fewer fields.
+    static let bindBudget: UInt64 = 150_000_000
+
     nonisolated func focusedField(pid: Int32) -> FillFieldRead? {
         MainActor.assumeIsolated {
             guard let (element, field) = FieldReader.readFocused(pid: pid), let frame = AXRead.frame(of: element) else { return nil }

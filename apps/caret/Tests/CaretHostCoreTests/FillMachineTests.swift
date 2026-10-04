@@ -97,7 +97,10 @@ final class FillMachineTests: XCTestCase {
 
     func testFocusOnAFieldTheProposalDoesNotNameWithdrawsTheOffer() {
         let rig = shown()
+        // Another element at a frame the proposal does not name. (The same element at a new
+        // frame is the field moved, which binding still matches: A18, bug 12.)
         rig.world.focused[Fx.app]?.frame = CGRect(x: 10, y: 10, width: 50, height: 20)
+        rig.world.focused[Fx.app]?.identity.elementID = "notes"
         rig.machine.fieldChanged(pid: Fx.app, at: 5)
         XCTAssertEqual(rig.takeLog(), ["hide offer"])
         XCTAssertNil(rig.arbiter.snapshot().current, "Tab passes through once the offer is gone")
@@ -542,5 +545,70 @@ final class MemoryFillTests: XCTestCase {
         rig.machine.memoryChanged(id: "about-name")
         XCTAssertEqual(rig.takeLog(), [])
         XCTAssertEqual(rig.arbiter.snapshot().current?.id, shownID)
+    }
+
+    // MARK: - Bug 12 (A18): a field focused after the page moved
+
+    /// The proposal arrives at Email; the page then moves every field down 40 pt (HubSpot scrolled
+    /// the next field into view). Phone, focused at its new frame, is matched by its element.
+    func testAFieldFocusedAfterThePageMovedIsMatchedByItsElement() {
+        let rig = FillRig()
+        rig.world.front(.email, value: "typed")
+        rig.propose()
+        XCTAssertEqual(rig.world.bindCalls, 1)
+        XCTAssertTrue(rig.counts.contains("fill.bound.all"))
+        rig.world.layoutShift = 40
+        rig.world.focus(.phone)
+        rig.machine.fieldChanged(pid: Fx.app, at: 2)
+        XCTAssertEqual(rig.arbiter.snapshot().current?.text, FillFx.phone)
+        XCTAssertEqual(rig.world.bindCalls, 1, "bound once per proposal")
+    }
+
+    func testAShownValueFollowsItsFieldWhenThePageMoves() {
+        let rig = shown()
+        rig.world.layoutShift = 40
+        rig.world.focus(.email)
+        rig.machine.fieldChanged(pid: Fx.app, at: 2)
+        let log = rig.takeLog()
+        XCTAssertEqual(log.first, "hide offer")
+        XCTAssertEqual(log.count, 2)
+        XCTAssertTrue(log.last?.hasPrefix("offer \(FillFx.email) ") == true, "drawn again at the new frame: \(log)")
+        XCTAssertEqual(rig.arbiter.snapshot().current?.text, FillFx.email)
+    }
+
+    func testWithoutABindingAMovedFieldIsStillNotGuessed() {
+        let rig = FillRig()
+        rig.world.bindable = false
+        rig.world.front(.email, value: "typed")
+        rig.propose()
+        rig.world.layoutShift = 40
+        rig.world.focus(.phone)
+        rig.machine.fieldChanged(pid: Fx.app, at: 2)
+        XCTAssertNil(rig.arbiter.snapshot().current)
+        XCTAssertEqual(rig.machine.status.lastSkip, "noFieldAtFocus")
+    }
+
+    func testAProposalForAnAppBehindIsBoundOnlyOnceItIsInFront() {
+        let rig = FillRig()
+        rig.world.focus(.email)
+        rig.world.frontmostPID = Fx.other
+        rig.propose()
+        XCTAssertEqual(rig.world.bindCalls, 0, "a background app is not hit-tested")
+        rig.world.frontmostPID = Fx.app
+        rig.machine.appActivated(pid: Fx.app)
+        XCTAssertEqual(rig.world.bindCalls, 1)
+        XCTAssertEqual(rig.arbiter.snapshot().current?.text, FillFx.email)
+    }
+
+    func testTheElementWinsOverAStaleFrame() {
+        let proposal = FillFx.proposal()
+        let email = Fx.Element.email.frame
+        // Phone's element now sits where Email was proposed; the frame alone would say Email.
+        let result = FillSelection.select(
+            proposal, focusedFrame: Frame(x: email.minX, y: email.minY, width: email.width, height: email.height),
+            focusedValue: "", secure: false, focusedElementID: "phone", bound: ["k:email": "email", "k:phone": "phone"]
+        )
+        guard case .offer(let field, _) = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(field.key, "k:phone")
     }
 }
