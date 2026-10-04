@@ -1,0 +1,1 @@
+AppKit presses a window's default button on Return typed into a single-line text field: frontmost fixture, Note focused, Send ran 5 of 5. B21's reader counts no Return while a text field has focus (brief), so that submit goes unreported (gui/keys-front).

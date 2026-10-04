@@ -1,0 +1,1 @@
+Input posted to a pid (CGEventPostToPid) resets HIDIdleTime like a person's (B20: 196 s to 0.3 s); GUI evals that post input record their last post (helper/scripts/synthetic-input.ts) or the idle gate stops them as 'user back'.

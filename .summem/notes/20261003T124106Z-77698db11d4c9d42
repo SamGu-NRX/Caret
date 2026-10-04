@@ -1,0 +1,1 @@
+Real targets (B15): Chrome takes AXValue on web inputs, front or back, but answers AXSelectedText ok and changes nothing; WKWebView in background-only caret-fixture drops value and insert silently; TextEdit takes all. The executor's walk check caught each drop.

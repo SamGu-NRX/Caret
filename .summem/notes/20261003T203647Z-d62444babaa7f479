@@ -1,0 +1,1 @@
+The planner asks only about fields the instruction names (relevance, or namesShortLabel for To/Cc/ID) unless asksToFillForm; an instruction that names no field, like 'msg: ...', now gets nothingToDo (B18 traded that for no unrequested writes).

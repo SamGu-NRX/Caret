@@ -1,0 +1,1 @@
+B14: a stopped taskProgress carries stopReason (stops go through stopped(reason); TaskProgress is a zod union on phase); before a live replay, run a copy of live-replay.ts with an oracle Jev to see withholding and wrong fills for free.

@@ -1,0 +1,1 @@
+Chrome ignores AXSelectedTextRange writes on web inputs (selection stays 0+0), so the insert fallback is refused there; and caret-fixture's 'activate legacy' cannot take the front from T3 Code, only from apps the eval launched (B15).

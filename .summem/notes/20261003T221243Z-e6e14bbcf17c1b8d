@@ -1,0 +1,1 @@
+caret-fixture: AX value writes land in the NSTextField's cell and AX reads return a cached value; to reformat input, override the cell's objectValue/stringValue setters and the field's accessibilityValue() -> String? (setAccessibilityValue never fires) (B19).
