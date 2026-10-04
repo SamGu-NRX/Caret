@@ -65,8 +65,39 @@ public final class ReconcilingClipboard {
     ]
     public static let plainText = "public.utf8-plain-text"
 
+    /// Types Caret puts back byte for byte and the owning app reads back as the same thing: text,
+    /// rich text, HTML and images, which are plain data with no reference to anything outside the
+    /// bytes, plus the markers above.
+    ///
+    /// Everything else refuses the paste route for that insert (lead decision, 2026-10-04). A
+    /// silent partial restore is worse than no paste. A17's VM probe (vm-insert run 1,
+    /// clipboard/pasteboard.ndjson) put back an item holding `public.file-url` 5 of 5 times
+    /// reported `restored` with nothing unreadable, and the item was gone each time. So "every
+    /// type read" does not prove "every type restored". A private type round-tripped its bytes in
+    /// that probe, but bytes do not show that its owner reads them back as the same thing (a file
+    /// promise, a reference into the owner's memory). So an unknown type refuses too. This list
+    /// is a judgment from the types' definitions. Only the text types and the probe's own private
+    /// type were tested on a real pasteboard; the image types were not.
+    public static let restorableTypes = Set([
+        "public.utf8-plain-text", "public.utf16-plain-text", "public.utf16-external-plain-text", "public.plain-text",
+        "public.rtf", "com.apple.flat-rtfd", "public.html",
+        "public.png", "public.tiff",
+    ] + markerTypes)
+
+    /// What in `items` a restore could not put back exactly, item by item ("item 2: public.file-url"):
+    /// types it could not read and types outside `restorableTypes`. Empty when the paste route may
+    /// be used.
+    public static func unrestorable(_ items: [PasteboardItemData]) -> [String] {
+        items.enumerated().flatMap { i, item in
+            (item.unreadable + item.types.filter { !restorableTypes.contains($0) }).map { "item \(i + 1): \($0)" }
+        }
+    }
+
     private let backend: PasteboardBackend
     private var saved: [PasteboardItemData]?
+    /// What the last save found it could not restore. While non-empty, `writeOwn` writes nothing,
+    /// so the pasteboard keeps the user's contents untouched.
+    public private(set) var refused: [String] = []
     /// The types the last save could not read, item by item ("item 2: public.file-url"): a restore
     /// cannot bring them back. Empty when every type was read.
     public private(set) var lost: [String] = []
@@ -79,12 +110,20 @@ public final class ReconcilingClipboard {
         let items = backend.read()
         saved = items
         lost = items.enumerated().flatMap { i, item in item.unreadable.map { "item \(i + 1): \($0)" } }
+        refused = Self.unrestorable(items)
         ownCount = nil
     }
 
-    /// Writes `text` as Caret's own item. Returns the change count it produced.
+    /// What a restore of the pasteboard as it is now could not put back exactly. The executor asks
+    /// this before choosing the paste route; `save` checks again on the items it actually keeps.
+    public func unrestorableNow() -> [String] { Self.unrestorable(backend.read()) }
+
+    /// Writes `text` as Caret's own item. Returns the change count it produced, or nil when the
+    /// last save was refused: nothing is written, so a paste posted anyway pastes the user's own
+    /// contents, never a partial restore's.
     @discardableResult
-    public func writeOwn(_ text: String) -> Int {
+    public func writeOwn(_ text: String) -> Int? {
+        guard refused.isEmpty else { return nil }
         var entries: [(type: String, data: Data)] = [(Self.plainText, Data(text.utf8))]
         for marker in Self.markerTypes { entries.append((marker, Data())) }
         // The clear's own count, never one read afterwards: a copy made between the write and a later
@@ -100,6 +139,7 @@ public final class ReconcilingClipboard {
         defer {
             saved = nil
             ownCount = nil
+            refused = []
         }
         guard let own = ownCount, let saved else { return .notWritten }
         guard backend.changeCount == own else { return .skippedUserCopied }

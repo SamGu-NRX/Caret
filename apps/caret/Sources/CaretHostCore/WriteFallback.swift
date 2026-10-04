@@ -49,6 +49,27 @@ public enum WriteFallback {
         }
     }
 
+    public enum Route: Equatable, Sendable {
+        case axWrite, paste
+    }
+
+    /// The failure code when the paste route was the only one left and the clipboard holds
+    /// something Caret cannot restore exactly (`ReconcilingClipboard.unrestorable`).
+    public static let clipboardUnrestorable = "clipboardUnrestorable"
+
+    /// The first write for a claim. An app known to need a paste (`appPastes`) is pasted into,
+    /// unless the clipboard holds something Caret cannot restore exactly: then this insert tries
+    /// the AX write instead (lead decision, 2026-10-04: no paste beats a partial restore).
+    public static func firstRoute(appPastes: Bool, clipboardRestorable: Bool) -> Route {
+        appPastes && clipboardRestorable ? .paste : .axWrite
+    }
+
+    /// The app refused the AX write with an error: paste, or, when the clipboard cannot be
+    /// restored exactly, fail so the claim hands off rather than paste.
+    public static func afterAXRefused(clipboardRestorable: Bool) -> Step {
+        clipboardRestorable ? .fallBackToPaste : .failed(clipboardUnrestorable)
+    }
+
     /// What to do after the pid paste settled. There is no fallback after it: the AX route was tried
     /// first, or the app is known to refuse it.
     public static func afterPaste(_ settle: Settle, postError: String?) -> Step {

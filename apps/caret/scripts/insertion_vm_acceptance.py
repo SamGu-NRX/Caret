@@ -9,7 +9,10 @@ general pasteboard; see a17-tool.swift). TextEdit and Caret are started here, by
         race   a copy made after Caret's item is on the pasteboard and the paste has landed, but
                before the restore, survives; the host reports skippedUserCopied;
         plain  the prior contents come back, every item and type with the same bytes, restored;
-        empty  an empty pasteboard is empty again.
+        empty  an empty pasteboard is empty again;
+        refused  prior contents with a file URL and a private type: Caret does not paste (I3's
+               refusal rule) but writes by AX instead, and the pasteboard is untouched.
+      race and plain start from restorable contents (`seed text`), refused from `seed rich`.
       changeCount and contents (types and SHA-256 per type) are logged before and after every run.
 
   insertion_vm_acceptance.py undo <out_dir>
@@ -131,11 +134,12 @@ def clipboard(out_dir, runs):
     pid = setup(out_dir)
     check("the paste route is set for TextEdit", host(f"writemethod {pid} pastePid").get("ok"))
     ledger = open(os.path.join(out_dir, "pasteboard.ndjson"), "w")
-    results = {"race": 0, "plain": 0, "empty": 0}
-    plan = [("race", i) for i in range(runs)] + [("plain", i) for i in range(runs)] + [("empty", i) for i in range(2)]
+    results = {"race": 0, "plain": 0, "empty": 0, "refused": 0}
+    plan = [("race", i) for i in range(runs)] + [("plain", i) for i in range(runs)] + [("empty", i) for i in range(2)] \
+        + [("refused", i) for i in range(2)]
     for kind, i in plan:
         text = f" {kind}{i:02d}"
-        before = tool("seed", "empty" if kind == "empty" else "rich")
+        before = tool("seed", {"empty": "empty", "refused": "rich"}.get(kind, "text"))
         watcher = None
         if kind == "race":
             watcher = subprocess.Popen([TOOL, "copy-when", str(pid), f"user copy {i:02d}", "6"], stdout=subprocess.PIPE, text=True)
@@ -154,9 +158,13 @@ def clipboard(out_dir, runs):
         elif kind == "plain":
             ok = inserted and ins.get("clipboard") == "restored" and items(after) == items(before) \
                 and after.get("changeCount") == before.get("changeCount") + 2
-        else:
+        elif kind == "empty":
             ok = inserted and ins.get("clipboard") == "restored" and after.get("items") == [] \
                 and after.get("changeCount") == before.get("changeCount") + 2
+        else:
+            ok = ins.get("ok") is True and ins.get("method") == "axSelectedText" and field.endswith(text) \
+                and ins.get("clipboard") is None and items(after) == items(before) \
+                and after.get("changeCount") == before.get("changeCount")
         results[kind] += 1 if ok else 0
         check(f"{kind} {i:02d}", ok, clipboard=ins.get("clipboard"), method=ins.get("method"), error=ins.get("error"),
               before=before.get("changeCount"), after=after.get("changeCount"), copied=(copied or {}).get("afterMarkerMs"))

@@ -670,6 +670,10 @@ public final class FillMachine {
             return "That suggestion was too old, so nothing was filled."
         case "writeIgnored", "writeMismatch":
             return "The field didn't take the value. Type it in to fill it."
+        // This app only takes a paste, and what is on the clipboard could not be put back exactly
+        // (`WriteFallback.clipboardUnrestorable`).
+        case WriteFallback.clipboardUnrestorable:
+            return "Pasting here would change what you copied, so nothing was filled. Type it in to fill it."
         default:
             return "Nothing was filled."
         }

@@ -24,9 +24,8 @@ final class GeneralPasteboardTests: XCTestCase {
         first.setData(Data("{\\rtf1 Hello}".utf8), forType: .rtf)
         first.setString("<b>Hello</b>", forType: .html)
         first.setString("Hello", forType: .string)
-        first.setData(Data([0, 1, 2, 255]), forType: NSPasteboard.PasteboardType("com.example.private"))
         let second = NSPasteboardItem()
-        second.setString("file:///tmp/a.txt", forType: .fileURL)
+        second.setData(Data([0x89, 0x50, 0x4E, 0x47]), forType: .png)
         named.writeObjects([first, second])
     }
 
@@ -54,6 +53,29 @@ final class GeneralPasteboardTests: XCTestCase {
         XCTAssertEqual(pasteboard.lastOutcome, .restored)
         XCTAssertEqual(backend.read(), prior, "every item, every type, the same bytes")
         XCTAssertEqual(named.string(forType: .string), "Hello")
+    }
+
+    /// The refusal rule on a real pasteboard: with a file URL and a private type on it, the save
+    /// refuses, Caret writes nothing, and the contents and change count stay as they were.
+    func testAFileURLAndAPrivateTypeAreLeftUntouched() {
+        named.clearContents()
+        let first = NSPasteboardItem()
+        first.setString("Hello", forType: .string)
+        first.setData(Data([0, 1, 2, 255]), forType: NSPasteboard.PasteboardType("com.example.private"))
+        let second = NSPasteboardItem()
+        second.setString("file:///tmp/a.txt", forType: .fileURL)
+        named.writeObjects([first, second])
+        let backend = GeneralPasteboard(named)
+        let prior = backend.read()
+        let count = named.changeCount
+        let pasteboard = ReconcilingPasteboard(backend: backend)
+        pasteboard.save()
+        XCTAssertEqual(pasteboard.clipboard.refused, ["item 1: com.example.private", "item 2: public.file-url"])
+        pasteboard.write("Lumen Labs")
+        pasteboard.restore()
+        XCTAssertEqual(pasteboard.lastOutcome, .notWritten)
+        XCTAssertEqual(named.changeCount, count, "nothing written")
+        XCTAssertEqual(backend.read(), prior)
     }
 
     func testAnEmptyPasteboardIsEmptyAgain() {

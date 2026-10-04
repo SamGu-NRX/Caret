@@ -4,8 +4,10 @@
 //
 //   a17-tool dump                          the pasteboard: changeCount, and per item each type with a
 //                                          SHA-256 of its bytes (contents are never printed whole)
-//   a17-tool seed rich|empty               the prior contents a run starts from: rich text, HTML,
-//                                          plain text and a private type, plus a second item; or nothing
+//   a17-tool seed rich|text|empty          the prior contents a run starts from. rich: rich text, HTML,
+//                                          plain text and a private type, plus a file URL item, which
+//                                          Caret refuses to paste over (I3). text: rich text, HTML and
+//                                          plain text, plus a PNG item, all restorable. empty: nothing
 //   a17-tool copy <text>                   a plain-text copy, as the user's
 //   a17-tool copy-when <pid> <text> <s>    waits until Caret's marked item is on the pasteboard and the
 //                                          app's focused field holds its text, then copies <text>: the
@@ -106,6 +108,14 @@ case "seed":
         first.setData(Data((0..<64).map { UInt8($0) }), forType: NSPasteboard.PasteboardType("dev.caret.a17.private"))
         let second = NSPasteboardItem()
         second.setString("file:///private/tmp/a17-prior.txt", forType: .fileURL)
+        pb.writeObjects([first, second])
+    } else if args.count > 1, args[1] == "text" {
+        let first = NSPasteboardItem()
+        first.setData(Data("{\\rtf1\\ansi {\\b Prior} contents}".utf8), forType: .rtf)
+        first.setString("<b>Prior</b> contents", forType: .html)
+        first.setString("Prior contents", forType: .string)
+        let second = NSPasteboardItem()
+        second.setData(Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), forType: .png)
         pb.writeObjects([first, second])
     }
     emit(describe())

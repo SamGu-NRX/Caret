@@ -59,7 +59,7 @@ final class ReconcilingPasteboard: CompletionPasteboard {
         clipboard.save()
     }
 
-    func write(_ string: String) { clipboard.writeOwn(string) }
+    func write(_ string: String) { _ = clipboard.writeOwn(string) }
 
     func restore() { lastOutcome = clipboard.restore() }
 }

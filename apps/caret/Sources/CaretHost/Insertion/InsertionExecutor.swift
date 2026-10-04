@@ -193,7 +193,13 @@ final class InsertionExecutor: @unchecked Sendable {
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
         }
         let refusal = { live() ? "targetNotAllowed" : "revoked" }
-        var method: FillResult.Method = writeMethods.method(for: appKey) == .axSelectedText ? .axSelectedText : .pastePid
+        // A clipboard Caret cannot restore exactly refuses the paste route for this insert
+        // (`WriteFallback.firstRoute`, `afterAXRefused`); `pasteInsert` checks again at the save.
+        let clipboardRestorable = { [pasteboard] in pasteboard.clipboard.unrestorableNow().isEmpty }
+        // The clipboard is read only when a paste would come first; the AX route never touches it.
+        let route: WriteFallback.Route = writeMethods.method(for: appKey) == .axSelectedText
+            ? .axWrite : WriteFallback.firstRoute(appPastes: true, clipboardRestorable: clipboardRestorable())
+        var method: FillResult.Method = route == .paste ? .pastePid : .axSelectedText
         var fellBack = false
         var stray: String?
         var clipboard: ReconcilingClipboard.Outcome?
@@ -201,6 +207,7 @@ final class InsertionExecutor: @unchecked Sendable {
 
         if method == .axSelectedText {
             step = axInsert(approved, element: element, unchanged: before.value, stillTarget: stillTarget, refusal: refusal)
+            if step == .fallBackToPaste { step = WriteFallback.afterAXRefused(clipboardRestorable: clipboardRestorable()) }
             switch step {
             case .fallBackToPaste:
                 // The app refused the AX write with an error, so nothing of it is pending: paste now,
@@ -210,6 +217,10 @@ final class InsertionExecutor: @unchecked Sendable {
                 fellBack = true
                 let paste = pasteInsert(claim, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
                 (step, stray, clipboard) = (paste.step, paste.stray, paste.clipboard)
+            case .failed(WriteFallback.clipboardUnrestorable):
+                // Refused with an error and the clipboard could not survive a paste: nothing was
+                // written. The app still needs a paste next time.
+                writeMethods.record(.pastePid, for: appKey)
             case .failed("writeIgnored"):
                 // The app took the AX write and showed nothing. It may still apply it, so a paste now
                 // could double the text (A17 review): this claim fails, and the next one pastes.
@@ -281,7 +292,10 @@ final class InsertionExecutor: @unchecked Sendable {
         stillTarget: @escaping () -> Bool, refusal: () -> String
     ) -> (step: WriteFallback.Step, stray: String?, clipboard: ReconcilingClipboard.Outcome?) {
         let pid = claim.offer.target.pid
-        let synthesizer = PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget)
+        // Once the save finds something it cannot restore, nothing more is posted: no ⌘V (which
+        // would paste the user's own contents) and no delete after it.
+        let clipboardState = pasteboard.clipboard
+        let synthesizer = PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: { stillTarget() && clipboardState.refused.isEmpty })
         let inserter = PasteboardCompletionInserter(planner: planner, synthesizer: synthesizer, pasteboard: pasteboard, restoreDelayNanoseconds: 0)
         let context = contexts.withLock { list in list.last { $0.0 == claim.offer.id }?.1 }
             ?? TextFieldContext(beforeCursor: "", target: AppTarget(bundleIdentifier: claim.offer.target.bundleID, appName: ""))
@@ -296,7 +310,9 @@ final class InsertionExecutor: @unchecked Sendable {
         plan.restorePasteboard = false
         let finalPlan = plan
         var postError = Self.blocking { try await inserter.insert(plan: finalPlan) }
-        if synthesizer.refusedPosts > 0 { postError = refusal() }
+        // Read before `restore`, which clears it.
+        let refusedAtSave = !clipboardState.refused.isEmpty
+        if synthesizer.refusedPosts > 0 { postError = refusedAtSave ? WriteFallback.clipboardUnrestorable : refusal() }
         let settle: Settle = postError == nil ? waitForSettle(element: element, expected: approved, unchanged: before.value) : .different
         var clipboard: ReconcilingClipboard.Outcome?
         if usesPasteboard {
