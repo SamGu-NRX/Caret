@@ -21,12 +21,15 @@
 //   --windows forms adds B19's order queue, whose one record `form next` replaces with a new invented one
 //   (answering with it), and B19's routine destinations, each a new window per `form open`: intake
 //   (Customer, Email, Order number; no buttons) and reply (To, Order number; Save draft and Send, where
-//   Send closes the window as a mail app does). stdin `form open|close|dump NAME`,
+//   Send closes the window as a mail app does), and B20's invite (To, Order number; Send later and Send, both
+//   closing the window). stdin `form open|close|dump NAME`,
 //   `form set NAME FIELD VALUE`, `form press NAME LABEL`, `form mangle NAME on|off` (values written through
 //   Accessibility come out upper-cased, as an app that reformats input does, for a forced mismatch).
 //   stdin `focus NAME` makes one of the fixture's own windows key without activating the app, which
 //   moves AX focus inside the fixture only (it works in the background-only default too: AppKit
 //   reports no key window, yet the reader sees the focus move).
+//   stdin `responder NAME` makes the window's web view (or first text field) its first responder without
+//   making the window key, as a browser left in the background has it.
 //   stdin `web JS` (with --webkit) evaluates JS in the page and answers with the JSON it returns, once the
 //   page answers; the executor's web form defines caretState, caretReset and caretSeed for it.
 //   stdin `activate legacy|cooperative` (with --foreground only) lets the app become active and asks
@@ -447,10 +450,15 @@ final class SkillForms {
     static let specs: [String: Spec] = [
         "intake": Spec(title: "Caret Fixture — Intake", fields: [("customer", "Customer"), ("email", "Email"), ("order", "Order number")], buttons: []),
         "reply": Spec(title: "Caret Fixture — Reply", fields: [("to", "To"), ("order", "Order number")], buttons: ["Save draft", "Send"]),
+        // B20: two buttons that both read as outbound, so the window's buttons alone cannot say which one
+        // ends an occurrence; only the user's observed click can.
+        "invite": Spec(title: "Caret Fixture — Invite", fields: [("to", "To"), ("order", "Order number")], buttons: ["Send later", "Send"]),
     ]
     var open: [String: (w: NSWindow, fields: [String: NSTextField])] = [:]
     var opened: [String: Int] = [:]
     var sent = 0
+    /// Presses of "Send later" (invite), which closes the window like Send.
+    var later = 0
     var mangled: Set<String> = []
     /// The source: one order at a time, so each occurrence copies values no earlier window showed.
     let queue = makeWindow("Caret Fixture — Order queue", NSRect(x: 60, y: 520, width: 360, height: 140))
@@ -559,18 +567,18 @@ final class SkillForms {
             pressed(b)
             return ["ok": true]
         case "dump":
-            guard let o = open[name] else { return ["ok": true, "open": false, "sent": sent] }
+            guard let o = open[name] else { return ["ok": true, "open": false, "sent": sent, "later": later] }
             var values: [String: Any] = [:]
             for (k, tf) in o.fields { values[k] = tf.stringValue }
-            return ["ok": true, "open": true, "title": o.w.title, "fields": values, "sent": sent]
+            return ["ok": true, "open": true, "title": o.w.title, "fields": values, "sent": sent, "later": later]
         default:
             return ["ok": false, "error": "unknown form command \(parts[0])"]
         }
     }
 
     @objc func pressed(_ b: NSButton) {
-        guard b.title == "Send", let (name, o) = open.first(where: { $0.value.w === b.window }) else { return }
-        sent += 1
+        guard b.title == "Send" || b.title == "Send later", let (name, o) = open.first(where: { $0.value.w === b.window }) else { return }
+        if b.title == "Send" { sent += 1 } else { later += 1 }
         open.removeValue(forKey: name)
         o.w.close()
     }
@@ -995,6 +1003,17 @@ func firstTextField(in v: NSView) -> NSTextField? {
     return nil
 }
 
+/// `responder NAME` sets the window's first responder (the web view for the WebKit window, else its first
+/// text field) without making it key: a browser window left in the background holds its web view as first
+/// responder, which the fixture's WebKit window otherwise never does (B20). The reply says whether it took.
+func responderCommand(_ name: String) -> [String: Any] {
+    guard let w = namedWindows()[name] else { return ["ok": false, "error": "no window named \(name)"] }
+    let target: NSResponder? = webView.flatMap { $0.window === w ? $0 : nil } ?? w.contentView.flatMap { firstTextField(in: $0) }
+    guard let r = target else { return ["ok": false, "error": "\(name) has nothing to make first responder"] }
+    let took = w.makeFirstResponder(r)
+    return ["ok": took, "isKey": w.isKeyWindow, "key": NSApp.keyWindow?.title ?? NSNull()]
+}
+
 /// Asks AppKit to make the fixture the active app. Whether it became frontmost is for the caller to
 /// read from NSWorkspace; this only reports what AppKit said at once.
 func activateCommand(_ how: String) -> [String: Any] {
@@ -1027,6 +1046,7 @@ let stdinCommand: ((String) -> [String: Any])? = { line in
     let parts = line.split(separator: " ").map(String.init)
     switch parts.first {
     case "focus" where parts.count == 2: return focusCommand(parts[1])
+    case "responder" where parts.count == 2: return responderCommand(parts[1])
     case "activate" where parts.count == 2: return activateCommand(parts[1])
     case "quit" where parts.count == 2: return quitCommand(parts[1])
     case "jobs":
