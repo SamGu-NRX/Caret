@@ -202,6 +202,23 @@ private func waitUntil(_ cond: () -> Bool, seconds: Double = 5) -> Bool {
         #expect(BridgeTrust.browserRequirements.allSatisfy(ProcessTrust.parses))
         #expect(BridgeTrust.bridgeRequirement == #"anchor apple generic and identifier "dev.caret.bridge" and certificate leaf[subject.OU] = "DWGXWVUR2B""#)
     }
+
+    /// W4 (W3 review #14, untested there): the parent is read again after its signature check, so a browser that exits
+    /// meanwhile, leaving the bridge to launchd or to a process that took its pid, is refused rather than named.
+    @Test func refusesABridgeWhoseParentChangesDuringTheSignatureCheck() {
+        let browser = BrowserRef(pid: 500, bundleId: "com.google.Chrome", name: "Google Chrome")
+        for later: pid_t? in [1, 777, nil] {
+            var reads = 0
+            let parentOf: (pid_t) -> pid_t? = { _ in reads += 1; return reads == 1 ? 500 : later }
+            let r = ProcessTrust.launchingBrowser(of: 42, requirements: ["r"], parentOf: parentOf, check: { pid, _ in pid == 500 }, describe: { _ in browser })
+            guard case let .failure(.parent(why)) = r else { Issue.record("a parent that became \(String(describing: later)) was accepted: \(r)"); continue }
+            #expect(why.contains("changed while Caret checked it"), "\(why)")
+            #expect(reads == 2)
+        }
+        // The same parent both times is the browser.
+        let same = ProcessTrust.launchingBrowser(of: 42, requirements: ["r"], parentOf: { _ in 500 }, check: { pid, _ in pid == 500 }, describe: { _ in browser })
+        #expect(same == .success(browser))
+    }
 }
 
 // W3 review: lifetimes and deadlines.
