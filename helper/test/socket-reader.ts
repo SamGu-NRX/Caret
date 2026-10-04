@@ -45,7 +45,11 @@ export class LineClient {
     });
   }
 
+  /** Messages this client has sent, of every kind. */
+  sent = 0;
+
   send(m: unknown): void {
+    this.sent++;
     this.s.write(JSON.stringify(m) + "\n");
   }
 
@@ -100,6 +104,21 @@ export class SocketReader {
   enforceGrants = false;
   /** Plays caret-screen's EventKit adapter for calendar verbs; null answers as a reader without --calendar-test does. */
   calendar: ((verb: CalendarVerb) => Pick<VerbResult, "outcome" | "detail" | "event" | "blocked">) | null = null;
+  /**
+   * Answers commands one at a time in arrival order, as caret-screen's per-app queue does, while grants and
+   * revokes still apply the moment they arrive, as its control path does (B22). Off by default: then a
+   * delayed answer lets later commands overtake it.
+   */
+  serial = false;
+  /** Milliseconds to hold this one verb before it is judged; takes precedence over `delayMs`. */
+  delayFor: ((verb: ReaderVerb) => number | undefined) | null = null;
+  /** Called as each command arrives, before it waits its turn. */
+  onCommand: ((verb: ReaderVerb) => void) | null = null;
+  /** Writes, presses and raises that passed the grant check and changed the simulated app, each with when (performance.now()). */
+  readonly acted: { verb: ReaderVerb; at: number }[] = [];
+  /** When each grant or revoke arrived (performance.now()), in arrival order. */
+  readonly grantTimes: { type: string; taskId: string; at: number }[] = [];
+  private turn: Promise<void> = Promise.resolve();
   /** Each app's own focused window, which it keeps while it is in the background. */
   private readonly appFocus = new Map<number, string>();
   /** The recording's clock, carried on into the snapshots verbs produce. */
@@ -111,8 +130,15 @@ export class SocketReader {
     client.onMessage = (m) => {
       const msg = HelperToReader.safeParse(m);
       if (!msg.success) return;
-      if (msg.data.type === "readerCommand") void this.answer(msg.data);
-      else this.grants.receive(msg.data);
+      if (msg.data.type === "readerCommand") {
+        const cmd = msg.data;
+        this.onCommand?.(cmd.verb);
+        if (this.serial) this.turn = this.turn.then(() => this.answer(cmd));
+        else void this.answer(cmd);
+      } else {
+        this.grantTimes.push({ type: msg.data.type, taskId: msg.data.taskId, at: performance.now() });
+        this.grants.receive(msg.data);
+      }
     };
   }
 
@@ -199,11 +225,11 @@ export class SocketReader {
   private async answer(cmd: ReaderCommand): Promise<void> {
     const verb = cmd.verb;
     this.verbs.push(verb);
-    const delay = this.delayMs[verb.kind];
+    const delay = this.delayFor?.(verb) ?? this.delayMs[verb.kind];
     if (delay !== undefined) await new Promise((r) => setTimeout(r, delay));
     const reply = (outcome: VerbResult["outcome"], detail: string | null = null): void =>
       this.client.send({ type: "verbResult", v: PROTOCOL_VERSION, id: cmd.id, at: this.clock, outcome, detail } satisfies VerbResult);
-    if (verb.kind === "watchInput" || verb.kind === "watchWindows") return reply("ok");
+    if (verb.kind === "watchInput" || verb.kind === "watchWindows" || verb.kind === "watchPresses") return reply("ok");
     if (isCalendarVerb(verb)) {
       // As caret-screen answers: nothing without --calendar-test (no adapter here), and a write only under its task's calendar grant.
       const refused = this.calendar !== null && "taskId" in verb ? this.grants.calendarRefusal(verb.taskId) : null;
@@ -226,6 +252,7 @@ export class SocketReader {
         const from = [...this.windows.values()].find((x) => x.app.pid === this.frontmostPid)?.app ?? null;
         this.clock += 10;
         if (from?.pid !== to.pid) this.client.send({ type: "appSwitch", v: PROTOCOL_VERSION, at: this.clock, from, to });
+        this.acted.push({ verb, at: performance.now() });
         this.focus(verb.windowId);
         this.show(verb.windowId);
         return reply("ok");
@@ -240,6 +267,7 @@ export class SocketReader {
         else if ((n.value ?? "") !== verb.expect) return reply("changed", "the value differs from what was expected");
         else if (verb.value === "") delete n.value;
         else n.value = verb.value;
+        this.acted.push({ verb, at: performance.now() });
         this.show(verb.windowId);
         return reply("ok");
       }

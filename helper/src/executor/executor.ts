@@ -7,7 +7,9 @@
 //      window, and compare what changed against the prediction. A mismatch stops the run at that step.
 // Real input in a window the task acts in, or a pause or take-over from a consumer, pauses it at the
 // next step boundary: before the next step starts, or before the current step acts if its reads are
-// still under way. A stop ends it there. Every write goes in an undo ledger with the value it replaced.
+// still under way. A stop ends it there. Every pause and stop revokes the task's act grant the moment it
+// is recorded, so an act already queued in the reader is refused. Every write goes in an undo ledger with
+// the value it replaced.
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt } from "node:crypto";
@@ -15,7 +17,7 @@ import { GRANT_MAX_MS, PROTOCOL_VERSION, type ActionType, type AppRef, type UseO
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
-import { classifyLabel, type RiskClass } from "./risk.ts";
+import { classifyPress, type RiskClass } from "./risk.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
 
@@ -45,6 +47,31 @@ export interface ExecutorDeps {
   onUse?: (u: TaskUse) => void;
   /** Whether memory entry `id` still holds `value` (Step.memory). Without it, a step that names an entry is refused. */
   memoryHolds?: (id: string, value: string) => boolean;
+  /**
+   * Whether the task may still act, asked right before every write, press, raise and calendar add, and by
+   * `recheck` for every live task: what it depends on (Caret not paused, its skill still on its own, the
+   * permission for the action it is about to take, the host session that started it) may have changed
+   * since it started (S1 audit #4, #5). `action` is null for the checks that do not depend on one. Without
+   * it every act is allowed, as in tests that predate B22.
+   */
+  authorize?: (a: Authorization) => Revocation | null;
+}
+
+/** What `authorize` is asked about: a task, whether a skill started it with no Tab, and the permission its next act falls under. */
+export interface Authorization {
+  taskId: string;
+  unprompted: boolean;
+  action: ActionType | null;
+}
+
+/**
+ * Why a task may no longer act. `you`: the user changed something it depended on (a permission, Caret's
+ * pause, the skill, a memory entry, the settings); the run stops as stopped by you. `host`: the host
+ * session that started it is gone; the run stops as an error Caret reports.
+ */
+export interface Revocation {
+  why: string;
+  by: "you" | "host";
 }
 
 /** One use of a permission by a run: its action type, what it did as a sentence, the app, and how it ended. */
@@ -56,7 +83,8 @@ export interface TaskUse {
 }
 
 /** The permission a press of this risk class falls under (plan section 3); a safe press needs none of these. */
-const RISK_ACTION: Record<Exclude<RiskClass, "safe">, ActionType> = { outbound: "outbound", destructive: "destructive", money: "sensitive" };
+/** A system prompt falls under "Money, passwords, system dialogs", which is always handed off (B22). */
+const RISK_ACTION: Record<Exclude<RiskClass, "safe">, ActionType> = { outbound: "outbound", destructive: "destructive", money: "sensitive", system: "sensitive" };
 
 /** How a run was started. Only a run from an accepted offer may hold an act grant. */
 export interface RunOptions {
@@ -92,11 +120,15 @@ export interface TaskEvent {
   window: { app: AppRef; windowId: string; title: string; frame: Frame | null } | null;
 }
 
-/** Why a run must stop at its next step boundary. `takeOver` is a pause that hands the run back to the user. */
+/**
+ * Why a run must stop at its next step boundary. `takeOver` is a pause that hands the run back to the user.
+ * `revoked`: a stop because something the task depended on changed (Executor.revoke), said in the stop's detail.
+ */
 interface Interrupt {
   kind: "pause" | "stop";
   by: "input" | "control" | "takeOver";
   why: string;
+  revoked?: Revocation;
 }
 
 export interface TaskResult {
@@ -125,6 +157,15 @@ export interface UndoResult {
   notUndoable: number;
 }
 
+/**
+ * The writes tried, in order, after a value write that answered ok and changed nothing (B15, B20), each with
+ * what it does in words for the activity feed.
+ */
+const FALLBACKS = [
+  { name: "focusValue", does: "focus the field, then write the value" },
+  { name: "insert", does: "focus, select all and replace" },
+] as const;
+
 /** How many re-reads a press or URL gets to show its effect, and the pause between them. Assumed, not measured. */
 const EFFECT_POLLS = 4;
 /** Extra tries for a failed walk. One cut-short walk in 20 shipping runs stopped a run on a loaded Mac. */
@@ -151,8 +192,8 @@ interface Task {
   session: number;
   /** True while undo is restoring this task's writes. */
   undoing: boolean;
-  /** The user stopped or took over an undo under way: the restores not yet made are left as they are. */
-  undoStopped: boolean;
+  /** Why an undo under way was stopped (the user stopped or took it over, Caret was paused, the host left), or null: the restores not yet made are left as they are. */
+  undoStopped: string | null;
   /**
    * Slot values the plan copied from windows, by the window's id (Plan.sources), each with its window as
    * the task found it: a target question charges that window for the value even after it has closed.
@@ -280,7 +321,7 @@ export class Executor {
       resolved: new Map(),
       session: this.session,
       undoing: false,
-      undoStopped: false,
+      undoStopped: null,
       sourced: Object.entries(parsed.data.sources ?? {}).flatMap(([slot, windowId]) => {
         const text = slots[slot];
         return text === undefined ? [] : [{ text, windowId, window: this.deps.model.windows.get(windowId) }];
@@ -301,38 +342,81 @@ export class Executor {
 
   /** Continues a paused task from the step it paused at, accepting whatever the user changed meanwhile. */
   async resume(taskId: string): Promise<TaskResult> {
-    const task = this.tasks.get(taskId);
-    if (task === undefined) throw new PlanError(`no task ${taskId}`);
-    if (task.finished !== "paused") throw new PlanError(`task ${taskId} is ${task.finished ?? "running"}, not paused`);
+    const no = this.resumeRefusal(taskId);
+    if (no !== null) throw new PlanError(no);
+    const task = this.need(taskId);
     task.interrupt = null;
     task.finished = null;
     task.expected.clear();
     return this.loop(task);
   }
 
-  /** Real input from the reader: pause any task acting in that window at its next step boundary. */
+  /** Why the task cannot be resumed now, or null. */
+  resumeRefusal(taskId: string): string | null {
+    const task = this.tasks.get(taskId);
+    if (task === undefined) return `no task ${taskId}`;
+    if (task.finished !== "paused") return `task ${taskId} is ${task.finished ?? "running"}, not paused`;
+    return null;
+  }
+
+  /**
+   * Why the task cannot be undone now, or null: it is unknown, running or already being undone, its window ids
+   * belong to an earlier reader, or Caret may not act at all now (paused, or the host that asked is gone). An
+   * undo is the user's own request about the task, so the permissions it ran under are not asked again.
+   */
+  undoRefusal(taskId: string): string | null {
+    const task = this.tasks.get(taskId);
+    if (task === undefined) return `no task ${taskId}`;
+    if (task.finished === null) return `task ${taskId} is still running`;
+    if (task.undoing) return `task ${taskId} is already being undone`;
+    if (task.session !== this.session) return `task ${taskId} ran under an earlier reader session; its window ids no longer apply, so nothing is restored`;
+    const r = this.undoBlocked(task);
+    return r === null ? null : `nothing was restored: ${r.why}`;
+  }
+
+  /** What stops an undo, before it starts and before each restore: Caret's general checks only (`authorize` with no action). */
+  private undoBlocked(task: Task): Revocation | null {
+    return this.deps.authorize?.({ taskId: task.id, unprompted: false, action: null }) ?? null;
+  }
+
+  /**
+   * Real input from the reader: pause any task acting in that window. The grant ends here, not at the next
+   * step boundary (S1 audit #3): a write already queued in the reader behind a slow call is refused there.
+   */
   onUserInput(m: UserInput): void {
     for (const task of this.tasks.values()) {
-      if (task.finished !== null || task.interrupt?.kind === "stop") continue;
+      const acting = task.undoing || (task.finished === null && task.interrupt?.kind !== "stop");
+      if (!acting) continue;
       for (const windowId of task.windows.values()) {
         const w = this.deps.model.windows.get(windowId);
         if (w === undefined || w.app.pid !== m.pid) continue;
         const inside = m.kind === "mouse" ? m.point !== null && w.window.frame !== null && contains(w.window.frame, m.point) : w.focused;
-        if (inside) task.interrupt = { kind: "pause", by: "input", why: `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'` };
+        if (!inside) continue;
+        const why = `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'`;
+        // An undo under way stops its remaining restores, as a pause of it does (B22 review).
+        if (task.undoing) this.stopUndo(task, `you used the window: ${why}`);
+        else {
+          task.interrupt = { kind: "pause", by: "input", why };
+          this.revokeGrant(task);
+        }
       }
     }
   }
 
   /**
-   * Pauses a running task at its next step boundary; the running `run` or `resume` call then resolves
-   * as paused. `takeOver` hands the run back to the user: the paused phase names the step it reached.
-   * Taking over an already paused task reports it again as handed back. A pause for `input` (the host
-   * saw the user's own input) leaves a pending pause from the reader's userInput as it is, since that one
-   * names what the user did and where; a userInput after it replaces its wording in turn.
+   * Pauses a running task; the running `run` or `resume` call then resolves as paused at its next step
+   * boundary. Every pause ends the grant at once, as a take-over and a stop do (S1 audit #3): the user has
+   * the window from the moment they ask, so an act already on its way to the reader is refused there. An
+   * act the reader has already dispatched to the app cannot be called back. `takeOver` hands the run back
+   * to the user: the paused phase names the step it reached. Taking over an already paused task reports it
+   * again as handed back. A pause for `input` (the host saw the user's own input) leaves a pending pause
+   * from the reader's userInput as it is, since that one names what the user did and where; a userInput
+   * after it replaces its wording in turn.
    */
   pause(taskId: string, takeOver: boolean, reason?: "input"): void {
     const task = this.need(taskId);
-    if (takeOver && task.undoing) return this.stopUndo(task);
+    // Any pause of an undo under way stops it: the restores not yet made are left as they are (B22 review).
+    if (task.undoing) return this.stopUndo(task, takeOver ? "you took over the undo" : "you paused the undo");
     const by = takeOver ? "takeOver" : reason ?? "control";
     if (task.finished === "paused") {
       if (takeOver) this.progress(task, "paused", this.stepAt(task), this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
@@ -341,8 +425,7 @@ export class Executor {
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
     if (task.interrupt?.kind === "stop" || (by === "input" && task.interrupt?.by === "input")) return;
     task.interrupt = { kind: "pause", by, why: takeOver ? "you took over" : by === "input" ? "your input" : "you paused it" };
-    // The user has the window now: an act already on its way to the reader is refused there.
-    if (takeOver) this.revokeGrant(task);
+    this.revokeGrant(task);
   }
 
   /** Ends a running task at its next step boundary, or a paused one now. What it wrote stays; undo restores it. */
@@ -361,9 +444,98 @@ export class Executor {
     this.revokeGrant(task);
   }
 
-  /** Ends an undo under way: its grant now, so a restore already sent is refused, and the rest are not tried. */
-  private stopUndo(task: Task): void {
-    task.undoStopped = true;
+  /**
+   * Ends a task because something it depended on changed (S1 audit #4, #5): its grant now, so an act
+   * already on its way is refused, and the run at its next step boundary, as stopped with `r.why`. A paused
+   * task stops now; an undo under way stops its remaining restores, as a stop does. A finished task holds no
+   * grant and is left as it is.
+   */
+  revoke(taskId: string, r: Revocation): void {
+    const task = this.tasks.get(taskId);
+    if (task === undefined) return;
+    if (task.undoing) return this.stopUndo(task, r.why);
+    if (task.finished === "paused") {
+      task.finished = "stopped";
+      releaseSources(task);
+      this.stoppedBy(task, r);
+      this.reportUses(task, "stopped");
+      return;
+    }
+    if (task.finished !== null || task.interrupt?.kind === "stop") return;
+    task.interrupt = { kind: "stop", by: "control", why: r.why, revoked: r };
+    this.revokeGrant(task);
+  }
+
+  /**
+   * Asks `authorize` again about every task that may still act, after a change to what tasks depend on (the
+   * user's settings, a permission, a skill or memory entry, a host session): Caret's general checks, the
+   * permission of every window its remaining steps act in, as that window stands to the user now, and every
+   * memory entry a remaining step copies. A task that fails any of them is revoked.
+   */
+  recheck(): void {
+    for (const task of this.tasks.values()) {
+      if (task.undoing) {
+        const r = this.undoBlocked(task);
+        if (r !== null) this.stopUndo(task, r.why);
+        continue;
+      }
+      if (task.finished !== null && task.finished !== "paused") continue;
+      const r = this.dependencyBroken(task);
+      if (r !== null) this.revoke(task.id, r);
+    }
+  }
+
+  private dependencyBroken(task: Task): Revocation | null {
+    const authorize = this.deps.authorize;
+    const ask = (action: ActionType | null): Revocation | null => authorize?.({ taskId: task.id, unprompted: task.unprompted, action }) ?? null;
+    const general = ask(null);
+    if (general !== null) return general;
+    for (const step of task.plan.steps.slice(task.next)) {
+      const end = step.end;
+      if (end.kind === "calendarEvent") {
+        const r = ask("writeElsewhere");
+        if (r !== null) return r;
+        continue;
+      }
+      const windowId = task.windows.get(JSON.stringify(end.window));
+      if (windowId !== undefined) {
+        const r = ask(this.actionIn(windowId));
+        if (r !== null) return r;
+      }
+      if (step.memory !== undefined && end.kind === "valueEquals" && this.deps.memoryHolds?.(step.memory, end.value) !== true) {
+        return { why: `what you told Caret for '${step.says}' changed or is gone`, by: "you" };
+      }
+    }
+    return null;
+  }
+
+  /** The permission an act in this window falls under now: "Write where you are" in the window the user is in, "Reversible write elsewhere" anywhere else. */
+  private actionIn(windowId: string | null): ActionType {
+    return windowId !== null && windowId === this.userWindow() ? "writeHere" : "writeElsewhere";
+  }
+
+  /**
+   * Asked right before an act is dispatched: a task whose dependency broke since the last check (the user
+   * moved to another window, turning a write where they are into a write elsewhere, or changed a permission)
+   * is revoked, and the run stops here rather than acting.
+   */
+  private authorizeAct(task: Task, windowId: string | null): void {
+    const r = this.deps.authorize?.({ taskId: task.id, unprompted: task.unprompted, action: this.actionIn(windowId) }) ?? null;
+    if (r === null) return;
+    this.revoke(task.id, r);
+    throw new Interrupted();
+  }
+
+  /** The stopped phase of a revoked task: who caused it, and why in the detail. */
+  private stoppedBy(task: Task, r: Revocation): string {
+    const detail = `stopped ${this.boundary(task)}: ${r.why}`;
+    this.stopped(task, this.stepAt(task), detail, r.by === "you" ? "you" : "caret", r.by === "you" ? "you" : "error");
+    return detail;
+  }
+
+  /** Ends an undo under way: its grant now, so a restore already sent is refused, and the rest are not tried, each for `why`. */
+  private stopUndo(task: Task, why = "you stopped the undo"): void {
+    if (task.undoStopped === null) task.undoStopped = why;
     this.revokeGrant(task);
   }
 
@@ -400,11 +572,9 @@ export class Executor {
    * wrote. Calendar events are removed only if unchanged. Presses cannot be undone and are counted.
    */
   async undo(taskId: string): Promise<UndoResult> {
-    const task = this.tasks.get(taskId);
-    if (task === undefined) throw new PlanError(`no task ${taskId}`);
-    if (task.finished === null) throw new PlanError(`task ${taskId} is still running`);
-    if (task.undoing) throw new PlanError(`task ${taskId} is already being undone`);
-    if (task.session !== this.session) throw new PlanError(`task ${taskId} ran under an earlier reader session; its window ids no longer apply, so nothing is restored`);
+    const no = this.undoRefusal(taskId);
+    if (no !== null) throw new PlanError(no);
+    const task = this.need(taskId);
     // A paused run whose writes are being restored cannot continue from where it was, so it stops
     // being resumable before the first restore is awaited.
     if (task.finished === "paused") {
@@ -413,7 +583,13 @@ export class Executor {
     }
     releaseSources(task);
     task.undoing = true;
-    task.undoStopped = false;
+    task.undoStopped = null;
+    // The user's input in the task's windows stops the undo, so the reader watches them before the first restore.
+    try {
+      await this.updateWatch();
+    } catch {
+      this.stopUndo(task, "the reader cannot watch for your input");
+    }
     // The run is over; a stop or pause still pending from it (a write that ended in axError) is not this undo's.
     task.interrupt = null;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
@@ -430,11 +606,14 @@ export class Executor {
           remaining.push(e);
           continue;
         }
+        // Caret paused, or the host gone, since the last restore: the rest are left as they are.
+        const blocked = task.undoStopped === null ? this.undoBlocked(task) : null;
+        if (blocked !== null) this.stopUndo(task, blocked.why);
         const reason =
           task.session !== this.session
             ? "the reader restarted during undo"
-            : task.undoStopped
-              ? "you stopped the undo"
+            : task.undoStopped !== null
+              ? task.undoStopped
               : e.kind === "write"
                 ? await this.undoWrite(task, e)
                 : await this.undoCalendar(task, e);
@@ -448,6 +627,8 @@ export class Executor {
     } finally {
       task.undoing = false;
       this.revokeGrant(task);
+      // The watch for this undo ends with it; a failure here only leaves a watch on, which the next run replaces.
+      await this.updateWatch().catch(() => undefined);
     }
     const detail = `restored ${out.restored}; not restored ${out.notRestored.length}; presses not undoable ${out.notUndoable}`;
     this.progress(task, "undone", null, detail, null, { restored: out.restored, notRestored: out.notRestored.length, notUndoablePresses: out.notUndoable });
@@ -497,9 +678,12 @@ export class Executor {
         task.interrupt = null;
         const at = this.stepAt(task);
         if (it.kind === "stop") {
-          const detail = `stopped by you ${this.boundary(task)}`;
           task.finished = "stopped";
-          this.stopped(task, at, detail, "you", "you");
+          let detail: string;
+          if (it.revoked === undefined) {
+            detail = `stopped by you ${this.boundary(task)}`;
+            this.stopped(task, at, detail, "you", "you");
+          } else detail = this.stoppedBy(task, it.revoked);
           this.reportUses(task, "stopped");
           return this.result(task, "stopped", at, detail);
         }
@@ -527,7 +711,7 @@ export class Executor {
   private async updateWatch(): Promise<void> {
     const pids = new Set<number>();
     for (const t of this.tasks.values()) {
-      if (t.finished !== null) continue;
+      if (t.finished !== null && !t.undoing) continue;
       for (const id of t.windows.values()) {
         const w = this.deps.model.windows.get(id);
         if (w !== undefined) pids.add(w.app.pid);
@@ -557,9 +741,10 @@ export class Executor {
       const label = (node.label ?? "").trim();
       const what = label === "" ? end.target.describe : `'${label}'`;
       // The control's own label decides the reason, as for a press: a plan cannot call a Send press unverifiable.
-      const risk = label === "" ? "safe" : classifyLabel(label);
-      if (risk !== "safe") task.handedOff = { action: RISK_ACTION[risk], what, windowId: w.window.windowId };
-      throw StepStop.handoff(risk === "safe" ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${risk}; Caret leaves that press to you`);
+      const risk = classifyPress({ label, windowKind: w.window.kind, bundleId: w.app.bundleId });
+      const known = risk === "safe" || risk === "unclassified" ? null : risk;
+      if (known !== null) task.handedOff = { action: RISK_ACTION[known], what, windowId: w.window.windowId };
+      throw StepStop.handoff(known === null ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${known}; Caret leaves that press to you`);
     }
 
     if (end.kind === "valueEquals" || end.kind === "focused") {
@@ -603,14 +788,39 @@ export class Executor {
       }
     };
     let seen = await sent(verb);
-    // B15: a web view whose window is not key answers a value write with ok and changes nothing. Then the
-    // field is focused, its text selected and replaced, as typing would; the comparison below checks it.
-    if (attribute === "value" && this.dropped(w.window.windowId, node.key, before, seen)) {
+    // A field the walk lost right after the write (B15's WebKit window) is read once more before it is judged.
+    if (attribute === "value" && this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
+    // B15, B20: a web view whose window is not key answers a value write with ok and changes nothing. It takes
+    // the value once the field has focus (focusValue, 3 of 3 in B20's candidate table); insert (focus, select
+    // all, replace) is the last means. Each runs only when the one before changed nothing, and the comparison
+    // below checks whichever landed.
+    for (const fallback of attribute === "value" ? FALLBACKS : []) {
+      if (!this.dropped(w.window.windowId, node.key, before, seen)) break;
       // Something else at work in the window stops the run before Caret writes again.
       this.checkUnexpected(seen, node.key);
       this.checkInterrupt(task);
-      this.progress(task, "acting", i, `insert; the value write changed nothing, so focus, select all and replace; expect ${prediction}`);
-      seen = [...seen, ...(await sent({ ...verb, attribute: "insert" }))];
+      this.progress(task, "acting", i, `${fallback.name}; the write before it changed nothing, so ${fallback.does}; expect ${prediction}`);
+      seen = [...seen, ...(await sent({ ...verb, attribute: fallback.name }))];
+      // A WebKit window that is not key can leave the field out of the walk right after a write (B15: the
+      // field read as gone); one more read tells a field that is back from one that really went.
+      if (this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
+      // A write that landed is judged and goes in the ledger below before any pause is honoured, so undo has it.
+      if (!this.dropped(w.window.windowId, node.key, before, seen)) break;
+      // A pause, stop or take-over that came in meanwhile is the user's word on the run, not a hand-off.
+      this.checkSession(task);
+      this.checkInterrupt(task);
+    }
+    if (attribute === "value") {
+      // Every means answered ok and the field holds what it held: this app takes no text written these ways.
+      // Nothing was written, so the field is the user's to fill, said plainly, not a failed run.
+      if (this.dropped(w.window.windowId, node.key, before, seen)) {
+        this.checkUnexpected(seen, node.key);
+        const label = (node.label ?? "").trim();
+        const field = label === "" ? "this field" : `the ${label} field`;
+        const here = w.window.windowId === task.userWindow;
+        task.handedOff = { action: here ? "writeHere" : "writeElsewhere", what: field, windowId: w.window.windowId };
+        throw StepStop.handoff(`${w.app.name} did not take the text for ${field}${here ? "" : " while its window was in the background"}, so Caret left it to you`);
+      }
     }
 
     const after = this.window(w.window.windowId);
@@ -621,7 +831,8 @@ export class Executor {
       if (now !== undefined && (now.value ?? "") !== before) {
         task.ledger.push({ kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: now.value ?? "" });
       }
-      const recorded = seen.some((c) => c.kind === "value" && c.key === node.key && c.after === value);
+      // A field the walk lost and then found again (B15's WebKit window) comes back as an added node holding the value.
+      const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);
       if (now === undefined || (now.value ?? "") !== value || !recorded) {
         throw StepStop.stop("mismatch", `mismatch: expected ${prediction}; the field now holds '${clip(now?.value ?? "(gone)")}'`);
       }
@@ -636,8 +847,14 @@ export class Executor {
   private async pressStep(task: Task, i: number, w: WindowState, target: Target, step: Step): Promise<void> {
     const node = await this.resolve(task, i, w, target, step.says);
     const label = (node.label ?? "").trim();
+    const risk = classifyPress({ label, windowKind: w.window.kind, bundleId: w.app.bundleId });
+    if (risk === "system") {
+      task.handedOff = { action: RISK_ACTION.system, what: label === "" ? "a control" : `'${label}'`, windowId: w.window.windowId };
+      throw StepStop.handoff(`${label === "" ? "This control" : `'${label}'`} is in a system prompt; Caret leaves that press to you`);
+    }
     if (label === "") throw StepStop.handoff(`the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
-    const risk = classifyLabel(label);
+    // Only a press the table positively allows is made (B22 review): one it cannot classify is the user's too.
+    if (risk === "unclassified") throw StepStop.handoff(`Caret cannot tell what pressing '${label}' does, so it leaves that press to you`);
     if (risk !== "safe") {
       task.handedOff = { action: RISK_ACTION[risk], what: `'${label}'`, windowId: w.window.windowId };
       throw StepStop.handoff(`'${label}' reads as ${risk}; Caret leaves that press to you`);
@@ -694,6 +911,7 @@ export class Executor {
     this.checkInterrupt(task);
     this.progress(task, "acting", i, `add event '${end.title}' to ${end.calendar}; expect it to be found there`);
     this.checkSession(task);
+    this.authorizeAct(task, null);
     // Only a task from an accepted offer gets one; without it the reader refuses the add.
     this.issueCalendarGrant(task);
     let ev: Awaited<ReturnType<CalendarPort["add"]>>;
@@ -724,6 +942,7 @@ export class Executor {
     this.checkSession(task);
     // The last boundary: a pause or stop that arrived while the step published or prepared its act.
     this.checkInterrupt(task);
+    if (verb.kind === "write" || verb.kind === "press" || verb.kind === "raise") this.authorizeAct(task, windowId);
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === windowId) seen.push(c);
@@ -866,7 +1085,8 @@ export class Executor {
       (w) =>
         (sel.bundleId === undefined || w.app.bundleId === sel.bundleId) &&
         (sel.title === undefined || w.window.title === sel.title) &&
-        (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)),
+        (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)) &&
+        (sel.number === undefined || w.window.number === sel.number),
     );
     if (hits.length === 0) throw StepStop.stop("windowGone", `no window matches ${k}`, "screen");
     if (hits.length > 1) throw StepStop.stop("ambiguous", `${hits.length} windows match ${k}; the plan must name one`);
@@ -946,7 +1166,7 @@ export class Executor {
     // The reader acts only on an element it saw in a walk the executor asked for, so undo reads first.
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
     if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
-    if (task.undoStopped) return "you stopped the undo";
+    if (task.undoStopped !== null) return task.undoStopped;
     const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
@@ -957,11 +1177,19 @@ export class Executor {
       r = await this.deps.reader.run(restore);
       // The same fallback as the run's own writes, for an app that drops value writes, and with the same
       // conditions: the user has not stopped the undo, and no other field changed meanwhile.
-      if (r.outcome === "ok" && this.dropped(e.windowId, e.key, e.after, seen)) {
-        if (task.undoStopped) return "you stopped the undo";
+      // As for the run's own writes, a field the walk lost right after a restore is read once more before it is judged.
+      const refind = async (): Promise<void> => {
+        const now = this.deps.model.windows.get(e.windowId);
+        if (r.outcome === "ok" && now !== undefined && !now.nodes.has(e.key)) await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
+      };
+      await refind();
+      for (const fallback of FALLBACKS) {
+        if (r.outcome !== "ok" || !this.dropped(e.windowId, e.key, e.after, seen)) break;
+        if (task.undoStopped !== null) return task.undoStopped;
         const other = seen.find((c) => c.editable && c.key !== e.key && (c.kind === "value" || c.kind === "removed"));
         if (other !== undefined) return `${other.key} changed while the field was restored, so the restore was not tried again`;
-        r = await this.deps.reader.run({ ...restore, attribute: "insert" });
+        r = await this.deps.reader.run({ ...restore, attribute: fallback.name });
+        await refind();
       }
     } finally {
       off();
@@ -997,9 +1225,10 @@ export class Executor {
 
   /** The focused window of the frontmost app, where the user is; null when the model cannot say. */
   private userWindow(): string | null {
+    // The frontmost app's last focused window: a request walk of a background app moves focusedWindowId (B21, B22 review).
+    // With the frontmost app unknown, no window counts as the user's: a write there falls under the stricter permission.
     const m = this.deps.model;
-    const w = m.focusedWindowId === null ? undefined : m.windows.get(m.focusedWindowId);
-    return w !== undefined && w.app.pid === m.frontmostPid ? w.window.windowId : null;
+    return m.frontmostPid === null ? null : (m.userWindow()?.window.windowId ?? null);
   }
 
   /**

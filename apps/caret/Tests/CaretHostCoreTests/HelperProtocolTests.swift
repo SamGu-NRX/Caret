@@ -59,6 +59,10 @@ final class HelperProtocolGoldenTests: XCTestCase {
             // B19: the keep question and its answer, skills in memory, the promote question and its
             // answer, and a skill's run with no Tab.
             "skillOffer", "skip:skillAnswer", "memoryReply", "skillOffer", "skip:skillAnswer", "taskProgress", "taskProgress",
+            // B20 to B22: the reader's watch on presses and a press it saw, a plan request naming its
+            // window and the unseenWindow refusal, a press made with Return, and the promote offer a
+            // skill row's "Let it run on its own…" asked for (taskId host-memory-7).
+            "skip:readerCommand", "skip:userPress", "skip:planRequest", "planProposal", "skip:userPress", "skillOffer",
         ]
         XCTAssertEqual(kinds, expected)
     }
@@ -67,7 +71,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
     /// withdrawal with its replacement and the withdrawal settings cause.
     func testTheB8LinesDecodeExactly() throws {
         let lines = try goldenLines()
-        XCTAssertEqual(lines.count, 53)
+        XCTAssertEqual(lines.count, 59)
         XCTAssertEqual(try HelperInbound.decode(lines[26]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_122_500, id: "offer-4", reason: .expired)))
         guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { return XCTFail("line 28") }
         XCTAssertEqual(pause, TaskControl(taskId: "task-1", action: .pause, reason: .input))
@@ -89,11 +93,8 @@ final class HelperProtocolGoldenTests: XCTestCase {
     func testTheHostsSettingsEncodeToTheGoldenLines() throws {
         let lines = try goldenLines()
         func object(_ data: Data) throws -> NSDictionary { try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary) }
-        // Line 32 is the host's defaults from before the calendar role (B16 did not rewrite it); the
-        // defaults now are the same roles with calendar in its CaretRole place.
-        var before = CaretSettings()
-        before.roles.remove(.calendar)
-        XCTAssertEqual(try object(NDJSON.line(GateSettings(before, at: 1_790_000_130_000))), try object(lines[31]), "line 32")
+        // Line 32 is the host's defaults, calendar role included (rewritten on v2/screen in b610800).
+        XCTAssertEqual(try object(NDJSON.line(GateSettings(CaretSettings(), at: 1_790_000_130_000))), try object(lines[31]), "line 32")
         XCTAssertEqual(GateSettings(CaretSettings(), at: 1).roles, [.fill, .repeat, .watch, .calendar, .words], "every role starts on, calendar included")
         var quiet = CaretSettings()
         quiet.roles = [.watch]

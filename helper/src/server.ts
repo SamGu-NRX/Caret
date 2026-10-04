@@ -23,6 +23,8 @@ export class HelperServer {
    */
   private granted = new Set<string>();
   private readonly sockets = new Set<Socket>();
+  /** Numbers each consumer connection's host session (Helper.hostConnected). */
+  private sessions = 0;
   private server: Server | null = null;
   private readonly helper: () => Helper;
   private readonly path: string;
@@ -82,6 +84,8 @@ export class HelperServer {
   private accept(s: Socket): void {
     this.sockets.add(s);
     let role: "reader" | "consumer" | null = null;
+    /** This consumer's host session: the work it accepts is bound to it and revoked when it closes (S1 audit #5). */
+    let session: string | null = null;
     let replaced = false;
     let buf = "";
     s.setEncoding("utf8");
@@ -112,8 +116,11 @@ export class HelperServer {
             return;
           }
           role = hello.data.role;
-          if (role === "consumer") this.consumers.add(s);
-          else {
+          if (role === "consumer") {
+            this.consumers.add(s);
+            session = `consumer-${++this.sessions}`;
+            this.helper().hostConnected(session);
+          } else {
             this.revokeOnOldReader(this.reader);
             this.reader = s;
             void this.helper().handleReader(hello.data);
@@ -140,11 +147,12 @@ export class HelperServer {
             this.reject(s, `invalid consumer message: ${m.error.message.slice(0, 500)}`);
             continue;
           }
+          const from = session ?? undefined;
           if (m.data.type === "fillRequest") void this.helper().handleConsumer(m.data);
-          else if (m.data.type === "runPlan" || m.data.type === "taskControl") void this.helper().handleTask(m.data);
-          else if (m.data.type === "offerControl") void this.helper().handleOffer(m.data);
+          else if (m.data.type === "runPlan" || m.data.type === "taskControl") void this.helper().handleTask(m.data, from);
+          else if (m.data.type === "offerControl") void this.helper().handleOffer(m.data, from);
           // The work an accept starts reports as taskProgress and activity under the offer id; a refusal as error plus a stopped taskProgress.
-          else if (m.data.type === "offerAccept") void this.helper().handleOfferAccept(m.data);
+          else if (m.data.type === "offerAccept") void this.helper().handleOfferAccept(m.data, from);
           else if (m.data.type === "offerStop") void this.helper().handleOfferStop(m.data);
           else if (m.data.type === "fillResult") this.helper().handleFillResult(m.data);
           else if (m.data.type === "settings") this.helper().handleSettings(m.data);
@@ -190,6 +198,7 @@ export class HelperServer {
     });
     s.on("close", () => {
       this.consumers.delete(s);
+      if (session !== null) this.helper().hostDisconnected(session);
       if (this.reader === s) {
         this.reader = null;
         // The reader drops its grants when its connection closes.

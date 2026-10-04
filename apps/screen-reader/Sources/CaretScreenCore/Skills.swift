@@ -5,7 +5,7 @@ import Foundation
 // runs, once to let it run without a Tab.
 
 /// The risk class of a press a skill leaves to the user (helper/src/executor/risk.ts).
-public enum PressRisk: String, Codable, Sendable { case outbound, destructive, money }
+public enum PressRisk: String, Codable, Sendable { case outbound, destructive, money, system }
 
 /// A one-time question at the end of a run that succeeded: keep the routine as a skill, or let a skill run
 /// on its own. The host answers with SkillAnswer naming `id`; the helper ends it with offerWithdrawn.

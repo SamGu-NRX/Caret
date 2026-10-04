@@ -1,0 +1,1 @@
+WKWebView in a window that is not key applies an AXValue write to whichever field has focus (none: dropped; another: overwritten). The reader focuses a WebKit web field first (focusValue): 3/3 landed, no raise or activation; typing or paste to the pid land 0/3 (B20).

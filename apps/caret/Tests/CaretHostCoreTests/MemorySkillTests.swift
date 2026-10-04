@@ -112,14 +112,14 @@ final class MemorySkillTests: XCTestCase {
         XCTAssertEqual(sent().last, HelperMemory.Request(requestId: sent().last!.requestId, op: .edit, id: "s-1", fields: ["name": .text("Orders into Tracker")]))
     }
 
-    /// The host's contract line for "Put back on Tab" (Fixtures/memory.ndjson, last line), and what
-    /// the row says when today's helper refuses it.
+    /// The host's contract line for "Put back on Tab" (Fixtures/memory.ndjson, host-memory-6), and
+    /// what the row says when a helper refuses it.
     func testPutBackOnTabIsTheContractEditAndARefusalSaysWhatStillWorks() throws {
         let (b, sent) = try book([entry("skill", id: "skill-5e6f7a8b", status: "active", fields: skillFields(onItsOwn: true))])
         XCTAssertTrue(b.backOnTab("skill-5e6f7a8b"))
         var request = try XCTUnwrap(sent().last)
         XCTAssertEqual(b.state.busy["skill-5e6f7a8b"], .backOnTab)
-        let contract = try XCTUnwrap(HelperMemoryTests.lines().last)
+        let contract = try HelperMemoryTests.line("host-memory-6", "memoryRequest")
         let id = request.requestId
         request.requestId = "host-memory-6"
         XCTAssertEqual(try JSONSerialization.jsonObject(with: request.line()) as? NSDictionary, try JSONSerialization.jsonObject(with: contract) as? NSDictionary)

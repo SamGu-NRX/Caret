@@ -16,8 +16,32 @@ final class HelperMemoryTests: XCTestCase {
         try HelperMemory.Reply.decode(lines()[index])
     }
 
+    /// The fixture's line of this type for this request id. The file is the helper's golden copy
+    /// (helper/fixtures/golden/memory.ndjson) plus the host's later lines, so lines are found by id.
+    static func line(_ requestId: String, _ type: String) throws -> Data {
+        let found = try lines().first { data in
+            let o = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return o?["requestId"] as? String == requestId && o?["type"] as? String == type
+        }
+        return try XCTUnwrap(found, "no \(type) \(requestId) in Fixtures/memory.ndjson")
+    }
+
     private func json(_ data: Data) throws -> NSDictionary {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary)
+    }
+
+    /// Every reply line reads in full: the helper's (host-memory-6 and -7, B21 and B22) and the host's
+    /// own `wrote` line (host-memory-8, A16).
+    func testEveryReplyLineReadsWithNothingUnreadable() throws {
+        for id in (1...8).map({ "host-memory-\($0)" }) {
+            let reply = try HelperMemory.Reply.decode(Self.line(id, "memoryReply"))
+            XCTAssertEqual(reply.unreadable, [], id)
+        }
+        let putBack = try HelperMemory.Reply.decode(Self.line("host-memory-6", "memoryReply"))
+        XCTAssertEqual(putBack.entries.first?.skill?.onItsOwn, false)
+        let offered = try HelperMemory.Reply.decode(Self.line("host-memory-7", "memoryReply"))
+        XCTAssertEqual(offered.entries.first?.skill?.onItsOwn, false, "the skill comes back unchanged; only the offer's yes changes it")
+        XCTAssertEqual(try HelperMemory.Reply.decode(Self.line("host-memory-8", "memoryReply")).entries.first?.wrote, [.writeElsewhere])
     }
 
     func testTheListReplyReadsEveryKind() throws {
@@ -59,8 +83,9 @@ final class HelperMemoryTests: XCTestCase {
     /// helper accepts. Today's helper names none, and a name this host does not know is left out.
     func testOpsSayWhetherTheHelperKeepsTypedValues() throws {
         let contract = try Self.reply(1)
-        XCTAssertEqual(contract.ops, [.list, .edit, .pause, .resume, .forget, .add])
+        XCTAssertEqual(contract.ops, [.list, .edit, .pause, .resume, .forget, .add, .offerOnItsOwn])
         XCTAssertTrue(contract.acceptsAdd)
+        XCTAssertTrue(contract.offersOnItsOwn)
         let today = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[]}"#.utf8))
         XCTAssertNil(today.ops)
         XCTAssertFalse(today.acceptsAdd)

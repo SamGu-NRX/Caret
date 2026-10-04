@@ -257,8 +257,12 @@ public enum HelperMemory {
 
         public enum Op: String, Codable, Sendable {
             case list, edit, pause, resume, forget
-            /// The host's contract: the helper does not accept it yet (see the file header).
+            /// A value the user typed (see the file header).
             case add
+            /// A skill row's "Let it run on its own…" (B22): the helper answers with the skill
+            /// unchanged and publishes the normal promote `skillOffer`, whose `taskId` is this
+            /// request's id. Running on its own still comes only from accepting that offer.
+            case offerOnItsOwn
         }
 
         public var requestId: String
@@ -324,6 +328,10 @@ public enum HelperMemory {
 
         /// The helper said it keeps typed values (`ops` names `add`).
         public var acceptsAdd: Bool { ops?.contains(.add) == true }
+
+        /// The helper offers running on its own when a skill's row asks (`ops` names
+        /// `offerOnItsOwn`, B22). An older helper does not, and the row has no such control.
+        public var offersOnItsOwn: Bool { ops?.contains(.offerOnItsOwn) == true }
 
         public static func decode(_ line: Data) throws -> Reply {
             try JSONDecoder().decode(Wire.self, from: line).reply

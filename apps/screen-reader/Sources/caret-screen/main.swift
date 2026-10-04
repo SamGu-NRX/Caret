@@ -59,9 +59,9 @@ let denyPath = option("--deny-list") ?? "\(home)/.caret-run/deny-apps.txt"
 let background = option("--background-interval").map { TimeInterval($0) ?? 30 } ?? 30
 let eventPids = pids(option("--event-pids"))
 let onlyPids = pids(option("--only-pids"))
-// The executor may act in these processes without a grant, for fixture tests. Acting needs reading, so
-// they must also be in --only-pids. Every other process needs an act grant from the helper.
-let actPids = pids(option("--act-pids"))
+// The executor may act in these processes without a grant, for fixture tests only (checked below). Acting
+// needs reading, so they must also be in --only-pids. Every other process needs an act grant from the helper.
+let actPidList = pids(option("--act-pids"))
 let eventBundles = Set((option("--event-bundles") ?? "").split(separator: ",").map(String.init))
 let recordPath = option("--record")
 let e1Path = option("--e1-log")
@@ -76,7 +76,33 @@ let calendarAudit = option("--calendar-audit")
 if !args.isEmpty { fail("unknown arguments: \(args.joined(separator: " "))") }
 // A recording holds screen text, so it is only allowed for processes named explicitly (fixtures).
 if recordPath != nil && onlyPids.isEmpty { fail("--record writes screen text to disk; it needs --only-pids naming fixture processes") }
-if !actPids.isEmpty && !actPids.isSubset(of: onlyPids) { fail("--act-pids must be a subset of --only-pids: the executor acts without a grant only in fixture processes") }
+if !actPidList.isEmpty && !actPidList.isSubset(of: onlyPids) { fail("--act-pids must be a subset of --only-pids: the executor acts without a grant only in fixture processes") }
+
+/// The value of CARET_SCREEN_FIXTURE_ACTS that lets --act-pids through. Nothing in the product sets it.
+let fixtureActsValue = "fixture-only"
+
+/// --act-pids, checked (S1 audit #10): before B22 it let any process the command line named be acted in without a
+/// grant. Now it needs a test environment variable a product launch does not set, a reader that is not running
+/// from inside an app bundle (the product ships it in one), and every pid to be a caret-fixture process, the
+/// synthetic windows tests drive. Each is bound to its process's start time, so a later process that reuses the
+/// pid gets no bypass. A press there still goes through the reader's risk table.
+@MainActor func checkedActPids() -> [pid_t: Int64] {
+    guard !actPidList.isEmpty else { return [:] }
+    guard ProcessInfo.processInfo.environment["CARET_SCREEN_FIXTURE_ACTS"] == fixtureActsValue else {
+        fail("--act-pids is for fixture tests: set CARET_SCREEN_FIXTURE_ACTS=\(fixtureActsValue) in the test that starts the reader")
+    }
+    guard Bundle.main.bundleURL.pathExtension != "app" else { fail("--act-pids is refused in a reader inside an app bundle") }
+    var out: [pid_t: Int64] = [:]
+    for pid in actPidList {
+        guard let path = ProcessFacts.executablePath(pid), (path as NSString).lastPathComponent == "caret-fixture" else {
+            fail("--act-pids \(pid) is not a caret-fixture process")
+        }
+        guard let start = ProcessFacts.startMicros(pid) else { fail("--act-pids \(pid): no such process") }
+        out[pid] = start
+    }
+    return out
+}
+let actPids = checkedActPids()
 
 // The calendar probes only read, and need no Accessibility, so they run before that check.
 if calendarProbe {
@@ -116,7 +142,9 @@ if e8 {
     for pid in e8Pids {
         guard let app = NSRunningApplication(processIdentifier: pid) else { fail("no process \(pid)") }
         if deny.denies(app.bundleIdentifier ?? "") { fail("\(pid) is on the deny list") }
-        workers.append(AppWorker(pid: pid, app: AppRef(pid: Int(pid), bundleId: app.bundleIdentifier ?? "", name: app.localizedName ?? ""), ctx: ctx))
+        guard let start = ProcessFacts.startMicros(pid) else { fail("no process \(pid)") }
+        workers.append(AppWorker(pid: pid, app: AppRef(pid: Int(pid), bundleId: app.bundleIdentifier ?? "", name: app.localizedName ?? ""), ctx: ctx,
+                                 incarnation: ProcessIncarnation(pid: pid, startMicros: start, generation: workers.count + 1)))
     }
     let reports = MainActor.assumeIsolated { KeyStability.run(workers: workers, titleMatch: re, runs: runs, interval: interval) }
     let enc = JSONEncoder()
@@ -157,10 +185,13 @@ var connectedOnce = false
 socket.onConnect = {
     DispatchQueue.main.async {
         MainActor.assumeIsolated {
-            if connectedOnce { reader.resync() }
+            if connectedOnce { reader.resync(newHelper: true) }
             connectedOnce = true
         }
     }
+}
+socket.onResync = {
+    DispatchQueue.main.async { MainActor.assumeIsolated { reader.resync(newHelper: false) } }
 }
 socket.onCommand = { cmd in
     DispatchQueue.main.async { MainActor.assumeIsolated { reader.perform(cmd) } }

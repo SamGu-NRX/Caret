@@ -31,8 +31,11 @@ export type FactCell = Pick<RoutineCell, "dstWindowId" | "dstLabel" | "srcWindow
 
 /**
  * Clean runs in a row before Caret offers to run a skill without a Tab. Assumed, not measured: the plan's
- * permission table names 10 (fable55-plan.md section 3) and no run has measured how many clean runs
- * predict the next one.
+ * permission table names 10 (fable55-plan.md section 3). B21 read two real days of the shadow store
+ * (scripts/real-day-replay.ts, 557 transfers): the shadow helper's own recognizer saw no routine more than
+ * twice and scored no prediction; an approximate replay through this code found one routine 8 times and no
+ * run of a routine repeating into its destination longer than 3. The data can neither support nor refute
+ * 10, so it is kept until a store holds routines that repeat past it.
  */
 export const PROMOTE_AFTER = 10;
 
@@ -79,6 +82,8 @@ export interface SkillsDeps {
   /** Values the routine with this signature was seen copying (RoutineRecognizer.valuesOf). */
   valuesOf: (sig: string) => string[];
   rand?: (n: number) => number;
+  /** Called after a skill is put back on Tab by reset (a failed run, an undo, a take over, an edit of what it wrote). */
+  onReset?: () => void;
 }
 
 interface OpenOffer {
@@ -192,11 +197,55 @@ export class Skills {
    * write under still allows it.
    */
   runsOnItsOwn(routineId: string, action: WriteAction, plan: Plan): boolean {
-    const s = this.activeSkill(routineId);
-    if (s === null || !s.onItsOwn || s.handsOff !== null) return false;
-    if (this.deps.memory.routine(routineId)?.finish != null) return false;
-    if (handedPress(plan) !== null) return false;
-    return mayRunUnasked(action, this.deps.memory.permission(action));
+    return handedPress(plan) === null && this.whyNotOnItsOwn(this.deps.memory.skillFor(routineId), action) === null;
+  }
+
+  /**
+   * Why a run with no Tab of this skill may not act now, or null: asked before each of its acts and after
+   * every change to what it depends on (S1 audit #4). `action` is the permission its next act falls under,
+   * judged from where the user is now; null asks only what does not depend on one.
+   */
+  whyNotOnItsOwn(s: SkillRecord | null, action: WriteAction | null): string | null {
+    const memory = this.deps.memory;
+    if (s === null) return "you forgot the skill";
+    if (s.paused) return `you paused ${s.name}`;
+    if (!s.onItsOwn) return `${s.name} is back on Tab`;
+    if (s.handsOff !== null) return `${s.name} ends in a press Caret leaves to you`;
+    const routine = memory.routine(s.routineId);
+    if (routine === null) return "you forgot the routine the skill was made from";
+    if (routine.paused) return "you paused the routine the skill was made from";
+    if (routine.finish != null) return `${s.name} ends in a press Caret leaves to you`;
+    if (this.deps.shadow() || this.deps.gate.holds("routine", this.clock).some((h) => h !== "hourlyBudget")) return "your settings no longer let Caret run routines";
+    if (action !== null && !mayRunUnasked(action, memory.permission(action))) {
+      return action === "writeHere" ? "Write where you are does not let a skill write unasked" : "Reversible write elsewhere is not set to act if pre-approved, and the window is not the one you are in";
+    }
+    return null;
+  }
+
+  /**
+   * Why a run of this routine the user accepted with Tab may not go on (B22 review): the routine, or the skill
+   * the run counts for, was forgotten or paused. Putting the skill back on Tab does not stop it: the user
+   * accepted this run.
+   */
+  whyTabRunMayNotContinue(taskId: string, routineId: string): string | null {
+    const memory = this.deps.memory;
+    const run = this.runs.get(taskId);
+    if (run !== undefined) {
+      const s = memory.skill(run.skillId);
+      if (s === null) return "you forgot the skill";
+      if (s.paused) return `you paused ${s.name}`;
+    }
+    const routine = memory.routine(routineId);
+    if (routine === null) return "you forgot the routine";
+    if (routine.paused) return "you paused the routine";
+    return null;
+  }
+
+  /** Why the run with this task id, started by a skill with no Tab, may not act now; see whyNotOnItsOwn. */
+  whyRunMayNotAct(taskId: string, action: WriteAction | null): string | null {
+    const run = this.runs.get(taskId);
+    if (run === undefined) return "Caret has no record of the skill that started this run";
+    return this.whyNotOnItsOwn(this.deps.memory.skill(run.skillId), action);
   }
 
   /** A run of a skill started; its result and any undo of it are counted against the skill. */
@@ -251,17 +300,61 @@ export class Skills {
     if (s !== null) this.reset(s, at);
   }
 
+  /**
+   * The user put the skill back on Tab (memoryRequest edit onItsOwn false; memory.ts resets its fields): a promote
+   * offer still out for it is withdrawn, and its next run needs Tab.
+   */
+  backOnTab(skillId: string): void {
+    for (const o of [...this.offers.values()]) if (o.msg.kind === "promote" && o.msg.skillId === skillId) this.close(o, "stale");
+  }
+
   /** Any failure, mismatch, undo or take over: the count starts again and the skill goes back on Tab. A declined promote offer stays declined. */
   private reset(s: SkillRecord, at: number): void {
     for (const o of [...this.offers.values()]) if (o.msg.kind === "promote" && o.msg.skillId === s.id) this.close(o, "stale");
     this.deps.memory.updateSkill(s.id, { cleanRuns: 0, onItsOwn: false, wrote: [], promote: s.promote === "declined" ? "declined" : null }, at);
+    // Another run of it still going ran on its own and may no longer act (B22 review).
+    this.deps.onReset?.();
   }
 
   private maybePromote(s: SkillRecord, plan: Plan, taskId: string): void {
-    if (s.onItsOwn || s.promote !== null || s.cleanRuns < s.needed || this.offeringHeld()) return;
-    if (s.handsOff !== null || handedPress(plan) !== null || this.deps.memory.routine(s.routineId)?.finish != null) return;
-    if (!s.wrote.every((a) => mayRunUnasked(a, this.deps.memory.permission(a)))) return;
+    // A skill the user put back on Tab is offered this only when they ask for it (requestPromote).
+    if (s.onItsOwn || s.putBack === true || s.promote !== null || s.cleanRuns < s.needed || this.promoteOut(s.id) || this.offeringHeld()) return;
+    if (handedPress(plan) !== null || this.promoteRefusal(s) !== null) return;
     this.deps.memory.updateSkill(s.id, { promote: "offered" }, this.clock);
+    this.offerPromote(s, taskId);
+  }
+
+  /**
+   * The user asked from the skill's row to let it run on its own (memoryRequest offerOnItsOwn, B22): the
+   * normal promote offer, whatever its clean count, put back on Tab or declined before, since the user is
+   * asking now. Its `taskId` is the request's id. Returns why it was refused, or null when the offer went
+   * out. The skill's stored promote state is left alone, so an offer that nobody answers changes nothing.
+   */
+  requestPromote(skillId: string, requestId: string): string | null {
+    const s = this.deps.memory.skill(skillId);
+    if (s === null) return `no skill ${skillId}`;
+    if (s.paused) return `${s.name} is paused; resume it first`;
+    if (s.onItsOwn) return `${s.name} already runs on its own`;
+    if (this.promoteOut(s.id)) return `the offer to let ${s.name} run on its own is already out`;
+    if (this.offeringHeld()) return "Caret is paused or your settings turn routines off";
+    const why = this.promoteRefusal(s);
+    if (why !== null) return why;
+    this.offerPromote(s, requestId);
+    return null;
+  }
+
+  /** Why this skill can never run on its own as it stands, or null: a press it leaves to the user, or a permission it wrote under that caps it at asking. */
+  private promoteRefusal(s: SkillRecord): string | null {
+    if (s.handsOff !== null || this.deps.memory.routine(s.routineId)?.finish != null) return `${s.name} ends in a press Caret leaves to you, so it never runs on its own`;
+    if (!s.wrote.every((a) => mayRunUnasked(a, this.deps.memory.permission(a)))) return `${s.name} writes elsewhere, and Reversible write elsewhere is not set to act if pre-approved`;
+    return null;
+  }
+
+  private promoteOut(skillId: string): boolean {
+    return [...this.offers.values()].some((o) => o.msg.kind === "promote" && o.msg.skillId === skillId);
+  }
+
+  private offerPromote(s: SkillRecord, taskId: string): void {
     this.offer({
       kind: "promote",
       taskId,
@@ -364,7 +457,8 @@ export class Skills {
 }
 
 /** When a kept routine is offered, as a clause: "a Tracker window opens with Order, Carrier and Tracking empty". */
-function trigger(f: RoutineFacts): string {
+export function trigger(f: RoutineFacts): string {
   const fields = f.dstLabels.length === 0 ? "its fields" : list(f.dstLabels.slice(0, 4));
-  return f.dstApp === "" ? `a window opens with ${fields} empty` : `a ${f.dstApp} window opens with ${fields} empty`;
+  // "an Electron window" (B20); a name that starts with a vowel letter takes "an". Names read aloud otherwise ("an MCP") are rare enough to leave.
+  return f.dstApp === "" ? `a window opens with ${fields} empty` : `${/^[aeiou]/i.test(f.dstApp) ? "an" : "a"} ${f.dstApp} window opens with ${fields} empty`;
 }

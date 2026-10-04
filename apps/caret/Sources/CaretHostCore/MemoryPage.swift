@@ -215,7 +215,13 @@ public enum MemoryPage {
     public static func skillState(_ f: SkillFields, paused: Bool) -> String {
         if paused { return "Paused" }
         if f.onItsOwn { return "On its own" }
-        if let handsOff = f.handsOff { return "On Tab, you press \(handsOff.label) yourself" }
+        if let handsOff = f.handsOff {
+            switch handsOff.why {
+            case .outbound, .destructive, .money: return "On Tab, you press \(handsOff.label) yourself"
+            // B22: a press in a permission dialog or system prompt, whatever its label says.
+            case .system: return "On Tab, you press \(handsOff.label) in the system prompt yourself"
+            }
+        }
         if f.cleanRuns >= f.needed { return "On Tab" }
         return "Learning, \(f.cleanRuns) of \(f.needed) clean runs"
     }

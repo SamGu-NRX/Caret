@@ -17,9 +17,11 @@ public struct ReaderOptions: Sendable {
     /// When non-empty, only these processes are read. For experiments that must not read anything else.
     public var onlyPids: Set<pid_t> = []
     public var denyList: DenyList
-    /// Processes the executor's write, press and raise verbs may act on without a grant, for fixture tests.
-    /// Every other process needs a live act grant from the helper (`grants`).
-    public var actPids: Set<pid_t> = []
+    /// Fixture processes the executor's write, press and raise verbs may act on without a grant, each with its
+    /// start time, so a later process that reuses the pid gets nothing (S1 audit #7, #10). main.swift fills it only
+    /// in a fixture test (CARET_SCREEN_FIXTURE_ACTS), and only with caret-fixture processes. Every other process
+    /// needs a live act grant from the helper (`grants`); a press is still checked against RiskTable either way.
+    public var actPids: [pid_t: Int64] = [:]
     /// The helper's act grants, filled by the socket client as grant lines arrive.
     public var grants = GrantTable()
     public var pasteboardPoll: TimeInterval = 0.5
@@ -36,6 +38,8 @@ public final class ScreenReader {
     private let ctx: ReaderContext
     private var opts: ReaderOptions
     private var workers: [pid_t: AppWorker] = [:]
+    /// Workers made so far: each new one's generation, so a worker made again for an app never reuses window ids.
+    private var generations = 0
     private var frontmost: pid_t?
     private var manualAXSet: Set<pid_t> = []
     private var timers: [Timer] = []
@@ -44,6 +48,13 @@ public final class ScreenReader {
     private var started = false
     private var watchedPids: Set<pid_t> = []
     private var inputMonitor: Any?
+    /// B20: windows whose user presses are reported, by process; taps and the monitor exist only while it is non-empty.
+    private var pressWatch: [pid_t: Set<String>] = [:]
+    /// A listen-only event tap per watched process. It sees a click posted to that process alone, which the
+    /// global monitor does not (B20 experiment: 3 of 3 against 0 of 3), and only that process's clicks.
+    private var pressTaps: [pid_t: (port: CFMachPort, source: CFRunLoopSource, box: PressTapBox)] = [:]
+    /// The global monitor, for watched processes no tap could be made for (no Input Monitoring access).
+    private var pressMonitor: Any?
     /// EventKit calls block, so calendar verbs run here, one at a time, off the main thread.
     private let calendarQueue = DispatchQueue(label: "caret.screen.calendar")
 
@@ -85,11 +96,14 @@ public final class ScreenReader {
         ctx.log("reading \(workers.count) apps; background every \(Int(opts.backgroundInterval)) s; deny list has \(opts.denyList.count) entries")
     }
 
-    /// After the helper reconnects it has no state, so walk everything again. Its watches are gone
-    /// with it, so the reader drops its own until the new helper asks for some.
-    public func resync() {
+    /// Walks everything again. After the helper reconnects (`newHelper`) it has no state: its watches are gone
+    /// with it, so the reader drops its own until the new helper asks for some. A resync after dropped snapshots
+    /// keeps the press watch, which the same helper still counts on (B20 review).
+    public func resync(newHelper: Bool) {
+        if newHelper { watchPresses([:]) }
         for w in workers.values {
-            w.setWatched([])
+            // The pending-state watch too: before B20 a drain resync dropped it while the helper still relied on it.
+            if newHelper { w.setWatched([]) }
             w.backgroundPass(reason: .initial, minAge: 0)
         }
         if let f = frontmost { workers[f]?.activate() }
@@ -109,6 +123,13 @@ public final class ScreenReader {
         case let .watchInput(pids):
             watch(Set(pids.map { pid_t($0) }))
             answer(.ok, nil)
+            return
+        case let .watchPresses(list):
+            var byPid: [pid_t: Set<String>] = [:]
+            for w in list { byPid[pid_t(w.pid), default: []].insert(w.windowId) }
+            watchPresses(byPid)
+            let unread = byPid.keys.filter { workers[$0] == nil }.sorted()
+            answer(.ok, unread.isEmpty ? nil : "not read, so not watched: \(unread.map(String.init).joined(separator: ","))")
             return
         case let .watchWindows(list):
             // The list replaces every watch, so each worker gets its own windows or none.
@@ -153,7 +174,7 @@ public final class ScreenReader {
             answer(.noWindow, "the reader does not read process \(pid)")
             return
         }
-        w.perform(cmd.verb, gate: ActGate(actPid: opts.actPids.contains(pid), grants: opts.grants), expires: cmd.expires, reply: answer)
+        w.perform(cmd.verb, gate: ActGate(actPid: opts.actPids[pid] == w.incarnation.startMicros, grants: opts.grants), expires: cmd.expires, reply: answer)
     }
 
     /// Reports real key presses and clicks that land in a watched process, so the executor can pause.
@@ -174,34 +195,136 @@ public final class ScreenReader {
         }
     }
 
+    /**
+     * Reports the user's presses of pressable elements in the named windows: clicks (B20), and Return, Enter or
+     * Space on a button (B21, KeyPresses). Each watched process gets a listen-only event tap: it observes and
+     * cannot change, block or post an event. A left button going down is read for its location and the window
+     * it went to, matched to an element of a watched window; a key going down only for which of the three it
+     * is, placed by the focus and default button the reader last read. A process no tap can be made for falls
+     * back to the global mouse monitor, placed by the frontmost window under the click, and its keys go unseen.
+     */
+    private func watchPresses(_ byPid: [pid_t: Set<String>]) {
+        pressWatch = byPid.filter { !$0.value.isEmpty }
+        for (pid, tap) in pressTaps where pressWatch[pid] == nil {
+            CGEvent.tapEnable(tap: tap.port, enable: false)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), tap.source, .commonModes)
+            CFMachPortInvalidate(tap.port)
+            pressTaps.removeValue(forKey: pid)
+        }
+        for pid in pressWatch.keys where pressTaps[pid] == nil {
+            if let tap = makePressTap(pid) { pressTaps[pid] = tap }
+        }
+        let untapped = pressWatch.keys.contains { pressTaps[$0] == nil }
+        if !untapped {
+            if let m = pressMonitor { NSEvent.removeMonitor(m) }
+            pressMonitor = nil
+            return
+        }
+        guard pressMonitor == nil else { return }
+        ctx.log("press watch: no event tap for \(pressWatch.keys.filter { pressTaps[$0] == nil }.map(String.init).joined(separator: ",")); using the global monitor")
+        pressMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { e in
+            // Where the click was, not where the cursor is by the time this runs: for another app's event,
+            // locationInWindow is in screen coordinates.
+            let loc = e.window == nil ? e.locationInWindow : NSEvent.mouseLocation
+            let at = nowMs()
+            MainActor.assumeIsolated { self.pressSeen(location: loc, at: at) }
+        }
+    }
+
+    /// A listen-only tap for the process's clicks and, when the system allows a keyboard tap, its Return, Enter
+    /// and Space (B21). A process whose keyboard cannot be tapped still has its clicks watched; the log says so.
+    private func makePressTap(_ pid: pid_t) -> (port: CFMachPort, source: CFRunLoopSource, box: PressTapBox)? {
+        let click: @Sendable (CGPoint, Int?, Int64) -> Void = { [weak self] p, number, at in
+            MainActor.assumeIsolated { self?.tapPress(pid: pid, at: p, number: number, time: at) }
+        }
+        let key: @Sendable (UserPress.Via, Int64) -> Void = { [weak self] via, at in
+            MainActor.assumeIsolated { self?.tapKey(pid: pid, via: via, time: at) }
+        }
+        let mouse = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+        let keys = mouse | CGEventMask(1 << CGEventType.keyDown.rawValue)
+        var box = PressTapBox(pid: pid, onPress: click, onKey: key)
+        var tapped = CGEvent.tapCreateForPid(pid: pid, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: keys,
+                                             callback: pressTapCallback, userInfo: Unmanaged.passUnretained(box).toOpaque())
+        if tapped == nil {
+            ctx.log("press watch: no keyboard tap for \(pid); watching its clicks only")
+            box = PressTapBox(pid: pid, onPress: click, onKey: nil)
+            tapped = CGEvent.tapCreateForPid(pid: pid, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mouse,
+                                             callback: pressTapCallback, userInfo: Unmanaged.passUnretained(box).toOpaque())
+        }
+        guard let port = tapped else { return nil }
+        box.port = port
+        guard let source = CFMachPortCreateRunLoopSource(nil, port, 0) else {
+            CFMachPortInvalidate(port)
+            return nil
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: port, enable: true)
+        return (port, source, box)
+    }
+
+    private func tapPress(pid: pid_t, at p: CGPoint, number: Int?, time at: Int64) {
+        guard let ids = pressWatch[pid], let w = workers[pid] else { return }
+        w.observePress(at: p, number: number, time: at, windows: ids)
+    }
+
+    private func tapKey(pid: pid_t, via: UserPress.Via, time at: Int64) {
+        guard let ids = pressWatch[pid], let w = workers[pid] else { return }
+        w.observeKey(via, time: at, windows: ids)
+    }
+
+    private func pressSeen(location: NSPoint, at: Int64) {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let p = CGPoint(x: location.x, y: primaryHeight - location.y)
+        guard let owner = windowOwner(at: p), pressTaps[owner] == nil, let ids = pressWatch[owner], let w = workers[owner] else { return }
+        w.observePress(at: p, number: nil, time: at, windows: ids)
+    }
+
+    /// The user's own key or click in a watched process. The grants for the window it landed in end here, before
+    /// the helper hears of it (B22 review): with the helper's socket full, the userInput below waits behind other
+    /// output, and a write queued for that window must not land meanwhile. A window the reader cannot place ends
+    /// every grant of the process.
     private func inputSeen(isKey: Bool, location: NSPoint) {
         if isKey {
             guard let front = NSWorkspace.shared.frontmostApplication?.processIdentifier, watchedPids.contains(front) else { return }
+            endGrants(pid: front, windowId: workers[front]?.keyWindowId())
             ctx.emitter.send(.userInput(UserInput(at: nowMs(), pid: Int(front), kind: .key, point: nil)))
             return
         }
         // Accessibility coordinates have their origin at the top left of the primary screen.
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let p = CGPoint(x: location.x, y: primaryHeight - location.y)
-        guard let owner = windowOwner(at: p), watchedPids.contains(owner) else { return }
+        guard let (owner, number) = windowUnder(p), watchedPids.contains(owner) else { return }
+        endGrants(pid: owner, windowId: number.flatMap { workers[owner]?.windowId(number: $0) })
         ctx.emitter.send(.userInput(UserInput(at: nowMs(), pid: Int(owner), kind: .mouse, point: [p.x, p.y])))
     }
 
+    private func endGrants(pid: pid_t, windowId: String?) {
+        let ended = windowId.map { opts.grants.revoke(pid: Int(pid), windowId: $0) } ?? opts.grants.revoke(pid: Int(pid))
+        if ended > 0 { ctx.log("the user's input in process \(pid)\(windowId.map { ", window \($0)" } ?? "") ended \(ended) act grants") }
+    }
+
     /// The process owning the frontmost normal window under a point. Bounds and owners need no Screen Recording grant.
-    private func windowOwner(at p: CGPoint) -> pid_t? {
+    private func windowOwner(at p: CGPoint) -> pid_t? { windowUnder(p)?.pid }
+
+    /// The frontmost normal window under a point: its process and window-server number.
+    private func windowUnder(_ p: CGPoint) -> (pid: pid_t, number: Int?)? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
         for info in list {
             guard (info[kCGWindowLayer as String] as? Int) == 0,
                   let b = info[kCGWindowBounds as String] as? NSDictionary,
-                  let r = CGRect(dictionaryRepresentation: b), r.contains(p) else { continue }
-            return (info[kCGWindowOwnerPID as String] as? Int).map { pid_t($0) }
+                  let r = CGRect(dictionaryRepresentation: b), r.contains(p),
+                  let owner = info[kCGWindowOwnerPID as String] as? Int else { continue }
+            return (pid_t(owner), info[kCGWindowNumber as String] as? Int)
         }
         return nil
     }
 
     private func add(_ app: NSRunningApplication) {
         let pid = app.processIdentifier
-        guard workers[pid] == nil, pid != getpid() else { return }
+        guard pid != getpid(), let start = ProcessFacts.startMicros(pid) else { return }
+        // A worker for an earlier process with this pid, whose exit the reader did not hear of first, goes with its grants.
+        if let old = workers[pid], old.incarnation.startMicros != start { remove(pid) }
+        guard workers[pid] == nil else { return }
         if !opts.onlyPids.isEmpty && !opts.onlyPids.contains(pid) { return }
         // A process named by --event-pids or --only-pids is read whatever its activation policy, so a
         // fixture run with --background-only (the prohibited policy) can be read without being event-driven.
@@ -211,7 +334,8 @@ public final class ScreenReader {
         if opts.eventBundles.contains(bundleId) { opts.eventPids.insert(pid) }
         let ref = AppRef(pid: Int(pid), bundleId: bundleId, name: app.localizedName ?? bundleId)
         enableManualAccessibility(app)
-        let w = AppWorker(pid: pid, app: ref, ctx: ctx)
+        generations += 1
+        let w = AppWorker(pid: pid, app: ref, ctx: ctx, incarnation: ProcessIncarnation(pid: pid, startMicros: start, generation: generations))
         workers[pid] = w
         // Apps present at start are walked once by start(); an app launched later is walked here.
         if started {
@@ -221,8 +345,17 @@ public final class ScreenReader {
     }
 
     private func remove(_ pid: pid_t) {
+        if pressWatch[pid] != nil {
+            var rest = pressWatch
+            rest.removeValue(forKey: pid)
+            watchPresses(rest)
+        }
         guard let w = workers.removeValue(forKey: pid) else { return }
         manualAXSet.remove(pid)
+        // Its grants end now, not when the helper next revokes them: the process is gone, and a command already queued
+        // for it must not act in whatever takes its pid (S1 audit #7).
+        let ended = opts.grants.revoke(pid: Int(pid))
+        if ended > 0 { ctx.log("act grants for process \(pid) ended with it: \(ended)") }
         w.stop()
     }
 
@@ -280,6 +413,45 @@ public final class ScreenReader {
         }
         return false
     }
+}
+
+/// What a press tap's callback needs: the process it watches, its port (to re-enable it after the system turns
+/// it off for a slow callback), and where to send a click. Kept alive by the reader's tap table.
+final class PressTapBox: @unchecked Sendable {
+    let pid: pid_t
+    var port: CFMachPort?
+    let onPress: @Sendable (CGPoint, Int?, Int64) -> Void
+    /// A press key went down (B21): which one, and when. Nil when the tap watches the mouse only.
+    let onKey: (@Sendable (UserPress.Via, Int64) -> Void)?
+    init(pid: pid_t, onPress: @escaping @Sendable (CGPoint, Int?, Int64) -> Void, onKey: (@Sendable (UserPress.Via, Int64) -> Void)?) {
+        self.pid = pid
+        self.onPress = onPress
+        self.onKey = onKey
+    }
+}
+
+/// Runs on the main run loop for each left button or key going down in a watched process. It only reads the
+/// event and passes it on unchanged. Of a key it reads the key code, the modifier flags and whether it repeats,
+/// and drops it at once unless it is Return, Enter or Space held alone (KeyPresses.via); characters are never read.
+private let pressTapCallback: CGEventTapCallBack = { _, type, event, refcon in
+    guard let refcon else { return Unmanaged.passUnretained(event) }
+    let box = Unmanaged<PressTapBox>.fromOpaque(refcon).takeUnretainedValue()
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let port = box.port { CGEvent.tapEnable(tap: port, enable: true) }
+        return Unmanaged.passUnretained(event)
+    }
+    if type == .keyDown {
+        guard let onKey = box.onKey,
+              let via = KeyPresses.via(keyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)), flags: event.flags.rawValue,
+                                       autorepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0) else { return Unmanaged.passUnretained(event) }
+        onKey(via, nowMs())
+        return Unmanaged.passUnretained(event)
+    }
+    guard type == .leftMouseDown else { return Unmanaged.passUnretained(event) }
+    // CGEvent locations share Accessibility's space: origin at the top left of the primary screen.
+    let number = Int(event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
+    box.onPress(event.location, number > 0 ? number : nil, nowMs())
+    return Unmanaged.passUnretained(event)
 }
 
 public enum AppClassifier {

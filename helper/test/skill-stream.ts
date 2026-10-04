@@ -121,7 +121,7 @@ export class StreamReader implements ReaderLink {
 
   async run(verb: ReaderVerb): Promise<VerbResult> {
     const answer = (outcome: VerbResult["outcome"], detail: string | null = null): VerbResult => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "stream", at: this.at, outcome, detail });
-    if (verb.kind === "watchInput" || verb.kind === "watchWindows") return answer("ok");
+    if (verb.kind === "watchInput" || verb.kind === "watchWindows" || verb.kind === "watchPresses") return answer("ok");
     if (verb.kind !== "walk" && verb.kind !== "write") return answer("notAllowed", `the stream reader does not ${verb.kind}`);
     const refused = this.grants.refusal(verb);
     if (refused !== null) return answer("notAllowed", refused);

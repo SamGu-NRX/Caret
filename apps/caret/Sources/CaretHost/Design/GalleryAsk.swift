@@ -12,7 +12,7 @@ extension Gallery {
     /// The golden proposal's card (helper/fixtures/golden/protocol.ndjson, `plan-1-ask-1`).
     static let askCard = AskCaret.Card(
         title: AskCopy.title(fields: ["Reference"], writes: 1, press: "Send", app: "Caret Fixture"), app: "Caret Fixture",
-        steps: [AskCaret.Step(text: AskCopy.write("ORD-2026-48213", into: "Reference")), AskCaret.Step(text: AskCopy.press("Send"), yours: true)],
+        steps: [AskCaret.Step(text: AskCopy.write("ORD-2026-48213", into: "Reference")), AskCaret.Step(text: AskCopy.press("Send", why: .outbound), yours: true)],
         more: 0, action: "Fill 1 field", offerKey: "plan-1-ask-1", actionId: "run", writes: 1, press: "Send"
     )
 
@@ -23,7 +23,7 @@ extension Gallery {
         card.steps = [
             AskCaret.Step(text: AskCopy.write("Dana Whitfield", into: "Name"), state: .done),
             AskCaret.Step(text: AskCopy.write("dana.whitfield@lumenlabs.example", into: "Email"), state: .running),
-            AskCaret.Step(text: AskCopy.press("Send"), yours: true),
+            AskCaret.Step(text: AskCopy.press("Send", why: .outbound), yours: true),
         ]
         card.action = "Fill 2 fields"
         card.writes = 2

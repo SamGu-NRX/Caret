@@ -1,7 +1,8 @@
 // memoryRequest op `add` (B17): the host's onboarding sends the name and email the user types, and the
 // helper keeps each as a sealed About entry. fixtures/golden/memory.ndjson is the host's contract
-// (apps/caret/Tests/CaretHostCoreTests/Fixtures/memory.ndjson on v2/host), copied byte for byte; these
-// tests hold the helper's schema and answers to it.
+// (apps/caret/Tests/CaretHostCoreTests/Fixtures/memory.ndjson on v2/host), copied byte for byte, plus the
+// helper's reply to the host's last request, host-memory-6 (B21: put a skill back on Tab), for the host to copy
+// back; these tests hold the helper's schema and answers to it.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +26,7 @@ describe("the host's memory contract, line by line", () => {
   });
 
   it("parses every reply losslessly, the list's permission uses and ops included", () => {
-    for (const id of ["host-memory-1", "host-memory-2", "host-memory-3", "host-memory-4", "host-memory-5"]) {
+    for (const id of ["host-memory-1", "host-memory-2", "host-memory-3", "host-memory-4", "host-memory-5", "host-memory-6"]) {
       const l = line(id, "memoryReply");
       expect(MemoryReply.parse(l), id).toEqual(l);
     }

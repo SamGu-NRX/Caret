@@ -319,7 +319,7 @@ public final class AskCaret {
             }
         }
         let writes = steps.count + more
-        if let handoff = proposal.handoff { steps.append(Step(text: AskCopy.press(handoff.label), yours: true)) }
+        if let handoff = proposal.handoff { steps.append(Step(text: AskCopy.press(handoff.label, why: handoff.why), yours: true)) }
         let app = proposal.window?.appName ?? "the app"
         let press = proposal.handoff.map { $0.label.isEmpty ? AskCopy.unlabelled : $0.label }
         return Card(
@@ -432,9 +432,14 @@ public enum AskCopy {
 
     static let unlabelled = "the unlabelled button"
 
-    /// A press left to the user: Press Send.
-    public static func press(_ label: String) -> String {
-        "Press \(label.isEmpty ? unlabelled : label)"
+    /// A press left to the user: Press Send. A press in a permission dialog or system prompt (B22's
+    /// `system`) says where it is, since the button alone ("Allow") does not say what it grants.
+    public static func press(_ label: String, why: PlanProposal.HandoffWhy) -> String {
+        let name = label.isEmpty ? unlabelled : label
+        switch why {
+        case .outbound, .destructive, .money, .unverifiable: return "Press \(name)"
+        case .system: return "Press \(name) in the system prompt"
+        }
     }
 
     /// The plan reached the press it leaves to the user.
@@ -465,6 +470,9 @@ public enum AskCopy {
             return q.map { "I couldn't find anything to fill or press in \u{201C}\($0)\u{201D}." } ?? "I couldn't find anything to fill or press for that."
         case .noWindow: return "I couldn't find an open window that can do that."
         case .unknownWindow: return q.map { "I couldn't find a window called \u{201C}\($0)\u{201D}." } ?? "The window I planned for closed while I planned."
+        // B21: the window the request named is one the reader has not read (closed, never walked,
+        // or an app it skips).
+        case .unseenWindow: return "I haven't read that window, so I can't plan in it. Click into it and ask again."
         case .ambiguousWindow: return "More than one window matches. Click into the one you mean and ask again."
         case .unknownTarget: return "A field I planned for changed or disappeared while I planned. Ask again."
         case .ambiguousTarget: return "More than one field matches. Name the one you mean."

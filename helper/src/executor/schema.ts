@@ -12,6 +12,11 @@ export const WindowSel = z
     title: z.string().optional(),
     /** Title prefix, for windows whose title an earlier step changes. */
     titleStartsWith: z.string().optional(),
+    /**
+     * The window server's number (WindowRef.number): only that window matches. The planner sets it when the
+     * reader read one, so two windows of one app with one title ("Untitled") are told apart (B21 review).
+     */
+    number: z.number().int().positive().optional(),
   })
   .refine((w) => w.title !== undefined || w.titleStartsWith !== undefined, { message: "a window needs title or titleStartsWith" });
 export type WindowSel = z.infer<typeof WindowSel>;
@@ -54,7 +59,7 @@ export const EndState = z.discriminatedUnion("kind", [
    * reads as outbound, destructive or money (risk.ts), or where code cannot predict what the press changes
    * and so could not verify it (`unverifiable`).
    */
-  z.object({ kind: z.literal("handoff"), ...InWindow, why: z.enum(["outbound", "destructive", "money", "unverifiable"]) }),
+  z.object({ kind: z.literal("handoff"), ...InWindow, why: z.enum(["outbound", "destructive", "money", "system", "unverifiable"]) }),
   /** An event with this title, start and end exists in the named calendar. Checked through the calendar interface, not the screen. */
   z.object({
     kind: z.literal("calendarEvent"),

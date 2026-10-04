@@ -29,7 +29,48 @@ describe("golden protocol fixture", () => {
       "planRequest", "planProposal", "planProposal",
       "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
       "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
+      "readerCommand", "userPress",
+      "planRequest", "planProposal", "userPress",
+      "skillOffer",
     ]);
+  });
+
+  it("carries B21's planRequest window, named as a host knows it, and the error for a window the reader has not read", () => {
+    const [req, failed] = lines.slice(55, 57).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(ConsumerMessage.parse(req)).toMatchObject({ type: "planRequest", window: { pid: 5150, number: 4821, title: "Caret Fixture — Executor" } });
+    expect(HelperMessage.parse(failed)).toMatchObject({ outcome: "error", error: { code: "unseenWindow" } });
+    const window = req?.window as Record<string, unknown>;
+    for (const bad of [
+      { ...req, windowId: "5150-1" },
+      { ...req, window: { ...window, number: 0 } },
+      { ...req, window: { ...window, number: 4821.5 } },
+      { ...req, window: { ...window, pid: 0 } },
+      { ...req, window: { pid: 5150, number: 4821 } },
+    ]) expect(ConsumerMessage.safeParse(bad).success).toBe(false);
+    // The title is the host's; an empty one (a window with no title) still names the window.
+    expect(ConsumerMessage.safeParse({ ...req, window: { ...window, title: "" } }).success).toBe(true);
+  });
+
+  it("carries B20's press watch: the windows to watch, and a press the user made in one, read only", () => {
+    const watch = JSON.parse(lines[53] ?? "") as Record<string, unknown>;
+    const press = JSON.parse(lines[54] ?? "") as Record<string, unknown>;
+    expect(HelperToReader.parse(watch)).toMatchObject({ verb: { kind: "watchPresses", windows: [{ pid: 5150, windowId: "5150-7" }] } });
+    expect(ReaderMessage.parse(press)).toEqual({ type: "userPress", v: 1, at: 1790000601200, pid: 5150, windowId: "5150-7", key: "dev.caret.fixture/standard/button:send~0", role: "AXButton", label: "Send", via: "click" });
+    // A press the walk did not keep has no key, and says so with null rather than leaving it out.
+    expect(ReaderMessage.parse({ ...press, key: null })).toMatchObject({ key: null });
+    const { key: _k, ...noKey } = press;
+    expect(ReaderMessage.safeParse(noKey).success).toBe(false);
+    expect(HelperMessage.safeParse(press).success).toBe(false);
+    expect(ConsumerMessage.safeParse(press).success).toBe(false);
+  });
+
+  it("carries B21's press by key: Return on the window's default button, and how a press was made is required", () => {
+    const press = JSON.parse(lines[57] ?? "") as Record<string, unknown>;
+    expect(ReaderMessage.parse(press)).toMatchObject({ type: "userPress", label: "Send", via: "return" });
+    for (const via of ["click", "return", "enter", "space"]) expect(ReaderMessage.safeParse({ ...press, via }).success).toBe(true);
+    for (const bad of [{ ...press, via: "tab" }, { ...press, via: "Return" }]) expect(ReaderMessage.safeParse(bad).success).toBe(false);
+    const { via: _v, ...noVia } = press;
+    expect(ReaderMessage.safeParse(noVia).success).toBe(false);
   });
 
   it("carries B19's skills: a keep offer and its answer, skill entries in a memory reply, a promote offer, and an unprompted run", () => {
@@ -128,6 +169,7 @@ describe("golden protocol fixture", () => {
     const { taskId: _, ...bare } = verb;
     expect(HelperToReader.safeParse({ ...write, verb: bare }).success).toBe(true);
     expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "insert" } }).success).toBe(true);
+    expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "focusValue" } }).success).toBe(true);
     expect(HelperToReader.safeParse({ ...write, verb: { ...verb, attribute: "paste" } }).success).toBe(false);
   });
 
@@ -165,7 +207,7 @@ describe("golden protocol fixture", () => {
 
   it("carries B10's settings: roles, level and pause from the host, and a withdrawal they caused", () => {
     const [full, paused, gone] = lines.slice(31, 34).map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(ConsumerMessage.parse(full)).toEqual({ type: "settings", v: 1, at: 1790000130000, roles: ["fill", "repeat", "watch", "words"], level: "balanced", paused: false });
+    expect(ConsumerMessage.parse(full)).toEqual({ type: "settings", v: 1, at: 1790000130000, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "balanced", paused: false });
     expect(ConsumerMessage.parse(paused)).toMatchObject({ roles: ["watch"], level: "quiet", paused: true });
     expect(ConsumerMessage.safeParse({ ...full, roles: ["watch", "watch"] }).success).toBe(false);
     expect(HelperMessage.parse(gone)).toMatchObject({ type: "offerWithdrawn", reason: "settings" });

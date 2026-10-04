@@ -18,6 +18,7 @@ import {
   type OfferKind,
   type OfferWithdrawn,
   type PatternOffer,
+  type UserPress,
   type ValueKind,
 } from "../protocol.ts";
 import type { PopupRef, PopupValue } from "../popup.ts";
@@ -31,7 +32,7 @@ import { decide, type Decision } from "./gate.ts";
 import { LoopRecognizer, type LoopCell, type LoopEvent } from "./loops.ts";
 import { MemoryError, dontOfferMatch, routineProven, typedAboutKey, type MemoryStore, type RoutineRecord } from "./memory.ts";
 import { applyMemory, captureEdit } from "./preferences.ts";
-import { RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
+import { BUNDLE_IDLE_MS, RoutineRecognizer, type Hash, type RoutineCell, type SilentPrediction } from "./routines.ts";
 import { describeTransfer, templateOf } from "./shape.ts";
 import { normalizeValue } from "../normalize.ts";
 import { offerField } from "../offers/field.ts";
@@ -58,7 +59,7 @@ export interface EngineDeps {
    * Runs a plan through the executor; `expect` holds field values, by window and key, that must still hold
    * at its first read. `unprompted`: a skill started it from its trigger without a Tab (B19).
    */
-  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, opts?: { unprompted?: boolean }) => Promise<TaskResult>;
+  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, opts?: RunDeps) => Promise<TaskResult>;
   /** Names routines (skills.ts); null with Jev off, when code names them. */
   askJev?: AskJev | null;
   shadow: () => boolean;
@@ -66,9 +67,32 @@ export interface EngineDeps {
   gate: OfferGate;
   /** A loopFinish or routine offer whose every value the user entered themselves, withdrawn as taken with no run to follow. */
   enteredByUser?: (offerId: string) => void;
+  /**
+   * Asks the reader to report the user's presses in these windows, replacing the last list (protocol.ts
+   * watchPresses): the windows with a routine occurrence under way, where a press may end it (B20).
+   */
+  watchPresses?: (windows: { pid: number; windowId: string }[]) => void;
+  /**
+   * Whether a host session is connected to show a run with no Tab, its toast, undo and take over (S1 audit
+   * #5). While none is, a skill that would run on its own is offered with Tab instead.
+   */
+  hostConnected: () => boolean;
+  /** A skill went back on Tab after a failure, an undo, a take over or an edit of what it wrote: runs of it still going may no longer act (B22). */
+  onSkillReset?: () => void;
 }
 
 type Cell = LoopCell | RoutineCell;
+
+/**
+ * What a pattern run depends on beyond its grant (B22): its offer's settings family and, for a routine's, the
+ * routine itself; turning the family off, or forgetting or pausing the routine or its skill, ends the run.
+ * `unprompted`: a skill started it from its trigger without a Tab (B19).
+ */
+export interface RunDeps {
+  unprompted?: boolean;
+  family: Family;
+  routineId: string | null;
+}
 
 interface OfferState {
   msg: PatternOffer;
@@ -186,6 +210,13 @@ export class PatternEngine {
   private seq = 0;
   /** The latest event time seen; decisions are stamped with it so replays with a fake clock log consistent times. */
   private clock = 0;
+  /** The press watch last sent to the reader, as sorted window ids; "" for none. */
+  private pressWatch = "";
+  /**
+   * Windows the user changed a field in, and when last: an occurrence may be under way there before its
+   * transfers settle into a bundle, and Send may come first (B20 review), so their presses are watched too.
+   */
+  private readonly editing = new Map<string, number>();
 
   constructor(deps: EngineDeps) {
     this.deps = deps;
@@ -199,6 +230,7 @@ export class PatternEngine {
       shadow: deps.shadow,
       askJev: deps.askJev ?? null,
       valuesOf: (sig) => this.routines.valuesOf(sig),
+      ...(deps.onSkillReset === undefined ? {} : { onReset: deps.onSkillReset }),
     });
   }
 
@@ -219,7 +251,7 @@ export class PatternEngine {
     for (const t of ts) {
       this.clock = Math.max(this.clock, t.at);
       const p = this.timings.time("shape", () =>
-        describeTransfer(this.deps.model, t, this.deps.text.findAll(t.value, t.kind, { excludeWindowId: t.dst.windowId, seenBy: t.at })),
+        describeTransfer(this.deps.model, t, this.deps.text.findAll(t.value, t.kind, { excludeWindowId: t.dst.windowId, seenBy: t.at }), (w, k) => this.routines.seenSlot(w, k)),
       );
       if (p === null) {
         const events = this.timings.time("loops", () => this.loops.onOpaque(t.at, t.dst.windowId, t.dst.key, t.value, t.kind));
@@ -230,21 +262,57 @@ export class PatternEngine {
       this.timings.time("routines.transfer", () => this.routines.onTransfer(p));
       for (const ev of events) this.onLoop(ev);
     }
+    this.syncPressWatch();
+  }
+
+  /** The user pressed something in a window under the press watch: a routine occurrence there may end with it. */
+  onUserPress(m: UserPress): void {
+    this.clock = Math.max(this.clock, m.at);
+    this.routines.onPress(m.windowId, { at: m.at, key: m.key, role: m.role, label: m.label, via: m.via });
+  }
+
+  /** Sends the reader the windows with an occurrence under way, or with recent edits, when that set changed. */
+  private syncPressWatch(): void {
+    for (const [id, at] of this.editing) {
+      if (this.clock - at <= BUNDLE_IDLE_MS && this.deps.model.windows.has(id)) continue;
+      this.editing.delete(id);
+      // Nobody is editing there now: where its elements were is kept only while an occurrence is under way.
+      this.routines.observe(id, false);
+    }
+    const ids = [...new Set([...this.routines.openWindows(), ...this.editing.keys()])].sort();
+    const key = ids.join(",");
+    if (key === this.pressWatch || this.deps.watchPresses === undefined) return;
+    this.pressWatch = key;
+    const windows = ids.flatMap((id) => {
+      const w = this.deps.model.windows.get(id);
+      return w === undefined ? [] : [{ pid: w.app.pid, windowId: id }];
+    });
+    this.deps.watchPresses(windows);
   }
 
   onChanges(changes: readonly Change[]): void {
+    // A window's fields can arrive after the window: a web page loads, or a browser builds its accessibility
+    // tree, after the window is first read (B20, Chrome). Editable fields appearing in a window with no
+    // occurrence under way are predicted for as an opening is, once per batch of changes.
+    const grew = new Set<string>();
     for (const c of changes) {
       this.clock = Math.max(this.clock, c.at);
-      if (c.kind === "windowOpened") {
+      if (c.kind === "windowOpened" || (c.kind === "added" && c.editable && !grew.has(c.windowId))) {
+        if (c.kind === "added") grew.add(c.windowId);
         const preds = this.timings.time("routines.open", () => this.routines.onWindowOpened(c.windowId, c.at));
         if (preds.length > 0) this.onPredictions(preds);
+        if (preds.length > 0) this.syncPressWatch();
       } else if (c.kind === "value" && c.key !== null) {
+        // The user's own edits, in the window they are in; Caret's writes elsewhere open no watch.
+        if (c.editable && this.deps.model.windows.get(c.windowId)?.focused === true) this.editing.set(c.windowId, c.at);
         const w = this.watches.get(`${c.windowId}\u0000${c.key}`);
         if (w !== undefined) w.pending = c.after === w.written ? null : { value: c.after ?? "", at: c.at };
       }
     }
+    for (const id of new Set(changes.map((c) => c.windowId))) this.routines.observe(id, this.editing.has(id));
     const touched = new Set(changes.filter((c) => c.kind === "value" || c.kind === "removed").map((c) => c.windowId));
     if (touched.size > 0) this.recheckOpen(touched);
+    if (changes.some((c) => c.kind === "value" && c.editable && this.editing.has(c.windowId))) this.syncPressWatch();
   }
 
   /**
@@ -384,10 +452,13 @@ export class PatternEngine {
     return matched === o.cells.length ? "taken" : "stale";
   }
 
-  /** Called before the window leaves the model. */
-  onWindowClosed(windowId: string): void {
-    const closed = this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId));
+  /** Called before the window leaves the model; `at` is when the reader saw it close. */
+  onWindowClosed(windowId: string, at = this.clock): void {
+    this.clock = Math.max(this.clock, at);
+    const closed = this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId, at));
+    this.editing.delete(windowId);
     if (closed !== null) this.skills.onBundleClosed(closed, this.clock);
+    this.syncPressWatch();
     this.loops.sourceClosed(windowId);
     for (const [id, w] of this.watches) {
       if (w.windowId !== windowId) continue;
@@ -440,6 +511,7 @@ export class PatternEngine {
     const ended = this.timings.time("loops", () => this.loops.tick(now));
     if (ended !== null) this.onLoop(ended);
     for (const closed of this.timings.time("routines.tick", () => this.routines.tick(now))) this.skills.onBundleClosed(closed, this.clock);
+    this.syncPressWatch();
     this.skills.tick(this.clock);
     this.timings.time("edits", () => {
       for (const [id, w] of this.watches) {
@@ -469,6 +541,9 @@ export class PatternEngine {
   /** A new reader numbers windows from scratch: every open bundle closes, and every offer is stale. */
   readerRestarted(): void {
     this.routines.flush();
+    // The new reader watches no presses; the next occurrence sends its window again.
+    this.pressWatch = "";
+    this.editing.clear();
     this.loops.reset();
     for (const o of this.offers.values()) if (o.state === "open") this.withdraw(o, "stale");
     this.watches.clear();
@@ -525,7 +600,7 @@ export class PatternEngine {
     if (routineId !== null) this.skills.runStarted(taskId, routineId, this.writeAction(o.msg.windowId));
     let r: TaskResult;
     try {
-      r = await this.deps.run(taskId, o.plan, o.slots, empty, unprompted ? { unprompted: true } : undefined);
+      r = await this.deps.run(taskId, o.plan, o.slots, empty, { ...(unprompted ? { unprompted: true } : {}), family: familyOf(o.msg.kind), routineId: o.routineId });
     } catch (e) {
       // A run that ends in an error (the reader refusing the last watch, say) is a failure like any other.
       if (routineId !== null) this.skills.afterRun(taskId, routineId, o.plan, o.cells, { outcome: "stopped", step: null }, this.clock);
@@ -537,9 +612,10 @@ export class PatternEngine {
 
   /** The permission a run into this window writes under, as the executor will judge it at the run's start. */
   private writeAction(windowId: string): WriteAction {
+    // The frontmost app's last focused window, as the executor judges it: a background request walk moves focusedWindowId,
+    // and with the frontmost app unknown no window is the user's (B22 review).
     const m = this.deps.model;
-    const w = m.windows.get(windowId);
-    return m.focusedWindowId === windowId && w !== undefined && m.frontmostPid === w.app.pid ? "writeHere" : "writeElsewhere";
+    return m.frontmostPid !== null && m.userWindow()?.window.windowId === windowId ? "writeHere" : "writeElsewhere";
   }
 
   /**
@@ -547,7 +623,8 @@ export class PatternEngine {
    * not shown: it exists so the run, its rechecks and the edits it watches work as for a taken offer. The
    * run starts once the reader event that triggered it has been handled, never in the middle of it, and
    * everything that allowed it is checked again then: the user may have paused Caret or the skill,
-   * changed a permission, or moved to another window, and a source may have changed. If the skill may no
+   * changed a permission, or moved to another window, the host may have disconnected, and a source may
+   * have changed. If the skill may no
    * longer run on its own but the offer still holds, it is offered with Tab instead.
    */
   private startUnprompted(o: OfferState): void {
@@ -560,7 +637,7 @@ export class PatternEngine {
         const held = this.deps.shadow() || this.deps.gate.holds("routine", this.clock).some((h) => h !== "hourlyBudget");
         const routine = o.routineId === null ? null : this.deps.memory.routine(o.routineId);
         const live = stale === null && !held && routine !== null && !routine.paused && !routine.skillPaused;
-        if (live && o.routineId !== null && this.skills.runsOnItsOwn(o.routineId, this.writeAction(o.msg.windowId), o.plan)) {
+        if (live && o.routineId !== null && this.deps.hostConnected() && this.skills.runsOnItsOwn(o.routineId, this.writeAction(o.msg.windowId), o.plan)) {
           const r = await this.runOffer(o, o.msg.id, true);
           if (cleanRun(o.plan, r)) for (const c of o.cells) this.watch(c, o.msg.id);
           return;
@@ -650,6 +727,8 @@ export class PatternEngine {
           const e = memory.edit(m.id, m.fields, now);
           // A typed entry is found by its label, so a renamed one answers to its new label.
           if (e.kind === "about" && e.fields.source === "typed") memory.rekey(e.id, typedMatch(e.fields.label));
+          if (e.kind === "skill" && m.fields.onItsOwn === false) this.skills.backOnTab(e.id);
+          // The helper sweeps live tasks after every memory request (Helper.handleMemory).
           this.withdrawDependents(m.id);
           return reply([e]);
         }
@@ -667,6 +746,14 @@ export class PatternEngine {
           this.withdrawDependents(m.id);
           if (before.kind === "skill") this.withdrawDependents(before.fields.routineId);
           return reply([]);
+        }
+        case "offerOnItsOwn": {
+          const e = memory.get(m.id);
+          if (e.kind !== "skill") throw new MemoryError(`offerOnItsOwn is for a skill, not ${e.kind === "about" ? "an About" : `a ${e.kind}`} entry`);
+          if (this.deps.shadow()) throw new MemoryError("the helper is in shadow mode and makes no offers");
+          const refused = this.skills.requestPromote(e.id, m.requestId);
+          if (refused !== null) throw new MemoryError(refused);
+          return reply([e]);
         }
       }
     } catch (e) {
@@ -708,7 +795,10 @@ export class PatternEngine {
    */
   private onPredictions(preds: SilentPrediction[]): void {
     const sorted = [...preds].sort((a, b) => b.routine.hits - a.routine.hits);
-    let spoken = false;
+    // A routine already offered in this window (predicted from fields that arrived first), or taken and maybe
+    // running, speaks for it: a fuller prediction is kept silent rather than offered or run beside it.
+    const window = sorted[0]?.dstWindowId;
+    let spoken = [...this.offers.values()].some((o) => o.state !== "closed" && o.msg.kind === "routine" && o.msg.windowId === window);
     for (const p of sorted) {
       const cells = p.cells.filter((c): c is RoutineCell => c !== null);
       const input = { hits: p.routine.hits, misses: p.routine.misses, paused: p.routine.paused || p.routine.skillPaused, grounded: p.grounded };
@@ -754,7 +844,7 @@ export class PatternEngine {
     if (!decision.speak) return null;
     this.deps.gate.spoke(this.clock);
     const o = this.create(kind, patternId, ids, cells, w.window.windowId, decision.showProbability, false, finish);
-    if (ids.routineId !== null && this.skills.runsOnItsOwn(ids.routineId, this.writeAction(windowId), o.plan)) {
+    if (ids.routineId !== null && this.deps.hostConnected() && this.skills.runsOnItsOwn(ids.routineId, this.writeAction(windowId), o.plan)) {
       this.startUnprompted(o);
       return o;
     }

@@ -160,6 +160,9 @@ export type Pasteboard = z.infer<typeof Pasteboard>;
  * `watchWindows` replaces the set of windows under a pending-state watch: the reader re-reads each
  * when the app posts a notification about it and every 10 s, as `watch` walks that send a snapshot
  * only when something changed. An empty list ends every watch. It only reads, so it needs no `--act-pids`.
+ * `watchPresses` (B20) replaces the set of windows whose user presses the reader reports as userPress: a
+ * click the user makes on a button, link or other pressable element inside one of them. It only reads;
+ * the reader never presses for it. An empty list stops reporting.
  * `raise` brings one window to the front and activates its app (AXRaise, then activation), re-walks it
  * and sends the snapshot; it writes nothing, but it moves focus, so it is gated like write and press.
  * The calendar verbs (B16) reach EventKit, which needs a native process. The reader answers them only when
@@ -195,11 +198,13 @@ export const ReaderCommand = z.object({
       key: z.string(),
       role: z.string(),
       /**
-       * "value" sets AXValue. "focused" sets AXFocused to true and ignores `value`. "insert" focuses the
-       * field, selects all of its text and replaces the selection with `value`, as typing over it would:
-       * the executor's fallback when an app answers a value write with success and changes nothing (B15).
+       * "value" sets AXValue. "focused" sets AXFocused to true and ignores `value`. "focusValue" sets AXFocused,
+       * rechecks the value, then sets AXValue: a WebKit window that is not key drops a bare value write and takes
+       * this one (B20, 3 of 3 in the candidate table). "insert" focuses the field, selects all of its text and
+       * replaces the selection with `value`, as typing over it would. The executor tries value, then
+       * focusValue, then insert, each only when the one before answered ok and changed nothing.
        */
-      attribute: z.enum(["value", "focused", "insert"]),
+      attribute: z.enum(["value", "focused", "focusValue", "insert"]),
       /** The value the field must hold right before the write; "" for empty. */
       expect: z.string(),
       value: z.string(),
@@ -217,6 +222,7 @@ export const ReaderCommand = z.object({
     }),
     z.object({ kind: z.literal("watchInput"), pids: z.array(z.number().int()) }),
     z.object({ kind: z.literal("watchWindows"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
+    z.object({ kind: z.literal("watchPresses"), windows: z.array(z.object({ pid: z.number().int(), windowId: z.string() })) }),
     z.object({ kind: z.literal("raise"), pid: z.number().int(), windowId: z.string(), taskId: GrantTask }),
     /** The event with this title, start and end in the reader's calendar of this name, if any. */
     z.object({ kind: z.literal("calendarFind"), ...CalendarSlot }),
@@ -336,7 +342,32 @@ export const UserInput = z.object({
 });
 export type UserInput = z.infer<typeof UserInput>;
 
-export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput]);
+/**
+ * The user pressed something in a window under a press watch (B20): the pressable element under their
+ * click, or the button a key pressed (B21), its role and its label as the reader last read it, and when the
+ * button or key went down. `key` is the element's key in the window's latest walk, null when that walk did
+ * not keep it. `via` says how: `click`; `return` or `enter` (keypad), which press the window's default
+ * button; or `space`, which presses the focused button. A key is read only as one of those three, held with
+ * no Command, Control, Option or Shift, and never while a text field has focus; no other key is reported or
+ * kept. The reader only observes; routines learn the press an occurrence ends with from it
+ * (patterns/routines.ts).
+ */
+export const PressVia = z.enum(["click", "return", "enter", "space"]);
+export type PressVia = z.infer<typeof PressVia>;
+export const UserPress = z.object({
+  type: z.literal("userPress"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  pid: z.number().int(),
+  windowId: z.string(),
+  key: z.string().nullable(),
+  role: z.string(),
+  label: z.string(),
+  via: PressVia,
+});
+export type UserPress = z.infer<typeof UserPress>;
+
+export const ReaderMessage = z.discriminatedUnion("type", [Hello, Snapshot, Focus, AppSwitch, WindowClosed, Pasteboard, VerbResult, UserInput, UserPress]);
 export type ReaderMessage = z.infer<typeof ReaderMessage>;
 
 /** Consumer asks for a fill proposal for the form around one field, without waiting for a focus event. */
@@ -404,7 +435,7 @@ export type OfferControl = z.infer<typeof OfferControl>;
 export const MemoryKind = z.enum(["about", "people", "preference", "routine", "permission", "skill"]);
 export type MemoryKind = z.infer<typeof MemoryKind>;
 
-export const MemoryOp = z.enum(["list", "edit", "pause", "resume", "forget", "add"]);
+export const MemoryOp = z.enum(["list", "edit", "pause", "resume", "forget", "add", "offerOnItsOwn"]);
 export type MemoryOp = z.infer<typeof MemoryOp>;
 
 /**
@@ -415,6 +446,13 @@ export type MemoryOp = z.infer<typeof MemoryOp>;
  * same label replaces that entry's value. The host's contract for it is
  * apps/caret/Tests/CaretHostCoreTests/Fixtures/memory.ndjson on v2/host, copied byte for byte into
  * fixtures/golden/memory.ndjson.
+ *
+ * `offerOnItsOwn` (B22) is the skill row's "Let it run on its own…": `id` names a skill on Tab, and the
+ * helper answers with the skill unchanged and publishes the normal promote skillOffer, whose `taskId` is
+ * this request's `requestId`. Running on its own still comes only from accepting that offer, never from an
+ * edit. A skill the user put back on Tab is never offered it again unless they ask this way. Refused, with
+ * the reason in `error`, for a skill that is paused, already on its own, ends in a press Caret leaves to
+ * the user, or has an offer out, and while Caret is paused or routines are off.
  */
 export const MemoryRequest = z.object({
   type: z.literal("memoryRequest"),
@@ -556,9 +594,7 @@ export type OfferStop = z.infer<typeof OfferStop>;
 /**
  * What Caret helps with, as the host's onboarding and menu bar name it (CaretRole on v2/host). `fill` is
  * grounded fill, `repeat` loops and routines, `watch` the pending-state watch, `calendar` the event card
- * (B16; v2/host's CaretRole does not list it yet, so a host that sends its own roles turns it off),
- * `words` the host's own
- * ghost text, which the helper accepts and ignores.
+ * (B16; on v2/host since A13), `words` the host's own ghost text, which the helper accepts and ignores.
  */
 export const SettingsRole = z.enum(["fill", "repeat", "watch", "calendar", "words"]);
 export type SettingsRole = z.infer<typeof SettingsRole>;
@@ -602,18 +638,37 @@ export const FirstLook = z.object({
 export type FirstLook = z.infer<typeof FirstLook>;
 
 /**
- * The user asked Caret to do something. The helper plans it against the screen model and memory and
- * answers with `planProposal`, to the asker only. `windowId` is the window the user means, when the host
- * knows it (the one they were in when they asked); without it Caret picks among the open windows.
+ * The window a host means in a planRequest (B21): the one the user was in when they opened Ask Caret, as the
+ * host knows it. `number` is the window server's number (CGWindowID); the helper matches it, with `pid`,
+ * against the numbers the reader read for its windows (WindowRef.number). `title` is what the host saw,
+ * for its own messages; titles change (a browser switching tabs), so the helper does not match on it.
  */
-export const PlanRequest = z.object({
-  type: z.literal("planRequest"),
-  v: z.literal(PROTOCOL_VERSION),
-  requestId: z.string().min(1).max(200),
-  at: ms,
-  instruction: z.string().min(1).max(500),
-  windowId: z.string().min(1).optional(),
+export const PlanWindow = z.object({
+  pid: z.number().int().positive(),
+  number: z.number().int().positive(),
+  title: z.string(),
 });
+export type PlanWindow = z.infer<typeof PlanWindow>;
+
+/**
+ * The user asked Caret to do something. The helper plans it against the screen model and memory and
+ * answers with `planProposal`, to the asker only. The window the user means is named by `window` (what a
+ * host can know) or `windowId` (the reader's id, for consumers that have it), never both. A named window
+ * the reader has not read is refused with `unseenWindow`. With neither, Caret plans in the window the
+ * user last focused in the frontmost app, and picks among the open windows only when that window has no
+ * field or button.
+ */
+export const PlanRequest = z
+  .object({
+    type: z.literal("planRequest"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string().min(1).max(200),
+    at: ms,
+    instruction: z.string().min(1).max(500),
+    windowId: z.string().min(1).optional(),
+    window: PlanWindow.optional(),
+  })
+  .refine((m) => m.windowId === undefined || m.window === undefined, "a planRequest names its window by window or windowId, not both");
 export type PlanRequest = z.infer<typeof PlanRequest>;
 
 /**
@@ -901,8 +956,8 @@ export const RoutineFields = z.object({
 });
 export const PermissionFields = z.object({ action: ActionType, rule: PermissionRule, fixed: z.boolean() });
 
-/** The risk classes a press can have (executor/risk.ts), as a skill's hand-off names them. */
-export const PressRisk = z.enum(["outbound", "destructive", "money"]);
+/** The risk classes a press can have (executor/risk.ts), as a skill's hand-off names them. `system` (B22): a permission dialog or system prompt. */
+export const PressRisk = z.enum(["outbound", "destructive", "money", "system"]);
 export type PressRisk = z.infer<typeof PressRisk>;
 
 /**
@@ -975,7 +1030,9 @@ export type MemoryEntry = z.infer<typeof MemoryEntry>;
 /**
  * A one-time question about a routine at the end of a run that succeeded (B19), shown with that run, whose
  * task id is `taskId`. `keep`: "Keep this as <name>?", which makes the routine a skill; `skillId` is null.
- * `promote`: after enough clean runs in a row, "Do this one on your own from now on?" for skill `skillId`.
+ * `promote`: after enough clean runs in a row, "Do this one on your own from now on?" for skill `skillId`;
+ * or the same offer the user asked for from the skill's row (memoryRequest offerOnItsOwn, B22), whose
+ * `taskId` is that request's `requestId`.
  * The host answers with skillAnswer naming `id`; the helper ends the offer with offerWithdrawn, `expired`
  * when nobody answers within its lifetime (offers/lifetimes.ts). Every string is rendered by code.
  */
@@ -1176,7 +1233,8 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  * `nothingToDo`: no field to write and no control to press. `unsupportedStep`: a step other than a field
  * write or a hand-off. `multipleWindows`: steps in more than one window. `unknownWindow`,
  * `ambiguousWindow`, `unknownTarget`, `ambiguousTarget`: a window or target is not (or not uniquely) in
- * the screen model now. `notEditable`: a write to something that is not a writable field.
+ * the screen model now. `unseenWindow`: the request named a window (planRequest `window` or `windowId`)
+ * that the reader has not read: closed, never walked, or an app it skips (B21). `notEditable`: a write to something that is not a writable field.
  * `untracedValue`: a value that no window, memory entry or the instruction shows verbatim.
  * `wrongKind`: a value whose kind does not fit its field, such as a whole address in City (B18, kinds.ts misfit).
  * `stepAfterHandoff`: a step after the press handed to the user. `riskMismatch`: a hand-off whose reason
@@ -1188,6 +1246,7 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
 export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
   "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "wrongKind", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
+  "unseenWindow",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 
@@ -1209,7 +1268,7 @@ export const PlanProposal = z
     offerKey: z.string().min(1).nullable(),
     window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }).nullable(),
     spec: PopupSpec.nullable(),
-    handoff: z.object({ label: z.string(), why: z.enum(["outbound", "destructive", "money", "unverifiable"]) }).nullable(),
+    handoff: z.object({ label: z.string(), why: z.enum(["outbound", "destructive", "money", "system", "unverifiable"]) }).nullable(),
     error: z.object({ code: PlanErrorCode, detail: z.string().min(1) }).nullable(),
   })
   .superRefine((m, ctx) => {

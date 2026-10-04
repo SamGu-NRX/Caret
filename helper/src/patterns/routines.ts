@@ -3,13 +3,17 @@
 // is the sorted set of its transfer shapes, as keyed hashes. Each completed bundle with at least two
 // shapes counts one occurrence of its routine.
 //
+// The press an occurrence ends with (B19's finish, "Send") is learned from the user's own click on it when
+// the reader saw one in the destination window (B20, protocol.ts UserPress), and otherwise guessed from the
+// window's buttons when it closes.
+//
 // When a window opens that holds every destination field of a known routine, still empty, Caret
 // predicts silently: it reads each step's source from the live windows now, and when the bundle
 // closes it scores the prediction against what the user did. Only the gate turns a prediction into
 // an offer, and only once enough silent predictions have matched (gate.ts).
 import { normalizeValue } from "../normalize.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
-import type { ValueKind } from "../protocol.ts";
+import type { PressVia, ValueKind } from "../protocol.ts";
 import { classifyLabel } from "../executor/risk.ts";
 import type { MemoryStore, RoutineFinish, RoutineRecord, RoutineStep } from "./memory.ts";
 import { locate, windowIndex, type Part, type PatternTransfer } from "./shape.ts";
@@ -55,6 +59,35 @@ export interface BundleClose {
   scored: { routineId: string; hit: boolean; cells: RoutineCell[] }[];
 }
 
+/** A press the user made in a destination window, as the reader observed it (protocol.ts UserPress). */
+export interface ObservedPress {
+  at: number;
+  /** The element's key in the window's latest walk; null when the walk did not keep it. */
+  key: string | null;
+  role: string;
+  label: string;
+  /** A click, or the key that pressed it (B21). */
+  via: PressVia;
+}
+
+/** A press as kept: where the pressed control sat in its window when the press arrived, while the window was whole. */
+interface KeptPress extends ObservedPress {
+  slot: { templateHash: string; pos: number } | null;
+}
+
+/** Presses kept per window; only the last one is ever read. */
+const PRESSES_PER_WINDOW = 4;
+/** Windows whose presses are kept at once; the oldest goes first. Bounded; no measurement behind either number. */
+const PRESS_WINDOWS = 50;
+/** Elements remembered per window (observe); a page that keeps adding elements stops adding past this. Assumed. */
+const SEEN_PER_WINDOW = 2000;
+/**
+ * How soon after a press that does not read as outbound, destructive or money the window must close for that
+ * press to count as how the occurrence ended. A safe press followed by more work (a checkbox, then a keyboard
+ * Send) says nothing about the finish. Assumed.
+ */
+export const PRESS_ENDS_MS = 3000;
+
 interface Bundle {
   dstWindowId: string;
   lastAt: number;
@@ -64,8 +97,25 @@ interface Bundle {
 
 export type Hash = (text: string) => string;
 
+/** A label fit to keep as a finish: a few words, with no address, digits or link in it. */
+export function finishLabel(label: string): boolean {
+  return label !== "" && label.length <= 40 && label.split(/\s+/).length <= 4 && !/[@\d/:]/.test(label);
+}
+
 export class RoutineRecognizer {
   private readonly bundles = new Map<string, Bundle>();
+  /**
+   * The user's presses by window, kept whether or not an occurrence is known to be under way there yet: its
+   * transfers are judged only once the edits settle, which can be after the user has already clicked Send.
+   */
+  private readonly presses = new Map<string, KeptPress[]>();
+  /**
+   * Where each element of a window with an occurrence under way was last seen: a window closing (Chrome tearing
+   * down its page, a Send that closes it) can reach the model with its fields and controls gone before its close
+   * does, and the edits judged then, and a click that arrives then, are placed from here (B20 Chrome run 2: a
+   * verified run scored as a miss because its fields were gone when its edits were judged).
+   */
+  private readonly lastSeen = new Map<string, Map<string, { template: string; pos: number }>>();
   private readonly templateHashes = new Map<string, string>();
   /** Values each routine (by signature) was seen copying in this session, for the naming check. Never persisted. */
   private readonly seenValues = new Map<string, Set<string>>();
@@ -80,8 +130,14 @@ export class RoutineRecognizer {
   }
 
   /** A window appeared. Predicts every unpaused routine whose destination fields it holds, empty, and keeps each prediction to score when its bundle closes. */
+  /**
+   * Predicts every routine whose destination fields the window holds, empty, that it has not predicted for this
+   * window already; called when the window opens and again as fields arrive (B20 review: a shorter routine that
+   * matched a half-loaded page must not keep a fuller one from being predicted once the rest arrives).
+   */
   onWindowOpened(windowId: string, at: number): SilentPrediction[] {
-    const out = this.predict(windowId, at);
+    const known = new Set(this.bundles.get(windowId)?.predictions.map((p) => p.routine.id) ?? []);
+    const out = this.predict(windowId, at).filter((p) => !known.has(p.routine.id));
     for (const p of out) this.bundle(windowId, at).predictions.push(p);
     return out;
   }
@@ -139,11 +195,83 @@ export class RoutineRecognizer {
     b.lastAt = t.at;
   }
 
-  onWindowClosed(windowId: string): BundleClose | null {
+  /** The user pressed something in a window under the press watch; read when an occurrence there ends. */
+  /**
+   * The user pressed something in a window under the press watch; read when an occurrence there ends. The
+   * pressed control is placed now: a window that closes on the press can reach the model with its controls
+   * already gone (B20 press-learn run 2: the clicked Send was missing from the closing window).
+   */
+  onPress(windowId: string, press: ObservedPress): void {
+    let ps = this.presses.get(windowId);
+    if (ps === undefined) {
+      if (this.presses.size >= PRESS_WINDOWS) this.presses.delete(this.presses.keys().next().value as string);
+      this.presses.set(windowId, (ps = []));
+    }
+    const w = this.model.windows.get(windowId);
+    const key = w === undefined ? null : this.pressedKey(w, press);
+    const slot = (w === undefined || key === null ? undefined : windowIndex(w).slots.get(key)) ?? (press.key === null ? undefined : this.seenSlot(windowId, press.key));
+    ps.push({ ...press, key: key ?? press.key, slot: slot === undefined ? null : { templateHash: this.templateHash(slot.template), pos: slot.pos } });
+    if (ps.length > PRESSES_PER_WINDOW) ps.shift();
+  }
+
+  /** The pressed control's key in the window as the model has it: the reader's key when the window holds it, else the one control of its role with its label. */
+  private pressedKey(w: WindowState, p: ObservedPress): string | null {
+    if (p.key !== null && w.nodes.has(p.key)) return p.key;
+    const label = p.label.trim();
+    const same = [...w.nodes.values()].filter((n) => n.role === p.role && (n.label ?? "").trim() === label);
+    return same.length === 1 ? (same[0]?.key ?? null) : null;
+  }
+
+  /**
+   * A window changed: remember where its elements sit, for one with an occurrence under way or that the user is
+   * editing in (`editing`); for any other window the memory goes. An element keeps the place it was first seen
+   * at: a window coming apart (B20 review) shifts the positions of the elements that are left, and those are
+   * not where the occurrence's edits went.
+   */
+  observe(windowId: string, editing = false): void {
+    if (!editing && !this.bundles.has(windowId)) {
+      this.lastSeen.delete(windowId);
+      return;
+    }
+    const w = this.model.windows.get(windowId);
+    if (w === undefined) return;
+    let seen = this.lastSeen.get(windowId);
+    if (seen === undefined) {
+      if (this.lastSeen.size >= PRESS_WINDOWS) this.lastSeen.delete(this.lastSeen.keys().next().value as string);
+      this.lastSeen.set(windowId, (seen = new Map()));
+    }
+    for (const [k, slot] of windowIndex(w).slots) {
+      if (seen.size >= SEEN_PER_WINDOW) break;
+      if (!seen.has(k)) seen.set(k, slot);
+    }
+  }
+
+  /** Where an element of the window was last seen, for one the window as the model has it no longer holds. */
+  seenSlot(windowId: string, key: string): { template: string; pos: number } | undefined {
+    return this.lastSeen.get(windowId)?.get(key);
+  }
+
+  /** Whether an occurrence is under way in this window: predicted when it opened, or with a transfer into it. */
+  underWay(windowId: string): boolean {
+    return this.bundles.has(windowId);
+  }
+
+  /** The windows with an occurrence under way: where a press may end one, so the reader is asked to report presses there. */
+  openWindows(): string[] {
+    return [...this.bundles.keys()];
+  }
+
+  /** `at`: when the window closed, which tells whether a safe press just before ended the occurrence. */
+  onWindowClosed(windowId: string, at: number): BundleClose | null {
     const b = this.bundles.get(windowId);
-    if (b === undefined) return null;
-    this.bundles.delete(windowId);
-    return this.close(b, true);
+    try {
+      if (b === undefined) return null;
+      this.bundles.delete(windowId);
+      return this.close(b, at);
+    } finally {
+      this.presses.delete(windowId);
+      this.lastSeen.delete(windowId);
+    }
   }
 
   /** Values the routine with this signature was seen copying in this session, for the naming check. */
@@ -165,6 +293,8 @@ export class RoutineRecognizer {
   flush(): BundleClose[] {
     const out = [...this.bundles.values()].map((b) => this.close(b));
     this.bundles.clear();
+    this.presses.clear();
+    this.lastSeen.clear();
     return out;
   }
 
@@ -174,12 +304,16 @@ export class RoutineRecognizer {
     return b;
   }
 
-  /** Scores and counts in one transaction: a bundle closes on the event path. `windowClosed`: its window closed, which ends an occurrence with its last press. */
-  private close(b: Bundle, windowClosed = false): BundleClose {
-    return this.memory.batch(() => this.closeNow(b, windowClosed));
+  /** Scores and counts in one transaction: a bundle closes on the event path. `closedAt`: when its window closed, null when it went idle. */
+  private close(b: Bundle, closedAt: number | null = null): BundleClose {
+    const presses: readonly KeptPress[] = this.presses.get(b.dstWindowId) ?? [];
+    // The next occurrence in a window that stays open starts with none of this one's presses.
+    this.presses.delete(b.dstWindowId);
+    this.lastSeen.delete(b.dstWindowId);
+    return this.memory.batch(() => this.closeNow(b, presses, closedAt));
   }
 
-  private closeNow(b: Bundle, windowClosed: boolean): BundleClose {
+  private closeNow(b: Bundle, presses: readonly KeptPress[], closedAt: number | null): BundleClose {
     // The last transfer of each shape counts: a value copied and then replaced from another row is the replacement.
     const last = new Map<string, PatternTransfer>();
     for (const t of b.transfers) {
@@ -211,8 +345,10 @@ export class RoutineRecognizer {
     }
     if (sig !== null) this.keepValues(sig, [...done.map((t) => t.value), ...b.predictions.flatMap((p) => p.cells.flatMap((c) => (c === null ? [] : [c.value])))]);
     // Read from the destination whether it closed or went idle; a press once learned is never forgotten, so a
-    // routine that has ended in a risky press stays one that never runs on its own.
-    const finish = dst === undefined ? undefined : (this.finishOf(dst) ?? undefined);
+    // routine that has ended in a risky press stays one that never runs on its own. The user's own last press
+    // decides when the reader saw one; the window's buttons are the guess only when it saw none.
+    const pressed = this.finishPressed(presses, closedAt);
+    const finish = dst === undefined ? undefined : pressed !== undefined ? (pressed ?? undefined) : (this.finishOf(dst) ?? undefined);
     const recorded = sig === null ? null : this.memory.recordRoutine(sig, steps, b.lastAt, finish);
     return { dstWindowId: b.dstWindowId, sig, recorded, scored };
   }
@@ -252,9 +388,29 @@ export class RoutineRecognizer {
     const at = pick ?? outbound[0] ?? first;
     const slot = windowIndex(w).slots.get(at.key);
     if (slot === undefined) return null;
-    const base = { why: at.why, templateHash: this.templateHash(slot.template), pos: slot.pos };
+    const base = { why: at.why, templateHash: this.templateHash(slot.template), pos: slot.pos, by: "buttons" as const };
     if (pick !== undefined) return { ...base, label: pick.label };
     return { ...base, label: [...new Set(risky.map((r) => r.label))].join(" or "), ambiguous: true };
+  }
+
+  /**
+   * The finish the user's own last press in this occurrence names (B20): a press that reads as outbound,
+   * destructive or money is the finish, found by template and position like a step's field. Any other press
+   * that closed the window (within PRESS_ENDS_MS) means the occurrence ended without one, so null, and no
+   * button is guessed. Undefined when the reader saw no press here, when a safe press did not end it, or when
+   * the press could not be placed in its window when it arrived (onPress): then the window's buttons are the
+   * guess.
+   */
+  private finishPressed(presses: readonly KeptPress[], closedAt: number | null): RoutineFinish | null | undefined {
+    const p = presses.at(-1);
+    if (p === undefined || p.slot === null) return undefined;
+    const label = p.label.trim();
+    // Learned only from a button whose label is a name for an action, as B19's guess from the window's buttons
+    // is: a link or a label that carries an address or a number would put screen data in memory (B20 review).
+    if (p.role !== "AXButton" || !finishLabel(label)) return undefined;
+    const why = classifyLabel(label);
+    if (why === "safe") return closedAt !== null && closedAt >= p.at && closedAt - p.at <= PRESS_ENDS_MS ? null : undefined;
+    return { label, why, templateHash: p.slot.templateHash, pos: p.slot.pos, by: p.via === "click" ? "click" : "key" };
   }
 
   private step(t: PatternTransfer): RoutineStep {

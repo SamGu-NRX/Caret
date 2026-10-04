@@ -15,10 +15,10 @@ import { instructionValues } from "../src/planner/spans.ts";
 import { occursBounded, traceValue, type MemoryValue } from "../src/planner/trace.ts";
 import { addressParts, misfit, textKind, type TextKind } from "../src/fill/kinds.ts";
 import { handoffWhy, PlannerError, validatePlan } from "../src/planner/validate.ts";
-import { asksToFillForm, byRelevance, namesShortLabel, planTask, type PlanTaskOptions } from "../src/planner/planner.ts";
+import { asksToFillForm, byRelevance, namesShortLabel, planTask, requestedWindow, type PlanTaskOptions } from "../src/planner/planner.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { MAIL_APP, snap, text } from "./builders.ts";
-import { executorWindow, FakeApp, K, TITLE, WIN, wireButtons } from "./fake-app.ts";
+import { executorWindow, FakeApp, K, TITLE, WIN, WIN_NUMBER, wireButtons } from "./fake-app.ts";
 
 const REF = "6160-2";
 const REF_TITLE = "Mail Fixture — Order";
@@ -306,6 +306,46 @@ describe("planTask", () => {
     await expect(planTask("Set Name to Dana Whitfield", m, mem(), opts(plannerJev({}), {}))).rejects.toMatchObject({ code: "noWindow" });
   });
 
+  it("resolves the window a request names by number and process, refuses one the reader has not read, and falls back to the last focused window (B21)", () => {
+    const m = new ScreenModel();
+    m.apply(snap(executorWindow(), { at: 1000, windowId: WIN, title: TITLE, number: 4821 }));
+    m.apply(referenceWindow());
+    const MAIL_PID = MAIL_APP.pid;
+    m.apply(snap([{ key: "dev.caret.mail/standard/textfield:to~0", parent: null, role: "AXTextField", label: "To", editable: true }], { at: 1500, windowId: "6160-3", title: "Mail Fixture — Compose", app: MAIL_APP, number: 4822 }));
+    const named = (number: number, pid = 5150, title = "any title") => ({ window: { pid, number, title } });
+    expect(requestedWindow(m, named(4821))).toBe(WIN);
+    expect(requestedWindow(m, named(4822, MAIL_PID))).toBe("6160-3");
+    // The title is the host's and may be stale; only the number and the process match.
+    expect(requestedWindow(m, named(4821, 5150, "Some other title"))).toBe(WIN);
+    const refused = (f: () => unknown): { code: string; message: string } => {
+      try {
+        f();
+      } catch (e) {
+        if (e instanceof PlannerError) return { code: e.code, message: e.message };
+        throw e;
+      }
+      throw new Error("not refused");
+    };
+    expect(refused(() => requestedWindow(m, named(4999)))).toEqual({ code: "unseenWindow", message: "the reader has not read window 4999 of process 5150" });
+    expect(refused(() => requestedWindow(m, named(4822)))).toEqual({ code: "unseenWindow", message: `window 4822 belongs to process ${MAIL_PID}, not 5150` });
+    expect(refused(() => requestedWindow(m, { windowId: "5150-77" })).code).toBe("unseenWindow");
+    expect(requestedWindow(m, { windowId: WIN })).toBe(WIN);
+    // Neither: no window was ever focused, so Caret chooses.
+    expect(requestedWindow(m, {})).toBeNull();
+    // The window focused last in the frontmost app, not a background app's own focused window.
+    m.apply(snap([{ key: "dev.caret.mail/standard/textfield:to~0", parent: null, role: "AXTextField", label: "To", editable: true }], { at: 2000, windowId: "6160-3", title: "Mail Fixture — Compose", app: MAIL_APP, number: 4822, focused: true }));
+    m.apply(snap(executorWindow(), { at: 2500, windowId: WIN, title: TITLE, number: 4821, focused: true }));
+    m.frontmostPid = MAIL_PID;
+    expect(requestedWindow(m, {})).toBe("6160-3");
+    m.frontmostPid = 5150;
+    expect(requestedWindow(m, {})).toBe(WIN);
+    // A last focused window with no field or button leaves the choice to Caret.
+    m.apply(referenceWindow(3000));
+    m.apply({ ...referenceWindow(3000), focused: true });
+    m.frontmostPid = MAIL_PID;
+    expect(requestedWindow(m, {})).toBeNull();
+  });
+
   it("hands a Send press back as outbound and a safe press as unverifiable, after the writes", async () => {
     const d = await planTask("Write 'See you at 3' in Name and send it", desk(), mem(), opts(plannerJev({ fields: { Name: "See you at 3" }, press: "Send" })));
     expect(d.plan.steps.at(-1)?.end).toEqual({ kind: "handoff", window: W, target: { key: K("button:send~0"), describe: "the Send button" }, why: "outbound" });
@@ -578,6 +618,35 @@ describe("planRequest through the helper", () => {
     helper.tick(clock);
     expect(published.some((m) => m.type === "offerWithdrawn" && m.id === r.offerKey && m.reason === "expired")).toBe(true);
     expect(await accept(r.offerKey ?? "")).toBeNull();
+  });
+
+  it("plans against the window a request names by number, and answers unseenWindow for a number the reader has not read (B21)", async () => {
+    // A second window with a field, so without the number Caret would have to ask Jev which window.
+    void helper.handleReader(snap([{ key: "dev.caret.mail/standard/textfield:to~0", parent: null, role: "AXTextField", label: "To", editable: true }], { at: 600, windowId: "6160-3", title: "Mail Fixture — Compose", app: MAIL_APP, number: 4822 }));
+    const number = helper.model.windows.get(WIN)?.window.number;
+    expect(number).toBeGreaterThan(0);
+    jev = plannerJev({ fields: { Name: "Dana Whitfield" } });
+    const asked: JevRequest[] = [];
+    const inner = jev;
+    jev = async (r) => (asked.push(r), inner(r));
+    const named = (n: number, requestId: string) =>
+      helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId, at: clock, instruction: "Set Name to Dana Whitfield", window: { pid: 5150, number: n, title: TITLE } });
+    const r = await named(number ?? 0, "w1");
+    expect(PlanProposal.parse(r)).toMatchObject({ outcome: "proposed", window: { windowId: WIN } });
+    expect(asked.some((q) => q.questions.window !== undefined)).toBe(false);
+    const miss = await named(999_999, "w2");
+    expect(miss).toMatchObject({ outcome: "error", error: { code: "unseenWindow", detail: "the reader has not read window 999999 of process 5150" } });
+    expect(PlanProposal.parse(miss).offerKey).toBeNull();
+  });
+
+  it("plans and runs in the numbered window when another window of the app has the same title (B21 review)", async () => {
+    // Same app, same title, another number: by title alone the plan's window would be ambiguous.
+    void helper.handleReader(snap(executorWindow(), { at: 700, windowId: "5150-9", title: TITLE, number: 4900 }));
+    jev = plannerJev({ fields: { Name: "Dana Whitfield" } });
+    const r = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "same", at: clock, instruction: "Set Name to Dana Whitfield", window: { pid: 5150, number: WIN_NUMBER, title: TITLE } });
+    expect(PlanProposal.parse(r)).toMatchObject({ outcome: "proposed", window: { windowId: WIN } });
+    expect(await accept(r.offerKey ?? "")).toMatchObject({ outcome: "done", acted: 1 });
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana Whitfield");
   });
 
   it("copies a memory value, and refuses it once the entry is forgotten", async () => {

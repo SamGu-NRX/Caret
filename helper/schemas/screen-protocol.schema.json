@@ -688,6 +688,66 @@
             "point"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "userPress"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "pid": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "windowId": {
+              "type": "string"
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "via": {
+              "type": "string",
+              "enum": [
+                "click",
+                "return",
+                "enter",
+                "space"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "pid",
+            "windowId",
+            "key",
+            "role",
+            "label",
+            "via"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -890,7 +950,8 @@
                 "pause",
                 "resume",
                 "forget",
-                "add"
+                "add",
+                "offerOnItsOwn"
               ]
             },
             "id": {
@@ -1245,6 +1306,30 @@
             "windowId": {
               "type": "string",
               "minLength": 1
+            },
+            "window": {
+              "type": "object",
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "number": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pid",
+                "number",
+                "title"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -2849,7 +2934,8 @@
                                     "enum": [
                                       "outbound",
                                       "destructive",
-                                      "money"
+                                      "money",
+                                      "system"
                                     ]
                                   }
                                 },
@@ -2901,7 +2987,8 @@
                   "pause",
                   "resume",
                   "forget",
-                  "add"
+                  "add",
+                  "offerOnItsOwn"
                 ]
               }
             }
@@ -6187,6 +6274,7 @@
                         "outbound",
                         "destructive",
                         "money",
+                        "system",
                         "unverifiable"
                       ]
                     }
@@ -6228,7 +6316,8 @@
                         "unavailable",
                         "jevFailed",
                         "privacy",
-                        "internal"
+                        "internal",
+                        "unseenWindow"
                       ]
                     },
                     "detail": {
@@ -6942,6 +7031,7 @@
                       "enum": [
                         "value",
                         "focused",
+                        "focusValue",
                         "insert"
                       ]
                     },
@@ -7035,6 +7125,41 @@
                     "kind": {
                       "type": "string",
                       "const": "watchWindows"
+                    },
+                    "windows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "pid": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "windowId": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "pid",
+                          "windowId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "windows"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "watchPresses"
                     },
                     "windows": {
                       "type": "array",

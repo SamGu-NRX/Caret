@@ -3,9 +3,17 @@
 //   textedit  a new TextEdit process (direct exec) on a fresh untitled document
 //   webkit    caret-fixture's WKWebView window showing fixtures/web/form.html
 //   chromium  Google Chrome (direct exec) with a temporary --user-data-dir, on the same form by file:// URL
+//   electron  a minimal Electron app (fixtures/electron/main.cjs) run from a temporary directory on the same
+//             form, from an Electron installed by scripts/electron-setup.sh into --electron DIR (B20)
 //
 //   node scripts/real-target-eval.ts --target T --bin ../apps/screen-reader/.build/debug --probe PATH --out DIR
 //        [--runs 20] [--safety-runs 10] [--means-runs 10] [--plans a,b] [--background | --front]
+//        [--electron DIR] [--candidates PATH] [--responder]
+//
+// --candidates (web targets) adds B20's table of ways to write a field whose window is not key, each tried
+// alone by experiments/write-candidates.swift, built at PATH, and read back from the page. --responder
+// (webkit) makes the WebKit window's web view its first responder without making the window key, as a
+// browser left in the background holds it, before anything runs.
 //
 // --background puts this script's own bystander fixture in front (started with --foreground, then
 // `activate legacy`), so the target's window is not key while the executor acts, as for a form the user
@@ -22,7 +30,7 @@
 // GUI gates first; this script stops, closes its windows and reports `deferred: user active` as soon as
 // HID idle drops under 5 s. Needs CARET_ENV_FILE for Jev (the shipping plan's ambiguous targets).
 import { execFile, spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,7 +42,9 @@ import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import type { Plan, Step, WindowSel } from "../src/executor/schema.ts";
 import type { TaskResult, UndoResult } from "../src/executor/executor.ts";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppSwitch, type HelperMessage, type ReaderVerb, type TaskProgress, type VerbResult } from "../src/protocol.ts";
+import { Cdp } from "./cdp.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { userInput } from "./synthetic-input.ts";
 
 const run = promisify(execFile);
 const { values: a } = parseArgs({
@@ -49,10 +59,14 @@ const { values: a } = parseArgs({
     background: { type: "boolean", default: false },
     front: { type: "boolean", default: false },
     plans: { type: "string" },
+    electron: { type: "string" },
+    candidates: { type: "string" },
+    responder: { type: "boolean", default: false },
   },
 });
 const TARGET = a.target;
-if (TARGET !== "textedit" && TARGET !== "webkit" && TARGET !== "chromium") throw new Error("--target is textedit, webkit or chromium");
+if (TARGET !== "textedit" && TARGET !== "webkit" && TARGET !== "chromium" && TARGET !== "electron") throw new Error("--target is textedit, webkit, chromium or electron");
+if (TARGET === "electron" && a.electron === undefined) throw new Error("--target electron needs --electron DIR (scripts/electron-setup.sh)");
 if (a.bin === undefined || a.out === undefined || a.probe === undefined) throw new Error("--bin, --probe and --out are required");
 const BIN = resolve(a.bin);
 const PROBE = resolve(a.probe);
@@ -64,9 +78,14 @@ const MEANS_RUNS = Number(a["means-runs"]);
 const BACKGROUND = a.background === true;
 const FRONT = a.front === true;
 if (FRONT && (BACKGROUND || TARGET !== "webkit")) throw new Error("--front is for --target webkit, without --background");
+const RESPONDER = a.responder === true;
+if (RESPONDER && TARGET !== "webkit") throw new Error("--responder is for --target webkit");
+const CANDIDATES = a.candidates === undefined ? null : resolve(a.candidates);
+if (CANDIDATES !== null && TARGET === "textedit") throw new Error("--candidates is for the web targets");
 const FORM = resolve(import.meta.dirname, "../fixtures/web/form.html");
 const TEXTEDIT = "/System/Applications/TextEdit.app/Contents/MacOS/TextEdit";
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const ELECTRON_MAIN = resolve(import.meta.dirname, "../fixtures/electron/main.cjs");
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const until = async (what: string, ok: () => boolean | Promise<boolean>, ms = 20_000): Promise<void> => {
   const t0 = Date.now();
@@ -116,6 +135,10 @@ function finalCleanup(): void {
     while (alive(pid) && Date.now() < deadline) spawnSync("/bin/sleep", ["0.2"]);
     if (alive(pid)) signal(pid, "SIGKILL");
   }
+  const killed = Date.now() + 2000;
+  while ([...own.keys()].some(alive) && Date.now() < killed) spawnSync("/bin/sleep", ["0.2"]);
+  // A folder is deleted only when no process this script started is left.
+  const ownLeft = [...own.keys()].some(alive);
   own.clear();
   for (const d of tempDirs.splice(0)) {
     // Chrome's helpers name the profile as --user-data-dir=<d>; compared as text, not as a pattern.
@@ -126,7 +149,11 @@ function finalCleanup(): void {
       .filter((p) => p > 1);
     for (const p of left) signal(p, "SIGTERM");
     leftoverHelpers += left.length;
-    rmSync(d, { recursive: true, force: true });
+    // Deleted only once nothing that used it is left; otherwise kept, and named in the report.
+    const until = Date.now() + 5000;
+    while (left.some(alive) && Date.now() < until) spawnSync("/bin/sleep", ["0.2"]);
+    if (ownLeft || left.some(alive)) keptDirs.push(d);
+    else rmSync(d, { recursive: true, force: true });
   }
 }
 /** A process that has exited meanwhile is not an error during cleanup. */
@@ -138,6 +165,8 @@ function signal(pid: number, sig: NodeJS.Signals): void {
   }
 }
 let leftoverHelpers = 0;
+/** Temporary directories left in place because a process that used them did not exit in time. */
+const keptDirs: string[] = [];
 process.on("exit", finalCleanup);
 // Ctrl-C or a kill from the wrapper: leave through exit, so the cleanup above runs.
 process.on("SIGINT", () => process.exit(130));
@@ -165,7 +194,8 @@ const idleWatch = setInterval(() => {
   void hidIdleSeconds()
     .then(
       (s) => {
-        if (s < 5 && aborted === null) aborted = `HID idle dropped to ${s.toFixed(1)} s at ${new Date().toISOString()}`;
+        // The write candidates post input to the target, which resets HID idle too; only input after it is someone's.
+        if (s < 5 && userInput(s) && aborted === null) aborted = `HID idle dropped to ${s.toFixed(1)} s at ${new Date().toISOString()}`;
       },
       (e: unknown) => {
         if (aborted === null) aborted = `cannot read HID idle (${String(e)}), so whether someone is using the Mac is unknown`;
@@ -177,6 +207,29 @@ const idleWatch = setInterval(() => {
 }, 1000);
 function checkAbort(): void {
   if (aborted !== null) throw new Aborted(aborted);
+}
+
+/** The frontmost app's pid as LaunchServices has it (`lsappinfo`), or null when it cannot be read. */
+async function lsFrontPid(): Promise<number | null> {
+  try {
+    const asn = (await run("/usr/bin/lsappinfo", ["front"])).stdout.trim();
+    const m = /"pid"=(\d+)/.exec((await run("/usr/bin/lsappinfo", ["info", "-only", "pid", asn])).stdout);
+    return m?.[1] === undefined ? null : Number(m[1]);
+  } catch {
+    return null;
+  }
+}
+/**
+ * A --front run measures the WebKit fixture while it is the frontmost app, so LaunchServices must say so before
+ * every run; otherwise the run ends as deferred: foreground rather than measuring something else (B21).
+ */
+async function checkFront(): Promise<void> {
+  if (!FRONT) return;
+  const front = await lsFrontPid();
+  if (front !== target.pid) {
+    aborted = `deferred: foreground (LaunchServices names pid ${front ?? "unknown"} frontmost, not the WebKit fixture ${target.pid})`;
+    throw new Aborted(aborted);
+  }
 }
 class Aborted extends Error {}
 
@@ -260,6 +313,8 @@ interface Target {
   press: { label: string; done: (s: State) => boolean } | null;
   /** Makes the target the active app with its form window key (--front); only the WebKit fixture can be asked. */
   front?(): Promise<void>;
+  /** Makes the form window's web view its first responder without making the window key (--responder); WebKit fixture only. */
+  responder?(): Promise<void>;
   /** The plan window's window server number, once the reader has read it; a target whose checks find windows by title switches to it. */
   bind?(number: number): void;
   stop(): Promise<void>;
@@ -390,8 +445,22 @@ async function webkitTarget(): Promise<Target> {
     return r.value;
   };
   await until("the page to load", async () => (await ask("web typeof caretState")).value === "function");
-  const t = webTarget(pid, { titleStartsWith: "Caret Fixture — WebKit" }, js, async () => "Caret Fixture — Executor", async () => void fixture.kill("SIGTERM"));
+  // A --front run hands activation back to the app that was frontmost before it (the fixture's `quit PID`).
+  let handBackTo: number | null = null;
+  const stop = async (): Promise<void> => {
+    if (handBackTo !== null) {
+      fixture.stdin.write(`quit ${handBackTo}\n`);
+      await sleep(600);
+    }
+    fixture.kill("SIGTERM");
+  };
+  const t = webTarget(pid, { titleStartsWith: "Caret Fixture — WebKit" }, js, async () => "Caret Fixture — Executor", stop);
+  t.responder = async () => {
+    const r = await ask("responder webkit");
+    if (r.ok !== true) throw new Error(`webkit responder: ${JSON.stringify(r)}`);
+  };
   t.front = async () => {
+    handBackTo = await lsFrontPid();
     for (const cmd of ["activate legacy", "focus webkit"]) {
       const r = await ask(cmd);
       if (r.ok !== true) throw new Error(`webkit ${cmd}: ${String(r.error)}`);
@@ -412,7 +481,7 @@ async function chromiumTarget(): Promise<Target> {
   const portFile = join(profile, "DevToolsActivePort");
   await until("Chrome's DevTools port", () => existsSync(portFile), 30_000);
   const [port, path] = readFileSync(portFile, "utf8").trim().split("\n");
-  const cdp = await Cdp.connect(`ws://127.0.0.1:${port}${path}`);
+  const cdp = await Cdp.connect(`ws://127.0.0.1:${port}${path}`, (m) => (aborted !== null ? new Aborted(aborted) : new Error(`no DevTools answer to ${m} within 15 s`)));
   const page = async (): Promise<string> => {
     const { targetInfos } = (await cdp.send("Target.getTargets")) as { targetInfos: { targetId: string; type: string; url: string }[] };
     const t = targetInfos.find((x) => x.type === "page" && x.url.startsWith("file:") && !x.url.includes("?second"));
@@ -422,9 +491,7 @@ async function chromiumTarget(): Promise<Target> {
   let session: string | null = null;
   const js = async (expr: string): Promise<unknown> => {
     if (session === null) session = ((await cdp.send("Target.attachToTarget", { targetId: await page(), flatten: true })) as { sessionId: string }).sessionId;
-    const r = (await cdp.send("Runtime.evaluate", { expression: `JSON.stringify(${expr})`, returnByValue: true }, session)) as { result: { value?: string }; exceptionDetails?: unknown };
-    if (r.exceptionDetails !== undefined || r.result.value === undefined) throw new Error(`chromium: ${JSON.stringify(r.exceptionDetails ?? r.result)}`);
-    return JSON.parse(r.result.value) as unknown;
+    return cdp.evaluate(session, expr);
   };
   await until("the page to load", async () => {
     try {
@@ -445,6 +512,65 @@ async function chromiumTarget(): Promise<Target> {
       cdp.close();
       chrome.kill("SIGTERM");
       await until("Chrome to exit", () => chrome.exitCode !== null || chrome.signalCode !== null, 15_000).catch(() => chrome.kill("SIGKILL"));
+    },
+  );
+}
+
+async function electronTarget(): Promise<Target> {
+  const exe = join(resolve(a.electron ?? ""), "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron");
+  if (!existsSync(exe)) throw new Error(`no ${exe}; run scripts/electron-setup.sh first`);
+  // The app and its page in a directory of this run's own, deleted at the end with the others.
+  const appDir = mkdtempSync(join(tmpdir(), "caret-electron-app-"));
+  tempDirs.push(appDir);
+  copyFileSync(ELECTRON_MAIN, join(appDir, "main.cjs"));
+  copyFileSync(FORM, join(appDir, "form.html"));
+  writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "caret-electron-eval", main: "main.cjs" }) + "\n");
+  // Electron keeps its profile under the app's name in Application Support unless told otherwise.
+  const profile = mkdtempSync(join(tmpdir(), "caret-electron-profile-"));
+  tempDirs.push(profile);
+  checkAbort();
+  // Without ELECTRON_RUN_AS_NODE, which an Electron host such as the agent's own sets for its children: with it
+  // the binary runs as plain Node and cannot load the app (B20 exploration).
+  const { ELECTRON_RUN_AS_NODE: _asNode, ...env } = process.env;
+  const proc: ChildProcessWithoutNullStreams = spawn(exe, [appDir, `--user-data-dir=${profile}`], { env });
+  const pid = started("electron", proc);
+  // Drained, so a chatty Electron cannot fill the pipe and stall; the tail goes in the report's folder.
+  let electronLog = "";
+  proc.stderr.setEncoding("utf8");
+  proc.stderr.on("data", (d: string) => (electronLog = (electronLog + d).slice(-20_000)));
+  process.on("exit", () => writeFileSync(join(OUT, "electron.log"), electronLog));
+  const lines = lineReader(proc, "the electron app");
+  const first = await lines.next(30_000);
+  const said = Number(/^caret-electron pid (\d+)/.exec(first)?.[1]);
+  if (said !== pid) throw new Error(`the electron app said '${first}', expected pid ${pid}`);
+  const ask = async (cmd: string): Promise<Record<string, unknown>> => {
+    proc.stdin.write(cmd + "\n");
+    return JSON.parse(await lines.next()) as Record<string, unknown>;
+  };
+  const js = async (expr: string): Promise<unknown> => {
+    const r = await ask(`web ${expr}`);
+    if (r.ok !== true) throw new Error(`electron: ${String(r.error)}`);
+    return r.value;
+  };
+  await until("the page to load", async () => {
+    try {
+      return (await js("typeof caretState")) === "function";
+    } catch {
+      return false;
+    }
+  }, 30_000);
+  return webTarget(
+    pid,
+    { titleStartsWith: "Caret Form — Web" },
+    js,
+    async () => {
+      const r = await ask("second");
+      if (r.ok !== true) throw new Error(`electron second: ${String(r.error)}`);
+      return "Caret Form — Web";
+    },
+    async () => {
+      proc.stdin.end();
+      await until("Electron to exit", () => proc.exitCode !== null || proc.signalCode !== null, 15_000).catch(() => proc.kill("SIGKILL"));
     },
   );
 }
@@ -588,56 +714,6 @@ function lineReader(p: ChildProcessWithoutNullStreams, label: string): { next(ms
   };
 }
 
-/** A minimal Chrome DevTools Protocol client over Node's WebSocket. */
-class Cdp {
-  private n = 0;
-  private readonly pending = new Map<number, { ok: (v: unknown) => void; fail: (e: Error) => void }>();
-  private readonly ws: WebSocket;
-  private constructor(ws: WebSocket) {
-    this.ws = ws;
-    ws.addEventListener("close", () => {
-      for (const p of this.pending.values()) p.fail(new Error("the DevTools connection closed"));
-      this.pending.clear();
-    });
-    ws.addEventListener("message", (ev) => {
-      const m = JSON.parse(String(ev.data)) as { id?: number; result?: unknown; error?: { message: string } };
-      if (m.id === undefined) return;
-      const p = this.pending.get(m.id);
-      this.pending.delete(m.id);
-      if (m.error !== undefined) p?.fail(new Error(m.error.message));
-      else p?.ok(m.result);
-    });
-  }
-  static connect(url: string): Promise<Cdp> {
-    return new Promise((res, rej) => {
-      const ws = new WebSocket(url);
-      const t = setTimeout(() => {
-        ws.close();
-        rej(new Error(`no DevTools connection to ${url} within 15 s`));
-      }, 15_000);
-      ws.addEventListener("open", () => (clearTimeout(t), res(new Cdp(ws))));
-      ws.addEventListener("error", () => (clearTimeout(t), rej(new Error(`cannot reach ${url}`))));
-    });
-  }
-  send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<unknown> {
-    const id = ++this.n;
-    this.ws.send(JSON.stringify({ id, method, params, ...(sessionId === undefined ? {} : { sessionId }) }));
-    return new Promise((ok, fail) => {
-      const t = setTimeout(() => {
-        this.pending.delete(id);
-        fail(aborted !== null ? new Aborted(aborted) : new Error(`no DevTools answer to ${method} within 15 s`));
-      }, 15_000);
-      this.pending.set(id, {
-        ok: (v) => (clearTimeout(t), ok(v)),
-        fail: (e) => (clearTimeout(t), fail(e)),
-      });
-    });
-  }
-  close(): void {
-    this.ws.close();
-  }
-}
-
 // MARK: - reader, bystander and target
 
 /** A second process the reader reads, for the "pid outside the grant" case: a fixture with its executor window. */
@@ -650,7 +726,7 @@ const bystanderPid = Number(/^caret-fixture pid (\d+)/.exec(await bystanderLines
 const textEditBefore = await pgrep("-x", "TextEdit");
 const autosaveBefore = new Set(textEditLeftovers());
 checkAbort();
-const target = TARGET === "textedit" ? await texteditTarget() : TARGET === "webkit" ? await webkitTarget() : await chromiumTarget();
+const target = TARGET === "textedit" ? await texteditTarget() : TARGET === "webkit" ? await webkitTarget() : TARGET === "electron" ? await electronTarget() : await chromiumTarget();
 await sleep(1000);
 checkAbort();
 checkAbort();
@@ -673,6 +749,7 @@ if (target.bind !== undefined) {
 // Chrome builds its web tree some time after the reader asks for it: plans start once the fields are there.
 const sf = target.safetyField;
 await until("the target's fields in the screen model", () => [...(windowOf(target.pid, titlePrefix)?.nodes.values() ?? [])].some((n) => n.role === sf.role && (sf.label === "" || n.label === sf.label)), 30_000);
+if (RESPONDER) await target.responder?.();
 if (FRONT) {
   await target.front?.();
   await until("the WebKit fixture to be frontmost", () => switches.at(-1)?.to.pid === target.pid, 5000).catch((e: unknown) => {
@@ -720,11 +797,16 @@ const only = a.plans === undefined ? null : new Set(a.plans.split(","));
 // Filled row by row, so an abort keeps every row finished before it.
 const safety: SafetyRow[] = [];
 const means: MeansRow[] = [];
+// Above the runs, not beside candidatesTable: the runs below call it before the module reaches that point.
+// B20's paste-cg is gone: it wrote the general pasteboard, which no test may (BUILD-ORDER clipboard rule).
+const CANDIDATE_NAMES = ["value", "focus-value", "main-value", "insert", "type-cg", "type-sl"] as const;
+const candidates: CandidateRow[] = [];
 try {
   for (const [name, pc] of Object.entries(target.plans)) {
     if (only !== null && !only.has(name)) continue;
     for (let r = 0; r < RUNS; r++) {
       checkAbort();
+      await checkFront();
       await reset(pc.seed);
       const before = await target.state();
       const slots = pc.slots(r);
@@ -754,6 +836,7 @@ try {
   }
 
   await meansTable();
+  if (CANDIDATES !== null) await candidatesTable(CANDIDATES);
 
   // MARK: - safety cases: each must answer notAllowed and leave the field as it was
 
@@ -786,6 +869,7 @@ async function meansTable(): Promise<void> {
   for (const kind of kinds) {
     for (let r = 0; r < MEANS_RUNS; r++) {
       checkAbort();
+      await checkFront();
       await reset({});
       // Insert replaces what is there; value starts from empty, as most fills do.
       if (kind === "insert") await target.seed(sf.name, `old text ${r}`);
@@ -818,6 +902,77 @@ async function meansTable(): Promise<void> {
   }
 }
 
+/** B20: the ways to write a web field whose window is not key, each alone, judged by the page itself. */
+interface CandidateRow {
+  candidate: (typeof CANDIDATE_NAMES)[number];
+  run: number;
+  /** The probe acted (or skipped: the pasteboard held something it could not restore). */
+  acted: boolean;
+  skipped: boolean;
+  /** The page's own field holds the value written. */
+  landed: boolean;
+  /** The candidate's own after-check, an Accessibility read of the field, says it landed. */
+  claimed: boolean;
+  /** Another field of the form changed, or the page's Send ran: keys that went somewhere else. */
+  collateral: string | null;
+  /** The target's window moved up the on-screen order, or the target app became active, or the frontmost app changed. */
+  raised: boolean;
+  activated: boolean;
+  frontChanged: boolean;
+  detail: string;
+  error: string | null;
+}
+
+async function candidatesTable(probe: string): Promise<void> {
+  const title = target.win.titleStartsWith ?? target.win.title ?? "";
+  for (const candidate of CANDIDATE_NAMES) {
+    for (let r = 0; r < MEANS_RUNS; r++) {
+      checkAbort();
+      await checkFront();
+      await reset({});
+      await target.seed("name", `old text ${r}`);
+      await sleep(300);
+      const before = await target.state();
+      const value = `cand ${candidate} ${r}`;
+      // The probe acts only on the target's pid, which this script started.
+      let o: Record<string, unknown>;
+      try {
+        // The probe marks CARET_SYNTHETIC_FILE around the input it posts, so the idle watch knows it for its own.
+        // In a --front run the probe checks LaunchServices names the target frontmost before every key it posts.
+        const env = FRONT ? { ...process.env, CARET_REQUIRE_FRONT: "1" } : process.env;
+        o = JSON.parse((await run(probe, [String(target.pid), title, "name", candidate, value], { timeout: 30_000, env })).stdout) as Record<string, unknown>;
+      } catch (e) {
+        o = { ok: false, error: String(e) };
+      }
+      // The probe saw another app frontmost before a key: the run is not measuring a frontmost target any more.
+      if (FRONT && String(o.error ?? "").startsWith("deferred: foreground")) {
+        aborted = `${String(o.error)} (candidate ${candidate}, run ${r})`;
+        throw new Aborted(aborted);
+      }
+      await sleep(300);
+      const after = await target.state();
+      const others = Object.keys(before.fields).filter((k) => k !== "name" && before.fields[k] !== after.fields[k]);
+      const collateral = others.length > 0 ? `changed: ${others.join(", ")}` : after.sent === true ? "the page's Send ran" : after.title !== before.title ? `title became '${after.title}'` : null;
+      const row: CandidateRow = {
+        candidate,
+        run: r,
+        acted: o.acted === true,
+        skipped: o.skipped === true,
+        landed: after.fields.name === value,
+        claimed: o.axSaysLanded === true,
+        collateral,
+        raised: o.raised === true,
+        activated: o.activeAfter === true && o.activeBefore !== true,
+        frontChanged: o.frontBefore !== o.frontAfter,
+        detail: String(o.detail ?? ""),
+        error: o.ok === true ? null : String(o.error ?? "probe failed"),
+      };
+      candidates.push(row);
+      process.stdout.write(`candidate ${candidate} ${r}: landed=${row.landed} claimed=${row.claimed} raised=${row.raised} activated=${row.activated} front=${row.frontChanged}${collateral === null ? "" : ` COLLATERAL ${collateral}`}${row.error === null ? "" : ` ERROR ${row.error}`} (${row.detail}) '${before.fields.name}' -> '${after.fields.name}'\n`);
+    }
+  }
+}
+
 interface SafetyRow {
   kind: "pidOutside" | "expired" | "otherWindow" | "control";
   run: number;
@@ -845,6 +1000,7 @@ async function safetyCases(): Promise<void> {
   const revoke = (taskId: string): void => void server?.sendToReader({ type: "actRevoke", v: PROTOCOL_VERSION, taskId, at: Date.now() });
   const attempt = async (kind: SafetyRow["kind"], r: number): Promise<void> => {
     checkAbort();
+    await checkFront();
     await reset({});
     const seeded = `safety ${kind} ${r}`;
     await target.seed(f.name, seeded);
@@ -941,11 +1097,28 @@ for (const k of ["pidOutside", "expired", "otherWindow", "control"] as const) {
   if (xs.length === 0) continue;
   md.push(`| ${k === "control" ? "control (valid grant)" : k} | ${xs.length} | ${JSON.stringify(count(xs.map((x) => x.outcome)))} | ${xs.filter((x) => x.asExpected).length} | ${xs[0]?.detail ?? ""} |`);
 }
+if (candidates.length > 0) {
+  md.push(
+    "",
+    `## Write candidates, each alone (${RESPONDER ? "web view first responder, window not key" : BACKGROUND ? "this script's fixture in front" : FRONT ? "WebKit fixture frontmost, its form window key" : "target as launched"})`,
+    "",
+    "Landed is read from the page. Claimed is the candidate's own Accessibility read-back saying it landed; claimed but not landed must be 0. Raised: the window moved up the on-screen order. Activated: the target app became active. Collateral: another field or the page's Send changed. B20's paste-cg is not run: it wrote the general pasteboard, which no test may.",
+    "",
+    "| Candidate | Runs | Landed | Claimed | Claimed, not landed | Raised | Activated | Front app changed | Collateral | Skipped or errors | Example |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+  );
+  for (const k of CANDIDATE_NAMES) {
+    const xs = candidates.filter((x) => x.candidate === k);
+    if (xs.length === 0) continue;
+    const ex = xs.find((x) => !x.landed) ?? xs[0];
+    md.push(`| ${k} | ${xs.length} | ${xs.filter((x) => x.landed).length} | ${xs.filter((x) => x.claimed).length} | ${xs.filter((x) => x.claimed && !x.landed).length} | ${xs.filter((x) => x.raised).length} | ${xs.filter((x) => x.activated).length} | ${xs.filter((x) => x.frontChanged).length} | ${xs.filter((x) => x.collateral !== null).length} | ${xs.filter((x) => x.skipped || x.error !== null).length} | ${ex === undefined ? "" : `${ex.detail}${ex.error === null ? "" : `; ${ex.error}`}`} |`);
+  }
+}
 md.push("", `## Frontmost app changes during the run`, "", switches.length === 0 ? "none" : switches.map((s) => `- ${new Date(s.at).toISOString()} ${s.from?.name ?? "?"} (${s.from?.pid ?? "?"}) -> ${s.to.name} (${s.to.pid})`).join("\n"));
-md.push("", `## Cleanup`, "", `Processes still carrying this run's temporary profile after Chrome exited, then stopped: ${leftoverHelpers}. TextEdit processes before: [${textEditBefore.join(", ")}], after: [${textEditAfter.join(", ")}]. New entries in TextEdit's autosave and saved-state folders: ${JSON.stringify(autosave)}.`);
+md.push("", `## Cleanup`, "", `Processes still carrying this run's temporary profile after Chrome exited, then stopped: ${leftoverHelpers}. Temporary folders kept because one did not exit in time: ${JSON.stringify(keptDirs)}. TextEdit processes before: [${textEditBefore.join(", ")}], after: [${textEditAfter.join(", ")}]. New entries in TextEdit's autosave and saved-state folders: ${JSON.stringify(autosave)}.`);
 md.push("", `Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}. Helper errors: ${errors.length}.`);
 writeFileSync(join(OUT, "real-target-eval.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "real-target-eval.json"), JSON.stringify({ target: TARGET, background: BACKGROUND, front: FRONT, aborted, rows, means, safety: sr, progress, errors, switches, jevCalls, jevCost, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
+writeFileSync(join(OUT, "real-target-eval.json"), JSON.stringify({ target: TARGET, background: BACKGROUND, front: FRONT, responder: RESPONDER, aborted, rows, means, candidates, safety: sr, progress, errors, switches, jevCalls, jevCost, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
 writeFileSync(join(OUT, "reader.log"), readerLog);
 console.log(md.join("\n"));
 process.exit(aborted === null ? 0 : 3);

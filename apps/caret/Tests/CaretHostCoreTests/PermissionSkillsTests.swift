@@ -173,7 +173,7 @@ final class PermissionSkillsTests: XCTestCase {
 
     /// The contract line (Fixtures/memory.ndjson): a skill's `wrote`, and what the host refuses.
     func testWroteIsReadFromTheContractAndAnythingElseIsRefused() throws {
-        let contract = try HelperMemoryTests.reply(9)
+        let contract = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-8", "memoryReply"))
         XCTAssertEqual(contract.entries.first?.wrote, [.writeElsewhere])
         XCTAssertNil(try state([skill("s", wrote: .unknown)]).entries.first?.wrote, "today's helper does not say")
         let bad = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[\#(skill("s", wrote: .here).replacingOccurrences(of: "writeHere", with: "outbound"))]}"#.utf8))

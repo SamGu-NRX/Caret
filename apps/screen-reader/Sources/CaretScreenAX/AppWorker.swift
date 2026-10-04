@@ -37,6 +37,149 @@ struct WindowInfo {
     var decided: [String: AXRef] = [:]
 }
 
+/// The worker's windows, and the keys of their pressable elements as of each window's latest walk, readable
+/// from any thread. A user's press is resolved the moment the button goes down, not behind walks queued on the
+/// worker, since Send can close its window before those finish (B20 review).
+final class PressIndex: @unchecked Sendable {
+    /// A pressable node of the latest walk, for placing a click the window's app cannot hit-test.
+    struct Control {
+        let key: String
+        let role: String
+        let label: String
+        let frame: Frame
+    }
+    /// The button Return presses in a window (AXDefaultButton), as of the latest full walk (B21).
+    struct DefaultButton {
+        /// The element itself, so a later partial walk finds it under whatever key it has then.
+        let element: AXRef
+        /// Its key in that walk; nil when the walk did not keep it.
+        let key: String?
+        let role: String
+        let label: String
+        let enabled: Bool
+    }
+    /// The element with focus in the app, as the latest focus change named it, and the role it had then (B21).
+    struct Focused {
+        let window: AXRef
+        let element: AXRef
+        let role: String
+        /// A single-line field outside any web page, in which Return presses the default button (B22; KeyPresses).
+        let singleLineField: Bool
+    }
+    private struct Entry {
+        var id: String
+        var number: Int?
+        var keys: [AXRef: String]
+        var controls: [Control]
+        var defaultButton: DefaultButton?
+    }
+    private let lock = NSLock()
+    private var byWindow: [AXRef: Entry] = [:]
+    private var focus: Focused?
+
+    /// After a full walk: the window's keys, its pressable controls with their frames, and its default button.
+    func set(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node], defaultButton: DefaultButton?) {
+        let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
+        let controls = nodes.compactMap { n -> Control? in
+            guard Roles.pressable.contains(n.role), let f = n.frame else { return nil }
+            return Control(key: n.key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines), frame: f)
+        }
+        lock.lock(); defer { lock.unlock() }
+        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: defaultButton)
+    }
+
+    /// After a walk of part of the window: its keys; the last full walk's controls, with every pressable node this
+    /// walk read put in under its key as read now; and the default button, found again by its element, with the key,
+    /// label and enabled state it has now (B21 review: a Send renamed, disabled or renumbered since the full walk
+    /// must not be reported as it was, nor a sibling that took its old key).
+    func setKeys(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node]) {
+        let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
+        let read = Dictionary(nodes.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let label = { (n: Node) in (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+        lock.lock(); defer { lock.unlock() }
+        var controls = (byWindow[w]?.controls ?? []).filter { read[$0.key] == nil }
+        for n in nodes where Roles.pressable.contains(n.role) {
+            guard let f = n.frame ?? byWindow[w]?.controls.first(where: { $0.key == n.key })?.frame else { continue }
+            controls.append(Control(key: n.key, role: n.role, label: label(n), frame: f))
+        }
+        var d = byWindow[w]?.defaultButton
+        if let old = d, let k = contexts[old.element]?.key {
+            d = read[k].map { DefaultButton(element: old.element, key: k, role: $0.role, label: label($0), enabled: !$0.states.contains(.disabled)) }
+                ?? DefaultButton(element: old.element, key: k, role: old.role, label: old.label, enabled: old.enabled)
+        }
+        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: d)
+    }
+
+    func setFocus(_ f: Focused?) {
+        lock.lock(); defer { lock.unlock() }
+        focus = f
+    }
+
+    /// What a press key pressed (KeyPresses), from the focus and the focused window's walk as last recorded: the
+    /// window's id and the control's key, role and label. Nil when it pressed nothing the reader reports, or the
+    /// window was never walked.
+    func keyPress(_ via: UserPress.Via) -> (id: String, key: String?, role: String, label: String)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let f = focus, let e = byWindow[f.window] else { return nil }
+        let d = e.defaultButton
+        switch KeyPresses.target(via, focusedRole: f.role, singleLineField: f.singleLineField, enabledDefaultButton: d?.enabled == true) {
+        case .defaultButton?:
+            guard let d else { return nil }
+            return (e.id, d.key, d.role, d.label)
+        case .focused?:
+            let key = e.keys[f.element]
+            // The label as the walk read it: a Space that closes the window leaves nothing to read afterwards.
+            let label = e.controls.first { $0.key == key }?.label
+            guard let key, let label else { return nil }
+            return (e.id, key, f.role, label)
+        case nil:
+            return nil
+        }
+    }
+
+    /// The smallest pressable control of the window with this window-server number whose walked frame holds
+    /// `p`, with the window's id. The frames are as of the latest full walk.
+    func control(number: Int, at p: CGPoint) -> (id: String, control: Control)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let e = byWindow.values.first(where: { $0.number == number }) else { return nil }
+        let hits = e.controls.filter { p.x >= $0.frame.x && p.x <= $0.frame.x + $0.frame.width && p.y >= $0.frame.y && p.y <= $0.frame.y + $0.frame.height }
+        guard let best = hits.min(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }) else { return nil }
+        return (e.id, best)
+    }
+
+    func remove(_ w: AXRef) {
+        lock.lock(); defer { lock.unlock() }
+        byWindow.removeValue(forKey: w)
+        if focus?.window == w { focus = nil }
+    }
+
+    func removeAll() {
+        lock.lock(); defer { lock.unlock() }
+        byWindow.removeAll()
+        focus = nil
+    }
+
+    /// The id of the window that has the app's focus, as the latest focus change named it; nil when unknown.
+    func focusedWindowId() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let f = focus else { return nil }
+        return byWindow[f.window]?.id
+    }
+
+    /// The id of the window with this window-server number, nil when the reader has not walked it.
+    func windowId(number: Int) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return byWindow.values.first { $0.number == number }?.id
+    }
+
+    /// The window's id and the element's key, nil when the reader has not walked that window.
+    func lookup(window w: AXRef, element el: AXRef) -> (id: String, key: String?)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry = byWindow[w] else { return nil }
+        return (entry.id, entry.keys[el])
+    }
+}
+
 private let observerCallback: AXObserverCallback = { _, element, notification, refcon in
     guard let refcon else { return }
     let worker = Unmanaged<AppWorker>.fromOpaque(refcon).takeUnretainedValue()
@@ -46,10 +189,17 @@ private let observerCallback: AXObserverCallback = { _, element, notification, r
 public final class AppWorker: @unchecked Sendable {
     public let pid: pid_t
     public let app: AppRef
+    /// The process and this worker's generation, which every window id it gives out carries (S1 audit #7).
+    public let incarnation: ProcessIncarnation
     let appPart: String
     let ax: AXUIElement
     let queue: DispatchQueue
     let ctx: ReaderContext
+    /// Resolves user presses at once, beside `queue` rather than behind it.
+    private let pressQueue: DispatchQueue
+    private let pressIndex = PressIndex()
+    /// Held from placing a key press to queueing it, and by `closed` around draining the press queue (B21).
+    private let keyAdmission = NSLock()
 
     // Confined to `queue`.
     private var windows: [AXRef: WindowInfo] = [:]
@@ -90,12 +240,18 @@ public final class AppWorker: @unchecked Sendable {
         "AXLoadComplete", "AXLiveRegionChanged", kAXSelectedRowsChangedNotification,
     ]
 
-    public init(pid: pid_t, app: AppRef, ctx: ReaderContext) {
+    /// Chromium and Electron render web pages themselves; any other app's web area is WebKit's (B20).
+    private let chromiumFamily: Bool
+
+    public init(pid: pid_t, app: AppRef, ctx: ReaderContext, incarnation: ProcessIncarnation) {
         self.pid = pid
         self.app = app
+        self.incarnation = incarnation
+        self.chromiumFamily = NSRunningApplication(processIdentifier: pid)?.bundleURL.map(AppClassifier.isChromiumFamily) ?? false
         self.appPart = ElementKey.appPart(bundleId: app.bundleId.isEmpty ? nil : app.bundleId, name: app.name)
         self.ax = AXUIElementCreateApplication(pid)
         self.queue = DispatchQueue(label: "caret.screen.app.\(pid)", qos: .utility)
+        self.pressQueue = DispatchQueue(label: "caret.screen.press.\(pid)", qos: .userInitiated)
         self.ctx = ctx
         AXUIElementSetMessagingTimeout(ax, AX.elementTimeout)
     }
@@ -188,7 +344,7 @@ public final class AppWorker: @unchecked Sendable {
             if case .failed(.invalidUIElement) = AX.read(w.el, kAXRoleAttribute) {
                 windows.removeValue(forKey: w)
                 watched.remove(info.id)
-                ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
+                closed(w, info.id)
                 continue
             }
             walkWindow(w, reason: .watch, isFocused: eventDriven && w == focusedWindow)
@@ -220,8 +376,10 @@ public final class AppWorker: @unchecked Sendable {
             self.watchTimer?.cancel()
             self.watchTimer = nil
             self.removeObserver()
+            self.pressQueue.sync {}
             for (_, info) in self.windows { self.ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id))) }
             self.windows.removeAll()
+            self.pressIndex.removeAll()
         }
     }
 
@@ -245,7 +403,7 @@ public final class AppWorker: @unchecked Sendable {
             walkWindow(el, reason: .event, isFocused: el == currentFocusedWindow())
         case kAXUIElementDestroyedNotification:
             if let info = windows.removeValue(forKey: el) {
-                ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
+                closed(el, info.id)
                 if focusedWindow == el { focusedWindow = nil }
             } else {
                 request(full: true, subtree: nil)
@@ -365,6 +523,12 @@ public final class AppWorker: @unchecked Sendable {
         }
         focusElement = fe
         w = w ?? currentFocusedWindow()
+        // For a key press made in this window (B21): which element had focus, read now rather than when the key goes down.
+        if let fe, let w {
+            let role = AX.string(fe.el, kAXRoleAttribute) ?? "AXUnknown"
+            let singleLine = KeyPresses.singleLineRoles.contains(role) && !inWebPage(fe.el)
+            pressIndex.setFocus(PressIndex.Focused(window: w, element: fe, role: role, singleLineField: singleLine))
+        } else { pressIndex.setFocus(nil) }
         if let prev = focusedWindow, prev != w, windows[prev] != nil {
             walkWindow(prev, reason: .leave, isFocused: false)
         }
@@ -396,7 +560,7 @@ public final class AppWorker: @unchecked Sendable {
     private func info(for w: AXRef) -> WindowInfo {
         if let i = windows[w] { return i }
         let kind = ElementKey.windowKind(subrole: AX.string(w.el, kAXSubroleAttribute), identifier: AX.string(w.el, kAXIdentifierAttribute))
-        let i = WindowInfo(id: "\(pid)-\(nextWindow)", kind: kind, number: AX.windowNumber(of: w.el))
+        let i = WindowInfo(id: incarnation.windowId(nextWindow), kind: kind, number: AX.windowNumber(of: w.el))
         nextWindow += 1
         windows[w] = i
         return i
@@ -416,11 +580,18 @@ public final class AppWorker: @unchecked Sendable {
         let raw = walker.readChildren(of: w.el)
         let title = AX.string(w.el, kAXTitleAttribute) ?? ""
         let result = Compactor(app: appPart, windowKind: info.kind, windowTitle: title).compact(windowChildren: raw)
-        let walkMs = walker.elapsedMs
         var contexts: [AXRef: KeyContext] = [:]
         for (h, kc) in result.contexts { contexts[AXRef(walker.elements[h])] = kc }
+        // A sheet the walk found among the window's children takes the window's keys, so its default button is Return's.
+        // A walk cut short may have missed a sheet; then which button Return presses is unknown, and none is kept
+        // (B21 fix-check: the window's own Send behind a sheet would be reported).
+        let sheet = raw.first { $0.role == kAXSheetRole }?.handle.map { walker.elements[$0] }
+        let sheetUnknown = sheet == nil && (walker.truncated || walker.clipped)
+        let defaultButton = sheetUnknown ? nil : defaultButton(of: sheet ?? w.el, contexts: contexts, nodes: result.nodes)
+        let walkMs = walker.elapsedMs
         info.contexts = contexts
         info.lastWalk = CFAbsoluteTimeGetCurrent()
+        pressIndex.set(w, id: info.id, number: info.number, contexts: contexts, nodes: result.nodes, defaultButton: defaultButton)
 
         let frame = AX.frame(of: w.el)
         var h = Hasher()
@@ -442,6 +613,21 @@ public final class AppWorker: @unchecked Sendable {
         return (result.nodes, walker.truncated || walker.clipped)
     }
 
+    /// The button Return presses in `owner`, a window or the sheet it shows (AXDefaultButton). Its key, role, label
+    /// and enabled state are from this walk when the walk kept it; otherwise from the element itself, with no key.
+    private func defaultButton(of owner: AXUIElement, contexts: [AXRef: KeyContext], nodes: [Node]) -> PressIndex.DefaultButton? {
+        guard let el = AX.element(owner, kAXDefaultButtonAttribute) else { return nil }
+        AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+        if let key = contexts[AXRef(el)]?.key, let n = nodes.first(where: { $0.key == key }) {
+            return PressIndex.DefaultButton(element: AXRef(el), key: key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                                            enabled: !n.states.contains(.disabled))
+        }
+        guard let label = liveLabel(el) else { return nil }
+        let enabled = (AX.copy(el, kAXEnabledAttribute) as? Bool) ?? true
+        return PressIndex.DefaultButton(element: AXRef(el), key: nil, role: AX.string(el, kAXRoleAttribute) ?? "AXButton",
+                                        label: label.trimmingCharacters(in: .whitespacesAndNewlines), enabled: enabled)
+    }
+
     /// Re-reads just the element a notification named, when it was a kept node whose key does not
     /// depend on anything outside it. Returns false when the whole window must be walked instead.
     private func walkSubtree(_ el: AXRef) -> Bool {
@@ -453,6 +639,7 @@ public final class AppWorker: @unchecked Sendable {
         for (h, c) in result.contexts { info.contexts[AXRef(walker.elements[h])] = c }
         info.contentHash = nil
         windows[w] = info
+        pressIndex.setKeys(w, id: info.id, number: info.number, contexts: info.contexts, nodes: result.nodes)
         let snap = Snapshot(seq: ctx.nextSeq(), at: nowMs(), reason: .event, app: app,
                             window: WindowRef(windowId: info.id, kind: info.kind, title: title, frame: AX.frame(of: w.el), number: info.number),
                             focused: w == focusedWindow, root: kc.key, nodes: result.nodes, values: ctx.detector.values(for: result.nodes),
@@ -472,7 +659,7 @@ public final class AppWorker: @unchecked Sendable {
         let live = Set(ws.map(AXRef.init))
         for (w, info) in windows where !live.contains(w) {
             windows.removeValue(forKey: w)
-            ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id)))
+            closed(w, info.id)
         }
         let focused = eventDriven ? (focusedWindow ?? currentFocusedWindow()) : nil
         let now = CFAbsoluteTimeGetCurrent()
@@ -480,6 +667,87 @@ public final class AppWorker: @unchecked Sendable {
             if let i = windows[w], now - i.lastWalk < minAge { continue }
             walkWindow(w, reason: reason, isFocused: w == focused)
         }
+    }
+
+    // MARK: - observed presses (B20)
+
+    /**
+     * Reports a window closed, after any press being resolved on the press queue has been sent. The press is
+     * read when the button goes down; the app may answer its hit-test only once the click is over, and by then
+     * a Send has closed the window. The helper learns a routine's finish from the press only if it arrives
+     * before the window's close (B20 press-learn run 1: 4 presses reported, none learned).
+     */
+    private func closed(_ w: AXRef, _ windowId: String) {
+        // Drained first, then the window leaves the index: a press still being resolved may need its frames. A key
+        // press placed but not yet queued is let in first (observeKey holds `keyAdmission` from placing to queueing).
+        keyAdmission.lock()
+        pressQueue.sync {}
+        pressIndex.remove(w)
+        keyAdmission.unlock()
+        ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: windowId)))
+    }
+
+    /// How many ancestors above the element under a click are tried for a pressable one: a button's label or
+    /// image is often the element hit. Assumed.
+    static let pressClimb = 6
+
+    /// The user clicked at `point` (Accessibility coordinates) at `at`, in the window with window-server number
+    /// `number` when the event named one. When the element under the click, or a near ancestor, is pressable
+    /// and sits in one of `windows`, reports it as a userPress with its key from the window's latest walk and
+    /// its label as the element carries it. An app cannot hit-test a point another app's window covers (B20: a
+    /// click posted to a covered fixture window), so then the control is found among the latest full walk's
+    /// frames in the window the event names, with the label that walk read. Read only: nothing is pressed or set.
+    func observePress(at point: CGPoint, number: Int?, time at: Int64, windows ids: Set<String>) {
+        pressQueue.async {
+            if self.pressByHitTest(at: point, number: number, time: at, windows: ids) { return }
+            guard let n = number, let (id, c) = self.pressIndex.control(number: n, at: point), ids.contains(id) else { return }
+            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: id, key: c.key, role: c.role, label: c.label, via: .click)))
+        }
+    }
+
+    /// The window the user's key went to: the app's focused window as the reader last saw it. Readable from any thread.
+    func keyWindowId() -> String? { pressIndex.focusedWindowId() }
+
+    /// The window with this window-server number, as the reader last walked it. Readable from any thread.
+    func windowId(number: Int) -> String? { pressIndex.windowId(number: number) }
+
+    /// The user pressed Return, Enter or Space in this app at `at` (B21; the tap read only which of the three it
+    /// was). Reports the button it pressed, when the window that had focus is one of `windows`: the default
+    /// button for Return and Enter, the focused button for Space, as the reader last read them (KeyPresses).
+    /// Nothing is read from the app here, so a key that closes the window is placed all the same. Read only.
+    func observeKey(_ via: UserPress.Via, time at: Int64, windows ids: Set<String>) {
+        // Placed now, as the key goes down: a walk or focus change while a click ahead of it is resolved must not
+        // change which button this key pressed (B21 review). Sent on the press queue, in order with clicks, and
+        // queued before a close of its window can drain the queue (B21 fix-check).
+        keyAdmission.lock()
+        defer { keyAdmission.unlock() }
+        guard let p = pressIndex.keyPress(via), ids.contains(p.id) else { return }
+        pressQueue.async {
+            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: p.id, key: p.key, role: p.role, label: p.label, via: via)))
+        }
+    }
+
+    /// The hit-test path of observePress; false when it placed nothing.
+    private func pressByHitTest(at point: CGPoint, number: Int?, time at: Int64, windows ids: Set<String>) -> Bool {
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(ax, Float(point.x), Float(point.y), &hit) == .success, var el = hit else { return false }
+        AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+        var role = AX.string(el, kAXRoleAttribute)
+        var climbed = 0
+        while let r = role, !Roles.pressable.contains(r), climbed < Self.pressClimb, let up = AX.element(el, kAXParentAttribute) {
+            el = up
+            AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+            role = AX.string(el, kAXRoleAttribute)
+            climbed += 1
+        }
+        guard let r = role, Roles.pressable.contains(r),
+              let w = AX.element(el, kAXWindowAttribute).map(AXRef.init), let (id, key) = pressIndex.lookup(window: w, element: AXRef(el)), ids.contains(id),
+              // The window the event went to, when it names one: a hit in another window of the app is not this click.
+              number == nil || AX.windowNumber(of: w.el) == number,
+              let label = liveLabel(el) else { return false }
+        ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(pid), windowId: id, key: key, role: r,
+                                              label: label.trimmingCharacters(in: .whitespacesAndNewlines), via: .click)))
+        return true
     }
 
     // MARK: - verbs
@@ -508,7 +776,7 @@ public final class AppWorker: @unchecked Sendable {
             gate.refusal(taskId: verb.taskId, pid: Int(pid), windowId: windowId).map { (.notAllowed, $0) }
         }
         switch verb {
-        case .watchInput, .watchWindows:
+        case .watchInput, .watchWindows, .watchPresses:
             return (.ok, nil)
         case .calendarFind, .calendarAdd, .calendarGet, .calendarRemove, .calendarDispose:
             // ScreenReader.perform sends these to the calendar adapter; none reaches an app's worker.
@@ -535,6 +803,9 @@ public final class AppWorker: @unchecked Sendable {
                 if let no = refused(windowId) { return no }
                 err = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             } else {
+                // Classified before the last checks below: its parent reads can block, and a grant that ends meanwhile
+                // must still stop the write (B20 fix-check).
+                let focusFirst = attribute == "focusValue" || (attribute == "value" && focusBeforeValue(el))
                 // The value is read again right before the write, so a change since the walk is caught too.
                 let current: String
                 switch AX.read(el, kAXValueAttribute) {
@@ -547,14 +818,20 @@ public final class AppWorker: @unchecked Sendable {
                 guard current == expect else { return (.changed, "value is '\(current.prefix(80))'") }
                 if nowMs() > expires { return (.axError, "the command expired before it could act") }
                 if let no = refused(windowId) { return no }
+                // Each step of insert and focusValue may block up to the element timeout, so the deadline and the
+                // grant are asked again before every one of them.
+                let stillAllowed: () -> (VerbOutcome, String?)? = {
+                    if nowMs() > expires { return (.axError, "the command expired before it could act") }
+                    return refused(windowId)
+                }
                 if attribute == "insert" {
-                    // Each of the insert's three steps may block up to the element timeout, so the deadline
-                    // and the grant are asked again before every one of them.
-                    let stillAllowed: () -> (VerbOutcome, String?)? = {
-                        if nowMs() > expires { return (.axError, "the command expired before it could act") }
-                        return refused(windowId)
-                    }
                     if let fail = insert(value, into: el, expect: expect, check: stillAllowed) { return fail }
+                    err = .success
+                } else if focusFirst {
+                    // A WebKit window that is not key applies a bare value write to whichever field has focus, not
+                    // the one written to (B20 final table: Email's value landed in Name, focused by the step before),
+                    // so a WebKit field is always focused first, whatever the executor asked.
+                    if let fail = focusThenValue(value, into: el, expect: expect, check: stillAllowed) { return fail }
                     err = .success
                 } else {
                     err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
@@ -572,6 +849,16 @@ public final class AppWorker: @unchecked Sendable {
             // the helper's risk check ran on `label`, so a control renamed since then is not pressed.
             guard let live = liveLabel(el) else { return (.axError, "cannot read the control's label") }
             guard live.trimmingCharacters(in: .whitespacesAndNewlines) == label else { return (.changed, "label is '\(live.prefix(80))'") }
+            // The reader's own risk table, whatever the helper decided and whatever grant or --act-pids allows
+            // (S1 audit #10): only a press it positively allows goes through. The window's subrole tells a
+            // system prompt from the app's own window; a subrole that cannot be read refuses the press.
+            let windowSubrole: String?
+            switch AX.read(w.el, kAXSubroleAttribute) {
+            case .failed(let e): return (.axError, "cannot read the window's subrole (\(e.rawValue)), so a system prompt cannot be ruled out")
+            case .absent: windowSubrole = nil
+            case .value(let v): windowSubrole = v as? String
+            }
+            if let no = RiskTable.refusal(label: live, role: role, windowSubrole: windowSubrole, bundleId: app.bundleId) { return (.notAllowed, no) }
             if nowMs() > expires { return (.axError, "the command expired before it could act") }
             if let no = refused(windowId) { return no }
             let err = AXUIElementPerformAction(el, kAXPressAction as CFString)
@@ -638,6 +925,57 @@ public final class AppWorker: @unchecked Sendable {
         if let no = check() { return no }
         let w = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, value as CFString)
         guard w == .success else { return (.axError, "insert: replace failed with \(w.rawValue)") }
+        return nil
+    }
+
+    /// Whether a value write to the element must focus it first: a field of a web page WebKit renders, inside an
+    /// AXWebArea in an app that is not Chromium or Electron. Only reaching the window with no web area on the way
+    /// says no; a read that fails or a chain past 40 parents says yes, since focusing first is right for any field
+    /// and a bare write can land in another one (B20 fix-check: fail safe, not open).
+    private func focusBeforeValue(_ el: AXUIElement) -> Bool {
+        !chromiumFamily && underWebArea(el)
+    }
+
+    /// Whether an AXWebArea is among the element's ancestors. Only reaching the window with no web area on the way
+    /// says no; a read that fails or a chain past 40 parents says yes.
+    private func underWebArea(_ el: AXUIElement) -> Bool {
+        var e: AXUIElement? = AX.element(el, kAXParentAttribute)
+        for _ in 0..<40 {
+            guard let cur = e else { return true }
+            AXUIElementSetMessagingTimeout(cur, AX.elementTimeout)
+            switch AX.read(cur, kAXRoleAttribute) {
+            case .value(let r) where (r as? String) == "AXWebArea": return true
+            case .value(let r) where (r as? String) == kAXWindowRole: return false
+            case .value: e = AX.element(cur, kAXParentAttribute)
+            case .absent, .failed: return true
+            }
+        }
+        return true
+    }
+
+    /// Whether the element is part of a web page: any field of a Chromium or Electron app, or one under an AXWebArea.
+    /// A read that fails or a chain past 40 parents says yes, so a Return there is not taken for a press (B22).
+    private func inWebPage(_ el: AXUIElement) -> Bool {
+        chromiumFamily || underWebArea(el)
+    }
+
+    /// Focus, then the value: a WebKit window that is not key drops a bare AXValue write and takes it once the
+    /// field has AX focus (B20 candidate table: 3 of 3, with the window not raised and the app not activated).
+    /// Focus can run the page's own handlers, so the field must still hold `expect` before the write. The
+    /// executor's walk afterwards checks what the field holds. Nil when both steps went through.
+    private func focusThenValue(_ value: String, into el: AXUIElement, expect: String, check: () -> (VerbOutcome, String?)?) -> (VerbOutcome, String?)? {
+        let f = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        guard f == .success else { return (.axError, "focusValue: focus failed with \(f.rawValue)") }
+        switch AX.read(el, kAXValueAttribute) {
+        case .failed(let e): return (.axError, "focusValue: cannot read the value after focus (\(e.rawValue))")
+        case .absent: if !expect.isEmpty { return (.changed, "after focus the field is empty") }
+        case .value(let v):
+            guard let now = v as? String else { return (.changed, "after focus the value is not text") }
+            if now != expect { return (.changed, "after focus the value is '\(now.prefix(80))'") }
+        }
+        if let no = check() { return no }
+        let w = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
+        guard w == .success else { return (.axError, "focusValue: AXUIElementSetAttributeValue \(w.rawValue)") }
         return nil
     }
 
@@ -731,6 +1069,11 @@ public final class AppWorker: @unchecked Sendable {
 
 /// Whether a verb may act. A process named by --act-pids always may (fixture tests); any other needs a
 /// live act grant for the command's task, process and window, asked at the moment of the check.
+///
+/// The boundary (B22): performNow asks this right before every Accessibility call that changes something, with
+/// nothing that can block in between. A revoke applied after that check cannot stop the call it admitted, which
+/// then runs for at most AX.elementTimeout (0.25 s) against the app; every later step and call is refused. The
+/// check is not held across the call, since a call blocked on a busy app would hold up every revoke with it.
 public struct ActGate: Sendable {
     let actPid: Bool
     let grants: GrantTable

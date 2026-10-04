@@ -8,20 +8,29 @@ import { FIXTURE_APP, snap } from "./builders.ts";
 import { FakeGrants } from "./fake-grants.ts";
 
 export const WIN = "5150-7";
+/** The fake window's window-server number (B21: a planRequest names its window by number). Invented. */
+export const WIN_NUMBER = 4821;
 export const TITLE = "Fixture — Executor";
 export const K = (s: string): string => `dev.caret.fixture/standard/${s}`;
 
 export class FakeApp implements ReaderLink {
   helper: Helper | null = null;
   title = TITLE;
+  /** The window's kind from its subrole; "systemdialog" makes it a system prompt (B22). */
+  windowKind = "standard";
   nodes: Node[];
   focusedKey: string | null = null;
   readonly verbs: ReaderVerb[] = [];
   readonly buttons = new Map<string, (app: FakeApp) => void>();
   /** Makes value writes report success while changing nothing, as a web view whose window is not key does (B15). */
   dropWrites = false;
+  /** The same for focus-then-value (B20). */
+  dropFocusValues = false;
   /** The same for focus-and-insert. */
   dropInserts = false;
+  /** Leaves the field out of the walk right after a write of this kind and back in the next one, as B15's WebKit window did. */
+  vanishAfter: "value" | "focusValue" | "insert" | null = null;
+  private vanished: Node | null = null;
   /** Sets the value but answers axError, as a reader that timed out while settling does. */
   timeoutAfterWrite = false;
   /** Answers this many walks with axError first, as a walk cut short by a busy app is. */
@@ -58,8 +67,9 @@ export class FakeApp implements ReaderLink {
   /** Sends the window's current state to the helper, as a full walk. */
   show(): void {
     this.at += 10;
+    const nodes = this.vanished === null ? this.nodes : this.nodes.filter((n) => n.key !== this.vanished?.key);
     void this.helper?.handleReader(
-      snap(structuredClone(this.nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request" }),
+      snap(structuredClone(nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request", number: WIN_NUMBER, kind: this.windowKind }),
     );
   }
 
@@ -77,7 +87,7 @@ export class FakeApp implements ReaderLink {
   }
 
   private perform(verb: ReaderVerb): { outcome: VerbResult["outcome"]; detail: string | null } {
-    if (verb.kind === "watchInput" || verb.kind === "watchWindows") return { outcome: "ok", detail: null };
+    if (verb.kind === "watchInput" || verb.kind === "watchWindows" || verb.kind === "watchPresses") return { outcome: "ok", detail: null };
     if (isCalendarVerb(verb)) return { outcome: "notAllowed", detail: "the fake app has no calendar" };
     if (verb.kind === "walk" && this.readable.has(verb.windowId)) return { outcome: "ok", detail: null };
     if (verb.pid !== FIXTURE_APP.pid) return { outcome: "notAllowed", detail: null };
@@ -87,6 +97,7 @@ export class FakeApp implements ReaderLink {
       return { outcome: "axError", detail: "the walk was cut short" };
     }
     if (verb.kind === "raise") return { outcome: "notAllowed", detail: "the fake app does not raise its window" };
+    if (verb.kind === "walk") this.vanished = null;
     this.show();
     if (verb.kind === "walk") return { outcome: "ok", detail: null };
     const n = this.node(verb.key);
@@ -94,10 +105,12 @@ export class FakeApp implements ReaderLink {
     if (n.role !== verb.role) return { outcome: "changed", detail: `role is ${n.role}` };
     if (verb.kind === "write") {
       if (n.states?.includes("secure")) return { outcome: "secure", detail: null };
-      if (verb.attribute === "value" || verb.attribute === "insert") {
+      if (verb.attribute === "value" || verb.attribute === "focusValue" || verb.attribute === "insert") {
         if ((n.value ?? "") !== verb.expect) return { outcome: "changed", detail: `value is '${n.value ?? ""}'` };
-        if (verb.attribute === "insert") this.focusedKey = verb.key;
-        if (!(verb.attribute === "value" ? this.dropWrites : this.dropInserts)) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
+        if (verb.attribute !== "value") this.focusedKey = verb.key;
+        const dropped = verb.attribute === "value" ? this.dropWrites : verb.attribute === "focusValue" ? this.dropFocusValues : this.dropInserts;
+        if (!dropped) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
+        if (verb.attribute === this.vanishAfter) this.vanished = n;
         if (this.timeoutAfterWrite) return { outcome: "axError", detail: "no answer from the reader within 5000 ms" };
       } else this.focusedKey = verb.key;
     } else {

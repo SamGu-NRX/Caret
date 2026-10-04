@@ -1,16 +1,18 @@
 // B19: Caret names a proven routine, offers once to keep it as a skill, counts the skill's clean runs,
 // and after PROMOTE_AFTER of them offers to run it without a Tab. Everything here is synthetic.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { ScreenModel } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { HelperMessage, PROTOCOL_VERSION, ConsumerMessage, type MemoryEntry, type MemoryReply, type PatternOffer, type SkillOffer, type TaskProgress } from "../src/protocol.ts";
+import { HelperMessage, PROTOCOL_VERSION, ConsumerMessage, type MemoryEntry, type MemoryReply, type PatternOffer, type PressVia, type SkillOffer, type TaskProgress } from "../src/protocol.ts";
 import { checkName, fallbackName, nameCandidates, nameRoutine, safeFacts, type RoutineFacts } from "../src/patterns/naming.ts";
-import { cleanRun, handedPress, mayRunUnasked, PROMOTE_AFTER } from "../src/patterns/skills.ts";
+import { cleanRun, handedPress, mayRunUnasked, PROMOTE_AFTER, trigger } from "../src/patterns/skills.ts";
+import { PRESS_ENDS_MS } from "../src/patterns/routines.ts";
 import { dontOfferMatch } from "../src/patterns/memory.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
 import { Desk, buttonKey, cellKey, type GridWindow, type ListWindow } from "./scene.ts";
@@ -184,6 +186,12 @@ describe("the skill messages", () => {
     expect(HelperMessage.safeParse({ ...offer, actions: [offer.actions[1], offer.actions[0]] }).success).toBe(false);
     expect(ConsumerMessage.safeParse(offer).success).toBe(false);
   });
+  it("says a keep offer's trigger with the article its app's name takes", () => {
+    const facts = (dstApp: string) => ({ routineId: "r", dstApp, dstWindow: null, dstLabels: ["Name", "Email"], srcApps: [], srcLabels: [], count: 3, values: [] });
+    expect(trigger(facts("Electron"))).toBe("an Electron window opens with Name and Email empty");
+    expect(trigger(facts("Google Chrome"))).toBe("a Google Chrome window opens with Name and Email empty");
+    expect(trigger(facts(""))).toBe("a window opens with Name and Email empty");
+  });
   it("takes an answer from the host and an unprompted mark on progress, true or absent", () => {
     expect(ConsumerMessage.parse({ type: "skillAnswer", v: 1, id: "skill-offer-1", answer: "decline", at: 2 })).toMatchObject({ answer: "decline" });
     expect(ConsumerMessage.safeParse({ type: "skillAnswer", v: 1, id: "", answer: "accept", at: 2 }).success).toBe(false);
@@ -196,6 +204,7 @@ describe("the skill messages", () => {
 // MARK: - in the helper
 
 describe("skills in the helper", () => {
+  const HOST = "test-host";
   let dir: string;
   let store: Store;
   let helper: Helper;
@@ -213,7 +222,7 @@ describe("skills in the helper", () => {
     const choice = Object.keys(req.questions.name?.criteria ?? {}).find((k) => k !== "none") ?? "none";
     return { model: "jev-test", answers: { name: { choice, confidence: 0.9 } }, inputTokens: 300, latencyMs: 1, costUsd: 0 };
   };
-  const ask = (op: "list" | "edit" | "pause" | "resume" | "forget", rest: { id?: string; kind?: "routine" | "skill" | "permission"; fields?: Record<string, unknown> } = {}): MemoryReply =>
+  const ask = (op: "list" | "edit" | "pause" | "resume" | "forget" | "offerOnItsOwn", rest: { id?: string; kind?: "routine" | "skill" | "permission"; fields?: Record<string, unknown> } = {}): MemoryReply =>
     helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "r", op, ...rest });
   const skills = (): Extract<MemoryEntry, { kind: "skill" }>[] => ask("list", { kind: "skill" }).entries.filter((e): e is Extract<MemoryEntry, { kind: "skill" }> => e.kind === "skill");
   const routines = (): Extract<MemoryEntry, { kind: "routine" }>[] => ask("list", { kind: "routine" }).entries.filter((e): e is Extract<MemoryEntry, { kind: "routine" }> => e.kind === "routine");
@@ -311,8 +320,8 @@ describe("skills in the helper", () => {
     desk.grants.now = () => Date.now();
   });
   /** A helper on this test's store and desk; called again to stand for a restart. */
-  const makeHelper = (): Helper =>
-    new Helper({
+  const makeHelper = (): Helper => {
+    const h = new Helper({
       store,
       askJev: namer,
       shadow: false,
@@ -326,6 +335,10 @@ describe("skills in the helper", () => {
         },
       },
     });
+    // The host these tests play, in process: a run with no Tab starts only while a host session is connected (S1 audit #5).
+    h.hostConnected(HOST);
+    return h;
+  };
   afterEach(() => {
     helper.memory.close();
     store.close();
@@ -462,6 +475,192 @@ describe("skills in the helper", () => {
     expect(needsTab.progress.every((p) => p.unprompted === undefined)).toBe(true);
   });
 
+  /** Kept, ten clean runs, and the promote offer accepted: the skill runs on its own from the next trigger. */
+  const promoted = async (): Promise<string> => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await keep();
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    expect(skills()[0]).toMatchObject({ status: "active", fields: { onItsOwn: true } });
+    return skillId;
+  };
+  const undoOf = (taskId: string) => helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action: "undo" });
+
+  // S1 audit #15: before B22 the skill went back on Tab only after the restore returned.
+  it("puts a skill back on Tab the moment its undo is asked for, before the first restore lands", async () => {
+    await promoted();
+    const own = await caretRun();
+    expect(own.offer).toBeNull();
+    const during: string[] = [];
+    desk.afterWrite = () => during.push(skills()[0]!.status);
+    expect(await undoOf(own.progress[0]!.taskId)).toMatchObject({ restored: 3 });
+    desk.afterWrite = null;
+    expect(during).toEqual(["learning", "learning", "learning"]);
+    finish(own);
+  });
+
+  it("puts a skill back on Tab when its undo is refused, as after a reader restart (S1 audit #15)", async () => {
+    await promoted();
+    const own = await caretRun();
+    expect(own.offer).toBeNull();
+    finish(own);
+    void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "restarted" });
+    const errors = sent.length;
+    expect(await undoOf(own.progress[0]!.taskId)).toBeNull();
+    expect(since("error", errors)[0]?.message).toMatch(/earlier reader session/);
+    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+  });
+
+  /**
+   * Runs one occurrence on its own and calls `change` once, as the run's first write answers. Returns the run,
+   * whether the grant was revoked by the change itself (before any later verb), and how many values landed.
+   */
+  const changeMidRun = async (change: () => void): Promise<{ own: CaretRun; revokedAtOnce: boolean; landed: number }> => {
+    let revokedAtOnce = false;
+    desk.afterWrite = (v) => {
+      desk.afterWrite = null;
+      const before = desk.grants.log.length;
+      change();
+      const taskId = v.kind === "write" ? v.taskId : undefined;
+      revokedAtOnce = desk.grants.log.slice(before).some((g) => g.type === "actRevoke" && g.taskId === taskId);
+    };
+    const own = await caretRun();
+    desk.afterWrite = null;
+    finish(own);
+    return { own, revokedAtOnce, landed: values(own.window).filter((x) => x !== "").length };
+  };
+  const settings = (s: { roles?: ("fill" | "repeat" | "watch" | "calendar" | "words")[]; paused?: boolean }): void =>
+    helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: s.roles ?? ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: s.paused ?? false });
+
+  // S1 audit #4: before B22 these changes withdrew offers but let a run already going write every field.
+  for (const [name, change] of [
+    ["the user puts it back on Tab", () => expect(ask("edit", { id: skills()[0]!.id, fields: { onItsOwn: false } }).error).toBeNull()],
+    ["the user pauses the skill", () => expect(ask("pause", { id: skills()[0]!.id }).error).toBeNull()],
+    ["the user forgets the skill", () => expect(ask("forget", { id: skills()[0]!.id }).error).toBeNull()],
+    ["the user sets Reversible write elsewhere back to ask first", () => setRule("writeElsewhere", "ask")],
+    ["the user turns routines off", () => settings({ roles: ["fill", "watch", "calendar", "words"] })],
+    ["the user pauses Caret", () => settings({ paused: true })],
+  ] as const) {
+    it(`revokes a run with no Tab at once when ${name}, and writes nothing more`, async () => {
+      await promoted();
+      const { own, revokedAtOnce, landed } = await changeMidRun(change);
+      expect(own.offer).toBeNull();
+      expect(revokedAtOnce).toBe(true);
+      expect(landed).toBe(1);
+      expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "you", unprompted: true });
+    });
+  }
+
+  // B22 review: a run the user accepted with Tab still depends on its routine, its skill and the settings family.
+  for (const [name, change] of [
+    ["the user pauses the skill", () => expect(ask("pause", { id: skills()[0]!.id }).error).toBeNull()],
+    ["the user forgets the skill", () => expect(ask("forget", { id: skills()[0]!.id }).error).toBeNull()],
+    ["the user forgets the routine", () => expect(ask("forget", { id: routines()[0]!.id }).error).toBeNull()],
+    ["the user turns routines off", () => settings({ roles: ["fill", "watch", "calendar", "words"] })],
+  ] as const) {
+    it(`revokes a run the user accepted with Tab at once when ${name}`, async () => {
+      await keep();
+      const { own, revokedAtOnce, landed } = await changeMidRun(change);
+      expect(own.offer).not.toBeNull();
+      expect(revokedAtOnce).toBe(true);
+      expect(landed).toBe(1);
+      expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "you" });
+    });
+  }
+
+  it("lets a run the user accepted with Tab finish when the write permission changes: the user answered for this run", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    await keep();
+    const { own, revokedAtOnce } = await changeMidRun(() => setRule("writeElsewhere", "ask"));
+    expect(own.offer).not.toBeNull();
+    expect(revokedAtOnce).toBe(false);
+    expect(own.progress.at(-1)).toMatchObject({ phase: "done" });
+  });
+
+  // S1 audit #5: before B22 nothing tied a run to a host that could show it.
+  it("revokes a run with no Tab at once when the host disconnects, as Caret's own stop", async () => {
+    await promoted();
+    const { own, revokedAtOnce, landed } = await changeMidRun(() => helper.hostDisconnected(HOST));
+    expect(own.offer).toBeNull();
+    expect(revokedAtOnce).toBe(true);
+    expect(landed).toBe(1);
+    expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "error", unprompted: true });
+    expect(own.progress.at(-1)?.detail).toMatch(/the host that started it disconnected/);
+  });
+
+  it("starts no run on its own while no host is connected: the skill is offered with Tab, and runs on its own again once a host is back", async () => {
+    await promoted();
+    helper.hostDisconnected(HOST);
+    const tab = await caretRun();
+    finish(tab);
+    expect(tab.offer).not.toBeNull();
+    expect(tab.progress.length).toBeGreaterThan(0);
+    expect(tab.progress.every((p) => p.unprompted === undefined)).toBe(true);
+    helper.hostConnected("another-host");
+    const own = await caretRun();
+    finish(own);
+    expect(own.offer).toBeNull();
+    expect(own.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+  });
+
+  it("rechecks the permission before each write as the user moves: a write where they were becomes a write elsewhere, which needs its own permission", async () => {
+    // Promoted while the user works in Mail, with Reversible write elsewhere left at ask first.
+    frontmost = "mail";
+    await keep();
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    expect(skills()[0]!.fields.onItsOwn).toBe(true);
+    // The user switches to another app as the first write answers: nothing tells the helper but the switch itself.
+    // The switch revokes at once (B22 review), so a write already queued in the reader is refused there too.
+    const { own, landed, revokedAtOnce } = await changeMidRun(() => void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: desk.at, from: MAIL_APP, to: FIXTURE_APP }));
+    expect(own.offer).toBeNull();
+    expect(revokedAtOnce).toBe(true);
+    expect(landed).toBe(1);
+    expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "you", unprompted: true });
+    expect(own.progress.at(-1)?.detail).toMatch(/Reversible write elsewhere/);
+  });
+
+  it("keeps a write where the user is when a background app's request walk moves the model's focused window (B22 review)", async () => {
+    frontmost = "mail";
+    await keep();
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    // A request walk of a window in another app marks that window focused in its own app; the user is still in
+    // Mail, so the run's writes stay "write where you are", which Reversible write elsewhere at ask first would stop.
+    let focusedThen: string | null = null;
+    const walked = await changeMidRun(() => {
+      void helper.handleReader(snap([], { at: desk.at, windowId: "5150-99", title: "Elsewhere", focused: true, reason: "request" }));
+      focusedThen = helper.model.focusedWindowId;
+    });
+    expect(focusedThen).toBe("5150-99");
+    expect(walked.own.offer).toBeNull();
+    expect(walked.revokedAtOnce).toBe(false);
+    expect(walked.own.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+  });
+
+  it("revokes a run with no Tab still going when the user asks to undo it, as the skill goes back on Tab (B22 review)", async () => {
+    await promoted();
+    let id = "";
+    const { own, revokedAtOnce, landed } = await changeMidRun(() => {
+      id = sent.filter((m): m is TaskProgress => m.type === "taskProgress").at(-1)!.taskId;
+      void helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: id, action: "undo" });
+    });
+    expect(own.offer).toBeNull();
+    expect(revokedAtOnce).toBe(true);
+    expect(landed).toBe(1);
+    expect(own.progress.at(-1)).toMatchObject({ taskId: id, phase: "stopped", stopReason: "you", unprompted: true });
+    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false } });
+  });
+
   it("resets on a take over, and never offers again after a declined promote offer", async () => {
     frontmost = "mail";
     await keep();
@@ -530,6 +729,118 @@ describe("skills in the helper", () => {
     expect(desk.pressed).toEqual([]);
     expect(desk.verbs.some((v) => v.kind === "press")).toBe(false);
     expect(buttonKey(compose(1, buttons), "Send")).toMatch(/button:send~0$/);
+  });
+
+  it("puts a skill that runs on its own back on Tab when the host asks, and never lets an edit make one run on its own (B21)", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await keep();
+    // An edit cannot grant autonomy, before or after the offer.
+    expect(ask("edit", { id: skillId, fields: { onItsOwn: true } }).error).toMatch(/only after you accept Caret's offer/);
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    expect(skills()[0]!.fields).toMatchObject({ onItsOwn: true });
+    const own = await caretRun();
+    finish(own);
+    expect(own.offer).toBeNull();
+    // The host's line (fixtures/golden/memory.ndjson host-memory-6), sent for this skill.
+    const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/memory.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const line = golden.find((l) => l.requestId === "host-memory-6" && l.type === "memoryRequest")!;
+    const want = golden.find((l) => l.requestId === "host-memory-6" && l.type === "memoryReply") as unknown as MemoryReply;
+    const reply = helper.handleMemory(ConsumerMessage.parse({ ...line, id: skillId }) as Parameters<typeof helper.handleMemory>[0]);
+    expect(reply.error).toBeNull();
+    expect(reply.entries[0]).toMatchObject({ kind: "skill", id: skillId, status: want.entries[0]!.status, fields: { onItsOwn: false, cleanRuns: 0, needed: PROMOTE_AFTER } });
+    expect(reply.entries[0]?.says).toMatch(/asks first; 0 of 10 clean runs in a row\)$/);
+    // The next run needs Tab, and the count starts again from there.
+    const needsTab = await caretRun();
+    finish(needsTab);
+    expect(needsTab.offer).not.toBeNull();
+    expect(needsTab.progress.every((p) => p.unprompted === undefined)).toBe(true);
+    expect(skills()[0]!.fields).toMatchObject({ onItsOwn: false, cleanRuns: 1 });
+    // Still never through an edit, and an edit that names nothing is refused.
+    expect(ask("edit", { id: skillId, fields: { onItsOwn: true } }).error).toMatch(/only after you accept Caret's offer/);
+    expect(ask("edit", { id: skillId, fields: {} }).error).toMatch(/changes its name or puts it back on Tab/);
+    expect(skills()[0]!.fields.onItsOwn).toBe(false);
+  });
+
+  it("never offers a skill put back on Tab to run on its own again unasked, and makes the normal offer when the user asks from its row (B22)", async () => {
+    const skillId = await promoted();
+    expect(ask("edit", { id: skillId, fields: { onItsOwn: false } }).error).toBeNull();
+    const cleanRunsOnTab = async (n: number): Promise<void> => {
+      for (let i = 1; i <= n; i++) {
+        const r = await caretRun();
+        finish(r);
+        expect(r.offer, `run ${i}`).not.toBeNull();
+        expect(r.skillOffers, `run ${i}`).toEqual([]);
+      }
+    };
+    // Past the ten clean runs that brought the offer before: no offer.
+    await cleanRunsOnTab(PROMOTE_AFTER + 1);
+    expect(skills()[0]!.fields).toMatchObject({ onItsOwn: false, cleanRuns: PROMOTE_AFTER + 1 });
+
+    // The host's request (fixtures/golden/memory.ndjson host-memory-7) for this skill: the skill back unchanged, and the
+    // offer published as fixtures/golden/protocol.ndjson's skill-offer-3, under the request's id.
+    const read = (name: string) => readFileSync(fileURLToPath(new URL(`../fixtures/golden/${name}`, import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const line = read("memory.ndjson").find((l) => l.requestId === "host-memory-7" && l.type === "memoryRequest")!;
+    const want = read("memory.ndjson").find((l) => l.requestId === "host-memory-7" && l.type === "memoryReply") as unknown as MemoryReply;
+    const wantOffer = read("protocol.ndjson").find((l) => l.id === "skill-offer-3") as unknown as SkillOffer;
+    const request = (): MemoryReply => helper.handleMemory(ConsumerMessage.parse({ ...line, id: skillId }) as Parameters<typeof helper.handleMemory>[0]);
+    let at = sent.length;
+    let reply = request();
+    expect(reply.error).toBeNull();
+    expect(reply.entries[0]).toMatchObject({ kind: "skill", id: skillId, status: want.entries[0]!.status, fields: { onItsOwn: false } });
+    const { id: _i, at: _a, skillId: _s, routineId: _r, name: _n, ...shape } = wantOffer;
+    expect(since("skillOffer", at)).toEqual([expect.objectContaining({ ...shape, skillId, taskId: "host-memory-7" })]);
+    // Asked again while it is out: refused, and no second offer.
+    expect(request().error).toMatch(/already out/);
+    // Nobody answers: it expires, and Caret still never makes it on its own.
+    desk.advance(3 * 60 * 1000);
+    expect(sent.some((m) => m.type === "offerWithdrawn" && m.id === since("skillOffer", at)[0]!.id && m.reason === "expired")).toBe(true);
+    await cleanRunsOnTab(2);
+
+    // Asked again and accepted: the next run starts with no Tab.
+    at = sent.length;
+    reply = request();
+    expect(reply.error).toBeNull();
+    answer(since("skillOffer", at)[0]!, "accept");
+    expect(skills()[0]).toMatchObject({ status: "active", fields: { onItsOwn: true } });
+    const own = await caretRun();
+    finish(own);
+    expect(own.offer).toBeNull();
+    expect(own.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+    expect(request().error).toMatch(/already runs on its own/);
+  });
+
+  it("refuses the request to run on its own for a paused skill, an entry that is not a skill, and while Caret is paused", async () => {
+    const skillId = await keep();
+    expect(ask("pause", { id: skillId }).error).toBeNull();
+    expect(ask("offerOnItsOwn", { id: skillId }).error).toMatch(/is paused; resume it first/);
+    expect(ask("resume", { id: skillId }).error).toBeNull();
+    expect(ask("offerOnItsOwn", { id: "permission-writeHere" }).error).toMatch(/is for a skill, not a permission entry/);
+    expect(ask("offerOnItsOwn").error).toMatch(/needs the entry's id/);
+    helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: true });
+    expect(ask("offerOnItsOwn", { id: skillId }).error).toMatch(/Caret is paused/);
+    expect(since("skillOffer", 0).filter((o) => o.kind === "promote")).toEqual([]);
+  });
+
+  it("withdraws a promote offer still out when the skill is put back on Tab (B21)", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await keep();
+    let promote: SkillOffer | undefined;
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      promote = r.skillOffers.find((o) => o.kind === "promote") ?? promote;
+    }
+    expect(promote).toBeDefined();
+    expect(ask("edit", { id: skillId, fields: { onItsOwn: false } }).error).toBeNull();
+    expect(sent.some((m) => m.type === "offerWithdrawn" && m.id === promote!.id && m.reason === "stale")).toBe(true);
+    expect(skills()[0]!.fields).toMatchObject({ onItsOwn: false, cleanRuns: 0 });
+    // Accepting the withdrawn offer is refused and changes nothing.
+    answer(promote!, "accept");
+    expect(skills()[0]!.fields.onItsOwn).toBe(false);
   });
 
   it("forgets a skill without relearning the keep offer, pauses its offers with it, and renames it", async () => {
@@ -719,6 +1030,185 @@ describe("skills in the helper", () => {
       expect(r.skillOffers, `run ${i}`).toEqual([]);
     }
     expect(skills()[0]!.fields).toMatchObject({ handsOff: { label: "Send or Send later", why: "outbound" }, onItsOwn: false });
+  });
+
+  // MARK: - B20: the press an occurrence ends with, learned from the user's own click
+
+  /** The reader saw the user press `label` in the window (protocol.ts UserPress); `keyed` false stands for a walk that did not keep the button. */
+  const press = (g: GridWindow, label: string, keyed = true, via: PressVia = "click"): void =>
+    void helper.handleReader({ type: "userPress", v: PROTOCOL_VERSION, at: desk.at, pid: g.app.pid, windowId: g.windowId, key: keyed ? buttonKey(g, label) : null, role: "AXButton", label, via });
+  /** One occurrence by hand that ends with the user pressing `label`, which closes the window as Send does. */
+  const byHandPressing = (label: string | null, keyed = true, via: PressVia = "click"): void => {
+    const c = open();
+    for (let i = 0; i < 3; i++) desk.fill(c, 0, i, calendar(day).lines[i]!);
+    if (label !== null) press(c, label, keyed, via);
+    desk.close(c.windowId);
+  };
+  const pressWatches = (): string[][] =>
+    desk.verbs.flatMap((v) => (v.kind === "watchPresses" ? [v.windows.map((w) => w.windowId)] : []));
+
+  it("learns the Send the user clicked where the buttons alone cannot tell, and hands it off on the next run", async () => {
+    buttons = ["Send", "Send later"];
+    setRule("writeElsewhere", "actIfApproved");
+    for (let i = 0; i < 3; i++) byHandPressing("Send");
+    await helper.patterns.skills.namesSettled();
+    // The press, not the buttons: one finish, named exactly, learned from the click.
+    expect(helper.memory.list("routine")[0]).toMatchObject({ kind: "routine" });
+    const routine = helper.memory.routine(routines()[0]!.id);
+    expect(routine?.finish).toMatchObject({ label: "Send", why: "outbound", by: "click" });
+    expect(routine?.finish?.ambiguous).toBeUndefined();
+    const r = await caretRun();
+    expect(r.result).toMatchObject({ outcome: "handoff", step: 3 });
+    expect(r.progress.at(-1)).toMatchObject({ phase: "handoff", says: "You press 'Send'" });
+    expect(values(r.window)).toEqual(calendar(day).lines);
+    finish(r);
+    answer(r.skillOffers.find((o) => o.kind === "keep")!, "accept");
+    expect(skills()[0]!.fields.handsOff).toEqual({ label: "Send", why: "outbound" });
+    // Later occurrences close with no click seen; the guess from the buttons never replaces what the user did.
+    for (let i = 1; i <= PROMOTE_AFTER + 1; i++) {
+      const again = await caretRun();
+      finish(again);
+      expect(again.result, `run ${i}`).toMatchObject({ outcome: "handoff", step: 3 });
+      expect(again.skillOffers).toEqual([]);
+    }
+    expect(helper.memory.routine(routine!.id)?.finish).toMatchObject({ label: "Send", by: "click" });
+    expect(skills()[0]!.fields).toMatchObject({ handsOff: { label: "Send", why: "outbound" }, onItsOwn: false });
+    // Read only: the reader was never asked to press.
+    expect(desk.pressed).toEqual([]);
+    expect(desk.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  it("learns the Send the user pressed with Return as a press seen by key, which a later guess from the buttons never replaces (B21)", async () => {
+    buttons = ["Send", "Send later"];
+    for (let i = 0; i < 3; i++) byHandPressing("Send", true, "return");
+    const routine = helper.memory.routine(routines()[0]!.id);
+    expect(routine?.finish).toMatchObject({ label: "Send", why: "outbound", by: "key" });
+    expect(routine?.finish?.ambiguous).toBeUndefined();
+    byHandPressing(null);
+    expect(helper.memory.routine(routine!.id)?.finish).toMatchObject({ label: "Send", by: "key" });
+    expect(desk.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  it("places a click the walk did not key by its label, and learns Send later when that is what the user clicked", async () => {
+    buttons = ["Send", "Send later"];
+    for (let i = 0; i < 3; i++) byHandPressing("Send later", false);
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send later", why: "outbound", by: "click" });
+    const r = await caretRun();
+    finish(r);
+    expect(r.result).toMatchObject({ outcome: "handoff", step: 3 });
+    expect(r.progress.at(-1)).toMatchObject({ says: "You press 'Send later'" });
+  });
+
+  it("guesses from the buttons only when no click was seen, and learns no finish from a click that is not a send", async () => {
+    buttons = ["Save draft", "Send"];
+    // The user saves drafts: the window's one Send is not what these occurrences end with.
+    for (let i = 0; i < 3; i++) byHandPressing("Save draft");
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toBeNull();
+    // With no click seen, the window's one Send is the guess, as in B19.
+    byHandPressing(null);
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "buttons" });
+  });
+
+  it("predicts for a window whose fields arrive after it opened, as a web page's do, once", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    for (let i = 0; i < 3; i++) expect(byHand()).toEqual([]);
+    await helper.patterns.skills.namesSettled();
+    // The window is first read with no fields, as a browser window is before its page loads.
+    const at = sent.length;
+    day++;
+    desk.at += DAY;
+    desk.showList(calendar(day));
+    desk.advance(1000);
+    const c = compose(day);
+    desk.showGrid({ ...c, rows: 0 });
+    expect(since("patternOffer", at)).toEqual([]);
+    desk.advance(500);
+    desk.showGrid(c);
+    const offers = since("patternOffer", at).filter((o) => o.kind === "routine");
+    expect(offers).toHaveLength(1);
+    expect(offers[0]?.windowId).toBe(c.windowId);
+    // A later read of the same fields makes no second prediction.
+    desk.showGrid({ ...c, rows: 0 });
+    desk.showGrid(c);
+    expect(since("patternOffer", at).filter((o) => o.kind === "routine")).toHaveLength(1);
+  });
+
+  it("asks the reader to watch presses in a window the user is filling, and stops when it closes", () => {
+    byHandPressing(null);
+    const c = compose(day);
+    const watches = pressWatches();
+    expect(watches.at(-2)).toEqual([c.windowId]);
+    expect(watches.at(-1)).toEqual([]);
+  });
+
+  it("learns the clicked Send when the closing window reaches the model with its controls gone (B20 press-learn run 2)", () => {
+    buttons = ["Send", "Send later"];
+    for (let i = 0; i < 3; i++) {
+      const c = open();
+      for (let j = 0; j < 3; j++) desk.fill(c, 0, j, calendar(day).lines[j]!);
+      press(c, "Send");
+      // A last walk of the closing window finds none of its controls.
+      desk.showGrid({ ...c, rows: 0, buttons: [] });
+      desk.close(c.windowId);
+    }
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "click" });
+  });
+
+  it("learns the clicked Send when that emptied walk reaches the model before the click does", () => {
+    buttons = ["Send", "Send later"];
+    for (let i = 0; i < 3; i++) {
+      const c = open();
+      for (let j = 0; j < 3; j++) desk.fill(c, 0, j, calendar(day).lines[j]!);
+      desk.showGrid({ ...c, rows: 0, buttons: [] });
+      press(c, "Send");
+      desk.close(c.windowId);
+    }
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "click" });
+  });
+
+  it("scores Caret's verified run as a hit when its window loses its fields before it closes, as a Chrome page does (B20)", async () => {
+    for (let i = 0; i < 3; i++) expect(byHand()).toEqual([]);
+    await helper.patterns.skills.namesSettled();
+    const id = routines()[0]!.id;
+    const before = helper.memory.routine(id)!;
+    const r = await caretRun();
+    expect(r.result?.outcome).toBe("done");
+    // Closed at once: the run's edits have not settled, and a last walk finds the page's fields gone.
+    desk.showGrid({ ...r.window, rows: 0 });
+    desk.close(r.window.windowId);
+    const after = helper.memory.routine(id)!;
+    expect(after.misses).toBe(before.misses);
+    expect(after.hits).toBe(before.hits + 1);
+    expect(after.count).toBe(before.count + 1);
+  });
+
+  it("keeps a Send clicked before the copied values settled, as a fast user's is (B20 review)", () => {
+    buttons = ["Send", "Send later"];
+    // The first occurrence, so no prediction made a bundle when the window opened.
+    const c = open();
+    // Typed in quick succession, then Send at once: no transfer has settled when the click comes.
+    for (let j = 0; j < 3; j++) {
+      c.values.set(cellKey(c, 0, j), calendar(day).lines[j]!);
+      desk.showGrid(c);
+      desk.advance(200);
+    }
+    expect(pressWatches().at(-1)).toEqual([c.windowId]);
+    press(c, "Send");
+    desk.close(c.windowId);
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "click" });
+  });
+
+  it("does not take a safe click as how an occurrence ended unless the window closed right after it", () => {
+    buttons = ["Save draft", "Send"];
+    for (let i = 0; i < 3; i++) {
+      const c = open();
+      for (let j = 0; j < 3; j++) desk.fill(c, 0, j, calendar(day).lines[j]!);
+      press(c, "Save draft");
+      // More work after the save, then the window closes some seconds later, as after a keyboard Send.
+      desk.advance(PRESS_ENDS_MS + 1000);
+      desk.close(c.windowId);
+    }
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "buttons" });
   });
 
   it("names nothing and offers nothing for a routine whose predictions miss", async () => {

@@ -68,8 +68,9 @@ export type RoutineStep = z.infer<typeof RoutineStep>;
 /**
  * The press that ended a routine's occurrences and that Caret leaves to the user (B19): a button in the
  * destination window whose label reads as outbound, destructive or money (executor/risk.ts), found by
- * template and position like a step's field. Learned when the destination window closes after the
- * values went in (routines.ts finishOf).
+ * template and position like a step's field. Learned from the user's own click on it when the reader saw
+ * one (B20), else from the window's buttons when the destination window closes after the values went in
+ * (routines.ts finishPressed, finishOf).
  */
 export const RoutineFinish = z.object({
   label: z.string().min(1),
@@ -81,6 +82,12 @@ export const RoutineFinish = z.object({
    * presses: `label` names them all, no plan hands one of them off, and the skill is never run on its own.
    */
   ambiguous: z.boolean().optional(),
+  /**
+   * How it was learned: the user's own press of it, which the reader observed, by a click (B20) or a key
+   * (Return, Enter or Space, B21), or the window's buttons when no press was seen. Absent on rows from
+   * before B20, which were all learned from buttons.
+   */
+  by: z.enum(["click", "key", "buttons"]).optional(),
 });
 export type RoutineFinish = z.infer<typeof RoutineFinish>;
 
@@ -124,6 +131,12 @@ const SkillJson = SkillFields.extend({
   promote: z.enum(["offered", "declined"]).nullable(),
   /** The permissions the skill's clean runs in a row wrote under (writeHere, writeElsewhere): what promoting it would let it do unasked. */
   wrote: z.array(z.enum(["writeHere", "writeElsewhere"])),
+  /**
+   * The user put it back on Tab (B22 lead decision): Caret never makes the promote offer for it on its own
+   * again; only the user's request from the skill's row (memoryRequest offerOnItsOwn) does. Absent on rows
+   * written before B22.
+   */
+  putBack: z.boolean().optional(),
 });
 export type SkillRecord = z.infer<typeof SkillJson> & { id: string; paused: boolean };
 
@@ -323,9 +336,20 @@ export class MemoryStore {
         break;
       }
       case "skill": {
-        const e = parseEdit(z.strictObject({ name: z.string().trim().min(1).max(80) }), raw);
-        if (ONE_LINE_BREAKS.test(e.name)) throw new MemoryError("invalid edit: a skill's name must be one line of text");
-        next = { ...SkillJson.parse(fields), name: e.name };
+        // The user can always take a skill's autonomy back (the host's "Put back on Tab": onItsOwn false), never
+        // grant it here: running on its own comes only from accepting Caret's promote offer (B21).
+        if (raw.onItsOwn === true) throw new MemoryError("a skill runs on its own only after you accept Caret's offer; an edit can only put it back on Tab");
+        const e = parseEdit(
+          z.strictObject({ name: z.string().trim().min(1).max(80).optional(), onItsOwn: z.literal(false).optional() }).refine((x) => x.name !== undefined || x.onItsOwn !== undefined, "a skill edit changes its name or puts it back on Tab"),
+          raw,
+        );
+        if (e.name !== undefined && ONE_LINE_BREAKS.test(e.name)) throw new MemoryError("invalid edit: a skill's name must be one line of text");
+        const s = SkillJson.parse(fields);
+        // Back on Tab as after a failed run (skills.ts reset): the clean count starts again, and a declined promote
+        // offer stays declined. Unlike after a failed run, Caret never offers it again on its own (B22 lead
+        // decision): the user asks for the offer from the skill's row (memoryRequest offerOnItsOwn).
+        const back = e.onItsOwn === false ? { onItsOwn: false, cleanRuns: 0, wrote: [], promote: s.promote === "declined" ? ("declined" as const) : null, putBack: true } : {};
+        next = { ...s, ...(e.name === undefined ? {} : { name: e.name }), ...back };
         break;
       }
       case "permission": {
@@ -459,6 +483,9 @@ export class MemoryStore {
     if (hit !== undefined) {
       // The latest occurrence's positions are the best guess for the next one; the rest of the row stays.
       const f = routineJson(this.row(hit.id));
+      // A guess from the window's buttons never replaces a press the user was seen making (B20).
+      const seen = (by: RoutineFinish["by"]): boolean => by === "click" || by === "key";
+      if (!seen(finish?.by) && seen(f.finish?.by)) finish = undefined;
       this.stmt("UPDATE memory SET count = count + 1, last_seen = ?, fields = ? WHERE id = ?").run(at, JSON.stringify({ ...f, steps, ...(finish === undefined ? {} : { finish }) }), hit.id);
       // A press learned after the routine was kept holds its skill on Tab from now on.
       const skill = finish === undefined || finish === null ? null : this.skillFor(hit.id);
@@ -754,7 +781,7 @@ export class MemoryStore {
         return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}`, uses: this.uses(f.action) };
       }
       case "skill": {
-        const { promote: _p, wrote: _w, ...f } = SkillJson.parse(this.fields(r));
+        const { promote: _p, wrote: _w, putBack: _b, ...f } = SkillJson.parse(this.fields(r));
         const status: MemoryStatus = paused ? "paused" : f.onItsOwn ? "active" : "learning";
         const how = paused
           ? "paused"

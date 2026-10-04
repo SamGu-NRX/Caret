@@ -104,7 +104,7 @@ export class Desk implements ReaderLink {
     const refused = this.enforceGrants ? this.grants.refusal(verb) : null;
     if (refused !== null) return answer("notAllowed", refused);
     if (verb.kind === "watchInput" && verb.pids.length === 0 && this.refuseLastWatch) return answer("notAllowed", "the desk refused the last watch");
-    if (verb.kind === "watchInput" || verb.kind === "watchWindows") return answer("ok");
+    if (verb.kind === "watchInput" || verb.kind === "watchWindows" || verb.kind === "watchPresses") return answer("ok");
     if (isCalendarVerb(verb)) return answer("notAllowed", "the desk has no calendar");
     // A list window is read-only here: its walk changes nothing, as a walk of an unchanged window sends nothing new.
     if (verb.kind === "walk" && !this.grids.has(verb.windowId) && this.h.model.windows.has(verb.windowId)) return answer("ok");

@@ -1,0 +1,1 @@
+B22: swift test --build-path /tmp/... keeps mutation runs out of .build/debug; Swift Testing marks failures 'recorded an issue', not ✘, so grep that when checking a mutation was caught.

@@ -531,7 +531,8 @@ public struct HelperError: Codable, Equatable, Sendable {
 /// What the helper asks the reader to do. Mirrors ReaderCommand.verb in protocol.ts.
 public enum ReaderVerb: Codable, Equatable, Sendable {
     case walk(pid: Int, windowId: String)
-    /// `attribute` is "value", "focused" or "insert" (focus, select all, replace the selection); `expect` is
+    /// `attribute` is "value", "focused", "focusValue" (focus, then the value: B20's WebKit write) or "insert"
+    /// (focus, select all, replace the selection); `expect` is
     /// the value the field must hold right before the write.
     /// `taskId` names the task whose act grant covers the write; nil acts only in --act-pids processes.
     case write(pid: Int, windowId: String, key: String, role: String, attribute: String, expect: String, value: String, taskId: String?)
@@ -540,6 +541,9 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     case watchInput(pids: [Int])
     /// Replaces the set of windows under a pending-state watch; an empty list ends every watch.
     case watchWindows(windows: [WatchedWindow])
+    /// B20: replaces the set of windows whose user presses the reader reports as userPress. Read only; an
+    /// empty list stops reporting.
+    case watchPresses(windows: [WatchedWindow])
     /// Brings one window to the front and activates its app, then re-walks it. It writes nothing, but
     /// it moves the user's focus, so it is gated like write and press.
     case raise(pid: Int, windowId: String, taskId: String?)
@@ -566,7 +570,7 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
         switch self {
         case let .write(_, _, _, _, _, _, _, t), let .press(_, _, _, _, _, t), let .raise(_, _, t): t
         case let .calendarAdd(_, _, _, _, t), let .calendarRemove(_, t), let .calendarDispose(_, t): t
-        case .walk, .watchInput, .watchWindows, .calendarFind, .calendarGet: nil
+        case .walk, .watchInput, .watchWindows, .watchPresses, .calendarFind, .calendarGet: nil
         }
     }
 
@@ -591,7 +595,7 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             self = .walk(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId))
         case "write":
             let attribute = try c.decode(String.self, forKey: .attribute)
-            guard ["value", "focused", "insert"].contains(attribute) else { throw ProtocolError("unknown write attribute \(attribute)") }
+            guard ["value", "focused", "focusValue", "insert"].contains(attribute) else { throw ProtocolError("unknown write attribute \(attribute)") }
             self = .write(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId),
                           key: try c.decode(String.self, forKey: .key), role: try c.decode(String.self, forKey: .role),
                           attribute: attribute, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value),
@@ -604,6 +608,8 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             self = .watchInput(pids: try c.decode([Int].self, forKey: .pids))
         case "watchWindows":
             self = .watchWindows(windows: try c.decode([WatchedWindow].self, forKey: .windows))
+        case "watchPresses":
+            self = .watchPresses(windows: try c.decode([WatchedWindow].self, forKey: .windows))
         case "raise":
             self = .raise(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId), taskId: try Self.grantTask(c))
         case "calendarFind", "calendarAdd":
@@ -645,6 +651,8 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             try c.encode("watchInput", forKey: .kind); try c.encode(pids, forKey: .pids)
         case let .watchWindows(windows):
             try c.encode("watchWindows", forKey: .kind); try c.encode(windows, forKey: .windows)
+        case let .watchPresses(windows):
+            try c.encode("watchPresses", forKey: .kind); try c.encode(windows, forKey: .windows)
         case let .raise(pid, windowId, taskId):
             try c.encode("raise", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
             try c.encodeIfPresent(taskId, forKey: .taskId)
@@ -870,6 +878,42 @@ public struct UserInput: Codable, Equatable, Sendable {
     }
 }
 
+/// B20: the user pressed something in a window under a press watch: the pressable element under the click,
+/// its role and label as the element carries them, and when the button went down. `key` is the element's key
+/// in the window's latest walk, nil when that walk did not keep it. Mirrors UserPress in protocol.ts.
+public struct UserPress: Codable, Equatable, Sendable {
+    public static let type = "userPress"
+    /// How the press was made: a click, Return or keypad Enter on the window's default button, or Space on the
+    /// focused button (B21, KeyPresses). protocol.ts PressVia.
+    public enum Via: String, Codable, Sendable { case click, `return`, enter, space }
+    public var at: Int64
+    public var pid: Int
+    public var windowId: String
+    public var key: String?
+    public var role: String
+    public var label: String
+    public var via: Via
+    public init(at: Int64, pid: Int, windowId: String, key: String?, role: String, label: String, via: Via) {
+        self.at = at; self.pid = pid; self.windowId = windowId; self.key = key; self.role = role; self.label = label; self.via = via
+    }
+    enum CodingKeys: String, CodingKey { case at, pid, windowId, key, role, label, via }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        at = try c.decode(Int64.self, forKey: .at); pid = try c.decode(Int.self, forKey: .pid)
+        windowId = try c.decode(String.self, forKey: .windowId); key = try c.decodeNullable(String.self, forKey: .key)
+        role = try c.decode(String.self, forKey: .role); label = try c.decode(String.self, forKey: .label)
+        via = try c.decode(Via.self, forKey: .via)
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(at, forKey: .at); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
+        try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(label, forKey: .label)
+        try c.encode(via, forKey: .via)
+    }
+}
+
 public struct TaskProgress: Codable, Equatable, Sendable {
     public static let type = "taskProgress"
     public enum Phase: String, Codable, Sendable { case started, skipped, acting, verified, paused, handoff, stopped, done, undone }
@@ -937,7 +981,7 @@ public enum Message: Codable, Equatable, Sendable {
     case alternatives(OfferAlternatives), action(OfferAction), popup(OfferPopup), offerAccept(OfferAccept), offerStop(OfferStop)
     case offerWithdrawn(OfferWithdrawn), settings(GateSettings), actGrant(ActGrant), actRevoke(ActRevoke)
     case planRequest(PlanRequest), planProposal(PlanProposal), calendarGrant(CalendarGrant)
-    case skillOffer(SkillOffer), skillAnswer(SkillAnswer), memoryReply(MemoryReply)
+    case skillOffer(SkillOffer), skillAnswer(SkillAnswer), memoryReply(MemoryReply), userPress(UserPress)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -975,6 +1019,7 @@ public enum Message: Codable, Equatable, Sendable {
         case SkillOffer.type: self = .skillOffer(try SkillOffer(from: decoder))
         case SkillAnswer.type: self = .skillAnswer(try SkillAnswer(from: decoder))
         case MemoryReply.type: self = .memoryReply(try MemoryReply(from: decoder))
+        case UserPress.type: self = .userPress(try UserPress(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -1014,6 +1059,7 @@ public enum Message: Codable, Equatable, Sendable {
         case .skillOffer(let m): try m.encode(to: encoder)
         case .skillAnswer(let m): try m.encode(to: encoder)
         case .memoryReply(let m): try m.encode(to: encoder)
+        case .userPress(let m): try m.encode(to: encoder)
         }
     }
 }

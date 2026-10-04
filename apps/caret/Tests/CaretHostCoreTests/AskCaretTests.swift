@@ -134,6 +134,14 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(card.writes, 1)
     }
 
+    /// A press in a permission dialog or system prompt (B22's `system`) says where it is; every
+    /// other reason keeps the button's own name.
+    func testAPressInASystemPromptSaysSo() {
+        XCTAssertEqual(AskCopy.press("Allow", why: .system), "Press Allow in the system prompt")
+        for why: PlanProposal.HandoffWhy in [.outbound, .destructive, .money, .unverifiable] {
+            XCTAssertEqual(AskCopy.press("Send", why: why), "Press Send", why.rawValue)
+        }
+
     func testEscDismissesTheCardAndTabThenDoesNothing() throws {
         _ = try proposed()
         XCTAssertTrue(ask.escape())
@@ -373,6 +381,7 @@ final class AskCaretTests: XCTestCase {
         let codes: [PlanProposal.ErrorCode] = [
             .schema, .noWindow, .unsure, .nothingToDo, .unsupportedStep, .multipleWindows, .unknownWindow, .ambiguousWindow,
             .unknownTarget, .ambiguousTarget, .notEditable, .untracedValue, .wrongKind, .stepAfterHandoff, .riskMismatch, .unavailable, .jevFailed, .privacy, .internal,
+            .unseenWindow,
         ]
         for code in codes {
             let words = AskCopy.planError(PlanProposal.Failure(code: code, detail: "something only the helper reads"))

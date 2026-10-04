@@ -29,7 +29,7 @@
 {"type":"taskProgress","v":1,"at":1790000003100,"taskId":"offer-5","planId":"offer-5","phase":"done","step":null,"steps":3,"says":null,"detail":"3 acted, 0 already true","written":3}
 {"type":"taskProgress","v":1,"at":1790000003900,"taskId":"offer-5","planId":"offer-5","phase":"undone","step":null,"steps":3,"says":null,"detail":"restored 2; not restored 1; presses not undoable 0","restored":2,"notRestored":1,"notUndoablePresses":0}
 {"type":"offerWithdrawn","v":1,"at":1790000124000,"id":"offer-5","reason":"reoffered","replacedBy":"offer-6"}
-{"type":"settings","v":1,"at":1790000130000,"roles":["fill","repeat","watch","words"],"level":"balanced","paused":false}
+{"type":"settings","v":1,"at":1790000130000,"roles":["fill","repeat","watch","calendar","words"],"level":"balanced","paused":false}
 {"type":"settings","v":1,"at":1790000131000,"roles":["watch"],"level":"quiet","paused":true}
 {"type":"offerWithdrawn","v":1,"at":1790000131000,"id":"fill-2","reason":"settings"}
 {"type":"actGrant","v":1,"taskId":"offer-5","pid":5150,"windowId":"5150-1","at":1790000140000,"expires":1790000260000}
@@ -51,3 +51,9 @@
 {"type":"skillAnswer","v":1,"id":"skill-offer-2","answer":"accept","at":1790000401000}
 {"type":"taskProgress","v":1,"at":1790000500000,"taskId":"offer-15","planId":"offer-15","step":null,"steps":3,"says":null,"detail":null,"phase":"started","unprompted":true}
 {"type":"taskProgress","v":1,"at":1790000501000,"taskId":"offer-15","planId":"offer-15","step":null,"steps":3,"says":null,"detail":"3 acted, 0 already true","phase":"done","written":3,"unprompted":true}
+{"type":"readerCommand","v":1,"id":"cmd-5","expires":1790000600000,"verb":{"kind":"watchPresses","windows":[{"pid":5150,"windowId":"5150-7"}]}}
+{"type":"userPress","v":1,"at":1790000601200,"pid":5150,"windowId":"5150-7","key":"dev.caret.fixture/standard/button:send~0","role":"AXButton","label":"Send","via":"click"}
+{"type":"planRequest","v":1,"requestId":"ask-3","at":1790000700000,"instruction":"Put my email in Email","window":{"pid":5150,"number":4821,"title":"Caret Fixture — Executor"}}
+{"type":"planProposal","v":1,"requestId":"ask-4","at":1790000701000,"outcome":"error","offerKey":null,"window":null,"spec":null,"handoff":null,"error":{"code":"unseenWindow","detail":"the reader has not read window 4999 of process 5150"}}
+{"type":"userPress","v":1,"at":1790000800400,"pid":5150,"windowId":"5150-7","key":"dev.caret.fixture/standard/button:send~0","role":"AXButton","label":"Send","via":"return"}
+{"type":"skillOffer","v":1,"id":"skill-offer-3","at":1790000510000,"kind":"promote","taskId":"host-memory-7","routineId":"routine-1a2b3c4d","skillId":"skill-5e6f7a8b","name":"Subject and To into Mail Fixture","says":"Do this one on your own from now on?","detail":"You'll see it happen and can undo it.","actions":[{"id":"accept","label":"Do it on its own"},{"id":"decline","label":"Keep asking"}]}

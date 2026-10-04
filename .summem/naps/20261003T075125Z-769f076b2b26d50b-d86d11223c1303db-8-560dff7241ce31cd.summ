@@ -1,0 +1,1 @@
+B13-B14: SnippetLedger charges a text to every window showing it; Jev replays vary ~3 fields, so rerun before reading a delta; socket tests bind to their own HelperServer; load-proof tests fix the generator clock; every stop carries stopReason; dry-run replays with an oracle Jev.

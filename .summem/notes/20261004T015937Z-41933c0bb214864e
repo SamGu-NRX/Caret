@@ -1,0 +1,1 @@
+planRequest names its window as window {pid, number, title} or windowId, never both; an unread one is unseenWindow; neither means the frontmost app's last focused window (ScreenModel.userWindow). v2/host's planError switch needs an unseenWindow sentence (B21).

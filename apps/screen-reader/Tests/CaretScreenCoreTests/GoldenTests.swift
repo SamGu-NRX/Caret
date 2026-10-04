@@ -51,6 +51,7 @@ private func goldenLines() throws -> [Data] {
             case .skillOffer: "skillOffer"
             case .skillAnswer: "skillAnswer"
             case .memoryReply: "memoryReply"
+            case .userPress: "userPress"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -62,7 +63,32 @@ private func goldenLines() throws -> [Data] {
                           "actGrant", "readerCommand", "verbResult", "actRevoke",
                           "planRequest", "planProposal", "planProposal",
                           "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
-                          "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress"])
+                          "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
+                          "readerCommand", "userPress",
+                          "planRequest", "planProposal", "userPress",
+                          "skillOffer"])
+    }
+
+    @Test func readsThePressWatch() throws {
+        let lines = try goldenLines()
+        guard case .readerCommand(let cmd) = try JSONDecoder().decode(Message.self, from: lines[53]),
+              case .userPress(let press) = try JSONDecoder().decode(Message.self, from: lines[54]) else { Issue.record("lines 54 and 55 are not the press watch"); return }
+        #expect(cmd.verb == .watchPresses(windows: [WatchedWindow(pid: 5150, windowId: "5150-7")]))
+        #expect(cmd.verb.taskId == nil)
+        #expect(press == UserPress(at: 1_790_000_601_200, pid: 5150, windowId: "5150-7", key: "dev.caret.fixture/standard/button:send~0", role: "AXButton", label: "Send", via: .click))
+        let noKey = Data(#"{"type":"userPress","v":1,"at":1,"pid":1,"windowId":"1-1","key":null,"role":"AXButton","label":"Send","via":"click"}"#.utf8)
+        guard case .userPress(let unkeyed) = try JSONDecoder().decode(Message.self, from: noKey) else { Issue.record("a press with a null key does not decode"); return }
+        #expect(unkeyed.key == nil)
+        let missing = Data(#"{"type":"userPress","v":1,"at":1,"pid":1,"windowId":"1-1","role":"AXButton","label":"Send","via":"click"}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: missing) }
+        // B21: a press by key, and how a press was made is required.
+        guard case .userPress(let byKey) = try JSONDecoder().decode(Message.self, from: lines[57]) else { Issue.record("line 58 is not a userPress"); return }
+        #expect(byKey == UserPress(at: 1_790_000_800_400, pid: 5150, windowId: "5150-7", key: "dev.caret.fixture/standard/button:send~0", role: "AXButton", label: "Send", via: .return))
+        let line = String(decoding: lines[57], as: UTF8.self)
+        for bad in [line.replacingOccurrences(of: #","via":"return""#, with: ""), line.replacingOccurrences(of: #""via":"return""#, with: #""via":"tab""#)] {
+            #expect(bad != line)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {
@@ -143,8 +169,8 @@ private func goldenLines() throws -> [Data] {
         let lines = try goldenLines()
         guard case .settings(let all) = try JSONDecoder().decode(Message.self, from: lines[31]),
               case .settings(let quiet) = try JSONDecoder().decode(Message.self, from: lines[32]) else { Issue.record("lines 32 and 33 are not settings"); return }
-        // The host's own message, which does not yet name the calendar role B16 added.
-        #expect(all == GateSettings(at: 1_790_000_130_000, roles: [.fill, .repeat, .watch, .words], level: .balanced, paused: false))
+        // The host's balanced settings as v2/host sends them since A13: every role, the calendar among them.
+        #expect(all == GateSettings(at: 1_790_000_130_000, roles: [.fill, .repeat, .watch, .calendar, .words], level: .balanced, paused: false))
         let calendar = Data(#"{"type":"settings","v":1,"at":1,"roles":["fill","calendar"],"level":"eager","paused":false}"#.utf8)
         guard case .settings(let withCalendar) = try JSONDecoder().decode(Message.self, from: calendar) else { Issue.record("a settings message with the calendar role does not decode"); return }
         #expect(withCalendar.roles == [.fill, .calendar])
@@ -312,6 +338,10 @@ private func goldenLines() throws -> [Data] {
         guard case .readerCommand(let ins) = try JSONDecoder().decode(Message.self, from: Data(insert.utf8)),
               case let .write(_, _, _, _, attribute, _, _, _) = ins.verb else { Issue.record("an insert write does not decode"); return }
         #expect(attribute == "insert")
+        let focusValue = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"focusValue""#)
+        guard case .readerCommand(let fv) = try JSONDecoder().decode(Message.self, from: Data(focusValue.utf8)),
+              case let .write(_, _, _, _, fvAttribute, _, _, _) = fv.verb else { Issue.record("a focusValue write does not decode"); return }
+        #expect(fvAttribute == "focusValue")
         let paste = write.replacingOccurrences(of: #""attribute":"value""#, with: #""attribute":"paste""#)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(paste.utf8)) }
         let bare = write.replacingOccurrences(of: #","taskId":"offer-5""#, with: "")
@@ -319,6 +349,31 @@ private func goldenLines() throws -> [Data] {
         #expect(noTask.verb.taskId == nil)
         let again = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(Message.readerCommand(noTask))) as! [String: Any]
         #expect((again["verb"] as? [String: Any])?["taskId"] == nil)
+    }
+
+    /// B21: a planRequest naming its window as a host knows it, and the error for a window the reader has not read.
+    @Test func readsThePlanWindow() throws {
+        let lines = try goldenLines()
+        guard case .planRequest(let req) = try JSONDecoder().decode(Message.self, from: lines[55]) else { Issue.record("line 56 is not a planRequest"); return }
+        #expect(req == PlanRequest(requestId: "ask-3", at: 1_790_000_700_000, instruction: "Put my email in Email", window: PlanWindow(pid: 5150, number: 4821, title: "Caret Fixture — Executor")))
+        guard case .planProposal(let f) = try JSONDecoder().decode(Message.self, from: lines[56]) else { Issue.record("line 57 is not a planProposal"); return }
+        #expect(f.outcome == .error && f.error?.code == .unseenWindow)
+        let request = String(decoding: lines[55], as: UTF8.self)
+        for bad in [
+            request.replacingOccurrences(of: #""instruction""#, with: #""windowId":"5150-1","instruction""#),
+            request.replacingOccurrences(of: #""number":4821"#, with: #""number":0"#),
+            request.replacingOccurrences(of: #""number":4821"#, with: #""number":4821.5"#),
+            request.replacingOccurrences(of: #""pid":5150"#, with: #""pid":0"#),
+            request.replacingOccurrences(of: #","title":"Caret Fixture — Executor""#, with: ""),
+        ] {
+            #expect(bad != request)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
+        let untitled = request.replacingOccurrences(of: #""title":"Caret Fixture — Executor""#, with: #""title":"""#)
+        #expect(throws: Never.self) { try JSONDecoder().decode(Message.self, from: Data(untitled.utf8)) }
+        // The encoder refuses both names at once rather than sending a request the helper refuses.
+        let both = PlanRequest(requestId: "x", at: 1, instruction: "x", windowId: "5150-1", window: PlanWindow(pid: 5150, number: 4821, title: ""))
+        #expect(throws: (any Error).self) { try NDJSON.encoder().encode(Message.planRequest(both)) }
     }
 
     /// B16: the planner's request and proposals; protocol.test.ts checks the same lines and refusals.

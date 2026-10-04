@@ -10,7 +10,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import type { AskJev, JevRequest } from "./fill/jev.ts";
-import { FillError, formFields, proposeFill } from "./fill/fill.ts";
+import { FillError, formAsksFor, formFields, proposeFill } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -44,8 +44,8 @@ import {
   type TaskPhase,
   type TaskState,
 } from "./protocol.ts";
-import type { Change } from "./model.ts";
-import { Executor, type ExecutorDeps, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
+import type { Change, WindowState } from "./model.ts";
+import { Executor, type Authorization, type ExecutorDeps, type Revocation, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
 import { MemoryStore } from "./patterns/memory.ts";
 import { PatternEngine } from "./patterns/engine.ts";
@@ -63,7 +63,7 @@ import { DEFAULT_SETTINGS, LEVELS, OfferGate, type Family, type UserSettings } f
 import { FirstLookRunner } from "./offers/first-look.ts";
 import { expired } from "./offers/lifetimes.ts";
 import { offerField } from "./offers/field.ts";
-import { planTask, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
+import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
@@ -155,7 +155,11 @@ function fillMatches(f: CaretFill, t: Transfer): boolean {
   return Math.abs(t.at - f.at) <= CARET_FILL_MATCH_MS && (f.value.includes(t.value) || t.value.includes(f.value));
 }
 
-/** Re-asking Jev for the same form inside this window returns nothing new. Assumed. */
+/**
+ * Re-asking Jev for the same form inside this window returns nothing new. Assumed. An About entry added
+ * since the form was last asked about is something new, so a form with a field it fits is asked again
+ * inside the window (B21: A14's walk found a form seen in the 30 s before onboarding's Continue got no offer).
+ */
 const FILL_REPEAT_MS = 30_000;
 const PRUNE_EVERY_MS = 10_000;
 
@@ -169,6 +173,10 @@ export class Helper {
   private readonly opts: HelperOptions;
   private readonly lastFill = new Map<string, number>();
   private readonly inflight = new Set<string>();
+  /** When each About entry was added through memoryRequest add, by id: the newer entries a form has not been asked about (B21). */
+  private readonly aboutAddedAt = new Map<string, number>();
+  /** Forms whose fill was in flight when an About entry was added; the focused field is asked about again when that fill ends. */
+  private readonly refillAfter = new Set<string>();
   /** Recent proposals, by id: the window and each proposed field's value, so fillResult can be checked and matched. */
   private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null }>();
   /** Every Jev request goes through this, which records it as a use of "Read and prepare" (B17). Null when Jev is off. */
@@ -229,6 +237,24 @@ export class Helper {
   private planSeq = 0;
   /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
   private readerConnected: boolean;
+  /**
+   * Host sessions connected now (S1 audit #5): each consumer connection, as the server names it, and any
+   * in-process session a test or evaluation registers. A consumer's hello does not say whether it is the
+   * host, so every consumer counts as one.
+   */
+  private readonly hosts = new Set<string>();
+  /**
+   * The host sessions each task is bound to, by task id: the session that accepted, took, ran, resumed or
+   * undid it, or for a run a skill started with no Tab, every session connected when it started. If any of
+   * them disconnects, the task is revoked. A task with no entry was started in process, outside a session.
+   */
+  private readonly taskHosts = new Map<string, ReadonlySet<string>>();
+  /**
+   * What each run from an offer depends on beyond its grant (B22 review): the settings family of the offer it
+   * came from, and for a routine's, the routine. Turning that family off, or forgetting or pausing the routine
+   * or its skill, revokes it, a run the user accepted with Tab included.
+   */
+  private readonly taskDeps = new Map<string, { family: Family | null; routineId: string | null }>();
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
@@ -269,6 +295,7 @@ export class Helper {
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
       memoryHolds: (id, value) => this.memory.text(id) === value,
+      authorize: (a) => this.authorize(a),
       onChanges: (l) => {
         this.changeListeners.add(l);
         return () => this.changeListeners.delete(l);
@@ -289,13 +316,30 @@ export class Helper {
       },
       // Every pattern run starts from an accepted offer (offerControl take or the host's offerAccept), or
       // from a skill the user agreed to let run on its own (B19), which is the approval its grant rests on.
-      run: (taskId, plan, slots, expect, opts) => this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true }),
+      // A run with no Tab is bound to every host session connected as it starts (S1 audit #5); with none,
+      // authorize refuses its first act. The engine does not start one while no host is connected.
+      run: (taskId, plan, slots, expect, opts) => {
+        if (opts !== undefined) this.taskDeps.set(taskId, { family: opts.family, routineId: opts.routineId });
+        if (opts?.unprompted === true) this.taskHosts.set(taskId, new Set(this.hosts));
+        return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true });
+      },
+      hostConnected: () => this.hosts.size > 0,
+      // A run of a skill that just went back on Tab, still going with no Tab, is revoked now (B22 review).
+      onSkillReset: () => this.executor.recheck(),
       askJev: this.ask,
       shadow: () => this.mode === "shadow",
       gate: this.gate,
       enteredByUser: (id) => {
         if (this.tasks.get(id)?.state === "ready") this.tasks.update(id, { state: "done", cause: "you", detail: "you entered the values yourself" });
       },
+      // Read only: without it a routine still learns its finish from the window's buttons, so a failure is a warning.
+      watchPresses: (windows) =>
+        void this.readerVerb({ kind: "watchPresses", windows }).then(
+          (r) => {
+            if (r.outcome !== "ok" || r.detail !== null) this.opts.warn?.(`patterns: watchPresses answered ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+          },
+          (e: unknown) => this.opts.warn?.(`patterns: watchPresses failed: ${String(e)}`),
+        ),
     });
     this.pending = new PendingWatcher({
       model: this.model,
@@ -308,13 +352,13 @@ export class Helper {
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
     // The open-app line runs only from the host's offerAccept.
-    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }), gate: this.gate, now: this.now });
+    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.runFrom("pending", taskId, plan, slots), gate: this.gate, now: this.now });
     this.events = new EventCards({
       model: this.model,
       askJev: this.ask,
       publish: (m, accept) => this.publish(m, accept),
       // An event card runs only from the host's offerAccept.
-      run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }),
+      run: (taskId, plan, slots) => this.runFrom("event", taskId, plan, slots),
       gate: this.gate,
       people: () => this.memory.list("people").flatMap((e) => (e.kind === "people" && e.status !== "paused" ? [{ id: e.id, label: e.fields.alias, text: e.fields.name }] : [])),
       calendar: opts.eventCalendar ?? "Caret",
@@ -333,6 +377,7 @@ export class Helper {
       patterns: this.patterns,
       events: this.events,
       // A first look's offer runs only from the host's offerAccept.
+      // The family is recorded when the offer is withdrawn as taken, just before this (withdrawFirstLook).
       run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
       record: (msg, family, accept, underlying) => {
         this.offers.record(msg, accept);
@@ -344,6 +389,36 @@ export class Helper {
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
+  }
+
+  /**
+   * Whether a task may act now (Executor.authorize). Caret paused stops every task, the one the user
+   * accepted too: a pause means Caret does nothing. A run a skill started with no Tab also needs its skill
+   * still on its own and the permission for where its next act lands, as the user stands now
+   * (Skills.whyNotOnItsOwn). A run the user accepted answered "ask" for its writes; it needs only that the
+   * permission is not one Caret always hands off.
+   */
+  private authorize(a: Authorization): Revocation | null {
+    const bound = this.taskHosts.get(a.taskId);
+    if (bound !== undefined && [...bound].some((h) => !this.hosts.has(h))) return { why: "the host that started it disconnected", by: "host" };
+    if (a.unprompted && (bound === undefined || bound.size === 0)) return { why: "no host was connected to show it", by: "host" };
+    if (this.gate.settings.paused) return { why: "you paused Caret", by: "you" };
+    const deps = this.taskDeps.get(a.taskId);
+    if (deps?.family != null && this.gate.holds(deps.family, this.now()).some((h) => h === "roleOff" || h === "levelOff")) {
+      return { why: "your settings no longer let Caret do this kind of work", by: "you" };
+    }
+    if (deps?.routineId != null) {
+      const why = this.patterns.skills.whyTabRunMayNotContinue(a.taskId, deps.routineId);
+      if (why !== null) return { why, by: "you" };
+    }
+    if (a.unprompted) {
+      const action = a.action === "writeHere" || a.action === "writeElsewhere" ? a.action : null;
+      if (a.action !== null && action === null) return { why: `a skill with no Tab never acts under ${a.action}`, by: "you" };
+      const why = this.patterns.skills.whyRunMayNotAct(a.taskId, action);
+      return why === null ? null : { why, by: "you" };
+    }
+    if (a.action !== null && this.memory.permission(a.action) === "handoff") return { why: `your rule for ${a.action} hands it to you`, by: "you" };
+    return null;
   }
 
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
@@ -407,6 +482,8 @@ export class Helper {
         // The user left a window: the reader's leave walk of it, or focus arriving in another window.
         if (m.reason === "leave") this.left(m.window.windowId, m.at);
         if (prevFocused !== null && moved) this.left(prevFocused, m.at);
+        // Where the user is decides a write's permission: a run with no Tab whose next write is no longer where they are is revoked now (B22 review).
+        if (moved) this.executor.recheck();
         return null;
       }
       case "focus": {
@@ -416,6 +493,7 @@ export class Helper {
         }
         this.preFocus = null;
         if (m.frontmost) this.model.frontmostPid = m.app.pid;
+        if (m.frontmost) this.executor.recheck();
         this.audit?.onFocus(m);
         store.count(m.editable ? "reader.focus_editable" : "reader.focus_other", 1, m.at);
         if (this.mode === "live") {
@@ -431,6 +509,7 @@ export class Helper {
         if (this.mode === "shadow") this.shadowLogger.onAppSwitch(m);
         // The app being left may send no leave walk when its window did not change; its focused window was left all the same.
         if (m.from !== null) for (const w of this.model.windows.values()) if (w.app.pid === m.from.pid && w.focused) this.left(w.window.windowId, m.at);
+        this.executor.recheck();
         store.count("reader.app_switch", 1, m.at);
         return null;
       case "windowClosed": {
@@ -438,7 +517,7 @@ export class Helper {
         // The shadow logger judges an open episode in this window before the window leaves the model,
         // since the judgment reads the window's typed values.
         if (this.mode === "shadow") this.shadowLogger.onWindowClosing(m.windowId);
-        this.patterns.onWindowClosed(m.windowId);
+        this.patterns.onWindowClosed(m.windowId, m.at);
         this.pending.onWindowClosed(m.windowId);
         this.openApp.onWindowClosed(m.windowId);
         this.audit?.onWindowClosed(m.windowId, m.at);
@@ -455,6 +534,9 @@ export class Helper {
         return null;
       case "userInput":
         this.executor.onUserInput(m);
+        return null;
+      case "userPress":
+        this.patterns.onUserPress(m);
         return null;
     }
   }
@@ -491,6 +573,8 @@ export class Helper {
     if (!m.roles.includes("watch")) this.pending.stopAll("you turned off watching");
     // Watches ask nothing while Caret is paused; once it is not, a window that changed meanwhile is asked about.
     else if (this.gate.enabled("pending")) this.pending.resumeAsks();
+    // A pause, or routines turned off, ends the work that depended on them now, not at its next act (S1 audit #4).
+    this.executor.recheck();
   }
 
   /** Whether a reader is connected, as the first look sees it. */
@@ -501,6 +585,46 @@ export class Helper {
   /** The reader's connection closed. A first look then answers that no reader is connected. */
   readerClosed(): void {
     this.readerConnected = false;
+  }
+
+  /**
+   * A host session connected: a consumer on the socket (HelperServer), or an in-process caller that plays
+   * the host, such as an evaluation that answers offers itself. Runs with no Tab start only while one is.
+   */
+  hostConnected(session: string): void {
+    this.hosts.add(session);
+  }
+
+  /**
+   * A host session closed (S1 audit #5): every task bound to it is revoked now, its grant first, so an act
+   * already queued in the reader is refused; a run stops at its next step boundary, a paused one at once.
+   */
+  hostDisconnected(session: string): void {
+    if (!this.hosts.delete(session)) return;
+    // The binding stays, naming a session that is gone, so authorize also refuses a task whose run has not begun.
+    for (const [taskId, bound] of [...this.taskHosts]) {
+      if (bound.has(session)) this.executor.revoke(taskId, { why: "the host that started it disconnected", by: "host" });
+    }
+  }
+
+  /** Runs an accepted offer of this settings family under a grant, recording the family it depends on. */
+  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>): Promise<TaskResult> {
+    if (family !== null) this.taskDeps.set(taskId, { family, routineId: null });
+    return this.executor.run(taskId, plan, slots, expect, { grant: true });
+  }
+
+  /**
+   * Binds a task that does not exist yet to the session about to start it (accept, take, runPlan). One that
+   * exists keeps its binding: a second take or accept from another session is refused, and must not take the
+   * task away from the host that started it (B22 review). In process (no session), nothing.
+   */
+  private bindNew(taskId: string, session: string | undefined): void {
+    if (session !== undefined && !this.executor.has(taskId)) this.taskHosts.set(taskId, new Set([session]));
+  }
+
+  /** Binds an existing task to the session that resumes or undoes it, once the executor would accept the request. */
+  private rebind(taskId: string, session: string | undefined, refusal: string | null): void {
+    if (session !== undefined && refusal === null) this.taskHosts.set(taskId, new Set([session]));
   }
 
   /** The host's first look: the best offer across the windows open now, answered to the asker only. */
@@ -545,11 +669,12 @@ export class Helper {
     const session = this.readerSession;
     let draft: PlanDraft;
     try {
+      const windowId = requestedWindow(this.model, m);
       draft = await planTask(m.instruction, this.model, { values: () => this.plannerMemory() }, {
         askJev: ask,
         offerKey,
         now: this.now(),
-        ...(m.windowId === undefined ? {} : { windowId: m.windowId }),
+        ...(windowId === null ? {} : { windowId }),
         ...this.opts.plannerHooks,
       });
     } catch (e) {
@@ -606,7 +731,11 @@ export class Helper {
 
   /** Ends an offer a first look recorded: its key leaves the registry and consumers get offerWithdrawn. */
   private withdrawFirstLook(offerKey: string, reason: Exclude<OfferWithdrawn["reason"], "reoffered">): void {
-    if (!this.firstLooks.delete(offerKey)) return;
+    const f = this.firstLooks.get(offerKey);
+    if (f === undefined) return;
+    this.firstLooks.delete(offerKey);
+    // Taken: the run that follows depends on this offer's family (B22 review).
+    if (reason === "taken") this.taskDeps.set(offerKey, { family: f.family, routineId: null });
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
 
@@ -627,8 +756,12 @@ export class Helper {
     if (refused !== null) this.error(refused);
   }
 
-  /** Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. */
-  handleOffer(m: OfferControl): Promise<TaskResult | null> {
+  /**
+   * Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. `session`: the
+   * host session it came from (HelperServer), which a taken offer's run is bound to; absent in process.
+   */
+  handleOffer(m: OfferControl, session?: string): Promise<TaskResult | null> {
+    if (m.action === "take") this.bindNew(m.offerId, session);
     return this.patterns.control(m);
   }
 
@@ -636,9 +769,10 @@ export class Helper {
    * The host took an action of an action line or pop-up. The offer must be live, not yet accepted, and
    * the action and overrides must be ones the host was shown; then the offer's producer runs it as the
    * task whose id is the offerId. Any refusal publishes an error and, unless a run already has that id,
-   * a terminal taskProgress, so the host's working line ends.
+   * a terminal taskProgress, so the host's working line ends. The run is bound to `session`, the host
+   * session that accepted it (S1 audit #5).
    */
-  async handleOfferAccept(m: OfferAccept): Promise<TaskResult | null> {
+  async handleOfferAccept(m: OfferAccept, session?: string): Promise<TaskResult | null> {
     if (this.mode !== "live") return this.refuseAccept(m.offerId, "the helper is in shadow mode and does not act");
     const r = this.offers.get(m.offerId);
     if (r === undefined) return this.refuseAccept(m.offerId, "no such offer, or it expired");
@@ -647,6 +781,7 @@ export class Helper {
     if (why !== null) return this.refuseAccept(m.offerId, why);
     if (r.accept === null) return this.refuseAccept(m.offerId, "the offer has nothing to run");
     r.accepted = true;
+    this.bindNew(m.offerId, session);
     let out: AcceptResult;
     try {
       out = await r.accept(m);
@@ -682,7 +817,41 @@ export class Helper {
       const ids = m.op === "add" ? reply.entries.map((e) => e.id) : m.id === undefined ? [] : [m.id];
       for (const id of ids) this.withdrawMemoryOffers(id);
     }
+    // A permission changed, a skill put back on Tab, paused or forgotten, or an entry a run copies edited or
+    // forgotten: every task that depended on it is revoked now (S1 audit #4).
+    if (reply.error === null && m.op !== "list") this.executor.recheck();
+    // A name or email the user just told Caret reaches the form they are on now, without a new focus (B21).
+    if (reply.error === null && m.op === "add") {
+      const at = this.now();
+      for (const e of reply.entries) this.aboutAddedAt.set(e.id, at);
+      this.refillFocused();
+    }
     return reply;
+  }
+
+  /**
+   * Asks again about the field the user is in, as a focus there would: an empty editable field of the
+   * frontmost app's focused window. The form's repeat window still holds unless an entry added since its
+   * last ask fits one of its fields (fill, FILL_REPEAT_MS).
+   */
+  private refillFocused(): void {
+    if (this.mode !== "live") return;
+    // The frontmost app's focused window: focusedWindowId can name a background app's window after a request walk.
+    // Tests that allow background focus take the latest focus in any app, as their focus events do.
+    const background = this.opts.allowBackgroundFocus && this.model.focusedWindowId !== null ? this.model.windows.get(this.model.focusedWindowId) : undefined;
+    const w = background ?? this.model.userWindow();
+    if (w === null || w.focusedKey === null) return;
+    if (!this.opts.allowBackgroundFocus && (this.model.frontmostPid === null || this.model.frontmostPid !== w.app.pid)) return;
+    const id = w.window.windowId;
+    const n = w.nodes.get(w.focusedKey);
+    if (n?.editable !== true || (n.value ?? "") !== "") return;
+    void this.fill(id, w.focusedKey, false, true);
+  }
+
+  /** Whether an About entry added at or after `since` fits a field of the form around `key`. */
+  private addedSince(since: number, w: WindowState, key: string): boolean {
+    const fresh = this.aboutValues().filter((a) => (this.aboutAddedAt.get(a.id) ?? -Infinity) >= since);
+    return formAsksFor(w, key, fresh);
   }
 
   private withdrawMemoryOffers(memoryId: string): void {
@@ -761,6 +930,11 @@ export class Helper {
   /** An executor phase becomes a task record: created on the run's first phase, updated on every later one. */
   private onTaskEvent(e: TaskEvent): void {
     const state = PHASE_STATE[e.phase];
+    // A task that can no longer act needs no host binding; an undo binds it again to the session asking.
+    if (state !== "running" && state !== "paused") {
+      this.taskHosts.delete(e.taskId);
+      this.taskDeps.delete(e.taskId);
+    }
     const cause: TaskCause | null = e.cause ?? (state === "running" ? null : state === "undone" ? "you" : "caret");
     const fields = {
       state,
@@ -816,7 +990,8 @@ export class Helper {
   }
 
   /** Runs a plan or controls a task. Errors in the request itself are published, not thrown. */
-  async handleTask(m: RunPlan | TaskControl): Promise<TaskResult | UndoResult | null> {
+  /** `session`: the host session it came from; a run, resume or undo is bound to it (S1 audit #5). */
+  async handleTask(m: RunPlan | TaskControl, session?: string): Promise<TaskResult | UndoResult | null> {
     if (this.mode !== "live") {
       this.error(`task ${m.taskId}: the helper is in shadow mode and does not act`);
       return null;
@@ -825,6 +1000,7 @@ export class Helper {
       if (m.type === "runPlan") {
         // A task id names one piece of work in the activity feed; a run may not take over another's record.
         if (this.tasks.get(m.taskId) !== undefined) throw new Error(`task id ${m.taskId} is already in use`);
+        this.bindNew(m.taskId, session);
         // No act grant: a consumer's plan is not an offer the user accepted, so the reader acts for it
         // only in --act-pids processes, which only tests start.
         return await this.executor.run(m.taskId, m.plan, m.slots);
@@ -836,13 +1012,16 @@ export class Helper {
       }
       switch (m.action) {
         case "resume":
+          this.rebind(m.taskId, session, this.executor.resumeRefusal(m.taskId));
           return await this.executor.resume(m.taskId);
-        case "undo": {
-          const undone = await this.executor.undo(m.taskId);
-          // Undoing a skill's run resets its clean runs and puts it back on Tab (B19).
+        case "undo":
+          // Asking to undo a skill's run resets its clean runs and puts it back on Tab (B19), before the restore
+          // is awaited: a restore that is refused or fails (a reader restart since the run, S1 audit #15) must
+          // not leave the skill running on its own.
+          // A run of the same skill still going depends on it running on its own: Skills.reset sweeps (onSkillReset).
           this.patterns.skills.reversed(m.taskId, this.now());
-          return undone;
-        }
+          this.rebind(m.taskId, session, this.executor.undoRefusal(m.taskId));
+          return await this.executor.undo(m.taskId);
         case "pause":
         case "takeOver":
           // The run's own promise resolves as paused at the next step boundary.
@@ -923,7 +1102,8 @@ export class Helper {
     if (ts.length > 0) this.patterns.onTransfers(ts);
   }
 
-  private async fill(windowId: string, key: string, explicit: boolean): Promise<FillProposal | null> {
+  /** `afterAdd`: asked because an About entry was just added (refillFocused), not because of a focus. */
+  private async fill(windowId: string, key: string, explicit: boolean, afterAdd = false): Promise<FillProposal | null> {
     const ask = this.ask;
     const store = this.opts.store;
     if (ask === null || this.mode === "shadow") {
@@ -951,8 +1131,13 @@ export class Helper {
       this.error(`fill: ${(e as Error).message}`);
       return null;
     }
-    if (this.inflight.has(formKey)) return null;
-    if (!explicit && now - (this.lastFill.get(formKey) ?? -Infinity) < FILL_REPEAT_MS) return null;
+    if (this.inflight.has(formKey)) {
+      // The fill under way read memory before the entry arrived; the form is asked again once it ends.
+      if (afterAdd) this.refillAfter.add(formKey);
+      return null;
+    }
+    const last = this.lastFill.get(formKey);
+    if (!explicit && last !== undefined && now - last < FILL_REPEAT_MS && !this.addedSince(last, w, key)) return null;
     // A pop-up already on offer covers this form, however long ago it was made.
     if (!explicit && [...this.fillPopups.values()].some((f) => f.form === formKey)) return null;
     this.inflight.add(formKey);
@@ -1016,6 +1201,7 @@ export class Helper {
     } finally {
       this.pendingFills.delete(focuses);
       this.inflight.delete(formKey);
+      if (this.refillAfter.delete(formKey)) this.refillFocused();
     }
   }
 
@@ -1055,7 +1241,7 @@ export class Helper {
     const { plan, slots } = fillPlan(this.model, p);
     this.withdrawFill(p.id, "taken");
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.executor.run(p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, { grant: true });
+    return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
   }
 
   /**

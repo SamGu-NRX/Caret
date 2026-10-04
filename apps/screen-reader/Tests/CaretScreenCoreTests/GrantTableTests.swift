@@ -104,4 +104,41 @@ import Testing
         t.clear()
         #expect(t.calendarRefusal(taskId: "t4", now: 2_000, uptimeMs: 110) == "no calendar grant for task t4")
     }
+
+    // S1 audit #7: before B22 every worker numbered windows from 1, so a process that reused a pid got "<pid>-1" again.
+    @Test func aProcessThatReusesAPidNeverMatchesTheOldOnesWindowsOrGrants() {
+        let old = ProcessIncarnation(pid: 500, startMicros: 1_790_000_000_000_000, generation: 3)
+        let reused = ProcessIncarnation(pid: 500, startMicros: 1_790_000_090_000_000, generation: 7)
+        let again = ProcessIncarnation(pid: 500, startMicros: old.startMicros, generation: 8)
+        let oldIds = Set((1...20).map(old.windowId))
+        #expect(oldIds.isDisjoint(with: (1...20).map(reused.windowId)))
+        // A worker made again for the same process (the reader dropped it and it came back) gets other ids too.
+        #expect(oldIds.isDisjoint(with: (1...20).map(again.windowId)))
+        let g = GrantTable()
+        g.issue(grant(window: old.windowId(1)), uptimeMs: u0)
+        #expect(check(g, window: old.windowId(1), now: t0 + 1, up: u0 + 1) == nil)
+        #expect(check(g, window: reused.windowId(1), now: t0 + 1, up: u0 + 1) != nil)
+    }
+
+    /// B22 review: the reader ends the grants for the window the user's input landed in, before the helper hears of it.
+    @Test func endsTheGrantsOfOneWindowAndNoOther() {
+        let g = GrantTable()
+        g.issue(grant("t1", pid: 500, window: "500-1"), uptimeMs: u0)
+        g.issue(grant("t2", pid: 500, window: "500-2"), uptimeMs: u0)
+        #expect(g.revoke(pid: 500, windowId: "500-1") == 1)
+        #expect(check(g, "t1", window: "500-1", now: t0 + 1, up: u0 + 1) == "no act grant for task t1")
+        #expect(check(g, "t2", window: "500-2", now: t0 + 1, up: u0 + 1) == nil)
+        #expect(g.revoke(pid: 600, windowId: "500-2") == 0)
+    }
+
+    @Test func endsEveryActGrantOfAProcessThatExitedAndNoOther() {
+        let g = GrantTable()
+        g.issue(grant("t1", pid: 500, window: "500-1"), uptimeMs: u0)
+        g.issue(grant("t2", pid: 500, window: "500-2"), uptimeMs: u0)
+        g.issue(grant("t3", pid: 600, window: "600-1"), uptimeMs: u0)
+        #expect(g.revoke(pid: 500) == 2)
+        #expect(check(g, "t1", window: "500-1", now: t0 + 1, up: u0 + 1) == "no act grant for task t1")
+        #expect(check(g, "t2", window: "500-2", now: t0 + 1, up: u0 + 1) == "no act grant for task t2")
+        #expect(check(g, "t3", pid: 600, window: "600-1", now: t0 + 1, up: u0 + 1) == nil)
+    }
 }

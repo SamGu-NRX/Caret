@@ -1,12 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
-import { classifyLabel } from "../src/executor/risk.ts";
+import { classifyLabel, classifyPress } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { quotedPart } from "../src/executor/target.ts";
@@ -81,25 +82,105 @@ describe("executor", () => {
     expect(await helper.executor.run("t3", plan([front], "p3"), {})).toMatchObject({ outcome: "done", acted: 0, skipped: 1 });
   });
 
-  it("aborts on a mismatch and names the step: the write and its insert fallback report success but nothing changed", async () => {
+  it("hands the field to the user, plainly, when the write and both fallbacks answer ok and change nothing (B20)", async () => {
     app.dropWrites = true;
+    app.dropFocusValues = true;
     app.dropInserts = true;
     const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
-    expect(r).toMatchObject({ outcome: "stopped", step: 0 });
-    expect(r.detail).toMatch(/^mismatch/);
-    expect(stopReason(r.taskId)).toBe("mismatch");
-    expect(progress("t1").at(-1)).toMatchObject({ phase: "stopped", step: 0, says: `${K("textfield:name~0")} holds Dana` });
-    // The value write, then the insert fallback; the second step never ran.
-    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "insert"]);
+    expect(r).toMatchObject({ outcome: "handoff", step: 0 });
+    expect(r.detail).toBe(`${FIXTURE_APP.name} did not take the text for the Name field while its window was in the background, so Caret left it to you`);
+    expect(progress("t1").at(-1)).toMatchObject({ phase: "handoff", step: 0, says: `${K("textfield:name~0")} holds Dana` });
+    // The value write, then focus-then-value, then insert; the second step never ran, and nothing went in the ledger.
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "focusValue", "insert"]);
+    expect(helper.executor.ledger("t1")).toEqual([]);
+    expect(app.node(K("textfield:name~0"))?.value ?? "").toBe("");
   });
 
-  it("falls back to focus-and-insert when a value write is answered ok and changes nothing, and undoes the same way", async () => {
+  it("reads the window once more when the field is missing right after the insert, then hands it off if it is back unchanged", async () => {
+    app.dropWrites = true;
+    app.dropFocusValues = true;
+    app.dropInserts = true;
+    app.vanishAfter = "insert";
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0 });
+    expect(app.verbs.at(-2)).toMatchObject({ kind: "walk" });
+  });
+
+  it("finishes the step when the field the walk lost comes back holding the value", async () => {
+    app.dropWrites = true;
+    app.dropFocusValues = true;
+    app.vanishAfter = "insert";
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "done", acted: 1 });
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+    expect(helper.executor.ledger("t1")).toMatchObject([{ kind: "write", before: "", after: "Dana" }]);
+  });
+
+  it("reads the window once more when the field is missing right after the first value write, and finishes when it is back written", async () => {
+    app.vanishAfter = "value";
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "done", acted: 1 });
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value"]);
+  });
+
+  it("ends as the user asked, not as a hand-off, when they take over while the insert fallback is on its way", async () => {
+    app.dropWrites = true;
+    app.dropFocusValues = true;
+    app.dropInserts = true;
+    app.beforeVerb = (_, v) => {
+      if (v.kind === "write" && v.attribute === "insert") helper.executor.pause("t1", true);
+    };
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r.outcome).toBe("paused");
+    expect(progress("t1").some((p) => p.phase === "handoff")).toBe(false);
+  });
+
+  it("keeps a fallback write that landed in the ledger when the user takes over while it was on its way (B20 review)", async () => {
+    app.dropWrites = true;
+    app.beforeVerb = (_, v) => {
+      if (v.kind === "write" && v.attribute === "focusValue") helper.executor.pause("t1", true);
+    };
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(r.outcome).toBe("paused");
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+    expect(helper.executor.ledger("t1")).toMatchObject([{ kind: "write", key: K("textfield:name~0"), before: "", after: "Dana" }]);
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+    expect(app.node(K("textfield:name~0"))?.value ?? "").toBe("");
+  });
+
+  it("reads the window once more when the field is missing right after an undo's restore", async () => {
+    expect(await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {})).toMatchObject({ outcome: "done" });
+    app.vanishAfter = "value";
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1, notRestored: [] });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+  });
+
+  it("still stops on a mismatch when a fallback lands something other than the value", async () => {
+    app.dropWrites = true;
+    app.normalize = (v) => v.toUpperCase();
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+    expect(stopReason("t1")).toBe("mismatch");
+  });
+
+  it("falls back to focus-then-value when a value write is answered ok and changes nothing, and undoes the same way (B20)", async () => {
     app.dropWrites = true;
     const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {});
     expect(r).toMatchObject({ outcome: "done", acted: 1 });
     expect(app.node(K("textfield:email~0"))?.value).toBe("d@example.com");
-    expect(progress("t1").filter((p) => p.phase === "acting").map((p) => p.detail?.split(";")[0])).toEqual(["write value", "insert"]);
-    expect(acts().map((v) => (v.kind === "write" ? [v.attribute, v.expect] : v.kind))).toEqual([["value", "old@example.com"], ["insert", "old@example.com"]]);
+    expect(progress("t1").filter((p) => p.phase === "acting").map((p) => p.detail?.split(";")[0])).toEqual(["write value", "focusValue"]);
+    expect(acts().map((v) => (v.kind === "write" ? [v.attribute, v.expect] : v.kind))).toEqual([["value", "old@example.com"], ["focusValue", "old@example.com"]]);
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+    expect(acts().slice(2).map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "focusValue"]);
+  });
+
+  it("falls back to focus-and-insert when focus-then-value changes nothing too", async () => {
+    app.dropWrites = true;
+    app.dropFocusValues = true;
+    const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(r).toMatchObject({ outcome: "done", acted: 1 });
+    expect(acts().map((v) => (v.kind === "write" ? v.attribute : v.kind))).toEqual(["value", "focusValue", "insert"]);
     expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
     expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
   });
@@ -178,6 +259,28 @@ describe("executor", () => {
     expect(app.node(K("statictext:sent!~0"))).toBeUndefined();
     const safe = plan([{ says: "You press Archive", end: { kind: "handoff", window: W, target: { key: K("button:archive~0"), describe: "the Archive button" }, why: "unverifiable" } }], "q");
     expect((await helper.executor.run("t3", safe, {})).detail).toBe("Caret cannot check what pressing 'Archive' changes, so it leaves that press to you");
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  // S1 audit #10: before B22 a safe-sounding label in a permission dialog was pressed.
+  it("hands any press in a system prompt to the user, whatever its label says", async () => {
+    app.windowKind = "systemdialog";
+    app.show();
+    const p = plan([{ says: "the next page shows", end: { kind: "exists", window: W, target: { label: "Page 2", describe: "page 2" } }, via: { kind: "press", target: { label: "Next page", describe: "Next page button" } } }]);
+    const r = await helper.executor.run("t1", p, {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0 });
+    expect(r.detail).toBe("'Next page' is in a system prompt; Caret leaves that press to you");
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  // B22 review: a label that matches no risk word was pressed before; only labels the table knows to be safe are.
+  it("hands a press it cannot classify to the user: no risk word is not evidence of safety", async () => {
+    app.nodes.push({ key: K("button:transmit~0"), parent: null, role: "AXButton", label: "Transmit" });
+    app.show();
+    const p = plan([{ says: "the form is sent", end: { kind: "exists", window: W, target: { label: "Sent!", describe: "sent notice" } }, via: { kind: "press", target: { label: "Transmit", describe: "Transmit button" } } }]);
+    const r = await helper.executor.run("t1", p, {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0 });
+    expect(r.detail).toBe("Caret cannot tell what pressing 'Transmit' does, so it leaves that press to you");
     expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 
@@ -583,17 +686,89 @@ describe("executor", () => {
       expect(kinds()).toEqual(["actGrant", "actRevoke"]);
     });
 
-    it("a pause keeps the grant to the step boundary, gives it back there, and resume grants again", async () => {
+    // S1 audit #3: before B22 an ordinary pause kept the grant to the step boundary.
+    it("a pause revokes the grant the moment it is recorded, and resume grants again", async () => {
       app.afterVerb = (a, v) => {
         if (v.kind !== "write" || v.key !== K("textfield:name~0")) return;
         a.afterVerb = null;
         helper.executor.pause("t1", false);
-        expect(kinds()).toEqual(["actGrant"]);
+        expect(kinds()).toEqual(["actGrant", "actRevoke"]);
       };
       expect(await helper.executor.run("t1", two(), {}, undefined, { grant: true })).toMatchObject({ outcome: "paused", step: 1 });
       expect(kinds()).toEqual(["actGrant", "actRevoke"]);
       expect(await helper.executor.resume("t1")).toMatchObject({ outcome: "done" });
       expect(kinds()).toEqual(["actGrant", "actRevoke", "actGrant", "actRevoke"]);
+    });
+
+    it("a pause for the user's own input, from the host or the reader, revokes the grant at once and the act on its way is refused", async () => {
+      for (const [id, how] of [
+        ["t1", "host"],
+        ["t2", "reader"],
+      ] as const) {
+        app.setValue(K("textfield:name~0"), "");
+        app.setValue(K("textfield:email~0"), "old@example.com");
+        app.show();
+        app.beforeVerb = (a, v) => {
+          if (v.kind !== "write" || v.key !== K("textfield:email~0")) return;
+          a.beforeVerb = null;
+          if (how === "host") helper.executor.pause(id, false, "input");
+          else helper.executor.onUserInput({ type: "userInput", v: PROTOCOL_VERSION, at: 1, pid: FIXTURE_APP.pid, kind: "mouse", point: [150, 50] });
+        };
+        const before = app.grants.log.length;
+        const r = await helper.executor.run(id, two(), {}, undefined, { grant: true });
+        expect(r, how).toMatchObject({ outcome: "paused", step: 1 });
+        expect(app.node(K("textfield:email~0"))?.value, how).toBe("old@example.com");
+        expect(app.grants.log.slice(before).map((m) => m.type), how).toEqual(["actGrant", "actRevoke"]);
+      }
+    });
+
+    it("an undo is refused while Caret is paused, and a pause during one leaves the restores not yet made (B22 review)", async () => {
+      const settings = (paused: boolean) => helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: 1, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "balanced", paused });
+      await helper.executor.run("t1", two(), {}, undefined, { grant: true });
+      settings(true);
+      const before = published.length;
+      expect(await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "t1", action: "undo" })).toBeNull();
+      expect(published.slice(before).find((m) => m.type === "error")).toMatchObject({ message: "task t1: nothing was restored: you paused Caret" });
+      expect(app.node(K("textfield:email~0"))?.value).toBe("d@example.com");
+      settings(false);
+      // Newest first: Email is restored, then Caret is paused before Name's restore.
+      app.afterVerb = (a, v) => {
+        if (v.kind !== "write") return;
+        a.afterVerb = null;
+        settings(true);
+      };
+      const u = await helper.executor.undo("t1");
+      expect(u).toMatchObject({ restored: 1, notRestored: [{ step: 0, reason: "you paused Caret" }] });
+      expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+      expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+      expect(kinds().slice(-2)).toEqual(["actGrant", "actRevoke"]);
+    });
+
+    // B22 review: before, an ordinary pause or the user's input during an undo was refused or ignored.
+    it("a pause or the user's own click during an undo stops it, and the undo watches for input before its first restore", async () => {
+      for (const [id, how, reason] of [
+        ["t1", "pause", "you paused the undo"],
+        ["t2", "click", "you used the window: a click in 'Fixture — Executor'"],
+      ] as const) {
+        app.setValue(K("textfield:name~0"), "");
+        app.setValue(K("textfield:email~0"), "old@example.com");
+        app.show();
+        await helper.executor.run(id, two(), {}, undefined, { grant: true });
+        const from = app.verbs.length;
+        app.afterVerb = (a, v) => {
+          if (v.kind !== "write") return;
+          a.afterVerb = null;
+          if (how === "pause") helper.executor.pause(id, false);
+          else helper.executor.onUserInput({ type: "userInput", v: PROTOCOL_VERSION, at: 1, pid: FIXTURE_APP.pid, kind: "mouse", point: [150, 50] });
+        };
+        const u = await helper.executor.undo(id);
+        expect(u, how).toMatchObject({ restored: 1, notRestored: [{ step: 0, reason }] });
+        expect(app.node(K("textfield:name~0"))?.value, how).toBe("Dana");
+        const verbs = app.verbs.slice(from);
+        const watch = verbs.findIndex((v) => v.kind === "watchInput" && v.pids.includes(FIXTURE_APP.pid));
+        expect(watch, how).toBeGreaterThanOrEqual(0);
+        expect(watch, how).toBeLessThan(verbs.findIndex((v) => v.kind === "write"));
+      }
     });
 
     it("undo of a granted run is granted the run's window for the restore, then revoked", async () => {
@@ -692,6 +867,16 @@ describe("risk class table", () => {
     ["Add note", "safe"],
   ])("%s is %s", (label, cls) => {
     expect(classifyLabel(label)).toBe(cls);
+  });
+
+  // S1 audit #10: before B22, "Allow" in a permission dialog read as safe. The reader's table must agree (RiskTable.swift).
+  const golden = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/golden/press-risk.json", import.meta.url)), "utf8")) as {
+    cases: { label: string; role: string; windowSubrole: string | null; bundleId: string; risk: string }[];
+  };
+  /** ElementKey.windowKind with no identifier: the subrole without "AX" and "window", lowercased. */
+  const kindOf = (subrole: string | null): string => (subrole ?? "AXStandardWindow").replace(/^AX/, "").toLowerCase().replace(/window/g, "") || "standard";
+  it.each(golden.cases.map((c) => [c.label, c.windowSubrole, c.bundleId, c.risk] as const))("'%s' in a %s window of %s is %s (fixtures/golden/press-risk.json)", (label, subrole, bundleId, risk) => {
+    expect(classifyPress({ label, windowKind: kindOf(subrole), bundleId })).toBe(risk);
   });
 });
 

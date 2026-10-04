@@ -121,6 +121,20 @@ export class ScreenModel {
   }
 
   /**
+   * The window the user is in: the one most recently focused in the frontmost app (frontmostPid), or in any
+   * app while the frontmost app is unknown. A request walk marks a background app's own window focused and
+   * moves focusedWindowId to it, so the frontmost app decides which focus counts (B21).
+   */
+  userWindow(): WindowState | null {
+    let best: WindowState | null = null;
+    for (const w of this.windows.values()) {
+      if (w.lastFocusedAt <= 0 || (this.frontmostPid !== null && w.app.pid !== this.frontmostPid)) continue;
+      if (best === null || w.lastFocusedAt > best.lastFocusedAt) best = w;
+    }
+    return best;
+  }
+
+  /**
    * The window the user was in just before they last came to `windowId`. When `windowId` was never
    * focused (a fill requested for a background form), the most recently focused other window.
    */

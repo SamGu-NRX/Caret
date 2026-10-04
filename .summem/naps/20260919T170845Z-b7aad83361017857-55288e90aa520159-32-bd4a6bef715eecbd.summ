@@ -1,1 +1,0 @@
-v1: .scratch/ never committed; Screenpipe sidecar (own screenpipe@0.4.50 :3031) behind hard-failing last-N; /search needs Bearer SCREENPIPE_LOCAL_API_KEY + X-Screenpipe-Client: api; never commit SUPABASE_HACKATHON_TOKEN; CI macos-26; skills JSON in caret/skills/<id>/.

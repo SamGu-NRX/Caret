@@ -4,34 +4,58 @@
 // parser, so a spec the helper's zod schema refuses is refused here with the same error.
 import Foundation
 
+/// The window a host means in a planRequest (B21): the window server's number (CGWindowID) and process of
+/// the window the user was in when they asked, and its title as the host saw it. The helper matches the
+/// number and process against the windows the reader read; it does not match on the title.
+public struct PlanWindow: Codable, Equatable, Sendable {
+    public var pid: Int
+    public var number: Int
+    public var title: String
+    public init(pid: Int, number: Int, title: String) { self.pid = pid; self.number = number; self.title = title }
+    enum CodingKeys: String, CodingKey { case pid, number, title }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pid = try c.decode(Int.self, forKey: .pid); number = try c.decode(Int.self, forKey: .number); title = try c.decode(String.self, forKey: .title)
+        guard pid > 0 else { throw ProtocolError("window.pid is a process id, above 0") }
+        guard number > 0 else { throw ProtocolError("window.number is a window server number, above 0") }
+    }
+}
+
 public struct PlanRequest: Codable, Equatable, Sendable {
     public static let type = "planRequest"
     public var requestId: String
     public var at: Int64
     /// What the user asked for, 1 to 500 characters.
     public var instruction: String
-    /// The window the user means, when the host knows it.
+    /// The window the user means by the reader's id, for consumers that have it. Never with `window`.
     public var windowId: String?
-    public init(requestId: String, at: Int64, instruction: String, windowId: String? = nil) {
-        self.requestId = requestId; self.at = at; self.instruction = instruction; self.windowId = windowId
+    /// The window the user means as a host knows it (B21). Never with `windowId`. With neither, the helper
+    /// plans in the window the user last focused, and refuses a named window it has not read with unseenWindow.
+    public var window: PlanWindow?
+    public init(requestId: String, at: Int64, instruction: String, windowId: String? = nil, window: PlanWindow? = nil) {
+        self.requestId = requestId; self.at = at; self.instruction = instruction; self.windowId = windowId; self.window = window
     }
-    enum CodingKeys: String, CodingKey { case requestId, at, instruction, windowId }
+    enum CodingKeys: String, CodingKey { case requestId, at, instruction, windowId, window }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         requestId = try c.decode(String.self, forKey: .requestId); at = try c.decode(Int64.self, forKey: .at)
         instruction = try c.decode(String.self, forKey: .instruction); windowId = try c.decodeOptional(String.self, forKey: .windowId)
+        window = try c.decodeOptional(PlanWindow.self, forKey: .window)
         // zod 4 counts a string's length in Unicode code points.
         guard (1...200).contains(requestId.unicodeScalars.count) else { throw ProtocolError("requestId is 1 to 200 characters") }
         guard (1...500).contains(instruction.unicodeScalars.count) else { throw ProtocolError("instruction is 1 to 500 characters") }
         if windowId == "" { throw ProtocolError("windowId is empty; omit it instead") }
+        if windowId != nil && window != nil { throw ProtocolError("a planRequest names its window by window or windowId, not both") }
         guard at >= 0 else { throw ProtocolError("at is milliseconds since the epoch, never negative") }
     }
     public func encode(to encoder: Encoder) throws {
+        if windowId != nil && window != nil { throw ProtocolError("a planRequest names its window by window or windowId, not both") }
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(requestId, forKey: .requestId); try c.encode(at, forKey: .at)
         try c.encode(instruction, forKey: .instruction); try c.encodeIfPresent(windowId, forKey: .windowId)
+        try c.encodeIfPresent(window, forKey: .window)
     }
 }
 
@@ -40,11 +64,12 @@ public struct PlanProposal: Codable, Equatable, Sendable {
     public enum Outcome: String, Codable, Sendable { case proposed, error }
     /// Why a press is left to the user: its risk class (helper/src/executor/risk.ts), or `unverifiable`
     /// when code cannot predict what it changes.
-    public enum HandoffWhy: String, Codable, Sendable { case outbound, destructive, money, unverifiable }
+    public enum HandoffWhy: String, Codable, Sendable { case outbound, destructive, money, system, unverifiable }
     /// protocol.ts PlanErrorCode has a sentence for each.
     public enum ErrorCode: String, Codable, Sendable {
         case schema, noWindow, unsure, nothingToDo, unsupportedStep, multipleWindows, unknownWindow, ambiguousWindow
         case unknownTarget, ambiguousTarget, notEditable, untracedValue, wrongKind, stepAfterHandoff, riskMismatch, unavailable, jevFailed, privacy, `internal`
+        case unseenWindow
     }
     public struct Window: Codable, Equatable, Sendable {
         public var pid: Int
