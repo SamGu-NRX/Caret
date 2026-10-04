@@ -21,12 +21,13 @@ enum MemoryAction: Equatable {
 /// own window, painted like onboarding (Window ground, white cards), drawn from
 /// `MemoryBook.State` through `MemoryPage`.
 ///
-/// Motion, all of it state indication: an edit opens with a 160 ms ease-out height and fade and
-/// closes at once (Return and Esc close it), a confirmed change washes its row in Carrot once
-/// (400 ms, the try-it field's wash), a forgotten row fades out in 120 ms, and a row's controls
-/// fade in over 120 ms when the pointer or keyboard focus reaches it. Switching tabs and picking a
-/// rule do not animate: they are choices, not journeys. Reduce Motion keeps the fades and the
-/// wash and drops the height change.
+/// Motion, all of it state indication and none of it movement: a confirmed change washes its row in
+/// Carrot once (400 ms, the try-it field's wash), a forgotten row fades out in 120 ms, and a row's
+/// controls fade in over 120 ms when the pointer reaches it. What a key does shows at once: keyboard
+/// focus reveals the controls with no fade, and an edit opens and closes with no motion, since its
+/// field takes focus to be typed in. Switching tabs and picking a rule do not animate: they are
+/// choices, not journeys. With nothing moving, Reduce Motion changes nothing here; buttons drop
+/// their press scale under it (`RowButtonStyle`).
 struct MemoryView: View {
     enum Tab: String, CaseIterable, Codable { case memory, permissions }
 
@@ -182,14 +183,13 @@ struct MemoryView: View {
     private var permissions: some View {
         VStack(alignment: .leading, spacing: 0) {
             let rows = MemoryPage.rules(state, now: now, calendar: calendar, locale: locale)
-            let exceptions = MemoryPage.exceptions(state)
             OnboardingCard {
                 VStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         if index > 0 { Divider14() }
                         RuleRowView(row: row) { send(.setRule(row.action, $0)) }
-                        // Under the two write rows: the skills that skip their Ask first, by name.
-                        if row.action == .writeElsewhere, !exceptions.isEmpty {
+                        // Under each write row: the skills on their own whose runs write under it.
+                        if let exceptions = MemoryPage.exceptions(state, under: row.action) {
                             ExceptionsView(exceptions: exceptions, animated: animated) { send(.control($0, .backOnTab, typed: false)) }
                                 .transition(.opacity.animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil))
                         }
@@ -277,7 +277,6 @@ struct MemoryRowView: View {
     var forceReveal = false
     var send: (MemoryAction) -> Void
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var wash: Double = 0
     @State private var hovering = false
     @FocusState private var focused: MemoryPage.Control?
@@ -322,7 +321,6 @@ struct MemoryRowView: View {
             if let editor {
                 EditorView(editor: editor, send: send)
                     .padding(.top, 10)
-                    .transition(animated && !reduceMotion ? .opacity.combined(with: .offset(y: -4)) : .opacity)
             }
         }
         .padding(.horizontal, 14)
@@ -332,7 +330,7 @@ struct MemoryRowView: View {
                 // The row the controls belong to: a faint fill (the hairline's own tone), so the
                 // buttons never seem to float free of their row.
                 Rectangle().fill(Color(token: Tokens.border)).opacity(revealed && !confirming ? 0.6 : 0)
-                    .animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil, value: revealed)
+                    .animation(animated ? Self.pointerFade : nil, value: hovering)
                 if confirming {
                     // Waiting for the user: the Carrot wash and 2 pt edge (SURFACES.md 4).
                     Rectangle().fill(Color(token: Tokens.carrotWash))
@@ -341,9 +339,6 @@ struct MemoryRowView: View {
                 Rectangle().fill(Color(token: Tokens.carrotWash)).opacity(wash)
             }
         }
-        // Opening animates (a click on Edit); closing is instant, since Return and Esc close it and
-        // a key's result should not wait on motion. Reduce Motion drops the height change too.
-        .animation(animated && !reduceMotion && editor != nil ? Motion.curve(Motion.easeOut, 0.16) : nil, value: editor == nil)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
@@ -376,10 +371,14 @@ struct MemoryRowView: View {
                 }
             }
         }
-        // Opacity only, so it plays under Reduce Motion too; leaving is as quick as arriving.
         .opacity(revealed ? 1 : 0)
-        .animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil, value: revealed)
+        .animation(animated ? Self.pointerFade : nil, value: hovering)
     }
+
+    /// The controls' fade when the pointer arrives or leaves: opacity only, so it plays under Reduce
+    /// Motion too, and leaving is as quick as arriving. Keyed to the pointer alone, so keyboard focus,
+    /// a Forget to confirm and a refusal show them in the same frame.
+    static let pointerFade = Motion.curve(Motion.easeOut, 0.12)
 }
 
 /// A row's controls as named accessibility actions, so VoiceOver offers Edit, Pause and Forget on
@@ -497,29 +496,31 @@ struct RuleRowView: View {
     }
 }
 
-/// The skills that run on their own, as exceptions to the write rows above: each by name and
-/// trigger, with one button that puts it back on Tab. Set in from the rows' text, on the hover row's
-/// tone with a Carrot edge, so it reads as part of those rules and not a rule of its own. Nothing moves: a skill
-/// that goes back on Tab leaves the list with the same 120 ms fade as a forgotten memory row.
+/// The skills on their own under the write row above them: each by name and trigger, with one
+/// button that puts it back on Tab. Set in from the rows' text, so it reads as part of that rule and
+/// not a rule of its own. While the rule lets them run, the block sits on the hover row's neutral tone
+/// with a Carrot edge: noted, not alarming. When the setting holds them back, it takes the Carrot wash
+/// the list uses for what waits on the user (a Forget to confirm), since the user has to settle it.
+/// Nothing moves: a skill that goes back on Tab leaves with the same 120 ms fade as a forgotten row.
 struct ExceptionsView: View {
-    var exceptions: [MemoryPage.Exception]
+    var exceptions: MemoryPage.Exceptions
     var animated = true
     var backOnTab: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(MemoryPage.exceptionsTitle)
+                Text(exceptions.title)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color(token: Tokens.ink))
                     .accessibilityAddTraits(.isHeader)
-                Text(MemoryPage.exceptionsDetail)
+                Text(exceptions.detail)
                     .font(.system(size: 11))
-                    .foregroundStyle(Color(token: Tokens.secondary))
+                    .foregroundStyle(Color(token: exceptions.runs ? Tokens.secondary : Tokens.ink))
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.bottom, 6)
-            ForEach(exceptions) { e in
+            ForEach(exceptions.skills) { e in
                 HStack(alignment: .center, spacing: 10) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(e.name)
@@ -553,17 +554,16 @@ struct ExceptionsView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(alignment: .leading) {
-            // The hover row's neutral tone, with the Carrot edge the list uses for what needs the
-            // user's eye: noted, not alarming.
             ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(token: Tokens.border)).opacity(0.6)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(exceptions.runs ? Color(token: Tokens.border).opacity(0.6) : Color(token: Tokens.carrotWash))
                 Rectangle().fill(Color(token: Tokens.carrot)).frame(width: 2).padding(.vertical, 8)
             }
         }
         .padding(.leading, 14)
         .padding(.trailing, 14)
         .padding(.bottom, 12)
-        .probed("exceptions")
+        .probed("exceptions-\(exceptions.action.rawValue)")
     }
 }
 

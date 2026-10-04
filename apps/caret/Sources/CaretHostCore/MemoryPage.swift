@@ -3,7 +3,8 @@ import Foundation
 
 /// What the memory window shows, computed from `MemoryBook.State`: the kinds of memory as sections
 /// of rows (skills among them, and anything a newer helper keeps that this host cannot name), and
-/// the permissions as one row per action type, with the skills that skip Ask first under them. The window only draws these.
+/// the permissions as one row per action type, with the skills on their own under the write rules
+/// they write under. The window only draws these.
 /// Each row's title and secondary line are composed here from the entry's structured fields, in
 /// plain words: the title says what Caret remembers, the secondary line says where it came from
 /// and how sure Caret is. The helper's own sentence (`says`) is left to the debug state.
@@ -316,9 +317,9 @@ public enum MemoryPage {
         }
     }
 
-    // MARK: - Skills that skip Ask first
+    // MARK: - Skills on their own, under the rule they write under
 
-    /// One skill the permissions page names as an exception to Ask first.
+    /// One skill on its own, as the permissions page names it under a write rule.
     public struct Exception: Equatable, Sendable, Identifiable {
         public var id: String
         public var name: String
@@ -328,18 +329,68 @@ public enum MemoryPage {
         public var problem: String?
     }
 
-    /// Every skill that runs on its own and is not paused, in the helper's order. The helper does not
-    /// say which permission a skill's runs fall under, so the list sits under both write rows.
-    public static func exceptions(_ s: MemoryBook.State) -> [Exception] {
-        s.entries.compactMap { e in
-            guard let f = e.skill, f.onItsOwn, e.status != .paused else { return nil }
-            return Exception(id: e.id, name: f.name, when: "When \(f.trigger)", busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id])
+    /// The skills on their own whose runs write under one write rule, with words that are true for
+    /// that rule's setting.
+    public struct Exceptions: Equatable, Sendable {
+        public var action: HelperMemory.ActionType
+        public var rule: HelperMemory.Rule
+        /// False when the setting keeps these skills from starting without Tab under this rule: the
+        /// user let them run on their own and then turned the rule down. The page asks the user to
+        /// settle it, by the rule or by putting them back on Tab.
+        public var runs: Bool
+        public var title: String
+        public var detail: String
+        public var skills: [Exception]
+    }
+
+    /// The skills on their own listed under `action`'s row, or nil when there are none (or the action
+    /// is not one a skill's run writes under). A skill is listed under each rule its runs wrote under
+    /// (`Entry.wrote`). The helper checks the rule each time a run would start (engine.ts), so a skill
+    /// listed under a rule whose setting no longer allows it waits for Tab there, and the block says
+    /// so. When the helper does not say where a skill wrote, the skill is listed under each rule that
+    /// lets it start without Tab now, since any window it fills falls under one of the two.
+    public static func exceptions(_ s: MemoryBook.State, under action: HelperMemory.ActionType) -> Exceptions? {
+        guard action == .writeHere || action == .writeElsewhere,
+              let rule = s.entries.first(where: { $0.permission?.action == action })?.permission?.rule else { return nil }
+        let runs = PermissionPolicy.skillRunsUnasked(action, rule)
+        let skills = zip(onTheirOwnEntries(s), onTheirOwn(s)).filter { pair, _ in pair.0.wrote.map { $0.contains(action) } ?? runs }.map(\.1)
+        guard !skills.isEmpty else { return nil }
+        let words = exceptionWords(action, rule, runs: runs)
+        return Exceptions(action: action, rule: rule, runs: runs, title: words.title, detail: words.detail, skills: skills)
+    }
+
+    /// Every skill that runs on its own and is not paused, in the helper's order.
+    public static func onTheirOwn(_ s: MemoryBook.State) -> [Exception] {
+        onTheirOwnEntries(s).map { e, f in
+            Exception(id: e.id, name: f.name, when: "When \(f.trigger)", busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id])
         }
     }
 
-    public static let exceptionsTitle = "Skills that run on their own"
-    public static let exceptionsDetail = "These skip Ask first. Each run shows where you are, and ⌘Z undoes it."
+    static func onTheirOwnEntries(_ s: MemoryBook.State) -> [(HelperMemory.Entry, SkillFields)] {
+        s.entries.compactMap { e in
+            guard let f = e.skill, f.onItsOwn, e.status != .paused else { return nil }
+            return (e, f)
+        }
+    }
 
+    /// The block's title and sentence for a write rule at a setting. Only three settings let a skill
+    /// start without Tab (`PermissionPolicy.skillRunsUnasked`); at any other the block names the clash.
+    public static func exceptionWords(_ action: HelperMemory.ActionType, _ rule: HelperMemory.Rule, runs: Bool) -> (title: String, detail: String) {
+        let undo = "Each run shows where you are, and ⌘Z undoes it."
+        let here = action == .writeHere
+        guard !runs else {
+            if !here { return ("Skills you approved for other apps", "They change windows in other apps without Tab. \(undo)") }
+            if rule == .ask { return ("Skills that skip Ask first here", "You let these run on their own, so they fill the window you're in without Tab. \(undo)") }
+            return ("Skills that run on their own here", "They fill the window you're in without Tab. \(undo)")
+        }
+        let place = here ? "in the window you're in" : "in other apps"
+        let held = rule == .handoff ? "Caret leaves them to you" : "they wait for Tab"
+        let allowing = here ? "Ask first or Act" : "Act if approved"
+        return (
+            "Skills this setting holds back",
+            "You let these run on their own \(place). At \(ruleTitle(rule)) \(held) there. Choose \(allowing) to let them run, or put them back on Tab."
+        )
+    }
 
     // MARK: - Permissions
 
@@ -399,11 +450,16 @@ public enum MemoryPage {
     public static func ruleDetail(_ a: HelperMemory.ActionType, _ r: HelperMemory.Rule) -> String {
         switch r {
         case .act where a == .read || a == .show: return "Caret does it without asking."
-        // B19: only a skill the user let run on its own acts without Tab (skills.ts mayRunUnasked); elsewhere
-        // that needs Act if approved.
-        case .act, .actIfApproved: return "Skills you let run on their own act without Tab. Anything else, Tab still does."
+        // B19: a skill earns running on its own here with the promote offer, which Ask first allows.
+        case .ask where a == .writeHere: return "Caret offers it, and Tab does it. A skill that keeps getting it right may ask to run on its own."
+        case .ask where a == .writeElsewhere: return "Caret offers it, and Tab does it. No skill runs on its own here at this setting."
         case .ask: return "Caret offers it, and Tab does it."
         case .handoff: return "Caret leaves it to you."
+        // Only a skill the user let run on its own acts without Tab, and only where skillRunsUnasked allows it.
+        case .act, .actIfApproved:
+            return PermissionPolicy.skillRunsUnasked(a, r)
+                ? "Skills you let run on their own act without Tab. Anything else, Tab still does."
+                : "Caret offers it, and Tab does it."
         }
     }
 

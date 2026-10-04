@@ -19,6 +19,10 @@ import Foundation
 //     entry without the key decodes with `uses == nil`, which the list shows as none recorded.
 //   - `op: "edit"` on a skill with `fields: {onItsOwn: false}`: "Put back on Tab" (A15). B19's helper
 //     accepts only `name` on a skill and refuses this edit; the host shows that refusal on the row.
+//   - `wrote` in a skill's fields: the write permissions its clean runs in a row wrote under
+//     (`writeHere`, `writeElsewhere`), which B19's helper keeps in its store (memory.ts SkillJson) and
+//     strips from the reply. The permissions page lists a skill under the rules it wrote under; an
+//     entry without the key decodes with `wrote == nil` (A16).
 //
 // Skills (B19) decode through CaretScreenCore's `SkillFields`, which checks them. An entry of a kind this
 // host does not know is kept, as `noticed`, and shown by the helper's own sentence: a newer helper's
@@ -208,16 +212,20 @@ public enum HelperMemory {
         public var fields: Fields
         /// A permission's last five uses, newest first; nil when the helper does not report them.
         public var uses: [Use]?
+        /// A skill's write permissions, from its clean runs in a row (host contract, see the file
+        /// header): `writeHere`, `writeElsewhere` or both. Nil when the helper does not say.
+        public var wrote: Set<ActionType>?
 
         public var kind: Kind { fields.kind }
 
-        public init(id: String, status: Status, says: String, evidence: Evidence, fields: Fields, uses: [Use]? = nil) {
+        public init(id: String, status: Status, says: String, evidence: Evidence, fields: Fields, uses: [Use]? = nil, wrote: Set<ActionType>? = nil) {
             self.id = id
             self.status = status
             self.says = says
             self.evidence = evidence
             self.fields = fields
             self.uses = uses
+            self.wrote = wrote
         }
 
         public var about: About? { if case .about(let f) = fields { return f } else { return nil } }
@@ -384,6 +392,7 @@ extension HelperMemory.Entry: Decodable {
                 throw ProtocolError("skill \(id) is \(status.rawValue), but its fields say \(skill.onItsOwn ? "active" : "learning")")
             }
             fields = .skill(skill)
+            wrote = try Self.wrote(c.nestedContainer(keyedBy: AnyKey.self, forKey: .fields), id: id)
         case .noticed, nil:
             fields = .noticed(kind: wireKind)
         }
@@ -392,6 +401,22 @@ extension HelperMemory.Entry: Decodable {
         if uses != nil, kind != .permission {
             throw ProtocolError("uses on a \(kind.rawValue) entry; only permissions have uses")
         }
+    }
+}
+
+extension HelperMemory.Entry {
+    /// A skill's `wrote` (host contract): only the two write permissions, since a routine run writes
+    /// in the window you're in or in another one (helper engine.ts `writeAction`).
+    static func wrote(_ fields: KeyedDecodingContainer<AnyKey>, id: String) throws -> Set<HelperMemory.ActionType>? {
+        guard let names = try fields.decodeIfPresent([String].self, forKey: AnyKey("wrote")) else { return nil }
+        var actions: Set<HelperMemory.ActionType> = []
+        for name in names {
+            guard let action = HelperMemory.ActionType(rawValue: name), action == .writeHere || action == .writeElsewhere else {
+                throw ProtocolError("skill \(id) wrote under '\(name)'; a skill's runs write only under writeHere or writeElsewhere")
+            }
+            actions.insert(action)
+        }
+        return actions
     }
 }
 
@@ -451,6 +476,19 @@ public enum PermissionPolicy {
     /// Whether the user may set `rule` for `action`.
     public static func permits(_ action: HelperMemory.ActionType, _ rule: HelperMemory.Rule) -> Bool {
         allowed(action).contains(rule)
+    }
+
+    /// Whether a skill the user let run on its own starts without Tab when its run writes under
+    /// `action` and that action's rule is `rule`: the helper's `mayRunUnasked` (skills.ts, B19; a test
+    /// reads that file). Write where you are allows it at Ask first or Act, since the promote offer
+    /// the user accepted is the agreement; Undoable changes in other apps only at Act if approved.
+    /// No other action type has skill runs, so none of them allows it.
+    public static func skillRunsUnasked(_ action: HelperMemory.ActionType, _ rule: HelperMemory.Rule) -> Bool {
+        switch action {
+        case .writeHere: return rule == .ask || rule == .act
+        case .writeElsewhere: return rule == .actIfApproved
+        case .read, .show, .outbound, .destructive, .sensitive: return false
+        }
     }
 
     private static func permits(_ action: HelperMemory.ActionType, _ rule: HelperMemory.Rule, table: [HelperMemory.Rule]) -> Bool {

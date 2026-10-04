@@ -126,7 +126,7 @@ final class MemorySkillTests: XCTestCase {
         b.receive(HelperMemory.Reply(requestId: id, error: "invalid edit: unrecognized key onItsOwn", entries: []))
         XCTAssertEqual(b.state.problems["skill-5e6f7a8b"], "This version of Caret can't put a skill back on Tab yet. Pause it to stop it running, or Forget it.")
         XCTAssertEqual(b.debugInfo().problems["skill-5e6f7a8b"], "This version of Caret can't put a skill back on Tab yet. Pause it to stop it running, or Forget it. [helper: invalid edit: unrecognized key onItsOwn]")
-        XCTAssertEqual(MemoryPage.exceptions(b.state).first?.problem, b.state.problems["skill-5e6f7a8b"], "the permissions page shows the same refusal")
+        XCTAssertEqual(MemoryPage.onTheirOwn(b.state).first?.problem, b.state.problems["skill-5e6f7a8b"], "the permissions page shows the same refusal")
         XCTAssertNil(b.state.busy["skill-5e6f7a8b"])
     }
 
@@ -143,22 +143,21 @@ final class MemorySkillTests: XCTestCase {
 
     // MARK: - The permissions page
 
-    func testSkillsOnTheirOwnAreNamedExceptionsUnderTheWriteRows() throws {
+    func testOnlySkillsOnTheirOwnAreNamedOnThePermissionsPage() throws {
         let (b, _) = try book([
             entry("skill", id: "s-own", status: "active", fields: skillFields(onItsOwn: true)),
             entry("skill", id: "s-tab", status: "learning", fields: skillFields(name: "On Tab one", onItsOwn: false)),
             entry("skill", id: "s-paused", status: "paused", fields: skillFields(name: "Paused one", onItsOwn: true)),
         ])
-        XCTAssertEqual(MemoryPage.exceptions(b.state), [
+        XCTAssertEqual(MemoryPage.onTheirOwn(b.state), [
             MemoryPage.Exception(id: "s-own", name: "Order to Tracker", when: "When a Tracker window opens with Order and Carrier empty", busy: false, problem: nil),
         ])
-        XCTAssertEqual(MemoryPage.exceptionsTitle, "Skills that run on their own")
     }
 
     /// The rule sentences no longer say nothing acts without Tab: a promoted skill does (B19).
     func testRuleSentencesTellTheTruthAboutSkills() {
         XCTAssertEqual(MemoryPage.ruleDetail(.writeElsewhere, .actIfApproved), "Skills you let run on their own act without Tab. Anything else, Tab still does.")
         XCTAssertEqual(MemoryPage.ruleDetail(.writeHere, .act), "Skills you let run on their own act without Tab. Anything else, Tab still does.")
-        XCTAssertEqual(MemoryPage.ruleDetail(.writeHere, .ask), "Caret offers it, and Tab does it.")
+        XCTAssertEqual(MemoryPage.ruleDetail(.read, .act), "Caret does it without asking.")
     }
 }

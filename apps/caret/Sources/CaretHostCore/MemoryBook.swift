@@ -402,11 +402,6 @@ public final class MemoryBook {
         return post(HelperMemory.Request(requestId: nextId(), op: .edit, id: id, fields: ["onItsOwn": .bool(false)]), op: .backOnTab, entryId: id)
     }
 
-    /// Skills that run on their own, by name: the permissions page lists them as exceptions to Ask first.
-    public var skillsOnTheirOwn: [HelperMemory.Entry] {
-        state.entries.filter { $0.skill?.onItsOwn == true && $0.status != .paused }
-    }
-
     // MARK: - Permissions
 
     /// Changes an action type's rule. A rule the table does not allow is refused here and never
@@ -508,8 +503,19 @@ public final class MemoryBook {
         public var confirmingForget: String?
         public var typed: [TypedInfo]
         public var sent: [String]
-        /// The skills the permissions page names as running on their own, by name.
+        /// The skills that run on their own, by name.
         public var onTheirOwn: [String]
+        /// What the permissions page shows under each write rule that lists a skill.
+        public var underRules: [RuleSkills]
+
+        public struct RuleSkills: Codable, Equatable, Sendable {
+            public var action: String
+            public var rule: String
+            /// False when the setting holds these skills back (the page asks the user to settle it).
+            public var runs: Bool
+            public var title: String
+            public var skills: [String]
+        }
     }
 
     public func debugInfo() -> DebugInfo {
@@ -539,7 +545,12 @@ public final class MemoryBook {
                 return DebugInfo.TypedInfo(id: t.id, label: t.label, valueLength: t.value.utf16.count, phase: phase, reason: reason)
             },
             sent: sentLog,
-            onTheirOwn: MemoryPage.exceptions(state).map(\.name)
+            onTheirOwn: MemoryPage.onTheirOwn(state).map(\.name),
+            underRules: [HelperMemory.ActionType.writeHere, .writeElsewhere].compactMap { action in
+                MemoryPage.exceptions(state, under: action).map { x in
+                    DebugInfo.RuleSkills(action: action.rawValue, rule: x.rule.rawValue, runs: x.runs, title: x.title, skills: x.skills.map(\.name))
+                }
+            }
         )
     }
 

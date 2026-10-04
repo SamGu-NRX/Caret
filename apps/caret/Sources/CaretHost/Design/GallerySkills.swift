@@ -44,12 +44,15 @@ extension Gallery {
     }
 
     /// Skills as the helper lists them, in each state the list names, beside the base entries'
-    /// permissions so the permissions page has its rows.
-    static func skillEntries() -> [HelperMemory.Entry] {
+    /// permissions so the permissions page has its rows. `wrote` is where the skill on its own wrote
+    /// (nil: the helper does not say, as today's does not), and `elsewhere` the rule for Undoable
+    /// changes in other apps.
+    static func skillEntries(wrote: Set<HelperMemory.ActionType>? = nil, elsewhere: HelperMemory.Rule = .ask) -> [HelperMemory.Entry] {
         func skill(_ id: String, _ name: String, onItsOwn: Bool, clean: Int, runs: Int, handsOff: String = "null", status: HelperMemory.Status) -> HelperMemory.Entry {
             let json = #"{"routineId":"r-\#(id)","name":"\#(name)","trigger":"\#(skillTrigger)","runs":\#(runs),"cleanRuns":\#(clean),"needed":10,"onItsOwn":\#(onItsOwn),"handsOff":\#(handsOff)}"#
             let fields = try! JSONDecoder().decode(SkillFields.self, from: Data(json.utf8))
-            return .init(id: id, status: status, says: name, evidence: .init(count: runs, lastSeen: 1_790_000_100_000, app: "Tracker"), fields: .skill(fields))
+            return .init(id: id, status: status, says: name, evidence: .init(count: runs, lastSeen: 1_790_000_100_000, app: "Tracker"), fields: .skill(fields),
+                         wrote: onItsOwn ? wrote : nil)
         }
         let skills: [HelperMemory.Entry] = [
             skill("skill-1", skillName, onItsOwn: true, clean: 11, runs: 11, status: .active),
@@ -58,7 +61,14 @@ extension Gallery {
             .init(id: "noticed-1", status: .active, says: "You archive receipts from Mail on Fridays", evidence: .init(count: 3, lastSeen: 1_790_000_000_000, app: "Mail"),
                   fields: .noticed(kind: "habit")),
         ]
-        return skills + memoryEntries().filter { $0.kind == .permission }
+        let permissions = memoryEntries().filter { $0.kind == .permission }.map { e -> HelperMemory.Entry in
+            guard var p = e.permission, p.action == .writeElsewhere else { return e }
+            var e = e
+            p.rule = elsewhere
+            e.fields = .permission(p)
+            return e
+        }
+        return skills + permissions
     }
 
     static func skillMemory(_ character: FigureCharacter = .pebble) -> [Item] {
@@ -76,7 +86,11 @@ extension Gallery {
             Item(name: "memory-skills", view: window(memoryState(entries: skillEntries()))),
             Item(name: "memory-skills-hover", view: window(memoryState(entries: skillEntries()), pointerOn: "skill-1")),
             Item(name: "memory-skills-refused", view: window(memoryState(refused, entries: skillEntries()))),
+            // Today's helper does not say where a skill wrote: it is listed where it may run now.
             Item(name: "memory-permissions-exceptions", view: window(memoryState(entries: skillEntries()), .permissions)),
+            Item(name: "memory-permissions-approved", view: window(memoryState(entries: skillEntries(wrote: [.writeElsewhere], elsewhere: .actIfApproved)), .permissions)),
+            // Let run on its own in other apps, then the rule turned down to Ask first.
+            Item(name: "memory-permissions-held-back", view: window(memoryState(entries: skillEntries(wrote: [.writeHere, .writeElsewhere])), .permissions)),
             // A kind this host cannot name, alone, so its section is in view.
             Item(name: "memory-noticed", view: window(memoryState(entries: skillEntries().filter { $0.kind != .skill }), pointerOn: "noticed-1")),
         ]

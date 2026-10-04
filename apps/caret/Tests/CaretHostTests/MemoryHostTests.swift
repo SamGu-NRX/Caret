@@ -50,6 +50,13 @@ final class MemoryHostTests: XCTestCase {
         XCTAssertFalse(info.windowShown, "the socket never puts the window up")
     }
 
+    /// A press shrinks a row button only while Reduce Motion is off; the Carrot fill shows it either way.
+    func testAPressDoesNotScaleUnderReduceMotion() {
+        XCTAssertEqual(RowButtonStyle.pressScale(pressed: true, reduceMotion: false), 0.97)
+        XCTAssertEqual(RowButtonStyle.pressScale(pressed: true, reduceMotion: true), 1)
+        XCTAssertEqual(RowButtonStyle.pressScale(pressed: false, reduceMotion: false), 1)
+    }
+
     /// Every sentence must be true today: values do go to the cloud model when Caret works out a
     /// fill, so the window may not say everything stays on this Mac.
     func testTheSubtitleSaysWhereValuesGo() {

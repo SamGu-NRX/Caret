@@ -314,6 +314,13 @@ struct MoreButtonStyle: ButtonStyle {
 struct RowButtonStyle: ButtonStyle {
     var primary: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// A press shrinks the button a little; under Reduce Motion it does not, and the Carrot fill
+    /// alone says the press landed.
+    static func pressScale(pressed: Bool, reduceMotion: Bool) -> CGFloat {
+        pressed && !reduceMotion ? 0.97 : 1
+    }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -330,7 +337,7 @@ struct RowButtonStyle: ButtonStyle {
                     .strokeBorder(Color(token: Tokens.keycapBorder), lineWidth: 1)
             }
             .opacity(isEnabled ? 1 : 0.45)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .scaleEffect(Self.pressScale(pressed: configuration.isPressed, reduceMotion: reduceMotion))
             .animation(Motion.curve(Motion.easeOut, 0.12), value: configuration.isPressed)
             .fixedSize()
     }
