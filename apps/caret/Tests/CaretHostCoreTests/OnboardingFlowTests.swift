@@ -109,6 +109,20 @@ final class OnboardingFlowTests: XCTestCase {
 
     // MARK: - Permissions
 
+    /// Add to Chrome (H4) is the user's to start, from the permissions screen only; nothing sends it by itself.
+    func testAddToChromeIsOfferedOnlyOnThePermissionsScreenAndOnlyWhenChosen() {
+        let rig = Rig(ax: false, input: true)
+        rig.send(.addToChrome)
+        XCTAssertEqual(rig.step, .welcome)
+        XCTAssertFalse(rig.take().contains(.addToChrome), "not on the welcome screen")
+        rig.send(.next, .next, .next)
+        XCTAssertEqual(rig.step, .permissions)
+        XCTAssertFalse(rig.take().contains(.addToChrome), "reaching the screen starts nothing")
+        rig.send(.addToChrome)
+        XCTAssertEqual(rig.take().last, .addToChrome)
+        XCTAssertEqual(rig.step, .permissions, "the screen stays where it was")
+    }
+
     func testPermissionsWaitForAccessibilityThenMoveOnByThemselves() {
         let rig = Rig(ax: false, input: true)
         rig.send(.next, .next, .next)

@@ -57,6 +57,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.refreshGlyph()
         }
         runtime.services = services
+        runtime.onAddToChrome = { [weak self] in
+            guard let self else { return }
+            ChromeBridgeInstaller.run(home: self.home, manifestOverride: self.manifestDirectory)
+        }
         services.onChange = { [weak self] in self?.refreshStopped() }
         do {
             // The debug socket is how a second host is refused; take it before starting any helper or reader.

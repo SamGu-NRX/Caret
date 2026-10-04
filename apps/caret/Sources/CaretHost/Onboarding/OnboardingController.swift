@@ -58,6 +58,8 @@ final class OnboardingController {
     var onForgetTyped: ([String]) -> Void = { _ in }
     /// A grant changed while the flow runs (the runtime retries a key tap the system refused).
     var onPermissionsChanged: (OnboardingPermissions) -> Void = { _ in }
+    /// The permissions screen's Add to Chrome (H4); the app shell runs `ChromeBridgeInstaller`.
+    var onAddToChrome: () -> Void = {}
     /// Whether the helper keeps typed values (`MemoryBook.State.acceptsAdd`), read when a flow opens.
     var knowAvailable: () -> Bool = { false }
     /// What the window refused to do because it is hidden, for the debug state.
@@ -165,6 +167,9 @@ final class OnboardingController {
         case .openSystemSettings(let pane):
             guard drawsWindow else { return suppressed.append("openSystemSettings.\(pane.rawValue)") }
             Self.openSettings(pane)
+        case .addToChrome:
+            guard drawsWindow else { return suppressed.append("addToChrome") }
+            onAddToChrome()
         case .askFirstLook(let request):
             if !sendFirstLook(request) { flow?.send(.firstLookUnsent) }
         case .accept(let accept):

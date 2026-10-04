@@ -436,6 +436,12 @@ public final class HostRuntime {
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
 
+    /// Onboarding's Add to Chrome, which the app shell runs (`ChromeBridgeInstaller`).
+    public var onAddToChrome: () -> Void {
+        get { onboarding.onAddToChrome }
+        set { onboarding.onAddToChrome = newValue }
+    }
+
     /// The menu's What Caret Knows: the memory window.
     public func openMemory() { memory.open() }
 

@@ -174,6 +174,8 @@ struct WelcomeScreen: View {
     var character: FigureCharacter
     var animated: Bool
 
+    static let loginLine = "Caret starts when you log in. You can turn that off in Login Items."
+
     enum Beat { case before, entered, looking, done, rest }
     @State private var beat: Beat = .before
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -193,6 +195,11 @@ struct WelcomeScreen: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
+            // Opening Caret made it a login item (SMAppService agent, H4); say so on the first screen.
+            Text(Self.loginLine)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(token: Tokens.secondary))
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 8)
@@ -464,6 +471,13 @@ struct PermissionsScreen: View {
                             granted: state.permissions.inputMonitoring, animated: animated
                         ) { send(.openSystemSettings(.inputMonitoring)) }
                     }
+                    Rectangle().fill(Color(token: Tokens.border)).frame(height: 1).padding(.leading, 40)
+                    // No check mark: the host cannot tell yet whether the extension is loaded, so the row only offers.
+                    // No detail line either: the window's height holds three rows only without one.
+                    PermissionRow(
+                        title: "Caret for Chrome", optional: true, detail: nil,
+                        granted: false, animated: animated, actionTitle: "Add to Chrome…", announcesState: false
+                    ) { send(.addToChrome) }
                 }
             }
             .padding(.top, 18)
@@ -496,6 +510,9 @@ struct PermissionRow: View {
     var detail: String?
     var granted: Bool
     var animated: Bool
+    var actionTitle = "Open System Settings"
+    /// False for a row whose state the host cannot read (Caret for Chrome): VoiceOver hears no "on" or "off".
+    var announcesState = true
     var open: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -532,13 +549,13 @@ struct PermissionRow: View {
             if granted {
                 Text("On").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.secondary))
             } else {
-                Button("Open System Settings", action: open).buttonStyle(OnboardingButtonStyle(kind: .secondary))
+                Button(actionTitle, action: open).buttonStyle(OnboardingButtonStyle(kind: .secondary))
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(title), \(granted ? "on" : "off")")
+        .accessibilityLabel(announcesState ? "\(title), \(granted ? "on" : "off")" : title)
     }
 }
 
