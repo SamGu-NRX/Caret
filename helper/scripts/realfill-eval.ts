@@ -11,18 +11,20 @@
 // proposed that is not, missed when an expected value got none, and a correct blank when "none" or
 // "handoff" got none. Wrong fills must be 0. The key is TYPESAFE_API_KEY from the environment or from
 // CARET_ENV_FILE; it is never printed. Output holds synthetic corpus text only.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { ScreenModel, type WindowState } from "../src/model.ts";
 import { proposeFill } from "../src/fill/fill.ts";
-import { aboutKind, type AboutValue } from "../src/fill/about.ts";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
-import { forgetWindows } from "../src/privacy.ts";
+import { heldAsConversation, heldToHalf, SnippetLedger, windowBudget } from "../src/privacy.ts";
+import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
+import { formInputs } from "../src/fill/fill.ts";
+import { describeField } from "../src/fill/descriptor.ts";
+import { fieldTerms } from "../src/fill/kinds.ts";
 import { Snapshot, type FillField, type FillProposal, type Node } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
-import { loadCorpus, type CorpusField, type CorpusForm, type CorpusSource } from "./realfill-corpus.ts";
+import { buildDesk, loadCorpus, nodesFor, T0, type CorpusField, type CorpusForm } from "./realfill-corpus.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: a } = parseArgs({
@@ -33,6 +35,8 @@ const { values: a } = parseArgs({
     forms: { type: "string" },
     "spend-limit": { type: "string", default: "0.30" },
     seed: { type: "string", default: "24" },
+    /** Writes every Jev question and answer to this NDJSON file (synthetic corpus text only), for reading the checks. */
+    "log-jev": { type: "string" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
@@ -51,49 +55,15 @@ const askJev: AskJev = async (req) => {
   const r = await live(req);
   spent += r.costUsd;
   calls++;
+  if (a["log-jev"] !== undefined) appendFileSync(a["log-jev"], JSON.stringify({ form: current, questions: Object.fromEntries(Object.entries(req.questions).map(([k, q]) => [k, String(q.instructions).slice(0, 300)])), answers: r.answers }) + "\n");
   return r;
 };
-
-/** The recorded window a source or form is shown in: by its page title, note file name or mail subject. */
-function windowOf(title: string): Snapshot {
-  const hits = snaps.filter((s) => s.window.title === title || s.window.title.startsWith(`${title} - `));
-  if (hits.length !== 1) throw new Error(`${hits.length} recorded windows are titled '${title}'`);
-  return hits[0] as Snapshot;
-}
-const sourceWindow = (s: CorpusSource): Snapshot | null => (s.kind === "memory" ? null : windowOf(s.title ?? ""));
-
-/** Required markers, a trailing colon and "(optional)" are not part of what a label says. */
-export const normLabel = (s: string): string =>
-  s
-    .replace(/\((?:required|optional)\)/gi, "")
-    .replace(/[*:]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-
-/** The nodes a corpus field is: the control whose label is the field's, or for a radio group its option buttons. */
-function nodesFor(w: WindowState, f: CorpusField): Node[] {
-  const want = normLabel(f.label);
-  const nodes = [...w.nodes.values()];
-  if (f.control === "radio") {
-    const group = nodes.find((n) => n.subrole === "AXFieldset" && normLabel(n.label ?? "") === want);
-    return group === undefined ? [] : nodes.filter((n) => n.parent === group.key && n.role === "AXRadioButton");
-  }
-  const roles: Record<string, readonly string[]> = {
-    select: ["AXPopUpButton"],
-    checkbox: ["AXCheckBox"],
-    date: ["AXDateField"],
-    time: ["AXTimeField"],
-    combobox: ["AXComboBox"],
-    file: ["AXButton", "AXGroup"],
-  };
-  const ok = roles[f.control] ?? ["AXTextField", "AXTextArea"];
-  const groupKey = f.group === undefined ? null : (nodes.find((n) => n.subrole === "AXFieldset" && normLabel(n.label ?? "") === normLabel(f.group ?? ""))?.key ?? null);
-  return nodes.filter((n) => ok.includes(n.role) && normLabel(n.label ?? "") === want && (groupKey === null || n.parent === groupKey));
-}
+let current = "";
 
 type Verdict = "right" | "wrong" | "missed" | "blank" | "unseen";
 interface Scored {
+  /** True when the proposed value is a hand-off (a control the user sets), not a write. */
+  handoff: boolean;
   label: string;
   control: string;
   expected: string;
@@ -106,10 +76,12 @@ interface Scored {
 function score(f: CorpusField, nodes: Node[], fields: readonly FillField[]): Scored {
   const keys = new Set(nodes.map((n) => n.key));
   const mine = fields.filter((x) => keys.has(x.key));
-  const withValue = mine.filter((x) => x.value !== null);
-  const proposed = withValue.length === 0 ? null : withValue.map((x) => x.value).join(" | ");
+  // A text field's value is written by Caret; a control's (select, radio, checkbox, date, time) is handed to the user.
+  const valueOf = (x: FillField): string | null => x.value ?? x.handoff?.value ?? null;
+  const withValue = mine.filter((x) => valueOf(x) !== null);
+  const proposed = withValue.length === 0 ? null : withValue.map(valueOf).join(" | ");
   const fillable = f.expected !== "none" && f.expected !== "handoff";
-  const base = { label: f.label, control: f.control, expected: f.expected, proposed };
+  const base = { handoff: withValue.some((x) => x.value === null), label: f.label, control: f.control, expected: f.expected, proposed };
   if (proposed !== null) {
     const good = [f.expected, ...(f.accept ?? [])];
     return { ...base, verdict: fillable && withValue.length === 1 && good.includes(proposed) ? "right" : "wrong", why: null };
@@ -117,46 +89,43 @@ function score(f: CorpusField, nodes: Node[], fields: readonly FillField[]): Sco
   if (!fillable) return { ...base, verdict: "blank", why: null };
   if (mine.length === 0) return { ...base, verdict: nodes.length === 0 ? "unseen" : "missed", why: nodes.length === 0 ? "notFound" : "notInModel" };
   const x = mine[0] as FillField;
-  return { ...base, verdict: "missed", why: x.withheld ?? (x.asks.length === 0 ? "notAsked" : "none") };
+  return { ...base, verdict: "missed", why: x.withheld ?? (x.asks.length === 0 ? (x.control === "select" ? "noOptions" : "notAsked") : "none") };
 }
 
-const T0 = 1_800_000_000_000;
-const results: { form: CorpusForm; proposal: FillProposal | null; error: string | null; scored: Scored[] }[] = [];
+/** How the privacy budget treated the form's source window: its budget, whether it was held to half, and whether a span of it did not fit. */
+interface SourceCut {
+  budget: number | null;
+  half: boolean;
+  cut: boolean;
+  removedKinds: string[];
+}
+const results: { form: CorpusForm; proposal: FillProposal | null; error: string | null; scored: Scored[]; source: SourceCut }[] = [];
 for (const [fi, form] of corpus.forms.entries()) {
   if (only !== null && !only.has(form.id)) continue;
-  forgetWindows();
-  const model = new ScreenModel();
-  const put = (s: Snapshot, at: number, focusedKey: string | null = null): void => {
-    model.apply({ ...s, at, focused: true, focusedKey });
-  };
-  corpus.decoys.forEach((d, i) => {
-    const s = sourceWindow(d);
-    if (s !== null) put(s, T0 - 600_000 + i * 60_000);
-  });
-  const src = sourceWindow(form.source);
-  if (src !== null) put(src, T0 - 30_000);
-  const formSnap = windowOf(form.title);
-  const trigger = formSnap.nodes.find((n) => n.editable === true && (n.role === "AXTextField" || n.role === "AXTextArea") && (n.value ?? "") === "" && n.parent !== null && !n.key.includes("address and search bar"));
-  if (trigger === undefined) throw new Error(`form ${form.id} has no empty text field to start from`);
-  put(formSnap, T0, trigger.key);
-  const w = model.windows.get(formSnap.window.windowId) as WindowState;
-  const about: AboutValue[] =
-    form.source.kind === "memory"
-      ? form.source.about.flatMap((x, i) => {
-          const kind = aboutKind(x.label, x.value);
-          return kind === null ? [] : [{ id: `about-${i + 1}`, label: x.label, value: x.value, kind }];
-        })
-      : [];
+  const { model, form: w, source: sw, trigger, about } = buildDesk(corpus, snaps, form);
+  current = form.id;
   let proposal: FillProposal | null = null;
   let error: string | null = null;
   try {
     const r = rng(Number(a.seed) * 1000 + fi);
-    proposal = await proposeFill(model, askJev, formSnap.window.windowId, trigger.key, T0, { rand: (n) => Math.floor(r() * n), newId: () => `realfill-${form.id}`, about });
+    proposal = await proposeFill(model, askJev, w.window.windowId, trigger.key, T0, { rand: (n) => Math.floor(r() * n), newId: () => `realfill-${form.id}`, about });
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
   const scored = form.fields.map((f) => score(f, nodesFor(w, f), proposal?.fields ?? []));
-  results.push({ form, proposal, error, scored });
+  // The same generator run proposeFill made, without Jev, to say whether the budget cut the source itself.
+  const terms = formInputs(w, trigger.key).map((x) => {
+    const d = describeField(w, x.node);
+    return fieldTerms([d.label, d.nearest, d.placeholder]);
+  });
+  const gen = collectCandidates(model, w.window.windowId, { now: T0, ledger: new SnippetLedger(model.windows.values()), fields: terms });
+  const source: SourceCut = {
+    budget: sw === null ? null : windowBudget(sw),
+    half: sw !== null && (heldToHalf(sw) || heldAsConversation(sw)),
+    cut: sw !== null && gen.cut.includes(sw.window.windowId),
+    removedKinds: [...cutKinds(model, gen.cut, gen.candidates)],
+  };
+  results.push({ form, proposal, error, scored, source });
   const n = (v: Verdict) => scored.filter((s) => s.verdict === v).length;
   process.stderr.write(`${form.id}: right ${n("right")}, wrong ${n("wrong")}, missed ${n("missed")}, blank ${n("blank")}, unseen ${n("unseen")}${error === null ? "" : `; error: ${error}`}\n`);
 }
@@ -171,10 +140,15 @@ const md: string[] = [
   "",
   `Windows: ${a.windows}. Jev calls ${calls}, $${spent.toFixed(4)}. Seed ${a.seed}.`,
   "",
-  "| form | source | fillable | right | wrong | missed | correct blanks | not found |",
-  "|---|---|---|---|---|---|---|---|",
-  ...results.map((r) => `| ${r.form.id} | ${r.form.source.kind} | ${fillable(r.scored)} | ${count(r.scored, "right")} | ${count(r.scored, "wrong")} | ${count(r.scored, "missed")} | ${count(r.scored, "blank")} | ${count(r.scored, "unseen")} |`),
-  `| **all** | | ${fillable(all)} | ${count(all, "right")} | ${count(all, "wrong")} | ${count(all, "missed")} | ${count(all, "blank")} | ${count(all, "unseen")} |`,
+  "| form | source | fillable | right | wrong | missed | correct blanks | not found | source budget | source cut | kinds cut |",
+  "|---|---|---|---|---|---|---|---|---|---|---|",
+  ...results.map(
+    (r) =>
+      `| ${r.form.id} | ${r.form.source.kind} | ${fillable(r.scored)} | ${count(r.scored, "right")} | ${count(r.scored, "wrong")} | ${count(r.scored, "missed")} | ${count(r.scored, "blank")} | ${count(r.scored, "unseen")} | ${r.source.budget ?? ""}${r.source.half ? " (half)" : ""} | ${r.source.cut ? "yes" : "no"} | ${r.source.removedKinds.join(", ")} |`,
+  ),
+  `| **all** | | ${fillable(all)} | ${count(all, "right")} | ${count(all, "wrong")} | ${count(all, "missed")} | ${count(all, "blank")} | ${count(all, "unseen")} | | ${results.filter((r) => r.source.cut).length} cut | |`,
+  "",
+  `Right values Caret writes: ${all.filter((s) => s.verdict === "right" && !s.handoff).length}; right values handed to the user (a select, radio, box, date or time): ${all.filter((s) => s.verdict === "right" && s.handoff).length}.`,
   "",
   "Why expected values were missed:",
   "",

@@ -3,6 +3,10 @@
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import * as z from "zod";
+import { ScreenModel, type WindowState } from "../src/model.ts";
+import { forgetWindows } from "../src/privacy.ts";
+import { aboutKind, type AboutValue } from "../src/fill/about.ts";
+import type { Node, Snapshot } from "../src/protocol.ts";
 
 const Control = z.enum(["text", "email", "tel", "url", "textarea", "select", "radio", "checkbox", "date", "time", "file", "combobox"]);
 export type Control = z.infer<typeof Control>;
@@ -104,4 +108,92 @@ h1{font-size:20px;font-weight:500}.hdr div{font-size:13px;color:#5f6368;margin:2
 <body><main aria-label="Message"><h1>${esc(m.subject)}</h1>
 <div class=hdr><div>From: ${esc(m.from)}</div><div>To: ${esc(m.to)}</div><div>Date: ${esc(m.date)}</div></div>
 <div class=body>${lines.join("\n")}</div></main></body></html>`;
+}
+
+/** The replay's clock: every desk is built as if the form were focused at this instant. */
+export const T0 = 1_800_000_000_000;
+
+/** One form on a replayed desk: the screen model, the form's window and the field it is focused on, and its memory. */
+export interface Desk {
+  model: ScreenModel;
+  form: WindowState;
+  source: WindowState | null;
+  trigger: Node;
+  /** A memory source's entries as fill offers them (About values), and as the planner reads them. */
+  about: AboutValue[];
+  memory: { id: string; label: string; text: string }[];
+}
+
+/**
+ * Replays the recorded windows (realfill-capture.ts) into a fresh model for one form: the shared decoys focused
+ * minutes ago, the form's source focused just before the form (the window the user just left), and the form
+ * focused on its first empty text field, as a person arrives at a form after reading their note.
+ */
+export function buildDesk(corpus: Corpus, snaps: readonly Snapshot[], form: CorpusForm): Desk {
+  const windowOf = (title: string): Snapshot => {
+    const hits = snaps.filter((s) => s.window.title === title || s.window.title.startsWith(`${title} - `));
+    if (hits.length !== 1) throw new Error(`${hits.length} recorded windows are titled '${title}'`);
+    return hits[0] as Snapshot;
+  };
+  const sourceSnap = (s: CorpusSource): Snapshot | null => (s.kind === "memory" ? null : windowOf(s.title ?? ""));
+  forgetWindows();
+  const model = new ScreenModel();
+  const put = (s: Snapshot, at: number, focusedKey: string | null = null): void => {
+    model.apply({ ...s, at, focused: true, focusedKey });
+  };
+  corpus.decoys.forEach((d, i) => {
+    const s = sourceSnap(d);
+    if (s !== null) put(s, T0 - 600_000 + i * 60_000);
+  });
+  const src = sourceSnap(form.source);
+  if (src !== null) put(src, T0 - 30_000);
+  const formSnap = windowOf(form.title);
+  const trigger = formSnap.nodes.find((n) => n.editable === true && (n.role === "AXTextField" || n.role === "AXTextArea") && (n.value ?? "") === "" && n.parent !== null && !n.key.includes("address and search bar"));
+  if (trigger === undefined) throw new Error(`form ${form.id} has no empty text field to start from`);
+  put(formSnap, T0, trigger.key);
+  // The host names the app the user is in (appSwitch); here, the form's.
+  model.frontmostPid = formSnap.app.pid;
+  const entries = form.source.kind === "memory" ? form.source.about : [];
+  const about = entries.flatMap((x, i) => {
+    const kind = aboutKind(x.label, x.value);
+    return kind === null ? [] : [{ id: `about-${i + 1}`, label: x.label, value: x.value, kind }];
+  });
+  return {
+    model,
+    form: model.windows.get(formSnap.window.windowId) as WindowState,
+    source: src === null ? null : (model.windows.get(src.window.windowId) ?? null),
+    trigger,
+    about,
+    memory: entries.map((x, i) => ({ id: `about-${i + 1}`, label: x.label, text: x.value })),
+  };
+}
+
+/** Required markers, a trailing colon and "(optional)" are not part of what a label says. */
+export const normLabel = (s: string): string =>
+  s
+    .replace(/\((?:required|optional)\)/gi, "")
+    .replace(/[*:]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+/** The nodes a corpus field is: the control whose label is the field's, or for a radio group its container and buttons. */
+export function nodesFor(w: WindowState, f: CorpusField): Node[] {
+  const want = normLabel(f.label);
+  const nodes = [...w.nodes.values()];
+  if (f.control === "radio") {
+    const group = nodes.find((n) => n.subrole === "AXFieldset" && normLabel(n.label ?? "") === want);
+    return group === undefined ? [] : [group, ...nodes.filter((n) => n.parent === group.key && n.role === "AXRadioButton")];
+  }
+  const roles: Record<string, readonly string[]> = {
+    select: ["AXPopUpButton"],
+    checkbox: ["AXCheckBox"],
+    date: ["AXDateField"],
+    time: ["AXTimeField"],
+    combobox: ["AXComboBox"],
+    file: ["AXButton", "AXGroup"],
+  };
+  const ok = roles[f.control] ?? ["AXTextField", "AXTextArea"];
+  const groupKey = f.group === undefined ? null : (nodes.find((n) => n.subrole === "AXFieldset" && normLabel(n.label ?? "") === normLabel(f.group ?? ""))?.key ?? null);
+  return nodes.filter((n) => ok.includes(n.role) && normLabel(n.label ?? "") === want && (groupKey === null || n.parent === groupKey));
 }

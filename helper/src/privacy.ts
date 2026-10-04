@@ -299,6 +299,18 @@ function windowShare(w: WindowState): WindowShare {
   return share;
 }
 
+/**
+ * Whether a request may take only part of this window's text, under half, though it is no conversation: a
+ * short note or page that is not a card of values (a line over CARD_LINE_CHARS, or more than CARD_LINES lines)
+ * and not large. Fill spends such a window's budget on the lines nearest the form's fields first, as it does a
+ * conversation's (candidates.ts byRelevance, B24).
+ */
+export function heldToHalf(w: WindowState): boolean {
+  if (heldAsConversation(w)) return false;
+  const text = windowText(w);
+  return !text.card && text.chars < 2 * WINDOW_CHARS;
+}
+
 /** Whether the conversation rule holds this window: it is a conversation, and the rule is on. */
 export function heldAsConversation(w: WindowState): boolean {
   return conversationCap && isConversation(w);

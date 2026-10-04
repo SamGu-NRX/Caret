@@ -146,6 +146,9 @@ function measure(r: Recorded): WindowMeasure[] {
 }
 
 /** Every way the request breaks the line, as sentences naming windows and lengths, never the text. */
+/** Each fill producer's requests since B24: two stages (whose details, then values), each asked twice. */
+const STAGED = (producers: readonly string[]): string[] => producers.flatMap((p) => [p, p, p, p]);
+
 function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations: ReadonlySet<string> = CONVERSATIONS): string[] {
   const out: string[] = [];
   const body = bodyOf(r.req);
@@ -302,7 +305,7 @@ describe("the privacy line on every Jev request", () => {
       await s.replay([notesWindow(500), chatWindow(600), ...loadRecording("offers-fill.ndjson")], "fill on focus");
       await s.firstLook();
     });
-    expect(rec.map((r) => r.producer)).toEqual(["fill on focus", "fill on focus", "first look", "first look"]);
+    expect(rec.map((r) => r.producer)).toEqual(STAGED(["fill on focus", "first look"]));
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
     // The chat window took part, and kept more than half of itself back.
     const chat = rec.flatMap(measure).filter((m) => m.windowId === CHAT && m.covered > 0);
@@ -321,7 +324,8 @@ describe("the privacy line on every Jev request", () => {
       await s.replay([...scene.snapshots, focus(scene.formWindowId, "dev.caret.form/standard/textfield:email~0", 2_000_000)], "fill on focus");
       await s.firstLook();
     });
-    expect(rec.length).toBe(4);
+    // Two stages of two asks for each fill (B24: whose details first, then values).
+    expect(rec.length).toBe(8);
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
     // Windows of thousands of characters each gave at most WINDOW_CHARS.
     expect(Math.max(...rec.flatMap(measure).map((m) => m.covered))).toBeLessThanOrEqual(WINDOW_CHARS);
@@ -384,7 +388,7 @@ describe("the privacy line on every Jev request", () => {
       await s.replay(shortChats(), "fill on focus");
       await s.firstLook();
     });
-    expect(rec.map((r) => r.producer)).toEqual(["fill on focus", "fill on focus", "first look", "first look"]);
+    expect(rec.map((r) => r.producer)).toEqual(STAGED(["fill on focus", "first look"]));
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
     // Fill still takes a value from a message: the address Dana sent in the chat.
     expect(rec.filter((r) => r.producer === "fill on focus").every((r) => bodyOf(r.req).includes('"dana.whitfield@example.com"'))).toBe(true);

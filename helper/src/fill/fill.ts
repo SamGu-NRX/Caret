@@ -9,14 +9,18 @@
 // (~/.caret-run/evidence/screen/fill-distractors/fill-eval.md), so agreement and the cutoff exist
 // to turn those into blanks.
 import { randomInt, randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillProposal, type Node, type ValueKind } from "../protocol.ts";
+import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
-import { candidateKinds, collectCandidates, cutKinds, describeCandidate, type Candidate } from "./candidates.ts";
-import { fieldKinds, fieldTerms, isNameLike, NAME_TERM, overlap } from "./kinds.ts";
+import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, type Candidate } from "./candidates.ts";
+import { fieldKinds, fieldTerms, isNameLike, kindTerm, misfit, NAME_TERM, overlap } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
-import { describeField } from "./descriptor.ts";
-import { ABOUT_SAYS, fieldAsksFor, type AboutValue } from "./about.ts";
+import { describeField, fieldLabelText } from "./descriptor.ts";
+import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
+import { describeControl, formControls, inWebArea, optionInText, type Control, type FormControl } from "./controls.ts";
+import { fieldPart, joinName, namePart, partFits, splitAddress, splitName, type FieldPart } from "./derive.ts";
+import { clockTime, readDate } from "./when.ts";
+import type { ResolveContext } from "../values/resolve.ts";
 
 export const NONE = "none";
 /** The proposal's model name when a cut withheld every field and Jev was not asked. */
@@ -81,6 +85,35 @@ export function formAsksFor(w: WindowState, triggerKey: string, about: readonly 
   });
 }
 
+/** A field of the form as fill asks about it: a text field, or (B24) one of controls.ts's controls. */
+export interface FormInput {
+  node: Node;
+  control: Control;
+  /** The control's model from controls.ts; null for a text field. */
+  form: FormControl | null;
+}
+
+/**
+ * The empty fields of the trigger's form, nearest the trigger first: text fields as formFields finds them,
+ * then, unless `controls` is false, its empty selects, radio groups, unticked boxes and date and time fields
+ * (controls.ts), so a form's every input is in one proposal (Q1 bug 10). The trigger is always included.
+ */
+export function formInputs(w: WindowState, triggerKey: string, max = MAX_FIELDS, controls = true): FormInput[] {
+  // A web page's combobox (react-select, an airport picker) takes a pick from its list, not typed text, so it
+  // is a named hand-off (Q1: Caret was about to type a school name into one).
+  const text = formFields(w, triggerKey, Number.MAX_SAFE_INTEGER).map((node): FormInput =>
+    controls && node.role === "AXComboBox" && inWebArea(w, node)
+      ? { node, control: "combobox", form: { node, control: "combobox", label: fieldLabelText(node.label), options: null, members: [] } }
+      : { node, control: "text", form: null },
+  );
+  const other = controls ? formControls(w).map((c): FormInput => ({ node: c.node, control: c.control, form: c })) : [];
+  const trigger = w.nodes.get(triggerKey) as Node;
+  const center = (n: Node): [number, number] => (n.frame === undefined ? [0, 0] : [n.frame[0] + n.frame[2] / 2, n.frame[1] + n.frame[3] / 2]);
+  const [tx, ty] = center(trigger);
+  const dist = (n: Node): number => (n.key === triggerKey ? -1 : Math.hypot(center(n)[0] - tx, center(n)[1] - ty));
+  return [...text, ...other.filter((o) => !text.some((t) => t.node.key === o.node.key))].sort((a, b) => dist(a.node) - dist(b.node)).slice(0, max);
+}
+
 export interface AskField {
   id: string;
   descriptor: string;
@@ -126,10 +159,65 @@ export function describeAbout(a: AboutValue): string {
   return `"${a.value}" (${a.kind === "email" ? "email" : "a name"}; the user's own ${a.label}, which the user told Caret)`;
 }
 
+/** Values code derived for one field, or candidates whose owner is asked, under one ask's ids. */
+export interface AskExtra {
+  id: string;
+  describe: string;
+}
+
+/** What one ask carries beyond the shared candidates and memory (B24). */
+export interface RequestMore {
+  /** Values code derived for a field (derive.ts), offered only in that field's question. */
+  derived?: ReadonlyMap<string, readonly AskExtra[]>;
+  /** Fields that ask for a person's details, so whose details they want is asked beside them. */
+  personal?: ReadonlySet<string>;
+  /** Candidates whose owner is asked, by this ask's candidate id. */
+  owners?: readonly AskExtra[];
+  /** Each field's control, which words its question. Text when absent. */
+  controls?: ReadonlyMap<string, Control>;
+  /**
+   * "whose": only the questions of whose details fields want and values are (the first stage); "values": only
+   * the value questions (the second). Absent: both in one request.
+   */
+  stage?: "whose" | "values";
+  /** Candidates, by this ask's id, not offered to a field (by field id): another person's for a field that wants the user's, or the reverse. */
+  exclude?: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/** A checkbox or a choice of options is asked which candidate says what to set, not which value to type. */
+const CONTROL_WORDINGS: Partial<Record<Control, readonly [(where: string, d: string) => string, (where: string, d: string) => string]>> = {
+  checkbox: [
+    (where, d) => `A form in the ${where} has this checkbox: ${d} Which candidate says the user wants this box ticked? The user usually copies from the window they just left. Choose none if no candidate says so.`,
+    (where, d) => `Checkbox: ${d} It is in a form in the ${where}. Which value below says this box should be ticked? Answer none if no value below says so.`,
+  ],
+  radio: [
+    (where, d) => `A form in the ${where} has this choice: ${d} Which candidate says which option the user should pick? The user usually copies from the window they just left. Choose none if no candidate says.`,
+    (where, d) => `Choice to make: ${d} It is in a form in the ${where}. Which value below names the option to pick? Answer none if no value below does.`,
+  ],
+  select: [
+    (where, d) => `A form in the ${where} has this menu: ${d} Which candidate says which option the user should pick? The user usually copies from the window they just left. Choose none if no candidate says.`,
+    (where, d) => `Menu to set: ${d} It is in a form in the ${where}. Which value below names the option to pick? Answer none if no value below does.`,
+  ],
+};
+
+/** The answers to a question about whose details a value on screen is. */
+export const OWNER_CRITERIA = {
+  user: "The user's own: the person using this Mac, who is filling in the form.",
+  other: "Someone else's: a sender, colleague, contact, family member, landlord, reference or any other person.",
+  unclear: "The screen does not make clear whose it is.",
+} as const;
+const OWNER_WORDINGS = [
+  (d: string): string => `A value on the user's screen: ${d} Whose details is it?`,
+  (d: string): string => `Whose details is this value, the user's or someone else's? ${d}`,
+] as const;
+/** The id of a candidate's whose-value question. */
+export const ownerId = (candidateId: string): string => `${candidateId}_owner`;
+
 /**
  * One ask. `declared` holds the screen text in it and what each window was charged (privacy.ts); `title` is the form window's title as
  * declared there, or null when it did not fit the window's budget and the question names the app alone. `about` lists, by field id,
- * the values the user told Caret that the field asks for (about.ts); only that field's question offers them.
+ * the values the user told Caret that the field asks for (about.ts); only that field's question offers them. `more` adds B24's
+ * derived values, controls and the questions about whose details a field wants and a value is.
  */
 export function buildFillRequest(
   w: WindowState,
@@ -140,32 +228,61 @@ export function buildFillRequest(
   title: string | null = w.window.title,
   about: ReadonlyMap<string, readonly AskAbout[]> = new Map(),
   whose = false,
+  more: RequestMore = {},
 ): JevRequest {
   const shared: Record<string, string> = {};
   for (const c of candidates) shared[c.id] = describeCandidate(c);
   const where = title === null ? `${w.app.name} window` : `${w.app.name} window '${title}'`;
   const questions: JevRequest["questions"] = {};
   for (const f of fields) {
-    const criteria: Record<string, string> = { ...shared };
-    for (const a of about.get(f.id) ?? []) criteria[a.id] = describeAbout(a.about);
-    criteria[NONE] = "No candidate is the value this field asks for.";
-    questions[f.id] = { type: "choice", instructions: WORDINGS[wording](where, f.descriptor), criteria };
-    if (whose && (about.get(f.id)?.length ?? 0) > 0) questions[whoseId(f.id)] = { type: "choice", instructions: WHOSE_WORDINGS[wording](where, f.descriptor), criteria: { ...WHOSE_CRITERIA } };
+    if (more.stage !== "whose") {
+      const excluded = more.exclude?.get(f.id);
+      const criteria: Record<string, string> = excluded === undefined ? { ...shared } : Object.fromEntries(Object.entries(shared).filter(([id]) => !excluded.has(id)));
+      for (const a of about.get(f.id) ?? []) criteria[a.id] = describeAbout(a.about);
+      for (const d of more.derived?.get(f.id) ?? []) criteria[d.id] = d.describe;
+      criteria[NONE] = "No candidate is the value this field asks for.";
+      const control = more.controls?.get(f.id) ?? "text";
+      const words = CONTROL_WORDINGS[control]?.[wording] ?? WORDINGS[wording];
+      questions[f.id] = { type: "choice", instructions: words(where, f.descriptor), criteria };
+    }
+    if (more.stage !== "values" && whose && ((about.get(f.id)?.length ?? 0) > 0 || more.personal?.has(f.id) === true)) {
+      questions[whoseId(f.id)] = { type: "choice", instructions: WHOSE_WORDINGS[wording](where, f.descriptor), criteria: { ...WHOSE_CRITERIA } };
+    }
   }
+  if (more.stage !== "values") for (const o of more.owners ?? []) questions[ownerId(o.id)] = { type: "choice", instructions: OWNER_WORDINGS[wording](o.describe), criteria: { ...OWNER_CRITERIA } };
   const anyAbout = fields.some((f) => (about.get(f.id)?.length ?? 0) > 0);
-  return {
+  const anyDerived = fields.some((f) => (more.derived?.get(f.id)?.length ?? 0) > 0);
+  const req: JevRequest = {
     state: {
       destination_window: where,
       form_fields: fields.map((f) => f.name).join("; "),
       task:
         "The user is filling in this form. The candidates are values visible in the user's other open windows. " +
         "Users most often copy from the window they were in just before the form." +
-        (anyAbout ? " A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there." : ""),
+        (anyAbout ? " A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there." : "") +
+        (anyDerived ? " Some candidates are a part of another, which Caret split out: a first or last name, or a street, city, state or ZIP code of an address." : ""),
     },
     questions,
     snippets: declared.snippets,
     charged: declared.charged,
   };
+  // A staged request (B24) carries only some of the asked text: it declares only the snippets it sends, as the
+  // planner's requests do (privacy.test.ts fails a request that declares text it does not send). The ledger
+  // still charged their windows for all of them, which errs on the side of saying less.
+  if (more.stage === undefined && more.exclude === undefined) return req;
+  const strings = sent(req);
+  return { ...req, snippets: req.snippets.filter((x) => strings.some((t) => t.includes(x.text))) };
+}
+
+/** Every string a request carries in its state and questions. */
+function sent(req: JevRequest): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (typeof v === "string") out.push(v);
+    else if (typeof v === "object" && v !== null) Object.values(v).forEach(walk);
+  };
+  walk([req.state, req.questions]);
+  return out;
 }
 
 /** Fisher-Yates with an injectable source of randomness, so tests can fix the order. */
@@ -224,6 +341,55 @@ export interface FillOptions {
   whose?: boolean;
   /** Lowest confidence, the lower of the two asks, at which "the user's" counts as the whose answer: WHOSE_CUTOFF. */
   whoseCutoff?: number;
+  /**
+   * B24's changes, each on by default; false turns one off for the real-form scoreboard's comparison
+   * (scripts/realfill-eval.ts). The helper never sets them. `controls`: selects, radios, boxes, dates and times
+   * (Q1 bug 10). `anchor`: a cut elsewhere does not withhold a field the window the user just left answers
+   * whole. `derive`: name and address parts (bug 11). `owner`: the whose-value veto.
+   */
+  controls?: boolean;
+  anchor?: boolean;
+  derive?: boolean;
+  owner?: boolean;
+  /** How dates and times are read for date and time fields; the Mac's locale and zone, with no reference instant, by default. */
+  resolve?: ResolveContext;
+}
+
+/** What a field's answer came from: a window's candidate, a value the user told Caret, or a part code derived from either. */
+type Pick =
+  | { from: "window"; c: Candidate }
+  | { from: "memory"; a: AboutValue }
+  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } };
+
+/** Words of a label that say its value is a person's: "Name:", "Traveler:", "To:", "Emergency contact:". Written for common labels, not measured. */
+const PERSON_LABEL = /\b(?:name|traveler|traveller|passenger|patient|guest|applicant|student|attendee|from|to|cc|reference|landlord|contact|recipient|sender|tenant|driver|member|employee|candidate|spouse|partner|roommate|manager|advisor)\b/i;
+/** "Avery Kim <avery.kim@example.com>": a display name before an address. */
+const DISPLAY_NAME = /^\s*"?([^"<>@]+?)"?\s*<[^<>\s@]+@[^<>\s]+>\s*$/u;
+const PART_SAYS: Record<FieldPart, string> = {
+  first: "first name",
+  middle: "middle name",
+  last: "last name",
+  full: "name",
+  street: "street line",
+  unit: "apartment or unit",
+  city: "city",
+  state: "state",
+  zip: "ZIP code",
+};
+const ADDRESS_PARTS: ReadonlySet<FieldPart> = new Set(["street", "unit", "city", "state", "zip"]);
+/** Kinds whose values are someone's: whose they are is asked before one fills a field that wants someone's (B24 owner veto). */
+const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "address"]);
+/** Owner questions one ask carries at most. Assumed: well above the personal values a few source windows hold. */
+const MAX_OWNERS = 40;
+
+/** The person's name a candidate holds, when it is a person's: the display name of "Name <email>", the head of "Name, more", or the whole span. */
+function personName(c: Candidate): string | null {
+  const shown = DISPLAY_NAME.exec(c.text)?.[1]?.trim();
+  if (shown !== undefined && isNameLike(shown, null)) return shown;
+  if (c.context === null || !PERSON_LABEL.test(c.context)) return null;
+  const head = c.text.split(/\s*(?:,|\(| - | – )\s*/u)[0]?.trim() ?? "";
+  if (head !== c.text && isNameLike(head, null)) return head;
+  return isNameLike(c.text, null) ? c.text : null;
 }
 
 export async function proposeFill(
@@ -238,6 +404,9 @@ export async function proposeFill(
   const whose = opts.whose !== false;
   const memoryCutoff = opts.memoryCutoff ?? (whose ? MEMORY_CUTOFF : cutoff);
   const whoseCutoff = opts.whoseCutoff ?? WHOSE_CUTOFF;
+  const derive = opts.derive !== false;
+  const owners = opts.owner !== false && whose;
+  const resolveCtx: ResolveContext = opts.resolve ?? { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
   const w = model.windows.get(windowId);
   if (w === undefined) throw new FillError(`unknown window ${windowId}`);
   // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
@@ -245,18 +414,44 @@ export async function proposeFill(
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
   const ledger = new SnippetLedger(model.windows.values());
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
-  const fields: { id: string; node: Node; descriptor: string; name: string; kinds: Set<ValueKind>; terms: Set<string>; texts: (string | null)[]; about: AboutValue[] }[] = [];
-  for (const n of formFields(w, triggerKey)) {
+  type Field = {
+    id: string;
+    node: Node;
+    descriptor: string;
+    name: string;
+    kinds: Set<ValueKind>;
+    terms: Set<string>;
+    texts: (string | null)[];
+    about: AboutValue[];
+    control: Control;
+    form: FormControl | null;
+    part: FieldPart | null;
+    labelWords: (string | null)[];
+    personal: boolean;
+  };
+  const fields: Field[] = [];
+  const inputs = formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false);
+  const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
+  for (const x of inputs) {
+    const n = x.node;
     const d = describeField(w, n);
-    const texts = [d.label, d.nearest, d.placeholder, d.section];
+    const c = x.form;
+    const label = c === null ? d.label : c.label;
+    const texts = c === null ? [d.label, d.nearest, d.placeholder, d.section] : [c.label, label === null ? d.nearest : null, d.section, ...(c.options ?? [])];
     if (!ledger.take(w, "descriptor", texts)) {
       if (n.key === triggerKey) throw new FillError(`the descriptor of the focused field in window ${windowId} is longer than the window's share of a question`);
       continue;
     }
-    const labelWords = [d.label, d.nearest, d.placeholder];
-    const name = d.label ?? d.nearest ?? d.placeholder;
-    const about = (opts.about ?? []).filter((a) => fieldAsksFor(a, name));
-    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor: d.text, name: name ?? "unnamed field", kinds: fieldKinds(labelWords), terms: fieldTerms(labelWords), texts, about });
+    const labelWords = c === null ? [d.label, d.nearest, d.placeholder] : [label, label === null ? d.nearest : null];
+    const name = (c === null ? (d.label ?? d.nearest ?? d.placeholder) : (label ?? d.nearest)) ?? null;
+    const kinds = x.control === "date" ? new Set<ValueKind>(["date"]) : x.control === "time" ? new Set<ValueKind>(["time"]) : x.control === "text" ? fieldKinds(labelWords) : new Set<ValueKind>();
+    const terms = fieldTerms(labelWords);
+    for (const k of kinds) terms.add(kindTerm(k));
+    const part = x.control === "text" && derive ? fieldPart(name, formHasCity) : null;
+    const about = x.control === "text" ? (opts.about ?? []).filter((a) => fieldAsksFor(a, name)) : [];
+    const personal = x.control === "text" && (part !== null || [...kinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+    const descriptor = c === null ? d.text : describeControl(c, d.section, label === null ? d.nearest : null);
+    fields.push({ id: `f${fields.length + 1}`, node: n, descriptor, name: name ?? "unnamed field", kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
   const { candidates, cut, cutTerms, cutAll, namesCut } = collectCandidates(model, windowId, {
     now,
@@ -269,7 +464,6 @@ export async function proposeFill(
   // A value a window shows is offered as that window's candidate, which names where it is; the same text
   // from memory would only repeat it.
   for (const f of fields) f.about = f.about.filter((a) => !candidates.some((c) => c.text === a.value));
-  if (candidates.length === 0 && cut.length === 0 && fields.every((f) => f.about.length === 0)) throw new FillError(`no candidate values in any window other than ${windowId}`);
 
   // A window's budget can cut the value a field wants and keep another of the same kind: with the
   // calibration sources as Messages windows, the cap cut the meeting block and Jev filled Meeting date
@@ -279,6 +473,93 @@ export async function proposeFill(
   // fill costs their trust.
   const removed = opts.cutRule === false ? new Set<ValueKind>() : cutKinds(model, cut, candidates);
   const isCut = (kinds: ReadonlySet<ValueKind>): boolean => [...kinds].some((k) => removed.has(k));
+  // The anchor (B24). The cut rules guard against a partial set: the right value cut by a window's budget, a
+  // decoy kept. Any window that did not fit (an unrelated draft, a chat) withheld every name and every field
+  // whose label names no kind, so on Q1's real forms nothing was offered although the user had just left a
+  // short note of labelled values (Q1 bug 1; 44 of 131 fields on the B24 corpus, evidence/screen/b24/before).
+  // When the window the user just left went into the question whole, a field is asked whatever was cut
+  // elsewhere, unless a cut took a value of its own kind, and a pick from that window is judged on its own when
+  // something ties it to a field: a "Label:" line, a typed kind the reader found, a name for a field that takes
+  // one, or an option or box code matches (controls.ts). A pick of a kind a cut took is still withheld: a
+  // labelled "Date:" in the window just left says nothing about a date a chat's budget cut (test/review-b13
+  // F1, F3). An untyped plain line is not enough, since a cut can hold the line the field wanted (B13 F4). A
+  // pick from any other window meets every cut rule.
+  const justLeft = model.windowBefore(windowId);
+  const anchorWindow = opts.anchor !== false && opts.cutRule !== false && justLeft !== null && !cut.includes(justLeft) ? (model.windows.get(justLeft) ?? null) : null;
+  const anchorLines = anchorWindow === null ? [] : labelledLines(anchorWindow);
+  const anchored = (f: Field): boolean => anchorWindow !== null && !isCut(f.kinds) && candidates.some((c) => c.source.windowId === anchorWindow.window.windowId);
+  const fromAnchor = (f: Field, p: Pick): boolean => {
+    const c = p.from === "window" ? p.c : p.from === "derived" && p.base.from === "window" ? p.base.c : null;
+    if (anchorWindow === null || c === null || c.source.windowId !== anchorWindow.window.windowId) return false;
+    return c.labelled === true || candidateKinds(model, c).size > 0 || f.control !== "text" || (f.terms.has(NAME_TERM) && isNameLike(c.text, c.context));
+  };
+  // The generator offers each text once, from the first window it reads it in, and reads a conversation's
+  // names before any other window's lines: a mail's "To: Jordan Reyes" took the text, and the question said
+  // nothing of the note the user just left, where "Name: Jordan Reyes" names it (Jev then answered none,
+  // B24 dev runs). A text the window just left labels is described there instead, when its label and title fit
+  // that window's budget; the value is the same text, so no fill changes but the description.
+  if (anchorWindow !== null) {
+    for (const l of anchorLines) {
+      const i = candidates.findIndex((c) => c.text === l.value && c.source.windowId !== anchorWindow.window.windowId);
+      const c = candidates[i];
+      if (c === undefined) continue;
+      const moved = labelledCandidate(anchorWindow, l.node, l.value, l.label, c.id, c.kind, "justLeft");
+      if (ledger.take(anchorWindow, "candidate", candidateTexts(moved))) candidates[i] = moved;
+    }
+  }
+  // Values code derives for one field (derive.ts): a name's first, middle or last part for a field that asks
+  // for it, a full name joined from labelled first and last names, and an address's parts. Each is offered only
+  // in its field's question, beside the shared candidates, and keeps the candidate or memory entry it came from.
+  type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"] };
+  const derived = new Map<string, Derived[]>();
+  const memoryNames = (opts.about ?? []).filter((a) => a.kind === "name");
+  if (derive) {
+    for (const f of fields) {
+      if (f.part === null) continue;
+      const list: Derived[] = [];
+      const add = (text: string | null, describe: string, base: Derived["base"]): void => {
+        if (text === null || text === "" || candidates.some((c) => c.text === text) || list.some((x) => x.text === text)) return;
+        list.push({ key: `${f.id}:${list.length}`, text, describe, base });
+      };
+      const part = f.part;
+      if (part === "first" || part === "middle" || part === "last" || part === "full") {
+        for (const c of candidates) {
+          const person = personName(c);
+          if (person === null) continue;
+          if (part === "full") add(person === c.text ? null : person, `"${person}" (the ${PART_SAYS.full} in ${describeCandidate(c)})`, { from: "window", c });
+          else add(namePart(splitName(person), part), `"${namePart(splitName(person), part) ?? ""}" (the ${PART_SAYS[part]} in ${describeCandidate(c)})`, { from: "window", c });
+        }
+        if (part !== "full") {
+          for (const a of memoryNames) {
+            if (!fieldAsksForNamePart(a, f.name)) continue;
+            const v = namePart(splitName(a.value), part);
+            add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} in ${describeAbout(a)})`, { from: "memory", a });
+          }
+        } else {
+          // A full name joined from a window's labelled first and last names ("First name: Kenji", "Last name: Watanabe").
+          const byWindow = new Map<string, Candidate[]>();
+          for (const c of candidates) if (c.labelled === true) byWindow.set(c.source.windowId, [...(byWindow.get(c.source.windowId) ?? []), c]);
+          for (const cs of byWindow.values()) {
+            const first = cs.filter((c) => fieldPart(c.context, false) === "first");
+            const last = cs.filter((c) => fieldPart(c.context, false) === "last");
+            if (first.length === 1 && last.length === 1) {
+              const [a, b] = [first[0] as Candidate, last[0] as Candidate];
+              add(joinName(a.text, b.text), `"${joinName(a.text, b.text)}" (the first name ${describeCandidate(a)} and the last name ${describeCandidate(b)}, joined)`, { from: "window", c: a });
+            }
+          }
+        }
+      } else if (ADDRESS_PARTS.has(part)) {
+        for (const c of candidates) {
+          const parts = splitAddress(c.text);
+          const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"];
+          if (v !== undefined) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+        }
+      }
+      if (list.length > 0) derived.set(f.id, list);
+    }
+  }
+  if (candidates.length === 0 && cut.length === 0 && fields.every((f) => f.about.length === 0 && (derived.get(f.id)?.length ?? 0) === 0)) throw new FillError(`no candidate values in any window other than ${windowId}`);
+
   // A field whose label names no kind (kinds.ts) could want a value of any kind or plain text. It is not
   // asked when a cut took a value of any kind: a "When" field was asked after a cut took the dates, and
   // filled with a note's untyped "Design review". Nor when a cut conversation left out a line sharing a
@@ -296,14 +577,19 @@ export async function proposeFill(
   const takesName = (f: { terms: ReadonlySet<string> }): boolean => opts.nameGroup !== false && f.terms.has(NAME_TERM);
   const unknownCut = (f: { terms: ReadonlySet<string> }): boolean => (removed.size > 0 && !takesName(f)) || (nameCut && takesName(f)) || cutAll || overlap(f.terms, cutTerms) > 0;
   const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? unknownCut(f) : isCut(f.kinds));
+  // A select whose options the app does not show cannot be matched to a value, so it is named and left (controls.ts).
+  const askable = (f: Field): boolean => f.control !== "combobox" && (f.control !== "select" || f.form?.options !== null);
   // A field is asked when a window gave candidates, or when something the user told Caret fits it; with
   // every window candidate cut away and nothing from memory, there is nothing to ask about. Values from
   // memory go through the ledger too (privacy.ts memory), and when one cannot, none is offered.
-  const uncut = fields.filter((f) => !fieldCut(f));
-  const aboutSent = [...new Map(uncut.flatMap((f) => f.about).map((a) => [a.id, a])).values()];
+  const uncut = fields.filter((f) => askable(f) && (!fieldCut(f) || anchored(f)));
+  const aboutSent = [...new Map(uncut.flatMap((f) => [...f.about, ...(derived.get(f.id) ?? []).flatMap((d) => (d.base.from === "memory" ? [d.base.a] : []))]).map((a) => [a.id, a])).values()];
   // Both the value and its label go into the question (describeAbout), so both are declared and priced.
-  if (aboutSent.length > 0 && !ledger.memory(aboutSent.flatMap((a) => [a.value, a.label]))) for (const f of fields) f.about = [];
-  const asked = uncut.filter((f) => candidates.length > 0 || f.about.length > 0);
+  if (aboutSent.length > 0 && !ledger.memory(aboutSent.flatMap((a) => [a.value, a.label]))) {
+    for (const f of fields) f.about = [];
+    for (const [id, list] of derived) derived.set(id, list.filter((d) => d.base.from !== "memory"));
+  }
+  const asked = uncut.filter((f) => candidates.length > 0 || f.about.length > 0 || (derived.get(f.id)?.length ?? 0) > 0);
   // The asks carry only the asked fields' descriptors, so a withheld field's are not declared; its
   // window was still charged for them, which errs on the side of saying less.
   const sent = new Set(asked.flatMap((f) => f.texts));
@@ -323,76 +609,220 @@ export async function proposeFill(
   const aboutOrder = shuffled(aboutSent, opts.rand);
   const aboutSecond = new Map(aboutOrder.map((a, i) => [a.id, `n${i + 1}`]));
   for (const [aid, nid] of aboutSecond) back.set(nid, aboutIds.get(aid) ?? "");
+  // Derived values are d1... in the first ask and e1..., shuffled, in the second.
+  const allDerived = asked.flatMap((f) => derived.get(f.id) ?? []);
+  const derivedIds = new Map(allDerived.map((d, i) => [d.key, `d${i + 1}`]));
+  const derivedSecond = new Map(shuffled(allDerived, opts.rand).map((d, i) => [d.key, `e${i + 1}`]));
+  for (const [k, eid] of derivedSecond) back.set(eid, derivedIds.get(k) ?? "");
   const askAbout = (ids: ReadonlyMap<string, string>): Map<string, AskAbout[]> =>
     new Map(asked.map((f) => [f.id, f.about.map((a) => ({ id: ids.get(a.id) ?? "", about: a })).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
+  const askDerived = (ids: ReadonlyMap<string, string>): Map<string, AskExtra[]> =>
+    new Map(asked.map((f) => [f.id, (derived.get(f.id) ?? []).map((d) => ({ id: ids.get(d.key) ?? "", describe: d.describe })).sort((x, y) => x.id.localeCompare(y.id, "en", { numeric: true }))]));
+  // Whose details a value is, asked for each candidate that is a person's (a typed email, phone or address,
+  // or a name), when some asked field wants a person's details (the owner veto below).
+  const personal = new Set(asked.filter((f) => f.personal).map((f) => f.id));
+  const personalCand = (c: Candidate): boolean => [...candidateKinds(model, c)].some((k) => PERSONAL_KINDS.has(k)) || personName(c) !== null || isNameLike(c.text, c.context);
+  const ownerCands = owners && personal.size > 0 ? candidates.filter(personalCand).slice(0, MAX_OWNERS) : [];
+  const secondId = new Map(order.map((c, i) => [c.id, `v${i + 1}`]));
+  const more = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({
+    derived: askDerived(dIds),
+    personal: whose ? personal : new Set(),
+    owners: ownerCands.map((c) => ({ id: first ? c.id : (secondId.get(c.id) ?? ""), describe: describeCandidate({ ...c, id: "" }) })),
+    controls: new Map(asked.map((f) => [f.id, f.control])),
+  });
+  // Two stages when some field wants a person's details (B24). First, both asks say whose details each such
+  // field wants and whose each person's value is. Then the value questions, where a field that wants the user's
+  // details is not offered a value both asks say is someone else's, and the reverse. In one stage, live Jev
+  // filled the user's First name and Email on a contact form from a colleague's mail that was open, though
+  // the user's own name and email from memory were offered beside it (evidence/screen/b24/dev-7: 0 of 12 memory
+  // values on the corpus's four memory forms).
+  const staged = whose && personal.size > 0;
+  const [w1, w2] =
+    asked.length === 0 || !staged
+      ? [null, null]
+      : await Promise.all([
+          askJev(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, { ...more(derivedIds, true), stage: "whose" })),
+          askJev(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, { ...more(derivedSecond, false), stage: "whose" })),
+        ]);
+  /** Both stage-one asks' answer to a whose or owner question, agreed at the whose cutoff, or null. */
+  const stageOne = (q: string, q2: string = q): string | null => {
+    const a1 = w1?.answers[q];
+    const a2 = w2?.answers[q2];
+    if (a1 === undefined || a2 === undefined || a1.choice !== a2.choice || !(a1.choice in WHOSE_CRITERIA)) return null;
+    return Math.min(a1.confidence, a2.confidence) >= whoseCutoff ? a1.choice : null;
+  };
+  /** Whether both stage-one answers put the field and the candidate on different people (one the user's, the other someone else's). */
+  const opposed = (f: Field, c: Candidate): boolean => {
+    if (!owners || !f.personal || !ownerCands.some((x) => x.id === c.id)) return false;
+    const wants = stageOne(whoseId(f.id));
+    const is = stageOne(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
+    return wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is;
+  };
+  const exclude = (first: boolean): Map<string, Set<string>> =>
+    new Map(asked.map((f) => [f.id, new Set(candidates.filter((c) => opposed(f, c)).map((c) => (first ? c.id : (secondId.get(c.id) ?? ""))))]));
+  // Derived values of an excluded candidate go with it.
+  if (staged) for (const f of asked) derived.set(f.id, (derived.get(f.id) ?? []).filter((d) => d.base.from !== "window" || !opposed(f, d.base.c)));
+  const valuesMore = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({ ...more(dIds, first), stage: staged ? "values" : undefined, exclude: staged ? exclude(first) : new Map() });
   const [r1, r2] =
     asked.length === 0
       ? [null, null]
       : await Promise.all([
-          askJev(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose)),
-          askJev(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose)),
+          askJev(buildFillRequest(w, asked, candidates, 0, declared, title, askAbout(aboutIds), whose, valuesMore(derivedIds, true))),
+          askJev(buildFillRequest(w, asked, second, 1, declared, title, askAbout(aboutSecond), whose, valuesMore(derivedSecond, false))),
         ]);
-
-  type Pick = { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue };
-  const byId = new Map<string, Pick>([...candidates.map((c): [string, Pick] => [c.id, { from: "window", c }]), ...aboutSent.map((a): [string, Pick] => [aboutIds.get(a.id) ?? "", { from: "memory", a }])]);
-  const pickText = (p: Pick): string => (p.from === "window" ? p.c.text : p.a.value);
-  const readAsk = (r: JevResult, f: { id: string; about: readonly AboutValue[] }, mapId: (id: string) => string | undefined): FillAsk => {
+  const byId = new Map<string, Pick>([
+    ...candidates.map((c): [string, Pick] => [c.id, { from: "window", c }]),
+    ...aboutSent.map((a): [string, Pick] => [aboutIds.get(a.id) ?? "", { from: "memory", a }]),
+    ...allDerived.map((d): [string, Pick] => [derivedIds.get(d.key) ?? "", { from: "derived", text: d.text, base: d.base }]),
+  ]);
+  const pickText = (p: Pick): string => (p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text);
+  const readAsk = (r: JevResult, f: Field, mapId: (id: string) => string | undefined): FillAsk => {
     const a = r.answers[f.id];
     if (a === undefined) throw new FillError(`Jev returned no answer for ${f.id}`);
     if (a.choice === NONE) return { choice: NONE, confidence: a.confidence, value: null };
     const id = mapId(a.choice);
     const p = id === undefined ? undefined : byId.get(id);
-    // A value from memory is a choice only in the questions of the fields it was offered to.
-    if (p === undefined || (p.from === "memory" && !f.about.includes(p.a))) throw new FillError(`Jev chose ${a.choice}, which is not a candidate id for ${f.id}`);
+    // A value from memory, or one code derived, is a choice only in the questions of the fields it was offered to.
+    const offered = p === undefined ? false : p.from === "window" ? true : p.from === "memory" ? f.about.includes(p.a) : (derived.get(f.id) ?? []).some((d) => derivedIds.get(d.key) === id);
+    if (p === undefined || !offered) throw new FillError(`Jev chose ${a.choice}, which is not a candidate id for ${f.id}`);
     return { choice: id as string, confidence: a.confidence, value: pickText(p) };
   };
 
-  // Picks of a kind a cut took are withheld (see above); a value from memory is of its own kind.
+  // Picks of a kind a cut took are withheld (see above); a value from memory is of its own kind; a derived
+  // value meets its source's rules.
   const pickCut = (p: Pick): boolean =>
-    p.from === "window" ? isCut(candidateKinds(model, p.c)) || (nameCut && isNameLike(p.c.text, p.c.context)) : p.a.kind === "email" ? isCut(new Set(["email"])) : nameCut;
+    p.from === "derived"
+      ? pickCut(p.base)
+      : p.from === "window"
+        ? isCut(candidateKinds(model, p.c)) || (nameCut && isNameLike(p.c.text, p.c.context))
+        : p.a.kind === "email"
+          ? isCut(new Set(["email"]))
+          : nameCut;
+  /** A pick of a kind a cut took, whatever window it came from. */
+  const kindCut = (p: Pick): boolean => (p.from === "derived" ? kindCut(p.base) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : p.a.kind === "email" && isCut(new Set(["email"])));
+  const memoryOf = (p: Pick): AboutValue | null => (p.from === "memory" ? p.a : p.from === "derived" && p.base.from === "memory" ? p.base.a : null);
+  const windowOf = (p: Pick): Candidate | null => (p.from === "window" ? p.c : p.from === "derived" && p.base.from === "window" ? p.base.c : null);
+  /** Both asks' answer to a question with fixed options (whose, owner), agreed at the whose cutoff, or null. */
+  const agreedChoice = (q: string, q2: string = q): string | null => {
+    const [x1, x2] = staged ? [w1, w2] : [r1, r2];
+    if (x1 === null || x2 === null) return null;
+    const a1 = x1.answers[q];
+    const a2 = x2.answers[q2];
+    if (a1 === undefined || a2 === undefined || a1.choice !== a2.choice || !(a1.choice in WHOSE_CRITERIA)) return null;
+    return Math.min(a1.confidence, a2.confidence) >= whoseCutoff ? a1.choice : null;
+  };
   /**
    * Whether both asks said the field wants the user's own details, at the whose cutoff or above. A value
    * from memory that fails this is withheld as lowConfidence: Jev was not sure enough the details are the
    * user's, and the protocol's reasons stay the three a host already reads.
    */
   const theUsers = (f: { id: string }): boolean => {
-    if (!whose || r1 === null || r2 === null) return true;
-    const w1 = r1.answers[whoseId(f.id)];
-    const w2 = r2.answers[whoseId(f.id)];
-    if (w1 === undefined || w2 === undefined) throw new FillError(`Jev returned no answer about whose details ${f.id} asks for`);
-    return w1.choice === "user" && w2.choice === "user" && Math.min(w1.confidence, w2.confidence) >= whoseCutoff;
+    const [x1, x2] = staged ? [w1, w2] : [r1, r2];
+    if (!whose || x1 === null || x2 === null) return true;
+    const a1 = x1.answers[whoseId(f.id)];
+    const a2 = x2.answers[whoseId(f.id)];
+    if (a1 === undefined || a2 === undefined) throw new FillError(`Jev returned no answer about whose details ${f.id} asks for`);
+    return a1.choice === "user" && a2.choice === "user" && Math.min(a1.confidence, a2.confidence) >= whoseCutoff;
+  };
+  /**
+   * The owner veto (B24). With nothing from memory to offer, live Jev filled a demo request's Work email and
+   * Phone with a colleague's signature details from an open mail, both asks agreeing at 0.86 to 0.98
+   * (evidence/screen/b24/before). So for a field that wants a person's details, both asks also say whose
+   * details the field wants (WHOSE_CRITERIA) and whose the value is (OWNER_CRITERIA). When both questions
+   * agree, at the whose cutoff, and the two answers are the user and someone else, the value is withheld; for a
+   * field that wants the user's, so is a value the asks do not both call the user's (see below).
+   */
+  const otherPerson = (f: Field, p: Pick): boolean => {
+    const c = windowOf(p);
+    if (!owners || !f.personal || c === null || !ownerCands.some((x) => x.id === c.id)) return false;
+    const wants = agreedChoice(whoseId(f.id));
+    const is = agreedChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
+    if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear") return wants !== is;
+    // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
+    // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
+    if (is === "other") return true;
+    // Unsettled, for a field that wants the user's details: a value goes in only when both asks also say it is
+    // the user's, or when the window the user just left labels it ("Name: Jordan Reyes" in their own note). Live,
+    // a contact form's Email took a colleague's address from an open mail beside the user's own from memory, and
+    // an RSVP's Phone the sender's signature phone, the owner question split (evidence/screen/b24/dev-8).
+    // The label must name the field: a mail's "From:" names the sender, not the form's Email (dev-9).
+    const labelsField = c.labelled === true && c.recency === "justLeft" && c.context !== null && overlap(fieldTerms([c.context]), f.terms) > 0;
+    return wants === "user" && is !== "user" && !labelsField;
+  };
+  /** The value a control takes from a pick: the option it names, "checked", or an ISO date or time; or why it cannot be read. */
+  const controlValue = (f: Field, p: Pick): { value: string; display: string } | { why: FillWithheld } => {
+    const text = pickText(p);
+    switch (f.control) {
+      case "radio":
+      case "select": {
+        const o = f.form?.options === null || f.form?.options === undefined ? null : optionInText(f.form.options, text);
+        return o === null ? { why: "ambiguous" } : { value: o, display: o };
+      }
+      case "checkbox":
+        return f.form?.label !== null && f.form?.label !== undefined && optionInText([f.form.label], text) !== null ? { value: "checked", display: "Ticked" } : { why: "ambiguous" };
+      case "date": {
+        const d = readDate(text, resolveCtx);
+        return d === null ? { why: "ambiguous" } : d;
+      }
+      case "time": {
+        const t = clockTime(text);
+        return t === null ? { why: "ambiguous" } : t;
+      }
+      case "combobox":
+        return { why: "ambiguous" };
+      case "text":
+        return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text } : { why: "wrongKind" };
+    }
+  };
+  const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;
+  const memoryRef = (p: Pick): FillMemory | null => {
+    const a = memoryOf(p);
+    return a === null ? null : { id: a.id, label: a.label, says: ABOUT_SAYS };
   };
   const out: FillField[] = fields.map((f) => {
+    const empty = { key: f.node.key, control: f.control, handoff: null, frame: f.node.frame ?? null, descriptor: f.descriptor, choice: NONE, confidence: 0, value: null, source: null, memory: null };
     if (r1 === null || r2 === null || !asked.includes(f)) {
-      // Not asked: a cut took its kind (or every candidate), or, with no cut, nothing could be offered for it.
-      const nothing = !fieldCut(f) && candidates.length === 0 && cut.length === 0;
-      return { key: f.node.key, frame: f.node.frame ?? null, descriptor: f.descriptor, choice: NONE, confidence: 0, value: null, source: null, memory: null, withheld: nothing ? null : "sourceCut", asks: [] };
+      // Not asked: a cut took its kind (or every candidate); a select shows no options; or, with no cut,
+      // nothing could be offered for it.
+      const nothing = !askable(f) || (!fieldCut(f) && candidates.length === 0 && cut.length === 0);
+      return { ...empty, withheld: nothing ? null : "sourceCut", asks: [] };
     }
     const a1 = readAsk(r1, f, (id) => id);
     const a2 = readAsk(r2, f, (id) => back.get(id));
     const agree = a1.choice === a2.choice;
     const confidence = agree ? Math.min(a1.confidence, a2.confidence) : 0;
     const picked = agree && a1.choice !== NONE ? byId.get(a1.choice) : undefined;
-    const withheld =
+    const fromMemory = picked !== undefined && memoryOf(picked) !== null;
+    // An anchored field's pick from the anchor window is judged on its own; any other pick meets the cut rules.
+    const anchoredPick = picked !== undefined && anchored(f) && fromAnchor(f, picked);
+    const cutOut = picked !== undefined && (anchoredPick ? kindCut(picked) : fieldCut(f) || pickCut(picked));
+    const read = picked === undefined ? null : controlValue(f, picked);
+    const withheld: FillWithheld | null =
       a1.choice === NONE && a2.choice === NONE
         ? null
         : !agree
           ? "disagree"
-          : picked !== undefined && pickCut(picked)
+          : picked !== undefined && cutOut
             ? "sourceCut"
-            : confidence < (picked?.from === "memory" ? memoryCutoff : cutoff) || (picked?.from === "memory" && !theUsers(f))
+            : confidence < (fromMemory ? memoryCutoff : cutoff) || (fromMemory && !theUsers(f))
               ? "lowConfidence"
-              : null;
+              : read !== null && "why" in read
+                ? read.why
+                : picked !== undefined && otherPerson(f, picked)
+                  ? "otherPerson"
+                  : null;
     const p = withheld === null ? picked : undefined;
+    const got = p === undefined || read === null || "why" in read ? null : read;
+    const handoff: FillHandoff | null = f.control === "text" || p === undefined || got === null ? null : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p) };
+    const text = f.control === "text" && p !== undefined && got !== null;
     return {
-      key: f.node.key,
-      frame: f.node.frame ?? null,
-      descriptor: f.descriptor,
+      ...empty,
+      handoff,
       choice: p === undefined ? NONE : a1.choice,
       confidence,
-      value: p === undefined ? null : pickText(p),
-      source: p?.from === "window" ? p.c.source : null,
-      memory: p?.from === "memory" ? { id: p.a.id, label: p.a.label, says: ABOUT_SAYS } : null,
+      value: text ? got.value : null,
+      source: text ? sourceOf(p) : null,
+      memory: text ? memoryRef(p) : null,
       withheld,
       asks: [a1, a2],
     };
@@ -412,7 +842,14 @@ export async function proposeFill(
     jev:
       r1 === null || r2 === null
         ? { model: NOT_ASKED, latencyMs: 0, inputTokens: 0, costUsd: 0 }
-        : { model: r1.model, latencyMs: Math.max(r1.latencyMs, r2.latencyMs), inputTokens: r1.inputTokens + r2.inputTokens, costUsd: r1.costUsd + r2.costUsd },
+        : {
+            model: r1.model,
+            // The stages run one after the other.
+            latencyMs: Math.max(r1.latencyMs, r2.latencyMs) + (w1 === null || w2 === null ? 0 : Math.max(w1.latencyMs, w2.latencyMs)),
+            inputTokens: r1.inputTokens + r2.inputTokens + (w1?.inputTokens ?? 0) + (w2?.inputTokens ?? 0),
+            costUsd: r1.costUsd + r2.costUsd + (w1?.costUsd ?? 0) + (w2?.costUsd ?? 0),
+          },
     cutoff,
   };
 }
+

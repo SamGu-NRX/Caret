@@ -302,6 +302,8 @@ export interface EventCardDeps {
   live: () => boolean;
   now: () => number;
   count?: (name: string) => void;
+  /** Whether a window is a conversation (conversation.ts); a test passes a counting one. */
+  isConversation?: (w: WindowState) => boolean;
 }
 
 export class EventCards {
@@ -341,6 +343,15 @@ export class EventCards {
     const work: Promise<void>[] = [];
     const lines: { w: WindowState; key: string; text: string; field: OfferField }[] = [];
     const model = this.deps.model;
+    // Once per window state in a batch: for a window that is no conversation the check reads every node, so
+    // asking it for every changed node made a snapshot that adds N nodes cost about N² node visits (CodeRabbit
+    // on PR #5). The model gives every snapshot a new state, so a state's answer cannot change within a batch.
+    const chat = new Map<WindowState, boolean>();
+    const isChat = (w: WindowState): boolean => {
+      let r = chat.get(w);
+      if (r === undefined) chat.set(w, (r = (this.deps.isConversation ?? isConversation)(w)));
+      return r;
+    };
     for (const c of changes) {
       const w = model.windows.get(c.windowId);
       if (w === undefined || c.key === null || c.after === null || (c.kind !== "value" && c.kind !== "added")) continue;
@@ -348,7 +359,7 @@ export class EventCards {
       if (typing) {
         const last = sentences(c.after, false).at(-1);
         if (last !== undefined) work.push(this.consider(w, c.key, last, offerField(w, c.key), "typed"));
-      } else if (!c.editable && isConversation(w)) {
+      } else if (!c.editable && isChat(w)) {
         const field = this.typingField();
         if (field !== null) lines.push({ w, key: c.key, text: c.after, field });
       }

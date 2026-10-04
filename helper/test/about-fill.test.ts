@@ -60,7 +60,8 @@ describe("which values and fields About entries fit", () => {
     [EMAIL, "Email address", true],
     [EMAIL, "Your email", true],
     [EMAIL, "Recipient email", false],
-    [EMAIL, "Work email", false],
+    // B24: a user who gave one email gets it in "Work email"; a qualified entry only in its own qualifier's field.
+    [EMAIL, "Work email", true],
     [EMAIL, "Name", false],
     [EMAIL, "Mail", false],
     [{ ...EMAIL, label: "Work email" }, "Work email", true],
@@ -100,11 +101,13 @@ describe("proposeFill with values the user told Caret", () => {
     expect(by[key("Name")]).toMatchObject({ value: "Sam Rivera", source: null, memory: { id: NAME.id, label: "Name", says: ABOUT_SAYS }, withheld: null });
     expect(by[key("Email")]).toMatchObject({ value: "sam.rivera@example.com", source: null, memory: { id: EMAIL.id, label: "Email", says: ABOUT_SAYS } });
     expect(by[key("Phone")]).toMatchObject({ value: null, memory: null, withheld: null, asks: [] });
-    // Each value is offered only in the question of the field that asks for it, and is declared as memory.
-    expect(requests).toHaveLength(2);
-    for (const r of requests) {
-      // A value question and a whose-details question for each of Name and Email; none for Phone.
-      expect(Object.keys(r.questions).sort()).toEqual(["f1", "f1_whose", "f2", "f2_whose"]);
+    // Each value is offered only in the question of the field that asks for it, and is declared as memory. Since
+    // B24 the whose-details questions go first, in two requests of their own; then the two value requests.
+    expect(requests).toHaveLength(4);
+    expect(requests.slice(0, 2).map((r) => Object.keys(r.questions).sort())).toEqual([["f1_whose", "f2_whose"], ["f1_whose", "f2_whose"]]);
+    for (const r of requests.slice(2)) {
+      // A value question for each of Name and Email; none for Phone.
+      expect(Object.keys(r.questions).sort()).toEqual(["f1", "f2"]);
       const crit = ["f1", "f2"].map((id) => Object.values(r.questions[id]?.criteria ?? {}).filter((c) => c?.includes("which the user told Caret")));
       expect(crit.map((c) => c.length)).toEqual([1, 1]);
       // Values and their labels both go into the question, so both are declared (review B17 #1).
@@ -112,12 +115,20 @@ describe("proposeFill with values the user told Caret", () => {
     }
   });
 
-  it("offers nothing from memory to First name, Guest email or Company name, and so asks nothing", async () => {
+  it("offers First name only the first name split from Name, and Guest email or Company name nothing (B24)", async () => {
     const m = new ScreenModel();
     form(m, ["First name", "Guest email", "Company name"]);
-    const { ask, requests } = recording({});
-    await expect(proposeFill(m, ask, FORM, key("First name"), 3000, { about: [NAME, EMAIL] })).rejects.toThrow(FillError);
-    expect(requests).toHaveLength(0);
+    const { ask, requests } = recording({ "First name": "Sam" });
+    const p = await proposeFill(m, ask, FORM, key("First name"), 3000, { about: [NAME, EMAIL] });
+    expect(p.fields.find((f) => f.key === key("First name"))).toMatchObject({ value: "Sam", memory: { id: NAME.id }, source: null });
+    expect(p.fields.find((f) => f.key === key("Guest email"))?.value).toBeNull();
+    expect(p.fields.find((f) => f.key === key("Company name"))?.value).toBeNull();
+    for (const r of requests.filter((x) => x.questions.f1 !== undefined)) {
+      const offered = (id: string) => Object.values(r.questions[id]?.criteria ?? {}).join(" ");
+      expect(offered("f1")).toContain('"Sam" (the first name in "Sam Rivera"');
+      expect(offered("f2")).not.toContain("sam.rivera@example.com");
+      expect(offered("f3")).not.toContain("Sam");
+    }
   });
 
   it("offers a window's copy of the same address as that window's candidate, not as memory", async () => {
@@ -131,7 +142,7 @@ describe("proposeFill with values the user told Caret", () => {
     const email = p.fields.find((f) => f.key === key("Email"));
     expect(email).toMatchObject({ value: "sam.rivera@example.com", memory: null, source: { windowId: SRC } });
     expect(p.fields.find((f) => f.key === key("Name"))).toMatchObject({ value: "Sam Rivera", memory: { id: NAME.id } });
-    expect(requests[0]?.snippets.filter((s) => s.windowId === "memory").map((s) => s.text)).toEqual(["Sam Rivera", "Name"]);
+    expect(requests.find((r) => r.questions.f1 !== undefined)?.snippets.filter((s) => s.windowId === "memory").map((s) => s.text)).toEqual(["Sam Rivera", "Name"]);
   });
 
   it("charges a window that shows a memory value inside a line, as sending the value reveals it", async () => {
@@ -187,14 +198,14 @@ describe("proposeFill with values the user told Caret", () => {
 // and its value pick is held to MEMORY_CUTOFF, not FILL_CUTOFF. A window's value is judged as before.
 describe("whose details a field offered a value from memory wants", () => {
   /** Answers like `recording`, then sets the value answers' and the whose answers' confidences apart, per ask. */
-  function answering(byLabel: Record<string, string>, o: { value: number; whose: number; who?: [Whose, Whose] | Whose }): { ask: AskJev; requests: JevRequest[] } {
+  function answering(byLabel: Record<string, string>, o: { value: number; whose: number; who?: [Whose, Whose] | Whose; owner?: Whose }): { ask: AskJev; requests: JevRequest[] } {
     const requests: JevRequest[] = [];
     let n = 0;
     const ask: AskJev = async (req) => {
       requests.push(req);
       const k = n++;
       const who = Array.isArray(o.who) ? o.who[k % 2] : (o.who ?? "user");
-      const r = await jevPickingText((_, ins) => byLabel[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.9, () => who as Whose)(req);
+      const r = await jevPickingText((_, ins) => byLabel[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null, 0.9, () => who as Whose, () => o.owner ?? "user")(req);
       for (const [id, a] of Object.entries(r.answers)) a.confidence = id.endsWith("_whose") ? o.whose : o.value;
       return r;
     };
@@ -232,19 +243,23 @@ describe("whose details a field offered a value from memory wants", () => {
     expect((await fill(answering(SAM, { value: MEMORY_CUTOFF, whose: 0.99 }).ask))?.value).toBe("Sam Rivera");
   });
 
-  it("asks whose only beside fields offered a value from memory, in both wordings", async () => {
+  it("asks whose beside fields offered a value from memory and fields that take a person's details, in both wordings", async () => {
     const m = new ScreenModel();
     form(m, ["Name", "Phone", "Guest name"]);
     m.apply(snap([text("dev.caret.mail/standard/statictext:p~0", "+1 (415) 555-0199")], { at: 1000, windowId: "6160-5", title: "Note", app: MAIL_APP, values: [value("phone", "+1 (415) 555-0199", "dev.caret.mail/standard/statictext:p~0")] }));
     const { ask, requests } = answering(SAM, { value: 0.9, whose: 0.9 });
     await proposeFill(m, ask, FORM, key("Name"), 3000, { about: [NAME, EMAIL] });
-    expect(requests).toHaveLength(2);
-    for (const r of requests) {
-      expect(Object.keys(r.questions).filter((id) => id.endsWith("_whose"))).toEqual(["f1_whose"]);
+    // B24: the whose-details questions go first, in two requests of their own.
+    expect(requests).toHaveLength(4);
+    const whoseAsks = requests.filter((r) => r.questions.f1_whose !== undefined);
+    expect(whoseAsks).toHaveLength(2);
+    for (const r of whoseAsks) {
+      // B24: Phone and Guest name take a person's details too, for the owner veto (fill.ts otherPerson).
+      expect(Object.keys(r.questions).filter((id) => id.endsWith("_whose"))).toEqual(["f1_whose", "f2_whose", "f3_whose"]);
       expect(Object.keys(r.questions.f1_whose?.criteria ?? {})).toEqual(["user", "other", "unclear"]);
       expect(String(r.questions.f1_whose?.instructions)).toContain("Label: 'Name'");
     }
-    expect(requests[0]?.questions.f1_whose?.instructions).not.toEqual(requests[1]?.questions.f1_whose?.instructions);
+    expect(whoseAsks[0]?.questions.f1_whose?.instructions).not.toEqual(whoseAsks[1]?.questions.f1_whose?.instructions);
   });
 
   it("refuses a reply that leaves a whose question unanswered", async () => {
@@ -257,13 +272,16 @@ describe("whose details a field offered a value from memory wants", () => {
     await expect(fill(ask)).rejects.toThrow(/no answer about whose details f1/);
   });
 
-  it("judges a window's value as before: no whose gate, FILL_CUTOFF", async () => {
+  it("judges a window's value as before: no memory whose gate, FILL_CUTOFF; B24's owner veto only when the two whose answers conflict", async () => {
     const m = new ScreenModel();
     const mk = "dev.caret.mail/standard/statictext:dana~0";
     m.apply(snap([text(mk, "Dana Whitfield")], { at: 1000, windowId: "6160-6", title: "Contact", app: MAIL_APP }));
     form(m, ["Name", "Email"]);
-    const p = await proposeFill(m, answering({ Name: "Dana Whitfield" }, { value: 0.8, whose: 0.95, who: "other" }).ask, FORM, key("Name"), 3000, { about: [NAME, EMAIL] });
+    const p = await proposeFill(m, answering({ Name: "Dana Whitfield" }, { value: 0.8, whose: 0.95, who: "other", owner: "other" }).ask, FORM, key("Name"), 3000, { about: [NAME, EMAIL] });
     expect(p.fields.find((f) => f.key === key("Name"))).toMatchObject({ value: "Dana Whitfield", memory: null, source: { windowId: "6160-6" } });
+    const vetoed = await proposeFill(m, answering({ Name: "Dana Whitfield" }, { value: 0.8, whose: 0.95, who: "other", owner: "user" }).ask, FORM, key("Name"), 3000, { about: [NAME, EMAIL] });
+    // Both stage-one asks put the field on someone else and the value on the user, so the value stage never offers it.
+    expect(vetoed.fields.find((f) => f.key === key("Name"))).toMatchObject({ value: null });
   });
 
   it("with whose off (the eval's other option), asks no whose question and holds memory to FILL_CUTOFF", async () => {

@@ -715,8 +715,41 @@ export type FillAsk = z.infer<typeof FillAsk>;
 export const FillMemory = z.object({ id: z.string().min(1), label: z.string(), says: z.string() });
 export type FillMemory = z.infer<typeof FillMemory>;
 
+/**
+ * Why no value was proposed although one might have been. The first three are B11-B13's; B24 added:
+ * "wrongKind": the agreed value is not the kind the field takes (a whole address in Street, kinds.ts misfit);
+ * "otherPerson": both asks said the field wants one person's details and the value is another's, or the field
+ * wants the user's and the asks did not both say the value is the user's;
+ * "ambiguous": code could not read the value without guessing (a single name for First/Last, a date that
+ * could be two days, no option or more than one that the source names).
+ */
+export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "wrongKind", "otherPerson", "ambiguous"]);
+export type FillWithheld = z.infer<typeof FillWithheld>;
+
+/**
+ * What a control is (B24): a text field Caret writes, or a control the user sets from Caret's proposal. Chrome
+ * shows native selects, radio groups, checkboxes and date and time inputs through Accessibility; the executor
+ * writes none of them yet, so their values come as `handoff`. "combobox" is a web page's custom dropdown
+ * (react-select and the like): typing into it does not pick an option, so it is named and left to the user,
+ * with no value, until the browser layer can pick one.
+ */
+export const FillControl = z.enum(["text", "date", "time", "select", "radio", "checkbox", "combobox"]);
+export type FillControl = z.infer<typeof FillControl>;
+
+/**
+ * A value for a control Caret does not write: the option to pick, "checked" for a box to tick, or an ISO date
+ * (YYYY-MM-DD) or time (HH:MM, 24-hour), with what it is read from. `value` stays null for such a control, so a
+ * consumer that does not know this key never writes it. `display` is how the host says it ("Mar 3, 1991").
+ */
+export const FillHandoff = z.object({ value: z.string(), display: z.string(), source: FillSource.nullable(), memory: FillMemory.nullable() });
+export type FillHandoff = z.infer<typeof FillHandoff>;
+
 export const FillField = z.object({
   key: z.string(),
+  /** What the control is; absent from a helper before B24, which read text fields only. */
+  control: FillControl.default("text"),
+  /** For a control other than text: the value the user should set, or null when none is proposed. */
+  handoff: FillHandoff.nullable().default(null),
   /** Where the field is on screen, so a consumer can draw the proposed value in place. */
   frame: Frame.nullable(),
   descriptor: z.string(),
@@ -741,17 +774,22 @@ export const FillField = z.object({
    * field takes or the asks picked ("sourceCut", fill.ts), so the candidates of that kind were a partial
    * set. Null otherwise.
    */
-  withheld: z.enum(["disagree", "lowConfidence", "sourceCut"]).nullable(),
+  withheld: FillWithheld.nullable(),
   /**
    * The first ask, and the second with candidates shuffled and the field reworded. Empty when the field
    * was not asked: withheld as "sourceCut" before any ask, or, with `withheld` null, nothing could be
    * offered for it (no window gave a candidate, and nothing the user told Caret fits it).
    */
   asks: z.union([z.tuple([FillAsk, FillAsk]), z.tuple([])]),
-}).refine((f) => (f.value === null ? f.source === null && f.memory === null : (f.source === null) !== (f.memory === null)), {
-  message: "a value comes with exactly one of source and memory, and no value with neither",
-  path: ["memory"],
-});
+})
+  .refine((f) => (f.value === null ? f.source === null && f.memory === null : (f.source === null) !== (f.memory === null)), {
+    message: "a value comes with exactly one of source and memory, and no value with neither",
+    path: ["memory"],
+  })
+  .refine((f) => (f.control === "text" ? f.handoff === null : f.value === null), {
+    message: "a text field's value is written and never handed off; any other control is never written, its value comes as a handoff",
+    path: ["handoff"],
+  });
 export type FillField = z.infer<typeof FillField>;
 
 export const FillProposal = z.object({

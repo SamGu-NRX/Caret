@@ -16,6 +16,21 @@ describe("golden protocol fixture", () => {
     expect(parsed.fields.map((f) => f.memory)).toEqual([null, null]);
   });
 
+  it("reads B24's controls: a hand-off value for a date field, the new reasons, and text when a helper sends no control", () => {
+    const line = JSON.parse(lines[7] as string) as { fields: Record<string, unknown>[] };
+    const before = { ...line, fields: line.fields.map(({ control: _c, handoff: _h, ...rest }) => rest) };
+    const parsed = HelperMessage.parse(before) as { fields: { control: string; handoff: unknown }[] };
+    expect(parsed.fields.map((f) => [f.control, f.handoff])).toEqual(parsed.fields.map(() => ["text", null]));
+    const src = { pid: 1, windowId: "1-1", bundleId: "b", appName: "A", windowTitle: "T", nodeKey: "n", kind: "date" };
+    const date = { key: "k", control: "date", handoff: { value: "1991-03-03", display: "Sun, Mar 3, 1991", source: src, memory: null }, frame: null, descriptor: "Date field. Label: 'Date of birth'.", choice: "c1", confidence: 0.95, value: null, source: null, memory: null, withheld: null, asks: [] };
+    const message = { ...line, fields: [date, { ...date, key: "k2", handoff: null, choice: "none", confidence: 0, withheld: "otherPerson" }] };
+    expect(HelperMessage.parse(message)).toMatchObject({ fields: [{ control: "date", handoff: { value: "1991-03-03" } }, { withheld: "otherPerson" }] });
+    // A control other than text is never written, and a text field never handed off.
+    const written = { ...date, value: "1991-03-03", source: src };
+    expect(HelperMessage.safeParse({ ...line, fields: [written] }).success).toBe(false);
+    expect(HelperMessage.safeParse({ ...line, fields: [{ ...date, control: "text" }] }).success).toBe(false);
+  });
+
   it("holds one of every message type", () => {
     const types = lines.map((l) => (JSON.parse(l) as { type: string }).type);
     expect(types).toEqual([

@@ -15,7 +15,9 @@ import { MemoryStore } from "../src/patterns/memory.ts";
 import { HelperMessage, PROTOCOL_VERSION, type AppRef, type OfferAction, type ReaderMessage, type TypedValue } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { DURATION_CHOICES, resolveEventTime } from "../src/offers/event-time.ts";
-import { eventCandidate, eventTitle, MAX_PENDING_EVENT_ASKS, personIn, sentences, spansIn, withZones } from "../src/offers/event-card.ts";
+import { EventCards, eventCandidate, eventTitle, MAX_PENDING_EVENT_ASKS, personIn, sentences, spansIn, withZones } from "../src/offers/event-card.ts";
+import { ScreenModel } from "../src/model.ts";
+import { DEFAULT_SETTINGS, OfferGate } from "../src/offers/settings.ts";
 import type { WindowState } from "../src/model.ts";
 import { snap, text } from "./builders.ts";
 
@@ -475,5 +477,47 @@ describe("event cards through the helper", () => {
       { title: "Call with Dana", start: "2026-10-20T17:00:00-05:00", end: "2026-10-20T18:00:00-05:00", startUtc: "2026-10-20T22:00:00.000Z", endUtc: "2026-10-20T23:00:00.000Z" },
       { title: "Sync with Priya", start: "2026-10-21T08:00:00-05:00", end: "2026-10-21T09:00:00-05:00", startUtc: "2026-10-21T13:00:00.000Z", endUtc: "2026-10-21T14:00:00.000Z" },
     ]);
+  });
+});
+
+describe("judging a batch of changes (CodeRabbit on PR #5)", () => {
+  it("asks whether a window is a conversation once per window per batch, however many of its nodes changed", async () => {
+    const model = new ScreenModel();
+    const nodes = Array.from({ length: 200 }, (_, i) => text(`notes/line${i}`, `Line ${i} of a long note`));
+    model.apply(snap([], { at: 1000, windowId: "notes", title: "Notes" }));
+    const changes = model.apply(snap(nodes, { at: 2000, windowId: "notes", title: "Notes" }));
+    expect(changes.filter((c) => c.kind === "added")).toHaveLength(200);
+    let calls = 0;
+    const cards = new EventCards({
+      model,
+      askJev: null,
+      publish: () => true,
+      run: () => Promise.reject(new Error("nothing runs")),
+      gate: new OfferGate(DEFAULT_SETTINGS),
+      people: () => [],
+      calendar: "Caret",
+      live: () => true,
+      now: () => 2000,
+      isConversation: () => (calls++, false),
+    });
+    await cards.onChanges(changes);
+    expect(calls).toBe(1);
+  });
+});
+
+describe("Q1 bug 9: the dogfood's sentence with PT", () => {
+  it("makes a card that shows the time in PT and in the Mac's zone, and asks how long since the text gives no end", () => {
+    const sentence = "Also, let's set up a call with Priya Thursday 3pm PT to go over the budget.";
+    const clock = { now: new Date("2026-10-04T16:00:00Z"), timeZone: "America/Chicago", locale: "en-US" };
+    // The reader typed the whole span in the capture (evidence/screen/b24/capture-2); the zone is found either way.
+    for (const spans of [["Thursday 3pm PT"], ["Thursday", "3pm"]]) {
+      const c = eventCandidate(sentence, spans, [{ id: "p1", label: "Priya", text: "Priya Raman" }], clock, "typed");
+      expect(c?.title).toBe("Call with Priya");
+      if (c?.time.kind !== "ask") throw new Error("expected a card that asks how long");
+      expect(c.time.choices.map((t) => t.zones)).toEqual([
+        "Oct 8, 3:00 to 3:30 PM PT (America/Los_Angeles, UTC-07:00) / 5:00 to 5:30 PM America/Chicago (UTC-05:00)",
+        "Oct 8, 3:00 to 4:00 PM PT (America/Los_Angeles, UTC-07:00) / 5:00 to 6:00 PM America/Chicago (UTC-05:00)",
+      ]);
+    }
   });
 });

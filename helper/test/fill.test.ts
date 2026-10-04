@@ -142,7 +142,8 @@ describe("proposeFill", () => {
     expect(p.fields[0]?.asks.map((a) => a.value)).toEqual([EMAIL, EMAIL]);
     expect(p.fields[0]?.source?.windowId).toBe(SRC);
     expect(p.fields.slice(1).every((f) => f.value === null && f.source === null && f.withheld === null)).toBe(true);
-    expect(p).toMatchObject({ type: "fillProposal", pid: 5150, windowId: FORM, at: 5000, jev: { model: "jev-test", inputTokens: 2000 } });
+    // Four requests of 1,000 tokens: since B24 a form with a field that takes a person's details is asked in two stages.
+    expect(p).toMatchObject({ type: "fillProposal", pid: 5150, windowId: FORM, at: 5000, jev: { model: "jev-test", inputTokens: 4000 } });
   });
 
   it("withholds a value the two asks disagree on", async () => {
@@ -165,7 +166,8 @@ describe("proposeFill", () => {
     };
     // A fixed "random" source that rotates each window's candidates.
     await proposeFill(buildModel(), ask, FORM, trigger, 5000, { rand: () => 0 });
-    const [q1, q2] = seen.map((r) => r.questions.f1!);
+    // The value stage's two asks (B24 asks whose details first, in two requests without value questions).
+    const [q1, q2] = seen.filter((r) => r.questions.f1 !== undefined).map((r) => r.questions.f1!);
     const texts = (q: typeof q1) => Object.entries(q!.criteria).filter(([id]) => id !== "none").map(([, d]) => d);
     expect(texts(q2)).not.toEqual(texts(q1));
     expect([...texts(q2)].sort()).toEqual([...texts(q1)].sort());

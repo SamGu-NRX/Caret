@@ -196,6 +196,9 @@ type Fit = "email" | "phone" | "url" | "city" | "street" | "address" | "name" | 
 const CITY = /\b(?:city|town)\b/;
 const STREET = /\bstreet\b|\baddress line\b/;
 const PERSON_NAME = /\bname\b/;
+const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
+/** A company's name: up to eight words with no digits, brackets or sentence punctuation ("Ridgeline Outdoor Co", "Acme, Inc."). */
+const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^\d()[\]{}@<>;:!?]+$/u;
 /** Kinds of value that have their own shape: none of them is a city, a street line or a name. */
 const SHAPED: ReadonlySet<TextKind> = new Set(["email", "url", "phone", "amount", "address", "street"]);
 
@@ -207,13 +210,37 @@ const TAKES: Record<Fit, (k: TextKind, value: string) => boolean> = {
   // A city has no digits: "Austin" fits, "Austin, TX 78701" and a whole address do not.
   city: (k, v) => k === "text" && !/\d/.test(v),
   street: (k) => k === "street" || k === "text",
-  address: (k) => k === "address" || k === "street" || k === "text",
+  // Plain text in an address field holds a number ("PO Box 12"): "in my note" from "her address is in my note"
+  // went into Address (B24 Ask scoreboard, asks-dev-3).
+  address: (k, v) => k === "address" || k === "street" || (k === "text" && /\d/.test(v)),
   name: (k) => !SHAPED.has(k),
-  // "10-08-2026" reads as a phone number by its characters, so a date field takes those too.
-  date: (k) => !SHAPED.has(k) || k === "phone",
-  time: (k) => !SHAPED.has(k),
+  // A date or time field takes a value code reads as one (B24, Q1 bug 4: a plan wrote "Seattle on 11/12/2026 on
+  // this Alaska Airlines page in Chrome" into two date fields). "10-08-2026" reads as a phone number by its
+  // characters, so it is checked by shape, not kind.
+  date: (_k, v) => dateShaped(v),
+  time: (_k, v) => timeShaped(v),
   amount: (k) => k === "amount" || k === "text",
 };
+
+const MONTH_OR_DAY_NAME = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|today|tomorrow|yesterday|next|last|this|of|the|at|on|st|nd|rd|th)\.?,?$/iu;
+/**
+ * Whether a whole value reads as a date or a part of one: digits and date separators ("11/12/2026", "05/2027",
+ * "12", "1990"), or words that are only month and day names among numbers ("March 3, 1991", "Thu Oct 8").
+ * Anything else, a place or a sentence, is not a date.
+ */
+export function dateShaped(value: string): boolean {
+  const v = value.trim();
+  if (v === "") return false;
+  if (/^\d{1,4}(?:[/.\-]\d{1,4}){0,2}$/u.test(v)) return true;
+  const ws = v.split(/[\s,]+/u).filter((w) => w !== "");
+  // A date may carry its time ("October 8, 2026 at 3:00 PM"): clock digits and am/pm are date words too.
+  const dateWord = (w: string): boolean => /^\d{1,4}(?:st|nd|rd|th)?[.,]?$/iu.test(w) || /^\d{1,2}:\d{2}(?:[ap]\.?m\.?)?$/iu.test(w) || /^[ap]\.?m\.?$/iu.test(w) || MONTH_OR_DAY_NAME.test(w);
+  return ws.length <= 8 && ws.some((w) => /\d/.test(w) || MONTH_OR_DAY_NAME.test(w)) && ws.every(dateWord);
+}
+/** Whether a whole value reads as a clock time: "3:00 PM", "15:00", "3pm", "noon". */
+export function timeShaped(value: string): boolean {
+  return /^(?:(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:[ap]\.?\s*m\.?)?|noon|midnight)$/iu.test(value.trim());
+}
 
 const KIND_SAYS: Record<TextKind, string> = {
   email: "an email address",
@@ -255,9 +282,15 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
     fits.delete("address");
   }
   if (PERSON_NAME.test(s)) fits.add("name");
-  if (fits.size === 0) return null;
-  const k = textKind(value);
   const v = value.trim();
+  // A company or employer field takes a name, not a sentence about one: the B24 corpus's "Current company" took
+  // "Junior Analyst at Ridgeline Outdoor Co (since 2024)" from a note's line (evidence/screen/b24/dev-4).
+  if (ORGANIZATION.test(s) && !ORG_NAME.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is more than a name, and the field takes a company or organization name`;
+  // A bare clock time goes only in a field that takes a time: the B24 Ask scoreboard's planner wrote "8:15" into
+  // Delivery instructions for "actually make the delivery 8:15 instead", whose time field is a control Caret
+  // does not write (asks-dev-1).
+  if (fits.size === 0) return timeShaped(v) && /:\d{2}|\d\s*[ap]\.?\s*m\b/iu.test(v) ? `'${v}' is a time, and the field does not take one` : null;
+  const k = textKind(value);
   if ([...fits].some((f) => TAKES[f](k, v))) return null;
   const said = k === "text" && fits.has("city") && /\d/.test(v) ? "text with digits" : KIND_SAYS[k];
   return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is ${said}, and the field takes ${[...fits].map((f) => FIT_SAYS[f]).join(" or ")}`;
