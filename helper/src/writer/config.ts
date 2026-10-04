@@ -122,7 +122,8 @@ export const WRITER_MAX_OUTPUT_TOKENS = 1000;
  * (code at e71a525), qwen3.8-27b after 6 of 7 (code at 82a1ab3). On the asks both answered (ask-01 to ask-04), 120b:
  * refused, asked a question, right, refused; qwen3.8: partial, asked, right, refused; 0 wrong each
  * (evidence/screen/b26/asks-b24-120b, asks-b24-qwen run logs). Four asks are no measurement, so the pick stays
- * gpt-oss-120b. B26's scoreboards ran on gpt-oss-20b instead, which still had tokens, and say so.
+ * gpt-oss-120b. B26's scoreboards ran on gpt-oss-20b instead, which still had tokens, and say so. A second try two
+ * hours later (code at 312cee5) ran out again within a few asks: 120b answered 2 of 20, qwen3.8 4 of 20.
  */
 export const ASK_MAKER: "writer" | "jev" = "writer";
 /** The writer route for intents; a change is explicit configuration and a fresh scoreboard run, never a fallback. */
