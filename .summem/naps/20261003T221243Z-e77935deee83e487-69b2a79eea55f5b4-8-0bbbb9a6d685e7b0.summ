@@ -1,1 +1,0 @@
-B19-B21: skill undo resets its clean count; per-pid listen taps see posted clicks; posted input resets HIDIdleTime (log last post); closing windows can arrive fieldless; drop ELECTRON_RUN_AS_NODE; focus a non-key WKWebView field before AXValue; shadow keys are hashed.
