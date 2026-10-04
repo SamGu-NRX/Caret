@@ -115,7 +115,9 @@ describe("namedSources", () => {
   });
 
   it.each([
-    ["rsvp for me and bea, everything's in her email", ["bea"]],
+    ["rsvp for me and Bea, everything's in her email", ["Bea"]],
+    // In lower case only a whole word of a sender's name counts: "bea" is not "Beatrice", nor "can" "Candace".
+    ["rsvp for me and bea, everything's in her email", []],
     ["use what dana sent", ["dana"]],
     ["Dana's numbers please", ["Dana"]],
     ["will you fill this out", []],
@@ -132,6 +134,7 @@ describe("namedSources", () => {
     ["use what Dana mentioned", false],
     ["fill this, without using my LinkedIn", false],
     ["fill this out", false],
+    ["use what Draft wrote", false],
   ])("knows whether %s names a source no open window could be", (instruction, missing) => {
     const { m, form } = desk();
     expect(namedSources(instruction, m, form, personSpans(instruction)).missing).toBe(missing);

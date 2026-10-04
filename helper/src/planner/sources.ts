@@ -117,10 +117,11 @@ export function fieldWords(instruction: string): string {
 const COMMON_NAMES = new Set(["will", "may", "mark", "bill", "rose", "art", "grace", "hope", "joy", "june", "april", "august", "sue", "pat", "max", "ray", "rob", "jack", "frank", "drew", "chase", "dawn", "faith", "summer", "page", "lane", "dean", "guy", "don", "jean", "carol", "bob", "ben", "al", "an", "eve"]);
 
 /**
- * The words of an instruction that name a mail's sender, however they are typed ("bea", "chris"): a word of a
- * conversation's sender name, or the start of the sender's first name when exactly one sender starts with it. Each is
- * an exact span of the instruction. B25 and B26's held-out sets type names in lower case ("rsvp for me and bea"), which
- * the capitalized-name rule (intent.ts personSpans) does not see.
+ * The words of an instruction that name a mail's sender, however they are typed: a word of a conversation's sender
+ * name ("ines", "chris"), or, capitalized, the start of the sender's first name when exactly one sender starts with it
+ * ("Bea" for "Beatrice"). Each is an exact span of the instruction. B25 and B26's held-out sets type names in lower
+ * case ("emergency contact is ines"), which the capitalized-name rule (intent.ts personSpans) does not see. A word in
+ * lower case never matches by its start: "can" named Candace's mail in B26's second review.
  */
 export function senderNames(instruction: string, model: ScreenModel, form: WindowState): string[] {
   const senders = [...model.windows.values()].filter((w) => w !== form && isConversation(w)).map((w) => wordsOf(senderOf(w) ?? ""));
@@ -130,7 +131,7 @@ export function senderNames(instruction: string, model: ScreenModel, form: Windo
     const n = word.toLowerCase();
     if (n.length < 3 || COMMON_NAMES.has(n) || STOP.has(n) || out.includes(word)) continue;
     const exact = senders.filter((ws) => ws.includes(n)).length;
-    const prefix = senders.filter((ws) => (ws[0] ?? "").startsWith(n)).length;
+    const prefix = /^\p{Lu}/u.test(word) ? senders.filter((ws) => (ws[0] ?? "").startsWith(n)).length : 0;
     if (exact > 0 || prefix === 1) out.push(word);
   }
   return out;
@@ -228,10 +229,13 @@ export function namedSources(instruction: string, model: ScreenModel, form: Wind
   for (const p of phrases) if (!p.negated) for (const w of resolve(p)) add(w, p.name === null ? [] : [p.name]);
   // A source the instruction names that no open window could be ("off my LinkedIn" with no LinkedIn open). Several
   // that fit, none picked, is not missing.
-  // A named mail or what someone said is missing when no sender has the name, or starts with it; a note or a titled
-  // source, named or not ("Gary's note" can be the user's note about Gary), when nothing of its kind is open.
+  // A phrase is missing when no open window could be it: none it resolves to, no sender with its person's name or
+  // starting with it, no title with the name, and for a note or titled source nothing of its kind ("Gary's note" can
+  // be the user's note about Gary). B26's second review: "use what Dana wrote" with "Dana notes.txt" open was refused.
   const senderHas = (name: string): boolean => others.some((w) => isConversation(w) && wordsOf(senderOf(w) ?? "").some((x, i) => x === name.toLowerCase() || (i === 0 && name.length >= 3 && x.startsWith(name.toLowerCase()))));
-  const missing = phrases.some((p) => !p.negated && (p.name !== null && (p.kind === "mail" || p.kind === "person") ? !senderHas(p.name) : resolveFits(p).length === 0));
+  const couldBe = (p: SourcePhrase): boolean =>
+    resolve(p).length > 0 || (p.name !== null && (senderHas(p.name) || others.some((w) => !isConversation(w) && wordsOf(w.window.title).includes((p.name as string).toLowerCase())))) || ((p.name === null || (p.kind !== "mail" && p.kind !== "person")) && resolveFits(p).length > 0);
+  const missing = phrases.some((p) => !p.negated && !couldBe(p));
   const negatedNames = new Set(phrases.filter((p) => p.negated && p.name !== null).map((p) => p.name as string));
   for (const person of people) {
     if (/^(?:my|our)\s/iu.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person)) continue;

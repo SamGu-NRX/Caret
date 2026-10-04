@@ -520,3 +520,30 @@ describe("what B26's blind held-out-2 run found", () => {
     }
   });
 });
+
+describe("what B26's second review found", () => {
+  it("never takes an ordinary lower-case word for a sender's name", () => {
+    const m = desk();
+    m.apply(snap([text("h1", "From: Candace Wells <candace@example.com>"), text("h2", "To: Theo"), text("b", "hi")], { at: 950, windowId: "mail-candace", title: "Hi", app: { pid: 7010, bundleId: "com.apple.mail", name: "Mail" } }));
+    const s = snapOf("can you fill my phone", m);
+    expect(s.persons).toEqual([]);
+    expect(s.named).toEqual([]);
+    expect(codeOf(() => checkIntent(intent({ fields: [refOf(s, "Landlord phone")] }), snapOf("can you put his number in", m)))).toBe("unsure");
+  });
+
+  it("asks Jev before a writer's list of every empty field becomes the whole form, even when no field is named", async () => {
+    const every = (s: IntentSnapshot): string[] => s.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
+    const no = jevBy(() => "elena.vance@example.com", () => "user", () => "no");
+    const e = await planAsk("fill only the first box", desk(), memory, about, { askJev: no.ask, maker: maker((s) => ({ fields: every(s) })), writer: null, offerKey: "r2-1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
+    expect((e as AskRefused).message).toBe(SAYS.whichFields);
+    expect(no.seen.some((r) => "all" in r.questions)).toBe(true);
+  });
+
+  it("does not call a source missing when a note's title names its person", () => {
+    const m = desk();
+    m.apply(snap([field("dn", "Dana: (415) 555-0162", { role: "AXTextArea" })], { at: 960, windowId: "dana-note", title: "Dana notes.txt", app: { pid: 7011, bundleId: "com.apple.TextEdit", name: "TextEdit" } }));
+    const s = snapOf("use what Dana wrote for the landlord phone", m);
+    expect(s.missing).toBe(false);
+    expect(s.named.map((n) => n.windowId)).toEqual(["dana-note"]);
+  });
+});
