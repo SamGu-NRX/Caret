@@ -17,7 +17,7 @@ import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { describeControl, formControls, inWebArea, optionInText, type Control, type FormControl } from "./controls.ts";
+import { consentLike, describeControl, formControls, inWebArea, optionInText, type Control, type FormControl } from "./controls.ts";
 import { fieldPart, joinName, namePart, partFits, splitAddress, splitName, type FieldPart } from "./derive.ts";
 import { clockTime, readDate } from "./when.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -83,6 +83,29 @@ export function formAsksFor(w: WindowState, triggerKey: string, about: readonly 
     const name = d.label ?? d.nearest ?? d.placeholder;
     return about.some((a) => fieldAsksFor(a, name));
   });
+}
+
+/** The descriptor a question carries for a form input; the helper compares it again before showing a proposal. */
+export function describeInput(w: WindowState, x: FormInput): string {
+  const d = describeField(w, x.node);
+  return x.form === null ? d.text : describeControl(x.form, d.section, x.form.label === null ? d.nearest : null);
+}
+
+/**
+ * A proposal's field as the form shows it now: its input, read the way proposeFill read it, when it is still
+ * empty (no value typed, no box ticked, no option picked), or null. The helper revalidates with this, so a
+ * control is judged by the same rules that proposed it (review: a checkbox's descriptor read as "Field." and
+ * every control was dropped before it was shown).
+ */
+export function emptyInput(w: WindowState, key: string): FormInput | null {
+  const n = w.nodes.get(key);
+  if (n === undefined) return null;
+  if (FILLABLE_ROLES.has(n.role) && n.editable === true) {
+    if ((n.value ?? "") !== "" || n.states?.includes("secure")) return null;
+    return n.role === "AXComboBox" && inWebArea(w, n) ? { node: n, control: "combobox", form: { node: n, control: "combobox", label: fieldLabelText(n.label), options: null, members: [] } } : { node: n, control: "text", form: null };
+  }
+  const c = formControls(w).find((x) => x.node.key === key);
+  return c === undefined ? null : { node: c.node, control: c.control, form: c };
 }
 
 /** A field of the form as fill asks about it: a text field, or (B24) one of controls.ts's controls. */
@@ -359,7 +382,7 @@ export interface FillOptions {
 type Pick =
   | { from: "window"; c: Candidate }
   | { from: "memory"; a: AboutValue }
-  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue } };
+  | { from: "derived"; text: string; base: { from: "window"; c: Candidate } | { from: "memory"; a: AboutValue }; also: Candidate | null };
 
 /** Words of a label that say its value is a person's: "Name:", "Traveler:", "To:", "Emergency contact:". Written for common labels, not measured. */
 const PERSON_LABEL = /\b(?:name|traveler|traveller|passenger|patient|guest|applicant|student|attendee|from|to|cc|reference|landlord|contact|recipient|sender|tenant|driver|member|employee|candidate|spouse|partner|roommate|manager|advisor)\b/i;
@@ -450,7 +473,7 @@ export async function proposeFill(
     const part = x.control === "text" && derive ? fieldPart(name, formHasCity) : null;
     const about = x.control === "text" ? (opts.about ?? []).filter((a) => fieldAsksFor(a, name)) : [];
     const personal = x.control === "text" && (part !== null || [...kinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
-    const descriptor = c === null ? d.text : describeControl(c, d.section, label === null ? d.nearest : null);
+    const descriptor = describeInput(w, x);
     fields.push({ id: `f${fields.length + 1}`, node: n, descriptor, name: name ?? "unnamed field", kinds, terms, texts, about, control: x.control, form: c, part, labelWords, personal });
   }
   const { candidates, cut, cutTerms, cutAll, namesCut } = collectCandidates(model, windowId, {
@@ -491,6 +514,7 @@ export async function proposeFill(
   const fromAnchor = (f: Field, p: Pick): boolean => {
     const c = p.from === "window" ? p.c : p.from === "derived" && p.base.from === "window" ? p.base.c : null;
     if (anchorWindow === null || c === null || c.source.windowId !== anchorWindow.window.windowId) return false;
+    if (p.from === "derived" && p.also !== null && p.also.source.windowId !== anchorWindow.window.windowId) return false;
     return c.labelled === true || candidateKinds(model, c).size > 0 || f.control !== "text" || (f.terms.has(NAME_TERM) && isNameLike(c.text, c.context));
   };
   // The generator offers each text once, from the first window it reads it in, and reads a conversation's
@@ -510,16 +534,16 @@ export async function proposeFill(
   // Values code derives for one field (derive.ts): a name's first, middle or last part for a field that asks
   // for it, a full name joined from labelled first and last names, and an address's parts. Each is offered only
   // in its field's question, beside the shared candidates, and keeps the candidate or memory entry it came from.
-  type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"] };
+  type Derived = { key: string; text: string; describe: string; base: Extract<Pick, { from: "derived" }>["base"]; also: Candidate | null };
   const derived = new Map<string, Derived[]>();
   const memoryNames = (opts.about ?? []).filter((a) => a.kind === "name");
   if (derive) {
     for (const f of fields) {
       if (f.part === null) continue;
       const list: Derived[] = [];
-      const add = (text: string | null, describe: string, base: Derived["base"]): void => {
+      const add = (text: string | null, describe: string, base: Derived["base"], also: Candidate | null = null): void => {
         if (text === null || text === "" || candidates.some((c) => c.text === text) || list.some((x) => x.text === text)) return;
-        list.push({ key: `${f.id}:${list.length}`, text, describe, base });
+        list.push({ key: `${f.id}:${list.length}`, text, describe, base, also });
       };
       const part = f.part;
       if (part === "first" || part === "middle" || part === "last" || part === "full") {
@@ -536,15 +560,18 @@ export async function proposeFill(
             add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} in ${describeAbout(a)})`, { from: "memory", a });
           }
         } else {
-          // A full name joined from a window's labelled first and last names ("First name: Kenji", "Last name: Watanabe").
-          const byWindow = new Map<string, Candidate[]>();
-          for (const c of candidates) if (c.labelled === true) byWindow.set(c.source.windowId, [...(byWindow.get(c.source.windowId) ?? []), c]);
-          for (const cs of byWindow.values()) {
+          // A full name joined from labelled first and last names of one block: the same node and section ("First
+          // name: Kenji" and "Last name: Watanabe" in one note). Two blocks can be two people (review: "Your
+          // details / First name: Jordan" and "Landlord / Last name: Singh"), so they are never joined; and the
+          // joined value meets every check through both of the candidates it came from (`also`).
+          const byNode = new Map<string, Candidate[]>();
+          for (const c of candidates) if (c.labelled === true) byNode.set(`${c.source.windowId}\u0000${c.source.nodeKey}\u0000${c.section ?? ""}`, [...(byNode.get(`${c.source.windowId}\u0000${c.source.nodeKey}\u0000${c.section ?? ""}`) ?? []), c]);
+          for (const cs of byNode.values()) {
             const first = cs.filter((c) => fieldPart(c.context, false) === "first");
             const last = cs.filter((c) => fieldPart(c.context, false) === "last");
             if (first.length === 1 && last.length === 1) {
               const [a, b] = [first[0] as Candidate, last[0] as Candidate];
-              add(joinName(a.text, b.text), `"${joinName(a.text, b.text)}" (the first name ${describeCandidate(a)} and the last name ${describeCandidate(b)}, joined)`, { from: "window", c: a });
+              add(joinName(a.text, b.text), `"${joinName(a.text, b.text)}" (the first name ${describeCandidate(a)} and the last name ${describeCandidate(b)}, joined)`, { from: "window", c: a }, b);
             }
           }
         }
@@ -653,7 +680,10 @@ export async function proposeFill(
   };
   /** Whether both stage-one answers put the field and the candidate on different people (one the user's, the other someone else's). */
   const opposed = (f: Field, c: Candidate): boolean => {
-    if (!owners || !f.personal || !ownerCands.some((x) => x.id === c.id)) return false;
+    if (!owners || !f.personal) return false;
+    // A person's value past the owner questions' cap was never asked about, so it is not offered to a field
+    // that wants a person's details (review: the 41st email was proposed unchecked).
+    if (!ownerCands.some((x) => x.id === c.id)) return personalCand(c);
     const wants = stageOne(whoseId(f.id));
     const is = stageOne(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
     return wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is;
@@ -661,7 +691,7 @@ export async function proposeFill(
   const exclude = (first: boolean): Map<string, Set<string>> =>
     new Map(asked.map((f) => [f.id, new Set(candidates.filter((c) => opposed(f, c)).map((c) => (first ? c.id : (secondId.get(c.id) ?? ""))))]));
   // Derived values of an excluded candidate go with it.
-  if (staged) for (const f of asked) derived.set(f.id, (derived.get(f.id) ?? []).filter((d) => d.base.from !== "window" || !opposed(f, d.base.c)));
+  if (staged) for (const f of asked) derived.set(f.id, (derived.get(f.id) ?? []).filter((d) => (d.base.from !== "window" || !opposed(f, d.base.c)) && (d.also === null || !opposed(f, d.also))));
   const valuesMore = (dIds: ReadonlyMap<string, string>, first: boolean): RequestMore => ({ ...more(dIds, first), stage: staged ? "values" : undefined, exclude: staged ? exclude(first) : new Map() });
   const [r1, r2] =
     asked.length === 0
@@ -673,7 +703,7 @@ export async function proposeFill(
   const byId = new Map<string, Pick>([
     ...candidates.map((c): [string, Pick] => [c.id, { from: "window", c }]),
     ...aboutSent.map((a): [string, Pick] => [aboutIds.get(a.id) ?? "", { from: "memory", a }]),
-    ...allDerived.map((d): [string, Pick] => [derivedIds.get(d.key) ?? "", { from: "derived", text: d.text, base: d.base }]),
+    ...allDerived.map((d): [string, Pick] => [derivedIds.get(d.key) ?? "", { from: "derived", text: d.text, base: d.base, also: d.also }]),
   ]);
   const pickText = (p: Pick): string => (p.from === "window" ? p.c.text : p.from === "memory" ? p.a.value : p.text);
   const readAsk = (r: JevResult, f: Field, mapId: (id: string) => string | undefined): FillAsk => {
@@ -692,14 +722,23 @@ export async function proposeFill(
   // value meets its source's rules.
   const pickCut = (p: Pick): boolean =>
     p.from === "derived"
-      ? pickCut(p.base)
+      ? pickCut(p.base) || (p.also !== null && pickCut({ from: "window", c: p.also }))
       : p.from === "window"
         ? isCut(candidateKinds(model, p.c)) || (nameCut && isNameLike(p.c.text, p.c.context))
         : p.a.kind === "email"
           ? isCut(new Set(["email"]))
           : nameCut;
   /** A pick of a kind a cut took, whatever window it came from. */
-  const kindCut = (p: Pick): boolean => (p.from === "derived" ? kindCut(p.base) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : p.a.kind === "email" && isCut(new Set(["email"])));
+  const kindCut = (p: Pick): boolean =>
+    p.from === "derived" ? kindCut(p.base) || (p.also !== null && kindCut({ from: "window", c: p.also })) : p.from === "window" ? isCut(candidateKinds(model, p.c)) : p.a.kind === "email" && isCut(new Set(["email"]));
+  /**
+   * What still withholds a pick from the window the user just left: a cut of its own kind, and the name cut for
+   * a name (review: a cut chat's "Name: Dana Whitfield" beside the note's "Name: Alex Raman"; nothing says the
+   * kept name is the one the form wants). The anchor lifts only the cut of fields whose label names no kind.
+   */
+  const nameish = (p: Pick): boolean =>
+    p.from === "window" ? isNameLike(p.c.text, p.c.context) : p.from === "memory" ? p.a.kind === "name" : nameish(p.base) || (p.also !== null && nameish({ from: "window", c: p.also }));
+  const anchoredCut = (p: Pick): boolean => kindCut(p) || (nameCut && nameish(p));
   const memoryOf = (p: Pick): AboutValue | null => (p.from === "memory" ? p.a : p.from === "derived" && p.base.from === "memory" ? p.base.a : null);
   const windowOf = (p: Pick): Candidate | null => (p.from === "window" ? p.c : p.from === "derived" && p.base.from === "window" ? p.base.c : null);
   /** Both asks' answer to a question with fixed options (whose, owner), agreed at the whose cutoff, or null. */
@@ -733,8 +772,11 @@ export async function proposeFill(
    * field that wants the user's, so is a value the asks do not both call the user's (see below).
    */
   const otherPerson = (f: Field, p: Pick): boolean => {
+    const also = p.from === "derived" ? p.also : null;
+    if (also !== null && otherPerson(f, { from: "window", c: also })) return true;
     const c = windowOf(p);
-    if (!owners || !f.personal || c === null || !ownerCands.some((x) => x.id === c.id)) return false;
+    if (!owners || !f.personal || c === null) return false;
+    if (!ownerCands.some((x) => x.id === c.id)) return personalCand(c);
     const wants = agreedChoice(whoseId(f.id));
     const is = agreedChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
     if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear") return wants !== is;
@@ -759,7 +801,9 @@ export async function proposeFill(
         return o === null ? { why: "ambiguous" } : { value: o, display: o };
       }
       case "checkbox":
-        return f.form?.label !== null && f.form?.label !== undefined && optionInText([f.form.label], text) !== null ? { value: "checked", display: "Ticked" } : { why: "ambiguous" };
+        // A consent, certification or sign-up box is never ticked (controls.ts consentLike); formControls already leaves it out.
+        if (f.form?.label === null || f.form?.label === undefined || consentLike(f.form.label)) return { why: "ambiguous" };
+        return optionInText([f.form.label], text) !== null ? { value: "checked", display: "Ticked" } : { why: "ambiguous" };
       case "date": {
         const d = readDate(text, resolveCtx);
         return d === null ? { why: "ambiguous" } : d;
@@ -775,9 +819,11 @@ export async function proposeFill(
     }
   };
   const sourceOf = (p: Pick): FillSource | null => windowOf(p)?.source ?? null;
-  const memoryRef = (p: Pick): FillMemory | null => {
+  const memoryRef = (p: Pick, f: Field): FillMemory | null => {
     const a = memoryOf(p);
-    return a === null ? null : { id: a.id, label: a.label, says: ABOUT_SAYS };
+    if (a === null) return null;
+    const part = p.from === "derived" && (f.part === "first" || f.part === "middle" || f.part === "last") ? f.part : null;
+    return { id: a.id, label: a.label, says: ABOUT_SAYS, ...(part === null ? {} : { part }) };
   };
   const out: FillField[] = fields.map((f) => {
     const empty = { key: f.node.key, control: f.control, handoff: null, frame: f.node.frame ?? null, descriptor: f.descriptor, choice: NONE, confidence: 0, value: null, source: null, memory: null };
@@ -795,7 +841,7 @@ export async function proposeFill(
     const fromMemory = picked !== undefined && memoryOf(picked) !== null;
     // An anchored field's pick from the anchor window is judged on its own; any other pick meets the cut rules.
     const anchoredPick = picked !== undefined && anchored(f) && fromAnchor(f, picked);
-    const cutOut = picked !== undefined && (anchoredPick ? kindCut(picked) : fieldCut(f) || pickCut(picked));
+    const cutOut = picked !== undefined && (anchoredPick ? anchoredCut(picked) : fieldCut(f) || pickCut(picked));
     const read = picked === undefined ? null : controlValue(f, picked);
     const withheld: FillWithheld | null =
       a1.choice === NONE && a2.choice === NONE
@@ -813,7 +859,7 @@ export async function proposeFill(
                   : null;
     const p = withheld === null ? picked : undefined;
     const got = p === undefined || read === null || "why" in read ? null : read;
-    const handoff: FillHandoff | null = f.control === "text" || p === undefined || got === null ? null : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p) };
+    const handoff: FillHandoff | null = f.control === "text" || p === undefined || got === null ? null : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f) };
     const text = f.control === "text" && p !== undefined && got !== null;
     return {
       ...empty,
@@ -822,7 +868,7 @@ export async function proposeFill(
       confidence,
       value: text ? got.value : null,
       source: text ? sourceOf(p) : null,
-      memory: text ? memoryRef(p) : null,
+      memory: text ? memoryRef(p, f) : null,
       withheld,
       asks: [a1, a2],
     };
@@ -853,3 +899,7 @@ export async function proposeFill(
   };
 }
 
+/** What a memory entry gives a field now: the whole value, or the part of the name the proposal took (FillMemory.part). */
+export function memoryValue(value: string, part: FillMemory["part"]): string | null {
+  return part === undefined ? value : namePart(splitName(value), part);
+}

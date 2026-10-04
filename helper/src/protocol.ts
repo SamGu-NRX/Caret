@@ -712,7 +712,16 @@ export type FillAsk = z.infer<typeof FillAsk>;
  * A value that came from memory rather than a window: an About entry the user typed into Caret (B17,
  * fill/about.ts). `says` is the source line after "from": "what you told Caret".
  */
-export const FillMemory = z.object({ id: z.string().min(1), label: z.string(), says: z.string() });
+export const FillMemory = z.object({
+  id: z.string().min(1),
+  label: z.string(),
+  says: z.string(),
+  /**
+   * The part of a remembered name the value is (B24, fill/derive.ts): "first" for "Riley" from Name "Riley
+   * Okafor". Absent: the value is the whole entry. A check that the entry still holds the value splits it again.
+   */
+  part: z.enum(["first", "middle", "last"]).optional(),
+});
 export type FillMemory = z.infer<typeof FillMemory>;
 
 /**

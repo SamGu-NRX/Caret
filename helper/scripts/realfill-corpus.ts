@@ -121,7 +121,7 @@ export interface Desk {
   trigger: Node;
   /** A memory source's entries as fill offers them (About values), and as the planner reads them. */
   about: AboutValue[];
-  memory: { id: string; label: string; text: string }[];
+  memory: { id: string; label: string; text: string; whose: "user" }[];
 }
 
 /**
@@ -164,7 +164,8 @@ export function buildDesk(corpus: Corpus, snaps: readonly Snapshot[], form: Corp
     source: src === null ? null : (model.windows.get(src.window.windowId) ?? null),
     trigger,
     about,
-    memory: entries.map((x, i) => ({ id: `about-${i + 1}`, label: x.label, text: x.value })),
+    // The corpus's memory is what the user told Caret about themselves.
+    memory: entries.map((x, i) => ({ id: `about-${i + 1}`, label: x.label, text: x.value, whose: "user" as const })),
   };
 }
 

@@ -26,6 +26,28 @@ import { loadJevKey, makeJevClient, type AskJev, type JevRequest } from "../src/
 import type { TaskResult } from "../src/executor/executor.ts";
 import { PlanProposal, PROTOCOL_VERSION, type HelperMessage, type TaskProgress } from "../src/protocol.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
+import { WRITER_ROUTE } from "../src/writer/config.ts";
+
+/** The configured writer, one call at least 15 s after the last (Groq allows qwen3.8 1,000 output tokens a minute). */
+function spacedWriter(): WriterPort {
+  const port = makeWriterPort(WRITER_ROUTE);
+  let last = 0;
+  return {
+    route: port.route,
+    async write(req) {
+      const wait = last + 15_000 - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      last = Date.now();
+      const r = await port.write(req);
+      writerCalls++;
+      writerUsd += r.costUsd;
+      return r;
+    },
+  };
+}
+let writerCalls = 0;
+let writerUsd = 0;
 
 const { values: a } = parseArgs({
   options: {
@@ -36,6 +58,9 @@ const { values: a } = parseArgs({
     "max-usd": { type: "string", default: "0.10" },
     cases: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "planner-eval.sock") },
+    // B24: the code-mode writer (writer/config.ts) for instructions the planner cannot ground, as the helper
+    // runs it when a Groq key is configured; calls are spaced 15 s apart for Groq's per-minute output limit.
+    writer: { type: "boolean", default: false },
   },
 });
 if (a.bin === undefined || a.out === undefined) throw new Error("--bin and --out are required");
@@ -163,6 +188,7 @@ const helper = new Helper({
   },
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
   plannerHooks: { beforeCheck: () => hooks.beforeCheck?.() ?? Promise.resolve() },
+  ...(a.writer === true ? { writer: spacedWriter() } : {}),
 });
 server = new HelperServer(a.socket, () => helper, (l) => errors.push(l));
 await server.listen();
@@ -347,6 +373,7 @@ md.push(`- Achievable plans verified through the executor: ${achievable.filter((
 md.push(`- Hand-off plans that ended in a hand-off with their writes verified: ${rows.filter((r) => r.id.startsWith("h") && r.verified === true).length} of ${rows.filter((r) => r.id.startsWith("h")).length}`);
 md.push(`- Send, Delete or Pay presses the fixture saw: ${presses}`);
 md.push(`- Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}${a.jev === "live" ? ` (budget $${MAX_USD})` : " (fake)"}; helper errors: ${errors.length}; taskProgress messages: ${grants.length}`, "");
+if (a.writer === true) md.push(`- Code-mode writer (${WRITER_ROUTE.model}): ${writerCalls} calls, $${writerUsd.toFixed(5)}`, "");
 md.push("| Case | Instruction | Expected | Proposal | As expected | Run | Verified by the fixture | Jev calls |", "| --- | --- | --- | --- | --- | --- | --- | --- |");
 for (const r of rows) {
   md.push(`| ${r.id} | ${r.instruction} | ${r.expected} | ${r.outcome}${r.code === null ? "" : ` ${r.code}`}${r.handoff === null ? "" : ` (${r.handoff.why}: ${r.handoff.label})`} | ${r.proposalOk ? "yes" : `no: ${r.proposalProblem}`} | ${r.run ?? "-"} | ${r.verified === null ? "-" : r.verified ? "yes" : `no: ${r.verifyProblem}`} | ${r.jevCalls} |`);

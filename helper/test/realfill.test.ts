@@ -3,7 +3,7 @@
 // stand-in Jev for the anchor, the derived values, the controls and the owner veto. All text is synthetic.
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { proposeFill } from "../src/fill/fill.ts";
+import { describeInput, emptyInput, memoryValue, proposeFill } from "../src/fill/fill.ts";
 import { fieldPart, joinName, partFits, splitAddress, splitName } from "../src/fill/derive.ts";
 import { clockTime, readDate } from "../src/fill/when.ts";
 import { consentLike, formControls, matchOption, optionInText } from "../src/fill/controls.ts";
@@ -11,9 +11,10 @@ import { describeField, fieldLabelText } from "../src/fill/descriptor.ts";
 import type { FillProposal, Node } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { field, jevPickingText, MAIL_APP, node, snap, text, value } from "./builders.ts";
+import { MESSAGES } from "./desks.ts";
 import { collectCandidates } from "../src/fill/candidates.ts";
 import { SnippetLedger } from "../src/privacy.ts";
-import { fieldTerms } from "../src/fill/kinds.ts";
+import { fieldTerms, misfit } from "../src/fill/kinds.ts";
 
 describe("splitName", () => {
   it.each([
@@ -189,10 +190,10 @@ describe("formControls", () => {
     const w = m.windows.get("form");
     if (w === undefined) throw new Error("no window");
     const cs = formControls(w);
+    // The sign-up box is left out: Caret never ticks one (consentLike).
     expect(cs.map((c) => [c.control, c.label, c.options])).toEqual([
       ["radio", "Pizza Size", ["Small", "Large"]],
       ["checkbox", "Mushroom", null],
-      ["checkbox", "Send me deals by email", null],
       ["select", "Degree", null],
       ["date", "Date of birth", null],
       ["time", "Delivery time", null],
@@ -245,8 +246,8 @@ describe("proposeFill on a real-shaped form (B24)", () => {
     expect(fieldOf(p, "group:pizza size~0")).toMatchObject({ control: "radio", value: null, handoff: { value: "Large", source: { windowId: "note" } } });
     expect(fieldOf(p, "checkbox:mushroom")).toMatchObject({ control: "checkbox", value: null, handoff: { value: "checked" } });
     expect(fieldOf(p, "timefield")).toMatchObject({ control: "time", handoff: { value: "19:30", display: "7:30 PM" } });
-    // A sign-up box is a control like any other, but "Large, mushroom and onion" does not name it.
-    expect(fieldOf(p, "send me deals")).toMatchObject({ handoff: null, withheld: "ambiguous" });
+    // A sign-up box is never ticked, so it is not even asked about.
+    expect(fieldOf(p, "send me deals")).toBeUndefined();
     // No options shown: the select is named and left; the combobox too, with no value and no question.
     expect(fieldOf(p, "popupbutton:degree")).toMatchObject({ control: "select", handoff: null, value: null, asks: [] });
     expect(fieldOf(p, "combobox:school")).toMatchObject({ control: "combobox", handoff: null, value: null, asks: [] });
@@ -295,5 +296,87 @@ describe("proposeFill on a real-shaped form (B24)", () => {
     const parts = await proposeFill(desk(note, [street, city]), jevPickingText((_, ins) => (ins.includes("'Street address'") ? "4410 Speedway" : ins.includes("'City'") ? "Austin" : null)), "form", `${P}/textfield:customer name~0`, 2000);
     expect(fieldOf(parts, "street address")).toMatchObject({ value: "4410 Speedway", source: { windowId: "note" } });
     expect(fieldOf(parts, "textfield:city")).toMatchObject({ value: "Austin", source: { windowId: "note" } });
+  });
+});
+
+describe("B24 review fixes", () => {
+  it("never joins a first and a last name from two blocks, which can be two people", async () => {
+    const m = new ScreenModel();
+    m.apply(snap([field("te/a", "Your details\nFirst name: Jordan", { role: "AXTextArea" }), field("te/b", "Landlord\nLast name: Singh", { role: "AXTextArea" })], { at: 900, windowId: "note", title: "Notes", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true }));
+    m.apply(snap([...page(), field(`${P}/textfield:full name~0`, "", { parent: `${P}/webarea:~0`, label: "Full name", frame: [100, 500, 200, 20] })], { at: 1000, windowId: "form", title: "Order", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${P}/textfield:customer name~0` }));
+    const requests: JevRequest[] = [];
+    const ask: AskJev = async (req) => (requests.push(req), jevPickingText(() => null)(req));
+    await proposeFill(m, ask, "form", `${P}/textfield:customer name~0`, 2000);
+    const offered = requests.flatMap((r) => Object.values(r.questions).flatMap((q) => Object.values(q.criteria)));
+    expect(offered.some((d) => d?.includes("Jordan Singh"))).toBe(false);
+  });
+
+  it("keeps the name cut on a pick from the window just left: a kept name may not be the one the form wants", () => {
+    const m = desk(NOTE);
+    // More contacts than the chat's budget holds as a group, so names are kept out (candidates.ts namesCut).
+    const chat = Array.from({ length: 30 }, (_, i) => `Person ${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(97 + Math.floor(i / 26))}lvarez-Quintero Delacroix <p${i}@example.org>`);
+    m.apply(snap(chat.map((l, i) => text(`chat/m${i}`, l)), { at: 850, windowId: "chat", title: "Team chat", app: MESSAGES, values: chat.map((_, i) => value("email", `p${i}@example.org`, `chat/m${i}`)) }));
+    const g = collectCandidates(m, "form", { now: 2000, ledger: new SnippetLedger(m.windows.values()), fields: [fieldTerms(["Customer name"])] });
+    expect(g.namesCut).toBe(true);
+    return proposeFill(m, jevPickingText((_, ins) => (ins.includes("'Customer name'") ? "Jordan Reyes" : null)), "form", `${P}/textfield:customer name~0`, 2000).then((p) => {
+      expect(fieldOf(p, "customer name")).toMatchObject({ value: null, withheld: "sourceCut" });
+    });
+  });
+
+  it("reads every proposed input back the way it proposed it, so the helper's revalidation keeps controls", async () => {
+    const m = desk(NOTE);
+    const p = await proposeFill(m, jevPickingText(() => null), "form", `${P}/textfield:customer name~0`, 2000);
+    const w = m.windows.get("form");
+    if (w === undefined) throw new Error("no form");
+    for (const f of p.fields) {
+      const x = emptyInput(w, f.key);
+      expect(x?.control).toBe(f.control);
+      expect(x === null ? null : describeInput(w, x)).toBe(f.descriptor);
+    }
+    expect(p.fields.some((f) => f.control === "checkbox") && p.fields.some((f) => f.control === "radio")).toBe(true);
+  });
+
+  it("gives a remembered name's part back by the same split, and nothing else", () => {
+    expect(memoryValue("Riley Ade Okafor", "first")).toBe("Riley");
+    expect(memoryValue("Riley Ade Okafor", "middle")).toBe("Ade");
+    expect(memoryValue("Riley Ade Okafor", undefined)).toBe("Riley Ade Okafor");
+    expect(memoryValue("Cher", "first")).toBeNull();
+  });
+
+  it("checks organization names and dates without refusing real ones", () => {
+    expect(misfit("3M", ["Employer"])).toBeNull();
+    expect(misfit("jo@acme.example", ["Company email"])).toBeNull();
+    expect(misfit("Junior Analyst at Ridgeline Outdoor Co (since 2024)", ["Current company"])).not.toBeNull();
+    for (const v of ["at", "9999-99-99", "13/13/2026"]) expect(misfit(v, ["Date"])).not.toBeNull();
+    for (const v of ["11/12/2026", "05/2027", "12", "March 3, 1991", "October 8, 2026 at 3:00 PM"]) expect(misfit(v, ["Date"])).toBeNull();
+    expect(misfit("23pm", ["Time"])).not.toBeNull();
+    // A field for one part of a date takes only that part (the corpus's Day under Date of birth took a whole date).
+    expect(misfit("04/12/1990", ["Day"])).not.toBeNull();
+    expect(misfit("12", ["Day"])).toBeNull();
+    expect(misfit("1990", ["Year"])).toBeNull();
+    expect(misfit("April", ["Month"])).toBeNull();
+    expect(misfit("3:00 PM", ["Time"])).toBeNull();
+  });
+});
+
+describe("B24 review fixes: the owner questions' cap", () => {
+  it("does not offer a person's value past the owner questions' cap to a field that wants a person's details", async () => {
+    const m = new ScreenModel();
+    for (let w = 0; w < 3; w++) {
+      const lines = Array.from({ length: 15 }, (_, i) => `p${w * 15 + i}@example.org`);
+      m.apply(snap(lines.map((l, i) => text(`src${w}/l${i}`, l)), { at: 100 + w, windowId: `src${w}`, title: `List ${w}`, app: MAIL_APP, values: lines.map((l, i) => value("email", l, `src${w}/l${i}`)) }));
+    }
+    m.apply(snap([...page(), field(`${P}/textfield:email~0`, "", { parent: `${P}/webarea:~0`, label: "Email", frame: [100, 520, 200, 20] })], { at: 1000, windowId: "form", title: "Order", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${P}/textfield:customer name~0` }));
+    const all = collectCandidates(m, "form", { now: 2000, ledger: new SnippetLedger(m.windows.values()), fields: [fieldTerms(["Email"])] }).candidates.filter((c) => c.text.includes("@"));
+    expect(all.length).toBeGreaterThan(40);
+    const past = (all[all.length - 1] as { text: string }).text;
+    const requests: JevRequest[] = [];
+    const ask: AskJev = async (req) => (requests.push(req), jevPickingText((_, ins) => (ins.includes("'Email'") ? past : null))(req));
+    const p = await proposeFill(m, ask, "form", `${P}/textfield:customer name~0`, 2000);
+    expect(fieldOf(p, "textfield:email")?.value ?? null).toBeNull();
+    // Never offered to Email in the value stage.
+    const emailQuestions = requests.flatMap((r) => Object.values(r.questions).filter((q) => String(q.instructions).includes("'Email'") && !("user" in q.criteria)));
+    expect(emailQuestions.length).toBe(2);
+    for (const q of emailQuestions) expect(Object.values(q.criteria).join(" ")).not.toContain(past);
   });
 });

@@ -79,7 +79,8 @@ export function formControls(w: WindowState): FormControl[] {
       continue;
     }
     if (n.role === "AXCheckBox") {
-      if (n.states?.includes("checked") === true) continue;
+      // Consent, certification and sign-up boxes are never ticked, so they are not asked about (plan section 4).
+      if (n.states?.includes("checked") === true || consentLike(fieldLabelText(n.label) ?? "")) continue;
       out.push({ node: n, control: "checkbox", label: label(n), options: null, members: [] });
       continue;
     }

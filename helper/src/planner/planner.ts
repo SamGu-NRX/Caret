@@ -159,11 +159,8 @@ async function planIn(
   // evidence/screen/b17/planner-heldout-live; a fix tuned on that set). So a field is left out when the
   // instruction names another section that has a field of the same label. A label only one section has
   // ("Phone" under Contact details) is still named by its own words.
-  const sectionsSaid = new Set(fields.flatMap((f) => (f.section !== null && relevance(instruction, f.section) > 0 ? [f.section] : [])));
-  const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
-  const outranked = (f: Field): boolean =>
-    f.section !== null && !sectionsSaid.has(f.section) && fields.some((g) => g !== f && g.section !== null && sectionsSaid.has(g.section) && same(g.label, f.label));
-  const named = new Set(fields.filter((f) => (relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.label)) && !outranked(f)).map((f) => f.node.key));
+  const outranked = outrankedFields(instruction, fields);
+  const named = new Set(fields.filter((f) => (relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.label)) && !outranked.has(f.node.key)).map((f) => f.node.key));
   const wholeForm = asksToFillForm(instruction);
   const askedFields = fields.filter((f) => taken.has(f.node.key) && (wholeForm || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
@@ -257,6 +254,17 @@ async function planIn(
   });
   const withSources: Plan = { ...plan, steps: steps2, ...(Object.keys(sources).length === 0 ? {} : { sources }) };
   return { plan: withSources, slots, checked, answers, withheld, jev };
+}
+
+/**
+ * The fields, by node key, that the instruction rules out by naming another section with a field of the same
+ * label: "billing street and billing town" rules out Shipping Street. The planner and the code-mode writer's
+ * check (codeplan.ts) both use it, so a writer cannot fill a field the planner would have left (B24 review).
+ */
+export function outrankedFields(instruction: string, fields: readonly Field[]): Set<string> {
+  const sectionsSaid = new Set(fields.flatMap((f) => (f.section !== null && relevance(instruction, f.section) > 0 ? [f.section] : [])));
+  const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+  return new Set(fields.filter((f) => f.section !== null && !sectionsSaid.has(f.section) && fields.some((g) => g !== f && g.section !== null && sectionsSaid.has(g.section) && same(g.label, f.label))).map((f) => f.node.key));
 }
 
 /** Words that say what to do rather than where; they do not make a field or button relevant. */

@@ -14,7 +14,7 @@ import { FirstLookReply, PROTOCOL_VERSION, type FillProposal, type FirstLook, ty
 import type { PopupBlock, PopupRef, PopupSpecT } from "../popup.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { FILLABLE_ROLES, FillError, proposeFill } from "../fill/fill.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, MAX_FILL_ROWS, recheckFill, type AboutNow, type GroundedProposal } from "./fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, MAX_FILL_ROWS, recheckFill, writtenFields, type AboutNow, type GroundedProposal } from "./fill-popup.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { allWatchLines, buildLookRequest, readPendingAnswer, stateFor, windowMarkers } from "../tasks/pending.ts";
 import { statusNode } from "./open-app.ts";
@@ -453,7 +453,8 @@ function emptyFields(w: WindowState): string[] {
 function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow): GroundedProposal | null {
   const w = model.windows.get(p.windowId);
   if (w === undefined) return null;
-  const fields = p.fields.filter((f) => {
+  // The fields Caret writes: a first look's pop-up runs text fields only, the rest are hand-offs (B24).
+  const fields = writtenFields(p).fields.filter((f) => {
     const n = w.nodes.get(f.key);
     return n !== undefined && (n.value ?? "") === "" && (f.source === null || model.windows.has(f.source.windowId));
   });

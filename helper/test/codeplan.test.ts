@@ -120,3 +120,51 @@ describe("planWithCode", () => {
     await expect(run(fillByText([["Reference name", "Simone Achebe"]]), "do the reference section from my notes", jev({ yes: () => false }))).rejects.toThrow(/did not confirm/);
   });
 });
+
+describe("planWithCode, review fixes (B24)", () => {
+  it("never writes a field the instruction rules out by naming another section's field of the same label", async () => {
+    const m = desk();
+    const groups = ["Billing", "Shipping"].flatMap((sec, i) => [
+      node(`${P}/group:${sec.toLowerCase()}~0`, "AXGroup", { parent: `${P}/webarea:~0`, label: sec }),
+      field(`${P}/group:${sec.toLowerCase()}/textfield:city~0`, "", { parent: `${P}/group:${sec.toLowerCase()}~0`, label: "City", frame: [100, 300 + 30 * i, 200, 20] }),
+    ]);
+    const form = m.windows.get("form");
+    if (form === undefined) throw new Error("no form");
+    m.apply(snap([...form.nodes.values(), ...groups], { at: 1100, windowId: "form", title: "Apply", app: FORM_APP, focused: true }));
+    m.apply(snap([field("te/note", "City: Austin", { role: "AXTextArea" })], { at: 1050, windowId: "note2", title: "City.txt", app: NOTE_APP }));
+    const program = `async function main(caret: CaretPlanAPI): Promise<PlanRef> {
+  const form = await caret.readWindow();
+  // The note the user just left is w2; the city's note is w3.
+  const src = await caret.readWindow("w3" as WindowRef);
+  const v = src.values.find((x) => x.display.startsWith('"Austin"'));
+  const steps: StepRef[] = [];
+  for (const t of form.targets) if (t.label.endsWith("City") && v !== undefined) steps.push(caret.fill(t.ref, v.ref));
+  return caret.plan({ basedOn: form.snapshot, steps });
+}`;
+    const d = await planWithCode("fill billing city", m, memory, { writer: writer(program), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000 });
+    expect(d.checked.writes.map((w) => w.node.key)).toEqual([`${P}/group:billing/textfield:city~0`]);
+  });
+
+  it("checks a value from memory as it checks one from a window, and keeps a person from memory out of the user's field", async () => {
+    const remembered = { values: () => [{ id: "about-1", label: "Personal email", text: "private@example.org", whose: "user" as const }, { id: "person-1", label: "Simone", text: "Simone Achebe", whose: "other" as const }] };
+    const program = (label: string, text: string) => fillByText([[label, text]]);
+    // Jev says the personal address is not the value Email asks for: the write is dropped.
+    await expect(planWithCode("fill in my email", desk(), remembered, { writer: writer(program("Email", "private@example.org")), askJev: jev({ yes: (q) => !q.includes("private@example.org") }).ask, offerKey: "plan-1", windowId: "form", now: 2000 })).rejects.toThrow(/did not confirm/);
+    // A remembered person in the user's Full name: the field wants the user's, the entry is someone else's.
+    await expect(planWithCode("put the name in", desk(), remembered, { writer: writer(program("Full name", "Simone Achebe")), askJev: jev().ask, offerKey: "plan-1", windowId: "form", now: 2000 })).rejects.toThrow(/did not confirm/);
+  });
+
+  it("records what the writer request disclosed, and its checks declare only what they send", async () => {
+    const j = jev();
+    const seen: WriterRequest[] = [];
+    const d = await run(fillByText([["Reference name", "Simone Achebe"]]), "do the reference section from my notes", j, seen);
+    const input = JSON.stringify(seen[0]?.input);
+    // Every disclosed text is in the prompt's inventory, and the note's values are among them.
+    for (const x of d.writer.disclosed) expect(input).toContain(JSON.stringify(x.text).slice(1, -1));
+    expect(d.writer.disclosed.some((x) => x.windowId === "note")).toBe(true);
+    for (const r of j.seen) {
+      const body = JSON.stringify([r.state, r.questions]);
+      for (const x of r.snippets) expect(body).toContain(JSON.stringify(x.text).slice(1, -1));
+    }
+  });
+});

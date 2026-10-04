@@ -23,9 +23,11 @@ import type { PlanningSnapshot } from "../codemode/types.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { WRITER_MAX_OUTPUT_TOKENS } from "../writer/config.ts";
 import { instructionValues } from "./spans.ts";
-import { asksToFillForm, byRelevance, namesShortLabel, PLAN_CUTOFF, relevance, writableFields, type Field, type PlanDraft, type PlannerMemory } from "./planner.ts";
+import { asksToFillForm, byRelevance, namesShortLabel, outrankedFields, PLAN_CUTOFF, relevance, writableFields, type Field, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import type { JevRequest } from "../fill/jev.ts";
 import { PlannerError, validatePlan, type PlanContext } from "./validate.ts";
+import type { MemoryValue } from "./trace.ts";
+import type { Snippet } from "../privacy.ts";
 
 export interface CodePlanOptions {
   writer: WriterPort;
@@ -40,6 +42,8 @@ export interface CodePlanOptions {
 
 /** What the writer cost and wrote, for the proposal's log and the scoreboard. */
 export interface WriterUse {
+  /** The ledger's declarations the writer request carried (disclosureFor). */
+  disclosed: readonly Snippet[];
   model: string;
   latencyMs: number;
   costUsd: number;
@@ -60,7 +64,7 @@ interface Value {
   text: string;
   display: string;
   window: WindowState | null;
-  owner: "user" | null;
+  owner: "user" | "other" | null;
 }
 
 /**
@@ -69,10 +73,10 @@ interface Value {
  * an address, by window, most recent first, in at most MAX_SOURCE_WINDOWS windows, as the plan API's
  * readWindow(windowRef) shapes it. Each window's list is held to the writer's per-window budget (plan-prompt.ts).
  */
-function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly { id: string; label: string; text: string }[], ledger: SnippetLedger, now: number, formRoom: number): Value[] {
+function valueList(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number, formRoom: number): Value[] {
   const out: Value[] = [];
   const used = new Map<WindowState | null, number>();
-  const add = (text: string, display: string, win: WindowState | null, owner: "user" | null): void => {
+  const add = (text: string, display: string, win: WindowState | null, owner: Value["owner"]): void => {
     const d = display.length <= 400 ? display : `${display.slice(0, 399)}…`;
     const room = win === null ? formRoom : WINDOW_CHARS - win.window.title.length;
     const u = used.get(win) ?? 0;
@@ -84,9 +88,12 @@ function valueList(instruction: string, model: ScreenModel, w: WindowState, memo
   if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`, null, null);
   for (const m of memory) {
     if (!ledger.plan([m.text, m.label])) continue;
-    add(m.text, `"${m.text}" (the user's ${m.label}, from memory)`, null, "user");
-    const s = /\bname\b/i.test(m.label) ? splitName(m.text) : null;
-    if (s?.kind === "split") for (const [part, t] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) if (t !== null) add(t, `"${t}" (the ${part} in the user's ${m.label}, from memory)`, null, "user");
+    // Memory holds people as well as the user (helper.ts plannerMemory): whose an entry is comes from the entry.
+    const owner = m.whose ?? null;
+    const whose = owner === "user" ? "the user's" : owner === "other" ? "someone else's" : "a";
+    add(m.text, `"${m.text}" (${whose} ${m.label}, from memory)`, null, owner);
+    const s = /\bname\b/i.test(m.label) || owner === "other" ? splitName(m.text) : null;
+    if (s?.kind === "split") for (const [part, t] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) if (t !== null) add(t, `"${t}" (the ${part} in ${whose} ${m.label}, from memory)`, null, owner);
   }
   const cands = generateCandidates(model, w.window.windowId, MAX_VALUES, now, ledger);
   const windows = [...new Set(cands.map((c) => c.source.windowId))].slice(0, MAX_SOURCE_WINDOWS);
@@ -155,13 +162,18 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
       questions: [],
     })),
   ];
+  // What the writer request discloses: the ledger's declarations that its prompt carries, recorded with the
+  // draft under the request's disclosure id (the offer key). Every screen text in the snapshots came through
+  // the ledger: field names and the title by take, values by the generator's takes, memory and the
+  // instruction by plan (review: the writer call carried only an id).
+  const writerDisclosure = disclosureFor(ledger.declared().snippets, snapshots, instruction);
   let written: Awaited<ReturnType<WriterPort["write"]>>;
   try {
     written = await o.writer.write({ kind: "plan", disclosureId: o.offerKey, input: { goal: instruction.slice(0, 500), snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) });
   } catch (e) {
     throw new PlannerError("unavailable", `the plan writer failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
   }
-  const use: WriterUse = { model: written.model, latencyMs: written.latencyMs, costUsd: written.costUsd, inputTokens: written.inputTokens, outputTokens: written.outputTokens, program: written.output.program };
+  const use: WriterUse = { model: written.model, latencyMs: written.latencyMs, costUsd: written.costUsd, inputTokens: written.inputTokens, outputTokens: written.outputTokens, program: written.output.program, disclosed: writerDisclosure };
   if (written.output.program === null) throw new PlannerError("unsure", "the plan writer wrote no program");
   const ran = await runCodePlan(written.output.program, snapshots, jevChooser(o.askJev, instruction), o.signal === undefined ? {} : { signal: o.signal });
   if (!ran.ok) throw new PlannerError("unsure", `the plan program was refused (${ran.kind}): ${ran.detail.slice(0, 200)}`);
@@ -174,7 +186,12 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   // confirmed by Jev, both asks agreeing at PLAN_CUTOFF that the instruction asks to change it, or its write is
   // dropped. Live, the writer filled Email, Phone and Student ID for "sign me up for the saturday section and
   // put my birthday in" (B24 Ask scoreboard, asks-dev-1); the deterministic planner has the same rule (B18).
-  const picked = fills.map((f) => ({ f, field: fields[Number(f.target.slice(1)) - 1] }));
+  // A field the instruction rules out by naming another section's field of the same label is never written:
+  // the planner leaves it (outrankedFields), and the writer cannot override that (review: "fill billing city"
+  // wrote Shipping City).
+  const outranked = outrankedFields(instruction, all);
+  const picked = fills.map((f) => ({ f, field: fields[Number(f.target.slice(1)) - 1] })).filter((p) => p.field === undefined || !outranked.has(p.field.node.key));
+  if (picked.length === 0) throw new PlannerError("nothingToDo", "the plan program filled only fields your instruction rules out");
   const unnamed = asksToFillForm(instruction) ? [] : picked.flatMap((p) => (p.field !== undefined && relevance(instruction, p.field.name) === 0 && !namesShortLabel(instruction, p.field.label) ? [p.field] : []));
   const confirmed = await confirmFields(instruction, unnamed, o.askJev, ledger);
   const kept = picked.filter((p) => p.field === undefined || !unnamed.includes(p.field) || confirmed.has(p.field.node.key)).map((p) => p.f);
@@ -245,12 +262,13 @@ const ASKS_ABOUT = { yes: "Yes: the instruction asks for this field.", no: "No: 
 async function confirmFields(instruction: string, unnamed: readonly Field[], askJev: AskJev, ledger: SnippetLedger): Promise<Set<string>> {
   if (unnamed.length === 0) return new Set();
   const declared = ledger.declared();
-  const req = (wording: 0 | 1): JevRequest => ({
-    state: { instruction, task: "Caret drafted field writes for the user's instruction and checks that each field is one the instruction asks about." },
-    questions: Object.fromEntries(unnamed.map((f, i) => [`f${i + 1}`, { type: "choice" as const, instructions: ASKS_ABOUT_WORDINGS[wording](instruction, f.name), criteria: { ...ASKS_ABOUT } }])),
-    snippets: declared.snippets,
-    charged: declared.charged,
-  });
+  const req = (wording: 0 | 1): JevRequest =>
+    sentOnly({
+      state: { instruction, task: "Caret drafted field writes for the user's instruction and checks that each field is one the instruction asks about." },
+      questions: Object.fromEntries(unnamed.map((f, i) => [`f${i + 1}`, { type: "choice" as const, instructions: ASKS_ABOUT_WORDINGS[wording](instruction, f.name), criteria: { ...ASKS_ABOUT } }])),
+      snippets: declared.snippets,
+      charged: declared.charged,
+    });
   let r: Awaited<ReturnType<AskJev>>[];
   try {
     r = await Promise.all([askJev(req(0)), askJev(req(1))]);
@@ -285,20 +303,19 @@ async function verifyWrites(instruction: string, writes: readonly { key: string;
   const req = (wording: 0 | 1): JevRequest => {
     const questions: JevRequest["questions"] = {};
     writes.forEach((x, i) => {
-      // Only a value from a window is checked: one from memory or the instruction is the user's own (an earlier
-      // wording asked whether the instruction asks for the value, and live Jev read "my name and email please"
-      // literally, refusing "Watanabe" for Last name at 0.93; asks-dev-5).
-      if (x.value.window !== null)
-        questions[`c${i + 1}`] = {
-          type: "choice",
-          instructions: wording === 0 ? `A form has this field: ${x.field.descriptor} Is this value the right one for it? ${x.value.display} The user asked: "${instruction}".` : `Value: ${x.value.display} Field: ${x.field.descriptor} The user asked: "${instruction}". Does this value belong in this field?`,
-          criteria: { ...VERIFY },
-        };
+      // Every value is checked, from memory and the instruction too (review: a writer put the user's Personal
+      // email in Work email unchecked). The field is named by its name, which went through the ledger; its
+      // descriptor can hold a placeholder that did not.
+      questions[`c${i + 1}`] = {
+        type: "choice",
+        instructions: wording === 0 ? `A form has the field '${x.field.name}'. Is this value the right one for it? ${x.value.display} The user asked: "${instruction}".` : `Value: ${x.value.display} Field: '${x.field.name}'. The user asked: "${instruction}". Does this value belong in this field?`,
+        criteria: { ...VERIFY },
+      };
       if (!personalField(x.field.label)) return;
-      questions[`f${i + 1}`] = { type: "choice", instructions: wording === 0 ? `The user asked: "${instruction}". A form has this field: ${x.field.descriptor} Whose details does this field ask for?` : `Field: ${x.field.descriptor} Instruction: "${instruction}". Is this field for the details of the user filling in the form, of someone else, or can you not tell?`, criteria: { ...WHOSE_CRITERIA } };
+      questions[`f${i + 1}`] = { type: "choice", instructions: wording === 0 ? `The user asked: "${instruction}". A form has the field '${x.field.name}'. Whose details does this field ask for?` : `Field: '${x.field.name}'. Instruction: "${instruction}". Is this field for the details of the user filling in the form, of someone else, or can you not tell?`, criteria: { ...WHOSE_CRITERIA } };
       if (x.value.window !== null) questions[`v${i + 1}`] = { type: "choice", instructions: wording === 0 ? `A value on the user's screen: ${x.value.display} Whose details is it?` : `Whose details is this value, the user's or someone else's? ${x.value.display}`, criteria: { ...OWNER_CRITERIA } };
     });
-    return { state: { instruction, task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged };
+    return sentOnly({ state: { instruction, task: "Caret checks each value a drafted plan would write before offering the plan." }, questions, snippets: declared.snippets, charged: declared.charged });
   };
   let r: Awaited<ReturnType<AskJev>>[];
   try {
@@ -312,11 +329,30 @@ async function verifyWrites(instruction: string, writes: readonly { key: string;
   };
   const out = new Set<string>();
   writes.forEach((x, i) => {
-    if (x.value.window !== null && agreed(`c${i + 1}`, VERIFY, PLAN_CUTOFF) !== "yes") return void out.add(x.key);
+    if (agreed(`c${i + 1}`, VERIFY, PLAN_CUTOFF) !== "yes") return void out.add(x.key);
     if (!personalField(x.field.label)) return;
     const wants = agreed(`f${i + 1}`, WHOSE_CRITERIA, WHOSE_CUTOFF);
-    const is = x.value.window === null ? (x.value.owner ?? null) : agreed(`v${i + 1}`, OWNER_CRITERIA, WHOSE_CUTOFF);
+    const is = x.value.window === null ? x.value.owner : agreed(`v${i + 1}`, OWNER_CRITERIA, WHOSE_CUTOFF);
     if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear" && wants !== is) out.add(x.key);
   });
   return out;
+}
+
+/** Every string a request carries in its state and questions. */
+function sentStrings(v: unknown, out: string[] = []): string[] {
+  if (typeof v === "string") out.push(v);
+  else if (typeof v === "object" && v !== null) for (const x of Object.values(v)) sentStrings(x, out);
+  return out;
+}
+
+/** A request with only the snippets it sends: a check asks about some fields and values, not all the ledger took. */
+function sentOnly(req: JevRequest): JevRequest {
+  const sent = sentStrings([req.state, req.questions]);
+  return { ...req, snippets: req.snippets.filter((x) => sent.some((t) => t.includes(x.text))) };
+}
+
+/** The declarations a writer request's snapshots and goal carry. */
+export function disclosureFor(snippets: readonly Snippet[], snapshots: readonly PlanningSnapshot[], instruction: string): Snippet[] {
+  const sent = sentStrings([instruction, snapshots.map((x) => [x.title, x.targets.map((t) => t.label), x.values.map((v) => v.display)])]);
+  return snippets.filter((x) => sent.some((t) => t.includes(x.text)));
 }

@@ -11,6 +11,8 @@ export interface MemoryValue {
   /** What the entry is, as the user named it ("Work email", or a person's alias). */
   label: string;
   text: string;
+  /** Whose details the entry holds when the helper knows: the user's (an About entry) or someone else's (a person). */
+  whose?: "user" | "other";
 }
 
 export type Trace =

@@ -10,7 +10,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import type { AskJev, JevRequest } from "./fill/jev.ts";
-import { FillError, formAsksFor, formFields, proposeFill } from "./fill/fill.ts";
+import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, proposeFill } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -53,7 +53,7 @@ import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
@@ -66,6 +66,7 @@ import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
+import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
 import type { PlanErrorCode } from "./protocol.ts";
 
@@ -305,7 +306,15 @@ export class Helper {
       onTask: (e) => this.onTaskEvent(e),
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
-      memoryHolds: (id, value) => this.memory.text(id) === value,
+      // A plan may write a first, middle or last name code split from a remembered name (B24): the entry must
+      // still give exactly that part, by the same split, not any substring.
+      memoryHolds: (id, value) => {
+        const text = this.memory.text(id);
+        if (text === null || text === undefined) return false;
+        if (text === value) return true;
+        const s = splitName(text);
+        return s.kind === "split" && [s.first, s.middle, s.last].includes(value);
+      },
       authorize: (a) => this.authorize(a),
       onChanges: (l) => {
         this.changeListeners.add(l);
@@ -653,8 +662,8 @@ export class Helper {
     const out: MemoryValue[] = [];
     for (const e of [...this.memory.list("about"), ...this.memory.list("people")]) {
       if (e.status === "paused") continue;
-      if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value });
-      else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name });
+      if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value, whose: "user" });
+      else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name, whose: "other" });
     }
     return out;
   }
@@ -1194,14 +1203,16 @@ export class Helper {
       // no per-field insert for a fillResult to report, and the proposal is not kept for one. An
       // explicit fillRequest asks for the proposal itself (scripts/fill-eval.ts reads its fields), so it
       // always gets one.
-      if (!explicit && fillPopupEligible(p)) {
-        if (this.fillOverBeforeShown(p, formKey, focuses) !== null) {
+      // The pop-up runs the fields Caret writes; a form's selects, boxes, dates and times are hand-offs (B24).
+      const written = writtenFields(p);
+      if (!explicit && fillPopupEligible(written)) {
+        if (this.fillOverBeforeShown(written, formKey, focuses) !== null) {
           store.count("fill.popup_stale", 1, now);
           return p;
         }
         store.count("fill.popup", 1, now);
-        if (this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p))) {
-          this.fillPopups.set(p.id, { p, form: formKey });
+        if (this.publish(buildFillPopup(this.model, written), () => this.acceptFill(written))) {
+          this.fillPopups.set(written.id, { p: written, form: formKey });
           // The hour runs from when the offer is shown, not from when it was asked for.
           this.gate.spoke(this.now());
         }
@@ -1242,13 +1253,17 @@ export class Helper {
     const trigger = w?.nodes.get(p.triggerKey);
     if (w === undefined || trigger === undefined || (trigger.value ?? "") !== "") return null;
     const fields = p.fields.filter((f) => {
-      const n = w.nodes.get(f.key);
-      if (n === undefined || (n.value ?? "") !== "" || describeField(w, n).text !== f.descriptor) return false;
-      if (f.memory !== null) {
-        const now = this.aboutNow(f.memory.id);
-        return now !== null && now.value === f.value && now.label === f.memory.label;
+      // Read the way proposeFill read it, so a control is judged by its own rules (B24 review).
+      const input = emptyInput(w, f.key);
+      if (input === null || describeInput(w, input) !== f.descriptor) return false;
+      const memory = f.memory ?? f.handoff?.memory ?? null;
+      const value = f.value ?? f.handoff?.value ?? null;
+      if (memory !== null) {
+        const now = this.aboutNow(memory.id);
+        return now !== null && memoryValue(now.value, memory.part) === value && now.label === memory.label;
       }
-      return f.source === null || this.model.windows.has(f.source.windowId);
+      const source = f.source ?? f.handoff?.source ?? null;
+      return source === null || this.model.windows.has(source.windowId);
     });
     return { ...p, fields };
   }
