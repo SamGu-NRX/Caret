@@ -1,6 +1,6 @@
 // caret-helper: listens on the screen socket for caret-screen and for consumers, and on page.sock beside it for the
 // page engines (Caret for Chrome, through caret-bridge; browser layer W2).
-//   node src/main.ts --auth-fd N [--socket PATH] [--page-socket PATH | --no-page] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
+//   node src/main.ts --auth-fd N [--socket PATH] [--page-socket PATH | --no-page] [--data-dir DIR] [--memory-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
 // --auth-fd names an inherited descriptor holding the 32-byte launch secret, which caret-screen also got from the
 // launcher (src/launch.ts); the helper answers the reader's challenge with it, and page.sock's handshake uses a key
 // derived from it (engines/auth.ts). It never comes on argv or in the environment. Without it page.sock is not started.
@@ -36,8 +36,13 @@ const { values: args } = parseArgs({
     "auth-fd": { type: "string" },
     "page-socket": { type: "string" },
     "no-page": { type: "boolean", default: false },
+    // The markdown memory folder (M1). Lead decision 1: Application Support, not Documents, which may sync to iCloud.
+    "memory-dir": { type: "string" },
   },
 });
+// A helper given its own --data-dir (tests, evaluations, the crash test) keeps memory inside it, so only the app's
+// own launch, with the default data directory, reads and migrates the user's real memory folder.
+const memoryDir = args["memory-dir"] ?? (process.argv.includes("--data-dir") || process.argv.some((a) => a.startsWith("--data-dir=")) ? join(args["data-dir"], "Memory") : join(homedir(), "Library", "Application Support", "Caret", "Memory"));
 
 /** Node's longest timer delay; a longer one runs every millisecond. */
 const TIMEOUT_MAX = 2_147_483_647;
@@ -90,6 +95,8 @@ const pages: PageHost | null = args["no-page"] || secret === null
   : pageHost({ path: args["page-socket"] ?? defaultPageSocket(args.socket), secret, reader: readerSocket, apply: (m) => void helper.handleReader(m), warn });
 helper = new Helper({
   store,
+  memoryDir,
+  watchMemory: true,
   askJev: args["no-jev"] ? null : makeJevClient(() => loadJevKey()),
   shadow: args.shadow,
   allowBackgroundFocus: args["allow-background-focus"],
