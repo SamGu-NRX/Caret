@@ -126,6 +126,11 @@
         return { ok: true };
       }
       case "navigate": setTimeout(() => location.assign(c.url), 50); return { ok: true };
+      case "busy": {
+        // Keeps the main thread busy for c.ms, starting just after the answer goes out (W4): a walk sent meanwhile waits.
+        setTimeout(() => { const end = Date.now() + c.ms; while (Date.now() < end) { /* busy */ } }, 20);
+        return { ok: true };
+      }
       default: return { ok: false, error: `unknown command ${c.cmd}` };
     }
   };
