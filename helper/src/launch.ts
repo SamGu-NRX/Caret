@@ -2,10 +2,21 @@
 //   node src/launch.ts --reader PATH/caret-screen [--socket PATH] [-- helper args...] [--- reader args...]
 // The secret is 32 random bytes made here, written to each child's standard input and closed (--auth-fd 0), so it is
 // never on a command line or in an environment another process can read. The reader then accepts a helper only if
-// it proves it holds the secret (Emitter.swift). Stopping this process stops both; either one exiting stops the other.
+// it proves it holds the secret (Emitter.swift).
+//
+// A helper that exits on its own (a crash) is started again with the same secret: the reader, still running, takes
+// it back, and the elements it recorded let the new helper undo a run the crash cut off (executor/journal.ts). At
+// most RESTARTS restarts in RESTART_WINDOW_MS, then both stop. The reader exiting, or this process being stopped,
+// stops both.
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+/** Restarts of a crashed helper allowed in RESTART_WINDOW_MS before the launcher gives up. Assumed. */
+const RESTARTS = 5;
+const RESTART_WINDOW_MS = 60_000;
+/** Wait before starting a crashed helper again. Assumed: the reader retries its connection every second. */
+const RESTART_DELAY_MS = 1000;
 
 /** A new launch secret. */
 export function newLaunchSecret(): Buffer {
@@ -34,25 +45,46 @@ function main(argv: string[]): void {
   const sock = socket === undefined ? [] : ["--socket", socket];
   const secret = newLaunchSecret();
   const helperMain = fileURLToPath(new URL("./main.ts", import.meta.url));
-  const helper = spawn(process.execPath, [helperMain, "--auth-fd", "0", ...sock, ...helperArgs]);
+  const say = (line: string): boolean => process.stderr.write(`[caret-launch] ${line}\n`);
+  let stopping = false;
+  const restarts: number[] = [];
+  let helper: ChildProcessWithoutNullStreams;
+  const startHelper = (): void => {
+    helper = spawn(process.execPath, [helperMain, "--auth-fd", "0", ...sock, ...helperArgs]);
+    sendSecret(helper, secret);
+    helper.stdout.pipe(process.stdout);
+    helper.stderr.pipe(process.stderr);
+    helper.once("exit", (code, signal) => {
+      if (stopping) return;
+      const now = Date.now();
+      while (restarts.length > 0 && now - (restarts[0] as number) > RESTART_WINDOW_MS) restarts.shift();
+      if (restarts.length >= RESTARTS) {
+        say(`the helper exited (${signal ?? code}) ${RESTARTS + 1} times within ${RESTART_WINDOW_MS / 1000} s; stopping`);
+        stop(1);
+        return;
+      }
+      restarts.push(now);
+      say(`the helper exited (${signal ?? code}); starting it again with the same secret`);
+      setTimeout(() => (stopping ? undefined : startHelper()), RESTART_DELAY_MS);
+    });
+  };
   const reader = spawn(readerPath, ["--auth-fd", "0", ...sock, ...readerArgs]);
-  for (const [name, child] of [["helper", helper], ["reader", reader]] as const) {
-    sendSecret(child, secret);
-    child.stdout.pipe(process.stdout);
-    child.stderr.pipe(process.stderr);
-    child.once("exit", (code, signal) => {
-      process.stderr.write(`[caret-launch] ${name} exited (${signal ?? code}); stopping the other\n`);
-      helper.kill("SIGTERM");
-      reader.kill("SIGTERM");
-      process.exitCode = code ?? 1;
-    });
-  }
-  for (const sig of ["SIGINT", "SIGTERM"] as const) {
-    process.on(sig, () => {
-      helper.kill("SIGTERM");
-      reader.kill("SIGTERM");
-    });
-  }
+  const stop = (code: number): void => {
+    stopping = true;
+    helper.kill("SIGTERM");
+    reader.kill("SIGTERM");
+    process.exitCode = code;
+  };
+  startHelper();
+  sendSecret(reader, secret);
+  reader.stdout.pipe(process.stdout);
+  reader.stderr.pipe(process.stderr);
+  reader.once("exit", (code, signal) => {
+    if (stopping) return;
+    say(`the reader exited (${signal ?? code}); stopping the helper`);
+    stop(code ?? 1);
+  });
+  for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => stop(0));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main(process.argv.slice(2));

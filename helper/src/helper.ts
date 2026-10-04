@@ -415,7 +415,16 @@ export class Helper {
     const now = this.now();
     const { records, unreadable } = this.journal.load(now);
     for (const id of unreadable) this.opts.warn?.(`recovery: the saved run ${id} cannot be read; its undo is lost and it is left in the journal`);
-    for (const r of records) {
+    for (const saved of records) {
+      // Offer and event ids count from 1 in every helper process, so the new process's next offer would take the
+      // interrupted run's id (the crash test hit this). A recovered task is renamed once with its start time; no
+      // generator makes an id with "@", and its row moves to the new id.
+      const taskId = saved.taskId.includes("@") ? saved.taskId : `${saved.taskId}@${saved.startedAt}`;
+      const r = { ...saved, taskId };
+      if (taskId !== saved.taskId) {
+        this.journal.save(r);
+        this.journal.drop(saved.taskId);
+      }
       if (r.skillId !== null) this.patterns.skills.interrupted(r.skillId, now);
       this.executor.recover(r);
       this.tasks.create(recoveredRecord(r));

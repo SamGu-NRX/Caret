@@ -656,6 +656,8 @@ export class Executor {
               : e.kind === "write"
                 ? await this.undoWrite(task, e)
                 : await this.undoCalendar(task, e);
+        // A write a crash cut off that never landed: nothing of Caret's is there, so it counts as neither.
+        if (reason === UNTOUCHED) continue;
         if (reason === null) out.restored++;
         else {
           out.notRestored.push({ step: e.step, reason });
@@ -666,11 +668,9 @@ export class Executor {
     } finally {
       task.undoing = false;
       this.revokeGrant(task);
-      // A run a crash interrupted keeps its row until its undo has restored what it could; what is left is kept for another try.
-      if (task.journaled) {
-        if (task.ledger.some((e) => e.kind !== "press")) this.journalSave(task, null);
-        else this.journalDrop(task);
-      }
+      // A run a crash interrupted keeps its row until the user has asked for its undo. What the undo could not restore
+      // stays in memory for another try in this process; a row kept for it would list the run again at every start.
+      this.journalDrop(task);
       // The watch for this undo ends with it; a failure here only leaves a watch on, which the next run replaces.
       await this.updateWatch().catch(() => undefined);
     }
@@ -1305,7 +1305,7 @@ export class Executor {
 
   // MARK: - undo
 
-  private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null> {
+  private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null | typeof UNTOUCHED> {
     // Only the element the reader recorded as written may be restored (S1 audit #6): without its mark, a sibling that
     // took the field's key, role and value would pass every other check.
     if (e.mark === null) return "Caret did not record which element it wrote, so it cannot be sure the field is the same one";
@@ -1315,6 +1315,8 @@ export class Executor {
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
     if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
     if (task.undoStopped !== null) return task.undoStopped;
+    // A write the crash cut off whose field, read just now, still holds what it held before: it never landed.
+    if (e.unconfirmed === true && (this.deps.model.windows.get(e.windowId)?.nodes.get(e.key)?.value ?? "") === e.before) return UNTOUCHED;
     const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id, sameAs: e.mark };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
@@ -1492,6 +1494,9 @@ function editableValues(w: WindowState): Map<string, string> {
 function contains(f: [number, number, number, number], p: [number, number]): boolean {
   return p[0] >= f[0] && p[0] <= f[0] + f[2] && p[1] >= f[1] && p[1] <= f[1] + f[3];
 }
+
+/** undoWrite's answer for a write a crash cut off that never landed. */
+const UNTOUCHED = Symbol("untouched");
 
 /** Why the reader refused a restore, in words for the activity row. */
 function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult): string {

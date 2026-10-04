@@ -1,8 +1,7 @@
 // A synthetic desk for pattern tests: a source list window and a destination grid window, sent to a
 // Helper as reader snapshots, with a clock the test advances. All names and addresses are invented.
-import type { Helper } from "../src/helper.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
-import { isCalendarVerb, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
+import { isCalendarVerb, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderMessage, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
 import { FakeGrants } from "./fake-grants.ts";
 import { FakeMarks } from "./fake-marks.ts";
@@ -64,9 +63,19 @@ export const cellKey = (g: GridWindow, row: number, col: number): string =>
   `${g.app.bundleId}/standard/textfield:${keyLabel(g.columns[col] ?? "")}~${row}`;
 export const buttonKey = (g: GridWindow, label: string): string => `${g.app.bundleId}/standard/button:${keyLabel(label)}~0`;
 
+/**
+ * What the desk sends its windows to: a Helper in process, or a stand-in that forwards them over the socket to a
+ * helper in another process (scripts/crash-recovery-eval.ts). The desk uses only these three.
+ */
+export interface DeskSink {
+  handleReader(m: ReaderMessage): unknown;
+  readonly model: { readonly windows: { has(windowId: string): boolean } };
+  tick(at: number): void;
+}
+
 export class Desk implements ReaderLink {
   at = 1_000_000;
-  helper: Helper | null = null;
+  helper: DeskSink | null = null;
   readonly grids = new Map<string, GridWindow>();
   /** Verbs the executor sent, for tests that count writes. */
   readonly verbs: ReaderVerb[] = [];
@@ -86,12 +95,12 @@ export class Desk implements ReaderLink {
   refuseLastWatch = false;
 
   /** Must be called once the helper exists; the helper takes the desk as its reader link first. */
-  attach(helper: Helper): this {
+  attach(helper: DeskSink): this {
     this.helper = helper;
     return this;
   }
 
-  private get h(): Helper {
+  private get h(): DeskSink {
     if (this.helper === null) throw new Error("desk not attached to a helper");
     return this.helper;
   }
