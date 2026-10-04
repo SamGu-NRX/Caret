@@ -85,8 +85,8 @@ function verbResult(outcome: VerbOutcome, detail: string | null): VerbResult {
 
 /**
  * A page outcome as the executor reads a reader outcome. `failed` with the old value back is `changed` (nothing
- * landed, the run stops); a failed write that left another value is `axError`, which the executor treats as
- * "may have landed" and judges by re-reading, so the value goes in its undo ledger.
+ * landed, the run stops). A failed write that left another value, or that stopped midway with no readings (the
+ * field changed under it), is `axError`, which the executor treats as "may have landed" and judges by re-reading.
  */
 export function toVerbOutcome(r: PageResult): VerbResult {
   const detail = r.detail === null ? r.outcome : `${r.outcome}: ${r.detail}`;
@@ -105,7 +105,7 @@ export function toVerbOutcome(r: PageResult): VerbResult {
     case "handoff":
       return verbResult("notAllowed", detail);
     case "failed":
-      return verbResult(r.readings !== undefined && r.readings.afterBlur !== r.readings.before ? "axError" : "changed", detail);
+      return verbResult(r.readings === undefined || r.readings.afterBlur !== r.readings.before ? "axError" : "changed", detail);
     case "unsupported":
     case "error":
       return verbResult("axError", detail);

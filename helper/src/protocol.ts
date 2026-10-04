@@ -1398,7 +1398,7 @@ export const PageFrame = z.object({
   /** h1 and h2 text, clipped. No body prose. */
   headings: z.array(z.string()),
   controls: z.array(PageControl),
-  /** The frame's own <iframe> elements, so the worker can place child frames: origin plus path of src, and rect. */
+  /** The frame's visible <iframe> elements, origin plus path of src and rect: the worker drops a child frame none of them holds. */
   iframes: z.array(z.object({ src: z.string(), rect: PageRect })),
   excluded: z.partialRecord(PageExclusion, z.number().int().positive()),
   truncated: z.boolean(),

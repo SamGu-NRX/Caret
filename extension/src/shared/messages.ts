@@ -74,6 +74,8 @@ export interface FrameReport {
   headings: string[];
   controls: PageControl[];
   iframes: { src: string; rect: Rect }[];
+  /** The frame's own viewport, [innerWidth, innerHeight]: 0 by 0 inside an iframe its embedder hides with display:none. */
+  viewport: [number, number];
   excluded: Partial<Record<PageExclusion, number>>;
   truncated: boolean;
   focused: { id: string; selection: [number, number] | null } | null;

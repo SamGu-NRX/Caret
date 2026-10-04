@@ -1,6 +1,6 @@
 // The page engine's batch 1 acceptance (browser layer memo, section 7), as one command:
 //
-//   node fixtures/web-form/accept.ts [--skip-build] [--nm-probe] [--idle SECONDS] [--memory-tabs N] [--evidence DIR]
+//   node fixtures/web-form/accept.ts [--skip-build] [--nm-probe] [--idle SECONDS] [--memory-tabs N] [--dump-walk] [--evidence DIR]
 //
 // It builds the extension and the bridge, installs the pinned Chrome for Testing with @puppeteer/browsers, writes
 // the bridge's Native Messaging manifest into Chrome for Testing's own directory (never Chrome's or Helium's),
@@ -14,8 +14,10 @@
 //              Testing's default directory, and reports which one Chrome read (memo hypothesis 1).
 // --idle S     after the checks, sends nothing for S seconds, then pings: the same worker instance on the same
 //              connection answers if an open Native Messaging port kept the worker alive (memo hypothesis 2).
-// --memory-tabs N   instead of the checks, measures renderer memory with N fixture tabs open, with and without the
-//              extension, on two temporary profiles.
+// --memory-tabs N   instead of the checks, measures renderer physical footprint with N fixture tabs open: no
+//              extension, the extension without its content script, and the extension as built, two rounds each.
+// --dump-walk  prints the first walk's frames and missing frames, then stops; for debugging frame composition.
+// A caller that already holds the heavy lock sets CARET_HEAVY_LOCK_HELD=1, so the bridge build does not wait on it.
 //
 // Browser control is the page's own script taking commands from the fixture server (fixture.js); no debugger or CDP
 // connection is made, so nothing here keeps the worker alive but the port under test.
@@ -57,6 +59,7 @@ const { values: args } = parseArgs({
     "nm-probe": { type: "boolean", default: false },
     idle: { type: "string", default: "0" },
     "memory-tabs": { type: "string", default: "0" },
+    "dump-walk": { type: "boolean", default: false },
     evidence: { type: "string", default: join(homedir(), ".caret-run", "evidence", "browser", "w1") },
   },
 });
@@ -92,8 +95,15 @@ function build(): void {
   }
   say("building the extension");
   execFileSync(process.execPath, [join(EXT, "build.mjs")], { stdio: "inherit" });
-  say("building the bridge (release), under the shared heavy lock");
-  execFileSync("/usr/bin/lockf", ["-k", join(homedir(), ".long-run", "locks", "heavy.lock"), "swift", "build", "-c", "release", "--package-path", BRIDGE_PKG, "--product", "caret-bridge"], { stdio: "inherit" });
+  const swift = ["swift", "build", "-c", "release", "--package-path", BRIDGE_PKG, "--product", "caret-bridge"];
+  // A caller that already holds the heavy lock says so; taking it again from a child would wait on the parent forever.
+  if (process.env.CARET_HEAVY_LOCK_HELD === "1") {
+    say("building the bridge (release); the caller holds the heavy lock");
+    execFileSync(swift[0] as string, swift.slice(1), { stdio: "inherit" });
+  } else {
+    say("building the bridge (release), under the shared heavy lock");
+    execFileSync("/usr/bin/lockf", ["-k", join(homedir(), ".long-run", "locks", "heavy.lock"), ...swift], { stdio: "inherit" });
+  }
 }
 
 async function chrome(): Promise<string> {
@@ -129,7 +139,8 @@ interface Running {
 }
 
 /** Headless Chrome for Testing on `profile`; its own process group, so stopping it stops every helper process too. */
-function launch(exe: string, profile: string, urls: string[], env: NodeJS.ProcessEnv, withExtension: boolean, log: string): Running {
+/** `extension`: the unpacked extension directory to load, or null for none. */
+function launch(exe: string, profile: string, urls: string[], env: NodeJS.ProcessEnv, extension: string | null, log: string, extra: string[] = []): Running {
   const flags = [
     "--headless=new",
     `--user-data-dir=${profile}`,
@@ -140,7 +151,8 @@ function launch(exe: string, profile: string, urls: string[], env: NodeJS.Proces
     "--disable-sync",
     "--disable-background-networking",
     "--disable-component-update",
-    ...(withExtension ? [`--load-extension=${join(EXT, "dist")}`, `--disable-extensions-except=${join(EXT, "dist")}`, "--disable-features=DisableLoadExtensionCommandLineSwitch"] : []),
+    ...(extension !== null ? [`--load-extension=${extension}`, `--disable-extensions-except=${extension}`, "--disable-features=DisableLoadExtensionCommandLineSwitch"] : []),
+    ...extra,
     ...urls,
   ];
   const proc = spawn(exe, flags, { env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -267,19 +279,22 @@ async function read(site: FixtureSite, selector: string): Promise<string | undef
 }
 
 const TOP_NAMES = ["First name", "Email", "Start date", "Country", "Remote OK", "Day", "Night", "Cover note", "Department", "Show more", "Badge code", "Resume", "Drop your resume here", "Submit", "Preferred name", "City", "Country of residence"];
-const NEVER_NAMES = ["Password", "Card number", "One-time code", "Visually hidden", "Off screen", "Not displayed", "Hidden from assistive tech", "Gender", "I agree to the terms of service", "Transparent", "Clipped away", "Expiry month", "Yes", "No", "Hidden frame field"];
+const NEVER_NAMES = ["Password", "Card number", "One-time code", "Visually hidden", "Off screen", "Not displayed", "Hidden from assistive tech", "Gender", "I agree to the terms of service", "Transparent", "Clipped away", "Expiry month", "Yes", "No", "Hidden frame field", "Sandboxed field", "Prefer to self-describe"];
 
 async function checks(e: Engine, site: FixtureSite): Promise<void> {
   let s = await walk(e);
 
   await check("snapshot covers the main document, both iframes and the closed shadow root", async () => {
     const top = s.frames.find((f) => f.parentFrameId === -1);
-    const same = s.frames.find((f) => f.parentFrameId !== -1 && f.origin === site.mainOrigin);
+    const same = s.frames.find((f) => f.parentFrameId !== -1 && f.origin === site.mainOrigin && f.path === "/frame/same");
     const cross = s.frames.find((f) => f.origin === site.embedOrigin);
     expect(top !== undefined && same !== undefined && cross !== undefined, `frames: ${s.frames.map((f) => `${f.frameId}@${f.origin}${f.path}`).join(", ")}; missing ${JSON.stringify(s.missing)}`);
     const names = top!.controls.map((c) => c.name);
     for (const n of TOP_NAMES) expect(names.filter((x) => x === n).length === 1, `top frame lacks exactly one '${n}': ${JSON.stringify(names)}`);
     expect(same!.controls.map((c) => c.name).join() === "Referral code", `same-origin frame: ${same!.controls.map((c) => c.name).join()}`);
+    expect(s.frames.filter((f) => f.controls.some((c) => c.name === "Referral code")).length === 1, "the hidden duplicate of the referral frame was kept");
+    const inline = s.frames.find((f) => f.controls.some((c) => c.name === "Inline frame field"));
+    expect(inline !== undefined && inline.origin === site.mainOrigin, `the srcdoc frame that inherits the page's origin is missing: ${JSON.stringify(s.missing)}`);
     expect(cross!.controls.map((c) => c.name).join() === "Portfolio URL", `cross-origin frame: ${cross!.controls.map((c) => c.name).join()}`);
     const kinds: Record<string, string> = { "First name": "text", Email: "email", "Start date": "date", Country: "select", "Remote OK": "checkbox", Day: "radio", "Cover note": "textarea", Department: "combobox", Resume: "file", Submit: "button", "Preferred name": "text", "Country of residence": "combobox", "Badge code": "text" };
     for (const [n, k] of Object.entries(kinds)) expect(control(s, n).c.kind === k, `'${n}' is a ${control(s, n).c.kind}, not a ${k}`);
@@ -289,8 +304,8 @@ async function checks(e: Engine, site: FixtureSite): Promise<void> {
     const all = s.frames.flatMap((f) => f.controls.map((c) => c.name));
     for (const n of NEVER_NAMES) expect(!all.includes(n), `excluded control '${n}' left the frame`);
     const x = top!.excluded;
-    expect(x.password === 1 && (x.hidden ?? 0) >= 1 && x.payment === 2 && x.oneTimeCode === 1 && (x.invisible ?? 0) >= 5 && x.ariaHidden === 1 && (x.selfIdentification ?? 0) >= 4, `exclusion counts ${JSON.stringify(x)}`);
-    expect(s.missing.some((m) => m.reason.includes("not visible in the parent")), `the hidden iframe was not dropped: missing ${JSON.stringify(s.missing)}`);
+    expect(x.password === 1 && (x.hidden ?? 0) >= 1 && x.payment === 2 && x.oneTimeCode === 1 && (x.invisible ?? 0) >= 5 && x.ariaHidden === 1 && (x.selfIdentification ?? 0) >= 5, `exclusion counts ${JSON.stringify(x)}`);
+    expect(s.missing.filter((m) => m.reason.includes("not visible in the parent")).length >= 2, `the hidden iframes were not both dropped: missing ${JSON.stringify(s.missing)}`);
     return `${s.frames.length} frames, ${s.frames.reduce((n, f) => n + f.controls.length, 0)} controls, excluded ${JSON.stringify(x)}, missing ${JSON.stringify(s.missing)}`;
   });
 
@@ -439,25 +454,70 @@ async function idleCheck(e: Engine, seconds: number): Promise<void> {
   });
 }
 
+/** Physical footprint (bytes) of each pid, from macOS footprint: dirty and compressed memory, not RSS's shared pages. */
+function footprints(pids: number[], tmp: string): Map<number, number> {
+  const out = new Map<number, number>();
+  if (pids.length === 0) return out;
+  const file = join(tmp, "footprint.json");
+  execFileSync("footprint", ["-j", file, ...pids.map(String)], { stdio: "ignore", timeout: 120_000 });
+  const j = JSON.parse(readFileSync(file, "utf8")) as { processes: { pid: number; auxiliary?: { phys_footprint?: number }; footprint?: number }[] };
+  for (const p of j.processes) out.set(p.pid, p.auxiliary?.phys_footprint ?? p.footprint ?? 0);
+  rmSync(file, { force: true });
+  return out;
+}
+
+/**
+ * Renderer memory with `tabs` fixture tabs, three ways: no extension; the extension with its content script removed
+ * (the cost of having any extension); the extension as built. The content script's own cost is the third minus the
+ * second. Two rounds each, interleaved, so drift on a shared Mac shows up as spread.
+ */
 async function memory(exe: string, site: FixtureSite, tabs: number, tmp: string): Promise<void> {
-  const urls = Array.from({ length: tabs }, (_, i) => `${site.mainOrigin}/tab?i=${i}`);
-  const measure = async (withExtension: boolean): Promise<{ renderers: number; rendererKiB: number; extensionKiB: number; totalKiB: number }> => {
-    const profile = mkdtempSync(join(tmp, withExtension ? "mem-ext-" : "mem-bare-"));
-    const c = launch(exe, profile, urls, process.env, withExtension, join(tmp, "chrome-memory.log"));
-    await sleep(25_000);
-    const tree = processTree(c.proc.pid as number);
+  type Reading = { tabs: number; renderers: number; rssKiB: number; footprintKiB: number; extensionKiB: number };
+  const noScript = join(tmp, "ext-no-content-script");
+  execFileSync("cp", ["-R", join(EXT, "dist"), noScript]);
+  const m = JSON.parse(readFileSync(join(noScript, "manifest.json"), "utf8")) as Record<string, unknown>;
+  delete m.content_scripts;
+  writeFileSync(join(noScript, "manifest.json"), JSON.stringify(m));
+  const configs: [string, string | null][] = [["none", null], ["noScript", noScript], ["full", join(EXT, "dist")]];
+  const measure = async (extension: string | null): Promise<Reading> => {
+    const profile = mkdtempSync(join(tmp, "mem-"));
+    site.tabsLoaded = 0;
+    // Headless Chrome takes one URL; the opener page opens the tabs (noopener, so each is its own browsing context group).
+    const c = launch(exe, profile, [`${site.mainOrigin}/opener?n=${tabs}`], process.env, extension, join(tmp, "chrome-memory.log"), ["--disable-popup-blocking"]);
+    for (let i = 0; i < 120 && site.tabsLoaded < tabs; i++) await sleep(250);
+    // Let the pages and the content scripts settle, then read every process in the browser's tree.
+    await sleep(15_000);
+    const pid = c.proc.pid as number;
+    if (c.proc.exitCode !== null) throw new Error(`Chrome for Testing exited early (${c.proc.exitCode}); log tail: ${tail(join(tmp, "chrome-memory.log"))}`);
+    const tree = processTree(pid);
     const renderers = tree.filter((p) => p.cmd.includes("--type=renderer") && !p.cmd.includes("--extension-process"));
     const ext = tree.filter((p) => p.cmd.includes("--extension-process"));
-    const out = { renderers: renderers.length, rendererKiB: renderers.reduce((n, p) => n + p.rss, 0), extensionKiB: ext.reduce((n, p) => n + p.rss, 0), totalKiB: tree.reduce((n, p) => n + p.rss, 0) };
+    const fp = footprints([...renderers, ...ext].map((p) => p.pid), tmp);
+    const out = {
+      tabs: site.tabsLoaded,
+      renderers: renderers.length,
+      rssKiB: renderers.reduce((n, p) => n + p.rss, 0),
+      footprintKiB: renderers.reduce((n, p) => n + (fp.get(p.pid) ?? 0), 0) / 1024,
+      extensionKiB: ext.reduce((n, p) => n + (fp.get(p.pid) ?? 0), 0) / 1024,
+    };
     await c.stop();
     rmSync(profile, { recursive: true, force: true });
     return out;
   };
   await check(`content-script memory with ${tabs} tabs`, async () => {
-    const bare = await measure(false);
-    const ext = await measure(true);
-    const perTab = (ext.rendererKiB - bare.rendererKiB) / tabs;
-    return `renderers (rss, KiB): without the extension ${bare.renderers} processes ${bare.rendererKiB}, with it ${ext.renderers} processes ${ext.rendererKiB}; difference ${(ext.rendererKiB - bare.rendererKiB)} KiB, ${perTab.toFixed(0)} KiB per tab; extension process ${ext.extensionKiB} KiB; whole browser ${bare.totalKiB} -> ${ext.totalKiB} KiB`;
+    const runs = new Map<string, Reading[]>(configs.map(([k]) => [k, []]));
+    for (let round = 0; round < 2; round++) for (const [k, dir] of configs) runs.get(k)?.push(await measure(dir));
+    for (const rs of runs.values()) for (const r of rs) expect(r.tabs >= tabs, `only ${r.tabs} of ${tabs} tabs loaded`);
+    const mean = (k: string, f: keyof Reading): number => {
+      const rs = runs.get(k) ?? [];
+      return rs.reduce((n, r) => n + r[f], 0) / rs.length;
+    };
+    const mib = (kib: number): string => (kib / 1024).toFixed(0);
+    const each = (k: string): string => (runs.get(k) ?? []).map((r) => `${mib(r.footprintKiB)}`).join("/");
+    const scriptPerTab = (mean("full", "footprintKiB") - mean("noScript", "footprintKiB")) / tabs;
+    const extensionPerTab = (mean("noScript", "footprintKiB") - mean("none", "footprintKiB")) / tabs;
+    const rssPerTab = (mean("full", "rssKiB") - mean("noScript", "rssKiB")) / tabs;
+    return `renderer footprint MiB per round: none ${each("none")}, extension without content script ${each("noScript")}, full ${each("full")} (${runs.get("full")?.[0]?.renderers} renderers); content script ${scriptPerTab.toFixed(0)} KiB per tab (rss ${rssPerTab.toFixed(0)}); any extension ${extensionPerTab.toFixed(0)} KiB per tab; extension process ${mib(mean("full", "extensionKiB"))} MiB`;
   });
 }
 
@@ -522,7 +582,7 @@ async function main(): Promise<number> {
       if (u >= 0) await undo.splice(u, 1)[0]?.fn();
     };
     const since = Date.now();
-    const c = launch(exe, profile, [url], env, true, log);
+    const c = launch(exe, profile, [url], env, join(EXT, "dist"), log);
     const stop = async (): Promise<void> => {
       await c.stop();
       await removeManifest();
@@ -560,7 +620,7 @@ async function main(): Promise<number> {
   await site.waitForLoad((h) => h.endsWith("/form"), 0);
   // The first walk may come before the frames' scripts are in; try for up to 10 s.
   let first = await session.command({ kind: "pageWalk", tabId: null });
-  for (let i = 0; i < 40 && (first.snapshot === null || first.snapshot.frames.length < 3); i++) {
+  for (let i = 0; i < 40 && (first.snapshot === null || first.snapshot.frames.length < 4); i++) {
     await sleep(250);
     first = await session.command({ kind: "pageWalk", tabId: null });
   }
@@ -569,6 +629,10 @@ async function main(): Promise<number> {
     return report(front0, { nmProbe, warnings });
   }
   const e: Engine = { host, helper, session, tabId: first.snapshot.tabId };
+  if (args["dump-walk"]) {
+    say(JSON.stringify({ frames: first.snapshot.frames.map((f) => ({ frameId: f.frameId, parent: f.parentFrameId, origin: f.origin, path: f.path, iframes: f.iframes, controls: f.controls.length })), missing: first.snapshot.missing }));
+    return report(front0);
+  }
   // React mounts after the bundle runs; give the walk a form with its React part in place.
   for (let i = 0; i < 40 && !(await walk(e)).frames.some((f) => f.controls.some((c) => c.name === "Country of residence")); i++) await sleep(250);
 

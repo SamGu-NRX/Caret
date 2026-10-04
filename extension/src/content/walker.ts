@@ -98,14 +98,40 @@ export function exclusionOf(el: Element, name: string): PageExclusion | null {
   return null;
 }
 
-/** A clip or clip-path that leaves nothing: clip: rect(0 0 0 0), clip-path: inset(50%) and the like. */
-function clipsToNothing(cs: CSSStyleDeclaration): boolean {
+/** A length in px or % of `size`, or null when it is neither. */
+function length(v: string, size: number): number | null {
+  const m = /^(-?[\d.]+)(px|%)?$/.exec(v.trim());
+  if (m === null) return null;
+  const n = Number(m[1]);
+  return m[2] === "%" ? (n / 100) * size : n;
+}
+
+/**
+ * A clip or clip-path that leaves nothing of a box `w` by `h`: clip: rect() with no area, clip-path: inset() whose
+ * opposite sides meet (all four sides read, so inset(50% 0 0 0) keeps its lower half), a circle of radius 0, or a
+ * polygon whose points are all one point.
+ */
+function clipsToNothing(cs: CSSStyleDeclaration, w: number, h: number): boolean {
   const rect = /rect\(\s*(-?[\d.]+)px[ ,]+(-?[\d.]+)px[ ,]+(-?[\d.]+)px[ ,]+(-?[\d.]+)px\s*\)/.exec(cs.clip);
   if (rect !== null) {
     const [top, right, bottom, left] = rect.slice(1, 5).map(Number) as [number, number, number, number];
     if (right - left <= 1 || bottom - top <= 1) return true;
   }
-  return /inset\(\s*(50|100)%/.test(cs.clipPath) || /circle\(\s*0(px)?\s/.test(`${cs.clipPath} `);
+  const cp = cs.clipPath.trim();
+  const inset = /^inset\(([^)]*?)(\s+round\b[^)]*)?\)$/.exec(cp);
+  if (inset !== null) {
+    const parts = (inset[1] ?? "").trim().split(/\s+/);
+    const [t, r = t, b = t, l = r] = parts as [string, string?, string?, string?];
+    const [tt, rr, bb, ll] = [length(t, h), length(r, w), length(b, h), length(l, w)];
+    if (tt !== null && rr !== null && bb !== null && ll !== null && (tt + bb >= h - 1 || ll + rr >= w - 1)) return true;
+  }
+  if (/^circle\(\s*0(px|%)?(\s|\))/.test(cp)) return true;
+  const poly = /^polygon\((.*)\)$/.exec(cp);
+  if (poly !== null) {
+    const pts = (poly[1] ?? "").split(",").map((x) => x.trim().replace(/^(nonzero|evenodd)\s*/, "")).filter((x) => x !== "");
+    if (pts.length > 0 && pts.every((x) => x === pts[0])) return true;
+  }
+  return false;
 }
 
 /**
@@ -118,7 +144,7 @@ function clipsToNothing(cs: CSSStyleDeclaration): boolean {
 export function visible(el: Element): boolean {
   if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
   const r = el.getBoundingClientRect();
-  if (clipsToNothing(getComputedStyle(el))) return false;
+  if (clipsToNothing(getComputedStyle(el), r.width, r.height)) return false;
   const doc = document.documentElement;
   const left = r.left + window.scrollX;
   const top = r.top + window.scrollY;
@@ -127,12 +153,12 @@ export function visible(el: Element): boolean {
   let [x0, y0, x1, y1] = [r.left, r.top, r.right, r.bottom];
   for (let p = composedParent(el); p !== null && p !== doc; p = composedParent(p)) {
     const cs = getComputedStyle(p);
-    if (clipsToNothing(cs)) return false;
+    const pb = p.getBoundingClientRect();
+    if (clipsToNothing(cs, pb.width, pb.height)) return false;
     const clips = (v: string): boolean => v === "hidden" || v === "clip";
     if (!clips(cs.overflowX) && !clips(cs.overflowY)) continue;
-    const b = p.getBoundingClientRect();
-    if (clips(cs.overflowX)) [x0, x1] = [Math.max(x0, b.left), Math.min(x1, b.right)];
-    if (clips(cs.overflowY)) [y0, y1] = [Math.max(y0, b.top), Math.min(y1, b.bottom)];
+    if (clips(cs.overflowX)) [x0, x1] = [Math.max(x0, pb.left), Math.min(x1, pb.right)];
+    if (clips(cs.overflowY)) [y0, y1] = [Math.max(y0, pb.top), Math.min(y1, pb.bottom)];
   }
   return x1 - x0 > 1 && y1 - y0 > 1;
 }

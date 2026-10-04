@@ -54,11 +54,30 @@ export function accessibleName(el: Element): string {
   return "";
 }
 
-/** The element's parent in the composed tree: through a shadow root to its host. */
+/**
+ * The node's parent in the flat tree, the tree that is rendered: a slotted light-DOM node's slot (in an open or a
+ * closed shadow root), else through a shadow root to its host, else its parent element (W1 review, round 2, #6).
+ */
 export function composedParent(n: Node): Element | null {
   const p = n.parentNode;
+  if (p instanceof Element) {
+    const root = p.shadowRoot ?? closedRootOf(p);
+    if (root !== null) {
+      for (const slot of root.querySelectorAll("slot")) if (slot.assignedNodes().includes(n as ChildNode)) return slot;
+    }
+    return p;
+  }
   if (p instanceof ShadowRoot) return p.host;
-  return p instanceof Element ? p : null;
+  return null;
+}
+
+function closedRootOf(el: Element): ShadowRoot | null {
+  if (!(el instanceof HTMLElement) || typeof chrome === "undefined" || chrome.dom?.openOrClosedShadowRoot === undefined) return null;
+  try {
+    return (chrome.dom.openOrClosedShadowRoot(el) as ShadowRoot | null) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**

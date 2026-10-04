@@ -18,7 +18,7 @@
 // decision on buttons that send data).
 import type { ActAnswer, ActVerb, WriteReadings } from "../shared/messages.ts";
 import { classifyPress } from "../shared/risk.ts";
-import type { Entry, Registry } from "./registry.ts";
+import { navigationEntry, type Entry, type Registry } from "./registry.ts";
 import { accessibleName, clean } from "./names.ts";
 import { checkedOf, exclusionOf, kindOf } from "./walker.ts";
 
@@ -56,7 +56,7 @@ type Mutating = Exclude<ActVerb, { kind: "pageChooseOption" | "pageAttachFile" |
 function ineligible(el: Element, verb: ActVerb, entry: Entry | undefined, deadline: number): ActAnswer | null {
   if (!el.isConnected || el.ownerDocument !== document) return answer("stale", "the element left the document");
   if (entry !== undefined && entry.href !== location.href) return answer("stale", "the page's address changed since the walk");
-  if (entry !== undefined && entry.histLen !== history.length) return answer("stale", "the page moved in history since the walk");
+  if (entry !== undefined && entry.nav !== navigationEntry()) return answer("stale", "the page moved in history since the walk");
   const name = accessibleName(el);
   const excluded = exclusionOf(el, name);
   if (excluded !== null) return answer("excluded", `the control is one Caret never touches (${excluded})`);
@@ -128,8 +128,10 @@ function setterFor(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElemen
 const current = (el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string => (el instanceof HTMLSelectElement ? (el.selectedOptions[0]?.value ?? "") : el.value);
 
 /**
- * Focus, recheck, set, input; read; recheck, change, blur; read. A recheck that fails after the value went in stops
- * there and reports `failed` with what the field holds, so the helper re-reads it rather than assuming nothing landed.
+ * Focus, recheck, set, input; read; recheck, change, blur; recheck, read. A recheck that fails after the value went in
+ * stops there and reports `failed` without readings: the field may now be one Caret never reads (a handler can turn
+ * it into a password field), so no value of it leaves the frame, and the helper re-reads the page instead of
+ * assuming nothing landed (W1 review, round 2, #3).
  */
 async function writeValue(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string, before: string, expect: string, check: () => ActAnswer | null): Promise<ActAnswer> {
   el.focus();
@@ -139,12 +141,17 @@ async function writeValue(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelec
   setterFor(el)(value);
   el.dispatchEvent(el instanceof HTMLSelectElement ? new Event("input", { bubbles: true, composed: true }) : new InputEvent("input", { bubbles: true, composed: true, inputType: "insertReplacementText", data: value }));
   await settle();
-  const afterInput = current(el);
+  const stopped = (why: ActAnswer, stage: string): ActAnswer => answer("failed", `the write went in, then ${why.detail ?? why.outcome} (${stage}); Caret stopped there`);
   const midway = check();
-  if (midway !== null) return answer("failed", `the write went in, then ${midway.detail ?? midway.outcome}; Caret stopped before change and blur`, { readings: { before, afterInput, afterBlur: afterInput, invalid: invalidNow(el), error: errorText(el) } });
+  if (midway !== null) return stopped(midway, "after input");
+  const afterInput = current(el);
   el.dispatchEvent(new Event("change", { bubbles: true }));
+  const afterChange = check();
+  if (afterChange !== null) return stopped(afterChange, "after change");
   el.blur();
   await settle();
+  const end = check();
+  if (end !== null) return stopped(end, "after blur");
   return judge({ before, afterInput, afterBlur: current(el), invalid: invalidNow(el), error: errorText(el) }, value);
 }
 

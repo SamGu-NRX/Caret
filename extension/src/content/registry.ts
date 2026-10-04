@@ -15,11 +15,19 @@ export interface Entry {
   /** location.href when a walk last saw it: an act from a later URL in this document is stale. */
   href: string;
   /**
-   * history.length then. A pushState, even to the same URL, adds an entry the isolated world can see, so an act
-   * that reaches the page after a history change the worker had not yet counted is still stale (W1 review #4).
+   * The history entry then (navigationEntry()). A pushState or replaceState, even to the same URL, makes a new entry
+   * id the isolated world can read, so an act that reaches the page after a history change the worker had not yet
+   * counted is still stale (W1 review #4 and round 2).
    */
-  histLen: number;
+  nav: string;
   form: string | null;
+}
+
+/** The current history entry's id from the Navigation API, or history.length where the API is missing. */
+export function navigationEntry(): string {
+  const nav = (globalThis as { navigation?: { currentEntry?: { id: string } | null } }).navigation;
+  const id = nav?.currentEntry?.id;
+  return id === undefined ? `length:${history.length}` : `entry:${id}`;
 }
 
 export class Registry {

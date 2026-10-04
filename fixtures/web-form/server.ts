@@ -27,6 +27,8 @@ export interface Ack {
 
 export class FixtureSite {
   submitted = 0;
+  /** Tabs of the memory run that finished loading (tab.html posts /tabhello). */
+  tabsLoaded = 0;
   state: Record<string, unknown> | null = null;
   readonly loads: { loadId: string; href: string; at: number }[] = [];
   private readonly queue: Command[] = [];
@@ -107,6 +109,14 @@ export class FixtureSite {
         return html(res, read("frame.html").replaceAll("__TITLE__", "Referral").replaceAll("__ID__", "referral").replaceAll("__NAME__", "referral_code").replaceAll("__LABEL__", "Referral code"));
       case "GET /frame/hidden":
         return html(res, read("frame.html").replaceAll("__TITLE__", "Hidden frame").replaceAll("__ID__", "hiddenframe").replaceAll("__NAME__", "hidden_frame").replaceAll("__LABEL__", "Hidden frame field"));
+      case "GET /opener": {
+        // Headless Chrome takes one URL on its command line, so the memory run opens its tabs from here.
+        const n = Math.min(Number(url.searchParams.get("n") ?? "0"), 100);
+        return html(res, `<!doctype html><title>Opener</title><script>for (let i = 0; i < ${n}; i++) window.open("/tab?i=" + i, "_blank", "noopener");</script>`);
+      }
+      case "POST /tabhello":
+        this.tabsLoaded++;
+        return send(res, "application/json", "{}");
       case "GET /tab":
         return html(res, read("tab.html").replaceAll("__N__", url.searchParams.get("i") ?? "0"));
       case "GET /fixture.js":

@@ -19,6 +19,15 @@
     }
   });
 
+  // A sensitive legend inside a shadow root, around a light-DOM radio slotted into it.
+  customElements.define("x-gender", class extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: "closed" });
+      root.innerHTML = "<fieldset><legend>Gender</legend><slot></slot></fieldset>";
+    }
+  });
+
   // An ARIA combobox whose listbox lives in a portal at the end of <body>.
   const dept = document.getElementById("dept");
   const DEPTS = ["Engineering", "Design", "Research"];

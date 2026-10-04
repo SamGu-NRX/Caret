@@ -253,6 +253,7 @@ describe("engine session and page link", () => {
     expect(r("handoff")).toBe("notAllowed");
     expect(r("failed", { before: "a", afterInput: "b", afterBlur: "a", invalid: false, error: null })).toBe("changed");
     expect(r("failed", { before: "a", afterInput: "b", afterBlur: "c", invalid: false, error: null })).toBe("axError");
+    expect(r("failed")).toBe("axError");
     expect(r("excluded")).toBe("secure");
   });
 

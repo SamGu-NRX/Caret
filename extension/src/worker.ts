@@ -13,6 +13,8 @@ const HOST = "ai.caret.bridge";
 const VERSION = chrome.runtime.getManifest().version;
 /** How long a frame has to answer a walk. Assumed: a walk of a large form measured in tens of milliseconds. */
 const FRAME_WALK_MS = 1500;
+/** Border plus padding an <iframe> box may add around its document's viewport. Assumed: UA default is 2 px of border each side. */
+const FRAME_CHROME_PX = 24;
 const instance = crypto.randomUUID();
 const startedAt = Date.now();
 
@@ -136,10 +138,17 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     }),
   );
   const answered = reports.filter((x): x is NonNullable<typeof x> => x !== null).sort((a, b) => a.f.frameId - b.f.frameId);
-  // A frame is kept only when its own script reports the origin the worker derived (a sandboxed srcdoc frame has an
-  // opaque origin, not its parent's: W1 review #8) and, below the top, when its parent shows a visible <iframe> for
-  // it (an iframe hidden by its embedder hides every control inside, which the frame cannot see for itself).
+  // A frame is kept only when its document's own origin (self.origin, which is opaque for a sandboxed frame) is the
+  // one the worker derived from Chrome's URL for it (W1 review #8), and, below the top, when it can be shown to sit in
+  // a visible <iframe> of its parent (#5): its own viewport is more than a pixel each way (an iframe its embedder hides
+  // with display:none or zero size gives its document a 0 by 0 viewport), and one visible parent iframe, not already
+  // matched to a sibling, has its size (the iframe's box less at most FRAME_CHROME_PX of border and padding),
+  // preferring one with the same src. Size, not src alone, so a frame that redirected still matches. Chrome gives
+  // content scripts no frame id for an iframe element (chrome.runtime.getFrameId is undefined there in Chrome 154),
+  // so a sibling hidden only by opacity, visibility or clipping that has a visible twin of the same size can take
+  // the twin's match; that case is not closed.
   const kept: typeof answered = [];
+  const used = new Set<string>();
   for (const k of answered.filter((x) => x.f.parentFrameId < 0).concat(answered.filter((x) => x.f.parentFrameId >= 0))) {
     if (k.r.origin !== k.origin) {
       missing.push({ frameId: k.f.frameId, reason: `its document's origin ${k.r.origin} is not ${k.origin}` });
@@ -147,14 +156,19 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     }
     if (k.f.parentFrameId >= 0) {
       const parent = kept.find((p) => p.f.frameId === k.f.parentFrameId);
-      const src = k.f.url.startsWith("about:") ? "about:srcdoc" : (() => {
+      const [vw, vh] = k.r.viewport;
+      const src = k.f.url.startsWith("about:") ? "about:" : (() => {
         const u = new URL(k.f.url);
         return `${u.origin}${u.pathname}`;
       })();
-      if (parent === undefined || !parent.r.iframes.some((i) => i.src === src || (src === "about:srcdoc" && i.src.startsWith("about")))) {
+      const fits = (i: { rect: [number, number, number, number] }): boolean => i.rect[2] - vw >= 0 && i.rect[2] - vw <= FRAME_CHROME_PX && i.rect[3] - vh >= 0 && i.rect[3] - vh <= FRAME_CHROME_PX;
+      const candidates = parent === undefined || vw <= 1 || vh <= 1 ? [] : parent.r.iframes.map((i, n) => ({ i, key: `${parent.f.frameId}:${n}` })).filter((c) => !used.has(c.key) && fits(c.i));
+      const pick = candidates.find((c) => c.i.src.startsWith(src)) ?? candidates[0];
+      if (pick === undefined) {
         missing.push({ frameId: k.f.frameId, reason: "its <iframe> is not visible in the parent frame" });
         continue;
       }
+      used.add(pick.key);
     }
     kept.push(k);
   }

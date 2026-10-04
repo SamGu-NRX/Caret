@@ -5,7 +5,7 @@
 import type { FrameReport, NavChanged, ToContent } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { clean } from "./content/names.ts";
-import { Registry } from "./content/registry.ts";
+import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 
 declare global {
@@ -25,8 +25,8 @@ function srcOf(f: HTMLIFrameElement): string {
 
 function walk(reg: Registry): FrameReport {
   const href = location.href;
-  const histLen = history.length;
-  const out = walkControls((el) => reg.idOf(el), (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, histLen, form: c.form }));
+  const nav = navigationEntry();
+  const out = walkControls((el) => reg.idOf(el), (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form }));
   const active = deepActiveElement();
   let focused: FrameReport["focused"] = null;
   if (active !== null) {
@@ -47,12 +47,18 @@ function walk(reg: Registry): FrameReport {
     return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)];
   };
   return {
-    origin: location.origin,
+    // The document's own origin, not its URL's: opaque ("null") for a sandboxed frame, the parent's for an
+    // about:blank or srcdoc frame that inherits it (W1 review, round 2, #8).
+    origin: self.origin,
     path: location.protocol === "about:" ? location.href : location.pathname,
     title: clean(document.title, 200),
     headings: [...document.querySelectorAll("h1, h2")].filter(visible).slice(0, 10).map((h) => clean(h.textContent, 120)).filter((t) => t !== ""),
     controls: out.controls,
+    // Each visible iframe, so the worker can match child frames to one (worker.ts walk). Chrome gives content scripts
+    // no frame id for an element (chrome.runtime.getFrameId is undefined there in Chrome 154), so the match is by
+    // size and src.
     iframes: [...document.querySelectorAll("iframe")].filter(visible).map((f) => ({ src: srcOf(f), rect: r(f) })),
+    viewport: [window.innerWidth, window.innerHeight],
     excluded: out.excluded,
     truncated: out.truncated,
     focused,
