@@ -21,8 +21,15 @@ const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial|ethnic
 /** Field names and ids that mark a card number or code even without autocomplete. */
 const PAYMENT_NAME = /\b(card.?number|cc.?(num|number|csc|cvc|cvv)|cvc|cvv|csc|security.?code)\b/i;
 
+/** An element's shadow root, open or closed. chrome.dom takes HTML elements only and throws on others (SVG). */
 export function shadowRootOf(el: Element): ShadowRoot | null {
-  return el.shadowRoot ?? (typeof chrome !== "undefined" && chrome.dom?.openOrClosedShadowRoot !== undefined ? (chrome.dom.openOrClosedShadowRoot(el as HTMLElement) as ShadowRoot | null) : null);
+  if (el.shadowRoot !== null) return el.shadowRoot;
+  if (!(el instanceof HTMLElement) || typeof chrome === "undefined" || chrome.dom?.openOrClosedShadowRoot === undefined) return null;
+  try {
+    return (chrome.dom.openOrClosedShadowRoot(el) as ShadowRoot | null) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** The control kind of an element, or null when it is not one Caret reads. */
@@ -91,29 +98,43 @@ export function exclusionOf(el: Element, name: string): PageExclusion | null {
   return null;
 }
 
+/** A clip or clip-path that leaves nothing: clip: rect(0 0 0 0), clip-path: inset(50%) and the like. */
+function clipsToNothing(cs: CSSStyleDeclaration): boolean {
+  const rect = /rect\(\s*(-?[\d.]+)px[ ,]+(-?[\d.]+)px[ ,]+(-?[\d.]+)px[ ,]+(-?[\d.]+)px\s*\)/.exec(cs.clip);
+  if (rect !== null) {
+    const [top, right, bottom, left] = rect.slice(1, 5).map(Number) as [number, number, number, number];
+    if (right - left <= 1 || bottom - top <= 1) return true;
+  }
+  return /inset\(\s*(50|100)%/.test(cs.clipPath) || /circle\(\s*0(px)?\s/.test(`${cs.clipPath} `);
+}
+
 /**
  * Something a person could see: rendered and not transparent (opacity counts: a field at opacity 0 is the hidden
- * field the memo forbids filling, W1 review #5), larger than the 1 px visually-hidden trick, not placed outside
- * everything the document can scroll to, and not clipped away by an ancestor with overflow hidden or clip. A
- * scrolling ancestor (overflow auto or scroll) does not hide what it holds; the user can scroll to it.
+ * field the memo forbids filling, W1 review #5), not clipped to nothing by its own clip or clip-path, not placed
+ * outside everything the document can scroll to, and with more than one pixel each way left once every ancestor
+ * with overflow hidden or clip has cut it (the visually-hidden pattern: a 1 px box, or a 1 px wrapper). A scrolling
+ * ancestor (overflow auto or scroll) does not hide what it holds; the user can scroll to it.
  */
 export function visible(el: Element): boolean {
   if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
   const r = el.getBoundingClientRect();
-  if (r.width <= 1 || r.height <= 1) return false;
+  if (clipsToNothing(getComputedStyle(el))) return false;
+  const doc = document.documentElement;
   const left = r.left + window.scrollX;
   const top = r.top + window.scrollY;
-  const doc = document.documentElement;
   if (left + r.width <= 0 || top + r.height <= 0) return false;
   if (left >= Math.max(doc.scrollWidth, window.innerWidth) || top >= Math.max(doc.scrollHeight, window.innerHeight)) return false;
+  let [x0, y0, x1, y1] = [r.left, r.top, r.right, r.bottom];
   for (let p = composedParent(el); p !== null && p !== doc; p = composedParent(p)) {
     const cs = getComputedStyle(p);
+    if (clipsToNothing(cs)) return false;
     const clips = (v: string): boolean => v === "hidden" || v === "clip";
     if (!clips(cs.overflowX) && !clips(cs.overflowY)) continue;
     const b = p.getBoundingClientRect();
-    if ((clips(cs.overflowX) && (r.right <= b.left || r.left >= b.right)) || (clips(cs.overflowY) && (r.bottom <= b.top || r.top >= b.bottom))) return false;
+    if (clips(cs.overflowX)) [x0, x1] = [Math.max(x0, b.left), Math.min(x1, b.right)];
+    if (clips(cs.overflowY)) [y0, y1] = [Math.max(y0, b.top), Math.min(y1, b.bottom)];
   }
-  return true;
+  return x1 - x0 > 1 && y1 - y0 > 1;
 }
 
 function rectOf(el: Element): Rect {

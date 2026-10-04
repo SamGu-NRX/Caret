@@ -25,16 +25,20 @@ func fail(_ s: String) -> Never {
     exit(1)
 }
 
-/// The browser that launched this host: its parent process.
+/// The browser that launched this host: its parent process. LaunchServices does not know a headless browser, so the
+/// bundle is also found from the executable's path (".../Name.app/Contents/MacOS/Name").
 func browserRef() -> BrowserRef {
     let ppid = getppid()
     let app = NSRunningApplication(processIdentifier: ppid)
-    var name = app?.localizedName ?? ""
-    if name.isEmpty {
-        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        if proc_pidpath(ppid, &buf, UInt32(buf.count)) > 0 { name = (String(cString: buf) as NSString).lastPathComponent }
-    }
-    return BrowserRef(pid: ppid, bundleId: app?.bundleIdentifier ?? "unknown", name: name.isEmpty ? "unknown" : name)
+    var path = ""
+    var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+    if proc_pidpath(ppid, &buf, UInt32(buf.count)) > 0 { path = String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self) }
+    var bundle: Bundle?
+    if let r = path.range(of: ".app/Contents/MacOS/", options: .backwards) { bundle = Bundle(path: String(path[..<r.lowerBound]) + ".app") }
+    let bundleId = app?.bundleIdentifier ?? bundle?.bundleIdentifier ?? "unknown"
+    var name = app?.localizedName ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? ""
+    if name.isEmpty { name = (path as NSString).lastPathComponent }
+    return BrowserRef(pid: ppid, bundleId: bundleId, name: name.isEmpty ? "unknown" : name)
 }
 
 /// Lines from the helper's socket, read with a deadline during the handshake and without one after.
@@ -83,7 +87,11 @@ final class FrameOut: @unchecked Sendable {
     private let lock = NSLock()
     func send(_ payload: Data) {
         lock.lock(); defer { lock.unlock() }
-        FileHandle.standardOutput.write(NativeFrame.encode(payload))
+        // The throwing write: Chrome closing the pipe ends the bridge quietly instead of raising an exception.
+        do { try FileHandle.standardOutput.write(contentsOf: NativeFrame.encode(payload)) } catch {
+            log("the extension's port is gone")
+            exit(0)
+        }
     }
 }
 
