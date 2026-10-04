@@ -17,6 +17,7 @@ import type { ActAnswer, ActVerb, FrameReport, NavChanged, ToContent, UserActed 
 import { GrantTable } from "./shared/grants.ts";
 import { classifyPress } from "./shared/risk.ts";
 import { NavGens, frameOrigin } from "./worker/frames.ts";
+import { composeFrames, isCaptchaUrl, type CaptchaFrame } from "./worker/compose.ts";
 import { Chunks, parseFromHelper, type FromHelper } from "./worker/wire.ts";
 
 const HOST = "ai.caret.bridge";
@@ -183,6 +184,7 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   const top = frameOrigin(frames, 0);
   if (top !== null && sitesOff.has(top)) return result(id, { outcome: "siteOff", detail: `Caret is off on ${top}` });
   const missing: { frameId: number; reason: string }[] = [];
+  const captchas: CaptchaFrame[] = [];
   const reports = await Promise.all(
     frames.map(async (f) => {
       const origin = frameOrigin(frames, f.frameId);
@@ -193,6 +195,14 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       // Not asked at all: a frame on a site Caret is off for is never walked.
       if (sitesOff.has(origin)) {
         missing.push({ frameId: f.frameId, reason: "Caret is off on this site" });
+        return null;
+      }
+      // A captcha frame is never walked; only its viewport is asked, for the frame count (compose.ts, W4).
+      if (isCaptchaUrl(f.url)) {
+        const msg: ToContent = { caret: 1, op: "viewport" };
+        const v = (await withTimeout(chrome.tabs.sendMessage(tab.id as number, msg, { frameId: f.frameId, documentId: f.documentId }), FRAME_WALK_MS, `frame ${f.frameId}`).catch(() => null)) as unknown;
+        const ok = Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === "number" && Number.isFinite(n));
+        captchas.push({ f, viewport: ok ? (v as [number, number]) : null });
         return null;
       }
       try {
@@ -213,57 +223,11 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   // window does.
   const [tabNow, lastFocused] = await Promise.all([chrome.tabs.get(tab.id).catch(() => undefined), chrome.windows.getLastFocused().catch(() => undefined)]);
   if (tabNow === undefined) return result(id, { outcome: "noElement", detail: `tab ${tab.id} closed during the walk` });
-  const answered = reports.filter((x): x is NonNullable<typeof x> => x !== null).sort((a, b) => a.f.frameId - b.f.frameId);
-  // A frame is kept only when its document's own origin (self.origin, which is opaque for a sandboxed frame) is the
-  // one the worker derived from Chrome's URL for it (W1 review #8), and, below the top, when it can be shown to sit in
-  // a visible <iframe> of its parent (#5). Chrome gives content scripts no frame id for an iframe element
-  // (chrome.runtime.getFrameId is undefined there in Chrome 154), so identity is argued from counts and sizes, and
-  // where that argument fails every child of the parent is dropped:
-  //   - a child whose own viewport is a pixel or less sits in an iframe hidden by display:none or zero size, and is
-  //     dropped by itself;
-  //   - every other child, answered or not, is "sized". If a parent has more sized children than visible iframes,
-  //     some sized child is hidden and nothing says which, so all of that parent's children are dropped (review
-  //     round 3: a decoy iframe sized to vouch for a hidden one);
-  //   - otherwise each sized child must take a distinct visible iframe whose content box is exactly its viewport
-  //     (src preferred), or it is dropped.
-  const kept: typeof answered = [];
-  const used = new Set<string>();
-  const sizedChildren = (parentId: number): number =>
-    frames.filter((f) => f.parentFrameId === parentId).filter((f) => {
-      const a = answered.find((x) => x.f.frameId === f.frameId);
-      return a === undefined || (a.r.viewport[0] > 1 && a.r.viewport[1] > 1);
-    }).length;
-  for (const k of answered.filter((x) => x.f.parentFrameId < 0).concat(answered.filter((x) => x.f.parentFrameId >= 0))) {
-    if (k.r.origin !== k.origin) {
-      missing.push({ frameId: k.f.frameId, reason: `its document's origin ${k.r.origin} is not ${k.origin}` });
-      continue;
-    }
-    if (k.f.parentFrameId >= 0) {
-      const parent = kept.find((p) => p.f.frameId === k.f.parentFrameId);
-      const [vw, vh] = k.r.viewport;
-      if (parent === undefined || vw <= 1 || vh <= 1) {
-        missing.push({ frameId: k.f.frameId, reason: "its <iframe> is not visible in the parent frame" });
-        continue;
-      }
-      if (sizedChildren(parent.f.frameId) > parent.r.iframes.length) {
-        missing.push({ frameId: k.f.frameId, reason: "its parent holds more frames than visible iframes, so which are seen cannot be told" });
-        continue;
-      }
-      const src = k.f.url.startsWith("about:") ? "about:" : (() => {
-        const u = new URL(k.f.url);
-        return `${u.origin}${u.pathname}`;
-      })();
-      const candidates = parent.r.iframes.map((i, n) => ({ i, key: `${parent.f.frameId}:${n}` })).filter((c) => !used.has(c.key) && Math.abs(c.i.inner[0] - vw) <= 1 && Math.abs(c.i.inner[1] - vh) <= 1);
-      const pick = candidates.find((c) => c.i.src.startsWith(src)) ?? candidates[0];
-      if (pick === undefined) {
-        missing.push({ frameId: k.f.frameId, reason: "no visible <iframe> in the parent has its size" });
-        continue;
-      }
-      used.add(pick.key);
-    }
-    kept.push(k);
-  }
-  kept.sort((a, b) => a.f.frameId - b.f.frameId);
+  const answered = reports.filter((x): x is NonNullable<typeof x> => x !== null);
+  // Which answered frames are kept, and why the others are not: compose.ts.
+  const composed = composeFrames(frames, answered, captchas);
+  const kept = composed.kept;
+  missing.push(...composed.missing);
   if (kept.length === 0) return result(id, { outcome: "noElement", detail: `no frame of tab ${tab.id} answered: ${missing.map((m) => m.reason).join("; ")}` });
   const focusedFrame = kept.filter((k) => k.r.focused !== null).sort((a, b) => Number(b.r.hasFocus) - Number(a.r.hasFocus))[0];
   send({

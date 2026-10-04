@@ -112,6 +112,8 @@ export interface FrameReport {
  */
 export type ToContent =
   | { caret: 1; op: "walk" }
+  /** The frame's viewport only, [innerWidth, innerHeight]: asked of a captcha frame, which is never walked (W4). */
+  | { caret: 1; op: "viewport" }
   | { caret: 1; op: "act"; verb: ActVerb; deadline: number; guardUntil: number }
   | { caret: 1; op: "guard"; until: number };
 
