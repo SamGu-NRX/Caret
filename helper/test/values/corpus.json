@@ -1,0 +1,1951 @@
+{
+  "about": "Written on 2026-10-04 by a separate agent from action-engine plan section 4 and the contract only, without seeing the resolver; expected instants checked by that agent with Python zoneinfo and units with fractions. Reviewed by the D2-03 builder: every expectation kept as written; identifier expectations number-20, number-21, number-22 were bare strings and are wrapped as resolved values.",
+  "version": 1,
+  "defaults": {
+    "context": {
+      "locale": "en-US",
+      "timeZone": "America/Chicago",
+      "referenceInstant": "2026-10-05T15:00:00Z"
+    }
+  },
+  "cases": [
+    {
+      "id": "date-01",
+      "category": "date",
+      "op": "date",
+      "input": "2026-03-04",
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-03-04"
+      },
+      "why": "ISO date needs no source locale"
+    },
+    {
+      "id": "date-02",
+      "category": "date",
+      "op": "date",
+      "input": "03/04/2026",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-03-04"
+      },
+      "why": "en-US numeric date is month/day/year"
+    },
+    {
+      "id": "date-03",
+      "category": "date",
+      "op": "date",
+      "input": "03/04/2026",
+      "context": {
+        "sourceLocale": "en-GB"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-04-03"
+      },
+      "why": "en-GB numeric date is day/month/year"
+    },
+    {
+      "id": "date-04",
+      "category": "date",
+      "op": "date",
+      "input": "03/04/2026",
+      "expect": {
+        "kind": "ask_or_unsupported"
+      },
+      "why": "03/04 with unknown source locale is ambiguous; section 4 does not choose ask or refuse for dates"
+    },
+    {
+      "id": "date-05",
+      "category": "date",
+      "op": "date",
+      "input": "03/04/2026",
+      "context": {
+        "locale": "en-GB",
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-03-04"
+      },
+      "why": "user display locale never decides how source text is read"
+    },
+    {
+      "id": "date-06",
+      "category": "date",
+      "op": "date",
+      "input": "04.03.2026",
+      "context": {
+        "sourceLocale": "de-DE"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-03-04"
+      },
+      "why": "de-DE numeric date is day.month.year"
+    },
+    {
+      "id": "date-07",
+      "category": "date",
+      "op": "date",
+      "input": "2024-02-29",
+      "expect": {
+        "kind": "resolved",
+        "value": "2024-02-29"
+      },
+      "why": "Feb 29 exists in leap year 2024"
+    },
+    {
+      "id": "date-08",
+      "category": "date",
+      "op": "date",
+      "input": "2026-02-29",
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "Feb 29 in non-leap 2026; overflow: reject"
+    },
+    {
+      "id": "date-09",
+      "category": "date",
+      "op": "date",
+      "input": "February 29, 2024",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2024-02-29"
+      },
+      "why": "English month form, leap year"
+    },
+    {
+      "id": "date-10",
+      "category": "date",
+      "op": "date",
+      "input": "February 29, 2026",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "English month form, non-leap year; overflow: reject"
+    },
+    {
+      "id": "date-11",
+      "category": "date",
+      "op": "date",
+      "input": "29/02/2024",
+      "context": {
+        "sourceLocale": "en-GB"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2024-02-29"
+      },
+      "why": "en-GB numeric leap day"
+    },
+    {
+      "id": "date-12",
+      "category": "date",
+      "op": "date",
+      "input": "29/02/2026",
+      "context": {
+        "sourceLocale": "en-GB"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "en-GB numeric Feb 29 in non-leap year; overflow: reject"
+    },
+    {
+      "id": "date-13",
+      "category": "date",
+      "op": "date",
+      "input": "2000-02-29",
+      "expect": {
+        "kind": "resolved",
+        "value": "2000-02-29"
+      },
+      "why": "2000 is a leap year (divisible by 400)"
+    },
+    {
+      "id": "date-14",
+      "category": "date",
+      "op": "date",
+      "input": "1900-02-29",
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "1900 is not a leap year (century rule); overflow: reject"
+    },
+    {
+      "id": "date-15",
+      "category": "date",
+      "op": "date",
+      "input": "2100-02-29",
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "2100 is not a leap year (century rule); overflow: reject"
+    },
+    {
+      "id": "date-16",
+      "category": "date",
+      "op": "date",
+      "input": "2026-04-31",
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "April has 30 days; overflow: reject"
+    },
+    {
+      "id": "date-17",
+      "category": "date",
+      "op": "date",
+      "input": "13/04/2026",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "en-US reads 13 as the month; overflow: reject"
+    },
+    {
+      "id": "date-18",
+      "category": "date",
+      "op": "date",
+      "input": "December 31, 2026",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-12-31"
+      },
+      "why": "English month form, last day of year"
+    },
+    {
+      "id": "date-19",
+      "category": "date",
+      "op": "date",
+      "input": "31 December 2026",
+      "context": {
+        "sourceLocale": "en-GB"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-12-31"
+      },
+      "why": "English day-month-year form"
+    },
+    {
+      "id": "date-20",
+      "category": "date",
+      "op": "date",
+      "input": "2027-01-01",
+      "expect": {
+        "kind": "resolved",
+        "value": "2027-01-01"
+      },
+      "why": "ISO date, first day of year"
+    },
+    {
+      "id": "date-21",
+      "category": "date",
+      "op": "date",
+      "input": "Thursday, October 22, 2026",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-10-22"
+      },
+      "why": "English weekday form consistent with the date"
+    },
+    {
+      "id": "date-22",
+      "category": "date",
+      "op": "date",
+      "input": "2026-10-20",
+      "context": {
+        "timeZone": "Asia/Tokyo",
+        "sourceTimeZone": "America/Los_Angeles"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-10-20"
+      },
+      "why": "date-only value stays a civil date even when source and user zones are a day apart"
+    },
+    {
+      "id": "date-23",
+      "category": "date",
+      "op": "date",
+      "input": "Oct 20, 2026",
+      "context": {
+        "sourceLocale": "en-US",
+        "timeZone": "Pacific/Kiritimati",
+        "sourceTimeZone": "Pacific/Pago_Pago"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-10-20"
+      },
+      "why": "date-only value is not shifted across a 25-hour zone gap"
+    },
+    {
+      "id": "date-24",
+      "category": "date",
+      "op": "date",
+      "input": "2026-02-28",
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-02-28"
+      },
+      "why": "last day of February in a non-leap year"
+    },
+    {
+      "id": "zone-01",
+      "category": "zone",
+      "op": "moment",
+      "input": "Mar 8, 2026 2:30 AM PT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask",
+        "alternatives": [
+          {
+            "instant": "2026-03-08T09:30:00Z"
+          },
+          {
+            "instant": "2026-03-08T10:30:00Z"
+          }
+        ]
+      },
+      "why": "spring-forward gap in Los Angeles: ask with the instants for PST and PDT readings; never auto-shift"
+    },
+    {
+      "id": "zone-02",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-03-08 02:30 America/Los_Angeles",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask",
+        "alternatives": [
+          {
+            "instant": "2026-03-08T09:30:00Z"
+          },
+          {
+            "instant": "2026-03-08T10:30:00Z"
+          }
+        ]
+      },
+      "why": "spring-forward gap, IANA form; disambiguation: reject"
+    },
+    {
+      "id": "zone-03",
+      "category": "zone",
+      "op": "moment",
+      "input": "Nov 1, 2026 1:30 AM PT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask",
+        "alternatives": [
+          {
+            "instant": "2026-11-01T08:30:00Z"
+          },
+          {
+            "instant": "2026-11-01T09:30:00Z"
+          }
+        ]
+      },
+      "why": "fall-back repeat in Los Angeles: ask with both real instants (PDT, then PST)"
+    },
+    {
+      "id": "zone-04",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-11-01 01:30 America/Los_Angeles",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask",
+        "alternatives": [
+          {
+            "instant": "2026-11-01T08:30:00Z"
+          },
+          {
+            "instant": "2026-11-01T09:30:00Z"
+          }
+        ]
+      },
+      "why": "fall-back repeat, IANA form; disambiguation: reject"
+    },
+    {
+      "id": "zone-05",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-03-08 03:30 America/Los_Angeles",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-03-08T10:30:00Z",
+          "zone": "America/Los_Angeles"
+        }
+      },
+      "why": "first hour after the gap is unambiguous PDT"
+    },
+    {
+      "id": "zone-06",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-11-01 02:30 America/Los_Angeles",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-11-01T10:30:00Z",
+          "zone": "America/Los_Angeles"
+        }
+      },
+      "why": "02:30 after fall-back occurs once, in PST"
+    },
+    {
+      "id": "zone-07",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM PT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T22:00:00Z",
+          "zone": "America/Los_Angeles"
+        }
+      },
+      "why": "PT means America/Los_Angeles (PDT that day); 3:00 PM is 15:00"
+    },
+    {
+      "id": "zone-08",
+      "category": "zone",
+      "op": "moment",
+      "input": "Jan 15, 2026 3:00 PM PT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-01-15T23:00:00Z",
+          "zone": "America/Los_Angeles"
+        }
+      },
+      "why": "PT follows the region, so PST in January"
+    },
+    {
+      "id": "zone-09",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM ET",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T19:00:00Z",
+          "zone": "America/New_York"
+        }
+      },
+      "why": "ET maps to America/New_York (CLDR America_Eastern golden zone)"
+    },
+    {
+      "id": "zone-10",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM CT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T20:00:00Z",
+          "zone": "America/Chicago"
+        }
+      },
+      "why": "CT maps to America/Chicago (CLDR America_Central golden zone)"
+    },
+    {
+      "id": "zone-11",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM MT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T21:00:00Z",
+          "zone": "America/Denver"
+        }
+      },
+      "why": "MT maps to America/Denver (CLDR America_Mountain golden zone), MDT that day"
+    },
+    {
+      "id": "zone-12",
+      "category": "zone",
+      "op": "moment",
+      "input": "Jan 15, 2026 3:00 PM PST",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-01-15T23:00:00Z",
+          "zone": "-08:00"
+        }
+      },
+      "why": "PST is the fixed offset -08:00, not a synonym for PT"
+    },
+    {
+      "id": "zone-13",
+      "category": "zone",
+      "op": "moment",
+      "input": "Jul 15, 2026 3:00 PM PDT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-07-15T22:00:00Z",
+          "zone": "-07:00"
+        }
+      },
+      "why": "PDT is the fixed offset -07:00"
+    },
+    {
+      "id": "zone-14",
+      "category": "zone",
+      "op": "moment",
+      "input": "Nov 1, 2026 1:30 AM PST",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-11-01T09:30:00Z",
+          "zone": "-08:00"
+        }
+      },
+      "why": "an explicit fixed offset removes the fall-back ambiguity"
+    },
+    {
+      "id": "zone-15",
+      "category": "zone",
+      "op": "moment",
+      "input": "Nov 1, 2026 1:30 AM PDT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-11-01T08:30:00Z",
+          "zone": "-07:00"
+        }
+      },
+      "why": "an explicit fixed offset removes the fall-back ambiguity"
+    },
+    {
+      "id": "zone-16",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-07-15T15:00:00-08:00[America/Los_Angeles]",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask"
+      },
+      "why": "offset -08:00 conflicts with Los Angeles on that date (PDT, -07:00): conflicting region/offset/date is an ask"
+    },
+    {
+      "id": "zone-17",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-07-15T15:00:00-07:00[America/Los_Angeles]",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-07-15T22:00:00Z",
+          "zone": "America/Los_Angeles"
+        }
+      },
+      "why": "offset consistent with region and date passes the offset check"
+    },
+    {
+      "id": "zone-18",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM UTC+2",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T13:00:00Z",
+          "zone": "+02:00"
+        }
+      },
+      "why": "numeric UTC offset is a fixed offset"
+    },
+    {
+      "id": "zone-19",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-10-20 15:00 +02:00",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T13:00:00Z",
+          "zone": "+02:00"
+        }
+      },
+      "why": "ISO-style numeric offset"
+    },
+    {
+      "id": "zone-20",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM Asia/Kolkata",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T09:30:00Z",
+          "zone": "Asia/Kolkata"
+        }
+      },
+      "why": "IANA zone with a half-hour offset (+05:30)"
+    },
+    {
+      "id": "zone-21",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM IST",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": null
+      },
+      "expect": {
+        "kind": "ask"
+      },
+      "why": "IST is ambiguous (India, Israel, Ireland) and the source zone is unknown: ask"
+    },
+    {
+      "id": "zone-22",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM IST",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "Asia/Kolkata"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T09:30:00Z"
+        }
+      },
+      "why": "IST with source region Asia/Kolkata is India Standard Time (+05:30)"
+    },
+    {
+      "id": "zone-23",
+      "category": "zone",
+      "op": "moment",
+      "input": "Jul 15, 2026 3:00 PM IST",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "Europe/Dublin"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-07-15T14:00:00Z"
+        }
+      },
+      "why": "IST with source region Europe/Dublin is Irish Standard Time (+01:00 in summer)"
+    },
+    {
+      "id": "zone-24",
+      "category": "zone",
+      "op": "moment",
+      "input": "Jan 15, 2026 3:00 PM CST",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": null
+      },
+      "expect": {
+        "kind": "ask"
+      },
+      "why": "CST is ambiguous (US Central, China, Cuba) and the source zone is unknown: ask"
+    },
+    {
+      "id": "zone-25",
+      "category": "zone",
+      "op": "moment",
+      "input": "Jan 15, 2026 3:00 PM CST",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/Chicago"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-01-15T21:00:00Z"
+        }
+      },
+      "why": "CST with source region America/Chicago is US Central Standard Time (-06:00)"
+    },
+    {
+      "id": "zone-26",
+      "category": "zone",
+      "op": "moment",
+      "input": "Jan 15, 2026 3:00 PM CST",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "Asia/Shanghai"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-01-15T07:00:00Z"
+        }
+      },
+      "why": "CST with source region Asia/Shanghai is China Standard Time (+08:00)"
+    },
+    {
+      "id": "zone-27",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T20:00:00Z",
+          "zone": "America/Chicago"
+        }
+      },
+      "why": "no zone in text and sourceTimeZone absent: read in the user's zone"
+    },
+    {
+      "id": "zone-28",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "Asia/Kolkata"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T09:30:00Z",
+          "zone": "Asia/Kolkata"
+        }
+      },
+      "why": "no zone in text: read in the stated source zone"
+    },
+    {
+      "id": "zone-29",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "+02:00"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T13:00:00Z",
+          "zone": "+02:00"
+        }
+      },
+      "why": "no zone in text: read in a fixed-offset source zone"
+    },
+    {
+      "id": "zone-30",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": null
+      },
+      "expect": {
+        "kind": "ask_or_unsupported"
+      },
+      "why": "no zone in text and the source zone cannot be established; the instant is unknown"
+    },
+    {
+      "id": "zone-31",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-03-29 02:30 Europe/Berlin",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask",
+        "alternatives": [
+          {
+            "instant": "2026-03-29T00:30:00Z"
+          },
+          {
+            "instant": "2026-03-29T01:30:00Z"
+          }
+        ]
+      },
+      "why": "spring-forward gap in Berlin: ask with CET and CEST readings"
+    },
+    {
+      "id": "zone-32",
+      "category": "zone",
+      "op": "moment",
+      "input": "2026-10-25 02:30 Europe/Berlin",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask",
+        "alternatives": [
+          {
+            "instant": "2026-10-25T00:30:00Z"
+          },
+          {
+            "instant": "2026-10-25T01:30:00Z"
+          }
+        ]
+      },
+      "why": "fall-back repeat in Berlin: ask with both real instants"
+    },
+    {
+      "id": "zone-33",
+      "category": "zone",
+      "op": "moment",
+      "input": "Oct 20, 2026 3:00 PM UTC",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-20T15:00:00Z"
+        }
+      },
+      "why": "UTC is offset zero"
+    },
+    {
+      "id": "relative-01",
+      "category": "relative",
+      "op": "date",
+      "input": "tomorrow",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/Chicago",
+        "referenceInstant": "2026-10-05T15:00:00Z"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-10-06"
+      },
+      "why": "tomorrow counts from the send instant in the sender's zone (Oct 5 10:00 CDT)"
+    },
+    {
+      "id": "relative-02",
+      "category": "relative",
+      "op": "date",
+      "input": "tomorrow",
+      "context": {
+        "sourceLocale": "en-US",
+        "timeZone": "America/Chicago",
+        "sourceTimeZone": "Asia/Tokyo",
+        "referenceInstant": "2026-10-05T23:30:00Z"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-10-07"
+      },
+      "why": "sender in Tokyo is already on Oct 6 while the user in Chicago is on Oct 5; tomorrow follows the sender"
+    },
+    {
+      "id": "relative-03",
+      "category": "relative",
+      "op": "date",
+      "input": "tomorrow",
+      "context": {
+        "sourceLocale": "en-US",
+        "timeZone": "Europe/London",
+        "sourceTimeZone": "America/Los_Angeles",
+        "referenceInstant": "2026-10-06T03:00:00Z"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-10-06"
+      },
+      "why": "sender in Los Angeles is still on Oct 5 while the user in London is on Oct 6; tomorrow follows the sender"
+    },
+    {
+      "id": "relative-04",
+      "category": "relative",
+      "op": "date",
+      "input": "tomorrow",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/Chicago",
+        "referenceInstant": "2026-12-31T20:00:00Z"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2027-01-01"
+      },
+      "why": "tomorrow across a year boundary in the sender's zone"
+    },
+    {
+      "id": "relative-05",
+      "category": "relative",
+      "op": "date",
+      "input": "today",
+      "context": {
+        "sourceLocale": "en-US",
+        "timeZone": "Europe/London",
+        "sourceTimeZone": "America/Los_Angeles",
+        "referenceInstant": "2026-10-06T03:00:00Z"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "2026-10-05"
+      },
+      "why": "today is the sender's date at the send instant, not the user's"
+    },
+    {
+      "id": "relative-06",
+      "category": "relative",
+      "op": "date",
+      "input": "tomorrow",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/Chicago",
+        "referenceInstant": null
+      },
+      "expect": {
+        "kind": "ask"
+      },
+      "why": "send instant unknown: ask"
+    },
+    {
+      "id": "relative-07",
+      "category": "relative",
+      "op": "date",
+      "input": "tomorrow",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": null
+      },
+      "expect": {
+        "kind": "ask"
+      },
+      "why": "sender's zone unknown: ask"
+    },
+    {
+      "id": "relative-08",
+      "category": "relative",
+      "op": "moment",
+      "input": "tomorrow 3:00 PM",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/Chicago",
+        "referenceInstant": "2026-10-05T15:00:00Z"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "instant": "2026-10-06T20:00:00Z",
+          "zone": "America/Chicago"
+        }
+      },
+      "why": "relative day plus explicit time in the sender's zone"
+    },
+    {
+      "id": "relative-09",
+      "category": "relative",
+      "op": "moment",
+      "input": "tomorrow 1:30 AM",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/Los_Angeles",
+        "referenceInstant": "2026-10-31T20:00:00Z"
+      },
+      "expect": {
+        "kind": "ask",
+        "alternatives": [
+          {
+            "instant": "2026-11-01T08:30:00Z"
+          },
+          {
+            "instant": "2026-11-01T09:30:00Z"
+          }
+        ]
+      },
+      "why": "tomorrow lands on the Los Angeles fall-back repeat: ask with both instants"
+    },
+    {
+      "id": "relative-10",
+      "category": "relative",
+      "op": "date",
+      "input": "next Friday",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/Chicago",
+        "referenceInstant": "2026-10-05T15:00:00Z"
+      },
+      "expect": {
+        "kind": "ask_or_unsupported"
+      },
+      "why": "\"next Friday\" is a listed ambiguity case"
+    },
+    {
+      "id": "relative-11",
+      "category": "relative",
+      "op": "moment",
+      "input": "tomorrow at 3",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/Chicago",
+        "referenceInstant": "2026-10-05T15:00:00Z"
+      },
+      "expect": {
+        "kind": "ask_or_unsupported"
+      },
+      "why": "bare \"at 3\" is a listed ambiguity case (AM or PM)"
+    },
+    {
+      "id": "relative-12",
+      "category": "relative",
+      "op": "interval",
+      "input": "Oct 20, 2026 at 3:00 PM PT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask_or_unsupported"
+      },
+      "why": "missing duration is a listed ambiguity case; no implicit 30-minute default"
+    },
+    {
+      "id": "relative-13",
+      "category": "relative",
+      "op": "interval",
+      "input": "Oct 20, 2026 10:00 PM – 2:00 AM PT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask_or_unsupported"
+      },
+      "why": "overnight range without a clear end date is a listed ambiguity case"
+    },
+    {
+      "id": "relative-14",
+      "category": "relative",
+      "op": "interval",
+      "input": "Oct 20, 2026 3:00 PM – 4:30 PM PT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "start": "2026-10-20T22:00:00Z",
+          "end": "2026-10-20T23:30:00Z"
+        }
+      },
+      "why": "explicit start and end on one date"
+    },
+    {
+      "id": "relative-15",
+      "category": "relative",
+      "op": "interval",
+      "input": "Oct 20, 2026 10:00 PM PT – Oct 21, 2026 2:00 AM PT",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "start": "2026-10-21T05:00:00Z",
+          "end": "2026-10-21T09:00:00Z"
+        }
+      },
+      "why": "overnight range with an explicit end date is clear"
+    },
+    {
+      "id": "relative-16",
+      "category": "relative",
+      "op": "interval",
+      "input": "Oct 20, 2026 3:00 PM – 4:00 PM",
+      "context": {
+        "sourceLocale": "en-US",
+        "sourceTimeZone": "America/New_York"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "start": "2026-10-20T19:00:00Z",
+          "end": "2026-10-20T20:00:00Z"
+        }
+      },
+      "why": "range with no zone in text is read in the source zone"
+    },
+    {
+      "id": "number-01",
+      "category": "number",
+      "op": "number",
+      "input": "1,234.56",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "123456",
+          "scale": 2
+        }
+      },
+      "why": "en-US: comma groups, dot is decimal"
+    },
+    {
+      "id": "number-02",
+      "category": "number",
+      "op": "number",
+      "input": "1.234,56",
+      "context": {
+        "sourceLocale": "de-DE"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "123456",
+          "scale": 2
+        }
+      },
+      "why": "de-DE: dot groups, comma is decimal"
+    },
+    {
+      "id": "number-03",
+      "category": "number",
+      "op": "number",
+      "input": "1234,5",
+      "context": {
+        "sourceLocale": "fr-FR"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "12345",
+          "scale": 1
+        }
+      },
+      "why": "fr-FR decimal comma"
+    },
+    {
+      "id": "number-04",
+      "category": "number",
+      "op": "number",
+      "input": "1,234",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "1234",
+          "scale": 0
+        }
+      },
+      "why": "en-US comma is a group separator"
+    },
+    {
+      "id": "number-05",
+      "category": "number",
+      "op": "number",
+      "input": "1,234",
+      "context": {
+        "sourceLocale": "de-DE"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "1234",
+          "scale": 3
+        }
+      },
+      "why": "de-DE comma is the decimal separator"
+    },
+    {
+      "id": "number-06",
+      "category": "number",
+      "op": "number",
+      "input": "1,234",
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "source locale unknown: 1234 or 1.234; reject ambiguous source locale"
+    },
+    {
+      "id": "number-07",
+      "category": "number",
+      "op": "number",
+      "input": "1 234 567,8",
+      "context": {
+        "sourceLocale": "fr-FR"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "12345678",
+          "scale": 1
+        }
+      },
+      "why": "fr-FR groups with U+202F narrow no-break space (CLDR)"
+    },
+    {
+      "id": "number-08",
+      "category": "number",
+      "op": "number",
+      "input": "1 234,56",
+      "context": {
+        "sourceLocale": "ru-RU"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "123456",
+          "scale": 2
+        }
+      },
+      "why": "ru-RU groups with U+00A0 no-break space (CLDR)"
+    },
+    {
+      "id": "number-09",
+      "category": "number",
+      "op": "number",
+      "input": "1.50",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "150",
+          "scale": 2
+        }
+      },
+      "why": "scale counts written decimal digits, so trailing zero is kept"
+    },
+    {
+      "id": "number-10",
+      "category": "number",
+      "op": "number",
+      "input": "-1,234.56",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "-123456",
+          "scale": 2
+        }
+      },
+      "why": "negative number"
+    },
+    {
+      "id": "number-11",
+      "category": "number",
+      "op": "number",
+      "input": "0.001",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "1",
+          "scale": 3
+        }
+      },
+      "why": "leading zeros drop from the coefficient"
+    },
+    {
+      "id": "number-12",
+      "category": "number",
+      "op": "number",
+      "input": "9007199254740993",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "9007199254740993",
+          "scale": 0
+        }
+      },
+      "why": "above 2^53: BigInt coefficient keeps every digit"
+    },
+    {
+      "id": "number-13",
+      "category": "number",
+      "op": "number",
+      "input": "1,23,45,678.9",
+      "context": {
+        "sourceLocale": "en-IN"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "123456789",
+          "scale": 1
+        }
+      },
+      "why": "en-IN lakh/crore grouping"
+    },
+    {
+      "id": "number-14",
+      "category": "number",
+      "op": "number",
+      "input": "12,34,567",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "en-US groups by three; this grouping is malformed"
+    },
+    {
+      "id": "number-15",
+      "category": "number",
+      "op": "number",
+      "input": "1,2345.6",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "malformed grouping"
+    },
+    {
+      "id": "number-16",
+      "category": "number",
+      "op": "number",
+      "input": "1.234.567,89",
+      "context": {
+        "sourceLocale": "de-DE"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "123456789",
+          "scale": 2
+        }
+      },
+      "why": "de-DE multiple groups"
+    },
+    {
+      "id": "number-17",
+      "category": "number",
+      "op": "number",
+      "input": "1.234,5.6",
+      "context": {
+        "sourceLocale": "de-DE"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "de-DE: group separator after the decimal separator is malformed"
+    },
+    {
+      "id": "number-18",
+      "category": "number",
+      "op": "number",
+      "input": "1,234.56",
+      "context": {
+        "sourceLocale": "de-DE"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "de-DE: dot after the decimal comma is malformed"
+    },
+    {
+      "id": "number-19",
+      "category": "number",
+      "op": "number",
+      "input": "1,000,000.000001",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "coefficient": "1000000000001",
+          "scale": 6
+        }
+      },
+      "why": "exact decimal beyond float precision"
+    },
+    {
+      "id": "number-20",
+      "category": "number",
+      "op": "identifier",
+      "input": "007341",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "007341"
+      },
+      "why": "an ID is a string; leading zeros preserved"
+    },
+    {
+      "id": "number-21",
+      "category": "number",
+      "op": "identifier",
+      "input": "00012345",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "00012345"
+      },
+      "why": "an ID is a string; leading zeros preserved"
+    },
+    {
+      "id": "number-22",
+      "category": "number",
+      "op": "identifier",
+      "input": "0042-0017",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": "0042-0017"
+      },
+      "why": "an ID is a string, not a number or a range"
+    },
+    {
+      "id": "unit-01",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 mi",
+      "to": "km",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "1.609344",
+          "unit": "km"
+        }
+      },
+      "why": "1 mi = 1609.344 m exactly"
+    },
+    {
+      "id": "unit-02",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 in",
+      "to": "cm",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "2.54",
+          "unit": "cm"
+        }
+      },
+      "why": "1 in = 2.54 cm exactly"
+    },
+    {
+      "id": "unit-03",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 lb",
+      "to": "kg",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "0.45359237",
+          "unit": "kg"
+        }
+      },
+      "why": "1 lb = 0.45359237 kg exactly"
+    },
+    {
+      "id": "unit-04",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 oz",
+      "to": "g",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "28.349523125",
+          "unit": "g"
+        }
+      },
+      "why": "avoirdupois oz = 1/16 lb exactly"
+    },
+    {
+      "id": "unit-05",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 gal",
+      "to": "L",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "3.785411784",
+          "unit": "L"
+        }
+      },
+      "why": "US gallon = 231 in^3 = 3.785411784 L exactly"
+    },
+    {
+      "id": "unit-06",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 gal",
+      "to": "fl oz",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "128",
+          "unit": "fl oz"
+        }
+      },
+      "why": "US gallon = 128 US fl oz"
+    },
+    {
+      "id": "unit-07",
+      "category": "unit",
+      "op": "convert",
+      "input": "60 mph",
+      "to": "km/h",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "96.56064",
+          "unit": "km/h"
+        }
+      },
+      "why": "mph to km/h via exact mile"
+    },
+    {
+      "id": "unit-08",
+      "category": "unit",
+      "op": "convert",
+      "input": "90 min",
+      "to": "h",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "1.5",
+          "unit": "h"
+        }
+      },
+      "why": "exact time conversion"
+    },
+    {
+      "id": "unit-09",
+      "category": "unit",
+      "op": "convert",
+      "input": "100 °C",
+      "to": "°F",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "212",
+          "unit": "°F"
+        }
+      },
+      "why": "affine temperature conversion"
+    },
+    {
+      "id": "unit-10",
+      "category": "unit",
+      "op": "convert",
+      "input": "-40 °F",
+      "to": "°C",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "-40",
+          "unit": "°C"
+        }
+      },
+      "why": "affine temperature conversion; scales meet at -40"
+    },
+    {
+      "id": "unit-11",
+      "category": "unit",
+      "op": "convert",
+      "input": "0 °C",
+      "to": "K",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "273.15",
+          "unit": "K"
+        }
+      },
+      "why": "K = °C + 273.15"
+    },
+    {
+      "id": "unit-12",
+      "category": "unit",
+      "op": "convert",
+      "input": "98.6 °F",
+      "to": "°C",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "37",
+          "unit": "°C"
+        }
+      },
+      "why": "exact result has no trailing zeros"
+    },
+    {
+      "id": "unit-13",
+      "category": "unit",
+      "op": "convert",
+      "input": "1,5 km",
+      "to": "m",
+      "context": {
+        "sourceLocale": "de-DE"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "1500",
+          "unit": "m"
+        }
+      },
+      "why": "quantity written with de-DE decimal comma"
+    },
+    {
+      "id": "unit-14",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 m",
+      "to": "ft",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask_or_unsupported"
+      },
+      "why": "1/0.3048 does not terminate; no silent rounding without a precision"
+    },
+    {
+      "id": "unit-15",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 m",
+      "to": "ft",
+      "precision": 2,
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "3.28",
+          "unit": "ft"
+        }
+      },
+      "why": "rounded result with explicit precision 2"
+    },
+    {
+      "id": "unit-16",
+      "category": "unit",
+      "op": "convert",
+      "input": "1.25 in",
+      "to": "cm",
+      "precision": 2,
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "3.18",
+          "unit": "cm"
+        }
+      },
+      "why": "3.175 rounds half away from zero to 3.18"
+    },
+    {
+      "id": "unit-17",
+      "category": "unit",
+      "op": "convert",
+      "input": "-1.25 in",
+      "to": "cm",
+      "precision": 2,
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "-3.18",
+          "unit": "cm"
+        }
+      },
+      "why": "-3.175 rounds half away from zero to -3.18"
+    },
+    {
+      "id": "unit-18",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 in",
+      "to": "cm",
+      "precision": 3,
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "2.540",
+          "unit": "cm"
+        }
+      },
+      "why": "with a precision the value has exactly that many digits"
+    },
+    {
+      "id": "unit-19",
+      "category": "unit",
+      "op": "convert",
+      "input": "70 °F",
+      "to": "°C",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "ask_or_unsupported"
+      },
+      "why": "21.111... does not terminate; no silent rounding"
+    },
+    {
+      "id": "unit-20",
+      "category": "unit",
+      "op": "convert",
+      "input": "70 °F",
+      "to": "°C",
+      "precision": 1,
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "21.1",
+          "unit": "°C"
+        }
+      },
+      "why": "rounded temperature with precision 1"
+    },
+    {
+      "id": "unit-21",
+      "category": "unit",
+      "op": "convert",
+      "input": "5 kg",
+      "to": "L",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "mass to volume: incompatible dimensions"
+    },
+    {
+      "id": "unit-22",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 h",
+      "to": "m",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "time to length: incompatible dimensions"
+    },
+    {
+      "id": "unit-23",
+      "category": "unit",
+      "op": "convert",
+      "input": "$100",
+      "to": "EUR",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "currency conversion is refused"
+    },
+    {
+      "id": "unit-24",
+      "category": "unit",
+      "op": "convert",
+      "input": "100 USD",
+      "to": "USD",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "currencies are known only to be refused, even to the same currency"
+    },
+    {
+      "id": "unit-25",
+      "category": "unit",
+      "op": "convert",
+      "input": "100",
+      "to": "km",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "no inferred units"
+    },
+    {
+      "id": "unit-26",
+      "category": "unit",
+      "op": "convert",
+      "input": "5 furlongs",
+      "to": "m",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "unsupported"
+      },
+      "why": "unit outside the finite table"
+    },
+    {
+      "id": "unit-27",
+      "category": "unit",
+      "op": "convert",
+      "input": "1 fl oz",
+      "to": "mL",
+      "context": {
+        "sourceLocale": "en-US"
+      },
+      "expect": {
+        "kind": "resolved",
+        "value": {
+          "value": "29.5735295625",
+          "unit": "mL"
+        }
+      },
+      "why": "US fl oz = 1/128 US gallon exactly"
+    }
+  ]
+}
