@@ -89,6 +89,29 @@ export function sensitiveKind(label: string | null | undefined, value: string): 
   return labelKind(label) ?? valueKind(value);
 }
 
+/**
+ * Phrases of LABEL_PHRASES that ordinary sentences use for other things ("pin it", "one time", "a token of thanks",
+ * "the routing"), so a sentence naming them does not name a secret. Written for B26's instructions, not measured.
+ */
+const COMMON_IN_SENTENCES = new Set(["pin", "sin", "tin", "swift", "routing", "token", "secret", "bic", "aba", "csc", "bearer", "acct", "one time"]);
+
+/**
+ * The kind a sentence names anywhere in it ("my SSN goes in there too"), or null, and whether it named a Social
+ * Security number in those words. A label names its kind at its end (labelKind); an instruction can name it anywhere.
+ */
+export function mentionedKind(text: string): { kind: SensitiveKind; ssn: boolean } | null {
+  const ws = words(text);
+  for (const [kind, phrases] of LABEL_PHRASES) {
+    for (const p of phrases) {
+      if (COMMON_IN_SENTENCES.has(p.join(" "))) continue;
+      for (let i = 0; i + p.length <= ws.length; i++) {
+        if (p.every((w, j) => ws[i + j] === w)) return { kind, ssn: p[0] === "ssn" || p[0] === "social" };
+      }
+    }
+  }
+  return null;
+}
+
 /** The refusal's wording: "Caret doesn't keep card numbers in memory". */
 export const refusal = (kind: SensitiveKind): string => `Caret doesn't keep ${SENSITIVE_SAYS[kind]} in memory`;
 

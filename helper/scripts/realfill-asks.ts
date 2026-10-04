@@ -22,12 +22,13 @@ import { AskRefused, planAsk, type AskDraft } from "../src/planner/ask.ts";
 import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } from "../src/planner/intent-makers.ts";
 import type { AskIntent } from "../src/planner/intent.ts";
 import { PlannerError } from "../src/planner/validate.ts";
+import { SAYS, SaidError } from "../src/planner/says.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { CANDIDATES, INTENT_ROUTE, WRITER_ROUTE } from "../src/writer/config.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
-import { buildDesk, loadAsks, loadCorpus, nodesFor, T0, type CorpusAsk } from "./realfill-corpus.ts";
+import { buildDesk, loadAsks, loadCorpus, nodesFor, T0, type CorpusAsk, type REFUSE_REASONS } from "./realfill-corpus.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const { values: a } = parseArgs({
@@ -122,6 +123,11 @@ interface Row {
   proposed: Proposed[];
   missing: string[];
   error: string | null;
+  /** The sentence the user reads, and what the failing check found (planner/says.ts SaidError). */
+  says: string | null;
+  detail: string | null;
+  /** For a must-refuse ask that names its reason: whether the sentence is that reason's. */
+  sentenceOk: boolean | null;
   intent: AskIntent | null;
   maker: MakerUse | null;
   /** The scoped fill's answer for each field it asked about, by corpus label, for reading the misses. */
@@ -140,6 +146,8 @@ for (const [i, ask] of asks.entries()) {
   const maker: IntentMaker = a.maker === "jev" ? jevIntentMaker(askJev, { rand: (n) => Math.floor(r() * n) }) : writerIntentMaker(writer, () => offerKey);
   let draft: AskDraft | null = null;
   let error: string | null = null;
+  let says: string | null = null;
+  let detail: string | null = null;
   let intent: AskIntent | null = null;
   let use: MakerUse | null = null;
   try {
@@ -149,6 +157,8 @@ for (const [i, ask] of asks.entries()) {
   } catch (e) {
     if (!(e instanceof PlannerError)) throw e;
     error = `${e.code}: ${e.message}`;
+    says = e.message;
+    detail = e instanceof SaidError ? e.detail : e.message;
     if (e instanceof AskRefused) ((intent = e.intent), (use = e.maker));
   }
   const labelOf = new Map<string, string>();
@@ -174,30 +184,53 @@ for (const [i, ask] of asks.entries()) {
   const missing = wanted.filter((l) => !proposed.some((p) => p.field === l));
   const verdict: Verdict = proposed.length === 0 ? "refused" : ask.expected === "refuse" || proposed.some((p) => !ok(p)) ? "wrong" : missing.length === 0 ? "right" : "partial";
   const fill = (draft?.fill?.fields ?? []).map((f) => ({ field: labelOf.get(f.key) ?? f.descriptor, value: f.value ?? f.handoff?.value ?? null, withheld: f.withheld }));
-  rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, intent, maker: use, fill });
+  const sentenceOk = ask.reason === undefined ? null : says !== null && sentenceFor(ask.reason, says);
+  rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, says, detail, sentenceOk, intent, maker: use, fill });
   process.stderr.write(`${ask.id} (${ask.form}): ${verdict} via ${draft?.route ?? "none"}${error === null ? "" : `; ${error.slice(0, 160)}`}\n`);
+}
+
+/** Whether a refusal's sentence is the one its reason calls for. */
+function sentenceFor(reason: (typeof REFUSE_REASONS)[number], says: string): boolean {
+  switch (reason) {
+    case "neverTyped":
+      return /^Caret doesn't type .+\. Type it yourself\.$/u.test(says);
+    case "payment":
+      return says === SAYS.payment;
+    case "submit":
+      return says === SAYS.submit;
+    case "send":
+      return says === SAYS.send;
+    case "whichPerson":
+      return says === SAYS.whichPerson;
+    case "noSuchField":
+      return says === SAYS.noSuchField;
+    case "notOnScreen":
+      return says === SAYS.notOnScreen;
+  }
 }
 
 const n = (v: Verdict, xs: readonly Row[] = rows) => xs.filter((r) => r.verdict === v).length;
 const refuseAsks = rows.filter((r) => r.ask.expected === "refuse");
-const asked = rows.filter((r) => r.verdict === "refused" && r.error !== null && /morning or the evening|which date do you mean|which option|say it in full|which fields|where should|whose details/.test(r.error));
+const asked = rows.filter((r) => r.verdict === "refused" && r.says !== null && r.says.includes("?"));
+const named = refuseAsks.filter((r) => r.ask.reason !== undefined);
 const tokens = rows.flatMap((r) => (r.maker === null ? [] : [r.maker.inputTokens + r.maker.outputTokens]));
 const mean = (xs: readonly number[]) => (xs.length === 0 ? 0 : Math.round(xs.reduce((s, x) => s + x, 0) / xs.length));
 const md = [
-  `# Ask scoreboard (B25): ${a["asks-file"]}, maker ${a.maker}`,
+  `# Ask scoreboard (B26): ${a["asks-file"]}, maker ${a.maker}`,
   "",
   `Maker ${a.maker}${a.maker === "writer" ? ` (${route.model} on ${route.provider}${route === INTENT_ROUTE ? ", the configured intent route" : `, not the configured ${INTENT_ROUTE.model}`})` : ""}; plan route's writer ${a["no-writer"] === true ? "off" : WRITER_ROUTE.model}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "jev" ? "Jev input only" : "the writer's"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, refused ${n("refused")} (of them asked a question ${asked.length}), **wrong ${n("wrong")}**.`,
-  `Of the ${refuseAsks.length} that should be refused: refused ${n("refused", refuseAsks)}, wrong ${n("wrong", refuseAsks)}.`,
+  `Of the ${refuseAsks.length} that should be refused: refused ${n("refused", refuseAsks)}, wrong ${n("wrong", refuseAsks)}; with the right sentence ${named.filter((r) => r.sentenceOk === true).length} of the ${named.length} that name their reason.`,
   "",
-  "| ask | form | instruction | verdict | route | proposed | missing | intent | error |",
-  "|---|---|---|---|---|---|---|---|---|",
+  "| ask | form | instruction | verdict | route | proposed | missing | intent | says | detail |",
+  "|---|---|---|---|---|---|---|---|---|---|",
   ...rows.map((r) => {
     const it = r.intent === null ? "" : `${r.intent.route}${r.intent.why === "none" ? "" : `/${r.intent.why}`} ${r.intent.scope}${r.intent.scope === "list" ? `[${r.intent.fields.join(",")}]` : ""} src=${r.intent.sources.join(",")} whose=${r.intent.whose}${r.intent.literals.length === 0 ? "" : ` lit=${r.intent.literals.map((l) => `${l.field}:${l.text}`).join(",")}`}`;
     const props = r.proposed.map((p) => `${p.control ? "set " : ""}${p.field} = ${p.value}${ok2(p) ? "" : ` (expected ${p.expected ?? "no change"})`}`).join("; ");
-    return `| ${r.ask.id} | ${r.ask.form} | ${r.ask.instruction} | ${r.verdict} | ${r.route} | ${props} | ${r.missing.join("; ")} | ${it} | ${(r.error ?? "").replace(/\|/g, "/").slice(0, 220)} |`;
+    const sentence = r.says === null ? "" : `${r.sentenceOk === false ? "WRONG SENTENCE: " : ""}${r.error?.split(":")[0] ?? ""}: ${r.says}`;
+    return `| ${r.ask.id} | ${r.ask.form} | ${r.ask.instruction} | ${r.verdict} | ${r.route} | ${props} | ${r.missing.join("; ")} | ${it} | ${sentence.replace(/\|/g, "/")} | ${(r.detail ?? "").replace(/\|/g, "/").slice(0, 200)} |`;
   }),
 ];
 function ok2(p: Proposed): boolean {

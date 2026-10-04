@@ -15,15 +15,16 @@ import { describeField } from "../fill/descriptor.ts";
 import { formControls, inWebArea, type Control } from "../fill/controls.ts";
 import { labelledLines } from "../fill/candidates.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
-import { SENSITIVE_SAYS, type SensitiveKind } from "../memory/sensitive.ts";
+import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { PlannerError } from "./validate.ts";
+import { SAYS, SaidError, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn } from "./says.ts";
 
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
 export type AskRoute = (typeof ROUTES)[number];
-/** Why an intent refuses, or what it asks; each has a sentence code writes (WHY_SAYS). */
+/** Why an intent refuses, or what it asks; each has a sentence in says.ts (sayWhy). */
 export const REASONS = ["none", "neverTyped", "noSuchField", "notOnScreen", "pressOrSend", "payment", "otherPersonUnnamed", "nothingToFill", "whichFields", "whichSource", "whichPerson"] as const;
 export type Reason = (typeof REASONS)[number];
 
@@ -130,7 +131,7 @@ function formInventory(w: WindowState): { node: Node; control: Control }[] {
  */
 export function intentSnapshot(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[]): IntentSnapshot {
   const ledger = new SnippetLedger(model.windows.values());
-  if (!ledger.plan([instruction])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");
+  if (!ledger.plan([instruction])) throw new SaidError("privacy", SAYS.privacy, "the instruction quotes more of an open window than one request may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
   const fields: IntentField[] = [];
   const sections: { ref: string; name: string }[] = [];
@@ -172,20 +173,6 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   };
 }
 
-/** The sentence each reason says, to the user, when an Ask refuses or asks. */
-export const WHY_SAYS: Record<Exclude<Reason, "none">, string> = {
-  neverTyped: "Caret never types passwords, card or account numbers, government ID numbers, one-time codes or API keys; that is yours to type",
-  noSuchField: "this form has no field for what you asked",
-  notOnScreen: "what you asked to copy from is not open on screen",
-  pressOrSend: "Caret never submits, sends or presses a button for you; that is yours to do",
-  payment: "Caret stops before payment; paying is yours to do",
-  otherPersonUnnamed: "whose details you mean is not clear; say their name",
-  nothingToFill: "Caret found nothing in your instruction to fill here",
-  whichFields: "which fields do you mean?",
-  whichSource: "where should Caret copy from?",
-  whichPerson: "whose details do you mean?",
-};
-
 /** An intent checked against its snapshot: the fill engine's scope, and what the route needs. */
 export type CheckedIntent =
   | { route: "fill"; scope: FillScope; fields: IntentField[]; trigger: string; leftToYou: IntentField[] }
@@ -194,9 +181,39 @@ export type CheckedIntent =
 /** The plan error code a refusal or an ask is reported under (protocol PlanErrorCode, unchanged). */
 const REFUSE_CODE = { neverTyped: "notEditable", noSuchField: "unknownTarget", notOnScreen: "noWindow", pressOrSend: "unsupportedStep", payment: "unsupportedStep", otherPersonUnnamed: "unsure", nothingToFill: "nothingToDo" } as const;
 
-function stop(why: Exclude<Reason, "none">): never {
+/** What an Ask says for each reason (says.ts). A never-typed refusal names the kind the instruction or a field names. */
+function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readonly IntentField[] = [], kind: SensitiveKind | null = null): string {
+  switch (why) {
+    case "neverTyped": {
+      if (kind !== null) return saysNeverTyped(kind, kind === "governmentId" && saysSsn(snap.instruction));
+      const said = mentionedKind(snap.instruction);
+      if (said !== null) return saysNeverTyped(said.kind, said.ssn);
+      const f = fields.find((x) => x.neverTyped !== null);
+      return f === undefined ? saysNeverTyped("governmentId", false) : saysNeverTyped(f.neverTyped as SensitiveKind, saysSsn(f.name));
+    }
+    case "pressOrSend":
+      return saysPressAsked(snap.instruction);
+    case "payment":
+      return SAYS.payment;
+    case "noSuchField":
+      return SAYS.noSuchField;
+    case "notOnScreen":
+      return SAYS.notOnScreen;
+    case "otherPersonUnnamed":
+    case "whichPerson":
+      return SAYS.whichPerson;
+    case "nothingToFill":
+      return SAYS.cannot;
+    case "whichFields":
+      return SAYS.whichFields;
+    case "whichSource":
+      return SAYS.whichSource;
+  }
+}
+
+function stop(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readonly IntentField[] = [], kind: SensitiveKind | null = null): never {
   const code = why in REFUSE_CODE ? REFUSE_CODE[why as keyof typeof REFUSE_CODE] : "unsure";
-  throw new PlannerError(code, WHY_SAYS[why]);
+  throw new SaidError(code, sayWhy(why, snap, fields, kind), `the intent's reason: ${why}`);
 }
 
 /**
@@ -214,8 +231,11 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   if (!REASONS.includes(intent.why)) bad(`gives reason '${intent.why}'`);
   // Someone's details by a pronoun, with no one named, is refused whatever the maker said: fill would take the
   // user's own (B25 held-out rule 4).
-  if (snap.persons.length === 0 && PRONOUN_DETAILS.test(snap.instruction)) stop("otherPersonUnnamed");
-  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why);
+  if (snap.persons.length === 0 && PRONOUN_DETAILS.test(snap.instruction)) stop("otherPersonUnnamed", snap);
+  // An instruction that names a kind Caret never types ("my SSN goes in there too") is refused for that, whatever
+  // reason the maker gave: B25's held-out run told the user "Caret stops before payment" for an SSN.
+  if ((intent.route === "refuse" || intent.route === "ask") && mentionedKind(snap.instruction) !== null) stop("neverTyped", snap);
+  if (intent.route === "refuse" || intent.route === "ask") stop(intent.why === "none" ? (intent.route === "ask" ? "whichFields" : "nothingToFill") : intent.why, snap);
   if (intent.route === "plan") return { route: "plan" };
 
   const byRef = new Map(snap.fields.map((f) => [f.ref, f]));
@@ -235,7 +255,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   scoped.sort((a, b) => snap.fields.indexOf(a) - snap.fields.indexOf(b));
   const leftToYou = scoped.filter((f) => f.neverTyped !== null);
   const fields = scoped.filter((f) => f.neverTyped === null);
-  if (fields.length === 0) stop(leftToYou.length > 0 ? "neverTyped" : "noSuchField");
+  if (fields.length === 0) stop(leftToYou.length > 0 ? "neverTyped" : "noSuchField", snap, leftToYou);
 
   const any = intent.sources.length === 0 || intent.sources.includes("any");
   const windows = new Set<string>();
@@ -248,7 +268,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   }
 
   let person: string | null = null;
-  if (intent.whose === "unnamed") stop("otherPersonUnnamed");
+  if (intent.whose === "unnamed") stop("otherPersonUnnamed", snap);
   else if (intent.whose !== "user") person = (snap.persons.find((p) => p.ref === intent.whose) ?? bad(`names person '${intent.whose}', whom the instruction does not name`)).span;
 
   const literals = new Map<string, string>();
@@ -257,7 +277,8 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
     if (!fields.includes(f)) bad(`ties '${l.text}' to ${f.name}, which is not among its fields`);
     const text = l.text.trim();
     if (text === "" || text.length > 200 || !occursBounded(snap.instruction, text)) bad(`ties '${text.slice(0, 60)}' to ${f.name}, and that is not a span of the instruction`);
-    if (secretIn(text, snap.instruction) !== null) stop("neverTyped");
+    const secret = secretIn(text, snap.instruction);
+    if (secret !== null) stop("neverTyped", snap, [], secret);
     if (literals.has(f.key) && literals.get(f.key) !== text) bad(`ties two values to ${f.name}`);
     literals.set(f.key, text);
   }
@@ -278,6 +299,5 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
 
 /** How the user is told what an Ask left to them. */
 export function leftToYouSays(fields: readonly IntentField[]): string | null {
-  if (fields.length === 0) return null;
-  return fields.map((f) => `${f.name} (Caret never types ${SENSITIVE_SAYS[f.neverTyped as SensitiveKind]})`).join(", ");
+  return saysLeftToYou(fields.flatMap((f) => (f.neverTyped === null ? [] : [{ name: f.name, kind: f.neverTyped }])));
 }
