@@ -8,6 +8,8 @@ import { FIXTURE_APP, snap } from "./builders.ts";
 import { FakeGrants } from "./fake-grants.ts";
 
 export const WIN = "5150-7";
+/** The fake window's window-server number (B21: a planRequest names its window by number). Invented. */
+export const WIN_NUMBER = 4821;
 export const TITLE = "Fixture — Executor";
 export const K = (s: string): string => `dev.caret.fixture/standard/${s}`;
 
@@ -65,7 +67,7 @@ export class FakeApp implements ReaderLink {
     this.at += 10;
     const nodes = this.vanished === null ? this.nodes : this.nodes.filter((n) => n.key !== this.vanished?.key);
     void this.helper?.handleReader(
-      snap(structuredClone(nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request" }),
+      snap(structuredClone(nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request", number: WIN_NUMBER }),
     );
   }
 

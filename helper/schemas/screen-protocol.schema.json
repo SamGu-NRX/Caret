@@ -1295,6 +1295,30 @@
             "windowId": {
               "type": "string",
               "minLength": 1
+            },
+            "window": {
+              "type": "object",
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "number": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pid",
+                "number",
+                "title"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
@@ -6278,7 +6302,8 @@
                         "unavailable",
                         "jevFailed",
                         "privacy",
-                        "internal"
+                        "internal",
+                        "unseenWindow"
                       ]
                     },
                     "detail": {

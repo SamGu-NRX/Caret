@@ -63,7 +63,7 @@ import { DEFAULT_SETTINGS, LEVELS, OfferGate, type Family, type UserSettings } f
 import { FirstLookRunner } from "./offers/first-look.ts";
 import { expired } from "./offers/lifetimes.ts";
 import { offerField } from "./offers/field.ts";
-import { planTask, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
+import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
@@ -556,11 +556,12 @@ export class Helper {
     const session = this.readerSession;
     let draft: PlanDraft;
     try {
+      const windowId = requestedWindow(this.model, m);
       draft = await planTask(m.instruction, this.model, { values: () => this.plannerMemory() }, {
         askJev: ask,
         offerKey,
         now: this.now(),
-        ...(m.windowId === undefined ? {} : { windowId: m.windowId }),
+        ...(windowId === null ? {} : { windowId }),
         ...this.opts.plannerHooks,
       });
     } catch (e) {

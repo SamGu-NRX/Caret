@@ -64,7 +64,8 @@ private func goldenLines() throws -> [Data] {
                           "planRequest", "planProposal", "planProposal",
                           "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
                           "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
-                          "readerCommand", "userPress"])
+                          "readerCommand", "userPress",
+                          "planRequest", "planProposal"])
     }
 
     @Test func readsThePressWatch() throws {
@@ -339,6 +340,31 @@ private func goldenLines() throws -> [Data] {
         #expect(noTask.verb.taskId == nil)
         let again = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(Message.readerCommand(noTask))) as! [String: Any]
         #expect((again["verb"] as? [String: Any])?["taskId"] == nil)
+    }
+
+    /// B21: a planRequest naming its window as a host knows it, and the error for a window the reader has not read.
+    @Test func readsThePlanWindow() throws {
+        let lines = try goldenLines()
+        guard case .planRequest(let req) = try JSONDecoder().decode(Message.self, from: lines[55]) else { Issue.record("line 56 is not a planRequest"); return }
+        #expect(req == PlanRequest(requestId: "ask-3", at: 1_790_000_700_000, instruction: "Put my email in Email", window: PlanWindow(pid: 5150, number: 4821, title: "Caret Fixture — Executor")))
+        guard case .planProposal(let f) = try JSONDecoder().decode(Message.self, from: lines[56]) else { Issue.record("line 57 is not a planProposal"); return }
+        #expect(f.outcome == .error && f.error?.code == .unseenWindow)
+        let request = String(decoding: lines[55], as: UTF8.self)
+        for bad in [
+            request.replacingOccurrences(of: #""instruction""#, with: #""windowId":"5150-1","instruction""#),
+            request.replacingOccurrences(of: #""number":4821"#, with: #""number":0"#),
+            request.replacingOccurrences(of: #""number":4821"#, with: #""number":4821.5"#),
+            request.replacingOccurrences(of: #""pid":5150"#, with: #""pid":0"#),
+            request.replacingOccurrences(of: #","title":"Caret Fixture — Executor""#, with: ""),
+        ] {
+            #expect(bad != request)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
+        let untitled = request.replacingOccurrences(of: #""title":"Caret Fixture — Executor""#, with: #""title":"""#)
+        #expect(throws: Never.self) { try JSONDecoder().decode(Message.self, from: Data(untitled.utf8)) }
+        // The encoder refuses both names at once rather than sending a request the helper refuses.
+        let both = PlanRequest(requestId: "x", at: 1, instruction: "x", windowId: "5150-1", window: PlanWindow(pid: 5150, number: 4821, title: ""))
+        #expect(throws: (any Error).self) { try NDJSON.encoder().encode(Message.planRequest(both)) }
     }
 
     /// B16: the planner's request and proposals; protocol.test.ts checks the same lines and refusals.

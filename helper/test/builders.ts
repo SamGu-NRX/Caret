@@ -33,6 +33,8 @@ export interface SnapOpts {
   focusedKey?: string | null;
   seq?: number;
   reason?: Snapshot["reason"];
+  /** The window server's number, when the test needs one (B21's planRequest window). */
+  number?: number;
 }
 
 export function snap(nodes: Node[], o: SnapOpts): Snapshot {
@@ -43,7 +45,7 @@ export function snap(nodes: Node[], o: SnapOpts): Snapshot {
     at: o.at,
     reason: o.reason ?? "event",
     app: o.app ?? FIXTURE_APP,
-    window: { windowId: o.windowId, kind: "standard", title: o.title ?? o.windowId, frame: [0, 0, 800, 600] },
+    window: { windowId: o.windowId, kind: "standard", title: o.title ?? o.windowId, frame: [0, 0, 800, 600], ...(o.number === undefined ? {} : { number: o.number }) },
     focused: o.focused ?? false,
     root: o.root ?? null,
     nodes,

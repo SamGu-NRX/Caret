@@ -30,7 +30,24 @@ describe("golden protocol fixture", () => {
       "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
       "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
       "readerCommand", "userPress",
+      "planRequest", "planProposal",
     ]);
+  });
+
+  it("carries B21's planRequest window, named as a host knows it, and the error for a window the reader has not read", () => {
+    const [req, failed] = lines.slice(55, 57).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(ConsumerMessage.parse(req)).toMatchObject({ type: "planRequest", window: { pid: 5150, number: 4821, title: "Caret Fixture — Executor" } });
+    expect(HelperMessage.parse(failed)).toMatchObject({ outcome: "error", error: { code: "unseenWindow" } });
+    const window = req?.window as Record<string, unknown>;
+    for (const bad of [
+      { ...req, windowId: "5150-1" },
+      { ...req, window: { ...window, number: 0 } },
+      { ...req, window: { ...window, number: 4821.5 } },
+      { ...req, window: { ...window, pid: 0 } },
+      { ...req, window: { pid: 5150, number: 4821 } },
+    ]) expect(ConsumerMessage.safeParse(bad).success).toBe(false);
+    // The title is the host's; an empty one (a window with no title) still names the window.
+    expect(ConsumerMessage.safeParse({ ...req, window: { ...window, title: "" } }).success).toBe(true);
   });
 
   it("carries B20's press watch: the windows to watch, and a press the user made in one, read only", () => {

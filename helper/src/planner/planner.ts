@@ -1,7 +1,7 @@
 // The planner: "do X" becomes a checked plan (brief B16). Jev answers only choice questions, so the
 // house rule holds here too: code proposes, Jev chooses, code copies and verifies.
-//   1. Code picks the window: the one the host names, the only window with fields or buttons, or Jev's
-//      choice among the titles of those windows.
+//   1. Code picks the window: the one the host names (requestedWindow resolves a host's window number), the
+//      only window with fields or buttons, or Jev's choice among the titles of those windows.
 //   2. Code lists the window's writable fields and labelled buttons, and the values the plan could
 //      write: spans of the instruction (spans.ts), memory values, and the fill generator's candidates
 //      from the other windows. Only the fields the instruction names are asked about, or every field when
@@ -18,7 +18,7 @@
 // Nothing here acts. The helper offers the plan, and it runs only after the user accepts it.
 import { randomInt } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
-import type { Node } from "../protocol.ts";
+import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import { FILL_CUTOFF, FILLABLE_ROLES, shuffled } from "../fill/fill.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
@@ -346,6 +346,49 @@ function actionable(w: WindowState): boolean {
   return writableFields(w).length > 0 || labelledButtons(w).length > 0;
 }
 
+/**
+ * The reader's id for the window a planRequest means, or null when Caret should choose among the open
+ * windows. A named window must be one the reader has read: `window` is matched by its window-server number
+ * and process, `windowId` by id, and either one missing throws unseenWindow (B21). With neither, the window
+ * the user last focused in the frontmost app, when it has a field or a button; the host's Ask Caret panel
+ * does not take focus, so that is the window the user was in when they asked.
+ */
+export function requestedWindow(model: ScreenModel, req: { windowId?: string | undefined; window?: PlanWindow | undefined }): string | null {
+  if (req.window !== undefined) {
+    const { pid, number } = req.window;
+    const numbered = [...model.windows.values()].filter((w) => w.window.number === number);
+    const mine = numbered.filter((w) => w.app.pid === pid);
+    if (mine.length > 1) throw new PlannerError("ambiguousWindow", `the reader holds ${mine.length} windows numbered ${number} for process ${pid}`);
+    const w = mine[0];
+    if (w !== undefined) return w.window.windowId;
+    const other = numbered[0];
+    throw new PlannerError(
+      "unseenWindow",
+      other === undefined ? `the reader has not read window ${number} of process ${pid}` : `window ${number} belongs to process ${other.app.pid}, not ${pid}`,
+    );
+  }
+  if (req.windowId !== undefined) {
+    if (!model.windows.has(req.windowId)) throw new PlannerError("unseenWindow", `the reader has not read window ${req.windowId}`);
+    return req.windowId;
+  }
+  const last = lastFocusedWindow(model);
+  return last !== null && actionable(last) ? last.window.windowId : null;
+}
+
+/**
+ * The window most recently focused in the app the user is in (ScreenModel.frontmostPid), or in any app
+ * while the frontmost app is unknown. A request walk marks a background app's own window focused, so the
+ * frontmost app decides which focus counts.
+ */
+function lastFocusedWindow(model: ScreenModel): WindowState | null {
+  let best: WindowState | null = null;
+  for (const w of model.windows.values()) {
+    if (w.lastFocusedAt <= 0 || (model.frontmostPid !== null && w.app.pid !== model.frontmostPid)) continue;
+    if (best === null || w.lastFocusedAt > best.lastFocusedAt) best = w;
+  }
+  return best;
+}
+
 /** Values to choose from: the instruction's spans, then memory, then the other windows' candidates; each text once. */
 function valueOptions(instruction: string, model: ScreenModel, w: WindowState, memory: readonly MemoryValue[], ledger: SnippetLedger, now: number): Option[] {
   const out: Option[] = [];
@@ -389,7 +432,8 @@ async function chooseWindow(
 ): Promise<WindowState> {
   if (o.windowId !== undefined) {
     const w = model.windows.get(o.windowId);
-    if (w === undefined || !actionable(w)) throw new PlannerError("noWindow", `window ${o.windowId} is not open or has no field or button`);
+    if (w === undefined) throw new PlannerError("unseenWindow", `window ${o.windowId} is not open`);
+    if (!actionable(w)) throw new PlannerError("noWindow", `window ${o.windowId} has no field or button`);
     return w;
   }
   const candidates = [...model.windows.values()].filter(actionable);

@@ -624,18 +624,37 @@ export const FirstLook = z.object({
 export type FirstLook = z.infer<typeof FirstLook>;
 
 /**
- * The user asked Caret to do something. The helper plans it against the screen model and memory and
- * answers with `planProposal`, to the asker only. `windowId` is the window the user means, when the host
- * knows it (the one they were in when they asked); without it Caret picks among the open windows.
+ * The window a host means in a planRequest (B21): the one the user was in when they opened Ask Caret, as the
+ * host knows it. `number` is the window server's number (CGWindowID); the helper matches it, with `pid`,
+ * against the numbers the reader read for its windows (WindowRef.number). `title` is what the host saw,
+ * for its own messages; titles change (a browser switching tabs), so the helper does not match on it.
  */
-export const PlanRequest = z.object({
-  type: z.literal("planRequest"),
-  v: z.literal(PROTOCOL_VERSION),
-  requestId: z.string().min(1).max(200),
-  at: ms,
-  instruction: z.string().min(1).max(500),
-  windowId: z.string().min(1).optional(),
+export const PlanWindow = z.object({
+  pid: z.number().int().positive(),
+  number: z.number().int().positive(),
+  title: z.string(),
 });
+export type PlanWindow = z.infer<typeof PlanWindow>;
+
+/**
+ * The user asked Caret to do something. The helper plans it against the screen model and memory and
+ * answers with `planProposal`, to the asker only. The window the user means is named by `window` (what a
+ * host can know) or `windowId` (the reader's id, for consumers that have it), never both. A named window
+ * the reader has not read is refused with `unseenWindow`. With neither, Caret plans in the window the
+ * user last focused in the frontmost app, and picks among the open windows only when that window has no
+ * field or button.
+ */
+export const PlanRequest = z
+  .object({
+    type: z.literal("planRequest"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string().min(1).max(200),
+    at: ms,
+    instruction: z.string().min(1).max(500),
+    windowId: z.string().min(1).optional(),
+    window: PlanWindow.optional(),
+  })
+  .refine((m) => m.windowId === undefined || m.window === undefined, "a planRequest names its window by window or windowId, not both");
 export type PlanRequest = z.infer<typeof PlanRequest>;
 
 /**
@@ -1198,7 +1217,8 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  * `nothingToDo`: no field to write and no control to press. `unsupportedStep`: a step other than a field
  * write or a hand-off. `multipleWindows`: steps in more than one window. `unknownWindow`,
  * `ambiguousWindow`, `unknownTarget`, `ambiguousTarget`: a window or target is not (or not uniquely) in
- * the screen model now. `notEditable`: a write to something that is not a writable field.
+ * the screen model now. `unseenWindow`: the request named a window (planRequest `window` or `windowId`)
+ * that the reader has not read: closed, never walked, or an app it skips (B21). `notEditable`: a write to something that is not a writable field.
  * `untracedValue`: a value that no window, memory entry or the instruction shows verbatim.
  * `wrongKind`: a value whose kind does not fit its field, such as a whole address in City (B18, kinds.ts misfit).
  * `stepAfterHandoff`: a step after the press handed to the user. `riskMismatch`: a hand-off whose reason
@@ -1210,6 +1230,7 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
 export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
   "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "wrongKind", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
+  "unseenWindow",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 
