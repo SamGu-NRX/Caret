@@ -95,8 +95,11 @@ final class HelperMemoryTests: XCTestCase {
     func testAnEntryThisHostCannotReadIsCountedAndTheRestApply() throws {
         let line = #"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[{"kind":"habit","id":"h-1","status":"active","says":"x","evidence":{"count":1,"lastSeen":1,"app":null},"fields":{}},{"kind":"preference","id":"p-1","status":"active","says":"y","evidence":{"count":1,"lastSeen":1,"app":null},"fields":{"rule":"shout","x":1}},{"kind":"about","id":"a-1","status":"active","says":"Name: Dana (you typed this)","evidence":{"count":1,"lastSeen":1,"app":null},"fields":{"label":"Name","value":"Dana","source":"typed"}}]}"#
         let reply = try HelperMemory.Reply.decode(Data(line.utf8))
-        XCTAssertEqual(reply.entries.map(\.id), ["a-1"])
-        XCTAssertEqual(reply.unreadable.count, 2)
+        // A kind this host does not know is kept and shown as something Caret noticed (A15); a known
+        // kind whose fields it cannot read is still counted, never guessed at.
+        XCTAssertEqual(reply.entries.map(\.id), ["h-1", "a-1"])
+        XCTAssertEqual(reply.entries.first?.fields, .noticed(kind: "habit"))
+        XCTAssertEqual(reply.unreadable.count, 1)
     }
 
     func testUsesOnAnythingButAPermissionIsRefused() throws {

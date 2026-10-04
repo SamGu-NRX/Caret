@@ -109,6 +109,7 @@ final class MemoryController {
             case .pause: book.pause(id)
             case .resume: book.resume(id)
             case .forget: book.askToForget(id)
+            case .backOnTab: book.backOnTab(id)
             }
         case .confirmForget: book.confirmForget()
         case .keep: book.keep()
@@ -142,6 +143,7 @@ final class MemoryController {
     ///   memory pause|resume <id>
     ///   memory forget <id>                        ask, as Forget does; then memory confirm | memory keep
     ///   memory rule <action> <rule>               pick a rule on the permissions list
+    ///   memory backontab <id>                     Put back on Tab, on a skill row or its permissions exception
     ///   memory remember <label> <value...>        what onboarding's Continue hands over
     ///   memory remove <typedId>                   drop a typed value not kept yet
     ///   memory show | memory close                the window itself, as the menu opens it (foreground runs only)
@@ -175,6 +177,7 @@ final class MemoryController {
         case ("forget", 2): book.askToForget(rest[1])
         case ("confirm", 1): return reply(["sent": book.confirmForget()])
         case ("keep", 1): book.keep()
+        case ("backontab", 2): return reply(["sent": book.backOnTab(rest[1])])
         case ("rule", 3):
             guard let action = HelperMemory.ActionType(rawValue: rest[1]), let rule = HelperMemory.Rule(rawValue: rest[2]) else {
                 return #"{"error":"usage: memory rule read|show|writeHere|writeElsewhere|outbound|destructive|sensitive act|actIfApproved|ask|handoff"}"#

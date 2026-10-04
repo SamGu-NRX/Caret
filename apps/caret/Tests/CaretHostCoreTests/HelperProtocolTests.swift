@@ -35,6 +35,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
             case .firstLookReply: return "firstLookReply"
             case .memoryReply: return "memoryReply"
             case .planProposal: return "planProposal"
+            case .skillOffer: return "skillOffer"
             case .notForConsumer(let type): return "skip:\(type)"
             case .unknown(let type): return "unknown:\(type)"
             }
@@ -55,6 +56,9 @@ final class HelperProtocolGoldenTests: XCTestCase {
             // B16: a plan asked for, proposed and refused; the calendar adapter's add, refusal and grant.
             "skip:planRequest", "planProposal", "planProposal",
             "skip:readerCommand", "skip:verbResult", "skip:verbResult", "taskProgress", "skip:calendarGrant",
+            // B19: the keep question and its answer, skills in memory, the promote question and its
+            // answer, and a skill's run with no Tab.
+            "skillOffer", "skip:skillAnswer", "memoryReply", "skillOffer", "skip:skillAnswer", "taskProgress", "taskProgress",
         ]
         XCTAssertEqual(kinds, expected)
     }
@@ -63,7 +67,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
     /// withdrawal with its replacement and the withdrawal settings cause.
     func testTheB8LinesDecodeExactly() throws {
         let lines = try goldenLines()
-        XCTAssertEqual(lines.count, 46)
+        XCTAssertEqual(lines.count, 53)
         XCTAssertEqual(try HelperInbound.decode(lines[26]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_122_500, id: "offer-4", reason: .expired)))
         guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { return XCTFail("line 28") }
         XCTAssertEqual(pause, TaskControl(taskId: "task-1", action: .pause, reason: .input))

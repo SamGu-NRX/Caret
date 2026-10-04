@@ -87,7 +87,7 @@ final class ActivityCenter {
                 inFlight = inFlight.filter { id, sent in (feed.tasks[id]?.updatedAt ?? .max) <= sent.updatedAt }
                 changed()
             }
-        case .fillProposal, .error, .alternatives, .action, .popup, .offerWithdrawn, .taskProgress, .firstLookReply, .memoryReply, .planProposal, .notForConsumer, .unknown:
+        case .fillProposal, .error, .alternatives, .action, .popup, .offerWithdrawn, .taskProgress, .firstLookReply, .memoryReply, .planProposal, .skillOffer, .notForConsumer, .unknown:
             return
         }
     }

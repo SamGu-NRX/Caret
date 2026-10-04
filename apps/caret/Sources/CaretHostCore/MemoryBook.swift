@@ -16,7 +16,7 @@ public final class MemoryBook {
     /// activity list's control timeout.
     public static let answerTimeout: TimeInterval = 3
 
-    public enum Op: String, Codable, Sendable { case list, edit, rule, pause, resume, forget, add }
+    public enum Op: String, Codable, Sendable { case list, edit, rule, pause, resume, forget, add, backOnTab }
 
     /// A value the user typed for the helper to keep (onboarding's name and email). Held here, in
     /// memory only, until the helper confirms it; sent again on each connect until then.
@@ -157,7 +157,7 @@ public final class MemoryBook {
             state.problems = state.problems.filter { ids.contains($0.key) }
             if let e = state.editor, !ids.contains(e.entryId) { state.editor = nil }
             if let f = state.confirmingForget, !ids.contains(f) { state.confirmingForget = nil }
-        case .edit, .rule, .pause, .resume:
+        case .edit, .rule, .pause, .resume, .backOnTab:
             guard let id = p.entryId else { break }
             if p.op == .edit || p.op == .pause { onEntryChanged(id) }
             if let entry = reply.entries.first(where: { $0.id == id }), let i = state.entries.firstIndex(where: { $0.id == id }) {
@@ -189,6 +189,9 @@ public final class MemoryBook {
             state.listProblem = error
         case .add:
             if let i = state.typed.firstIndex(where: { $0.id == p.typedId }) { state.typed[i].phase = .refused(error) }
+        case .backOnTab:
+            guard let id = p.entryId else { return }
+            state.problems[id] = MemoryCheck.backOnTabRefused(error)
         case .edit, .rule, .pause, .resume, .forget:
             guard let id = p.entryId else { return }
             state.problems[id] = error
@@ -209,7 +212,7 @@ public final class MemoryBook {
             // Today's helper refuses `add` without naming the request, so silence is the usual
             // answer: the value waits for the next connection.
             if let i = state.typed.firstIndex(where: { $0.id == p.typedId }) { state.typed[i].phase = .waiting }
-        case .edit, .rule, .pause, .resume, .forget:
+        case .edit, .rule, .pause, .resume, .forget, .backOnTab:
             guard let id = p.entryId else { break }
             state.busy[id] = nil
             state.problems[id] = message
@@ -272,7 +275,7 @@ public final class MemoryBook {
     public func resume(_ id: String) -> Bool { setPaused(id, false) }
 
     private func setPaused(_ id: String, _ paused: Bool) -> Bool {
-        guard let e = ready(id), e.kind != .permission, (e.status == .paused) != paused else { return false }
+        guard let e = ready(id), e.kind != .permission, e.kind != .noticed, (e.status == .paused) != paused else { return false }
         let op: Op = paused ? .pause : .resume
         state.problems[id] = nil
         let sent = post(HelperMemory.Request(requestId: nextId(), op: paused ? .pause : .resume, id: id), op: op, entryId: id)
@@ -317,7 +320,8 @@ public final class MemoryBook {
         case .preference(.format(let template)): return [d("template", "Format", template)]
         case .preference: return []
         case .routine(let f): return [d("name", "Name", f.name ?? "")]
-        case .permission: return []
+        case .skill(let f): return [d("name", "Name", f.name)]
+        case .permission, .noticed: return []
         }
     }
 
@@ -378,6 +382,24 @@ public final class MemoryBook {
             state.editor?.problem = MemoryCheck.offline
         }
         return sent
+    }
+
+    // MARK: - Skills
+
+    /// "Put back on Tab": a skill that runs on its own asks first again, from its next run. Sent as an
+    /// edit of `onItsOwn` (the host's contract; B19's helper refuses it, see `HelperMemory`). False when
+    /// nothing was sent: not connected, busy, not a skill, or already on Tab.
+    @discardableResult
+    public func backOnTab(_ id: String) -> Bool {
+        guard let e = ready(id), e.skill?.onItsOwn == true else { return false }
+        state.problems[id] = nil
+        defer { changed() }
+        return post(HelperMemory.Request(requestId: nextId(), op: .edit, id: id, fields: ["onItsOwn": .bool(false)]), op: .backOnTab, entryId: id)
+    }
+
+    /// Skills that run on their own, by name: the permissions page lists them as exceptions to Ask first.
+    public var skillsOnTheirOwn: [HelperMemory.Entry] {
+        state.entries.filter { $0.skill?.onItsOwn == true && $0.status != .paused }
     }
 
     // MARK: - Permissions
@@ -565,6 +587,11 @@ public enum MemoryCheck {
                 if length > 200 { return "\(f.title) is too long. Keep it under 200 characters." }
             case (.routine, "name"):
                 if length > 80 { return "Name is too long. Keep it under 80 characters." }
+            case (.skill, "name"):
+                // memory.ts: trimmed, 1 to 80 characters, one line.
+                if length == 0 { return "Name can't be empty. To remove the skill, use Forget." }
+                if length > 80 { return "Name is too long. Keep it under 80 characters." }
+                if text.contains(where: \.isNewline) { return "Name has to fit on one line." }
             case (.preference, "template"):
                 let slots = text.filter { $0 == "#" }.count
                 if text.contains(where: \.isNumber) || slots < 7 || slots > 15 {
@@ -575,6 +602,12 @@ public enum MemoryCheck {
             }
         }
         return nil
+    }
+
+    /// The helper would not put a skill back on Tab. B19's helper refuses every skill edit but its
+    /// name, so this is today's answer: the user is told what still works, never left guessing.
+    public static func backOnTabRefused(_ error: String) -> String {
+        "Caret couldn't put this back on Tab yet (\(error)). Pause it to stop it running, or Forget it."
     }
 
     public static func ruleRefused(_ action: HelperMemory.ActionType, _ rule: HelperMemory.Rule) -> String {

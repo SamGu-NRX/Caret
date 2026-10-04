@@ -71,14 +71,30 @@ public struct LineContent: Equatable, Sendable {
     /// The working line names the app in its caption, so it shows only the app's glyph, standing
     /// where the figure stood before it left.
     public var appGlyphOnly: Bool
+    /// A question under the line about the run it reports on (B19 keep or promote), or its answer.
+    public var question: Question?
 
     public enum Emphasis: Equatable, Sendable {
         case endState, plain, secondary
     }
 
+    /// The second row of a result line: the helper's question and its two answers' keys, or, once
+    /// answered, what the answer did.
+    public struct Question: Equatable, Sendable {
+        public var text: String
+        public var detail: String?
+        public var hints: [Hint]
+
+        public init(text: String, detail: String? = nil, hints: [Hint] = []) {
+            self.text = text
+            self.detail = detail
+            self.hints = hints
+        }
+    }
+
     public init(
         figure: FigureState, app: String? = nil, lead: String? = nil, text: String, emphasis: Emphasis = .endState,
-        hints: [Hint] = [], appGlyphOnly: Bool = false
+        hints: [Hint] = [], appGlyphOnly: Bool = false, question: Question? = nil
     ) {
         self.figure = figure
         self.app = app
@@ -87,6 +103,7 @@ public struct LineContent: Equatable, Sendable {
         self.emphasis = emphasis
         self.hints = hints
         self.appGlyphOnly = appGlyphOnly
+        self.question = question
     }
 }
 
@@ -261,6 +278,50 @@ public enum WorkLines {
     public static func blocked(_ reason: CalendarBlock) -> WorkLine {
         let caption = Captions.blocked(reason)
         return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
+    }
+
+    // MARK: Skills (B19)
+
+    /// A skill working with no Tab. It names the skill and that nobody asked, and Esc hands it back
+    /// from the first moment. The figure stays on the line, working: this run was not the user's
+    /// request, so the line does not look away as a Tab'd one does.
+    public static func onItsOwn(_ name: String, app: String) -> WorkLine {
+        let caption = "\(name), on its own"
+        return WorkLine(LineContent(
+            figure: .working, app: app, text: caption, emphasis: .plain, hints: [Hint(key: "Esc", label: "Take over")], appGlyphOnly: true
+        ), text: caption)
+    }
+
+    /// A skill's run with no Tab finished and wrote something: ⌘Z takes it while the line shows.
+    public static func doneOnItsOwn(_ name: String) -> WorkLine {
+        let rest = "\(name), on its own"
+        return WorkLine(
+            LineContent(figure: .done, lead: "Done:", text: rest, emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")]),
+            text: "Done: \(rest)"
+        )
+    }
+
+    /// Esc took over a skill's run: "You took over before step 2 of 3".
+    public static func tookOver(next: Int?, of steps: Int) -> WorkLine {
+        let caption = Captions.place(next: next, of: steps).map { "You took over \($0)" } ?? "You took over"
+        return WorkLine(LineContent(figure: .done, text: caption, emphasis: .plain), text: caption)
+    }
+
+    /// The keep or promote question under a run's result line, in the helper's words: its sentence,
+    /// its detail, and its two answers on Tab and Esc.
+    public static func question(_ offer: SkillOffer) -> LineContent.Question {
+        LineContent.Question(text: offer.says, detail: offer.detail, hints: [
+            Hint(key: "Tab", label: offer.actions.first?.label), Hint(key: "Esc", label: offer.actions.last?.label),
+        ])
+    }
+
+    /// What Tab on the question did. No keys: the row now reports.
+    public static func answered(_ offer: SkillOffer, sent: Bool) -> LineContent.Question {
+        guard sent else { return LineContent.Question(text: "Caret's helper isn't running, so nothing changed.") }
+        switch offer.kind {
+        case .keep: return LineContent.Question(text: "Kept as \(offer.name)", detail: "Caret will offer it when you start it again.")
+        case .promote: return LineContent.Question(text: "\(offer.name) runs on its own from now on", detail: "You'll see each run, and ⌘Z undoes it.")
+        }
     }
 
     /// Esc stopped it: the line names the step it stopped before.

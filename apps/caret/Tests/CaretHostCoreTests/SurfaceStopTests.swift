@@ -148,6 +148,46 @@ final class SurfaceStopTests: XCTestCase {
         ]))
     }
 
+    /// A15 part 1, the regression A14's on-screen run hit (Esc 1 of 3). The helper stops a run at
+    /// its next step boundary, so its ending can come more than 3 s after Esc. Replayed with the
+    /// helper's timing in A12's harness (act_end_to_end.ts): step 1 is held 5 s before it starts, the
+    /// first step took 1.2 s on a loaded Mac, and Esc lands 3.2 s after Tab, so the helper's
+    /// `stopped` arrives 3.0 s after Esc and the harness reads the line 0.2 s after that. Timed from
+    /// Esc, the line was gone by then, and a correction the ending carried was lost with it.
+    func testTheStoppedLineWaitsForTheHelpersEndingAfterASlowStep() {
+        let tabbed: [Step] = [
+            .screen { $0.front() }, .offer(Fx.action()), .press(Fx.tab()),
+            .taskLine(Fx.progress("offer-5", .started, steps: 3)),
+            .taskLine(Fx.progress("offer-5", .acting, step: 0, steps: 3)),
+            .wait(1.2),
+            .taskLine(Fx.progress("offer-5", .verified, step: 0, steps: 3)),
+            .wait(2.0),
+            .press(Fx.esc()),
+            .sent(["accept offer-5 finish", "stop offer-5"]),
+            .expect(.line("You stopped it before step 2 of 3")),
+        ]
+        play(Transition("the helper's ending 3.0 s after Esc", tabbed + [
+            .wait(3.0),
+            .expect(.line("You stopped it before step 2 of 3")),
+            .taskLine(Fx.progress("offer-5", .stopped, reason: .you, step: 1, steps: 3)),
+            .wait(0.2),
+            .expect(.line("You stopped it before step 2 of 3")), .expect(.escOwned(true)),
+            // Its 3 s run from the ending.
+            .wait(2.7), .expect(.line("You stopped it before step 2 of 3")),
+            .wait(0.1), .expect(.line(nil)),
+        ]))
+        play(Transition("a late ending still corrects the step", tabbed + [
+            .wait(3.5),
+            .taskLine(Fx.progress("offer-5", .verified, step: 1, steps: 3)),
+            .taskLine(Fx.progress("offer-5", .stopped, reason: .you, step: 2, steps: 3)),
+            .expect(.line("You stopped it before step 3 of 3")), .expect(.counted("surface.stop.corrected")),
+        ]))
+        play(Transition("no ending ever comes: the line goes after the wait", tabbed + [
+            .wait(SurfaceMachine.stopConfirmWait - 0.1), .expect(.line("You stopped it before step 2 of 3")),
+            .wait(0.1), .expect(.line(nil)), .expect(.escOwned(false)),
+        ]))
+    }
+
     func testEscBeforeAnyProgressJustStops() {
         play(Transition("Esc at 3 s with no progress yet", [
             .screen { $0.front() }, .offer(Fx.action()), .press(Fx.tab()),

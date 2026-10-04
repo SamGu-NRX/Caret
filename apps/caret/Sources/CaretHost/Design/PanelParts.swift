@@ -156,6 +156,30 @@ struct LineView: View {
     var figureFacing: FigureFacing = .right
 
     var body: some View {
+        if let question = content.question, !compact {
+            // A result with a question about it (B19): one panel, so ⌘Z, Tab and Esc read as one
+            // place. The question sits under the line's words, past the figure's slot.
+            VStack(alignment: .leading, spacing: 0) {
+                row
+                Rectangle().fill(Color(token: Tokens.border)).frame(height: 1)
+                    .padding(.leading, PopupView.figureSlot + 16)
+                QuestionRow(question: question, animated: animated)
+                    .padding(.leading, PopupView.figureSlot + 16)
+                    .padding(.trailing, 6)
+                    .padding(.vertical, 7)
+            }
+            .frame(maxWidth: 520, alignment: .leading)
+            .fixedSize()
+            .panelChrome(radius: 8)
+        } else {
+            row
+                .frame(maxWidth: 520, alignment: .leading)
+                .fixedSize()
+                .panelChrome(radius: compact ? 6 : 8)
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 0) {
             if content.figure != .absent {
                 FigureView(character: character, state: content.figure, facing: figureFacing, height: compact ? 9 : 11, animated: animated)
@@ -183,9 +207,6 @@ struct LineView: View {
         .padding(.leading, compact ? 6 : 8)
         .padding(.trailing, compact ? 4 : 6)
         .frame(height: compact ? 20 : 28)
-        .frame(maxWidth: 520, alignment: .leading)
-        .fixedSize()
-        .panelChrome(radius: compact ? 6 : 8)
     }
 
     private var size: CGFloat { compact ? 11 : 13 }
@@ -201,5 +222,49 @@ struct LineView: View {
         case .plain: return Text(content.text).font(.system(size: size)).foregroundColor(Color(token: Tokens.ink))
         case .secondary: return Text(content.text).font(.system(size: size)).foregroundColor(Color(token: Tokens.secondary))
         }
+    }
+}
+
+/// The keep or promote question under a result line, or what its answer did: the helper's sentence
+/// in Ink, its detail in Secondary under it, and the two answers' keys at the right.
+///
+/// Motion: the row arrives under a line already on screen, so it fades in and rises 3 pt over 160 ms
+/// (`--ease-out`) rather than appear from nothing; Reduce Motion keeps the fade and drops the rise.
+/// Tab's answer swaps the row's words at once: a key's result does not wait on motion.
+struct QuestionRow: View {
+    var question: LineContent.Question
+    var animated = true
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 0) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(question.text)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(token: Tokens.ink))
+                    .lineLimit(1)
+                if let detail = question.detail {
+                    Text(detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(token: Tokens.secondary))
+                        .lineLimit(1)
+                }
+            }
+            if !question.hints.isEmpty {
+                Spacer(minLength: 16)
+                HStack(spacing: 12) {
+                    ForEach(Array(question.hints.enumerated()), id: \.offset) { HintView(hint: $0.element) }
+                }
+            }
+        }
+        .opacity(shown || !animated ? 1 : 0)
+        .offset(y: shown || !animated || reduceMotion ? 0 : 3)
+        .onAppear {
+            guard animated, !shown else { return }
+            withAnimation(Motion.curve(Motion.easeOut, 0.16)) { shown = true }
+        }
+        .accessibilityElement(children: .combine)
     }
 }

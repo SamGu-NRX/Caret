@@ -169,6 +169,9 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// `planRequest` lines written from the ask field, and `planProposal` answers received.
         public var planRequests: UInt64 = 0
         public var planProposals: UInt64 = 0
+        /// `skillOffer` questions received, and `skillAnswer` lines written (B19).
+        public var skillOffers: UInt64 = 0
+        public var skillAnswers: UInt64 = 0
         /// Lines written as `offerAccept` and `offerStop`, counted again in `resultsSent`.
         public var accepts: UInt64 = 0
         public var stops: UInt64 = 0
@@ -287,6 +290,11 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var working: Double?
         /// The offer key (and helper task id) of the accepted work.
         public var workingOn: String?
+        /// The work was started by a skill with no Tab (B19).
+        public var unprompted: Bool?
+        /// The keep or promote question under the result line, as its row reads (asked or answered).
+        public var question: String?
+        public var questionAnswered: Bool?
         /// The fill pop-up's toast, and what its undo did.
         public var toast: Toast?
         /// An injected offer waiting for its field to be where the user is looking

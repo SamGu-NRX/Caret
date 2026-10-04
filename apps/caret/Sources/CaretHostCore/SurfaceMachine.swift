@@ -76,6 +76,26 @@ public final class SurfaceMachine {
         var nextStep: Int?
         /// The figure has looked away and left the working line.
         var figureLeft = false
+        /// A skill started it with no Tab (B19 `taskProgress.unprompted`); `name` is the skill's.
+        var unprompted = false
+        var name: String?
+    }
+
+    /// The run whose result or toast is on the panel, and the line it shows: what a skill question
+    /// attaches to.
+    struct Result {
+        let taskID: String
+        let target: TargetIdentity
+        var line: WorkLine
+    }
+
+    /// A keep or promote question under `result` (B19 `skillOffer`), the arbiter offer that holds its
+    /// Tab and Esc, and the row as drawn: the question, or what Tab did.
+    struct Question {
+        let offer: SkillOffer
+        let offerID: UInt64
+        var row: LineContent.Question
+        var answered = false
     }
 
     /// What a visibility watch protects, and what losing it does.
@@ -110,6 +130,23 @@ public final class SurfaceMachine {
     public static let recheckInterval: TimeInterval = 0.5
     /// How long a held offer is retried before it is dropped. Assumed, not measured.
     public static let holdLimit: TimeInterval = 30
+    /// How long the line Esc left waits for the helper's own ending before it goes anyway (no
+    /// helper, or one that never answers). The helper stops at its next step boundary, so a slow
+    /// step can take seconds (A15: the A12 harness holds a step for 5 s). The same cap as the
+    /// "Undoing" line's; assumed, not measured.
+    public static let stopConfirmWait: TimeInterval = 10
+    /// How long the stopped line stays once its ending is known.
+    public static let stoppedLineLifetime: TimeInterval = 3
+    /// How long a keep or promote question stays under its run's line. Assumed, not measured: two
+    /// short lines and one decision. The helper keeps the offer two minutes (lifetimes.ts `skill`)
+    /// and may ask again after a later run, so letting it go unanswered costs nothing.
+    public static let questionLifetime: TimeInterval = 15
+    /// How long the answer to a question stays before the line leaves. Assumed.
+    public static let answerHold: TimeInterval = 2
+    /// How long ⌘Z belongs to the done line of a run nobody asked for. Assumed: longer than a Tab'd
+    /// run's 5 s (`UndoGrant.defaultLifetime`), since the user did not start it and may look up
+    /// late; the activity list keeps its Undo after that.
+    public static let unpromptedToastLifetime: TimeInterval = 8
 
     let arbiter: OfferArbiter
     let world: SurfaceWorld
@@ -132,6 +169,13 @@ public final class SurfaceMachine {
     /// The work Esc stopped, kept while its "Stopped" line shows: a step can finish between Esc
     /// and the helper's stop, so the helper's own ending corrects the line.
     var stoppedWork: Work?
+    var result: Result?
+    var question: Question?
+    /// Runs a skill started with no Tab, seen in progress and not drawn yet: each is drawn once its
+    /// activity record names the app and the skill (`activity`), or never.
+    var unpromptedSeen: Set<String> = []
+    /// Recent activity records by task id, for those runs.
+    var records: [String: TaskRecord] = [:]
     var swap: Swap?
     /// Set by `present` when it redrew a re-sent offer in place; read by `receive`.
     var replacedInPlace = false
@@ -244,6 +288,15 @@ public final class SurfaceMachine {
     /// The helper withdrew an offer: take it down if it is shown, forget it if it is held, or swap
     /// it for its replacement if it was `reoffered`. Work already accepted from it goes on.
     public func withdrawn(_ message: OfferWithdrawn) {
+        if let q = question, q.offer.id == message.id {
+            // An answered question's withdrawal (taken, dismissed) is the helper confirming it.
+            guard !q.answered else { return publish() }
+            arbiter.invalidate(offerID: q.offerID)
+            question = nil
+            count("surface.skill.withdrawn.\(message.reason.rawValue)")
+            redrawResult()
+            return publish()
+        }
         // CaretScreenCore's decoder refuses `reoffered` without `replacedBy`, so a line off the
         // wire always takes the swap; one built in code without it is an ordinary withdrawal.
         if message.reason == .reoffered, let newKey = message.replacedBy { return reoffered(message.id, replacedBy: newKey) }
@@ -613,6 +666,17 @@ public final class SurfaceMachine {
 
     public func offerChanged(_ reason: OfferArbiter.PassReason) {
         let snapshot = arbiter.snapshot()
+        if let q = question, !q.answered, snapshot.current?.id != q.offerID {
+            // Esc declined the question (and closed the toast with it); any other key dismissed it
+            // unanswered, as typing on dismisses every offer.
+            question = nil
+            if reason == .closed {
+                let sent = sendToHelper(.skillAnswer(SkillAnswer(id: q.offer.id, answer: .decline, at: nowMs)))
+                count(sent ? "surface.skill.declined" : "surface.skill.unsent")
+            } else {
+                count("surface.skill.dismissed")
+            }
+        }
         if reason == .typedThrough, let shown, snapshot.current?.id == shown.offerID {
             // The user typed the head of the top candidate: the rest stays as ghost text, and the
             // other candidates no longer fit, so their underline and list go.
@@ -645,6 +709,12 @@ public final class SurfaceMachine {
 
     /// Another producer's offer replaced this one in the arbiter.
     public func displaced(_ offer: Offer) {
+        if let q = question, q.offerID == offer.id, !q.answered {
+            question = nil
+            count("surface.skill.displaced")
+            redrawResult()
+            return publish()
+        }
         guard let shown, offer.id == shown.offerID else { return }
         clear(exit: 0.10)
         publish()
@@ -662,6 +732,7 @@ public final class SurfaceMachine {
     }
 
     public func claimed(_ claim: Claim) {
+        if let q = question, q.offerID == claim.offer.id { return answerQuestion() }
         releaseWhatTheKeyCleared()
         let shown: Shown
         if let current = self.shown, current.offerID == claim.offer.id {
@@ -773,6 +844,11 @@ public final class SurfaceMachine {
         let snapshot = arbiter.snapshot()
         var info = DebugState.SurfaceInfo()
         info.headless = headless
+        if let q = question {
+            info.question = q.row.text
+            info.questionAnswered = q.answered
+        }
+        if work?.unprompted == true { info.unprompted = true }
         if let shown {
             info.offerId = shown.offerID
             info.offerKey = shown.offerKey

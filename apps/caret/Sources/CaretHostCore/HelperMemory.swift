@@ -17,10 +17,18 @@ import Foundation
 //     Today's helper sends no `ops`, so the step stays hidden.
 //   - `uses` on a permission entry: its last five uses, newest first. No helper records uses yet; an
 //     entry without the key decodes with `uses == nil`, which the list shows as none recorded.
+//   - `op: "edit"` on a skill with `fields: {onItsOwn: false}`: "Put back on Tab" (A15). B19's helper
+//     accepts only `name` on a skill and refuses this edit; the host shows that refusal on the row.
+//
+// Skills (B19) decode through CaretScreenCore's `SkillFields`, which checks them. An entry of a kind this
+// host does not know is kept, as `noticed`, and shown by the helper's own sentence: a newer helper's
+// memory is never dropped unseen.
 
 public enum HelperMemory {
     public enum Kind: String, Codable, CaseIterable, Sendable {
-        case about, people, preference, routine, permission
+        case about, people, preference, routine, permission, skill
+        /// Any kind this host does not know, from a newer helper. Never sent.
+        case noticed
     }
 
     public enum Status: String, Codable, Sendable {
@@ -158,6 +166,10 @@ public enum HelperMemory {
         case preference(Preference)
         case routine(Routine)
         case permission(Permission)
+        case skill(SkillFields)
+        /// An entry of a kind this host does not know: its wire kind, kept for the debug state. Only
+        /// the helper's sentence (`says`) is shown.
+        case noticed(kind: String)
 
         public var kind: Kind {
             switch self {
@@ -166,6 +178,8 @@ public enum HelperMemory {
             case .preference: return .preference
             case .routine: return .routine
             case .permission: return .permission
+            case .skill: return .skill
+            case .noticed: return .noticed
             }
         }
     }
@@ -208,6 +222,7 @@ public enum HelperMemory {
 
         public var about: About? { if case .about(let f) = fields { return f } else { return nil } }
         public var permission: Permission? { if case .permission(let f) = fields { return f } else { return nil } }
+        public var skill: SkillFields? { if case .skill(let f) = fields { return f } else { return nil } }
     }
 
     // MARK: - Requests
@@ -216,12 +231,15 @@ public enum HelperMemory {
     public enum FieldValue: Equatable, Sendable, Encodable {
         case text(String)
         case null
+        /// A skill's `onItsOwn` (host contract, see the file header).
+        case bool(Bool)
 
         public func encode(to encoder: Encoder) throws {
             var c = encoder.singleValueContainer()
             switch self {
             case .text(let s): try c.encode(s)
             case .null: try c.encodeNil()
+            case .bool(let b): try c.encode(b)
             }
         }
     }
@@ -346,18 +364,30 @@ extension HelperMemory.Entry: Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try c.decode(HelperMemory.Kind.self, forKey: .kind)
+        let wireKind = try c.decode(String.self, forKey: .kind)
         id = try c.decode(String.self, forKey: .id)
         status = try c.decode(HelperMemory.Status.self, forKey: .status)
         says = try c.decode(String.self, forKey: .says)
         evidence = try c.decode(HelperMemory.Evidence.self, forKey: .evidence)
-        switch kind {
+        // `noticed` is this host's name for kinds it does not know; a helper sending it is one of them.
+        let known = HelperMemory.Kind(rawValue: wireKind).flatMap { $0 == .noticed ? nil : $0 }
+        switch known {
         case .about: fields = .about(try c.decode(HelperMemory.About.self, forKey: .fields))
         case .people: fields = .people(try c.decode(HelperMemory.People.self, forKey: .fields))
         case .preference: fields = .preference(try c.decode(HelperMemory.Preference.self, forKey: .fields))
         case .routine: fields = .routine(try c.decode(HelperMemory.Routine.self, forKey: .fields))
         case .permission: fields = .permission(try c.decode(HelperMemory.Permission.self, forKey: .fields))
+        case .skill:
+            let skill = try c.decode(SkillFields.self, forKey: .fields)
+            // The helper's rule (protocol.ts MemoryEntry): on its own is active, on Tab is learning, either may be paused.
+            if status != .paused, status != (skill.onItsOwn ? .active : .learning) {
+                throw ProtocolError("skill \(id) is \(status.rawValue), but its fields say \(skill.onItsOwn ? "active" : "learning")")
+            }
+            fields = .skill(skill)
+        case .noticed, nil:
+            fields = .noticed(kind: wireKind)
         }
+        let kind = fields.kind
         uses = try c.decodeIfPresent([HelperMemory.Use].self, forKey: .uses)
         if uses != nil, kind != .permission {
             throw ProtocolError("uses on a \(kind.rawValue) entry; only permissions have uses")

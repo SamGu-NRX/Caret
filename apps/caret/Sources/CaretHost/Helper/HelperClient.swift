@@ -94,6 +94,14 @@ final class HelperClient: @unchecked Sendable {
         return sent
     }
 
+    /// `skillAnswer`: Tab or Esc on a keep or promote question. True when written.
+    @discardableResult
+    func send(_ answer: SkillAnswer) -> Bool {
+        let sent = sendLine(try? NDJSON.line(answer))
+        if sent { stats.withLock { $0.skillAnswers &+= 1 } }
+        return sent
+    }
+
     /// `taskControl` from the activity list or the input pause. True when written; a control for
     /// a helper that is not connected is dropped, since its task is gone with it.
     @discardableResult
@@ -265,6 +273,7 @@ final class HelperClient: @unchecked Sendable {
             case .firstLookReply: s.firstLookReplies &+= 1
             case .memoryReply: s.memoryReplies &+= 1
             case .planProposal: s.planProposals &+= 1
+            case .skillOffer: s.skillOffers &+= 1
             case .error(let e):
                 s.errors &+= 1
                 // The helper answers a message it cannot parse with this error; until its schema

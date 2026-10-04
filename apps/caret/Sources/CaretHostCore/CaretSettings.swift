@@ -285,7 +285,8 @@ public enum HostGate {
     public static func allows(_ message: HelperInbound, _ settings: CaretSettings) -> Bool {
         switch message {
         case .fillProposal: return settings.gate.allows(family: "fill")
-        case .alternatives, .action, .popup: return !settings.paused
+        // A keep or promote question is an offer too: paused, Caret asks nothing.
+        case .alternatives, .action, .popup, .skillOffer: return !settings.paused
         default: return true
         }
     }

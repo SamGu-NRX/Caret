@@ -258,11 +258,25 @@ public final class OfferArbiter: @unchecked Sendable {
                 if toast.isExpired(at: now) {
                     s.toast = nil
                 } else if key.isHeaded(to: toast.target.pid) {
-                    s.toast = nil
-                    if key.isUndo { return .undo(toast) }
-                    if key.isPlainEscape { return .closeToast }
-                    // Any other key passes through and dismisses the toast; ⌘Z is the host's again.
-                    dismissedLine = .toastDismissed
+                    // A question about the run this toast reports on (B19 keep or promote) shares its
+                    // keys: ⌘Z still undoes the run, Tab answers and leaves the toast, Esc declines and
+                    // closes both. Any other key dismisses both, as it would either alone.
+                    let question = s.current.flatMap { $0.kind.actionLine?.answersToast == true && key.isHeaded(to: $0.target.pid) ? $0 : nil }
+                    if key.isUndo {
+                        s.toast = nil
+                        return .undo(toast)
+                    }
+                    if let question, key.isPlainEscape {
+                        s.toast = nil
+                        Self.clearOffer(&s)
+                        return .closeOffer(offerID: question.id)
+                    }
+                    if question == nil || !key.isPlainTab {
+                        s.toast = nil
+                        if key.isPlainEscape { return .closeToast }
+                        // Any other key passes through and dismisses the toast; ⌘Z is the host's again.
+                        dismissedLine = .toastDismissed
+                    }
                 }
             }
             if let line = s.statusLine, key.isHeaded(to: line.pid) {

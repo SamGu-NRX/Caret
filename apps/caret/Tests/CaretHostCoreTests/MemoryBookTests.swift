@@ -363,7 +363,7 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertEqual(rig.entry("permission-writeHere")?.permission?.rule, .act)
         let row = try XCTUnwrap(MemoryPage.rules(rig.state, now: Date()).first { $0.action == .writeHere })
         XCTAssertEqual(row.rule, .act)
-        XCTAssertEqual(row.ruleDetail, "Meant to happen without asking. For now, Tab still does it.", "nothing acts without Tab yet")
+        XCTAssertEqual(row.ruleDetail, "Skills you let run on their own act without Tab. Anything else, Tab still does.", "only a skill the user promoted acts without Tab (B19)")
     }
 
     func testSendingDeletingAndMoneyCannotGoPastAskAndNothingIsSent() throws {
@@ -492,7 +492,7 @@ final class MemoryBookTests: XCTestCase {
         let rig = try Rig(listed: false)
         rig.answer(HelperMemory.Reply(requestId: "", error: nil, entries: []))
         let sections = MemoryPage.sections(rig.state, now: Date())
-        XCTAssertEqual(sections.map(\.title), ["About you", "People", "Preferences", "Routines"])
+        XCTAssertEqual(sections.map(\.title), ["About you", "People", "Preferences", "Routines", "Skills"], "no noticed section while it is empty")
         XCTAssertTrue(sections.allSatisfy { $0.rows.isEmpty && !$0.empty.isEmpty })
     }
 

@@ -66,4 +66,6 @@ public enum SurfaceSend: Equatable, Sendable {
     case accept(OfferAccept)
     case stop(OfferStop)
     case control(TaskControl)
+    /// The answer to a keep or promote question (B19 `skillAnswer`).
+    case skillAnswer(SkillAnswer)
 }

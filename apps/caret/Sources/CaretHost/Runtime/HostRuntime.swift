@@ -167,6 +167,12 @@ public final class HostRuntime {
         // reported exactly as a real one.
         let route: @MainActor (HelperInbound, UInt64) -> Void = { message, at in
             activity.receive(message)
+            // Where a skill's run with no Tab acts, and which skill it is, come from its record.
+            switch message {
+            case .activity(let a): surface.activity(a.task)
+            case .activityReply(let r): for task in r.tasks { surface.activity(task) }
+            default: break
+            }
             // Memory is the user's to see and change whatever the gate holds.
             if case .memoryReply(let reply) = message {
                 memory.receive(reply)
@@ -189,6 +195,7 @@ public final class HostRuntime {
                 onboarding.receive(progress)
                 perch.ask.receive(progress)
             case .planProposal(let proposal): perch.ask.receive(proposal)
+            case .skillOffer(let offer): surface.skillOffer(offer)
             case .firstLookReply(let reply): onboarding.receive(reply)
             default: break
             }

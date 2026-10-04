@@ -7,3 +7,4 @@
 {"type":"memoryRequest","v":1,"requestId":"host-memory-4","op":"edit","id":"permission-writeHere","fields":{"rule":"act"}}
 {"type":"memoryReply","v":1,"requestId":"host-memory-4","error":null,"entries":[{"kind":"permission","id":"permission-writeHere","status":"active","says":"Write where you are: act","evidence":{"count":0,"lastSeen":1790000160000,"app":null},"fields":{"action":"writeHere","rule":"act","fixed":false}}]}
 {"type":"memoryReply","v":1,"requestId":"host-memory-5","error":"sensitive can be handoff, not act","entries":[]}
+{"type":"memoryRequest","v":1,"requestId":"host-memory-6","op":"edit","id":"skill-5e6f7a8b","fields":{"onItsOwn":false}}

@@ -182,11 +182,17 @@ struct MemoryView: View {
     private var permissions: some View {
         VStack(alignment: .leading, spacing: 0) {
             let rows = MemoryPage.rules(state, now: now, calendar: calendar, locale: locale)
+            let exceptions = MemoryPage.exceptions(state)
             OnboardingCard {
                 VStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         if index > 0 { Divider14() }
                         RuleRowView(row: row) { send(.setRule(row.action, $0)) }
+                        // Under the two write rows: the skills that skip their Ask first, by name.
+                        if row.action == .writeElsewhere, !exceptions.isEmpty {
+                            ExceptionsView(exceptions: exceptions, animated: animated) { send(.control($0, .backOnTab, typed: false)) }
+                                .transition(.opacity.animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil))
+                        }
                     }
                 }
             }
@@ -361,7 +367,7 @@ struct MemoryRowView: View {
                 Button("Forget") { send(.confirmForget) }.buttonStyle(RowButtonStyle(primary: true))
             } else {
                 ForEach(row.controls, id: \.self) { control in
-                    Button(row.typed && control == .forget ? "Remove" : MemoryPage.controlTitle(control)) {
+                    Button(row.typed && control == .forget ? "Remove" : MemoryPage.controlTitle(control, kind: row.kind)) {
                         send(.control(row.id, control, typed: row.typed))
                     }
                     .buttonStyle(RowButtonStyle(primary: false))
@@ -386,7 +392,7 @@ private struct RowActions: ViewModifier {
     func body(content: Content) -> some View {
         row.controls.reduce(AnyView(content)) { view, control in
             guard enabled, !row.busy else { return view }
-            let title = row.typed && control == .forget ? "Remove" : MemoryPage.controlTitle(control)
+            let title = row.typed && control == .forget ? "Remove" : MemoryPage.controlTitle(control, kind: row.kind)
             return AnyView(view.accessibilityAction(named: Text(title)) { send(.control(row.id, control, typed: row.typed)) })
         }
     }
@@ -488,6 +494,68 @@ struct RuleRowView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Last uses: " + row.uses.map(\.says).joined(separator: ". "))
         }
+    }
+}
+
+/// The skills that run on their own, as exceptions to the write rows above: each by name and
+/// trigger, with one button that puts it back on Tab. Set in from the rows' text and tinted with the
+/// Carrot wash, so it reads as part of those rules and not a rule of its own. Nothing moves: a skill
+/// that goes back on Tab leaves the list with the same 120 ms fade as a forgotten memory row.
+struct ExceptionsView: View {
+    var exceptions: [MemoryPage.Exception]
+    var animated = true
+    var backOnTab: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(MemoryPage.exceptionsTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color(token: Tokens.ink))
+                    .accessibilityAddTraits(.isHeader)
+                Text(MemoryPage.exceptionsDetail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(token: Tokens.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, 6)
+            ForEach(exceptions) { e in
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(e.name)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color(token: Tokens.ink))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(e.when)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color(token: Tokens.secondary))
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let problem = e.problem {
+                            Text(problem)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color(token: Tokens.ink))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Button(MemoryPage.controlTitle(.backOnTab)) { backOnTab(e.id) }
+                        .buttonStyle(RowButtonStyle(primary: false))
+                        .disabled(e.busy)
+                        .accessibilityLabel("Put \(e.name) back on Tab")
+                }
+                .padding(.vertical, 5)
+                .accessibilityElement(children: .contain)
+                .transition(.opacity.animation(animated ? Motion.curve(Motion.easeOut, 0.12) : nil))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color(token: Tokens.carrotWash), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.leading, 14)
+        .padding(.trailing, 14)
+        .padding(.bottom, 12)
+        .probed("exceptions")
     }
 }
 

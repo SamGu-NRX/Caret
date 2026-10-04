@@ -13,13 +13,17 @@ public struct ActionLine: Equatable, Sendable {
     public var actions: [PopupSpec.Action]
     /// What the down arrow opens: a picker of variants ("Thu 3:00" against "Thu 15:00 to 15:45").
     public var variants: PopupSpec?
+    /// A question about the run whose toast shows with it (a B19 keep or promote offer): Tab answers
+    /// it and leaves the toast's ⌘Z in place; Esc declines it and closes both (`OfferArbiter`).
+    public var answersToast: Bool
 
-    public init(offerKey: String, app: String, endState: PopupSpec.Value, actions: [PopupSpec.Action], variants: PopupSpec? = nil) {
+    public init(offerKey: String, app: String, endState: PopupSpec.Value, actions: [PopupSpec.Action], variants: PopupSpec? = nil, answersToast: Bool = false) {
         self.offerKey = offerKey
         self.app = app
         self.endState = endState
         self.actions = actions
         self.variants = variants
+        self.answersToast = answersToast
     }
 
     public var primary: PopupSpec.Action? { actions.first { $0.key == .tab } }
@@ -109,16 +113,20 @@ public struct StatusLine: Equatable, Sendable {
     public var kind: Kind
     /// The offer the work came from, for `stopWork`.
     public var offerKey: String?
+    /// Esc takes over from the first moment, not after `stoppableAfter`: work a skill started with no
+    /// Tab (B19) is one key from being handed back however short it is.
+    public var takesOverAtOnce: Bool
 
-    public init(pid: Int32, kind: Kind, offerKey: String? = nil) {
+    public init(pid: Int32, kind: Kind, offerKey: String? = nil, takesOverAtOnce: Bool = false) {
         self.pid = pid
         self.kind = kind
         self.offerKey = offerKey
+        self.takesOverAtOnce = takesOverAtOnce
     }
 
     public func surface(at now: Date) -> Surface {
         switch kind {
-        case .working(let started): return .working(stoppable: now.timeIntervalSince(started) >= Self.stoppableAfter)
+        case .working(let started): return .working(stoppable: takesOverAtOnce || now.timeIntervalSince(started) >= Self.stoppableAfter)
         case .error, .result: return .errorLine
         }
     }

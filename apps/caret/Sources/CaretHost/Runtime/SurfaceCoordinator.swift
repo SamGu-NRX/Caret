@@ -118,6 +118,8 @@ final class SurfaceCoordinator {
     func toastChanged() { machine.toastChanged() }
     func gateClosed() { machine.gateClosed() }
     func stopWork(_ line: StatusLine) { machine.stopWork(line) }
+    func skillOffer(_ offer: SkillOffer) { machine.skillOffer(offer) }
+    func activity(_ record: TaskRecord) { machine.activity(record) }
 
     func insertionFinished(_ result: InsertionExecutor.Result) {
         guard result.claim.offer.source != .engine, case .ghost = result.claim.offer.kind else { return }
@@ -183,6 +185,7 @@ final class SurfaceCoordinator {
         case .accept(let accept): return client.send(accept)
         case .stop(let stop): return client.send(stop)
         case .control(let control): return client.send(control)
+        case .skillAnswer(let answer): return client.send(answer)
         }
     }
 

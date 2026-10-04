@@ -231,6 +231,7 @@ final class SurfaceRig {
             case .accept(let a): self.sent.append("accept \(a.offerId) \(a.actionId)"); self.sentAt.append(a.at)
             case .stop(let s): self.sent.append("stop \(s.offerId)"); self.sentAt.append(s.at)
             case .control(let c): self.sent.append("\(c.action.rawValue) \(c.taskId)")
+            case .skillAnswer(let a): self.sent.append("skill \(a.answer.rawValue) \(a.id)")
             }
             return self.helperConnected
         }

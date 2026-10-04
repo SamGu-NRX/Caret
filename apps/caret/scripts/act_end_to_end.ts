@@ -333,6 +333,60 @@ interface Surface {
 }
 const surface = async (): Promise<Surface> => ((await hostCommand("state")).surface ?? {}) as Surface;
 
+/** Counters that say why a line left: hidden by its watch, stopped, corrected, or a new offer drawn. */
+const LINE_COUNTERS = /^surface\.(lineHidden|workStopped|stop\.|withdrawn|shown|progress|held|toast|undo)/;
+
+/** On-screen windows over `frame` (any overlap), front to back: owner, pid, layer, alpha, bounds. */
+async function windowsOver(frame: [number, number, number, number]): Promise<unknown> {
+  const [fx, fy, fw, fh] = frame;
+  const script = `ObjC.import("CoreGraphics"); ObjC.import("Foundation");
+var l = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0)); var o = [];
+for (var i = 0; i < l.count; i++) { var w = l.objectAtIndex(i); var b = w.objectForKey("kCGWindowBounds");
+  var X = b.objectForKey("X").doubleValue, Y = b.objectForKey("Y").doubleValue, W = b.objectForKey("Width").doubleValue, H = b.objectForKey("Height").doubleValue;
+  if (X < ${fx + fw} && ${fx} < X + W && Y < ${fy + fh} && ${fy} < Y + H) o.push({ owner: ObjC.unwrap(w.objectForKey("kCGWindowOwnerName")), pid: w.objectForKey("kCGWindowOwnerPID").intValue,
+    layer: w.objectForKey("kCGWindowLayer").intValue, alpha: w.objectForKey("kCGWindowAlpha").doubleValue, bounds: [X, Y, W, H] }); }
+JSON.stringify(o);`;
+  try {
+    return JSON.parse((await run("/usr/bin/osascript", ["-l", "JavaScript", "-e", script])).stdout) as unknown;
+  } catch (e) {
+    return String(e);
+  }
+}
+
+/**
+ * Samples the host every 100 ms until stopped: its line, the work it runs, and the counters above,
+ * plus the windows over the field whenever a counter moved. An Esc run writes this beside its row, so
+ * a failure says which path took the line down instead of leaving only "gone 200 ms later" (A14).
+ */
+function sampleHost(frame: [number, number, number, number]): { stop: () => Promise<unknown[]> } {
+  const t0 = Date.now();
+  const rows: unknown[] = [];
+  let on = true;
+  let last: Record<string, number> = {};
+  const loop = (async () => {
+    while (on) {
+      try {
+        const st = await hostCommand("state");
+        const s = (st.surface ?? {}) as Surface;
+        const all = (st.counters ?? {}) as Record<string, number>;
+        const counters = Object.fromEntries(Object.entries(all).filter(([k]) => LINE_COUNTERS.test(k)));
+        const moved = Object.entries(counters).filter(([k, v]) => last[k] !== v).map(([k, v]) => `${k}=${v}`);
+        const row: Record<string, unknown> = { ms: Date.now() - t0, lineText: s.lineText ?? null, workingOn: s.workingOn ?? null, working: s.working ?? null, toast: s.toast?.caption ?? null };
+        if (moved.length > 0 && Object.keys(last).length > 0) {
+          row.moved = moved;
+          row.windows = await windowsOver(frame);
+        }
+        last = counters;
+        rows.push(row);
+      } catch (e) {
+        rows.push({ ms: Date.now() - t0, error: String(e) });
+      }
+      await sleep(100);
+    }
+  })();
+  return { stop: async () => ((on = false), await loop, rows) };
+}
+
 // MARK: - targets
 
 interface Target {
@@ -608,6 +662,7 @@ try {
     const row: Row = { kind, run: r, shown: false, accepted: false, outcome: "", readBack: {}, valueOk: false, revoked: false, secondAct: "", secondActDetail: null, secondActChanged: false, toast: null, undoOk: null, afterUndo: null, stoppedLine: null, stopOk: null, ms: 0, problem: null };
     rows.push(row);
     const t0 = Date.now();
+    let sampler: { stop: () => Promise<unknown[]> } | null = null;
     try {
       await ensureFront(t);
       await t.reset();
@@ -618,6 +673,7 @@ try {
       const { plan, want, afterFirst } = t.plan(r, kind === "tab" ? 1 : 3);
       const offerKey = offerKeyFor(kind, r);
       if (kind === "esc") slow.add(offerKey);
+      if (kind === "esc" && f.n.frame !== undefined) sampler = sampleHost(f.n.frame as [number, number, number, number]);
       const msg: OfferAction = {
         type: "action",
         v: PROTOCOL_VERSION,
@@ -725,6 +781,11 @@ try {
       row.problem = e instanceof Error ? e.message : String(e);
     } finally {
       row.ms = Date.now() - t0;
+      if (sampler !== null) {
+        // The line lives 3 s after the helper's ending; sample past it so its exit is on record.
+        await sleep(3500);
+        writeFileSync(join(OUT, `timeline-${kind}-${r}.json`), JSON.stringify(await sampler.stop(), null, 1) + "\n");
+      }
       say(`${kind} ${r}: shown ${row.shown} accepted ${row.accepted} ${row.outcome} value ${row.valueOk} revoked ${row.revoked} second ${row.secondAct}${row.secondActChanged ? " CHANGED" : ""} toast '${row.toast}' undo ${row.undoOk} stop '${row.stoppedLine}'${row.problem === null ? "" : ` PROBLEM ${row.problem}`}`);
       // The host's line and toast go before the next offer.
       await sleep(kind === "esc" ? 2500 : 2500);

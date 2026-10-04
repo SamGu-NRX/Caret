@@ -1,12 +1,14 @@
+import CaretScreenCore
 import Foundation
 
-/// What the memory window shows, computed from `MemoryBook.State`: the four kinds of memory as
-/// sections of rows, and the permissions as one row per action type. The window only draws these.
+/// What the memory window shows, computed from `MemoryBook.State`: the kinds of memory as sections
+/// of rows (skills among them, and anything a newer helper keeps that this host cannot name), and
+/// the permissions as one row per action type, with the skills that skip Ask first under them. The window only draws these.
 /// Each row's title and secondary line are composed here from the entry's structured fields, in
 /// plain words: the title says what Caret remembers, the secondary line says where it came from
 /// and how sure Caret is. The helper's own sentence (`says`) is left to the debug state.
 public enum MemoryPage {
-    public enum Control: String, Codable, Sendable { case edit, pause, resume, forget }
+    public enum Control: String, Codable, Sendable { case edit, pause, resume, forget, backOnTab }
 
     public struct Row: Equatable, Sendable, Identifiable {
         public enum Status: Equatable, Sendable {
@@ -64,7 +66,8 @@ public enum MemoryPage {
         public var problem: String?
     }
 
-    public static let kinds: [HelperMemory.Kind] = [.about, .people, .preference, .routine]
+    /// The sections in order. `noticed` is listed only when it has rows.
+    public static let kinds: [HelperMemory.Kind] = [.about, .people, .preference, .routine, .skill, .noticed]
 
     public static func title(_ kind: HelperMemory.Kind) -> String {
         switch kind {
@@ -73,6 +76,8 @@ public enum MemoryPage {
         case .preference: return "Preferences"
         case .routine: return "Routines"
         case .permission: return "Permissions"
+        case .skill: return "Skills"
+        case .noticed: return "Something Caret noticed"
         }
     }
 
@@ -82,16 +87,18 @@ public enum MemoryPage {
         case .people: return "Nobody yet. When you write out a name Caret shortened, it remembers who you meant."
         case .preference: return "None yet. When you reformat what Caret filled, the format shows up here."
         case .routine: return "None yet. Steps you repeat between the same apps show up here as Caret learns them."
-        case .permission: return ""
+        case .skill: return "None yet. After Caret runs a routine for you, it asks whether to keep it as a skill."
+        case .permission, .noticed: return ""
         }
     }
 
     // MARK: - Memory
 
     public static func sections(_ s: MemoryBook.State, now: Date, calendar: Calendar = .current, locale: Locale = .current) -> [Section] {
-        kinds.map { kind in
+        kinds.compactMap { kind in
             var rows = s.entries.filter { $0.kind == kind }.map { row($0, s, now: now, calendar: calendar, locale: locale) }
             if kind == .about { rows += s.typed.map(typedRow) }
+            if kind == .noticed, rows.isEmpty { return nil }
             return Section(kind: kind, title: title(kind), empty: emptyLine(kind), rows: rows)
         }
     }
@@ -105,7 +112,9 @@ public enum MemoryPage {
         }
         var controls: [Control] = []
         if !MemoryBook.editable(e).isEmpty { controls.append(.edit) }
-        controls.append(e.status == .paused ? .resume : .pause)
+        if e.skill?.onItsOwn == true, e.status != .paused { controls.append(.backOnTab) }
+        // Something this host cannot name: it shows the helper's sentence and can only be forgotten.
+        if e.kind != .noticed { controls.append(e.status == .paused ? .resume : .pause) }
         controls.append(.forget)
         let words = wording(e, entries: s.entries, now: now, calendar: calendar, locale: locale)
         return Row(
@@ -192,7 +201,22 @@ public enum MemoryPage {
             return (copies, joined([state, record]))
         case .permission(let p):
             return (actionTitle(p.action), ruleTitle(p.rule))
+        case .skill(let f):
+            return (f.name, joined([skillState(f, paused: e.status == .paused), "when \(f.trigger)", "ran \(times(f.runs))"]))
+        case .noticed:
+            return (e.says, joined([paused, seen, e.evidence.app]))
         }
+    }
+
+    /// Where a skill stands, in the three words the list uses: learning (on Tab, counting clean runs),
+    /// on Tab (it stays there: it hands a press to you, or it has earned more and you kept it asking),
+    /// or on its own.
+    public static func skillState(_ f: SkillFields, paused: Bool) -> String {
+        if paused { return "Paused" }
+        if f.onItsOwn { return "On its own" }
+        if let handsOff = f.handsOff { return "On Tab, you press \(handsOff.label) yourself" }
+        if f.cleanRuns >= f.needed { return "On Tab" }
+        return "Learning, \(f.cleanRuns) of \(f.needed) clean runs"
     }
 
     /// "Your guest is Marcus Lowe (ops)". The label keeps its capitals when it is an initialism
@@ -272,19 +296,50 @@ public enum MemoryPage {
         }
     }
 
-    public static func controlTitle(_ c: Control) -> String {
+    public static func controlTitle(_ c: Control, kind: HelperMemory.Kind? = nil) -> String {
         switch c {
-        case .edit: return "Edit"
+        case .edit: return kind == .skill ? "Rename" : "Edit"
         case .pause: return "Pause"
         case .resume: return "Resume"
         case .forget: return "Forget"
+        case .backOnTab: return "Put back on Tab"
         }
     }
 
     /// The question on a row whose Forget waits for confirmation.
     public static func forgetQuestion(_ kind: HelperMemory.Kind) -> String {
-        kind == .routine ? "Forget this routine? Caret won't relearn it for 30 days." : "Forget this? Caret can't bring it back."
+        switch kind {
+        case .routine: return "Forget this routine? Caret won't relearn it for 30 days."
+        // memory.ts `forget`: the routine stays, marked declined.
+        case .skill: return "Forget this skill? Caret won't ask to keep it again."
+        default: return "Forget this? Caret can't bring it back."
+        }
     }
+
+    // MARK: - Skills that skip Ask first
+
+    /// One skill the permissions page names as an exception to Ask first.
+    public struct Exception: Equatable, Sendable, Identifiable {
+        public var id: String
+        public var name: String
+        /// "When a Tracker window opens with Order, Carrier and Tracking empty".
+        public var when: String
+        public var busy: Bool
+        public var problem: String?
+    }
+
+    /// Every skill that runs on its own and is not paused, in the helper's order. The helper does not
+    /// say which permission a skill's runs fall under, so the list sits under both write rows.
+    public static func exceptions(_ s: MemoryBook.State) -> [Exception] {
+        s.entries.compactMap { e in
+            guard let f = e.skill, f.onItsOwn, e.status != .paused else { return nil }
+            return Exception(id: e.id, name: f.name, when: "When \(f.trigger)", busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id])
+        }
+    }
+
+    public static let exceptionsTitle = "Skills that run on their own"
+    public static let exceptionsDetail = "These skip Ask first. Each run shows where you are, and ⌘Z undoes it."
+
 
     // MARK: - Permissions
 
@@ -337,14 +392,16 @@ public enum MemoryPage {
     }
 
     /// What the rule does today. The helper's gate reads only Write where you are and Undoable
-    /// changes, and only Hand off changes anything there: it holds the offer (helper/src/patterns/
-    /// gate.ts, `permissionHandoff`). Nothing yet acts without Tab, so Act and Act if approved say
+    /// changes: Hand off holds the offer (helper/src/patterns/gate.ts, `permissionHandoff`), and a
+    /// skill the user promoted runs without Tab under Ask first or Act where you are, and under Act if
+    /// approved elsewhere (B19, skills.ts `mayRunUnasked`). Nothing else acts without Tab, so Act says
     /// so rather than promise it; reading and showing do happen without asking.
     public static func ruleDetail(_ a: HelperMemory.ActionType, _ r: HelperMemory.Rule) -> String {
         switch r {
         case .act where a == .read || a == .show: return "Caret does it without asking."
-        case .act: return "Meant to happen without asking. For now, Tab still does it."
-        case .actIfApproved: return "Meant for routines you approved. For now, Tab still does it."
+        // B19: only a skill the user let run on its own acts without Tab (skills.ts mayRunUnasked); elsewhere
+        // that needs Act if approved.
+        case .act, .actIfApproved: return "Skills you let run on their own act without Tab. Anything else, Tab still does."
         case .ask: return "Caret offers it, and Tab does it."
         case .handoff: return "Caret leaves it to you."
         }

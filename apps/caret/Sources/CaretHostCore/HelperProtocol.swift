@@ -5,8 +5,8 @@ import Foundation
 ///
 /// The wire types are the screen track's (`CaretScreenCore`, mirroring `helper/src/protocol.ts`).
 /// The host acts on `fillProposal`, `error`, the broadcast `activity` and the `activityReply` to
-/// its own request, the offers (`alternatives`, `action`, `popup`) and their withdrawal, and
-/// `taskProgress`, which ends the working line of an accepted offer. Anything else the helper sends
+/// its own request, the offers (`alternatives`, `action`, `popup`) and their withdrawal,
+/// `taskProgress`, which ends the working line of an accepted offer, and `skillOffer`. Anything else the helper sends
 /// is named and counted rather than treated as a broken connection, so a helper that adds message
 /// types does not disconnect an older host.
 public enum HelperInbound: Equatable, Sendable {
@@ -27,6 +27,9 @@ public enum HelperInbound: Equatable, Sendable {
     case memoryReply(HelperMemory.Reply)
     /// The answer to this host's `planRequest` (`AskCaret`), to this connection only.
     case planProposal(PlanProposal)
+    /// B19: keep a routine as a skill, or let a skill run without a Tab. Asked after a run the
+    /// user took; the host shows it with that run's line and answers with `skillAnswer`.
+    case skillOffer(SkillOffer)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -48,6 +51,7 @@ public enum HelperInbound: Equatable, Sendable {
         case .firstLookReply: return FirstLookReply.type
         case .memoryReply: return HelperMemory.Reply.type
         case .planProposal: return PlanProposal.type
+        case .skillOffer: return SkillOffer.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -87,6 +91,12 @@ public enum HelperInbound: Equatable, Sendable {
             return .memoryReply(try HelperMemory.Reply.decode(line))
         case PlanProposal.type:
             return .planProposal(try JSONDecoder().decode(PlanProposal.self, from: line))
+        case SkillOffer.type:
+            return .skillOffer(try JSONDecoder().decode(SkillOffer.self, from: line))
+        case SkillAnswer.type:
+            // The host's own answer, echoed back; validated so a malformed line is still counted.
+            _ = try JSONDecoder().decode(SkillAnswer.self, from: line)
+            return .notForConsumer(type: envelope.type)
         default:
             return .unknown(type: envelope.type)
         }
