@@ -1,0 +1,1 @@
+NSSpellChecker requestChecking treats the orthography option as a starting point: with the system's automatic language on, French text passes under en and tres passes under fr (T1, macOS 26.6).
