@@ -1,1 +1,0 @@
-A13: the ask field lives in the keyable non-activating list panel; Return/Tab/Esc are caught in its sendEvent (the field editor eats Tab/Esc first). Golden protocol.ndjson line 32 keeps pre-calendar roles; HelperProtocolTests drops calendar until the screen track rewrites it.

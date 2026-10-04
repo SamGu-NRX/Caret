@@ -1,1 +1,0 @@
-On-screen fill scripts: the helper asks about a form at most once per 30 s (helper.ts FILL_REPEAT_MS) and refocusing an already-focused field posts no focus change; focus another field first and start 40 s after the reader (A14 memory_fill_walk.py).

@@ -1,0 +1,1 @@
+B17-B21: tests and skill evals use Eager; planError needs host sentences for new codes; lease 2 GiB for swift test; one ask per form per 30 s; record last pid post (resets HIDIdleTime); pid keys skip key equivalents; host hello settings override the helper's.

@@ -1,0 +1,1 @@
+Desktop GUI runs: TextEdit exec'd from the background never takes the front; open -b com.apple.TextEdit (only when ours is the sole TextEdit) plus its Window > Bring All to Front does. Our own HID keys reset HIDIdleTime, so gate the next leg on no input since the last (A12).

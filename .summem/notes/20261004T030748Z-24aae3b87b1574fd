@@ -1,1 +1,0 @@
-Permissions page lists a skill under each write rule in its fields' 'wrote' (host contract; B19 helper stores wrote but strips it from replies); without it a skill is listed only where PermissionPolicy.skillRunsUnasked (mirrors skills.ts mayRunUnasked) allows now (A16).

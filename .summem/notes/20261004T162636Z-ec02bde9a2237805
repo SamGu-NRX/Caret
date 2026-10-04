@@ -1,1 +1,0 @@
-Rig VM display file is pixels at 2x: 1920x1200 gives a 960x600-pt screen, too small for Caret's panels beside caret-fixture forms; A16's drawn walk uses 3840x2400. Close fixture forms >=3 s after a routine run or the bundle loses a copy and scores a miss.

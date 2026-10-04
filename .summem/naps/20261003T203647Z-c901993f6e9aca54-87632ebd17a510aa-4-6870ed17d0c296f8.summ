@@ -1,1 +1,0 @@
-B18: PlanErrorCode gains need host sentences (planError is exhaustive); the planner asks only about fields the instruction names unless asksToFillForm (else nothingToDo). swift test peaks under 1 GB RSS; lease 2 GiB. Routine evals copy new values each time (B19).
