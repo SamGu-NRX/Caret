@@ -259,6 +259,7 @@ final class SurfaceRig {
             }
         case .hidePanel(let exit): log.append("hide \(exit)")
         case .workingChanged(let on): log.append(on ? "working on" : "working off")
+        case .dropHelperSession: log.append("drop session")
         case .toastSlotTaken:
             log.append("toast slot")
             // FillCoordinator.toastChanged: its toast is gone once the slot holds another.

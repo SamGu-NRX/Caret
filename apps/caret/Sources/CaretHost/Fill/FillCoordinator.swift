@@ -67,7 +67,7 @@ final class FillCoordinator {
         machine.insertionFinished(FillInsertion(
             claim: result.claim, verified: result.insertion.verified == true, rejected: result.rejected,
             reason: result.reason, method: result.method, undo: result.undo,
-            insertedLength: UTF16Text.length(result.claim.insertionText)
+            insertedLength: UTF16Text.length(result.claim.insertionText), strayField: result.strayField
         ))
     }
 

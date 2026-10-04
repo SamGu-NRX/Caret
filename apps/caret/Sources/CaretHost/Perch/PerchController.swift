@@ -109,6 +109,7 @@ final class PerchController {
         askModel.submit = { [weak self] in self?.ask.submit() }
         askModel.run = { [weak self] in self?.ask.tab() }
         askModel.escape = { [weak self] in self?.ask.escape() }
+        askModel.undo = { [weak self] in self?.ask.undo() }
         ask.onChange = { [weak self] in self?.askChanged() }
     }
 
@@ -122,11 +123,15 @@ final class PerchController {
         if listOpen, drawnAsk != ask.phase || drawnHint != AskSection.showsHint(text: ask.text, phase: ask.phase) { renderList() }
     }
 
-    /// Return, Tab and Esc while the list is key, before the field editor sees them. Return plans
+    /// Return, Tab, Esc and ⌘Z while the list is key, before the field editor sees them. ⌘Z undoes an
+    /// ended run that wrote. Return plans
     /// what the field holds; Tab takes a plan; Esc stops a run, puts away a card or an answer, then
     /// empties the field, then closes the list. True when the key was used.
     private func listKey(_ event: NSEvent) -> Bool {
-        let plain = event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        // ⌘Z on a run that wrote undoes it (q1 bug 8); otherwise the field editor's own undo.
+        if modifiers == .command, event.keyCode == 6, ask.undo() { return true }
+        let plain = modifiers.isEmpty
         guard plain else { return false }
         // An input method composing text owns Return and Esc until it commits or cancels.
         if let editor = list.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return false }

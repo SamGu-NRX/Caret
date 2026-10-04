@@ -37,6 +37,10 @@ public final class HostRuntime {
         /// When onboarding opens (`--onboarding`, `CARET_ONBOARDING`): `off` (the menu opens it),
         /// `auto` (at launch until finished once), `show`, or `hidden` (no window; socket only).
         public var onboarding: String
+        /// `CARET_TEST_RESTORE_DELAY_MS`, used only with test hooks: how long a paste holds Caret's item
+        /// on the pasteboard after the field settles, so an acceptance run can copy in the middle of a
+        /// paste on cue. Ignored in normal use.
+        public var pasteRestoreDelay: TimeInterval
 
         public init(
             socketPath: String = HostRuntime.defaultSocketPath,
@@ -64,6 +68,8 @@ public final class HostRuntime {
             self.allowedPIDs = allowedPIDs
             self.ghostEnabled = ghostEnabled
             self.fillAdvances = fillAdvances
+            let delayMs = Double(ProcessInfo.processInfo.environment["CARET_TEST_RESTORE_DELAY_MS"] ?? "") ?? 0
+            self.pasteRestoreDelay = min(max(delayMs, 0), 2000) / 1000
         }
     }
 
@@ -123,9 +129,12 @@ public final class HostRuntime {
             headless: configuration.surfacesHeadless
         )
         self.surface = surface
+        // Every host write asks this right before it acts; pause, stop, take over and the helper's
+        // connection closing end it (S1 audit #2).
+        let authority = HostAuthority()
         let executor = InsertionExecutor(
             arbiter: arbiter, status: status, compatibilityStore: compatibilityStore, policy: policy,
-            advanceAfterFill: configuration.fillAdvances,
+            authority: authority, advanceAfterFill: configuration.fillAdvances, pasteRestoreDelay: configuration.testHooks ? configuration.pasteRestoreDelay : 0,
             onFinished: { result in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -216,7 +225,7 @@ public final class HostRuntime {
                     if !up { surface.helperGone() }
                 }
             }
-        })
+        }, authority: authority)
         fill.client = helper
         let firstLookClient = helper
         onboarding.sendFirstLook = { firstLookClient.send($0) }
@@ -239,7 +248,21 @@ public final class HostRuntime {
             case .plan(let request): return askClient.send(request)
             case .accept(let accept): return askClient.send(accept)
             case .stop(let stop): return askClient.send(stop)
+            case .control(let control): return askClient.send(control)
             }
+        }
+        perch.ask.dropSession = { [weak askClient] in askClient?.dropSession() }
+        // ⌘Z in the app an Ask run acted in, while its card offers it, as a fill's toast does (q1 bug 8).
+        let askToast = AskToast()
+        perch.ask.onUndoChanged = { offer in
+            if let id = askToast.id { arbiter.dismissToast(grantID: id) }
+            askToast.id = nil
+            guard let offer else { return }
+            let target = TargetIdentity(pid: offer.pid, bundleID: "", windowID: "", elementID: "", elementRevision: "")
+            askToast.id = arbiter.showToast(UndoGrant.task(offer.taskId, target: target))
+            // The arbiter has one toast slot: a fill's or a line's toast that held it is gone now.
+            surface.toastChanged()
+            fill.toastChanged()
         }
         // The helper's gate holds the same roles, level and pause: sent after every hello and on
         // every change (B10). The client drops a change that leaves all three as they were.
@@ -251,7 +274,10 @@ public final class HostRuntime {
             gateClient.update(GateSettings(settings, at: Self.nowMs()))
             if !HostGate.allowsGhostText(settings) { coordinator.gateClosed() }
             if !settings.gate.allows(family: "fill") { fill.gateClosed() }
-            if settings.paused { surface.gateClosed() }
+            if settings.paused {
+                authority.revokeAll("paused")
+                surface.gateClosed()
+            }
         }
         surface.client = helper
         // The fill line and the fill pop-up share the arbiter's one toast slot.
@@ -288,10 +314,14 @@ public final class HostRuntime {
                 }
             },
             undo: { grant in
-                if grant.taskID != nil {
+                if let taskID = grant.taskID {
                     // The helper's executor made these writes and keeps their ledger; it undoes them.
                     // The request goes from main, never from the tap thread, which only enqueues.
-                    DispatchQueue.main.async { MainActor.assumeIsolated { surface.undoStarted(grant) } }
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            if perch.ask.ownsUndo(taskID) { perch.ask.undo() } else { surface.undoStarted(grant) }
+                        }
+                    }
                 } else {
                     executor.submitUndo(grant)
                     DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoStarted(grant) } }
@@ -357,7 +387,8 @@ public final class HostRuntime {
             },
             settings: { words in MainActor.assumeIsolated { Self.settingsCommand(words) } },
             onboarding: { words in MainActor.assumeIsolated { onboarding.command(words) } },
-            memory: { words in MainActor.assumeIsolated { memory.command(words) } }
+            memory: { words in MainActor.assumeIsolated { memory.command(words) } },
+            testHooks: testHooks
         )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
             Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods, hooks: hooks)
@@ -476,6 +507,8 @@ public final class HostRuntime {
         let onboarding: @Sendable ([String]) -> String
         /// `memory ...` (`MemoryController.command`).
         let memory: @Sendable ([String]) -> String
+        /// The host was started with `--test-hooks`.
+        let testHooks: Bool
     }
 
     /// The ask field, over the debug socket. Main thread.
@@ -505,7 +538,8 @@ public final class HostRuntime {
             switch words.count > 2 ? words[2] : "" {
             case "tab": return state(["consumed": ask.tab()])
             case "esc": return state(["consumed": ask.escape()])
-            default: return #"{"error":"usage: ask key tab|esc"}"#
+            case "cmd-z": return state(["consumed": ask.undo()])
+            default: return #"{"error":"usage: ask key tab|esc|cmd-z"}"#
             }
         case "open":
             perch.openAsk()
@@ -607,6 +641,15 @@ public final class HostRuntime {
             // The tap's callbacks post to main; wait for them, so the next read sees their effect.
             DispatchQueue.main.sync {}
             return Data("{\"ok\":true,\"consumed\":\(consumed)}\n".utf8)
+        case "writemethod":
+            // Test hook: `writemethod <pid> pastePid|axSelectedText` sets how that app takes writes,
+            // so an acceptance run can drive the pasteboard route in an app that takes AX writes.
+            guard hooks.testHooks else { return Data("{\"error\":\"writemethod is a test hook: start the host with --test-hooks\"}\n".utf8) }
+            guard words.count == 3, let pid = Int32(words[1]), let method = WriteMethodTable.Method(rawValue: words[2]) else {
+                return Data("{\"error\":\"usage: writemethod <pid> pastePid|axSelectedText\"}\n".utf8)
+            }
+            writeMethods.record(method, for: WriteMethodTable.appKey(pid: pid))
+            return Data("{\"ok\":true}\n".utf8)
         case "inject":
             // `inject <json>`: an offer for the focused field of the pid it names (SurfaceInjection).
             let json = command.dropFirst("inject".count).trimmingCharacters(in: .whitespaces)
@@ -697,6 +740,11 @@ public final class HostRuntime {
         state.helper = helper.snapshot()
         state.lastUndo = fields.lastUndo
         state.writeMethods = writeMethods.snapshot()
+        if let authority = helper.authority {
+            let info = authority.debugInfo
+            state.authorityRevokes = info.revokes
+            state.authorityLastRevoke = info.lastReason
+        }
         state.ghostFits = fields.ghostFits
         return state
     }
@@ -726,4 +774,10 @@ enum TestKeys {
             return KeyStroke(keyCode: 0, text: String(name.suffix(1)), targetPID: pid)
         }
     }
+}
+
+/// The arbiter's toast an Ask run's ⌘Z holds, if any.
+@MainActor
+private final class AskToast {
+    var id: UInt64?
 }

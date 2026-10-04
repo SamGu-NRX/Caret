@@ -268,9 +268,10 @@ final class SurfaceMachineTests: XCTestCase {
                 .wait(3),
                 .press(Fx.esc()),
                 .sent(["accept fill-2 fillAll", "stop fill-2"]),
-                .expect(.workingOn(nil)), .expect(.line("You stopped it")),
-                // The line lives its 3 s from the helper's ending (A15 part 1).
+                .expect(.workingOn(nil)), .expect(.line("Stopping\u{2026}")),
+                // The line says it stopped once the helper does, and lives its 3 s from there.
                 .taskLine(Fx.progress("fill-2", .stopped, reason: .you, steps: 0)),
+                .expect(.line("You stopped it")),
                 .wait(3), .expect(.line(nil)), .expect(.escOwned(false)),
             ]),
         ])

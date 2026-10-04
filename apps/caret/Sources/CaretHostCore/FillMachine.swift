@@ -112,8 +112,10 @@ public struct FillInsertion: Equatable, Sendable {
     /// For a verified fill: what ⌘Z may revert while the toast is up.
     public var undo: UndoGrant?
     public var insertedLength: Int
+    /// The field a paste landed in instead, by its label (`wroteElsewhere`).
+    public var strayField: String?
 
-    public init(claim: Claim, verified: Bool, rejected: Bool, reason: String?, method: FillResult.Method?, undo: UndoGrant?, insertedLength: Int) {
+    public init(claim: Claim, verified: Bool, rejected: Bool, reason: String?, method: FillResult.Method?, undo: UndoGrant?, insertedLength: Int, strayField: String? = nil) {
         self.claim = claim
         self.verified = verified
         self.rejected = rejected
@@ -121,6 +123,7 @@ public struct FillInsertion: Equatable, Sendable {
         self.method = method
         self.undo = undo
         self.insertedLength = insertedLength
+        self.strayField = strayField
     }
 }
 
@@ -513,7 +516,7 @@ public final class FillMachine {
             )
             emit(.toastSlotTaken)
         } else {
-            let caption = Self.errorCaption(result.reason)
+            let caption = Self.errorCaption(result.reason, field: result.strayField)
             showToast(
                 FillToastDraw(kind: .error, lead: nil, text: caption, keycap: nil, field: lastFieldFrame, pid: pid, source: origin.sourceCaption),
                 lifetime: Self.errorLifetime, grantID: nil, info: DebugState.Toast(kind: "error", caption: caption, grantID: nil)
@@ -603,8 +606,15 @@ public final class FillMachine {
     }
 
     /// What went wrong and what next, without blame or probabilities (`IDENTITY.md` captions).
-    public static func errorCaption(_ reason: String?) -> String {
+    public static func errorCaption(_ reason: String?, field: String? = nil) -> String {
         switch reason ?? "" {
+        // The paste went to the field that took focus as it was sent (S1 audit #13).
+        case "wroteElsewhereRepaired":
+            return "It went into \(field ?? "another field") instead, so Caret took it back out. Nothing was filled."
+        case "wroteElsewhere":
+            return "It may have gone into \(field ?? "another field") instead. Check that field."
+        case "revoked":
+            return "Caret stopped before filling, so nothing was filled."
         case let r where r.hasPrefix("source."):
             return "The source changed, so nothing was filled."
         case "targetMoved", "fieldContentChanged", "selectionMoved", "replacedTextChanged":

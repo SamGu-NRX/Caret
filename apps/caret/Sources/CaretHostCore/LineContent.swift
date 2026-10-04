@@ -207,6 +207,13 @@ public enum Captions {
     /// `acceptUnsent` would not be true.
     public static let helperStopped = "Caret's helper stopped, so the rest wasn't done."
 
+    /// Esc on work the helper runs, before the helper confirms the stop (S1 audit #17).
+    public static let stopping = "Stopping\u{2026}"
+
+    /// The stop could not be delivered, or the helper never confirmed it. The connection is closed
+    /// so the helper revokes the run's grants (B22), but nothing here can see that it did.
+    public static let stopUnreached = "Couldn't reach Caret's helper, so the run may still be going. Quit Caret to stop it."
+
     /// An undo that could not restore every field.
     public static func undoPartial(notRestored: Int) -> String {
         notRestored == 1
@@ -348,6 +355,10 @@ public enum WorkLines {
     public static let acceptUnsent = WorkLine(LineContent(figure: .error, text: Captions.acceptUnsent, emphasis: .plain), text: Captions.acceptUnsent)
 
     public static let helperStopped = WorkLine(LineContent(figure: .error, text: Captions.helperStopped, emphasis: .plain), text: Captions.helperStopped)
+
+    public static let stopping = WorkLine(LineContent(figure: .working, text: Captions.stopping, emphasis: .plain), text: Captions.stopping)
+
+    public static let stopUnreached = WorkLine(LineContent(figure: .error, text: Captions.stopUnreached, emphasis: .plain), text: Captions.stopUnreached)
 
     /// The undo's answer: what it cleared, or that some fields were left because they changed.
     public static func undone(_ count: OfferLifecycle.UndoCount?) -> WorkLine {

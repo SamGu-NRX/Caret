@@ -158,6 +158,9 @@ public final class SurfaceMachine {
     public static let stopConfirmWait: TimeInterval = 10
     /// How long the stopped line stays once its ending is known.
     public static let stoppedLineLifetime: TimeInterval = 3
+    /// How long the line saying a stop could not be confirmed stays: a longer sentence that asks
+    /// the user to act. Assumed, not measured.
+    public static let stopUnreachedLifetime: TimeInterval = 8
     /// How long a keep or promote question stays under its run's line. Assumed, not measured: two
     /// short lines and one decision. The helper keeps the offer two minutes (lifetimes.ts `skill`)
     /// and may ask again after a later run, so letting it go unanswered costs nothing.
@@ -193,9 +196,11 @@ public final class SurfaceMachine {
     var pendingTimer: SurfaceTimer?
     var watch: Watch?
     var work: Work?
-    /// The work Esc stopped, kept while its "Stopped" line shows: a step can finish between Esc
-    /// and the helper's stop, so the helper's own ending corrects the line.
+    /// The work Esc stopped, kept while its "Stopping…" line waits for the helper's own ending,
+    /// which says where it stopped (or that it finished first).
     var stoppedWork: Work?
+    /// Ends the wait for that ending at `stopConfirmWait` (`stopUnconfirmed`).
+    var stopWaitTimer: SurfaceTimer?
     var result: Result?
     var question: Question?
     /// Questions asked, by their arbiter offer id, until answered or 2 lifetimes old: a Tab or Esc the
@@ -311,6 +316,11 @@ public final class SurfaceMachine {
         // An answer can no longer reach the helper, and a new one will ask again.
         dropQuestion("surface.skill.helperGone")
         asked.removeAll()
+        // A stop still waiting for its answer will get none: say that it is not known to have stopped.
+        if work == nil, stoppedWork != nil {
+            count("surface.stop.helperGone")
+            stopUnconfirmed(dropSession: false)
+        }
         if let work, work.source == .helper {
             count("surface.work.helperGone")
             end(with: .helperDown)

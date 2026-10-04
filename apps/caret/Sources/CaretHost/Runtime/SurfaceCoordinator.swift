@@ -202,6 +202,7 @@ final class SurfaceCoordinator {
             announce(content)
         case .hidePanel(let exit): panel.exit(duration: exit)
         case .workingChanged(let working): onWorkingChanged?(working)
+        case .dropHelperSession: client?.dropSession()
         case .toastSlotTaken: onToastChanged?()
         case .count(let name): status.increment(name)
         case .publish: publish()

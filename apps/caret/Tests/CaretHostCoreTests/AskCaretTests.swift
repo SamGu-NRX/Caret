@@ -141,6 +141,10 @@ final class AskCaretTests: XCTestCase {
         for why: PlanProposal.HandoffWhy in [.outbound, .destructive, .money, .unverifiable] {
             XCTAssertEqual(AskCopy.press("Send", why: why), "Press Send", why.rawValue)
         }
+        XCTAssertEqual(AskCopy.press("", why: .system), "Press the unlabelled button in the system prompt")
+        XCTAssertEqual(AskCopy.planError(PlanProposal.Failure(code: .unseenWindow, detail: "window 4211 of pid 77 is not in the screen model")),
+                       "I haven't read that window, so I can't plan in it. Click into it and ask again.")
+    }
 
     func testEscDismissesTheCardAndTabThenDoesNothing() throws {
         _ = try proposed()
@@ -204,7 +208,8 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(line.text, "Done, in Caret Fixture")
     }
 
-    func testEscStopsTheRunAndSaysYouStoppedIt() throws {
+    /// S1 audit #17: Esc says "Stopping…" until the helper's own ending says where it stopped.
+    func testEscSaysStoppingUntilTheHelperSaysItStopped() throws {
         let card = try proposed()
         ask.tab()
         ask.receive(progress(card.offerKey, .verified, step: 0))
@@ -212,11 +217,13 @@ final class AskCaretTests: XCTestCase {
         guard case .stop(let stop)? = sent.last else { return XCTFail("no offerStop") }
         XCTAssertEqual(stop.offerId, card.offerKey)
         guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
-        XCTAssertEqual(line.text, "You stopped it before step 2 of 2")
-        // The helper's own stop names the step it stopped before; a later progress changes nothing.
+        XCTAssertEqual(line, WorkLines.stopping)
+        XCTAssertNil(ask.undoOffer, "no ⌘Z while the run may still be writing")
+        // The helper's own stop names the step it stopped before.
         ask.receive(progress(card.offerKey, .stopped, step: 1, steps: 2, reason: .you))
         guard case .ended(_, let same) = ask.phase else { return XCTFail("not ended") }
         XCTAssertEqual(same.text, "You stopped it before step 2 of 2")
+        XCTAssertEqual(same.content.hints, [Hint(key: "⌘Z", label: "Undo")], "what it wrote before the stop can be undone")
         ask.receive(progress(card.offerKey, .verified, step: 1, steps: 2))
         guard case .running = ask.phase else { return XCTFail("a run continued from the list moves the same card") }
     }
@@ -249,13 +256,16 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(line, AskCopy.lostTouch)
     }
 
-    func testAStopThatCouldNotBeSentClaimsNoStop() throws {
+    func testAStopThatCouldNotBeSentSaysTheRunMayStillBeGoing() throws {
         _ = try proposed()
         ask.tab()
         connected = false
+        var dropped = 0
+        ask.dropSession = { dropped += 1 }
         XCTAssertTrue(ask.escape())
         guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
-        XCTAssertEqual(line, AskCopy.lostTouch)
+        XCTAssertEqual(line, WorkLines.stopUnreached)
+        XCTAssertEqual(dropped, 1, "the session closes so the helper revokes the run")
     }
 
     func testAStopWhoseAnswerNeverCameIsNotLeftAsStopped() throws {
@@ -264,7 +274,109 @@ final class AskCaretTests: XCTestCase {
         ask.escape()
         ask.linkChanged(false)
         guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
-        XCTAssertEqual(line, AskCopy.lostTouch)
+        XCTAssertEqual(line, WorkLines.stopUnreached)
+    }
+
+    func testAStopTheHelperNeverConfirmsClosesTheSession() throws {
+        let card = try proposed()
+        ask.tab()
+        var dropped = 0
+        ask.dropSession = { dropped += 1 }
+        ask.escape()
+        clock.advance(by: SurfaceMachine.stopConfirmWait - 0.1)
+        guard case .ended(_, let waiting) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(waiting, WorkLines.stopping)
+        XCTAssertEqual(dropped, 0)
+        clock.advance(by: 0.1)
+        guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(line, WorkLines.stopUnreached)
+        XCTAssertEqual(dropped, 1)
+        ask.receive(progress(card.offerKey, .stopped, step: 0, steps: 2, reason: .you))
+        guard case .ended(_, let after) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(after.text, "You stopped it before step 1 of 2", "a late confirmation is still worth showing")
+    }
+
+    // MARK: - ⌘Z (q1 bug 8)
+
+    /// A run that wrote ends with ⌘Z Undo, as a fill's toast does; ⌘Z asks the helper to undo the
+    /// task, the card says Undoing until the helper's `undone`, and the toast in the app goes.
+    func testCommandZUndoesARunThatWrote() throws {
+        var p = try goldenProposal(answering: "x")
+        p.handoff = nil
+        ask.edit("Put the order number in Reference")
+        ask.submit()
+        p.requestId = try asked()
+        ask.receive(p)
+        guard case .proposed(let card) = ask.phase else { return XCTFail("no card") }
+        XCTAssertEqual(card.pid, Int32(p.window!.pid))
+        var offers: [AskCaret.UndoOffer?] = []
+        ask.onUndoChanged = { offers.append($0) }
+        ask.tab()
+        ask.receive(progress(card.offerKey, .verified, step: 0, steps: 1))
+        XCTAssertNil(ask.undoOffer, "nothing to undo while it runs")
+        ask.receive(progress(card.offerKey, .done, step: nil, steps: 1))
+        guard case .ended(_, let done) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(done.text, "Done, in Caret Fixture")
+        XCTAssertEqual(done.content.hints, [Hint(key: "⌘Z", label: "Undo")])
+        XCTAssertEqual(offers, [AskCaret.UndoOffer(taskId: card.offerKey, pid: Int32(p.window!.pid))])
+        XCTAssertTrue(ask.ownsUndo(card.offerKey))
+
+        XCTAssertTrue(ask.undo())
+        guard case .control(let control)? = sent.last else { return XCTFail("no taskControl") }
+        XCTAssertEqual(control.taskId, card.offerKey)
+        XCTAssertEqual(control.action, .undo)
+        guard case .ended(_, let undoing) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(undoing, WorkLines.undoing)
+        XCTAssertEqual(offers.last, .some(nil), "the app's ⌘Z is its own again")
+        XCTAssertFalse(ask.undo(), "asked once")
+        let undone = try JSONDecoder().decode(TaskProgress.self, from: Data(#"{"type":"taskProgress","v":1,"at":1,"taskId":"\#(card.offerKey)","planId":"p","phase":"undone","step":null,"steps":1,"says":null,"detail":null,"restored":1,"notRestored":0}"#.utf8))
+        ask.receive(undone)
+        guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(line.text, "Cleared 1 field")
+        XCTAssertNil(ask.undoOffer)
+    }
+
+    func testARunThatWroteNothingOffersNoUndoAndAnUnsentUndoSaysSo() throws {
+        let card = try proposed()
+        ask.tab()
+        ask.receive(progress(card.offerKey, .handoff, step: 1))
+        guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(line.content.hints, [], "a press left to the user wrote nothing")
+        XCTAssertFalse(ask.undo())
+
+        let second = try proposed()
+        ask.tab()
+        ask.receive(progress(second.offerKey, .verified, step: 0))
+        ask.receive(progress(second.offerKey, .handoff, step: 1))
+        XCTAssertNotNil(ask.undoOffer)
+        connected = false
+        XCTAssertTrue(ask.undo())
+        guard case .ended(_, let unsent) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(unsent, WorkLines.undoUnsent)
+    }
+
+    func testAnUndoTheHelperNeverAnswersSaysSo() throws {
+        let card = try proposed()
+        ask.tab()
+        ask.receive(progress(card.offerKey, .verified, step: 0))
+        ask.receive(progress(card.offerKey, .handoff, step: 1))
+        XCTAssertTrue(ask.undo())
+        clock.advance(by: SurfaceMachine.stopConfirmWait)
+        guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(line, AskCopy.undoUnanswered)
+    }
+
+    func testTheHelperGoingAwayTakesTheUndoWithIt() throws {
+        let card = try proposed()
+        ask.tab()
+        ask.receive(progress(card.offerKey, .verified, step: 0))
+        ask.receive(progress(card.offerKey, .handoff, step: 1))
+        XCTAssertNotNil(ask.undoOffer)
+        ask.linkChanged(false)
+        XCTAssertNil(ask.undoOffer)
+        guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(line.content.hints, [])
+        XCTAssertEqual(line.text, "Filled 1 field. Your turn: press Send in Caret Fixture")
     }
 
     func testAProposalGoesWithItsHelperOrItsWithdrawal() throws {

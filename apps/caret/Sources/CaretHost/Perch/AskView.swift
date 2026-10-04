@@ -13,6 +13,7 @@ final class AskModel: ObservableObject {
     var submit: () -> Void = {}
     var run: () -> Void = {}
     var escape: () -> Void = {}
+    var undo: () -> Void = {}
 }
 
 /// The ask field at the top of the activity list, and under it what Caret made of the request:
@@ -33,6 +34,7 @@ struct AskSection: View {
     var onSubmit: () -> Void = {}
     var onRun: () -> Void = {}
     var onEscape: () -> Void = {}
+    var onUndo: () -> Void = {}
 
     static let fieldTitle = "Ask Caret"
 
@@ -86,7 +88,7 @@ struct AskSection: View {
         case .running(let card):
             AskCard(card: card, ending: nil, running: true, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
         case .ended(let card, let line):
-            AskCard(card: card, ending: line, running: false, character: character, animated: animated, onRun: onRun, onEscape: onEscape).padding(.top, 8)
+            AskCard(card: card, ending: line, running: false, character: character, animated: animated, onRun: onRun, onEscape: onEscape, onUndo: onUndo).padding(.top, 8)
         }
     }
 
@@ -115,9 +117,10 @@ struct AskCard: View {
     var running: Bool
     var character: FigureCharacter
     var animated = true
-    /// The card's keys as named VoiceOver actions: Tab's run, and Esc's stop or dismiss.
+    /// The card's keys as named VoiceOver actions: Tab's run, Esc's stop or dismiss, and ⌘Z's undo.
     var onRun: () -> Void = {}
     var onEscape: () -> Void = {}
+    var onUndo: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -151,7 +154,10 @@ struct AskCard: View {
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color(token: Tokens.border), lineWidth: 1))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Caret's plan")
-        .modifier(CardActions(proposed: !running && ending == nil, running: running, action: card.action, onRun: onRun, onEscape: onEscape))
+        .modifier(CardActions(
+            proposed: !running && ending == nil, running: running, undoable: ending?.content.hints.contains { $0.key == "⌘Z" } == true,
+            action: card.action, onRun: onRun, onEscape: onEscape, onUndo: onUndo
+        ))
     }
 
     private var figure: FigureState {
@@ -167,6 +173,8 @@ struct AskCard: View {
                     .font(Tokens.Font.body)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                // ⌘Z Undo on a run that wrote (q1 bug 8), as on a fill's toast.
+                ForEach(ending.content.hints, id: \.key) { HintView(hint: $0) }
                 HintView(hint: Hint(key: "Esc", label: "Close"))
             }
         } else if running {
@@ -189,15 +197,19 @@ struct AskCard: View {
 private struct CardActions: ViewModifier {
     var proposed: Bool
     var running: Bool
+    var undoable: Bool
     var action: String
     var onRun: () -> Void
     var onEscape: () -> Void
+    var onUndo: () -> Void
 
     func body(content: Content) -> some View {
         if proposed {
             content.accessibilityAction(named: Text(action), onRun).accessibilityAction(named: Text("Dismiss"), onEscape)
         } else if running {
             content.accessibilityAction(named: Text("Stop"), onEscape)
+        } else if undoable {
+            content.accessibilityAction(named: Text("Undo"), onUndo).accessibilityAction(named: Text("Close"), onEscape)
         } else {
             content.accessibilityAction(named: Text("Close"), onEscape)
         }
@@ -268,7 +280,7 @@ struct AskLiveSection: View {
     var body: some View {
         AskSection(
             text: model.text, phase: model.phase, character: character, focusToken: model.focusToken, animated: animated,
-            onEdit: { model.edit($0) }, onSubmit: { model.submit() }, onRun: { model.run() }, onEscape: { model.escape() }
+            onEdit: { model.edit($0) }, onSubmit: { model.submit() }, onRun: { model.run() }, onEscape: { model.escape() }, onUndo: { model.undo() }
         )
         .onChange(of: announcement) { _, words in
             if let words { AccessibilityNotification.Announcement(words).post() }

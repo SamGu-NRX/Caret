@@ -20,6 +20,9 @@ public enum SurfaceCommand: Equatable, Sendable {
     case hidePanel(exit: TimeInterval)
     /// Accepted work started or ended (the menu bar glyph tints Carrot while it runs).
     case workingChanged(Bool)
+    /// A stop could not be delivered or was never confirmed: close the connection to the helper,
+    /// which revokes the work the session accepted (B22), then reconnect.
+    case dropHelperSession
     /// This machine's toast took the arbiter's one toast slot; the fill line's toast must give way.
     case toastSlotTaken
     /// Count an event in the host status (`surface.*` counters).

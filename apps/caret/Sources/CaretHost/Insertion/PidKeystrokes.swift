@@ -14,8 +14,9 @@ import TextInsertion
 /// in the app whose field was reread. Selection writes go to the element itself, not to the
 /// system-wide focused element.
 ///
-/// Before each post, `stillTarget` is asked again; if it returns false (the target app quit, or
-/// its pid is no longer allowed), the event is not sent.
+/// Before each post and each selection change, `stillTarget` is asked again; if it returns false
+/// (the claim's authorization was revoked, the target app quit, its pid is no longer allowed, or
+/// another element took focus), nothing is sent.
 final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
     private let pid: pid_t
     private let element: AXUIElement
@@ -49,8 +50,13 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
         post(0, flags: [], text: string)
     }
 
+    /// A selection change is a write to the app too: it is made only while the target holds.
     func selectTextRange(location: Int, length: Int) -> Bool {
-        AXRead.setRange(kAXSelectedTextRangeAttribute, location: location, length: length, on: element) == .success
+        guard stillTarget() else {
+            refusedPosts += 1
+            return false
+        }
+        return AXRead.setRange(kAXSelectedTextRangeAttribute, location: location, length: length, on: element) == .success
     }
 
     private func post(_ keyCode: CGKeyCode, flags: CGEventFlags, text: String? = nil) {
@@ -72,10 +78,10 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
 
 /// How each app takes a write, learned from what happened.
 ///
-/// Some apps ignore a ⌘V posted to their pid: an AppKit app maps ⌘V to `paste:` through its main
-/// menu, and an app with no Edit menu (caret-fixture is one) has nothing to map it to. For those,
-/// the executor writes `AXSelectedText` on the field instead. Once an app has ignored a pid paste,
-/// later writes go straight to AX, so the slow detection is paid once per app per launch.
+/// `AXSelectedText` on the field itself comes first (A17): it can land only in that element and
+/// leaves the clipboard alone. Some apps refuse it or accept it and change nothing; those get a ⌘V
+/// posted to their pid through the reconciled pasteboard, and once an app has been seen to do so,
+/// later writes paste straight away, so the slow detection is paid once per app per launch.
 final class WriteMethodTable: @unchecked Sendable {
     enum Method: String, Codable, Sendable {
         case pastePid
@@ -85,7 +91,7 @@ final class WriteMethodTable: @unchecked Sendable {
     private let learned = OSAllocatedUnfairLock(initialState: [String: Method]())
 
     func method(for app: String) -> Method {
-        learned.withLock { $0[app] } ?? .pastePid
+        learned.withLock { $0[app] } ?? .axSelectedText
     }
 
     func record(_ method: Method, for app: String) {

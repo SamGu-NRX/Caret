@@ -20,6 +20,14 @@ public final class AskCaret {
         case plan(PlanRequest)
         case accept(OfferAccept)
         case stop(OfferStop)
+        /// ⌘Z on a run that wrote: `taskControl undo`, which restores what the helper's ledger recorded.
+        case control(TaskControl)
+    }
+
+    /// A run's writes that ⌘Z may undo, for the arbiter's toast in the app it acted in.
+    public struct UndoOffer: Equatable, Sendable {
+        public var taskId: String
+        public var pid: Int32
     }
 
     /// One step of a proposed plan, as the card lists it.
@@ -55,8 +63,10 @@ public final class AskCaret {
         public var writes: Int
         /// The press the plan leaves to the user ("Send"), if any.
         public var press: String?
+        /// The process of the window the plan acts in, where ⌘Z undoes the run once it wrote.
+        public var pid: Int32?
 
-        public init(title: String, app: String, steps: [Step], more: Int, action: String, offerKey: String, actionId: String, writes: Int, press: String?) {
+        public init(title: String, app: String, steps: [Step], more: Int, action: String, offerKey: String, actionId: String, writes: Int, press: String?, pid: Int32? = nil) {
             self.title = title
             self.app = app
             self.steps = steps
@@ -66,6 +76,7 @@ public final class AskCaret {
             self.actionId = actionId
             self.writes = writes
             self.press = press
+            self.pid = pid
         }
     }
 
@@ -94,6 +105,12 @@ public final class AskCaret {
     public private(set) var linked = false
     /// Where the helper's ending for a run Esc stopped can still correct the line (`SurfaceMachine.confirmStop`).
     private var stopping: String?
+    private var stopTimer: SurfaceTimer?
+    /// Fields the run verified, from its progress, so its ending knows whether ⌘Z has anything to undo.
+    private var wrote = 0
+    /// The ended run's writes ⌘Z may undo; nil once undone, asked or put away.
+    public private(set) var undoOffer: UndoOffer?
+    private var undoTimer: SurfaceTimer?
     /// The task Tab started, followed while its card is up: a paused run resumed from the activity
     /// list, or undone there, moves the same card. Nil once the card is put away.
     private var tracking: String?
@@ -107,6 +124,11 @@ public final class AskCaret {
     private let character: () -> FigureCharacter
     /// Writes one message to the helper; false when it is not connected.
     public var send: (Send) -> Bool = { _ in false }
+    /// A stop could not be delivered or was never confirmed: close the helper connection, which
+    /// revokes what this session accepted (B22).
+    public var dropSession: () -> Void = {}
+    /// The run's undo became available (an offer) or went (nil), for the toast in the app it acted in.
+    public var onUndoChanged: (UndoOffer?) -> Void = { _ in }
     /// Called after every change, for the view and the debug socket.
     public var onChange: () -> Void = {}
 
@@ -168,6 +190,7 @@ public final class AskCaret {
         text = ""
         tracking = card.offerKey
         nextStep = nil
+        wrote = 0
         steps = card.steps.count
         if let first = card.steps.indices.first, !card.steps[first].yours { card.steps[first].state = .running }
         settle(.running(card))
@@ -180,14 +203,23 @@ public final class AskCaret {
     public func escape() -> Bool {
         switch phase {
         case .running(var card):
-            // Not delivered: the helper may still be running it, so the card says only what is known.
+            // Not delivered: the helper may still be running it, so the card says only what is
+            // known, and the connection closes so the helper revokes the run (S1 audit #17).
             guard send(.stop(OfferStop(offerId: card.offerKey, at: nowMs))) else {
-                settle(.ended(card, AskCopy.lostTouch))
+                dropSession()
+                settle(.ended(card, WorkLines.stopUnreached))
                 return true
             }
-            stopping = card.offerKey
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .pending }
-            settle(.ended(card, WorkLines.stoppedByYou(next: nextStep ?? (steps > 0 ? 0 : nil), of: steps)))
+            // "Stopping…" until the helper's own ending says where it stopped.
+            settle(.ended(card, WorkLines.stopping))
+            stopping = card.offerKey
+            let key = card.offerKey
+            stopTimer = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
+                guard let self, self.stopping == key, case .ended(let card, _) = self.phase else { return }
+                self.dropSession()
+                self.settle(.ended(card, WorkLines.stopUnreached))
+            }
             return true
         case .asking, .proposed, .failed, .ended:
             settle(.idle)
@@ -212,7 +244,17 @@ public final class AskCaret {
         // A run in flight, or one whose stop has not been answered: losing the connection says
         // nothing about how far the helper got, so the card does not guess.
         case .running(let card): settle(.ended(card, AskCopy.lostTouch))
-        case .ended(let card, _) where stopping != nil: settle(.ended(card, AskCopy.lostTouch))
+        case .ended(let card, _) where stopping != nil: settle(.ended(card, WorkLines.stopUnreached))
+        // An undo asked for and not answered: nothing says whether the fields came back.
+        case .ended(let card, _) where undoTimer != nil:
+            undoTimer?.cancel()
+            undoTimer = nil
+            settle(.ended(card, AskCopy.lostTouch))
+        // The helper's ledger went with it: there is nothing left for ⌘Z to ask for.
+        case .ended(let card, var line) where undoOffer != nil:
+            wrote = 0
+            line.content.hints.removeAll { $0.key == "⌘Z" }
+            settle(.ended(card, line))
         default: onChange()
         }
     }
@@ -242,13 +284,19 @@ public final class AskCaret {
         if case .ended(var card, let line) = phase, stopping == tracking {
             // The helper's own ending for a run Esc stopped: the step it stopped before, or Done when
             // it finished first. The line says it once; nothing else the run reports changes it.
+            if progress.phase == .verified { wrote += 1 }
             let corrected: WorkLine
             switch progress.phase {
             case .stopped:
-                corrected = WorkLines.stopped(app: card.app, reason: progress.stopReason ?? .error, next: progress.step, steps: progress.steps, fillFilled: nil)
+                corrected = WorkLines.stopped(app: card.app, reason: progress.stopReason ?? .error, next: progress.step ?? nextStep, steps: progress.steps > 0 ? progress.steps : steps, fillFilled: nil)
             case .done:
                 for i in card.steps.indices where !card.steps[i].yours { card.steps[i].state = .done }
+                if let written = progress.written { wrote = written }
                 corrected = WorkLines.done(app: card.app, character: character())
+            case .paused:
+                corrected = WorkLines.stoppedByYou(next: progress.step ?? nextStep, of: progress.steps > 0 ? progress.steps : steps)
+            case .handoff:
+                corrected = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: card.writes)
             default:
                 return
             }
@@ -270,6 +318,7 @@ public final class AskCaret {
             if let index { card.steps[index].state = .running }
             settle(.running(card))
         case .verified, .skipped:
+            if progress.phase == .verified { wrote += 1 }
             if let step = progress.step { nextStep = step + 1 }
             if let index { card.steps[index].state = .done }
             if let index, index + 1 < card.steps.count, !card.steps[index + 1].yours, card.steps[index + 1].state == .pending {
@@ -278,6 +327,8 @@ public final class AskCaret {
             settle(.running(card))
         case .done:
             for i in card.steps.indices where !card.steps[i].yours { card.steps[i].state = .done }
+            // `written` counts each field once; an older helper sends none, and the verified steps stand in.
+            if let written = progress.written { wrote = written }
             settle(.ended(card, WorkLines.done(app: card.app, character: character())))
         case .stopped:
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .failed }
@@ -291,13 +342,40 @@ public final class AskCaret {
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .pending }
             settle(.ended(card, AskCopy.paused(app: card.app)))
         case .undone:
-            // Undo from the activity list: what Caret wrote is back as it was.
+            // Undo from ⌘Z or the activity list: what Caret wrote is back as it was.
+            undoTimer?.cancel()
+            undoTimer = nil
+            wrote = 0
             for i in card.steps.indices where !card.steps[i].yours && card.steps[i].state == .done { card.steps[i].state = .pending }
             settle(.ended(card, WorkLines.undone(OfferLifecycle.undoCount(progress))))
         case .started:
             if case .running = phase { settle(.running(card)) }
         }
     }
+
+    // MARK: - Undo
+
+    /// ⌘Z on a run that wrote (q1 bug 8), in the list or, through the arbiter's toast, in the app the
+    /// run acted in: the helper undoes the task, and its `undone` progress ends the card. False when
+    /// there is nothing to undo, so the key does what it would.
+    @discardableResult
+    public func undo() -> Bool {
+        guard let offer = undoOffer, case .ended(let card, _) = phase else { return false }
+        guard send(.control(TaskControl(taskId: offer.taskId, action: .undo))) else {
+            settle(.ended(card, WorkLines.undoUnsent))
+            return true
+        }
+        settle(.ended(card, WorkLines.undoing))
+        undoTimer = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
+            guard let self, self.undoTimer != nil, case .ended(let card, _) = self.phase else { return }
+            self.undoTimer = nil
+            self.settle(.ended(card, AskCopy.undoUnanswered))
+        }
+        return true
+    }
+
+    /// Whether the arbiter's toast for this task is this card's.
+    public func ownsUndo(_ taskId: String) -> Bool { undoOffer?.taskId == taskId }
 
     // MARK: - The card
 
@@ -324,7 +402,8 @@ public final class AskCaret {
         let press = proposal.handoff.map { $0.label.isEmpty ? AskCopy.unlabelled : $0.label }
         return Card(
             title: AskCopy.title(fields: fields, writes: writes, press: press, app: app), app: app, steps: steps, more: more,
-            action: tab.label, offerKey: key, actionId: tab.id, writes: writes, press: press
+            action: tab.label, offerKey: key, actionId: tab.id, writes: writes, press: press,
+            pid: proposal.window.map { Int32(truncatingIfNeeded: $0.pid) }
         )
     }
 
@@ -343,12 +422,33 @@ public final class AskCaret {
             waitTimer?.cancel()
             waitTimer = nil
         }
-        if case .ended = next {} else { stopping = nil }
+        // Any new line ends the wait for a stop's answer; `escape` sets it again after its own settle.
+        stopping = nil
+        stopTimer?.cancel()
+        stopTimer = nil
         switch next {
         case .running, .ended: break
         case .idle, .asking, .proposed, .failed: tracking = nil
         }
-        phase = next
+        var shown = next
+        var offer: UndoOffer?
+        // An ending of a run that wrote, other than an undo's own lines, offers ⌘Z.
+        if case .ended(let card, var line) = next, wrote > 0, let task = tracking, let pid = card.pid, undoTimer == nil,
+           line != WorkLines.stopping, line != WorkLines.undoing, line != WorkLines.undoUnsent, line != AskCopy.undoUnanswered {
+            offer = UndoOffer(taskId: task, pid: pid)
+            if !line.content.hints.contains(where: { $0.key == "⌘Z" }) { line.content.hints.append(Hint(key: "⌘Z", label: "Undo")) }
+            shown = .ended(card, line)
+        }
+        // An undo still waiting for its answer keeps its timer only while the card shows.
+        if case .ended = next {} else {
+            undoTimer?.cancel()
+            undoTimer = nil
+        }
+        phase = shown
+        if offer != undoOffer {
+            undoOffer = offer
+            onUndoChanged(offer)
+        }
         onChange()
     }
 
@@ -387,6 +487,12 @@ public enum AskCopy {
     public static let noAnswer = "I didn't hear back in time, so nothing was planned."
     public static let tooLong = "That's longer than I can plan from. Try it in fewer words."
     public static let planGone = "My helper stopped, so this plan can't run now."
+
+    /// ⌘Z went to the helper, and no word came back that the fields were restored.
+    public static let undoUnanswered: WorkLine = {
+        let caption = "My helper didn't confirm the undo, so check the fields."
+        return WorkLine(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption)
+    }()
 
     /// The connection to the helper dropped while a run was going or its stop was unanswered.
     /// Nothing says how far the helper got, so the line claims nothing about it.

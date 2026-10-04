@@ -31,36 +31,47 @@ final class WriteFallbackTests: XCTestCase {
         XCTAssertEqual(classify(nil, elapsed: 1.5), .different)
     }
 
-    func testAnIgnoredPastePasteFallsBackToAX() {
-        XCTAssertEqual(WriteFallback.afterPaste(.unchanged, usedPasteboard: true, postError: nil), .fallBackToAX)
+    /// AX first (A17): an AX error or an AX write the app ignored moves to the pid paste; a
+    /// mismatch never retries.
+    func testTheAXRouteComesFirstAndFallsBackToPasteOnlyWhenNothingChanged() {
+        XCTAssertEqual(WriteFallback.afterAX(.matched, refused: false), .verified)
+        XCTAssertEqual(WriteFallback.afterAX(nil, refused: true), .fallBackToPaste, "the app refused the AX write")
+        XCTAssertEqual(WriteFallback.afterAX(.unchanged, refused: false), .fallBackToPaste, "the app took it and showed nothing")
+        XCTAssertEqual(WriteFallback.afterAX(.different, refused: false), .failed("writeMismatch"), "a second write could double the value")
     }
 
-    func testAnIgnoredInjectionDoesNotFallBack() {
-        XCTAssertEqual(WriteFallback.afterPaste(.unchanged, usedPasteboard: false, postError: nil), .failed("writeIgnored"))
+    func testThePasteHasNoFurtherFallback() {
+        XCTAssertEqual(WriteFallback.afterPaste(.matched, postError: nil), .verified)
+        XCTAssertEqual(WriteFallback.afterPaste(.unchanged, postError: nil), .failed("writeIgnored"))
+        XCTAssertEqual(WriteFallback.afterPaste(.different, postError: nil), .failed("writeMismatch"))
+        XCTAssertEqual(WriteFallback.afterPaste(.different, postError: "revoked"), .failed("revoked"))
     }
 
-    func testAMismatchIsNeverRetried() {
-        XCTAssertEqual(WriteFallback.afterPaste(.different, usedPasteboard: true, postError: nil), .failed("writeMismatch"),
-                       "a second write could double the value")
-    }
-
-    func testARefusedPostIsReportedAsSuch() {
-        XCTAssertEqual(WriteFallback.afterPaste(.different, usedPasteboard: true, postError: "targetNotAllowed"), .failed("targetNotAllowed"))
-    }
-
-    func testAMatchedPasteIsVerified() {
-        XCTAssertEqual(WriteFallback.afterPaste(.matched, usedPasteboard: true, postError: nil), .verified)
-    }
-
-    func testALatePasteAfterTheFallbackIsTheInsertionTwiceAtTheCaret() {
+    func testALateAXWriteAfterThePasteIsTheInsertionTwiceAtTheCaret() {
         XCTAssertEqual(WriteFallback.lateDuplicate(original: "", start: 0, end: 0, replacement: "Lumen Labs"), "Lumen LabsLumen Labs")
         XCTAssertEqual(WriteFallback.lateDuplicate(original: "Dear , hi", start: 5, end: 5, replacement: "Dana"), "Dear DanaDana, hi")
         XCTAssertNil(WriteFallback.lateDuplicate(original: "ab", start: 3, end: 3, replacement: "x"))
     }
 
-    func testTheAXRouteHasNoFurtherFallback() {
-        XCTAssertEqual(WriteFallback.afterAX(.matched), .verified)
-        XCTAssertEqual(WriteFallback.afterAX(.unchanged), .failed("writeIgnored"))
-        XCTAssertEqual(WriteFallback.afterAX(.different), .failed("writeMismatch"))
+    // MARK: - S1 audit #13: focus moves between the check and the post
+
+    /// The check passed with Name focused; before the app handled the posted ⌘V, focus moved to
+    /// Email, and the paste landed there. Name is unchanged, so the after-read looks in Email: the
+    /// pasted text ends exactly at its caret, and only that span is taken back out.
+    func testAPasteThatLandedInTheFieldThatTookFocusIsFoundThereByItsSpan() {
+        let span = WriteFallback.strayInsertion(focusIsApproved: false, value: "dana@example.comLumen Labs", caret: 26, inserted: "Lumen Labs")
+        XCTAssertEqual(span?.start, 16)
+        XCTAssertEqual(span?.length, 10)
+        let mid = WriteFallback.strayInsertion(focusIsApproved: false, value: "ab Lumen Labs cd", caret: 13, inserted: "Lumen Labs")
+        XCTAssertEqual(mid?.start, 3, "a paste in the middle of the other field")
+    }
+
+    func testNothingIsTakenFromAFieldThatDoesNotEndInThePaste() {
+        XCTAssertNil(WriteFallback.strayInsertion(focusIsApproved: true, value: "Lumen Labs", caret: 10, inserted: "Lumen Labs"), "focus never moved")
+        XCTAssertNil(WriteFallback.strayInsertion(focusIsApproved: false, value: "Lumen Lab", caret: 9, inserted: "Lumen Labs"), "the user's own typing")
+        XCTAssertNil(WriteFallback.strayInsertion(focusIsApproved: false, value: "Lumen Labs!", caret: 11, inserted: "Lumen Labs"), "something after it")
+        XCTAssertNil(WriteFallback.strayInsertion(focusIsApproved: false, value: "Lumen Labs", caret: nil, inserted: "Lumen Labs"), "a selection, not a caret")
+        XCTAssertNil(WriteFallback.strayInsertion(focusIsApproved: false, value: nil, caret: 0, inserted: "Lumen Labs"), "unreadable")
+        XCTAssertNil(WriteFallback.strayInsertion(focusIsApproved: false, value: "x", caret: 1, inserted: ""))
     }
 }

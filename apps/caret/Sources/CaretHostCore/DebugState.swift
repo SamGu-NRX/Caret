@@ -123,8 +123,15 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var method: String?
         /// The app ignored a pid-posted paste and the write fell back to AX.
         public var fellBack: Bool?
-        /// After the fallback, a late paste doubled the text and was set back.
+        /// After the paste fallback, an AX write the app had accepted landed late, doubled the text,
+        /// and the second copy was removed.
         public var repairedLatePaste: Bool?
+        /// The field a pid paste landed in instead of the approved one, by its label (S1 audit #13).
+        public var strayField: String?
+        /// What the pasteboard reconcile did after a paste: `restored`, `skippedUserCopied` (someone
+        /// copied after Caret wrote, and their copy stays), `raced` or `notWritten`. Nil when the
+        /// write did not use the pasteboard.
+        public var clipboard: String?
 
         public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {
             self.claimID = claimID
@@ -506,8 +513,13 @@ public struct DebugState: Codable, Equatable, Sendable {
     public var fill: FillStatus?
     public var lastUndo: UndoInfo?
     public var surface: SurfaceInfo?
-    /// Apps that ignored a pid-posted paste and now take AX writes, by bundle id or `exe:` name.
+    /// How each app took a write, by bundle id or `exe:` name: `pastePid` for apps that refused or
+    /// ignored `AXSelectedText` (A17); an app not listed takes AX writes.
     public var writeMethods: [String: String]?
+    /// How many times the host's write authorization was ended, and why the last time (`paused`,
+    /// `stop`, `takeOver`, `pause`, `helperDisconnected`).
+    public var authorityRevokes: Int?
+    public var authorityLastRevoke: String?
     /// The ghost overlay's recent attempts to draw a completion, oldest first: how each fit, or
     /// why it was not drawn, with the room it had. Geometry only, never text.
     public var ghostFits: [GhostFit.Record]?

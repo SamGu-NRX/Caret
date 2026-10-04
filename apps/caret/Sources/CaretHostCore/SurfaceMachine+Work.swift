@@ -215,40 +215,68 @@ extension SurfaceMachine {
         showResult(line, lifetime: partial ? 6 : 2)
     }
 
-    /// Esc on a working line after 3 s: stop, and say so for 3 s. Work the helper runs is stopped
-    /// there too (`offerStop`); what it already wrote stays, as the activity list's undo can restore.
-    /// The line names the step from the progress seen so far; the helper's own ending corrects it
-    /// (`confirmStop`).
+    /// Esc on a working line after 3 s: stop. Work the helper runs is stopped there (`offerStop`, or
+    /// a take over for a skill's run with no Tab), and the line says "Stopping…" until the helper's
+    /// own ending says where it stopped (`confirmStop`), never "Stopped" before it (S1 audit #17).
+    /// What it already wrote stays, as the activity list's undo can restore. A stop that cannot be
+    /// delivered, or is never answered, says so and closes the connection, which makes the helper
+    /// revoke the work this session accepted (B22).
     public func stopWork(_ line: StatusLine) {
         guard let work, work.statusID == line.id else { return }
+        let helperWork = work.unprompted || work.source == .helper
+        var delivered = true
         // A skill's run with no Tab is handed back, not ended: it pauses where it is, and the
         // activity list offers Continue (plan section 3, "Take over").
         if work.unprompted {
-            _ = sendToHelper(.control(TaskControl(taskId: work.offerKey, action: .takeOver)))
+            delivered = sendToHelper(.control(TaskControl(taskId: work.offerKey, action: .takeOver)))
         } else if work.source == .helper {
-            _ = sendToHelper(.stop(OfferStop(offerId: work.offerKey, at: nowMs)))
+            delivered = sendToHelper(.stop(OfferStop(offerId: work.offerKey, at: nowMs)))
         }
         endWork()
         count("surface.workStopped")
+        if !delivered {
+            count("surface.stop.unsent")
+            emit(.dropHelperSession)
+        }
         guard !lineSuppressed else {
-            // The tap took Esc, then the line went down before this ran: nobody sees "Stopped", so
+            // The tap took Esc, then the line went down before this ran: nobody sees the line, so
             // it is not shown and takes no key.
             takeLineDown(exit: 0)
             return publish()
         }
-        resultStatusID = arbiter.showStatus(StatusLine(pid: line.pid, kind: .result, offerKey: line.offerKey))
+        resultStatusID = arbiter.showStatus(StatusLine(pid: line.pid, kind: delivered ? .result : .error, offerKey: line.offerKey))
         result = Result(taskID: work.offerKey, target: work.target, anchor: work.anchor, line: WorkLines.undoing)
-        // Where it stopped: the helper stops before the step it has not finished, as the activity
-        // list says it.
-        let steps = work.steps ?? 0
-        let next = work.nextStep ?? (steps > 0 ? 0 : nil)
-        let line = work.unprompted ? WorkLines.tookOver(next: next, of: steps) : WorkLines.stoppedByYou(next: next, of: steps)
-        // Work the helper runs is not over until the helper says so, at its next step boundary: the
-        // line waits for that ending (`confirmStop`) and lives its 3 s from there. Timed from Esc, it
-        // could leave before a slow step finished, and the helper's correction found no line to
-        // correct (A14's Esc 1 of 3; A15 part 1).
-        showResult(line, lifetime: work.source == .helper ? Self.stopConfirmWait : Self.stoppedLineLifetime)
-        if work.source == .helper { stoppedWork = work }
+        guard helperWork else {
+            // The host's own work stops here and now. Where it stopped: before the step it had not
+            // finished, as the activity list says it.
+            let steps = work.steps ?? 0
+            return showResult(WorkLines.stoppedByYou(next: work.nextStep ?? (steps > 0 ? 0 : nil), of: steps), lifetime: Self.stoppedLineLifetime)
+        }
+        guard delivered else { return showResult(WorkLines.stopUnreached, lifetime: Self.stopUnreachedLifetime) }
+        // The helper stops at its next step boundary, which a slow step can put seconds away (A14's
+        // Esc 1 of 3; A15 part 1): the line waits for that ending, and lives its 3 s from there.
+        stoppedWork = work
+        showResult(WorkLines.stopping, lifetime: Self.stopConfirmWait + Self.stopUnreachedLifetime)
+        let statusID = resultStatusID
+        stopWaitTimer?.cancel()
+        stopWaitTimer = clock.schedule(after: Self.stopConfirmWait, repeats: false) { [weak self] in
+            guard let self, self.stoppedWork != nil, self.resultStatusID == statusID else { return }
+            self.stopWaitTimer = nil
+            self.count("surface.stop.unconfirmed")
+            self.stopUnconfirmed(dropSession: true)
+        }
+    }
+
+    /// The helper never said the run stopped: the line says so plainly, and, unless the connection
+    /// is already gone, closing it makes the helper revoke the session's work (B22).
+    func stopUnconfirmed(dropSession: Bool) {
+        stoppedWork = nil
+        stopWaitTimer?.cancel()
+        stopWaitTimer = nil
+        if dropSession { emit(.dropHelperSession) }
+        guard let statusID = resultStatusID, arbiter.snapshot().statusLine?.id == statusID, headless || !lineSuppressed else { return publish() }
+        if let r = result { resultStatusID = arbiter.showStatus(StatusLine(pid: r.target.pid, kind: .error, offerKey: r.taskID)) }
+        showResult(WorkLines.stopUnreached, lifetime: Self.stopUnreachedLifetime)
     }
 
     /// The helper's ending for work Esc stopped, while its line still shows. A stop names the step
@@ -259,12 +287,14 @@ extension SurfaceMachine {
         guard let statusID = resultStatusID, resultTimer != nil, arbiter.snapshot().statusLine?.id == statusID,
               !lineSuppressed || headless else {
             stoppedWork = nil
+            stopWaitTimer?.cancel()
+            stopWaitTimer = nil
             return
         }
+        let steps = progress.steps > 0 ? progress.steps : (stopped.steps ?? 0)
         let line: WorkLine
         switch progress.phase {
         case .stopped:
-            let steps = progress.steps > 0 ? progress.steps : (stopped.steps ?? 0)
             line = WorkLines.stopped(
                 app: stopped.app, reason: progress.stopReason ?? .error, next: progress.step ?? stopped.nextStep, steps: steps,
                 fillFilled: stopped.fill.map { _ in stopped.verified }
@@ -273,17 +303,26 @@ extension SurfaceMachine {
             line = WorkLines.done(app: stopped.app, character: world.character)
         case .paused where stopped.unprompted:
             // Take over pauses the run at its next step boundary; the helper names that step.
-            let steps = progress.steps > 0 ? progress.steps : (stopped.steps ?? 0)
             line = WorkLines.tookOver(next: progress.step ?? stopped.nextStep, of: steps)
-        case .paused, .handoff:
-            // Ended another way before the stop reached it: the line as it stands, now confirmed.
-            guard let shownLine = result?.line else { return }
-            line = shownLine
+        case .paused:
+            // Paused another way before the stop reached it (the user's own input): it acts no more.
+            line = WorkLines.stoppedByYou(next: progress.step ?? stopped.nextStep, of: steps)
+        case .handoff:
+            // It reached the press it leaves to the user before the stop reached it.
+            line = progress.blocked.map(WorkLines.blocked) ?? WorkLines.handoff(app: stopped.app)
         default:
+            // Not an ending: the line keeps waiting.
             return
         }
         stoppedWork = nil
-        if line.text != lineText { count("surface.stop.corrected") }
+        stopWaitTimer?.cancel()
+        stopWaitTimer = nil
+        // What Esc alone would have said; the helper's ending differs when a step finished first.
+        let predicted = stopped.unprompted
+            ? WorkLines.tookOver(next: stopped.nextStep ?? (steps > 0 ? 0 : nil), of: steps)
+            : WorkLines.stoppedByYou(next: stopped.nextStep ?? (steps > 0 ? 0 : nil), of: steps)
+        if line.text != predicted.text { count("surface.stop.corrected") }
+        count("surface.stop.confirmed")
         let failed = progress.phase == .stopped && progress.stopReason != .you
         showResult(line, lifetime: failed ? 6 : Self.stoppedLineLifetime)
     }
@@ -292,6 +331,8 @@ extension SurfaceMachine {
         dropQuestion("surface.skill.lineEnded")
         result = nil
         stoppedWork = nil
+        stopWaitTimer?.cancel()
+        stopWaitTimer = nil
         cancelResultTimer()
         if let id = resultStatusID { arbiter.clearStatus(id: id) }
         resultStatusID = nil

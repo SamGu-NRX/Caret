@@ -38,15 +38,20 @@ final class HelperClient: @unchecked Sendable {
     private let running = OSAllocatedUnfairLock(initialState: false)
     private let minBackoff: TimeInterval = 0.25
     private let maxBackoff: TimeInterval = 2
+    /// Ended by every stop, take over or pause this client is asked to send, delivered or not, and
+    /// by the connection closing (S1 audit #2): no host write authorized before then goes ahead.
+    let authority: HostAuthority?
 
     init(
         path: String = HelperClient.defaultPath,
         onMessage: @escaping @Sendable (HelperInbound) -> Void,
-        onLink: @escaping @Sendable (Bool) -> Void = { _ in }
+        onLink: @escaping @Sendable (Bool) -> Void = { _ in },
+        authority: HostAuthority? = nil
     ) {
         self.path = path
         self.onMessage = onMessage
         self.onLink = onLink
+        self.authority = authority
     }
 
     func start() {
@@ -70,6 +75,15 @@ final class HelperClient: @unchecked Sendable {
 
     func snapshot() -> Stats { stats.withLock { $0 } }
 
+    /// Closes the connection, and reconnects as after any drop. The helper revokes every task and
+    /// grant this session accepted when it closes (B22), so a stop that could not be delivered or
+    /// was never answered still ends the run, if the helper is there to hear the close.
+    func dropSession() {
+        connection.withLock { link in
+            if link.fd >= 0 { shutdown(link.fd, SHUT_RDWR) }
+        }
+    }
+
     /// Writes one message. Dropped (and counted) when the helper is not connected: a result for a
     /// write the helper cannot hear about is not worth queueing across a reconnect, because the
     /// new helper session has forgotten the proposal.
@@ -89,6 +103,7 @@ final class HelperClient: @unchecked Sendable {
     /// `offerStop`: Esc on the working line of an offer the helper offered. True when written.
     @discardableResult
     func send(_ stop: OfferStop) -> Bool {
+        authority?.revokeAll("stop")
         let sent = sendLine(try? NDJSON.line(stop))
         if sent { stats.withLock { $0.stops &+= 1 } }
         return sent
@@ -106,7 +121,11 @@ final class HelperClient: @unchecked Sendable {
     /// a helper that is not connected is dropped, since its task is gone with it.
     @discardableResult
     func send(_ control: TaskControl) -> Bool {
-        sendLine(try? NDJSON.line(control))
+        switch control.action {
+        case .stop, .takeOver, .pause: authority?.revokeAll(control.action.rawValue)
+        case .resume, .undo: break
+        }
+        return sendLine(try? NDJSON.line(control))
     }
 
     /// `activityRequest`; the reply comes back to this connection only.
@@ -162,7 +181,11 @@ final class HelperClient: @unchecked Sendable {
         guard let line else { return false }
         let sent = connection.withLock { link -> Bool in
             guard link.fd >= 0 else { return false }
-            return Self.writeAll(link.fd, line)
+            let written = Self.writeAll(link.fd, line)
+            // A write that fails on a live connection leaves the helper and the host disagreeing
+            // about what was said; closing it makes the helper revoke this session's work (B22).
+            if !written { shutdown(link.fd, SHUT_RDWR) }
+            return written
         }
         stats.withLock { s in
             if sent { s.resultsSent &+= 1 } else { s.resultsDropped &+= 1 }
@@ -184,6 +207,7 @@ final class HelperClient: @unchecked Sendable {
                 }
                 close(fd)
                 stats.withLock { $0.connected = false }
+                authority?.revokeAll("helperDisconnected")
                 onLink(false)
             }
             guard running.withLock({ $0 }) else { break }

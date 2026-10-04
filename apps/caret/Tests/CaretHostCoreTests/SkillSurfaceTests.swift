@@ -299,10 +299,11 @@ final class SkillSurfaceTests: XCTestCase {
         rig.clock.advance(by: 0.4)
         rig.press(Fx.esc())
         XCTAssertEqual(rig.sent, ["takeOver offer-15"], "one key, well before the 3 s a Tab'd run needs")
-        XCTAssertEqual(rig.machine.lineText, "You took over before step 2 of 3")
+        XCTAssertEqual(rig.machine.lineText, "Stopping\u{2026}", "nothing claims the take over before the helper does (S1 audit #17)")
         rig.clock.advance(by: 4)
-        XCTAssertEqual(rig.machine.lineText, "You took over before step 2 of 3", "waits for the helper's pause")
+        XCTAssertEqual(rig.machine.lineText, "Stopping\u{2026}", "waits for the helper's pause")
         rig.machine.taskProgress(Self.unprompted(.paused, step: 1))
+        XCTAssertEqual(rig.machine.lineText, "You took over before step 2 of 3")
         rig.clock.advance(by: SurfaceMachine.stoppedLineLifetime)
         XCTAssertNil(rig.machine.lineText)
     }

@@ -14,16 +14,33 @@ final class PidInsertionTests: XCTestCase {
         synthesizer.type("x")
         synthesizer.deleteBackward()
         synthesizer.tab()
-        XCTAssertEqual(synthesizer.refusedPosts, 5, "every send rechecks the target and refuses")
+        XCTAssertFalse(synthesizer.selectTextRange(location: 0, length: 0), "a selection change is a write too")
+        XCTAssertEqual(synthesizer.refusedPosts, 6, "every send rechecks the target and refuses")
     }
 
-    func testAnAppLearnsTheAXRouteOnceAndKeepsIt() {
+    /// S1 audit #13: focus moves to another field between the check that passed and the next post.
+    /// The synthesizer asks again before every event, so nothing more is sent once it has moved.
+    /// No event is posted here: the check refuses before any reaches the system.
+    func testFocusMovingAfterACheckStopsTheNextPost() {
+        var checks = 0
+        let synthesizer = PidKeystrokeSynthesizer(pid: Int32.max, element: nowhere, stillTarget: {
+            checks += 1
+            return false
+        })
+        synthesizer.paste()
+        synthesizer.paste()
+        XCTAssertEqual(checks, 2, "asked before each post, not once")
+        XCTAssertEqual(synthesizer.refusedPosts, 2)
+    }
+
+    /// A17: the AX write comes first; an app that refuses or ignores it is remembered for paste.
+    func testAnAppLearnsThePasteRouteOnceAndKeepsIt() {
         let table = WriteMethodTable()
-        XCTAssertEqual(table.method(for: "exe:caret-fixture"), .pastePid, "pid paste is the default")
-        table.record(.axSelectedText, for: "exe:caret-fixture")
-        XCTAssertEqual(table.method(for: "exe:caret-fixture"), .axSelectedText)
-        XCTAssertEqual(table.method(for: "com.apple.TextEdit"), .pastePid, "learned per app")
-        XCTAssertEqual(table.snapshot(), ["exe:caret-fixture": "axSelectedText"])
+        XCTAssertEqual(table.method(for: "com.google.Chrome"), .axSelectedText, "AX selected text is the default")
+        table.record(.pastePid, for: "com.google.Chrome")
+        XCTAssertEqual(table.method(for: "com.google.Chrome"), .pastePid)
+        XCTAssertEqual(table.method(for: "com.apple.TextEdit"), .axSelectedText, "learned per app")
+        XCTAssertEqual(table.snapshot(), ["com.google.Chrome": "pastePid"])
     }
 
     func testThePolicyNamesExactlyTheAllowedPIDs() {
