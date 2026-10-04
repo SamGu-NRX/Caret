@@ -83,6 +83,8 @@ export interface TaskUse {
 }
 
 /** The permission a press of this risk class falls under (plan section 3); a safe press needs none of these. */
+/** Roles of the form controls fill and Ask hand to the user rather than write (fill/controls.ts). */
+const CONTROL_ROLES: ReadonlySet<string> = new Set(["AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXDateField", "AXTimeField", "AXComboBox", "AXGroup"]);
 /** A system prompt falls under "Money, passwords, system dialogs", which is always handed off (B22). */
 const RISK_ACTION: Record<Exclude<RiskClass, "safe">, ActionType> = { outbound: "outbound", destructive: "destructive", money: "sensitive", system: "sensitive" };
 
@@ -744,6 +746,8 @@ export class Executor {
       const risk = classifyPress({ label, windowKind: w.window.kind, bundleId: w.app.bundleId });
       const known = risk === "safe" || risk === "unclassified" ? null : risk;
       if (known !== null) task.handedOff = { action: RISK_ACTION[known], what, windowId: w.window.windowId };
+      // A form control an Ask hands over (a select, a date: planner/ask.ts) is the user's to set, not a press.
+      if (known === null && CONTROL_ROLES.has(node.role)) throw StepStop.handoff(`Caret does not set ${what} itself, so it leaves setting it to you`);
       throw StepStop.handoff(known === null ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${known}; Caret leaves that press to you`);
     }
 

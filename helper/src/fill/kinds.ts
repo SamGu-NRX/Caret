@@ -204,6 +204,10 @@ const DATE_PART: ReadonlyMap<string, RegExp> = new Map([
   ["year", /^\d{4}$/u],
 ]);
 const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
+/** A label that spells out a date's format: "Moved in (MM/YYYY)", "Start date (DD.MM.YYYY)". */
+const DATE_FORMAT = /\b(?:mm|dd|yyyy|yy)(?:\s*[/.-]\s*(?:mm|dd|yyyy|yy))+\b/iu;
+/** A label that shows the currency beside the field, so the field takes the number alone: "Monthly rent ($)". */
+export const CURRENCY_SHOWN = /\(\s*(?:\$|€|£|¥|usd|eur|gbp)\s*\)/iu;
 /** A company's name: up to eight words with no brackets, @ or sentence punctuation ("Ridgeline Outdoor Co", "Acme, Inc.", "3M"). */
 const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^()[\]{}@<>;:!?$€£¥]+$/u;
 /**
@@ -352,6 +356,16 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
   }
   if (PERSON_NAME.test(s)) fits.add("name");
   const v = value.trim();
+  // A label that spells out a numeric date format takes a value in that format only (B25: an Ask's scoped fill wrote
+  // "moved in Aug 2022, rent $1,450/mo" into "Moved in (MM/YYYY)", evidence/screen/b25/asks-dev-1-gpt-oss-120b; tuned
+  // on the B24 corpus). Converting "Aug 2022" to it is the value resolver's work, which plans do not do yet.
+  const format = DATE_FORMAT.exec(s)?.[0];
+  if (format !== undefined) {
+    const shape = new RegExp(`^${format.replace(/\s+/g, "").replace(/yyyy/giu, "\\d{4}").replace(/yy/giu, "\\d{2}").replace(/mm|dd/giu, "\\d{1,2}").replace(/[/.]/g, (c) => `\\${c}`)}$`, "u");
+    if (!shape.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is not written as ${format.toUpperCase()}, the format the field asks for`;
+  }
+  // A field that shows its currency takes the number alone; the same scoreboard wrote "$1,450" into "Monthly rent ($)".
+  if (CURRENCY_SHOWN.test(s) && /[$€£¥]/u.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' carries a currency sign, and the field shows its currency itself`;
   // A field for one part of a date takes only that part: the B24 corpus's "Day" (under Date of birth) took a
   // whole "04/12/1990" (evidence/screen/b24/after).
   // The field's own label decides (a placeholder "DD" beside "Day" must not hide it; fix-check review).

@@ -74,8 +74,10 @@ export async function chat(
   maxOutputTokens: number,
   signal: AbortSignal,
   fetchFn: typeof fetch = fetch,
+  /** An OpenAI-style response_format, such as a strict json_schema (B25 intents); absent for free text. */
+  responseFormat?: Readonly<Record<string, unknown>>,
 ): Promise<ChatResult> {
-  const body = { ...route.extraBody, model: route.model, messages, [route.maxTokensParam]: maxOutputTokens, temperature: 0 };
+  const body = { ...route.extraBody, model: route.model, messages, [route.maxTokensParam]: maxOutputTokens, temperature: 0, ...(responseFormat === undefined ? {} : { response_format: responseFormat }) };
   const t0 = performance.now();
   const res = await fetchFn(`${route.baseUrl}/chat/completions`, {
     method: "POST",

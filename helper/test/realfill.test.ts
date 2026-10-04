@@ -1,7 +1,7 @@
 // B24: fill on real forms. The deterministic parts (name and address parts, dates and times, the form
 // controls, required markers) have one right answer each and are tested in isolation; then proposeFill with a
 // stand-in Jev for the anchor, the derived values, the controls and the owner veto. All text is synthetic.
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
 import { describeInput, emptyInput, memoryRefOf, memoryValue, parseMemoryRef, proposeFill } from "../src/fill/fill.ts";
 import { fieldPart, joinName, partFits, splitAddress, splitName } from "../src/fill/derive.ts";
@@ -12,9 +12,14 @@ import type { FillProposal, Node } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { field, jevPickingText, MAIL_APP, node, snap, text, value } from "./builders.ts";
 import { MESSAGES } from "./desks.ts";
-import { collectCandidates } from "../src/fill/candidates.ts";
+import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
 import { SnippetLedger } from "../src/privacy.ts";
 import { fieldTerms, misfit } from "../src/fill/kinds.ts";
+
+// The generator's time budget reads a fixed clock here, so a loaded machine cannot stop it partway and change an
+// answer these tests check (candidates.ts setGeneratorClock); B25's full suite failed two of them under load.
+beforeAll(() => setGeneratorClock(() => 0));
+afterAll(() => setGeneratorClock(null));
 
 describe("splitName", () => {
   it.each([

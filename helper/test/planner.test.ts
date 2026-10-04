@@ -603,6 +603,42 @@ describe("planRequest through the helper", () => {
     expect(await request("put the customer's name in")).toMatchObject({ outcome: "error", error: { code: "nothingToDo" } });
   });
 
+  it("with an intent maker, Asks run as a scoped fill: the intent's fields only, proposed, and run only when accepted (B25)", async () => {
+    // The writer names the Name field by its ref; Jev picks Dana's name for it and calls her the user.
+    const intents: string[] = [];
+    const intentWriter = {
+      route: WRITER_ROUTE,
+      write: async (req: WriterRequest) => {
+        intents.push(req.kind);
+        const input = req.input as { fields: { ref: string; name: string }[] };
+        const ref = input.fields.find((f) => f.name === "Name")?.ref ?? "none";
+        const json = { route: "fill", why: "none", scope: "list", section: "none", fields: [ref], sources: ["any"], whose: "user", literals: [] };
+        return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };
+      },
+    };
+    const fillJev: AskJev = async (req) => {
+      const answers = Object.fromEntries(
+        Object.entries(req.questions).map(([id, q]) => {
+          if (id.endsWith("_whose") || id.endsWith("_owner")) return [id, { choice: "user", confidence: 0.9 }];
+          const hit = String(q.instructions).includes("'Name'") ? Object.entries(q.criteria).find(([, d]) => d?.startsWith('"Dana Whitfield"'))?.[0] : undefined;
+          return [id, { choice: hit ?? "none", confidence: 0.9 }];
+        }),
+      );
+      return { model: "jev-test", answers, inputTokens: 1, latencyMs: 1, costUsd: 0 };
+    };
+    const asking = new Helper({ store, memory, askJev: fillJev, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, now: () => clock, ask: { maker: "writer", writer: intentWriter } });
+    app.helper = asking;
+    app.show();
+    void asking.handleReader(referenceWindow());
+    const r = await asking.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "a1", at: clock, instruction: "put the customer's name in" });
+    expect(PlanProposal.parse(r)).toMatchObject({ outcome: "proposed", error: null });
+    expect(intents).toEqual(["intent"]);
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(0);
+    const res = await asking.handleOfferAccept({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: r.offerKey ?? "", actionId: "run", overrides: {}, at: clock });
+    expect(res).toMatchObject({ outcome: "done", acted: 1 });
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana Whitfield");
+  });
+
   it("hands Send back without pressing it", async () => {
     jev = plannerJev({ fields: { Name: "Running late" }, press: "Send" });
     const r = await request("Write 'Running late' in Name and send it");

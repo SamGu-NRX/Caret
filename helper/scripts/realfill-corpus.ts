@@ -83,8 +83,9 @@ export function loadCorpus(dir: string): Corpus {
   return { decoys: raw.decoys.map((d) => withTitle(dir, d)), forms };
 }
 
-export function loadAsks(dir: string, corpus: Corpus): CorpusAsk[] {
-  const asks = z.object({ asks: z.array(Ask) }).strict().parse(JSON.parse(readFileSync(join(dir, "asks.json"), "utf8"))).asks;
+/** An ask set: asks.json (B24's, tuned on since) or asks-heldout.json (B25's, written blind). */
+export function loadAsks(dir: string, corpus: Corpus, file = "asks.json"): CorpusAsk[] {
+  const asks = z.object({ asks: z.array(Ask) }).strict().parse(JSON.parse(readFileSync(join(dir, file), "utf8"))).asks;
   for (const x of asks) {
     const f = corpus.forms.find((ff) => ff.id === x.form);
     if (f === undefined) throw new Error(`ask ${x.id} names form ${x.form}, which the corpus does not have`);
