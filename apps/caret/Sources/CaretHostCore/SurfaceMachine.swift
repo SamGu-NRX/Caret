@@ -243,6 +243,9 @@ public final class SurfaceMachine {
     /// When the panel's last exit finishes. Until then a hide still goes out: an immediate one
     /// cuts a running fade short, so an old line does not fade over a new offer.
     var panelExitEnds: Date?
+    /// M1: where the noticed facts behind recent offers came from, by offer key, newest last; the
+    /// helper sends each right after its offer (`provenance`).
+    var provenances: [(key: String, value: MemoryProvenance)] = []
 
     public init(arbiter: OfferArbiter, world: SurfaceWorld, clock: SurfaceClock, headless: Bool) {
         self.arbiter = arbiter
@@ -953,6 +956,10 @@ public final class SurfaceMachine {
         }
         if work?.unprompted == true { info.unprompted = true }
         info.lineHidden = lastLineHidden
+        if let p = shownProvenance {
+            info.provenance = p.facts.first?.says
+            info.provenanceFacts = p.facts.count
+        }
         if let shown {
             info.offerId = shown.offerID
             info.offerKey = shown.offerKey

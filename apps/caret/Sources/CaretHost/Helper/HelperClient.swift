@@ -157,6 +157,18 @@ final class HelperClient: @unchecked Sendable {
         sendLine(try? request.line())
     }
 
+    /// M1's "Not right" about a noticed fact; answered with `memoryReply` to this connection.
+    @discardableResult
+    func send(_ notRight: MemoryNotRight) -> Bool {
+        sendLine(try? NDJSON.line(notRight))
+    }
+
+    /// M1's memory files: list, read, save; answered with `memoryDocumentReply` to this connection.
+    @discardableResult
+    func send(_ request: MemoryDocumentRequest) -> Bool {
+        sendLine(try? NDJSON.line(request))
+    }
+
     /// The user's settings for the helper's gate (B10). Sent now when connected and the roles,
     /// level or pause changed, and again after every hello, so a helper that restarts hears them
     /// before anything else the host writes. Any thread.
@@ -295,7 +307,8 @@ final class HelperClient: @unchecked Sendable {
             case .offerWithdrawn: s.withdrawals &+= 1
             case .taskProgress: s.progress &+= 1
             case .firstLookReply: s.firstLookReplies &+= 1
-            case .memoryReply: s.memoryReplies &+= 1
+            case .memoryReply, .memoryDocumentReply: s.memoryReplies &+= 1
+            case .memoryProvenance: s.provenances &+= 1
             case .planProposal: s.planProposals &+= 1
             case .skillOffer: s.skillOffers &+= 1
             case .error(let e):

@@ -88,15 +88,18 @@ enum Tokens {
     static var keycapBorder: NSColor { keyEdge }
     static var surface: NSColor { glass }
 
-    // MARK: Caret's own windows (onboarding, What Caret knows): restyled in part 2 of v3.
+    // MARK: Caret's own windows (onboarding, What Caret knows), v3 part 2
 
-    // Onboarding is Caret's own window, so it paints its own ground rather than the system's
-    // `#ECECEC`, on which Ink 2 would be too faint for 12 pt text.
-    static let window = dynamic(light: 0xF7F7F8, dark: 0x2A2A2C)
-    static let card = dynamic(light: 0xFFFFFF, dark: 0x323234)
-    /// The primary button: white on `#B24F12` is 5.22:1; `#1D1D1F` on the dark Carrot is 7.71:1.
-    static let buttonFill = dynamic(light: 0xB24F12, dark: 0xF49A5B)
-    static let onButton = dynamic(light: 0xFFFFFF, dark: 0x1D1D1F)
+    /// The ground of Caret's own windows: the glass's warm neutral, opaque, since a window is not
+    /// laid over someone's work. It replaces the cool `#F7F7F8` / `#2A2A2C` of part 1, which sat
+    /// apart from the panels' tint. Ink 2 on it is 6.1:1 light and 6.6:1 dark by the WCAG formula (`ContrastRenderTests`
+    /// measures every text token on it from rendered pixels).
+    static let window = dynamic(light: 0xFCFBF9, dark: 0x242220)
+    /// A field or a bordered block on the window: the plan block on the desk, Caret's editor.
+    static let card = dynamic(light: 0xFFFFFF, dark: 0x2E2C29)
+    /// The ink button (DIRECTION.md 5.9: Carrot stays the figure's), and the text on it.
+    static let inkFill = dynamic(light: 0x1C1B19, dark: 0xF2EFEA)
+    static let onInk = dynamic(light: 0xFCFBF9, dark: 0x1C1B19)
     /// The check inside a ticked box, on the Carrot fill.
     static let onCarrot = dynamic(light: 0xFFFFFF, dark: 0x1D1D1F)
 

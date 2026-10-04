@@ -25,35 +25,50 @@ final class PerchPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Main-thread owner of the perch and the activity list.
+/// Main-thread owner of Caret's work in other windows and of the desk.
 ///
-/// The perch is on screen only while there is something to report (`Perch.subject`), so it is
-/// never idle on screen. It sits in a corner of the visible frame of the screen the user is
-/// typing on, looks toward the window its task acts in, and moves to another corner when the
-/// focused field or the caret comes near (`PerchPlacement`). `drawsOnScreen: false` computes all
-/// of it and orders nothing front, for socket-only test runs while someone is using the Mac.
+/// Work in another window (DIRECTION.md 5.7): while a task runs, waits or needs the user
+/// (`Perch.subject`), a warm rim goes around the window it works in, the figure perches on that
+/// window's top edge, and a caption sits at its bottom-left. Only while that window is on screen and
+/// uncovered (H3, `Rim.seen`); otherwise nothing is drawn there and the menu bar glyph, lit while any
+/// of this is going on (`onLitChanged`), carries it. The rim follows the window, read from the window
+/// list four times a second while shown. Nothing is ever on screen idle.
+///
+/// The desk (5.6) opens from the menu bar or a click on the perch: under the menu bar of the screen
+/// holding the window in front, centered over that window (A18).
+///
+/// `drawsOnScreen: false` computes all of it and orders nothing front, for socket-only test runs
+/// while someone is using the Mac.
 @MainActor
 final class PerchController {
     let model = PerchModel()
     private let center: ActivityCenter
     private let drawsOnScreen: Bool
     private let panel = PerchPanel.make()
-    private let list = HostedPanel(radius: 12, interactive: true)
+    private let rimPanel = OverlayPanel.make()
+    private let rimModel = RimModel()
+    private let caption = HostedPanel(radius: 8)
+    private let list = HostedPanel(radius: ActivityListView.radius, interactive: true)
     private let locator = WindowLocator()
-    /// The ask field at the top of the list (brief A13): its decisions, and what the view draws.
+    /// The ask field at the top of the desk (brief A13): its decisions, and what the view draws.
     let ask = AskCaret(clock: RunLoopClock())
     private let askModel = AskModel()
-    /// The ask phase last drawn into the list, so a change of phase resizes it and typing does not.
+    /// The ask phase last drawn into the desk, so a change of phase resizes it and typing does not.
     private var drawnAsk: AskCaret.Phase = .idle
-    /// Whether the drawn list shows the Return hint under the field, which appears with the first
-    /// character typed and adds a row: the list is measured again only when that changes.
+    /// Whether the drawn desk shows the Return hint, which appears with the first character typed:
+    /// the desk is measured again only when that changes.
     private var drawnHint = false
-    /// "What Caret knows" at the foot of the list.
+    /// "What Caret knows" at the foot of the desk.
     var onOpenMemory: (() -> Void)?
-    /// The list opened (true) or closed (false).
+    /// The desk opened (true) or closed (false).
     var onListChanged: ((Bool) -> Void)?
+    /// Work runs, waits or needs the user somewhere: the menu bar glyph is Carrot.
+    var onLitChanged: ((Bool) -> Void)?
+    /// "Not right" on the plan's noticed fact (`MemoryBook.notRight`): false when nothing was sent.
+    var sendNotRight: (_ memoryId: String, _ offerKey: String, _ correction: String?, _ answered: @escaping (String?) -> Void) -> Bool = { _, _, _, _ in false }
 
-    /// The menu bar's "Show Perch" choice. Hidden stops drawing; the list still opens from the menu.
+    /// The menu bar's "Show Perch" choice. Hidden stops drawing the rim and the perch; the desk
+    /// still opens from the menu.
     var hidden: Bool {
         get { UserDefaults.standard.bool(forKey: Self.hiddenKey) }
         set {
@@ -64,39 +79,38 @@ final class PerchController {
     static let hiddenKey = "perchHidden"
 
     private var subject: Perch.Subject?
-    private var home: PerchPlacement.Home?
-    private var frame: CGRect?
-    private var choice: PerchPlacement.Choice?
-    private var field: CGRect?
-    private var caret: CGRect?
-    /// The focused field, kept so its frame can be read when the perch first gets something to
-    /// show; its frame is not read while the perch is idle.
-    private var focusedElement: AXUIElement?
-    private var hopWork: DispatchWorkItem?
+    private(set) var lit = false
+    /// The window the subject's task acts in: its frame as Accessibility last found it, and its
+    /// window-server number once matched in the window list.
+    private var target: (taskId: String, frame: CGRect?, number: Int?)?
+    private var seen: Rim.Seen = .notFound
+    /// The target is the window in front: the slip at the caret already says what Caret does there,
+    /// so the corner caption would say it twice.
+    private var targetInFront = false
+    /// Where the parts went, global top-left.
+    private var layout: Rim.Layout?
+    private var drawnCaption: RimCaption?
     private var stopped = false
-    /// The window the subject's task acts in, as last located; global, top-left origin.
-    private var target: (taskId: String, frame: CGRect?)?
     private var expiryTimer: Timer?
-    private var gazeTimer: Timer?
+    private var trackTimer: Timer?
+    private var locateTimer: Timer?
     private var blinkTimer: Timer?
-    private var orderOutWork: DispatchWorkItem?
-    private var relocating = false
+    private var fadeWork: DispatchWorkItem?
     private var clickMonitor: Any?
     private(set) var listOpen = false
-    /// The open list was placed as the desk (Ask Caret), so a perch move does not re-hang it.
-    private var listIsDesk = false
-    /// Pages of Done rows the open list shows; "and N more" adds one, closing the list resets it.
+    /// Pages of Done rows the open desk shows; "and N more" adds one, closing the desk resets it.
     private(set) var donePages = 1
     private var stats = Stats()
 
     struct Stats: Codable, Equatable {
-        var moves = 0
         var shows = 0
         var leaves = 0
-        var lastMoveReason: String?
-        /// The list was marked open but was not on screen when Ask Caret was chosen.
+        /// Times the rim was held back because the window was covered or not on screen (H3).
+        var covered = 0
+        var notFound = 0
+        /// The desk was marked open but was not on screen when Ask Caret was chosen.
         var reopened = 0
-        /// Where the list last opened: under the perch, or as the desk under the menu bar.
+        /// Where the desk last opened: over the window in front, or under the menu bar's right end.
         var listAnchor: String?
     }
 
@@ -106,6 +120,7 @@ final class PerchController {
         let host = FirstMouseHostingView(rootView: AnyView(PerchView(model: model)))
         host.frame = NSRect(origin: .zero, size: PerchModel.size)
         panel.contentView = host
+        rimPanel.contentView = NSHostingView(rootView: RimView(model: rimModel, radius: RimView.windowRadius))
         model.character = FigureSettings.shared.character
         model.animated = !Motion.reduceMotion
         model.onTap = { [weak self] in self?.toggleList() }
@@ -118,6 +133,7 @@ final class PerchController {
         askModel.run = { [weak self] in self?.ask.tab() }
         askModel.escape = { [weak self] in self?.ask.escape() }
         askModel.undo = { [weak self] in self?.ask.undo() }
+        askModel.notRightAction = { [weak self] in self?.deskNotRight($0) }
         ask.onChange = { [weak self] in self?.askChanged() }
     }
 
@@ -126,10 +142,14 @@ final class PerchController {
     private func askChanged() {
         if askModel.text != ask.text { askModel.text = ask.text }
         if askModel.phase != ask.phase { askModel.phase = ask.phase }
+        let rowBefore = askModel.notRight
+        syncDeskNotRight()
         let newlyFailed: Bool = { if case .failed = ask.phase, drawnAsk != ask.phase { return true } else { return false } }()
-        // A new phase can change the list's height; typing alone does not, and redrawing the panel
+        // A new phase can change the desk's height; typing alone does not, and redrawing the panel
         // on each key would cost a measure per keystroke.
-        if listOpen, drawnAsk != ask.phase || drawnHint != AskSection.showsHint(text: ask.text, phase: ask.phase) { renderList() }
+        if listOpen, drawnAsk != ask.phase || drawnHint != AskSection.showsHint(text: ask.text, phase: ask.phase) || rowBefore != askModel.notRight {
+            renderList()
+        }
         if newlyFailed { selectFailedInstruction() }
     }
 
@@ -146,10 +166,62 @@ final class PerchController {
         }
     }
 
-    /// Return, Tab, Esc and ⌘Z while the list is key, before the field editor sees them. ⌘Z undoes an
-    /// ended run that wrote. Return plans
-    /// what the field holds; Tab takes a plan; Esc stops a run, puts away a card or an answer, then
-    /// empties the field, then closes the list. True when the key was used.
+    /// The plan's noticed fact (M1): a row on the card with "Not right" while the plan waits for Tab.
+    private func syncDeskNotRight() {
+        guard let p = ask.shownProvenance, let fact = p.facts.first else {
+            askModel.notRight = nil
+            return
+        }
+        if askModel.notRight == nil || askModel.notRight?.says != fact.says {
+            askModel.notRight = NotRightRow(says: fact.says, more: p.facts.count - 1, correctable: fact.correctable)
+        }
+    }
+
+    private func deskNotRight(_ action: DeskNotRight) {
+        guard var row = askModel.notRight, let p = ask.shownProvenance, let fact = p.facts.first else { return }
+        switch action {
+        case .open where row.phase == .shown:
+            row.phase = .correcting
+        case .edit(let text) where row.phase == .correcting:
+            row.text = text
+            row.problem = nil
+        case .cancel where row.phase == .correcting:
+            row.phase = .shown
+            row.problem = nil
+        case .save, .forget:
+            guard row.phase == .correcting else { return }
+            let forget = action == .forget
+            let text = row.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !forget, let problem = MemoryCheck.correctionProblem(text, correctable: row.correctable) {
+                row.problem = problem
+                break
+            }
+            let key = p.offerKey
+            let sent = sendNotRight(fact.memoryId, key, forget ? nil : text) { [weak self] problem in
+                guard let self, var now = self.askModel.notRight, self.ask.shownProvenance?.offerKey == key || problem == nil else { return }
+                if let problem {
+                    now.phase = .correcting
+                    now.problem = problem
+                } else {
+                    now.phase = .answered(forget ? NotRightRow.forgotten : NotRightRow.corrected)
+                    AccessibilityNotification.Announcement(forget ? NotRightRow.forgotten : NotRightRow.corrected).post()
+                }
+                self.askModel.notRight = now
+                if self.listOpen { self.renderList() }
+            }
+            if sent { row.phase = .sending } else { row.problem = MemoryCheck.offline }
+        default:
+            return
+        }
+        let phaseChanged = row.phase != askModel.notRight?.phase || row.problem != askModel.notRight?.problem
+        askModel.notRight = row
+        if listOpen, phaseChanged { renderList() }
+    }
+
+    /// Return, Tab, Esc and ⌘Z while the desk is key, before the field editor sees them. ⌘Z undoes an
+    /// ended run that wrote. Return plans what the field holds; Tab takes a plan; Esc first closes an
+    /// open "Not right", then stops a run, puts away a card or an answer, then empties the field,
+    /// then closes the desk. True when the key was used.
     private func listKey(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         // ⌘Z on a run that wrote undoes it (q1 bug 8); otherwise the field editor's own undo.
@@ -159,14 +231,20 @@ final class PerchController {
         // An input method composing text owns Return and Esc until it commits or cancels.
         if let editor = list.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
         let editing = list.panel.firstResponder is NSTextView
+        let correcting = askModel.notRight?.phase == .correcting
         switch Int64(event.keyCode) {
         case KeyStroke.returnKeyCode, 76:
-            return editing && ask.submit()
+            // The "Not right" field's Return is its own (Save).
+            return editing && !correcting && ask.submit()
         case KeyStroke.tabKeyCode:
             // Only from the ask field: with Full Keyboard Access, Tab from a row's button moves on.
-            return editing && ask.tab()
+            return editing && !correcting && ask.tab()
         case KeyStroke.escapeKeyCode:
-            // A key closes the list at once: keyboard-initiated changes do not animate.
+            if correcting {
+                deskNotRight(.cancel)
+                return true
+            }
+            // A key closes the desk at once: keyboard-initiated changes do not animate.
             if !ask.escape() { closeList(exit: 0) }
             return true
         default:
@@ -174,7 +252,7 @@ final class PerchController {
         }
     }
 
-    /// The menu's Ask Caret: the list opens with the field focused, Caret still behind the app the
+    /// The menu's Ask Caret: the desk opens with the field focused, Caret still behind the app the
     /// user is in.
     ///
     /// Opened whenever it is not on screen, whatever `listOpen` says (A18, bug 15: right after
@@ -185,7 +263,7 @@ final class PerchController {
             stats.reopened += 1
             listOpen = false
         }
-        if listOpen { anchorList(desk: true) } else { openList(desk: true) }
+        if listOpen { anchorList() } else { openList() }
         guard drawsOnScreen else { return }
         list.panel.orderFrontRegardless()
         list.panel.makeKey()
@@ -201,216 +279,234 @@ final class PerchController {
         let next = center.subject(now: now)
         scheduleExpiry(now: now)
         if next?.taskId != subject?.taskId { target = nil }
-        if subject == nil, next != nil { field = focusedElement.flatMap { AXRead.frame(of: $0) } }
         subject = next
+        let nowLit = next.map { [.working, .waiting, .needsYou].contains($0.mood) } ?? false
+        if nowLit != lit {
+            lit = nowLit
+            onLitChanged?(nowLit)
+        }
         if let next {
             model.mood = next.mood
-            model.needsYou = next.needsYou
             model.summary = Self.summary(next)
-            place(reason: nil)
-            updateGaze(locate: target == nil)
-            show()
+            if target == nil { locate() }
+            track()
+            startTimers()
         } else {
-            leave()
+            leave(stopped: false)
         }
         if listOpen { renderList() }
     }
 
-    /// The focused text field changed or its caret moved. The field's frame is read only while
-    /// the perch has something to show, so focus changes cost nothing extra the rest of the day.
-    func focusChanged(caret: CGRect?, element: AXUIElement?) {
-        self.caret = caret
-        focusedElement = element
-        field = subject == nil ? nil : element.flatMap { AXRead.frame(of: $0) }
-        guard subject != nil else { return }
-        place(reason: "focus")
-    }
+    // MARK: - The window it works in
 
-    /// The debug socket's stand-in for a focused field: global, top-left-origin rects.
-    func avoid(caret: CGRect?, field: CGRect?) {
-        focusedElement = nil
-        self.caret = caret
-        self.field = field
-        place(reason: "avoid")
-    }
-
-    // MARK: - Placement and gaze
-
-    private func screenFrame() -> CGRect {
-        let anchor = caret ?? field ?? target?.frame
-        let screen = anchor.map { Screen.containing(Screen.cocoa($0)) } ?? NSScreen.main
-        return Screen.ax(screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900))
-    }
-
-    /// Picks a home and moves there. A move while the perch is on screen is a hop: out in 120 ms,
-    /// in at the new corner with the normal entrance, so it never slides across the user's work.
-    private func place(reason: String?) {
-        let choice = PerchPlacement.choose(visible: screenFrame(), size: PerchModel.size, field: field, caret: caret, current: home)
-        self.choice = choice
-        guard choice.frame != frame else { return }
-        let moving = frame != nil && home != choice.home
-        home = choice.home
-        frame = choice.frame
-        if moving {
-            stats.moves += 1
-            stats.lastMoveReason = reason
+    /// Finds the subject's window through Accessibility (by the frame and title the helper recorded),
+    /// then tracks it in the window list by number.
+    private func locate() {
+        guard let subject, let pid = subject.pid else { return track() }
+        let taskId = subject.taskId
+        if target?.taskId != taskId { target = (taskId, subject.windowFrame, nil) }
+        locator.locate(pid: pid, title: subject.windowTitle, frame: subject.windowFrame) { [weak self] found in
+            guard let self, self.subject?.taskId == taskId else { return }
+            // A frame found is the window as it is now; the number is matched again from it.
+            if let found, found != self.target?.frame { self.target = (taskId, found, nil) }
+            self.track()
         }
-        if moving, model.presented, drawsOnScreen, panel.isVisible, !hidden {
-            hop(to: choice.frame)
-        } else {
-            panel.setFrame(Screen.cocoa(choice.frame), display: false)
-        }
-        updateGaze(locate: false)
-        if listOpen { anchorList() }
     }
 
-    private func hop(to axFrame: CGRect) {
-        relocating = true
-        hopWork?.cancel()
-        withAnimation(Motion.curve(Motion.easeOut, 0.12)) { model.presented = false }
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, !self.stopped else { return }
-                self.relocating = false
-                self.hopWork = nil
-                self.panel.setFrame(Screen.cocoa(axFrame), display: false)
-                if self.subject != nil { self.show() } else { self.panel.orderOut(nil) }
-            }
-        }
-        hopWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.13, execute: work)
-    }
-
-    /// Looks again for the subject's window when `locate` is set or the subject changed, and
-    /// re-aims at the last frame found (the perch may have moved).
-    private func updateGaze(locate: Bool) {
+    /// Reads the window list once: is the window still there, has it moved, does anything cover it.
+    /// Then shows, moves or takes down the rim, the perch and the caption.
+    private func track() {
         guard let subject else { return }
-        let changed = target?.taskId != subject.taskId
-        if changed { target = (subject.taskId, nil) }
-        if locate || changed, let pid = subject.pid {
-            let taskId = subject.taskId
-            locator.locate(pid: pid, title: subject.windowTitle, frame: subject.windowFrame) { [weak self] found in
-                guard let self, self.subject?.taskId == taskId else { return }
-                let screenWas = self.screenFrame()
-                self.target = (taskId, found)
-                // With no field focused, the perch belongs on the screen of the window it watches
-                // (the first on-screen run put it on another display).
-                if self.caret == nil, self.field == nil, self.screenFrame() != screenWas { self.place(reason: "target") }
-                self.aim()
+        let next: Rim.Seen
+        if let pid = subject.pid, let target, target.taskId == subject.taskId {
+            let own = ProcessInfo.processInfo.processIdentifier
+            let windows = Self.windows()
+            next = Rim.seen(pid: pid, number: target.number, frame: target.frame, windows: windows, ownPID: own)
+            if case .clear(let number, _) = next {
+                targetInFront = windows.first { $0.pid != own && $0.layer == 0 && $0.alpha > 0.01 && $0.bounds.width >= Rim.minimumCover.width }?.number == number
+            }
+        } else {
+            next = .notFound
+        }
+        if case .clear(let number, let frame) = next { target = (subject.taskId, frame, number) }
+        if case .covered(let number, let frame, _) = next { target = (subject.taskId, frame, number) }
+        if !next.isClear, seen.isClear || seen == .notFound {
+            switch next {
+            case .covered: if seen.isClear { stats.covered += 1 }
+            case .notFound: if seen.isClear { stats.notFound += 1 }
+            case .clear: break
             }
         }
-        aim()
+        seen = next
+        draw()
     }
 
-    private func aim() {
-        guard let subject, let frame else { return }
-        let perch = CGPoint(x: frame.midX, y: frame.midY)
-        let gaze: CGVector
+    private func draw() {
+        guard let subject, !stopped else { return }
+        let showsHere = !hidden && drawsOnScreen
         switch subject.mood {
-        case .done, .error: gaze = .zero
         case .working, .waiting, .needsYou:
-            gaze = target?.frame.map { PerchGaze.toward($0, from: perch) } ?? PerchGaze.fallback(for: subject.mood)
+            guard case .clear(_, let frame) = seen, showsHere else { return leave(stopped: false) }
+            show(at: frame, subject: subject)
+        case .done:
+            // Done: the figure hops off, the ring goes with it (the slip at the caret says Added).
+            leave(stopped: false)
+        case .error:
+            leave(stopped: true)
         }
-        if gaze != model.gaze { model.gaze = gaze }
     }
 
-    // MARK: - On and off screen
-
-    private func show() {
-        orderOutWork?.cancel()
-        orderOutWork = nil
-        guard !relocating, !stopped else { return }
-        if !model.presented {
-            stats.shows += 1
-            let reduce = Motion.reduceMotion
-            // Nothing animates where nothing is drawn.
-            model.animated = !reduce && drawsOnScreen && !hidden
-            if drawsOnScreen, !hidden, let frame {
-                panel.setFrame(Screen.cocoa(frame), display: false)
-                panel.orderFrontRegardless()
-            }
-            withAnimation(reduce ? .linear(duration: 0.12) : Motion.curve(Motion.easeOut, 0.18)) { model.presented = true }
-        } else if drawsOnScreen, !hidden, !panel.isVisible {
-            panel.orderFrontRegardless()
+    private func show(at window: CGRect, subject: Perch.Subject) {
+        fadeWork?.cancel()
+        fadeWork = nil
+        let visible = Screen.axVisibleFrame(around: window)
+        let layout = Rim.layout(window: window, perchHeight: PerchModel.figureHeight, visible: visible)
+        let moved = layout != self.layout
+        self.layout = layout
+        let entering = !rimModel.shown
+        if moved || entering {
+            rimPanel.setFrame(Screen.cocoa(layout.ring), display: true)
+            // The view stands the figure on its panel's bottom edge, centered; the panel's extra room
+            // above and beside it is for the squash and the bob.
+            let perch = CGRect(x: layout.perch.midX - PerchModel.size.width / 2, y: layout.perch.maxY - PerchModel.size.height,
+                               width: PerchModel.size.width, height: PerchModel.size.height)
+            panel.setFrame(Screen.cocoa(perch), display: false)
         }
-        if hidden || !drawsOnScreen { panel.orderOut(nil) }
-        startGazeTimer()
+        let row = center.rows().first { $0.id == subject.taskId }
+        let words = RimCaption.words(mood: subject.mood, row: row)
+        let view = RimCaption(text: words.text, detail: words.detail)
+        if targetInFront {
+            if caption.isVisible { caption.exit(duration: Motion.Duration.fade) }
+            drawnCaption = nil
+        } else if moved || entering || !caption.isVisible || drawnCaption?.text != view.text || drawnCaption?.detail != view.detail {
+            let entersNow = !caption.isVisible
+            drawnCaption = view
+            caption.pin(.init(corner: .topLeft, point: NSPoint(x: layout.caption.x, y: Screen.cocoa(CGRect(origin: layout.caption, size: .zero)).maxY)))
+            caption.setContent(view)
+            caption.text = words.text
+            if entersNow { caption.enter() }
+        }
+        rimModel.graphite = false
+        guard entering else { return }
+        stats.shows += 1
+        let reduce = Motion.reduceMotion
+        rimModel.animated = !reduce
+        model.animated = !reduce
+        rimPanel.orderFrontRegardless()
+        panel.orderFrontRegardless()
+        rimModel.shown = true
+        withAnimation(reduce ? .linear(duration: Motion.Duration.reduced) : Motion.curve(Motion.easeOut, Motion.Duration.figureEnter)) { model.presented = true }
     }
 
-    private func leave() {
-        gazeTimer?.invalidate()
-        gazeTimer = nil
-        blinkTimer?.invalidate()
-        blinkTimer = nil
-        // A hop in flight has already hidden the figure; nothing must bring it back.
-        if relocating {
-            hopWork?.cancel()
-            hopWork = nil
-            relocating = false
-            panel.orderOut(nil)
-        }
-        guard model.presented else { return }
+    /// Takes everything down. `stopped`: the run ended badly or was stopped, so the ring turns
+    /// Graphite over 220 ms and fades after 900 ms while the figure hops off at once.
+    private func leave(stopped: Bool) {
+        guard rimModel.shown || model.presented || caption.isVisible else { return }
         stats.leaves += 1
         let reduce = Motion.reduceMotion
-        withAnimation(reduce ? .linear(duration: 0.12) : Motion.curve(Motion.easeOut, 0.16)) { model.presented = false }
+        withAnimation(reduce ? .linear(duration: Motion.Duration.reduced) : Motion.curve(Motion.easeOut, Motion.Duration.figureLeave)) { model.presented = false }
+        caption.exit(duration: Motion.Duration.fade)
+        layout = nil
+        drawnCaption = nil
+        let hold: TimeInterval
+        if stopped {
+            rimModel.graphite = true
+            hold = reduce ? 0.12 : 0.9
+        } else {
+            hold = 0
+        }
+        fadeWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, !self.model.presented else { return }
-                self.panel.orderOut(nil)
+                guard let self else { return }
+                self.rimModel.shown = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, !self.rimModel.shown else { return }
+                        self.rimPanel.orderOut(nil)
+                        self.panel.orderOut(nil)
+                    }
+                }
             }
         }
-        orderOutWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+        fadeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: work)
     }
 
-    /// The window a task acts in can move; the perch re-reads its frame every 2 s while it is on
-    /// screen. One Accessibility read of one app's windows. Assumed often enough: a glance that
-    /// lags a dragged window by 2 s reads as attention, not a fault.
-    private func startGazeTimer() {
+    /// While there is a subject: the window list four times a second (the rim follows a dragged
+    /// window within a quarter second; one list read costs about a millisecond), Accessibility every
+    /// 2 s (a window that was replaced or a document that changed title), and a blink every 5 s.
+    /// Assumed intervals; nothing measured them against what a user notices.
+    private func startTimers() {
+        if trackTimer == nil {
+            trackTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.track() }
+            }
+        }
+        if locateTimer == nil {
+            locateTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { if self?.seen.isClear == false { self?.locate() } }
+            }
+        }
         if blinkTimer == nil {
-            // The pebble blinks every 5 s while its eyes are open on something (IDENTITY.md).
-            blinkTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            blinkTimer = Timer.scheduledTimer(withTimeInterval: Motion.Duration.blinkEvery, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self, self.model.animated, self.model.presented else { return }
-                    guard [.working, .waiting, .needsYou].contains(self.model.mood) else { return }
+                    guard let self, self.model.animated, self.model.presented, self.model.mood != .done, self.model.mood != .error else { return }
                     self.model.blinkTick &+= 1
                 }
             }
         }
-        guard gazeTimer == nil else { return }
-        gazeTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateGaze(locate: true) }
-        }
+    }
+
+    private func stopTimers() {
+        trackTimer?.invalidate()
+        trackTimer = nil
+        locateTimer?.invalidate()
+        locateTimer = nil
+        blinkTimer?.invalidate()
+        blinkTimer = nil
     }
 
     private func scheduleExpiry(now: Date) {
         expiryTimer?.invalidate()
         expiryTimer = nil
-        guard let at = Perch.nextExpiry(center.records, now: now, acknowledgedAt: center.acknowledgedAt) else { return }
+        guard let at = Perch.nextExpiry(center.records, now: now, acknowledgedAt: center.acknowledgedAt) else {
+            if subject == nil { stopTimers() }
+            return
+        }
         expiryTimer = Timer.scheduledTimer(withTimeInterval: max(0.05, at.timeIntervalSince(now) + 0.05), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
     }
 
-    // MARK: - The activity list
+    /// On-screen windows, front to back, with their numbers. Window-server only.
+    static func windows() -> [Rim.Window] {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+        return list.compactMap { info in
+            guard let number = info[kCGWindowNumber as String] as? Int, let pid = info[kCGWindowOwnerPID as String] as? Int32,
+                  let raw = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: raw as CFDictionary) else { return nil }
+            return Rim.Window(number: number, pid: pid, bounds: bounds, layer: info[kCGWindowLayer as String] as? Int ?? 0,
+                              alpha: info[kCGWindowAlpha as String] as? Double ?? 1)
+        }
+    }
+
+    // MARK: - The desk
 
     func toggleList() {
         listOpen ? closeList() : openList()
     }
 
-    /// `desk`: placed as the desk over the window in front even when the perch is on screen
-    /// (the menu's Ask Caret); otherwise it hangs from the perch when there is one.
-    func openList(desk: Bool = false) {
+    func openList() {
         listOpen = true
         defer { onListChanged?(true) }
-        listIsDesk = desk
         center.acknowledge()
         renderList()
-        anchorList(desk: desk)
+        anchorList()
         if drawsOnScreen { list.enter() }
         if clickMonitor == nil {
-            // A click in another app closes the list; clicks in Caret's own panels do not reach
-            // a global monitor.
+            // A click in another app closes the desk; clicks in Caret's own panels do not reach a
+            // global monitor.
             clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
                 MainActor.assumeIsolated { self?.closeList() }
             }
@@ -427,7 +523,7 @@ final class PerchController {
     func closeList(exit: TimeInterval = 0.1) {
         guard listOpen else { return }
         listOpen = false
-        // A card nobody can see takes no Tab, so it goes; a run goes on and the list still reports
+        // A card nobody can see takes no Tab, so it goes; a run goes on and the desk still reports
         // it, and a half-typed request stays for the next opening.
         switch ask.phase {
         case .running, .idle: break
@@ -465,30 +561,17 @@ final class PerchController {
         list.setContent(view)
     }
 
-    /// The list grows away from the perch's corner, 6 pt from it. With no perch on screen (opened
-    /// from the menu), it is the desk: under the menu bar of the screen holding the window in
-    /// front, centered over that window (`DeskPlacement`, A18 bug 13).
-    private func anchorList(desk: Bool? = nil) {
-        if let desk { listIsDesk = desk }
-        guard !listIsDesk, let perch = frame, model.presented, drawsOnScreen, !hidden, panel.isVisible else {
-            let window = Self.frontWindow()
-            let screens = NSScreen.screens.map { Screen.ax($0.visibleFrame) }
-            let visible = DeskPlacement.screen(for: window, screens: screens, fallback: screenFrame())
-            let p = DeskPlacement.topLeft(width: list.size.width, visible: visible, window: window)
-            stats.listAnchor = window == nil ? "desk" : "desk.window"
-            list.pin(.init(corner: .topLeft, point: NSPoint(x: p.x, y: Screen.cocoa(CGRect(origin: p, size: .zero)).maxY)))
-            return
-        }
-        stats.listAnchor = "perch"
-        let c = Screen.cocoa(perch)
-        let anchor: HostedPanel.Anchor
-        switch home ?? .bottomRight {
-        case .bottomRight: anchor = .init(corner: .bottomRight, point: NSPoint(x: c.maxX, y: c.maxY + 6))
-        case .bottomLeft: anchor = .init(corner: .bottomLeft, point: NSPoint(x: c.minX, y: c.maxY + 6))
-        case .topRight: anchor = .init(corner: .topRight, point: NSPoint(x: c.maxX, y: c.minY - 6))
-        case .topLeft: anchor = .init(corner: .topLeft, point: NSPoint(x: c.minX, y: c.minY - 6))
-        }
-        list.pin(anchor)
+    /// The desk: under the menu bar of the screen holding the window in front, centered over that
+    /// window (`DeskPlacement`, A18 bug 13). It no longer hangs from the perch: the perch sits on a
+    /// window now, and a 460 pt desk hung from it would cover that window's work.
+    private func anchorList() {
+        let window = Self.frontWindow()
+        let screens = NSScreen.screens.map { Screen.ax($0.visibleFrame) }
+        let fallback = Screen.ax(NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let visible = DeskPlacement.screen(for: window, screens: screens, fallback: fallback)
+        let p = DeskPlacement.topLeft(width: list.size.width, visible: visible, window: window)
+        stats.listAnchor = window == nil ? "desk" : "desk.window"
+        list.pin(.init(corner: .topLeft, point: NSPoint(x: p.x, y: Screen.cocoa(CGRect(origin: p, size: .zero)).maxY)))
     }
 
     /// The frontmost ordinary window of another app, global top-left points: what the desk opens
@@ -503,41 +586,49 @@ final class PerchController {
 
     func shutdown() {
         stopped = true
-        hopWork?.cancel()
-        orderOutWork?.cancel()
+        fadeWork?.cancel()
         expiryTimer?.invalidate()
-        gazeTimer?.invalidate()
-        blinkTimer?.invalidate()
+        stopTimers()
         closeList()
+        caption.exit(duration: 0)
+        rimPanel.orderOut(nil)
         panel.orderOut(nil)
     }
 
     // MARK: - Debug socket
 
     struct DebugInfo: Codable, Equatable {
+        /// The figure is on the task's window.
         var presented: Bool
         var onScreen: Bool
         var drawsOnScreen: Bool
         var hidden: Bool
         var subject: Perch.Subject?
         var figure: String?
-        var gaze: [Double]
-        var home: String?
-        /// Global, top-left origin: x, y, width, height.
-        var frame: [Double]?
+        /// The menu bar glyph is lit.
+        var lit: Bool
+        /// `clear`, `covered` or `notFound` (H3), and the window it is about.
+        var seen: String
         var targetWindow: [Double]?
-        var avoid: [String: [Double]]
-        var overlapsField: Bool?
-        var overlapsCaret: Bool?
+        var targetNumber: Int?
+        /// Global, top-left: the perched figure's slot, the ring's panel, the caption's corner.
+        var frame: [Double]?
+        var rim: [Double]?
+        var rimShown: Bool
+        var rimGraphite: Bool
+        var caption: String?
+        var captionFrame: [Double]?
         var isKey: Bool
-        /// The list is key and the ask field holds the keyboard (its field editor is first responder).
+        /// The desk is key and the ask field holds the keyboard (its field editor is first responder).
         var askEditing: Bool
-        /// The window server's numbers for the perch and the list, for window-only screenshots.
+        /// The window server's numbers, for window-only screenshots.
         var windowNumber: Int
+        var rimWindowNumber: Int
+        var captionWindowNumber: Int
         var listWindowNumber: Int
         var listOpen: Bool
         var listOnScreen: Bool
-        /// The list's frame while on screen, global top-left points.
+        /// The desk's frame while on screen, global top-left points.
         var listFrame: [Double]?
         var rows: [ActivityRow]
         /// Done rows behind "and N more", and the pages shown.
@@ -550,28 +641,42 @@ final class PerchController {
         var pausable: [String: [String]]
         var activity: ActivityCenter.DebugActivity
         var stats: Stats
+        /// The plan's noticed fact on the desk card, and its "Not right" state.
+        var deskNotRight: String?
     }
 
     func debugInfo() -> DebugInfo {
         func box(_ r: CGRect?) -> [Double]? { r.map { [$0.minX, $0.minY, $0.width, $0.height].map(Double.init) } }
-        var avoid: [String: [Double]] = [:]
-        if let f = box(field) { avoid["field"] = f }
-        if let c = box(caret) { avoid["caret"] = c }
         let pause = center.pauseGate.snapshot()
+        let seenWords: String
+        switch seen {
+        case .clear: seenWords = "clear"
+        case .covered: seenWords = "covered"
+        case .notFound: seenWords = "notFound"
+        }
+        let deskNotRight: String? = askModel.notRight.map { row in
+            switch row.phase {
+            case .shown: return "shown: \(row.says)"
+            case .correcting: return "correcting"
+            case .sending: return "sending"
+            case .answered(let s): return s
+            }
+        }
         return DebugInfo(
             presented: model.presented, onScreen: panel.isVisible, drawsOnScreen: drawsOnScreen, hidden: hidden,
-            subject: subject, figure: subject.map { $0.mood.figure.rawValue },
-            gaze: [Double(model.gaze.dx), Double(model.gaze.dy)], home: home?.rawValue, frame: box(frame),
-            targetWindow: box(target?.frame), avoid: avoid,
-            overlapsField: choice?.overlapsField, overlapsCaret: choice?.overlapsCaret,
+            subject: subject, figure: subject.map { $0.mood.figure.rawValue }, lit: lit, seen: seenWords,
+            targetWindow: box(target?.frame), targetNumber: target?.number, frame: box(layout?.perch), rim: box(layout?.ring),
+            rimShown: rimModel.shown, rimGraphite: rimModel.graphite, caption: caption.isVisible ? caption.text : nil,
+            captionFrame: caption.isVisible ? box(Screen.ax(caption.contentFrame(size: caption.size))) : nil,
             isKey: panel.isKeyWindow || list.panel.isKeyWindow,
             askEditing: list.panel.isKeyWindow && list.panel.firstResponder is NSTextView,
-            windowNumber: panel.windowNumber, listWindowNumber: list.panel.windowNumber, listOpen: listOpen, listOnScreen: list.panel.isVisible,
+            windowNumber: panel.windowNumber, rimWindowNumber: rimPanel.windowNumber, captionWindowNumber: caption.panel.windowNumber,
+            listWindowNumber: list.panel.windowNumber, listOpen: listOpen, listOnScreen: list.panel.isVisible,
             listFrame: list.panel.isVisible ? box(Screen.ax(list.contentFrame(size: list.size))) : nil,
             rows: center.page(pages: donePages).rows, more: center.page(pages: donePages).more, donePages: donePages,
             incomplete: center.feed.incomplete, feedSeq: center.feed.seq, listed: center.feed.listed,
             pausable: Dictionary(uniqueKeysWithValues: pause.running.map { (String($0.key), $0.value.sorted()) }),
-            activity: center.stats, stats: stats
+            activity: center.stats, stats: stats, deskNotRight: deskNotRight
         )
     }
 

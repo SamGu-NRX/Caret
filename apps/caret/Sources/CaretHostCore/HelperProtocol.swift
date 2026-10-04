@@ -30,6 +30,10 @@ public enum HelperInbound: Equatable, Sendable {
     /// B19: keep a routine as a skill, or let a skill run without a Tab. Asked after a run the
     /// user took; the host shows it with that run's line and answers with `skillAnswer`.
     case skillOffer(SkillOffer)
+    /// M1: the noticed facts an offer or plan was built from, right after it.
+    case memoryProvenance(MemoryProvenance)
+    /// M1: the answer to this host's `memoryDocumentRequest`, to this connection only.
+    case memoryDocumentReply(MemoryDocumentReply)
     /// A valid protocol message that is not addressed to consumers (reader traffic, or our own
     /// requests echoed back).
     case notForConsumer(type: String)
@@ -52,6 +56,8 @@ public enum HelperInbound: Equatable, Sendable {
         case .memoryReply: return HelperMemory.Reply.type
         case .planProposal: return PlanProposal.type
         case .skillOffer: return SkillOffer.type
+        case .memoryProvenance: return MemoryProvenance.type
+        case .memoryDocumentReply: return MemoryDocumentReply.type
         case .notForConsumer(let type), .unknown(let type): return type
         }
     }
@@ -87,8 +93,12 @@ public enum HelperInbound: Equatable, Sendable {
             // Validated, so a malformed line is still counted as undecodable.
             _ = try JSONDecoder().decode(Message.self, from: line)
             return .notForConsumer(type: envelope.type)
-        case FillResult.type, FirstLookRequest.type, HelperMemory.Request.type:
+        case FillResult.type, FirstLookRequest.type, HelperMemory.Request.type, MemoryNotRight.type, MemoryDocumentRequest.type:
             return .notForConsumer(type: envelope.type)
+        case MemoryProvenance.type:
+            return .memoryProvenance(try MemoryProvenance.decode(line))
+        case MemoryDocumentReply.type:
+            return .memoryDocumentReply(try MemoryDocumentReply.decode(line))
         case FirstLookReply.type:
             return .firstLookReply(try FirstLookReply.decode(line))
         case HelperMemory.Reply.type:
@@ -166,9 +176,27 @@ public struct LineFramer: Sendable {
 
 /// The host's hello to the helper. `host: true` (B23): only the host app's session counts as "host
 /// connected", which a skill needs before it runs on its own, and the helper binds the work the host
-/// accepts to this session.
+/// accepts to this session. `capabilities` (M1) names `memoryDocuments`, so the helper sends noticed
+/// facts as noticed, with provenance, and accepts "Not right" and the document requests. A helper from
+/// before M1 ignores the key (its hello schema is not strict).
 public enum HostHello {
-    public static func make(pid: Int) -> Hello {
-        Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true)
+    public static let capabilities = [MemoryDocs.capability]
+
+    public static func make(pid: Int) -> Message {
+        Message(hello: Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true), capabilities: capabilities)
+    }
+
+    /// CaretScreenCore's `Hello` with the capabilities beside it; that mirror has no such key.
+    public struct Message: Encodable, Equatable, Sendable {
+        public var hello: Hello
+        public var capabilities: [String]
+
+        enum CodingKeys: String, CodingKey { case capabilities }
+
+        public func encode(to encoder: Encoder) throws {
+            try hello.encode(to: encoder)
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(capabilities, forKey: .capabilities)
+        }
     }
 }

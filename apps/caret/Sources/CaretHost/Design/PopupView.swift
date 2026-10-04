@@ -23,6 +23,11 @@ struct PopupView: View {
     /// A fixed width, for a pop-up narrowed to fit between the app's fields; nil sizes it to its
     /// content within 280 to 380.
     var width: CGFloat?
+    /// A row at the foot inside the same glass: where an offer's noticed fact came from, with
+    /// "Not right" (`NotRightRowView`).
+    var under: AnyView? = nil
+    var underInteractive = false
+    var onNotRight: (() -> Void)? = nil
 
     @Environment(\.voiceFace) private var face
 
@@ -34,13 +39,16 @@ struct PopupView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(spec.blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(spec.blocks.enumerated()), id: \.offset) { _, block in
+                    blockView(block)
+                }
             }
+            .padding(.top, 10)
+            .padding(.bottom, 9)
+            .padding(.horizontal, 12)
+            if let under { under }
         }
-        .padding(.top, 10)
-        .padding(.bottom, 9)
-        .padding(.horizontal, 12)
         .frame(minWidth: width ?? Self.minWidth, maxWidth: width ?? Tokens.Shape.popupMaxWidth, alignment: .leading)
         .fixedSize(horizontal: true, vertical: true)
         .background(alignment: .topLeading) {
@@ -48,8 +56,9 @@ struct PopupView: View {
                 .offset(x: 12 + Self.figureSize / 2 - 32, y: 10 + 10 - 32)
         }
         .panelChrome(radius: Tokens.Shape.popupRadius)
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: underInteractive ? .contain : .ignore)
         .accessibilityLabel(SlipSpeech.popup(spec, highlight: highlight))
+        .modifier(OptionalAction(name: "Not right", action: onNotRight))
     }
 
     @ViewBuilder

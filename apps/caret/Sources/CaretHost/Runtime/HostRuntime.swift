@@ -192,6 +192,7 @@ public final class HostRuntime {
                 memory.receive(reply)
                 return onboarding.knowAvailableChanged(memory.book.state.acceptsAdd)
             }
+            if case .memoryDocumentReply(let reply) = message { return memory.receive(reply) }
             // Pause and the roles the host can tell apart (`HostGate`); the perch still
             // hears about work, which the user asked to see.
             guard HostGate.allows(message, SettingsStore.shared.settings) else {
@@ -213,6 +214,10 @@ public final class HostRuntime {
             // An offer the memory row asked for ("Let it run on its own…") is shown there, not at the caret.
             case .skillOffer(let offer): if !memory.book.claim(offer) { surface.skillOffer(offer) }
             case .firstLookReply(let reply): onboarding.receive(reply)
+            // Where the noticed facts behind an offer or a plan came from, for its "Not right".
+            case .memoryProvenance(let provenance):
+                surface.provenance(provenance)
+                perch.ask.provenance(provenance)
             default: break
             }
         }
@@ -241,10 +246,18 @@ public final class HostRuntime {
         let memoryClient = helper
         memory.send = { [weak memoryClient] in memoryClient?.send($0) ?? false }
         memory.book.sendAnswer = { [weak memoryClient] in memoryClient?.send($0) ?? false }
+        memory.sendNotRight = { [weak memoryClient] in memoryClient?.send($0) ?? false }
+        memory.sendDocuments = { [weak memoryClient] in memoryClient?.send($0) ?? false }
+        surface.sendNotRight = { [weak memory] id, key, correction, answered in
+            memory?.book.notRight(memoryId: id, offerKey: key, correction: correction, answered: answered) ?? false
+        }
         onboarding.onRemember = { [weak memory] in memory?.remember($0) }
         onboarding.onForgetTyped = { [weak memory] in memory?.forgetTyped(labels: $0) }
         onboarding.knowAvailable = { [weak memory] in memory?.book.state.acceptsAdd ?? false }
         perch.onOpenMemory = { [weak memory] in memory?.open() }
+        perch.sendNotRight = { [weak memory] id, key, correction, answered in
+            memory?.book.notRight(memoryId: id, offerKey: key, correction: correction, answered: answered) ?? false
+        }
         memory.book.onEntryChanged = { id in fill.memoryChanged(id) }
         let askClient = helper
         perch.ask.send = { [weak askClient] message in
@@ -403,15 +416,25 @@ public final class HostRuntime {
         socket = DebugStateSocket(path: configuration.socketPath) { command in
             Self.respond(to: command, arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods, hooks: hooks)
         }
+        surface.onWorkingChanged = { [weak self] working in
+            guard let self else { return }
+            self.surfaceWorking = working
+            self.onWorkingChanged?(working || self.perch.lit)
+        }
+        perch.onLitChanged = { [weak self] lit in
+            guard let self else { return }
+            self.onWorkingChanged?(self.surfaceWorking || lit)
+        }
     }
 
     /// Throws when another host already serves the socket; the caller should exit rather than run
     /// a second key tap.
-    /// True while accepted work runs (the menu bar glyph tints Carrot).
+    /// True while accepted work runs at the caret, or work runs, waits or needs the user in another
+    /// window (the perch's subject): the menu bar glyph is Carrot (DIRECTION.md 5.10).
     public var onWorkingChanged: ((Bool) -> Void)? {
-        get { surface.onWorkingChanged }
-        set { surface.onWorkingChanged = newValue }
+        didSet { onWorkingChanged?(surfaceWorking || perch.lit) }
     }
+    private var surfaceWorking = false
 
     /// The menu bar's "Show Perch" choice, kept in user defaults.
     public var perchHidden: Bool {
@@ -434,9 +457,8 @@ public final class HostRuntime {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
         if !tap.start() { status.increment("tap.createFailed") }
-        focus.onChange = { [coordinator, perch] change in
+        focus.onChange = { [coordinator] change in
             coordinator.handle(change)
-            perch.focusChanged(caret: change.snapshot?.caretRectAX, element: change.element)
         }
         focus.start()
         helper.start()
@@ -617,15 +639,9 @@ public final class HostRuntime {
             pauser.click(pid: pid)
             return ok()
         case "perch-avoid":
-            if words.count == 2, words[1] == "clear" {
-                perch.avoid(caret: nil, field: nil)
-                return ok()
-            }
-            let n = words.dropFirst().compactMap(Double.init)
-            guard n.count == 4 else { return #"{"error":"usage: perch-avoid x y w h | clear"}"# }
-            let rect = CGRect(x: n[0], y: n[1], width: n[2], height: n[3])
-            perch.avoid(caret: CGRect(x: rect.maxX - 2, y: rect.minY, width: 2, height: min(rect.height, 18)), field: rect)
-            return ok()
+            // v3 (U2): the perch sits on the window its task works in, never in a screen corner by the
+            // caret, so there is no field for it to avoid. Said, rather than accepted and ignored.
+            return #"{"error":"perch-avoid no longer applies: the perch sits on the task's window (rim and perch, v3)"}"#
         default:
             return #"{"error":"unknown command"}"#
         }

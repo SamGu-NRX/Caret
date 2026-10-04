@@ -217,88 +217,80 @@ final class PerchStateTests: XCTestCase {
     }
 }
 
-// MARK: - Gaze
+// MARK: - Working in another window (H3)
 
-final class PerchGazeTests: XCTestCase {
-    let perch = CGPoint(x: 1400, y: 860)
+final class RimTests: XCTestCase {
+    let own: Int32 = 99
+    let tracker = CGRect(x: 100, y: 120, width: 600, height: 400)
 
-    func testItLooksTowardTheWindowsCenter() {
-        let left = PerchGaze.toward(CGRect(x: 100, y: 800, width: 400, height: 100), from: perch)
-        XCTAssertLessThan(left.dx, -0.99)
-        XCTAssertEqual(left.dy, 0, accuracy: 0.01)
-
-        let upLeft = PerchGaze.toward(CGRect(x: 200, y: 100, width: 400, height: 300), from: perch)
-        XCTAssertLessThan(upLeft.dx, 0)
-        XCTAssertLessThan(upLeft.dy, 0, "up is negative y, as in Accessibility frames and the viewBox")
-
-        let above = PerchGaze.toward(CGRect(x: 1300, y: 100, width: 200, height: 200), from: perch)
-        XCTAssertEqual(above.dx, 0, accuracy: 0.01)
-        XCTAssertEqual(above.dy, -1, accuracy: 0.01)
-        XCTAssertEqual(hypot(upLeft.dx, upLeft.dy), 1, accuracy: 0.0001)
+    func window(_ number: Int, _ pid: Int32, _ bounds: CGRect, layer: Int = 0, alpha: Double = 1) -> Rim.Window {
+        Rim.Window(number: number, pid: pid, bounds: bounds, layer: layer, alpha: alpha)
     }
 
-    func testAWindowUnderThePerchOrTooCloseGetsAStraightLook() {
-        XCTAssertEqual(PerchGaze.toward(CGRect(x: 1000, y: 500, width: 600, height: 600), from: perch), .zero)
-        XCTAssertEqual(PerchGaze.toward(CGRect(x: 1410, y: 870, width: 10, height: 10), from: perch), .zero)
-        XCTAssertEqual(PerchGaze.toward(.null, from: perch), .zero)
+    func testAnUncoveredWindowIsClearAndMatchedByItsFrame() {
+        let windows = [window(1, 7, CGRect(x: 800, y: 100, width: 300, height: 300)), window(2, 5, tracker)]
+        XCTAssertEqual(Rim.seen(pid: 5, number: nil, frame: tracker.offsetBy(dx: 2, dy: -3), windows: windows, ownPID: own), .clear(number: 2, frame: tracker))
     }
 
-    func testWithoutAWindowWorkingLooksUpAndOut() {
-        XCTAssertEqual(PerchGaze.fallback(for: .working), CGVector(dx: 0.7, dy: -0.7))
-        XCTAssertEqual(PerchGaze.fallback(for: .needsYou), .zero)
-    }
-}
-
-// MARK: - Yielding to the field and the caret
-
-final class PerchPlacementTests: XCTestCase {
-    let visible = CGRect(x: 0, y: 25, width: 1440, height: 850)
-    let size = CGSize(width: 56, height: 48)
-
-    func testHomesSitInTheCornersOfTheVisibleFrame() {
-        let f = PerchPlacement.frame(.bottomRight, size: size, in: visible)
-        XCTAssertEqual(f, CGRect(x: 1440 - 10 - 56, y: 875 - 10 - 48, width: 56, height: 48))
-        XCTAssertEqual(PerchPlacement.frame(.topLeft, size: size, in: visible).origin, CGPoint(x: 10, y: 35))
+    /// H3: another app's window over any part of it means no rim, which would be drawn over that window.
+    func testAWindowInFrontThatOverlapsCoversIt() {
+        let mail = CGRect(x: 600, y: 300, width: 400, height: 300)
+        let windows = [window(1, 7, mail), window(2, 5, tracker)]
+        XCTAssertEqual(Rim.seen(pid: 5, number: 2, frame: nil, windows: windows, ownPID: own), .covered(number: 2, frame: tracker, by: 7))
     }
 
-    func testWithNothingFocusedItSitsBottomRight() {
-        let c = PerchPlacement.choose(visible: visible, size: size, field: nil, caret: nil, current: nil)
-        XCTAssertEqual(c.home, .bottomRight)
-        XCTAssertFalse(c.overlapsField || c.overlapsCaret)
+    /// Caret's own panels, menus and the Dock above layer 0, and tiny windows never count as cover.
+    func testCaretsOwnPanelsMenusAndTinyWindowsDoNotCover() {
+        let windows = [
+            window(1, own, tracker.insetBy(dx: 50, dy: 50)),
+            window(2, 3, CGRect(x: 0, y: 450, width: 1440, height: 90), layer: 20),
+            window(3, 7, CGRect(x: 300, y: 300, width: 30, height: 30)),
+            window(4, 8, tracker, alpha: 0),
+            window(5, 5, tracker),
+        ]
+        XCTAssertTrue(Rim.seen(pid: 5, number: nil, frame: tracker, windows: windows, ownPID: own).isClear)
     }
 
-    func testAFieldNearTheCornerMovesItAside() {
-        let field = CGRect(x: 1100, y: 800, width: 300, height: 22)
-        let caret = CGRect(x: 1390, y: 802, width: 1, height: 17)
-        let c = PerchPlacement.choose(visible: visible, size: size, field: field, caret: caret, current: .bottomRight)
-        XCTAssertEqual(c.home, .topRight)
-        XCTAssertFalse(c.frame.insetBy(dx: -PerchPlacement.clearance, dy: -PerchPlacement.clearance).intersects(field))
+    /// Once matched by number it follows the window as it moves, which a frame match could not.
+    func testANumberedWindowIsFollowedWhereverItMoved() {
+        let moved = tracker.offsetBy(dx: 240, dy: 60)
+        XCTAssertEqual(Rim.seen(pid: 5, number: 2, frame: tracker, windows: [window(2, 5, moved)], ownPID: own), .clear(number: 2, frame: moved))
     }
 
-    func testItStaysPutWhileItsHomeIsClear() {
-        // Top right was chosen earlier; the field moved to the middle, where bottom right is also
-        // clear. No jump back.
-        let field = CGRect(x: 500, y: 400, width: 300, height: 22)
-        let c = PerchPlacement.choose(visible: visible, size: size, field: field, caret: nil, current: .topRight)
-        XCTAssertEqual(c.home, .topRight)
+    func testAWindowNotOnScreenIsNotFound() {
+        XCTAssertEqual(Rim.seen(pid: 5, number: nil, frame: tracker, windows: [window(2, 5, tracker.offsetBy(dx: 40, dy: 0))], ownPID: own), .notFound)
+        XCTAssertEqual(Rim.seen(pid: 5, number: 9, frame: nil, windows: [window(2, 5, tracker)], ownPID: own), .notFound)
+        // A window behind the target does not cover it.
+        let windows = [window(2, 5, tracker), window(1, 7, tracker)]
+        XCTAssertTrue(Rim.seen(pid: 5, number: nil, frame: tracker, windows: windows, ownPID: own).isClear)
     }
 
-    func testAFieldCoveringTheScreenStillLeavesTheCaretClear() {
-        let field = visible
-        let caret = CGRect(x: 1380, y: 840, width: 1, height: 17)
-        let c = PerchPlacement.choose(visible: visible, size: size, field: field, caret: caret, current: .bottomRight)
-        XCTAssertNotEqual(c.home, .bottomRight)
-        XCTAssertTrue(c.overlapsField)
-        XCTAssertFalse(c.overlapsCaret)
+    /// DIRECTION.md 5.7's geometry: the ring's panel is the window plus the bloom; the figure's right
+    /// edge 18 in from the window's, its top 13 above; the caption 12 in, its bottom 15 below.
+    func testThePartsSitWhereTheSpecPutsThem() {
+        let visible = CGRect(x: 0, y: 25, width: 1440, height: 850)
+        let l = Rim.layout(window: tracker, perchHeight: 20, visible: visible)
+        XCTAssertEqual(l.ring, tracker.insetBy(dx: -16, dy: -16))
+        XCTAssertEqual(l.perch, CGRect(x: tracker.maxX - 18 - 22, y: tracker.minY - 13, width: 22, height: 20))
+        XCTAssertEqual(l.caption, CGPoint(x: tracker.minX + 12, y: tracker.maxY + 15 - 26))
     }
 
-    func testTheCaretNearEveryCornerSendsItToTheFarthest() {
-        // A tiny visible frame: every home is within clearance of the caret.
-        let tiny = CGRect(x: 0, y: 0, width: 120, height: 100)
-        let caret = CGRect(x: 40, y: 40, width: 1, height: 16)
-        let c = PerchPlacement.choose(visible: tiny, size: size, field: nil, caret: caret, current: .topLeft)
-        XCTAssertEqual(c.home, .bottomRight)
-        XCTAssertTrue(c.overlapsCaret)
+    /// A window right under the menu bar keeps its figure on the screen, on the window's edge, and
+    /// one at the bottom of the screen keeps its caption on it.
+    func testAtTheScreensEdgesThePartsStayOnIt() {
+        let visible = CGRect(x: 0, y: 25, width: 1440, height: 850)
+        let top = CGRect(x: 100, y: 25, width: 600, height: 400)
+        XCTAssertGreaterThanOrEqual(Rim.layout(window: top, perchHeight: 20, visible: visible).perch.minY, visible.minY)
+        let bottom = CGRect(x: 100, y: 475, width: 600, height: 400)
+        let caption = Rim.layout(window: bottom, perchHeight: 20, visible: visible).caption
+        XCTAssertLessThanOrEqual(caption.y + Rim.captionHeight, visible.maxY)
+    }
+
+    func testTheCaptionsStepComesFromTheRowsProgress() {
+        XCTAssertEqual(Rim.stepCount("Step 2 of 3"), "2 of 3")
+        XCTAssertEqual(Rim.stepCount("Stopped before step 3 of 6"), "3 of 6")
+        XCTAssertNil(Rim.stepCount("Watching"))
+        XCTAssertNil(Rim.stepCount(nil))
     }
 }
 

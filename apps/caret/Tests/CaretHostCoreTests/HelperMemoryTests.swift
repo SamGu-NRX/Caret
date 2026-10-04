@@ -126,7 +126,7 @@ final class HelperMemoryTests: XCTestCase {
         // A kind this host does not know is kept and shown as something Caret noticed (A15); a known
         // kind whose fields it cannot read is still counted, never guessed at.
         XCTAssertEqual(reply.entries.map(\.id), ["h-1", "a-1"])
-        XCTAssertEqual(reply.entries.first?.fields, .noticed(kind: "habit"))
+        XCTAssertEqual(reply.entries.first?.fields, .unrecognized(kind: "habit"))
         XCTAssertEqual(reply.unreadable.count, 1)
     }
 

@@ -497,16 +497,15 @@ struct PanelPlacementScene: View {
 // MARK: - The perch and the activity list
 
 extension Gallery {
-    /// The perch in each mood, in a corner of a synthetic screen with the window it works in, so
-    /// the render shows the glance as `PerchGaze` computes it.
+    /// Working in another window (5.7): the rim, the perch and the caption on the window Caret
+    /// fills, as working and as needing you; the ring gone Graphite after a stop; and H3's fallback,
+    /// the same window covered by another, with nothing drawn on it and the glyph lit.
     static func perch(_ character: FigureCharacter = .pebble) -> [Item] {
         [
-            Item(name: "perch-working", view: AnyView(PerchScene(mood: .working, character: character))),
-            Item(name: "perch-waiting", view: AnyView(PerchScene(mood: .waiting, needsYou: 1, character: character))),
-            Item(name: "perch-needs-you", view: AnyView(PerchScene(mood: .needsYou, needsYou: 2, character: character))),
-            Item(name: "perch-done", view: AnyView(PerchScene(mood: .done, character: character))),
-            Item(name: "perch-error", view: AnyView(PerchScene(mood: .error, character: character))),
-            Item(name: "perch-working-above", view: AnyView(PerchScene(mood: .working, character: character, windowAbove: true))),
+            Item(name: "rim-working", view: AnyView(RimScene(mood: .working, character: character))),
+            Item(name: "rim-needs-you", view: AnyView(RimScene(mood: .needsYou, character: character))),
+            Item(name: "rim-stopped", view: AnyView(RimScene(mood: .error, stopped: true, character: character))),
+            Item(name: "rim-covered", view: AnyView(RimScene(mood: .working, covered: true, character: character))),
         ]
     }
 
@@ -542,74 +541,6 @@ extension Gallery {
             Item(name: "activity-list-taking-over", view: list(activityRows, mood: .needsYou, busy: ["run-3"])),
             Item(name: "activity-list-empty", view: list([], mood: nil)),
         ]
-    }
-}
-
-/// A corner of a synthetic screen: the window a task works in, and the perch in the corner's
-/// home, aimed by `PerchGaze` exactly as on screen. Off screen only; nothing here reads the screen.
-struct PerchScene: View {
-    var mood: Perch.Mood
-    var needsYou = 0
-    var character: FigureCharacter = .pebble
-    /// The window straight above the perch rather than up and to the left.
-    var windowAbove = false
-    @Environment(\.colorScheme) private var scheme
-
-    static let size = CGSize(width: 300, height: 190)
-
-    var body: some View {
-        let visible = CGRect(origin: .zero, size: Self.size)
-        let perch = PerchPlacement.frame(.bottomRight, size: PerchModel.size, in: visible)
-        let window = windowAbove ? CGRect(x: 170, y: 14, width: 120, height: 84) : CGRect(x: 16, y: 16, width: 168, height: 104)
-        let model = PerchModel()
-        model.presented = true
-        model.animated = false
-        model.mood = mood
-        model.needsYou = needsYou
-        model.character = character
-        switch mood {
-        case .done, .error: model.gaze = .zero
-        default: model.gaze = PerchGaze.toward(window, from: CGPoint(x: perch.midX, y: perch.midY))
-        }
-        let dark = scheme == .dark
-        return ZStack(alignment: .topLeading) {
-            Rectangle().fill(Color(nsColor: Tokens.srgb(dark ? 0x26282C : 0xD9DCE1)))
-            SceneWindow(title: "Upload", dark: dark)
-                .frame(width: window.width, height: window.height)
-                .offset(x: window.minX, y: window.minY)
-            PerchView(model: model)
-                .offset(x: perch.minX, y: perch.minY)
-        }
-        .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    /// A window, roughly: title bar with three dots and a title, an empty body.
-    struct SceneWindow: View {
-        var title: String
-        var dark: Bool
-
-        var body: some View {
-            VStack(spacing: 0) {
-                HStack(spacing: 5) {
-                    ForEach(0..<3, id: \.self) { _ in Circle().fill(Color(token: Tokens.secondary).opacity(0.35)).frame(width: 7, height: 7) }
-                    Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(token: Tokens.secondary)).padding(.leading, 6)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 20)
-                Rectangle().fill(Color(token: Tokens.border)).frame(height: 1)
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach([0.8, 0.55, 0.65], id: \.self) { w in
-                        RoundedRectangle(cornerRadius: 2).fill(Color(token: Tokens.secondary).opacity(0.18)).frame(height: 5).frame(maxWidth: .infinity, alignment: .leading).scaleEffect(x: w, y: 1, anchor: .leading)
-                    }
-                }
-                .padding(10)
-                Spacer(minLength: 0)
-            }
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: Tokens.srgb(dark ? 0x2E2F33 : 0xFBFBFC))))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color(token: Tokens.border), lineWidth: 1))
-        }
     }
 }
 
@@ -667,7 +598,8 @@ extension Gallery {
 
     static func memory(_ character: FigureCharacter = .pebble) -> [Item] {
         func window(_ state: MemoryBook.State, _ tab: MemoryView.Tab = .memory, pointerOn row: String? = nil) -> AnyView {
-            AnyView(MemoryView(state: state, tab: tab, character: character, animated: false, now: memoryNow, revealedRow: row)
+            // Offline, the files are not listed either: a window that can't reach the helper offers no Edit.
+            AnyView(MemoryView(state: state, files: state.connected ? memoryFiles() : MemoryFiles.State(), tab: tab, character: character, animated: false, now: memoryNow, revealedRow: row)
                 .environment(\.timeZone, TimeZone(identifier: "America/Chicago")!)
                 .environment(\.locale, Locale(identifier: "en_US")))
         }
@@ -689,6 +621,84 @@ extension Gallery {
             Item(name: "memory-empty", view: window(memoryState(entries: []))),
             Item(name: "memory-permissions", view: window(memoryState(), .permissions)),
             Item(name: "memory-permissions-refused", view: window(memoryState { $0.setRule(.outbound, .act) }, .permissions)),
+        ]
+    }
+
+    // MARK: M1, markdown memory
+
+    /// Two facts Caret noticed itself, beside the gallery's entries: an About value seen in Mail on
+    /// Tuesday and a person seen in Messages yesterday.
+    static func noticedEntries() -> [HelperMemory.Entry] {
+        let now = Int64(memoryNow.timeIntervalSince1970 * 1000)
+        let day: Int64 = 86_400_000
+        var entries = memoryEntries()
+        entries.insert(.init(id: "about-2", status: .noticed, says: "Office: 4th floor, Northline (noticed)", evidence: .init(count: 1, lastSeen: now - 6 * day, app: "Mail Fixture"),
+                             fields: .about(.init(label: "Office", value: "4th floor, Northline", source: .edit)),
+                             noticed: .init(app: "Mail Fixture", windowTitle: "Re: dinner on Friday", at: now - 6 * day)), at: 1)
+        entries.insert(.init(id: "people-2", status: .noticed, says: "\"Sam\" usually means Sam Okafor (noticed)", evidence: .init(count: 1, lastSeen: now - day, app: "Messages Fixture"),
+                             fields: .people(.init(alias: "Sam", name: "Sam Okafor")),
+                             noticed: .init(app: "Messages Fixture", windowTitle: nil, at: now - day)), at: 3)
+        return entries
+    }
+
+    /// The memory folder in renders: an example home, never a real one.
+    static let memoryFolder = "/Users/example/Library/Application Support/Caret/Memory"
+
+    static func memoryDocument(_ doc: String, revision: String?, bytes: Int = 0, problems: [MemoryDiagnostic] = []) -> MemoryDocument {
+        MemoryDocument(doc: doc, file: "\(doc).md", path: "\(memoryFolder)/\(doc).md", revision: revision, bytes: bytes, diagnostics: problems)
+    }
+
+    static let aboutText = "# About me\n\n## Guest <!-- caret:id=about-1 kind=about -->\n- Label: Guest\n- Value: Marcus Lowe (ops)\n- Source: edit\n- Status: active\n\n## Office <!-- caret:id=about-2 kind=about -->\n- Label: Office\n- Value: 4th floor, Northline\n- Status: noticed\n- Noticed: Mail Fixture, Re: dinner on Friday\n"
+
+    /// The files as the window last listed them, reached by the calls the window makes.
+    static func memoryFiles(problems: [MemoryDiagnostic] = [], _ setup: (MemoryFiles, () -> String) -> Void = { _, _ in }) -> MemoryFiles.State {
+        let files = MemoryFiles(clock: StillClock())
+        var asked: [MemoryDocumentRequest] = []
+        files.send = { asked.append($0); return true }
+        files.linkChanged(true)
+        files.receive(MemoryDocumentReply(requestId: asked.last!.requestId, error: nil, conflict: nil, folder: memoryFolder, documents: [
+            memoryDocument("about-me", revision: "sha256:aa01", bytes: 612, problems: problems),
+            memoryDocument("people", revision: "sha256:bb02", bytes: 140),
+            memoryDocument("preferences", revision: nil),
+        ], text: nil))
+        setup(files) { asked.last!.requestId }
+        return files.state
+    }
+
+    /// The about file open in Caret's editor, with a line typed.
+    static func memoryFileOpen(conflict: Bool) -> MemoryFiles.State {
+        memoryFiles { files, last in
+            files.open("about-me")
+            files.receive(MemoryDocumentReply(requestId: last(), error: nil, conflict: nil, folder: memoryFolder,
+                                              documents: [memoryDocument("about-me", revision: "sha256:aa01", bytes: 612)], text: aboutText))
+            files.updateText(aboutText.replacingOccurrences(of: "Marcus Lowe (ops)", with: "Marcus Lowe, Ops lead"))
+            guard conflict else { return }
+            files.save()
+            files.receive(MemoryDocumentReply(requestId: last(), error: "about-me.md changed outside Caret while it saved; keeping that version",
+                                              conflict: .some("sha256:aa02"), folder: memoryFolder,
+                                              documents: [memoryDocument("about-me", revision: "sha256:aa02", bytes: 640)], text: nil))
+        }
+    }
+
+    static func knows(_ character: FigureCharacter = .pebble) -> [Item] {
+        func window(_ state: MemoryBook.State, _ files: MemoryFiles.State) -> AnyView {
+            AnyView(MemoryView(state: state, files: files, tab: .memory, character: character, animated: false, now: memoryNow, editorApp: "TextEdit")
+                .environment(\.timeZone, TimeZone(identifier: "America/Chicago")!)
+                .environment(\.locale, Locale(identifier: "en_US")))
+        }
+        let noticed = noticedEntries()
+        return [
+            Item(name: "knows-noticed", view: window(memoryState(entries: noticed), memoryFiles())),
+            Item(name: "knows-not-right", view: window(memoryState({ book in
+                book.beginNotRight("about-2")
+                book.updateCorrection("5th floor, Northline")
+            }, entries: noticed), memoryFiles())),
+            Item(name: "knows-file-open", view: window(memoryState(entries: noticed), memoryFileOpen(conflict: false))),
+            Item(name: "knows-file-conflict", view: window(memoryState(entries: noticed), memoryFileOpen(conflict: true))),
+            Item(name: "knows-file-problem", view: window(memoryState(entries: noticed), memoryFiles(problems: [
+                MemoryDiagnostic(line: 14, field: "On its own", severity: .warning, message: "not a field Caret reads in an about record; it changes nothing"),
+                MemoryDiagnostic(line: 9, field: "Value", severity: .error, message: "a value can't be empty"),
+            ]))),
         ]
     }
 }

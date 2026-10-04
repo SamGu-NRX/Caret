@@ -9,11 +9,19 @@ import Foundation
 /// plain words: the title says what Caret remembers, the secondary line says where it came from
 /// and how sure Caret is. The helper's own sentence (`says`) is left to the debug state.
 public enum MemoryPage {
-    public enum Control: String, Codable, Sendable { case edit, pause, resume, forget, backOnTab, onItsOwn }
+    public enum Control: String, Codable, Sendable {
+        case edit, pause, resume, forget, backOnTab, onItsOwn
+        /// M1, on a noticed fact: make it the user's own (`MemoryBook.keepNoticed`).
+        case keep
+        /// M1, on a noticed fact: forget it, or type what is right (`MemoryBook.beginNotRight`).
+        case notRight
+    }
 
     public struct Row: Equatable, Sendable, Identifiable {
         public enum Status: Equatable, Sendable {
             case active, learning, paused
+            /// M1: Caret saw this itself; the row says where (`noticedLine`) and offers Keep and Not right.
+            case noticed
             /// Typed by hand and not kept by the helper yet.
             case notSaved
             /// Typed by hand and refused by the helper.
@@ -35,6 +43,8 @@ public enum MemoryPage {
         public var typed: Bool
         /// The helper's offer to let this skill run on its own, asked for from the row.
         public var question: MemoryBook.OnItsOwnQuestion? = nil
+        /// "Noticed in Mail, Tue": where and when Caret saw a noticed fact.
+        public var noticedLine: String? = nil
     }
 
     public struct Section: Equatable, Sendable, Identifiable {
@@ -69,8 +79,8 @@ public enum MemoryPage {
         public var problem: String?
     }
 
-    /// The sections in order. `noticed` is listed only when it has rows.
-    public static let kinds: [HelperMemory.Kind] = [.about, .people, .preference, .routine, .skill, .noticed]
+    /// The sections in order. `unrecognized` is listed only when it has rows.
+    public static let kinds: [HelperMemory.Kind] = [.about, .people, .preference, .routine, .skill, .unrecognized]
 
     public static func title(_ kind: HelperMemory.Kind) -> String {
         switch kind {
@@ -80,7 +90,7 @@ public enum MemoryPage {
         case .routine: return "Routines"
         case .permission: return "Permissions"
         case .skill: return "Skills"
-        case .noticed: return "Something Caret noticed"
+        case .unrecognized: return "Kept by a newer Caret"
         }
     }
 
@@ -91,7 +101,7 @@ public enum MemoryPage {
         case .preference: return "None yet. When you reformat what Caret filled, the format shows up here."
         case .routine: return "None yet. Steps you repeat between the same apps show up here as Caret learns them."
         case .skill: return "None yet. After Caret runs a routine for you, it asks whether to keep it as a skill."
-        case .permission, .noticed: return ""
+        case .permission, .unrecognized: return ""
         }
     }
 
@@ -101,7 +111,7 @@ public enum MemoryPage {
         kinds.compactMap { kind in
             var rows = s.entries.filter { $0.kind == kind }.map { row($0, s, now: now, calendar: calendar, locale: locale) }
             if kind == .about { rows += s.typed.map(typedRow) }
-            if kind == .noticed, rows.isEmpty { return nil }
+            if kind == .unrecognized, rows.isEmpty { return nil }
             return Section(kind: kind, title: title(kind), empty: emptyLine(kind), rows: rows)
         }
     }
@@ -112,13 +122,26 @@ public enum MemoryPage {
         case .active: status = .active
         case .learning: status = .learning
         case .paused: status = .paused
+        case .noticed: status = .noticed
         }
         var controls: [Control] = []
+        if e.status == .noticed {
+            // Caret saw it and uses it; the user's two answers are to make it theirs or to say it's
+            // wrong (which forgets it or replaces it). Edit and Pause wait until it is theirs.
+            if !MemoryBook.editable(e).isEmpty { controls.append(.keep) }
+            controls.append(.notRight)
+            let words = wording(e, entries: s.entries, now: now, calendar: calendar, locale: locale)
+            return Row(
+                id: e.id, kind: e.kind, title: words.title, secondary: "", status: status, controls: controls,
+                busy: s.busy[e.id] != nil || !s.connected || !s.loaded, problem: s.problems[e.id], typed: false,
+                noticedLine: e.noticed.map { noticedLine($0, now: now, calendar: calendar, locale: locale) } ?? "Noticed by Caret"
+            )
+        }
         if !MemoryBook.editable(e).isEmpty { controls.append(.edit) }
         if e.skill?.onItsOwn == true, e.status != .paused { controls.append(.backOnTab) }
         if mayAskOnItsOwn(e, s) { controls.append(.onItsOwn) }
         // Something this host cannot name: it shows the helper's sentence and can only be forgotten.
-        if e.kind != .noticed { controls.append(e.status == .paused ? .resume : .pause) }
+        if e.kind != .unrecognized { controls.append(e.status == .paused ? .resume : .pause) }
         controls.append(.forget)
         let words = wording(e, entries: s.entries, now: now, calendar: calendar, locale: locale)
         return Row(
@@ -200,7 +223,7 @@ public enum MemoryPage {
             let state: String
             switch e.status {
             case .learning: state = "still learning"
-            case .active: state = "learned"
+            case .active, .noticed: state = "learned"
             case .paused: state = "paused"
             }
             let tries = r.silent.hits + r.silent.misses
@@ -216,7 +239,7 @@ public enum MemoryPage {
             return (actionTitle(p.action), ruleTitle(p.rule))
         case .skill(let f):
             return (f.name, joined([skillState(f, paused: e.status == .paused), "when \(f.trigger)", "ran \(times(f.runs))"]))
-        case .noticed:
+        case .unrecognized:
             return (e.says, joined([paused, seen, e.evidence.app]))
         }
     }
@@ -304,10 +327,31 @@ public enum MemoryPage {
         return day.string(from: date)
     }
 
+    /// "Noticed in Mail, Tue": the app when the helper knows it, then the day. Today and yesterday by
+    /// name, the last week by weekday, earlier by date. The window title stays out of the row; it can
+    /// name a person or a subject the user did not ask to see here.
+    public static func noticedLine(_ n: HelperMemory.Noticed, now: Date, calendar: Calendar, locale: Locale) -> String {
+        let date = Date(timeIntervalSince1970: Double(n.at) / 1000)
+        let day: String
+        let f = DateFormatter()
+        f.locale = locale
+        f.timeZone = calendar.timeZone
+        if calendar.isDate(date, inSameDayAs: now) { day = "today" }
+        else if let y = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: y) { day = "yesterday" }
+        else if let week = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)), date >= week, date <= now {
+            day = f.shortWeekdaySymbols[calendar.component(.weekday, from: date) - 1]
+        } else {
+            f.setLocalizedDateFormatFromTemplate("MMMd")
+            day = f.string(from: date)
+        }
+        return n.app.map { "Noticed in \($0), \(day)" } ?? "Noticed \(day)"
+    }
+
     /// Plain words for a row's status; nil for active, which needs none.
     public static func statusText(_ s: Row.Status) -> String? {
         switch s {
         case .active: return nil
+        case .noticed: return "Noticed"
         case .learning: return "Learning"
         case .paused: return "Paused"
         case .notSaved: return "Not saved yet"
@@ -323,6 +367,8 @@ public enum MemoryPage {
         case .forget: return "Forget"
         case .backOnTab: return "Put back on Tab"
         case .onItsOwn: return "Let it run on its own\u{2026}"
+        case .keep: return "Keep"
+        case .notRight: return "Not right"
         }
     }
 

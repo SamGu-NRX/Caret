@@ -49,21 +49,21 @@ final class MemorySkillTests: XCTestCase {
     func testAKindThisHostDoesNotKnowIsKeptAndShownAsSomethingCaretNoticed() throws {
         let r = try reply([
             entry("habit", id: "h-1", says: "You archive receipts on Fridays", fields: "{}"),
-            entry("noticed", id: "h-2", says: "A kind named like the host's own label", fields: #"{"x":1}"#),
+            entry("unrecognized", id: "h-2", says: "A kind named like the host's own label", fields: #"{"x":1}"#),
             entry("preference", id: "p-1", fields: #"{"rule":"shout"}"#),
         ])
         XCTAssertEqual(r.entries.map(\.id), ["h-1", "h-2"])
-        XCTAssertEqual(r.entries.first?.fields, .noticed(kind: "habit"))
+        XCTAssertEqual(r.entries.first?.fields, .unrecognized(kind: "habit"))
         XCTAssertEqual(r.unreadable.count, 1, "a known kind with fields this host cannot read is still counted, not guessed")
         var state = MemoryBook.State()
         state.entries = r.entries
         state.connected = true
         state.loaded = true
-        let section = try XCTUnwrap(MemoryPage.sections(state, now: Date()).first { $0.kind == .noticed })
-        XCTAssertEqual(section.title, "Something Caret noticed")
+        let section = try XCTUnwrap(MemoryPage.sections(state, now: Date()).first { $0.kind == .unrecognized })
+        XCTAssertEqual(section.title, "Kept by a newer Caret")
         XCTAssertEqual(section.rows.map(\.title), ["You archive receipts on Fridays", "A kind named like the host's own label"])
         XCTAssertEqual(section.rows.first?.controls, [.forget], "it can be forgotten; nothing else is guessed at")
-        XCTAssertNil(MemoryPage.sections(MemoryBook.State(), now: Date()).first { $0.kind == .noticed }, "no section while there is nothing")
+        XCTAssertNil(MemoryPage.sections(MemoryBook.State(), now: Date()).first { $0.kind == .unrecognized }, "no section while there is nothing")
     }
 
     func testASkillWhoseStatusContradictsItsFieldsIsUnreadable() throws {

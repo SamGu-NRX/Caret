@@ -102,7 +102,7 @@ public struct ActivityRow: Equatable, Sendable, Codable, Identifiable {
         public var title: String {
             switch self {
             case .needsYou: return "Needs you"
-            case .inProgress: return "In progress"
+            case .inProgress: return "Now"
             case .done: return "Done today"
             }
         }

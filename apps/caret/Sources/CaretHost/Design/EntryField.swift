@@ -97,17 +97,21 @@ struct EntryField: View {
 }
 
 /// A scroll view on screen; off screen, the same content laid out from the top and clipped to the
-/// frame, since ImageRenderer cannot draw a scroll view.
+/// space the column is given, since ImageRenderer cannot draw a scroll view. Like the scroll view,
+/// the stand-in takes the height offered and never asks for more: a `GeometryReader` does that, where
+/// a fixed-size stack inside a flexible frame still pushed what came after it out of the window.
 struct ScrollingColumn<Content: View>: View {
     @ViewBuilder var content: Content
     @Environment(\.rendersOffscreen) private var offscreen
 
     var body: some View {
         if offscreen {
-            VStack(spacing: 0) { content }
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .clipped()
+            GeometryReader { _ in
+                VStack(spacing: 0) { content }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .top)
+            }
+            .clipped()
         } else {
             ScrollView(.vertical) { content }
                 .scrollIndicators(.automatic)

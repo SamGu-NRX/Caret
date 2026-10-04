@@ -62,7 +62,7 @@ extension Gallery {
             skill("skill-2", "Shipping address into Orders", onItsOwn: false, clean: 4, runs: 4, status: .learning),
             skill("skill-3", "Reply to the carrier in Mail", onItsOwn: false, clean: 6, runs: 6, handsOff: #"{"label":"Send","why":"outbound"}"#, status: .learning),
             .init(id: "noticed-1", status: .active, says: "You archive receipts from Mail on Fridays", evidence: .init(count: 3, lastSeen: 1_790_000_000_000, app: "Mail"),
-                  fields: .noticed(kind: "habit")),
+                  fields: .unrecognized(kind: "habit")),
         ]
         let permissions = memoryEntries().filter { $0.kind == .permission }.map { e -> HelperMemory.Entry in
             guard var p = e.permission, p.action == .writeElsewhere else { return e }
@@ -101,7 +101,8 @@ extension Gallery {
 }
 
 /// A skill's run with no Tab, as the user sees it: the Tracker window it fills, its line under the
-/// focused field, and the perch in the corner, working, its eyes on that window. Off screen only.
+/// focused field, and the rim and the perch on that window, eyes down at it. No caption at the
+/// window's corner: it is the window in front, and the line at the caret says it. Off screen only.
 struct SkillRunScene: View {
     var character: FigureCharacter = .pebble
     @Environment(\.colorScheme) private var scheme
@@ -111,20 +112,22 @@ struct SkillRunScene: View {
     var body: some View {
         let dark = scheme == .dark
         let visible = CGRect(origin: .zero, size: Self.size)
-        let perch = PerchPlacement.frame(.bottomRight, size: PerchModel.size, in: visible)
-        let window = CGRect(x: 16, y: 16, width: 500, height: 230)
+        let window = CGRect(x: 40, y: 40, width: 500, height: 230)
+        let layout = Rim.layout(window: window, perchHeight: PerchModel.figureHeight, visible: visible)
         let model = PerchModel()
         model.presented = true
         model.animated = false
         model.mood = .working
         model.character = character
-        model.gaze = PerchGaze.toward(window, from: CGPoint(x: perch.midX, y: perch.midY))
+        let rim = RimModel()
+        rim.shown = true
+        rim.animated = false
         return ZStack(alignment: .topLeading) {
             Rectangle().fill(Color(nsColor: Tokens.srgb(dark ? 0x26282C : 0xD9DCE1)))
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 5) {
-                    ForEach(0..<3, id: \.self) { _ in Circle().fill(Color(token: Tokens.secondary).opacity(0.35)).frame(width: 7, height: 7) }
-                    Text("Tracker").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(token: Tokens.secondary)).padding(.leading, 6)
+                    ForEach(0..<3, id: \.self) { _ in Circle().fill(Color(token: Tokens.ink2).opacity(0.35)).frame(width: 7, height: 7) }
+                    Text("Tracker").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color(token: Tokens.ink2)).padding(.leading, 6)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 8)
@@ -144,7 +147,11 @@ struct SkillRunScene: View {
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: Tokens.srgb(dark ? 0x2E2F33 : 0xFBFBFC))))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color(token: Tokens.border), lineWidth: 1))
             .offset(x: window.minX, y: window.minY)
-            PerchView(model: model).offset(x: perch.minX, y: perch.minY)
+            RimView(model: rim, radius: 8)
+                .frame(width: layout.ring.width, height: layout.ring.height)
+                .offset(x: layout.ring.minX, y: layout.ring.minY)
+            PerchView(model: model)
+                .offset(x: layout.perch.midX - PerchModel.size.width / 2, y: layout.perch.maxY - PerchModel.size.height)
         }
         .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -152,7 +159,7 @@ struct SkillRunScene: View {
 
     private func field(_ label: String, _ value: String, focused: Bool) -> some View {
         HStack(spacing: 10) {
-            Text(label).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.secondary)).frame(width: 60, alignment: .trailing)
+            Text(label).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink2)).frame(width: 60, alignment: .trailing)
             Text(value).font(.system(size: 12)).foregroundStyle(Color(token: Tokens.ink))
                 .frame(width: 230, height: 22, alignment: .leading).padding(.leading, 6)
                 .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: Tokens.srgb(scheme == .dark ? 0x1E1F22 : 0xFFFFFF))))

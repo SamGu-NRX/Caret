@@ -173,6 +173,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var firstLookReplies: UInt64 = 0
         /// `memoryReply` messages received.
         public var memoryReplies: UInt64 = 0
+        /// M1: where the noticed facts behind an offer or a plan came from.
+        public var provenances: UInt64 = 0
         /// `planRequest` lines written from the ask field, and `planProposal` answers received.
         public var planRequests: UInt64 = 0
         public var planProposals: UInt64 = 0
@@ -319,6 +321,12 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var working: Double?
         /// The offer key (and helper task id) of the accepted work.
         public var workingOn: String?
+        /// M1: where the shown offer's first noticed fact came from ("from what Caret noticed in Mail, Tue"),
+        /// and how many facts the helper named.
+        public var provenance: String?
+        public var provenanceFacts: Int?
+        /// The tab under the slip: `shown`, `correcting`, `sending`, or the answer's sentence.
+        public var notRight: String?
         /// The work was started by a skill with no Tab (B19).
         public var unprompted: Bool?
         /// Why a working or result line was last taken down by its watch.

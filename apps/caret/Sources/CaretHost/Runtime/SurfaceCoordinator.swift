@@ -86,6 +86,15 @@ final class SurfaceCoordinator {
     /// own toast can take itself down (they share the slot).
     var onToastChanged: (() -> Void)?
     private var character: FigureCharacter { FigureSettings.shared.character }
+    /// M1: the row under the slip naming where the offer's noticed fact came from, and its "Not
+    /// right", for the offer on screen (`NotRight.swift`).
+    private var notRight: (offerKey: String, memoryId: String, row: NotRightRow)?
+    private let notRightTarget = NotRightTarget()
+    /// The last panel drawn, so the row can redraw it in place when it changes.
+    private var lastShown: (content: PanelContent, text: String, placement: PanelPlacementRequest)?
+    /// Sends "Not right" for the fact behind an offer (`MemoryBook.notRight`): false when nothing
+    /// was sent; `answered` hears nil when the helper made the change.
+    var sendNotRight: (_ memoryId: String, _ offerKey: String, _ correction: String?, _ answered: @escaping (String?) -> Void) -> Bool = { _, _, _, _ in false }
 
     init(arbiter: OfferArbiter, status: HostStatus, policy: TargetPolicy, compatibilityStore: AppCompatibilityStore, headless: Bool = false) {
         self.status = status
@@ -98,6 +107,10 @@ final class SurfaceCoordinator {
         world.owner = self
         machine.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
         machine.sendToHelper = { [weak self] message in MainActor.assumeIsolated { self?.send(message) ?? false } }
+        notRightTarget.onClick = { [weak self] in self?.beginNotRight() }
+        panel.panel.interceptKey = { [weak self] event in
+            MainActor.assumeIsolated { self?.slipKey(event) ?? false }
+        }
         // A shown surface is rechecked as soon as another app activates, not only every half second.
         activation = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -109,6 +122,7 @@ final class SurfaceCoordinator {
     // MARK: - Events in, forwarded to the machine
 
     func receive(_ offer: HelperOffer) { machine.receive(offer) }
+    func provenance(_ p: MemoryProvenance) { machine.provenance(p) }
     func withdrawn(_ message: OfferWithdrawn) { machine.withdrawn(message) }
     func helperGone() { machine.helperGone() }
 
@@ -213,10 +227,15 @@ final class SurfaceCoordinator {
             // change of size comes from a key or a result and lands at once.
             let gainsQuestion = Self.question(content) && !shownQuestion
             shownQuestion = Self.question(content)
-            show(Self.view(content, character: character), narrows: Self.narrows(content), text: text, placement: placement, content: content, growing: gainsQuestion)
+            lastShown = (content, text, placement)
+            syncNotRight()
+            show(view(content), narrows: Self.narrows(content), text: text, placement: placement, content: content, growing: gainsQuestion)
+            placeNotRightTarget()
             announce(content)
         case .hidePanel(let exit):
+            endNotRight(keepRow: false)
             panel.exit(duration: exit)
+            lastShown = nil
             announced = nil
             announcedPopup = nil
             shownQuestion = false
@@ -397,13 +416,34 @@ final class SurfaceCoordinator {
     /// or beside the field. The panel scales in from the corner nearest the field. A redraw keeps
     /// the spot unless the panel grew onto something; a working or result line is redrawn where
     /// it stands.
-    /// How `content` is drawn, at an optional narrow width (pop-ups only).
-    static func view(_ content: PanelContent, character: FigureCharacter) -> (CGFloat?) -> AnyView {
+    /// How `content` is drawn, at an optional narrow width (pop-ups only). `under`: the row naming
+    /// where a noticed fact came from, inside the same glass (not on the compact line, which has
+    /// no room; its fact is still in What Caret knows).
+    static func view(_ content: PanelContent, character: FigureCharacter, under: ((CGFloat) -> AnyView)? = nil, interactive: Bool = false,
+                     onNotRight: (() -> Void)? = nil) -> (CGFloat?) -> AnyView {
         switch content {
-        case .line(let line): return { _ in AnyView(LineView(content: line, character: character)) }
+        case .line(let line):
+            return { _ in AnyView(LineView(content: line, character: character, under: under?(LineView.textIndent(compact: false)),
+                                           underInteractive: interactive, onNotRight: under == nil ? nil : onNotRight)) }
         case .compactLine(let line): return { _ in AnyView(LineView(content: line, character: character, compact: true)) }
-        case .popup(let spec, let highlight): return { width in AnyView(PopupView(spec: spec, highlight: highlight, character: character, width: width)) }
+        case .popup(let spec, let highlight):
+            return { width in AnyView(PopupView(spec: spec, highlight: highlight, character: character, width: width,
+                                                under: under?(12 + PopupView.indent), underInteractive: interactive, onNotRight: under == nil ? nil : onNotRight)) }
         }
+    }
+
+    /// `view(content)` with this offer's "Not right" row, when it has one.
+    private func view(_ content: PanelContent) -> (CGFloat?) -> AnyView {
+        guard let row = notRight?.row else { return Self.view(content, character: character) }
+        let under: (CGFloat) -> AnyView = { [weak self] indent in
+            AnyView(NotRightRowView(
+                row: row, indent: indent,
+                onEdit: { self?.editNotRight($0) }, onSave: { self?.sendNotRight(forget: false) },
+                onForget: { self?.sendNotRight(forget: true) }, onCancel: { self?.cancelNotRight() }
+            ))
+        }
+        let interactive = row.phase != .shown
+        return Self.view(content, character: character, under: under, interactive: interactive, onNotRight: { [weak self] in self?.beginNotRight() })
     }
 
     static func narrows(_ content: PanelContent) -> Bool {
@@ -420,7 +460,7 @@ final class SurfaceCoordinator {
     /// around the field that covers none of the app's own elements? The probe is the one the draw
     /// would make, and its answer is kept for that draw.
     fileprivate func panelIsClear(_ content: PanelContent, field: CGRect, caret: CGRect, pid: Int32) -> Bool {
-        let placed = place(Self.view(content, character: character), narrows: Self.narrows(content), field: field, caret: caret, pid: pid, counts: false, content: content)
+        let placed = place(view(content), narrows: Self.narrows(content), field: field, caret: caret, pid: pid, counts: false, content: content)
         fitted = (content, field, caret, pid, placed)
         return placed.choice.overlap == 0
     }
@@ -561,6 +601,136 @@ final class SurfaceCoordinator {
         ownGhost.panel.orderFrontRegardless()
     }
 
+    // MARK: - Not right (M1)
+
+    /// The row follows the offer on screen: a new offer, one with no noticed fact, or the compact
+    /// line (no room for it) ends it.
+    private func syncNotRight() {
+        let compact: Bool = { if case .compactLine? = lastShown?.content { return true } else { return false } }()
+        guard !compact, let p = machine.shownProvenance, let fact = p.facts.first else {
+            if notRight != nil { endNotRight(keepRow: false) }
+            return
+        }
+        keepOrStart(p, fact)
+    }
+
+    private func keepOrStart(_ p: MemoryProvenance, _ fact: MemoryProvenance.Fact) {
+        if notRight?.offerKey == p.offerKey, notRight?.memoryId == fact.memoryId { return }
+        if notRight != nil { endNotRight(keepRow: false) }
+        notRight = (p.offerKey, fact.memoryId, NotRightRow(says: fact.says, more: p.facts.count - 1, correctable: fact.correctable))
+    }
+
+    /// The click target sits over the row while it shows "Not right"; it goes once the row is a field.
+    private func placeNotRightTarget() {
+        guard let row = notRight?.row, row.phase == .shown, panel.isVisible, !headless else { return notRightTarget.hide() }
+        let content = panel.contentFrame(size: panel.size)
+        notRightTarget.show(over: NSRect(x: content.minX, y: content.minY, width: content.width, height: NotRightRow.rowHeight))
+    }
+
+    /// The click: the row becomes a field with Forget and Save, and the slip takes the keyboard
+    /// without bringing Caret forward (a non-activating panel). The offer stays: Tab in the app it
+    /// is about still takes it once the user goes back.
+    private func beginNotRight() {
+        guard var current = notRight, current.row.phase == .shown else { return }
+        current.row.phase = .correcting
+        notRight = current
+        status.increment("surface.notRight.opened")
+        redraw()
+        panel.panel.ignoresMouseEvents = false
+        panel.panel.keyable = true
+        panel.panel.makeKey()
+    }
+
+    private func editNotRight(_ text: String) {
+        guard notRight?.row.phase == .correcting else { return }
+        notRight?.row.text = text
+        notRight?.row.problem = nil
+        redraw()
+    }
+
+    private func sendNotRight(forget: Bool) {
+        guard let current = notRight, current.row.phase == .correcting else { return }
+        let text = current.row.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !forget, let problem = MemoryCheck.correctionProblem(text, correctable: current.row.correctable) {
+            notRight?.row.problem = problem
+            return redraw()
+        }
+        let key = current.offerKey
+        let sent = sendNotRight(current.memoryId, key, forget ? nil : text) { [weak self] problem in
+            self?.notRightAnswered(offerKey: key, forget: forget, problem: problem)
+        }
+        if sent {
+            notRight?.row.phase = .sending
+            status.increment(forget ? "surface.notRight.forget" : "surface.notRight.correct")
+        } else {
+            notRight?.row.problem = MemoryCheck.offline
+        }
+        redraw()
+    }
+
+    /// The helper's answer. It also withdraws every offer that used the fact, which takes this slip
+    /// down; until then the row says what happened, and VoiceOver hears it.
+    private func notRightAnswered(offerKey: String, forget: Bool, problem: String?) {
+        guard notRight?.offerKey == offerKey else { return }
+        if let problem {
+            notRight?.row.phase = .correcting
+            notRight?.row.problem = problem
+            return redraw()
+        }
+        let sentence = forget ? NotRightRow.forgotten : NotRightRow.corrected
+        notRight?.row.phase = .answered(sentence)
+        SlipAnnouncer.post(sentence)
+        giveKeysBack()
+        redraw()
+    }
+
+    private func cancelNotRight() {
+        guard notRight?.row.phase == .correcting else { return }
+        notRight?.row.phase = .shown
+        notRight?.row.problem = nil
+        giveKeysBack()
+        redraw()
+    }
+
+    /// Esc while the slip holds the keyboard puts the row back; Return is the field's.
+    private func slipKey(_ event: NSEvent) -> Bool {
+        guard notRight?.row.phase == .correcting, Int64(event.keyCode) == KeyStroke.escapeKeyCode,
+              event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
+        if let editor = panel.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
+        cancelNotRight()
+        return true
+    }
+
+    /// The slip goes back to click-through and gives up the keyboard: ordered out and in again in
+    /// one turn of the run loop, which hands key back to the app being typed in (it never stopped
+    /// being the active app).
+    private func giveKeysBack() {
+        panel.panel.ignoresMouseEvents = true
+        let wasKey = panel.panel.isKeyWindow
+        panel.panel.keyable = false
+        if wasKey, panel.isVisible {
+            panel.panel.orderOut(nil)
+            panel.panel.orderFrontRegardless()
+        }
+    }
+
+    private func endNotRight(keepRow: Bool) {
+        notRightTarget.hide()
+        guard notRight != nil else { return }
+        giveKeysBack()
+        if !keepRow { notRight = nil }
+    }
+
+    /// Draws the last panel again where it stands, with the row as it is now.
+    private func redraw() {
+        guard let last = lastShown else { return }
+        var placement = last.placement
+        if case .atField(let field, let caret, let pid, _) = placement { placement = .atField(field: field, caret: caret, pid: pid, entering: false) }
+        show(view(last.content), narrows: Self.narrows(last.content), text: last.text, placement: placement, content: last.content)
+        placeNotRightTarget()
+        publish()
+    }
+
     // MARK: - Debug state
 
     /// The machine's state plus what only the screen knows: the panels and the ghost text drawn.
@@ -578,6 +748,14 @@ final class SurfaceCoordinator {
         info.decor = decor.debugInfo()
         info.list = list.debugInfo()
         info.character = character.rawValue
+        if let row = notRight?.row {
+            switch row.phase {
+            case .shown: info.notRight = notRightTarget.isVisible ? "shown" : "shown-no-target"
+            case .correcting: info.notRight = "correcting"
+            case .sending: info.notRight = "sending"
+            case .answered(let sentence): info.notRight = sentence
+            }
+        }
         if !headless {
             info.lineText = panel.isVisible ? panel.text : nil
             info.reduceMotion = Motion.reduceMotion

@@ -262,6 +262,13 @@ struct LineView: View {
     /// Where the figure looks instead, when what the slip is about is not beside it: the fill
     /// slip's figure looks down at its field.
     var figureGaze: CGVector?
+    /// A row under the line inside the same glass: where an offer's noticed fact came from, with
+    /// "Not right" (`NotRightRowView`). It is placed with the slip, so it covers nothing either.
+    var under: AnyView? = nil
+    /// The row under it holds a field and buttons now: VoiceOver reaches them as the slip's children.
+    var underInteractive = false
+    /// VoiceOver's "Not right" on the slip, while the row offers it.
+    var onNotRight: (() -> Void)? = nil
 
     @Environment(\.voiceFace) private var face
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -289,6 +296,7 @@ struct LineView: View {
                         ? .opacity.combined(with: .offset(y: -4)).animation(Motion.curve(Motion.easeOut, Motion.Duration.growRow))
                         : .opacity.animation(.linear(duration: Motion.Duration.reduced)))
             }
+            if let under, !compact { under }
         }
         .frame(maxWidth: Tokens.Shape.slipMaxWidth, alignment: .leading)
         .fixedSize()
@@ -305,10 +313,16 @@ struct LineView: View {
         }
         .animation(moves ? Motion.curve(Motion.easeOut, Motion.Duration.grow) : fades ? fade : nil, value: content.question != nil)
         .panelChrome(radius: compact ? Tokens.Shape.compactRadius : Tokens.Shape.slipRadius)
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: underInteractive ? .contain : .ignore)
         .accessibilityLabel(SlipSpeech.label(content) + (content.question.map { " " + SlipSpeech.sentences([$0.text, $0.detail ?? ""]) } ?? ""))
         .accessibilityValue(SlipSpeech.value(content) ?? "")
         .accessibilityAddTraits(.updatesFrequently)
+        .modifier(OptionalAction(name: "Not right", action: onNotRight))
+    }
+
+    /// Where the words start: the row under the line aligns to it.
+    static func textIndent(compact: Bool) -> CGFloat {
+        Tokens.Shape.slipLeading + (compact ? Tokens.FigureSize.compact : Tokens.FigureSize.line) + Tokens.Shape.gap
     }
 
     private var rowHeight: CGFloat { compact ? Tokens.Shape.compactHeight : Tokens.Shape.slipHeight }
@@ -471,5 +485,15 @@ struct QuestionRow: View {
                 }
             }
         }
+    }
+}
+
+/// A named VoiceOver action when there is one to take.
+struct OptionalAction: ViewModifier {
+    var name: String
+    var action: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if let action { content.accessibilityAction(named: Text(name), action) } else { content }
     }
 }

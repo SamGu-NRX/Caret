@@ -17,7 +17,24 @@ public final class MemoryBook {
     /// activity list's control timeout.
     public static let answerTimeout: TimeInterval = 3
 
-    public enum Op: String, Codable, Sendable { case list, edit, rule, pause, resume, forget, add, backOnTab, onItsOwn }
+    public enum Op: String, Codable, Sendable {
+        case list, edit, rule, pause, resume, forget, add, backOnTab, onItsOwn
+        /// M1: "Not right" about a noticed fact (`memoryNotRight`), from its row or from an offer.
+        case notRight
+        /// M1: "Keep" on a noticed fact: an edit that sends its values unchanged, which the helper
+        /// takes as the user's own word (memory.ts `edit`: "no longer something Caret only noticed").
+        case keep
+    }
+
+    /// "Not right" open on a noticed row: what the user is typing instead, or nothing to type when the
+    /// fact is a preference, which can only be forgotten.
+    public struct Correction: Equatable, Sendable {
+        public var entryId: String
+        public var text = ""
+        public var correctable: Bool
+        public var sending = false
+        public var problem: String?
+    }
 
     /// The helper's offer to let a skill run on its own, asked for from the skill's row ("Let it run
     /// on its own…", B22): shown on that row until the user answers it or the helper takes it back.
@@ -95,6 +112,8 @@ public final class MemoryBook {
         public var offersOnItsOwn = false
         /// Open offers to let a skill run on its own, by the skill's entry id.
         public var questions: [String: OnItsOwnQuestion] = [:]
+        /// The noticed row whose "Not right" is open.
+        public var correcting: Correction?
 
         public init() {}
     }
@@ -104,6 +123,8 @@ public final class MemoryBook {
         var entryId: String?
         var typedId: String?
         var timer: SurfaceTimer
+        /// An offer's "Not right" is told how it went: nil when the helper made the change, else why not.
+        var answered: ((String?) -> Void)? = nil
     }
 
     public private(set) var state = State()
@@ -124,6 +145,8 @@ public final class MemoryBook {
     private var asked: [String: String] = [:]
     /// Writes the user's answer to an offer; false when it is not connected.
     public var sendAnswer: (SkillAnswer) -> Bool = { _ in false }
+    /// Writes a "Not right"; false when it is not connected.
+    public var sendNotRight: (MemoryNotRight) -> Bool = { _ in false }
     private var requests = 0
     private var typedCount = 0
     /// The last requests sent, "op:id", for the debug state.
@@ -144,7 +167,11 @@ public final class MemoryBook {
         } else {
             // The helper's answers to anything in flight are gone with the connection. What it
             // listed stays on screen, read only, until the next list.
-            for p in pending.values { p.timer.cancel() }
+            for p in pending.values {
+                p.timer.cancel()
+                p.answered?(MemoryCheck.offline)
+            }
+            state.correcting?.sending = false
             pending.removeAll()
             state.busy.removeAll()
             state.loaded = false
@@ -188,7 +215,24 @@ public final class MemoryBook {
             state.questions = state.questions.filter { ids.contains($0.key) }
             if let e = state.editor, !ids.contains(e.entryId) { state.editor = nil }
             if let f = state.confirmingForget, !ids.contains(f) { state.confirmingForget = nil }
-        case .edit, .rule, .pause, .resume, .backOnTab:
+            // A noticed fact confirmed or forgotten elsewhere (an offer taken, the file edited) has nothing left to correct.
+            if let c = state.correcting, !c.sending, reply.entries.first(where: { $0.id == c.entryId })?.status != .noticed { state.correcting = nil }
+        case .notRight:
+            guard let id = p.entryId else { break }
+            // Every offer that used the fact is stale now; the helper withdraws them, and a fill held
+            // here must not offer the old value either.
+            onEntryChanged(id)
+            if let entry = reply.entries.first(where: { $0.id == id }), let i = state.entries.firstIndex(where: { $0.id == id }) {
+                state.entries[i] = entry
+                state.changed = id
+            } else if reply.entries.isEmpty {
+                state.entries.removeAll { $0.id == id }
+            }
+            state.problems[id] = nil
+            if state.correcting?.entryId == id { state.correcting = nil }
+            p.answered?(nil)
+            requestList()
+        case .edit, .rule, .pause, .resume, .backOnTab, .keep:
             guard let id = p.entryId else { break }
             if p.op == .edit || p.op == .pause { onEntryChanged(id) }
             if let entry = reply.entries.first(where: { $0.id == id }), let i = state.entries.firstIndex(where: { $0.id == id }) {
@@ -235,7 +279,15 @@ public final class MemoryBook {
             asked = asked.filter { $0.value != p.entryId }
             guard let id = p.entryId else { return }
             state.problems[id] = MemoryCheck.sentence(error)
-        case .edit, .rule, .pause, .resume, .forget:
+        case .notRight:
+            p.answered?(MemoryCheck.sentence(error))
+            guard let id = p.entryId else { return }
+            state.problems[id] = MemoryCheck.sentence(error)
+            if state.correcting?.entryId == id {
+                state.correcting?.problem = MemoryCheck.sentence(error)
+                state.correcting?.sending = false
+            }
+        case .edit, .rule, .pause, .resume, .forget, .keep:
             guard let id = p.entryId else { return }
             state.problems[id] = error
             if state.editor?.entryId == id {
@@ -255,9 +307,14 @@ public final class MemoryBook {
             // Today's helper refuses `add` without naming the request, so silence is the usual
             // answer: the value waits for the next connection.
             if let i = state.typed.firstIndex(where: { $0.id == p.typedId }) { state.typed[i].phase = .waiting }
-        case .edit, .rule, .pause, .resume, .forget, .backOnTab, .onItsOwn:
+        case .edit, .rule, .pause, .resume, .forget, .backOnTab, .onItsOwn, .notRight, .keep:
+            p.answered?(message)
             guard let id = p.entryId else { break }
             state.busy[id] = nil
+            if state.correcting?.entryId == id {
+                state.correcting?.problem = message
+                state.correcting?.sending = false
+            }
             // An offer that came without its reply still stands; one that never came is not waited for.
             if p.op == .onItsOwn, state.questions[id] != nil { break }
             if p.op == .onItsOwn { asked = asked.filter { $0.value != id } }
@@ -286,12 +343,16 @@ public final class MemoryBook {
     /// False when the request could not be written.
     @discardableResult
     private func post(_ request: HelperMemory.Request, op: Op, entryId: String? = nil, typedId: String? = nil) -> Bool {
-        guard state.connected, send(request) else { return false }
+        track(request.requestId, op: op, entryId: entryId, typedId: typedId) { send(request) }
+    }
+
+    /// Writes one request with `write` and waits for its reply under `requestId`.
+    private func track(_ requestId: String, op: Op, entryId: String? = nil, typedId: String? = nil, answered: ((String?) -> Void)? = nil, write: () -> Bool) -> Bool {
+        guard state.connected, write() else { return false }
         sentLog.append([op.rawValue, entryId ?? typedId].compactMap { $0 }.joined(separator: ":"))
         if sentLog.count > 30 { sentLog.removeFirst(sentLog.count - 30) }
-        let id = request.requestId
-        let timer = clock.schedule(after: Self.answerTimeout, repeats: false) { [weak self] in self?.timedOut(id) }
-        pending[id] = Pending(op: op, entryId: entryId, typedId: typedId, timer: timer)
+        let timer = clock.schedule(after: Self.answerTimeout, repeats: false) { [weak self] in self?.timedOut(requestId) }
+        pending[requestId] = Pending(op: op, entryId: entryId, typedId: typedId, timer: timer, answered: answered)
         if let entryId { state.busy[entryId] = op }
         return true
     }
@@ -321,7 +382,7 @@ public final class MemoryBook {
     public func resume(_ id: String) -> Bool { setPaused(id, false) }
 
     private func setPaused(_ id: String, _ paused: Bool) -> Bool {
-        guard let e = ready(id), e.kind != .permission, e.kind != .noticed, (e.status == .paused) != paused else { return false }
+        guard let e = ready(id), e.kind != .permission, e.kind != .unrecognized, (e.status == .paused) != paused else { return false }
         let op: Op = paused ? .pause : .resume
         state.problems[id] = nil
         let sent = post(HelperMemory.Request(requestId: nextId(), op: paused ? .pause : .resume, id: id), op: op, entryId: id)
@@ -367,7 +428,7 @@ public final class MemoryBook {
         case .preference: return []
         case .routine(let f): return [d("name", "Name", f.name ?? "")]
         case .skill(let f): return [d("name", "Name", f.name)]
-        case .permission, .noticed: return []
+        case .permission, .unrecognized: return []
         }
     }
 
@@ -428,6 +489,88 @@ public final class MemoryBook {
             state.editor?.problem = MemoryCheck.offline
         }
         return sent
+    }
+
+    // MARK: - Noticed facts (M1)
+
+    /// "Not right" on a noticed row: opens a field for what is right (an About value or a person's
+    /// name), or just Forget for a preference, which the helper can only forget.
+    public func beginNotRight(_ id: String) {
+        guard let e = ready(id), e.status == .noticed else { return }
+        state.editor = nil
+        state.confirmingForget = nil
+        state.correcting = Correction(entryId: id, correctable: e.kind != .preference)
+        changed()
+    }
+
+    public func updateCorrection(_ text: String) {
+        guard state.correcting?.sending == false else { return }
+        state.correcting?.text = text
+        state.correcting?.problem = nil
+        changed()
+    }
+
+    public func cancelNotRight() {
+        guard state.correcting != nil else { return }
+        state.correcting = nil
+        changed()
+    }
+
+    /// Sends the open "Not right": `forget`, or the typed correction. False when nothing was sent;
+    /// the row says why.
+    @discardableResult
+    public func sendCorrection(forget: Bool) -> Bool {
+        guard var c = state.correcting, !c.sending else { return false }
+        defer { changed() }
+        var correction: String?
+        if !forget {
+            let text = c.text.trimmed
+            if let problem = MemoryCheck.correctionProblem(text, correctable: c.correctable) {
+                state.correcting?.problem = problem
+                return false
+            }
+            correction = text
+        }
+        guard ready(c.entryId) != nil else {
+            state.correcting?.problem = MemoryCheck.offline
+            return false
+        }
+        let message = MemoryNotRight(requestId: nextId(), memoryId: c.entryId, offerKey: nil, correction: correction)
+        guard track(message.requestId, op: .notRight, entryId: c.entryId, write: { sendNotRight(message) }) else {
+            state.correcting?.problem = MemoryCheck.offline
+            return false
+        }
+        c.sending = true
+        c.problem = nil
+        state.correcting = c
+        state.problems[c.entryId] = nil
+        return true
+    }
+
+    /// "Not right" on an offer, about one fact its provenance named. The fact need not be listed here
+    /// yet: Caret may have noticed it since the last list. `answered` hears nil when the helper made
+    /// the change, else the reason in a sentence. False when nothing was sent.
+    @discardableResult
+    public func notRight(memoryId: String, offerKey: String, correction: String?, answered: @escaping (String?) -> Void) -> Bool {
+        guard state.busy[memoryId] == nil else { return false }
+        if let correction, MemoryCheck.correctionProblem(correction, correctable: true) != nil { return false }
+        let message = MemoryNotRight(requestId: nextId(), memoryId: memoryId, offerKey: offerKey, correction: correction)
+        let sent = track(message.requestId, op: .notRight, entryId: memoryId, answered: answered) { sendNotRight(message) }
+        changed()
+        return sent
+    }
+
+    /// "Keep" on a noticed row: the fact's own values, sent back as the user's edit, make it active.
+    /// Only where there is something an edit accepts (not a use-instead or don't-offer preference).
+    @discardableResult
+    public func keepNoticed(_ id: String) -> Bool {
+        guard let e = ready(id), e.status == .noticed else { return false }
+        let values = Self.editable(e)
+        guard !values.isEmpty else { return false }
+        state.problems[id] = nil
+        defer { changed() }
+        let fields = Dictionary(values.map { ($0.key, HelperMemory.FieldValue.text($0.original)) }, uniquingKeysWith: { a, _ in a })
+        return post(HelperMemory.Request(requestId: nextId(), op: .edit, id: id, fields: fields), op: .keep, entryId: id)
     }
 
     // MARK: - Skills
@@ -627,6 +770,9 @@ public final class MemoryBook {
         public var offersOnItsOwn: Bool
         /// Open offers to let a skill run on its own, by entry id: `asked`, or `answering` after a yes.
         public var questions: [String: String]
+        /// The noticed row whose "Not right" is open, and its typed text's length.
+        public var correcting: String?
+        public var correctionLength: Int?
 
         public struct RuleSkills: Codable, Equatable, Sendable {
             public var action: String
@@ -672,7 +818,9 @@ public final class MemoryBook {
                 }
             },
             offersOnItsOwn: state.offersOnItsOwn,
-            questions: state.questions.mapValues { $0.answering ? "answering" : "asked" }
+            questions: state.questions.mapValues { $0.answering ? "answering" : "asked" },
+            correcting: state.correcting?.entryId,
+            correctionLength: state.correcting.map { $0.text.utf16.count }
         )
     }
 
@@ -746,6 +894,15 @@ public enum MemoryCheck {
         return nil
     }
 
+    /// What "Not right" can send instead of a noticed fact (protocol.ts MemoryNotRight `correction`:
+    /// 1 to 500 characters). A preference can only be forgotten.
+    public static func correctionProblem(_ text: String, correctable: Bool) -> String? {
+        guard correctable else { return "Caret can only forget this one." }
+        if text.trimmed.isEmpty { return "Type what's right, or choose Forget." }
+        if text.trimmed.utf16.count > MemoryNotRight.maxCorrection { return "That's too long. Keep it under 500 characters." }
+        return nil
+    }
+
     /// The helper would not put a skill back on Tab. B19's helper refuses every skill edit but its
     /// name, so this is today's answer: the user is told what still works, never left guessing.
     public static let backOnTabRefused = "This version of Caret can't put a skill back on Tab yet. Pause it to stop it running, or Forget it."
@@ -754,11 +911,13 @@ public enum MemoryCheck {
     /// it expired, or Caret was paused.
     public static let onItsOwnEnded = "The offer to let it run on its own ended before you answered. Ask again from here."
 
-    /// The helper's refusal as a sentence: capitalized, with a final period.
+    /// The helper's refusal as a sentence: capitalized, with a final period. A sentence that starts
+    /// with a file's name ("about-me.md changed…") keeps the name as it is.
     static func sentence(_ text: String) -> String {
         let t = text.trimmed
         guard let first = t.first else { return t }
-        let capped = first.uppercased() + t.dropFirst()
+        let startsWithFile = t.split(separator: " ").first.map { $0.contains(".") } ?? false
+        let capped = startsWithFile ? t : first.uppercased() + t.dropFirst()
         return capped.hasSuffix(".") ? capped : capped + "."
     }
 

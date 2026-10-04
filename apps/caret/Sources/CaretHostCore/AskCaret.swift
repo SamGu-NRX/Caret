@@ -289,6 +289,22 @@ public final class AskCaret {
         }
     }
 
+    /// M1: where the noticed facts behind the plan on the card came from; the desk shows the first
+    /// with "Not right". The helper sends it to the asker right after the proposal.
+    public private(set) var provenance: MemoryProvenance?
+
+    public func provenance(_ p: MemoryProvenance) {
+        guard case .proposed(let card) = phase, card.offerKey == p.offerKey else { return }
+        provenance = p
+        onChange()
+    }
+
+    /// The provenance of the plan on the card now; nil once the card is taken, put away or replaced.
+    public var shownProvenance: MemoryProvenance? {
+        guard case .proposed(let card) = phase, let provenance, provenance.offerKey == card.offerKey else { return nil }
+        return provenance
+    }
+
     /// The helper took back the proposal on the card (it expired, Caret was paused, the screen
     /// reader restarted): Tab must not send its key. A run's own `taken` withdrawal changes nothing.
     public func withdrawn(_ message: OfferWithdrawn) {

@@ -7,10 +7,18 @@ import SwiftUI
 /// not taken from AppKit, so the off-screen renders show exactly what the window shows.
 ///
 /// Copy is third person throughout ("Caret ..."), sentence case, with no dashes for punctuation and no
-/// all-caps labels. Motion, all rare (this window opens once): screens crossfade with a 6 pt slide
-/// the way the user moved (160 ms ease-out); the figure performs once on the first screen; a
-/// grant's check and the try-it fill state what changed. Reduce Motion keeps the fades and drops
-/// every movement.
+/// all-caps labels. v3 (DIRECTION.md 5.9): headlines in Caret's serif voice, Continue as the ink
+/// button, Back as quiet text, and Carrot only on the figure and the current dot (and on a field
+/// Caret is about to fill, which is the product being shown, not chrome).
+///
+/// Motion, all rare (this window opens once): screens crossfade with a 6 pt slide the way the user
+/// moved (160 ms ease-out); the figure performs once on the first screen (arrives, reads the line,
+/// bows); a grant's check and the try-it fill state what changed. Reduce Motion keeps the fades
+/// and drops every movement.
+///
+/// A step is a `StepPage`: its title, an optional line, then its content, at the insets every step
+/// shares. The bar (Back, the dots, Continue) and the keys (Return, Esc) belong to this view and the
+/// controller, so a new step adds a case to `OnboardingFlow.Step` and a page here, nothing else.
 struct OnboardingView: View {
     var state: OnboardingFlow.State
     var character: FigureCharacter
@@ -18,7 +26,11 @@ struct OnboardingView: View {
     var animated = true
     var send: (OnboardingFlow.Event) -> Void = { _ in }
 
-    static let size = CGSize(width: 520, height: 440)
+    /// DIRECTION.md's 520 by 460.
+    static let size = CGSize(width: 520, height: 460)
+    /// Every step's insets: 36 at the sides, 34 above the title.
+    static let inset: CGFloat = 36
+    static let top: CGFloat = 34
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -66,47 +78,68 @@ struct OnboardingView: View {
             StepDots(current: state.stepIndex, count: state.steps.count)
             HStack {
                 if state.canGoBack {
-                    Button("Back") { send(.back) }.buttonStyle(OnboardingButtonStyle(kind: .secondary))
+                    Button("Back") { send(.back) }.buttonStyle(QuietButtonStyle(size: 13))
                 }
                 Spacer()
                 if state.step == .know {
-                    Button("Skip") { send(.skip) }.buttonStyle(OnboardingButtonStyle(kind: .secondary))
+                    Button("Skip") { send(.skip) }.buttonStyle(QuietButtonStyle(size: 13)).padding(.trailing, 8)
                 }
                 Button(state.step == .firstLook ? "Done" : "Continue") { send(.next) }
                     .buttonStyle(OnboardingButtonStyle(kind: .primary))
                     .disabled(!state.canContinue)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 20)
+        .padding(.horizontal, 28)
+        .padding(.bottom, 22)
         .padding(.top, 8)
+    }
+}
+
+/// One step's page: the title in Caret's voice, an optional line under it, then the step's own
+/// content, at the insets every step shares.
+struct StepPage<Content: View>: View {
+    var title: String
+    var detail: String?
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScreenTitle(title: title, detail: detail)
+            content.padding(.top, 18)
+        }
+        .padding(.horizontal, OnboardingView.inset)
+        .padding(.top, OnboardingView.top)
     }
 }
 
 // MARK: - Shared parts
 
-/// A screen's heading: 20 pt semibold Ink, and an optional 13 pt Secondary line under it.
+/// A step's heading: Caret speaking, in the voice at display size (New York 22, tracking -0.3), and
+/// an optional 13 pt Ink 2 line under it.
 struct ScreenTitle: View {
     var title: String
     var detail: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             Text(title)
-                .font(.system(size: 20, weight: .semibold))
+                .font(Tokens.Font.voiceDisplay(.newYork))
+                .tracking(-0.3)
                 .foregroundStyle(Color(token: Tokens.ink))
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
             if let detail {
                 Text(detail)
                     .font(.system(size: 13))
-                    .foregroundStyle(Color(token: Tokens.secondary))
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 }
 
-/// 6 pt dots, Secondary, the current one Carrot.
+/// 6 pt dots, one per step: the current one Carrot, the rest Ink 3 (a mark, 3.8:1 on the window).
 struct StepDots: View {
     var current: Int
     var count: Int
@@ -115,8 +148,7 @@ struct StepDots: View {
         HStack(spacing: 8) {
             ForEach(0..<count, id: \.self) { i in
                 Circle()
-                    .fill(Color(token: i == current ? Tokens.carrot : Tokens.secondary))
-                    .opacity(i == current ? 1 : 0.4)
+                    .fill(Color(token: i == current ? Tokens.carrot : Tokens.ink3))
                     .frame(width: 6, height: 6)
             }
         }
@@ -125,99 +157,127 @@ struct StepDots: View {
     }
 }
 
-/// The primary (Carrot fill) and secondary (bordered) buttons: 13 pt, 28 tall. A press scales to
-/// 0.97 at once (feedback); disabled reads at 40 percent.
+/// The step's buttons, as v3 draws every button in Caret's windows (`WindowButtonStyle`): primary
+/// is the ink button (Continue, Done), secondary is key-styled (Open System Settings, Look again).
 struct OnboardingButtonStyle: ButtonStyle {
     enum Kind { case primary, secondary }
     var kind: Kind
-    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
-        configuration.label
-            .font(.system(size: 13, weight: kind == .primary ? .semibold : .regular))
-            .foregroundStyle(Color(token: kind == .primary ? Tokens.onButton : Tokens.ink))
-            .padding(.horizontal, 14)
-            .frame(height: 28)
-            .background {
-                if kind == .primary {
-                    shape.fill(Color(token: Tokens.buttonFill))
-                } else {
-                    shape.fill(Color(token: configuration.isPressed ? Tokens.carrotWash : Tokens.card))
-                }
-            }
-            .overlay { if kind == .secondary { shape.strokeBorder(Color(token: Tokens.keycapBorder), lineWidth: 1) } }
-            .contentShape(shape)
-            .opacity(isEnabled ? 1 : 0.4)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(Motion.curve(Motion.easeOut, 0.12), value: configuration.isPressed)
-            .fixedSize()
+        WindowButtonBody(label: configuration.label, pressed: configuration.isPressed, kind: kind == .primary ? .ink : .key, small: false)
     }
 }
 
-/// A white card on the window, 1 pt Border, radius 10.
+/// A group of rows on the window: a hairline block, radius 10, no fill of its own (DIRECTION.md:
+/// no cards).
 struct OnboardingCard<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        content
-            .background(Color(token: Tokens.card), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(token: Tokens.border), lineWidth: 1) }
+        Block { content }
     }
 }
 
 // MARK: - 1. Welcome
 
-/// The only place the figure performs (`SURFACES.md` 7): it enters, looks down at the sentence,
-/// and squashes once, 900 ms, once. Under Reduce Motion it is simply there, looking at the words.
+/// The only place the figure performs (DIRECTION.md 5.9), once, at 64 pt: it arrives (160 ms,
+/// opacity, a 2 pt rise, scale 0.9 to 1), at 420 ms looks down at the headline, at 720 ms bows
+/// (520 ms: 1.06 wide by 0.9 tall with a 1 pt dip at 45 percent), then settles into the 4 s breath.
+/// This is the delight budget, spent once. Under Reduce Motion it is simply there, looking at the
+/// words, and still.
 struct WelcomeScreen: View {
     var character: FigureCharacter
     var animated: Bool
 
-    enum Beat { case before, entered, looking, done, rest }
+    static let headline = "Caret works where you type."
+    static let line = "It offers the next words, and sometimes the next step. Tab takes it. Typing says no."
+
+    enum Beat { case before, entered, looking, bowing, rest }
     @State private var beat: Beat = .before
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 0) {
             Spacer(minLength: 0)
-            FigureView(character: character, state: figureState, height: 48, animated: animated && !reduceMotion, gaze: gaze)
+            FigureView(character: character, state: .noticed, size: Tokens.FigureSize.onboarding, animated: !still, gaze: gaze)
+                .keyframeAnimator(initialValue: Bow.rest, trigger: beat == .bowing) { figure, bow in
+                    figure.scaleEffect(x: bow.x, y: bow.y, anchor: .bottom).offset(y: bow.dip)
+                } keyframes: { _ in Bow.track(active: beat == .bowing) }
+                .keyframeAnimator(initialValue: Gesture.rest, repeating: beat == .rest && !still) { figure, g in
+                    figure.scaleEffect(x: g.scaleX, y: g.scaleY, anchor: .bottom)
+                } keyframes: { _ in Gesture.breath(active: beat == .rest && !still) }
                 .opacity(shown ? 1 : 0)
-                .scaleEffect(shown ? 1 : 0.8, anchor: .bottom)
+                .scaleEffect(shown ? 1 : 0.9, anchor: .bottom)
                 .offset(y: shown ? 0 : 2)
-            Text("Caret works where you type, and can do the next step for you.")
-                .font(.system(size: 20, weight: .semibold))
+                .padding(.bottom, 26)
+            Text(Self.headline)
+                .font(Tokens.Font.voiceDisplay(.newYork))
+                .tracking(-0.3)
                 .foregroundStyle(Color(token: Tokens.ink))
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
-                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
+            Text(Self.line)
+                .font(.system(size: 13))
+                .foregroundStyle(Color(token: Tokens.ink2))
+                .multilineTextAlignment(.center)
+                .lineSpacing(2)
+                .frame(maxWidth: 360)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 9)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 8)
+        .padding(.top, 12)
         .task {
-            guard animated, !reduceMotion, beat == .before else { return }
-            // Enter 180 ms, look 240 ms, squash 260 ms, settle: about 900 ms in all.
-            withAnimation(Motion.curve(Motion.easeOut, 0.18)) { beat = .entered }
-            try? await Task.sleep(for: .milliseconds(220))
+            guard !still, beat == .before else { return }
+            withAnimation(Motion.curve(Motion.easeOut, Motion.Duration.figureEnter)) { beat = .entered }
+            try? await Task.sleep(for: .milliseconds(420))
             beat = .looking
-            try? await Task.sleep(for: .milliseconds(320))
-            beat = .done
-            try? await Task.sleep(for: .milliseconds(360))
+            try? await Task.sleep(for: .milliseconds(300))
+            beat = .bowing
+            try? await Task.sleep(for: .milliseconds(Int(Motion.Duration.bow * 1000)))
             beat = .rest
         }
     }
 
     private var still: Bool { !animated || reduceMotion }
     private var shown: Bool { still || beat != .before }
-    private var figureState: FigureState { !still && beat == .done ? .done : .noticed }
-    /// Straight out at the user, then down at the sentence.
+
+    /// Out at the user as it arrives, then down at the headline (the figure's glance, 140 ms).
     private var gaze: CGVector {
         if still { return CGVector(dx: 0, dy: 0.8) }
         switch beat {
         case .before, .entered: return CGVector(dx: 0, dy: 0.001)
-        case .looking, .done, .rest: return CGVector(dx: 0, dy: 0.8)
+        case .looking, .bowing, .rest: return CGVector(dx: 0, dy: 0.8)
+        }
+    }
+
+    /// The bow: wider and shorter about the bottom edge with a 1 pt dip, peaking at 45 percent of
+    /// 520 ms, ease-in-out both ways.
+    struct Bow: Animatable {
+        var x: CGFloat = 1
+        var y: CGFloat = 1
+        var dip: CGFloat = 0
+        static let rest = Bow()
+
+        var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat> {
+            get { AnimatablePair(AnimatablePair(x, y), dip) }
+            set {
+                x = newValue.first.first
+                y = newValue.first.second
+                dip = newValue.second
+            }
+        }
+
+        static func track(active: Bool) -> some Keyframes<Bow> {
+            KeyframeTrack(\Bow.self) {
+                if active {
+                    CubicKeyframe(Bow(x: 1.06, y: 0.9, dip: 1), duration: Motion.Duration.bow * 0.45)
+                    CubicKeyframe(.rest, duration: Motion.Duration.bow * 0.55)
+                } else {
+                    CubicKeyframe(.rest, duration: 0.01)
+                }
+            }
         }
     }
 }
@@ -231,14 +291,14 @@ struct WorkScreen: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScreenTitle(title: "How should Caret work with you?")
-            SectionLabel(text: "Help with").padding(.top, 18)
+            SectionLabel(text: "Help with").padding(.top, 14)
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(CaretRole.allCases, id: \.self) { role in
                     RoleRow(role: role, on: state.roles.contains(role)) { send(.toggleRole(role)) }
                 }
             }
             .padding(.top, 6)
-            SectionLabel(text: CaretLevel.question).padding(.top, 16)
+            SectionLabel(text: CaretLevel.question).padding(.top, 12)
             LevelPicker(level: state.level) { send(.setLevel($0)) }.padding(.top, 8)
             Text(state.roles.isEmpty ? "Choose at least one kind of help to continue." : state.level.detail)
                 .font(.system(size: 12))
@@ -250,25 +310,22 @@ struct WorkScreen: View {
                 .foregroundStyle(Color(token: Tokens.secondary))
                 .padding(.top, 2)
         }
-        .padding(.horizontal, 32)
-        .padding(.top, 30)
+        .padding(.horizontal, OnboardingView.inset)
+        .padding(.top, OnboardingView.top)
     }
 }
 
-/// 12 pt semibold Ink, sentence case.
+/// A group's name: the windows' group head (Chrome 12 semibold, Ink 2), sentence case.
 struct SectionLabel: View {
     var text: String
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Color(token: Tokens.ink))
-            .accessibilityAddTraits(.isHeader)
+        GroupHead(text: text)
     }
 }
 
-/// A checkbox row: the whole row toggles. The box is Carrot with a check when on, a Secondary
-/// outline when off (3:1 against the window either way).
+/// A checkbox row: the whole row toggles. The box is Ink with a check when on, an Ink 2 outline
+/// when off (3:1 against the window either way).
 struct RoleRow: View {
     var role: CaretRole
     var on: Bool
@@ -303,15 +360,16 @@ struct CheckBox: View {
         let shape = RoundedRectangle(cornerRadius: 4, style: .continuous)
         ZStack {
             if on {
-                shape.fill(Color(token: Tokens.carrot))
+                // Ink, not Carrot: the light is the figure's (DIRECTION.md 5.9).
+                shape.fill(Color(token: Tokens.inkFill))
                 Path { p in
                     p.move(to: CGPoint(x: 4, y: 8.2))
                     p.addLine(to: CGPoint(x: 6.8, y: 11))
                     p.addLine(to: CGPoint(x: 12, y: 5.2))
                 }
-                .stroke(Color(token: Tokens.onCarrot), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                .stroke(Color(token: Tokens.onInk), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
             } else {
-                shape.strokeBorder(Color(token: Tokens.secondary), lineWidth: 1.5)
+                shape.strokeBorder(Color(token: Tokens.ink2), lineWidth: 1.5)
             }
         }
         .frame(width: 16, height: 16)
@@ -414,8 +472,8 @@ struct KnowScreen: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 14)
         }
-        .padding(.horizontal, 32)
-        .padding(.top, 30)
+        .padding(.horizontal, OnboardingView.inset)
+        .padding(.top, OnboardingView.top)
     }
 
     private func row(_ field: AboutField, placeholder: String) -> some View {
@@ -482,12 +540,12 @@ struct PermissionsScreen: View {
                     .padding(.top, 12)
             }
         }
-        .padding(.horizontal, 32)
-        .padding(.top, 30)
+        .padding(.horizontal, OnboardingView.inset)
+        .padding(.top, OnboardingView.top)
     }
 }
 
-/// One grant: a ring while it is off, a Carrot check once it is on, and the button that opens
+/// One grant: a ring while it is off, an Ink check once it is on, and the button that opens
 /// System Settings at the right pane. The check enters at 160 ms ease-out from 0.9 (state
 /// indication); under Reduce Motion it fades only.
 struct PermissionRow: View {
@@ -505,13 +563,13 @@ struct PermissionRow: View {
                 Circle().strokeBorder(Color(token: Tokens.secondary), lineWidth: 1.5).opacity(granted ? 0 : 1)
                 if granted {
                     ZStack {
-                        Circle().fill(Color(token: Tokens.carrot))
+                        Circle().fill(Color(token: Tokens.inkFill))
                         Path { p in
                             p.move(to: CGPoint(x: 5, y: 9.2))
                             p.addLine(to: CGPoint(x: 7.8, y: 12))
                             p.addLine(to: CGPoint(x: 13, y: 6.2))
                         }
-                        .stroke(Color(token: Tokens.onCarrot), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                        .stroke(Color(token: Tokens.onInk), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
                     }
                     .transition(animated && !reduceMotion ? .opacity.combined(with: .scale(scale: 0.9)) : .opacity)
                 }
@@ -555,7 +613,8 @@ struct TryItScreen: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScreenTitle(title: "Try it.", detail: "The amount is in the invoice on the left. Press Tab to fill it in.")
-            HStack(alignment: .top, spacing: 20) {
+            // 196 + 16 + 232 = 444, inside the 448 the step's insets leave.
+            HStack(alignment: .top, spacing: 16) {
                 SampleSourceWindow(animated: animated)
                 SampleForm(tryIt: state.tryIt, character: character, animated: animated)
             }
@@ -571,8 +630,8 @@ struct TryItScreen: View {
                     .padding(.top, 8)
             }
         }
-        .padding(.horizontal, 32)
-        .padding(.top, 30)
+        .padding(.horizontal, OnboardingView.inset)
+        .padding(.top, OnboardingView.top)
     }
 
     @ViewBuilder
@@ -655,7 +714,7 @@ struct SampleForm: View {
             }
             .padding(.top, 4)
             HStack(alignment: .bottom) {
-                FieldLabel(text: TryItSample.fieldLabel)
+                FieldLabel(text: TryItSample.fieldLabel).fixedSize()
                 Spacer(minLength: 6)
                 line
             }
@@ -677,7 +736,7 @@ struct SampleForm: View {
             .accessibilityLabel(TryItSample.fieldLabel)
             .accessibilityValue(fieldValueForVoiceOver)
         }
-        .frame(width: 240, alignment: .leading)
+        .frame(width: 232, alignment: .leading)
         .onChange(of: tryIt.completed) { _, completed in
             guard completed, animated, !reduceMotion else { return }
             wash = 1
@@ -773,8 +832,8 @@ struct FirstLookScreen: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color(token: Tokens.secondary))
         }
-        .padding(.horizontal, 32)
-        .padding(.top, 30)
+        .padding(.horizontal, OnboardingView.inset)
+        .padding(.top, OnboardingView.top)
         .padding(.bottom, 8)
     }
 

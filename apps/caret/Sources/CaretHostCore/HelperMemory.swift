@@ -25,18 +25,49 @@ import Foundation
 //     (A16).
 //
 // Skills (B19) decode through CaretScreenCore's `SkillFields`, which checks them. An entry of a kind this
-// host does not know is kept, as `noticed`, and shown by the helper's own sentence: a newer helper's
+// host does not know is kept, as `unrecognized`, and shown by the helper's own sentence: a newer helper's
 // memory is never dropped unseen.
+//
+// M1 (markdown memory) adds the `noticed` status: a fact Caret saw itself, usable at once, carrying where
+// and when it was seen (`Entry.noticed`). The helper sends it only to a consumer whose hello names the
+// `memoryDocuments` capability (`HostHello`); to anyone else a noticed fact reads as active.
+// MemoryDocuments.swift has the rest of M1's messages.
 
 public enum HelperMemory {
     public enum Kind: String, Codable, CaseIterable, Sendable {
         case about, people, preference, routine, permission, skill
         /// Any kind this host does not know, from a newer helper. Never sent.
-        case noticed
+        case unrecognized
     }
 
     public enum Status: String, Codable, Sendable {
         case learning, active, paused
+        /// M1: Caret saw this itself and uses it at once; `Entry.noticed` says where. Only about,
+        /// people and preference entries are noticed.
+        case noticed
+    }
+
+    /// Where Caret noticed a fact (protocol.ts NoticedSource): the app and window title when known,
+    /// and when, in milliseconds since the epoch.
+    public struct Noticed: Codable, Equatable, Sendable {
+        public var app: String?
+        public var windowTitle: String?
+        public var at: Int64
+
+        public init(app: String?, windowTitle: String?, at: Int64) {
+            self.app = app
+            self.windowTitle = windowTitle
+            self.at = at
+        }
+
+        enum CodingKeys: String, CodingKey { case app, windowTitle, at }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            app = try FirstLookWire.nullable(c, String.self, .app)
+            windowTitle = try FirstLookWire.nullable(c, String.self, .windowTitle)
+            at = try c.decode(Int64.self, forKey: .at)
+        }
     }
 
     /// Plan section 3's action types, in the plan's order.
@@ -173,7 +204,7 @@ public enum HelperMemory {
         case skill(SkillFields)
         /// An entry of a kind this host does not know: its wire kind, kept for the debug state. Only
         /// the helper's sentence (`says`) is shown.
-        case noticed(kind: String)
+        case unrecognized(kind: String)
 
         public var kind: Kind {
             switch self {
@@ -183,7 +214,7 @@ public enum HelperMemory {
             case .routine: return .routine
             case .permission: return .permission
             case .skill: return .skill
-            case .noticed: return .noticed
+            case .unrecognized: return .unrecognized
             }
         }
     }
@@ -215,10 +246,13 @@ public enum HelperMemory {
         /// A skill's write permissions, from its clean runs in a row (host contract, see the file
         /// header): `writeHere`, `writeElsewhere` or both. Nil when the helper does not say.
         public var wrote: Set<ActionType>?
+        /// Where Caret noticed it (M1). Always set on a `noticed` entry; an entry the user has since
+        /// confirmed may keep it as history.
+        public var noticed: Noticed?
 
         public var kind: Kind { fields.kind }
 
-        public init(id: String, status: Status, says: String, evidence: Evidence, fields: Fields, uses: [Use]? = nil, wrote: Set<ActionType>? = nil) {
+        public init(id: String, status: Status, says: String, evidence: Evidence, fields: Fields, uses: [Use]? = nil, wrote: Set<ActionType>? = nil, noticed: Noticed? = nil) {
             self.id = id
             self.status = status
             self.says = says
@@ -226,6 +260,7 @@ public enum HelperMemory {
             self.fields = fields
             self.uses = uses
             self.wrote = wrote
+            self.noticed = noticed
         }
 
         public var about: About? { if case .about(let f) = fields { return f } else { return nil } }
@@ -376,7 +411,7 @@ public enum HelperMemory {
 }
 
 extension HelperMemory.Entry: Decodable {
-    enum CodingKeys: String, CodingKey { case kind, id, status, says, evidence, fields, uses }
+    enum CodingKeys: String, CodingKey { case kind, id, status, says, evidence, fields, uses, noticed }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -385,8 +420,8 @@ extension HelperMemory.Entry: Decodable {
         status = try c.decode(HelperMemory.Status.self, forKey: .status)
         says = try c.decode(String.self, forKey: .says)
         evidence = try c.decode(HelperMemory.Evidence.self, forKey: .evidence)
-        // `noticed` is this host's name for kinds it does not know; a helper sending it is one of them.
-        let known = HelperMemory.Kind(rawValue: wireKind).flatMap { $0 == .noticed ? nil : $0 }
+        // `unrecognized` is this host's name for kinds it does not know; a helper sending it is one of them.
+        let known = HelperMemory.Kind(rawValue: wireKind).flatMap { $0 == .unrecognized ? nil : $0 }
         switch known {
         case .about: fields = .about(try c.decode(HelperMemory.About.self, forKey: .fields))
         case .people: fields = .people(try c.decode(HelperMemory.People.self, forKey: .fields))
@@ -401,10 +436,18 @@ extension HelperMemory.Entry: Decodable {
             }
             fields = .skill(skill)
             wrote = try Self.wrote(c.nestedContainer(keyedBy: AnyKey.self, forKey: .fields), id: id)
-        case .noticed, nil:
-            fields = .noticed(kind: wireKind)
+        case .unrecognized, nil:
+            fields = .unrecognized(kind: wireKind)
         }
         let kind = fields.kind
+        // The helper's rules (protocol.ts MemoryEntry): only about, people and preference entries are
+        // noticed, and a noticed entry says where. A known kind breaking them is a helper bug.
+        noticed = try c.decodeIfPresent(HelperMemory.Noticed.self, forKey: .noticed)
+        if known != nil {
+            let noticeable: Set<HelperMemory.Kind> = [.about, .people, .preference]
+            if noticed != nil, !noticeable.contains(kind) { throw ProtocolError("noticed on a \(kind.rawValue) entry; only about, people and preference entries are noticed") }
+            if status == .noticed, noticed == nil { throw ProtocolError("\(id) is noticed but does not say where Caret noticed it") }
+        }
         // `wrote` belongs to skills; on another known kind it is a helper bug, not something to drop.
         if known != nil, kind != .skill, try c.nestedContainer(keyedBy: AnyKey.self, forKey: .fields).contains(AnyKey("wrote")) {
             throw ProtocolError("wrote on a \(kind.rawValue) entry; only skills have it")
