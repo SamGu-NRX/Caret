@@ -54,7 +54,11 @@ const ALLOWED = new Set([
   "UpdateExpression",
   "ConditionalExpression",
   "AssignmentExpression",
+  "NewExpression",
 ]);
+
+/** Constructors a program may call with `new`. Writers reach for Map and Set to index refs. */
+const NEW_ALLOWED = new Set(["Map", "Set", "Error"]);
 
 /** Names that reach the host, the global object, constructors or clocks. The sandbox lacks or removes them too. */
 const DENIED_NAMES = new Set([
@@ -118,6 +122,10 @@ function breaks(n: AstNode, parent: AstNode | null): string | null {
       return null;
     case "Property":
       return n.kind === "init" && n.method === false ? null : "getters, setters and methods are not allowed in object literals";
+    case "NewExpression": {
+      const callee = n.callee as AstNode;
+      return callee.type === "Identifier" && NEW_ALLOWED.has(callee.name as string) ? null : "new is allowed only for Map, Set and Error";
+    }
     case "UnaryExpression":
       return UNARY.has(n.operator as string) ? null : `the ${String(n.operator)} operator is not allowed`;
     case "Identifier":

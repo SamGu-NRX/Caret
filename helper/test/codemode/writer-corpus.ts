@@ -62,7 +62,8 @@ export const WRITER_CORPUS: WriterCase[] = [
       win("thread", "Re: planning sync", [], [val("snap:thread", "tv:title", "Planning sync", 3), val("snap:thread", "tv:mon", "Mon Nov 2, 9:30 AM", 30), val("snap:thread", "tv:thu", "Thu Nov 5, 2:00 PM", 70)]),
     ],
     choose: "eo:thu",
-    expected: { fills: [["ev:title", "tv:title"], ["ev:when", "tv:thu"]], presses: [], asks: [] },
+    // "Create the event" asks for Save. Run 1 (2026-10-04) scored this without the press, which was wrong.
+    expected: { fills: [["ev:title", "tv:title"], ["ev:when", "tv:thu"]], presses: [["ev:save", "e:save-event"]], asks: [] },
   },
   {
     id: "expense-receipt",

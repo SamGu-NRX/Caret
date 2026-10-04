@@ -4,6 +4,9 @@
 //   CARET_ENV_FILE=/path/to/.env node scripts/writer-eval.ts --out DIR [--budget 0.45] [--models a,b]
 //
 // Keys are read at call time and never printed. Calls run one at a time, so latency is per request.
+// Groq's on-demand tier allows 8,000 tokens a minute for gpt-oss and 1,000 output tokens a minute for
+// qwen3.8 (its 429 messages, 2026-10-04), so calls are spaced by --gap seconds, and a 429 waits out the
+// provider's Retry-After and retries once. Retries are counted in the report; WriterPort never retries.
 // The run stops before a call that could take total spend past --budget (USD), estimated from the
 // largest cost seen so far.
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -17,10 +20,13 @@ import { readKey } from "../src/writer/env.ts";
 import { makeWriterPort } from "../src/writer/port.ts";
 import { WRITER_CORPUS, type WriterCase } from "../test/codemode/writer-corpus.ts";
 
-const { values: args } = parseArgs({ options: { out: { type: "string" }, budget: { type: "string", default: "0.45" }, models: { type: "string" } } });
+const { values: args } = parseArgs({ options: { out: { type: "string" }, budget: { type: "string", default: "0.45" }, models: { type: "string" }, gap: { type: "string", default: "20" } } });
 if (args.out === undefined) throw new Error("--out DIR is required");
 const outDir = args.out;
 const budget = Number(args.budget);
+const gapMs = Number(args.gap) * 1000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let retries = 0;
 mkdirSync(outDir, { recursive: true });
 const routes = args.models === undefined ? CANDIDATES : CANDIDATES.filter((r) => args.models!.split(",").includes(r.model));
 
@@ -84,8 +90,15 @@ for (const route of routes) {
       break;
     }
     const call: Call = { model: route.model, servedModel: null, case: c.id, latencyMs: null, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0, valid: false, correct: false, failure: null, program: null };
+    if (calls.length > 0) await sleep(gapMs);
+    const write = () => port.write({ kind: "plan", disclosureId: "writer-eval", input: { goal: c.goal, snapshots: c.snapshots }, maxOutputTokens: 2000, signal: AbortSignal.timeout(15_000) });
     try {
-      const w = await port.write({ kind: "plan", disclosureId: "writer-eval", input: { goal: c.goal, snapshots: c.snapshots }, maxOutputTokens: 2000, signal: AbortSignal.timeout(15_000) });
+      const w = await write().catch(async (e: unknown) => {
+        if (!(e instanceof ChatHttpError) || e.status !== 429) throw e;
+        retries++;
+        await sleep(Math.min(90, e.retryAfterS ?? 30) * 1000 + 1000);
+        return write();
+      });
       Object.assign(call, { servedModel: w.model, latencyMs: w.latencyMs, inputTokens: w.inputTokens, outputTokens: w.outputTokens, reasoningTokens: w.reasoningTokens, costUsd: w.costUsd, program: w.output.program });
       spent += w.costUsd;
       worst = Math.max(worst, w.costUsd);
@@ -139,9 +152,9 @@ Groq lists: ${groqModels.join(", ")}
 
 ${table}
 
-Total spend: $${spent.toFixed(4)} (budget $${budget}).${stopped === null ? "" : ` ${stopped}`}
+Total spend: $${spent.toFixed(4)} (budget $${budget}). Rate-limit retries: ${retries}.${stopped === null ? "" : ` ${stopped}`}
 Latency is the client's wall time for one HTTP request, sequential, from this Mac. p95 of 10 samples is the slowest one.
 `;
 writeFileSync(join(outDir, "writer-eval.md"), report);
-writeFileSync(join(outDir, "writer-eval.json"), JSON.stringify({ gatewayStatus, gatewayModelCount: gatewayModels.length, groqModels, rows, calls, spent }, null, 1));
+writeFileSync(join(outDir, "writer-eval.json"), JSON.stringify({ gatewayStatus, gatewayModelCount: gatewayModels.length, groqModels, rows, calls, spent, retries }, null, 1));
 log(`\n${report}`);

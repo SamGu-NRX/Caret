@@ -54,11 +54,14 @@ export class ChatHttpError extends Error {
   readonly provider: string;
   readonly status: number;
   readonly errorType: string | null;
-  constructor(provider: string, status: number, errorType: string | null, detail: string) {
+  /** Seconds the provider asked the caller to wait (Retry-After), when it said. */
+  readonly retryAfterS: number | null;
+  constructor(provider: string, status: number, errorType: string | null, detail: string, retryAfterS: number | null = null) {
     super(`${provider} HTTP ${status}${errorType === null ? "" : ` ${errorType}`}: ${detail}`);
     this.provider = provider;
     this.status = status;
     this.errorType = errorType;
+    this.retryAfterS = retryAfterS;
   }
 }
 
@@ -96,7 +99,8 @@ export async function chat(
     } catch {
       // not JSON; keep the text
     }
-    throw new ChatHttpError(route.provider, res.status, type, message);
+    const retry = Number(res.headers.get("retry-after"));
+    throw new ChatHttpError(route.provider, res.status, type, message, Number.isFinite(retry) && retry > 0 ? retry : null);
   }
   const parsed = Completion.parse(JSON.parse(raw));
   const inputTokens = parsed.usage.prompt_tokens;

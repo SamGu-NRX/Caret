@@ -118,8 +118,8 @@ describe("compute, memory and stack", () => {
   });
 
   test("the watchdog stops a native builtin the interrupt hook cannot reach (raw)", async () => {
-    // JSON.stringify runs in C without checking the interrupt; 20,000 levels take over a second.
-    const o = await raw(`let o = {}; for (let i = 0; i < 2e4; i++) o = { o }; JSON.stringify(o);`);
+    // JSON.stringify runs in C without checking the interrupt; 50,000 levels took 2.7 s in the probe.
+    const o = await raw(`let o = {}; for (let i = 0; i < 5e4; i++) o = { o }; JSON.stringify(o);`);
     expect(refusal(o)).toMatchObject({ kind: "cpu", detail: expect.stringContaining("watchdog") });
     expect(o.stats.wallMs).toBeLessThan(2500);
   });
