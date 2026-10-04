@@ -84,9 +84,9 @@ enum Screen {
 /// The one panel every at-caret surface uses (DIRECTION.md section 7, "Panels"): a borderless,
 /// non-activating, click-through `OverlayPanel` holding one SwiftUI view over glass.
 ///
-/// - Material: on macOS 26 the system glass (`NSGlassEffectView`, tinted warm neutral); below it
-///   `NSVisualEffectView` (`.popover` light, `.hudWindow` dark) with the glass color laid over it
-///   by the view (`drawsGlassTint`).
+/// - Material: on macOS 26 the system glass (`NSGlassEffectView`); below it `NSVisualEffectView`
+///   (`.popover` light, `.hudWindow` dark). Either way the view lays the glass color over it
+///   (`drawsGlassTint`), so text contrast does not depend on what is behind the panel.
 /// - Shadow: drawn here, outside the shape only, so it never darkens the glass; the window's own
 ///   shadow is off. The window is `Tokens.Shape.shadowMargin` larger than the content on every side
 ///   to hold it. Every frame this class takes or reports is the content's, not the window's.
@@ -114,7 +114,7 @@ final class HostedPanel {
     /// shows each of these in turn, so it follows its content.
     var radius: CGFloat { didSet { if radius != oldValue { applyRadius() } } }
     private let margin: CGFloat
-    /// The view lays the glass color over the material (macOS before 26).
+    /// The view lays the glass color over the material.
     private let tints: Bool
     /// Pop-ups enter a little larger than slips (scale 0.96, 180 ms).
     var popup: Bool
@@ -143,13 +143,11 @@ final class HostedPanel {
             if #available(macOS 26.0, *) {
                 let glass = NSGlassEffectView()
                 glass.style = .regular
-                glass.tintColor = Tokens.glassTint
                 material = glass
-                tints = false
             } else {
                 material = FallbackMaterial()
-                tints = true
             }
+            tints = true
             if drawsShadow { container.addSubview(shadow) }
             container.addSubview(material!)
         } else {
@@ -188,11 +186,11 @@ final class HostedPanel {
     }
 
     /// Replaces the content and resizes about the anchor. Content changes come from keys (an
-    /// arrow, a reveal) or from results, which land at once; the one exception is the slip growing
-    /// for the skill question, whose glass grows over 200 ms with the view (`Motion.Duration.grow`).
-    func setContent<V: View>(_ view: V) {
+    /// arrow, a reveal) or from results, which land at once. `growing`: the slip is gaining the
+    /// skill question, and its glass grows over 200 ms with the view (`Motion.Duration.grow`).
+    func setContent<V: View>(_ view: V, growing: Bool = false) {
         let next = measure(view)
-        let grows = isVisible && size != .zero && next.height > size.height && !Motion.reduceMotion
+        let grows = growing && isVisible && size != .zero && next.height > size.height && !Motion.reduceMotion
         let from = size
         shown = AnyView(view)
         host.rootView = hosted(view)
@@ -304,8 +302,8 @@ final class HostedPanel {
         layer.add(animation, forKey: "enter")
     }
 
-    /// Opacity to 0, linear: 100 ms on Esc or timeout, 80 ms on typing, 220 ms for a result that
-    /// timed out, 0 for at once.
+    /// Opacity to 0 with `ease-out`: 100 ms on Esc, 80 ms on typing, 220 ms for a result that
+    /// timed out, 0 for at once; 120 ms for any of them under Reduce Motion.
     func exit(duration: TimeInterval) {
         let duration = Motion.exit(duration, reduce: Motion.reduceMotion)
         guard duration > 0, panel.isVisible else {
@@ -316,7 +314,7 @@ final class HostedPanel {
         isExiting = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .linear)
+            context.timingFunction = Motion.caCurve(Motion.easeOut)
             panel.animator().alphaValue = 0
         } completionHandler: { [weak self] in
             MainActor.assumeIsolated {

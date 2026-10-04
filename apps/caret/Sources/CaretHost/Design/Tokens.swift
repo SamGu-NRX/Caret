@@ -65,13 +65,11 @@ enum Tokens {
 
     // MARK: Glass
 
-    /// The panel's color where the system material is not drawn (macOS before 26 as an overlay on
-    /// `NSVisualEffectView`, and off-screen renders). DIRECTION.md's 0.88 / 0.86 let a document of
-    /// the opposite theme pull Ink 2 under 4.5:1; 0.94 / 0.92 keep every text token above it.
+    /// The glass's warm-neutral tint, laid over the system material on screen (DIRECTION.md
+    /// section 7) and drawn alone in off-screen renders. DIRECTION.md's 0.88 / 0.86 let a document
+    /// of the opposite theme pull Ink 2 under 4.5:1; 0.94 / 0.92 keep every text token above it.
+    /// Because the tint covers the material, the rendered-pixel contrast holds over any backdrop.
     static let glass = dynamic(light: 0xFAF9F7, dark: 0x262422, alpha: 0.94, darkAlpha: 0.92)
-    /// The tint handed to `NSGlassEffectView` on macOS 26: the same warm neutral. Its contrast on
-    /// the live material is measured from captures, not assumed (see the U1 report).
-    static let glassTint = dynamic(light: 0xFAF9F7, dark: 0x262422, alpha: 0.55, darkAlpha: 0.55)
     /// 1 pt ring on every panel.
     static let glassEdge = dynamic(light: 0x000000, dark: 0xFFFFFF, alpha: 0.10, darkAlpha: 0.12)
     /// 1 pt inset line along the top edge.
@@ -316,10 +314,11 @@ enum Motion {
         static func panel(popup: Bool, reduce: Bool) -> Entrance {
             reduce
                 ? Entrance(duration: Duration.reduced, scale: nil, settle: 0)
-                : Entrance(duration: popup ? Duration.pop : Duration.enter, scale: popup ? 0.96 : 0.97, settle: popup ? 3 : 2)
+                : Entrance(duration: popup ? Duration.pop : Duration.enter, scale: popup ? 0.96 : 0.97, settle: 2)
         }
     }
 
-    /// An exit: every exit is opacity; Reduce Motion caps it at 0.12 s.
-    static func exit(_ duration: Double, reduce: Bool) -> Double { reduce ? min(duration, Duration.reduced) : duration }
+    /// An exit: every exit is opacity; under Reduce Motion every one that fades is 0.12 s, and one
+    /// that is at once stays at once.
+    static func exit(_ duration: Double, reduce: Bool) -> Double { reduce && duration > 0 ? Duration.reduced : duration }
 }

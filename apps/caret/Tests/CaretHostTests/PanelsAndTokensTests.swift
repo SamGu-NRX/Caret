@@ -38,6 +38,15 @@ final class TokenContrastTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(contrast(graphite, (0x2C / 255.0, 0x2C / 255.0, 0x2E / 255.0)), 3, "on the dark surface")
     }
 
+    /// The ticks after an alternative stand on the host's document and take its theme
+    /// (`SurfaceCoordinator.drawAlternatives`): each theme's marks against that theme's page.
+    func testTheTicksReachThreeToOneOnTheirOwnThemesPage() throws {
+        for (dark, page) in [(false, gray(255)), (true, (0x1E / 255.0, 0x1E / 255.0, 0x1E / 255.0))] {
+            XCTAssertGreaterThanOrEqual(contrast(try resolved(Tokens.carrot, dark: dark), page), 3, "current tick, dark \(dark)")
+            XCTAssertGreaterThanOrEqual(contrast(try resolved(Tokens.ink3, dark: dark), page), 3, "idle tick, dark \(dark)")
+        }
+    }
+
     func testTheErrorFigureStaysLighterThanSecondaryText() throws {
         // Graphite is a figure, not text: it must not read as the secondary words beside it.
         XCTAssertGreaterThan(luminance(try resolved(Tokens.graphite, dark: false)), luminance(try resolved(Tokens.secondary, dark: false)))

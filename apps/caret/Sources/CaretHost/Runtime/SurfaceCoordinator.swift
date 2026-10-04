@@ -209,11 +209,17 @@ final class SurfaceCoordinator {
         case .typedThrough(let offerID, let typed, let remainder, let caret): typedThrough(offerID: offerID, typed: typed, remainder: remainder, caret: caret)
         case .clearCaret: clearCaret()
         case .showPanel(let content, let text, let placement):
-            show(Self.view(content, character: character), narrows: Self.narrows(content), text: text, placement: placement, content: content)
+            // The glass grows over 200 ms only when a result gains its question; every other
+            // change of size comes from a key or a result and lands at once.
+            let gainsQuestion = Self.question(content) && !shownQuestion
+            shownQuestion = Self.question(content)
+            show(Self.view(content, character: character), narrows: Self.narrows(content), text: text, placement: placement, content: content, growing: gainsQuestion)
             announce(content)
         case .hidePanel(let exit):
             panel.exit(duration: exit)
             announced = nil
+            announcedPopup = nil
+            shownQuestion = false
         case .workingChanged(let working): onWorkingChanged?(working)
         case .dropHelperSession: client?.dropSession()
         case .toastSlotTaken: onToastChanged?()
@@ -270,8 +276,11 @@ final class SurfaceCoordinator {
         }
         let decorView = HStack(alignment: .bottom, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
+                if draw.quoted {
+                    UnevenUnderline(width: layout.underlineWidth, animated: draw.entering)
+                        .padding(.top, layout.underlineTop)
+                }
                 Spacer(minLength: 0)
-                if draw.quoted { UnevenUnderline(width: layout.underlineWidth, animated: draw.entering) }
             }
             .frame(width: layout.textSpan, height: layout.decorHeight, alignment: .leading)
             if layout.showsTag {
@@ -283,6 +292,9 @@ final class SurfaceCoordinator {
         .fixedSize()
         // The decor's top left sits on the caret's top left: the underline lands at the baseline
         // plus 2 pt (baseline estimated at 0.78 of the caret height).
+        // The marks stand on the host's document, not on glass: they take the field's theme, read
+        // from its text color, so a dark Caret over a white page still draws marks for white.
+        decor.panel.appearance = drawn?.style.textColor.map { NSAppearance(named: FillOverlay.isLight($0) ? .darkAqua : .aqua) } ?? nil
         decor.pin(HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: caret.maxX, y: Screen.cocoa(caret).maxY)))
         decor.setContent(decorView)
         decor.text = ui.open ? "\(ui.candidate + 1) of \(candidates.count)" : "underline"
@@ -341,10 +353,27 @@ final class SurfaceCoordinator {
     /// pop-up as it enters and again on each change of state (`SlipSpeech`); the working line's
     /// seconds are not a change.
     private var announced: String?
+    /// The pop-up last announced whole: a highlight moving on it says only the new choice.
+    private var announcedPopup: String?
+    /// The slip on screen shows a question under its result.
+    private var shownQuestion = false
+
     private func announce(_ content: PanelContent) {
         guard let words = SlipAnnouncer.next(Self.spoken(content), last: announced) else { return }
         announced = words
-        SlipAnnouncer.post(words)
+        var said = words
+        if case .popup(let spec, let highlight) = content {
+            if announcedPopup == spec.id, let moved = SlipSpeech.popupHighlight(spec, highlight: highlight) { said = moved }
+            announcedPopup = spec.id
+        } else {
+            announcedPopup = nil
+        }
+        SlipAnnouncer.post(said)
+    }
+
+    static func question(_ content: PanelContent) -> Bool {
+        if case .line(let line) = content { return line.question != nil }
+        return false
     }
 
     static func spoken(_ content: PanelContent) -> String {
@@ -396,7 +425,7 @@ final class SurfaceCoordinator {
         return placed.choice.overlap == 0
     }
 
-    private func show(_ view: (CGFloat?) -> AnyView, narrows: Bool, text: String, placement: PanelPlacementRequest, content: PanelContent? = nil) {
+    private func show(_ view: (CGFloat?) -> AnyView, narrows: Bool, text: String, placement: PanelPlacementRequest, content: PanelContent? = nil, growing: Bool = false) {
         let fit = fitted
         fitted = nil
         switch content {
@@ -406,7 +435,7 @@ final class SurfaceCoordinator {
         }
         switch placement {
         case .inPlace:
-            panel.setContent(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil))
+            panel.setContent(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil), growing: growing)
             panel.text = text
             if !panel.isVisible { panel.enter() }
         case .atField(let field, let caret, let pid, let entering):
@@ -443,7 +472,7 @@ final class SurfaceCoordinator {
             if enter || panel.anchor.point != Self.cocoaPoint(chosen) || panel.anchor.corner != Self.corner(chosen.spot.corner) {
                 panel.pin(HostedPanel.Anchor(corner: Self.corner(chosen.spot.corner), point: Self.cocoaPoint(chosen)))
             }
-            panel.setContent(view(chosen.spot.isNarrow ? PopupView.minWidth : nil))
+            panel.setContent(view(chosen.spot.isNarrow ? PopupView.minWidth : nil), growing: growing)
             panel.text = text
             if enter { panel.enter() }
         }

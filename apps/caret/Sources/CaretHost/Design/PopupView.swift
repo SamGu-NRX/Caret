@@ -305,7 +305,7 @@ struct UnevenUnderline: View {
         Wave()
             .trim(from: 0, to: draws ? drawn : 1)
             .stroke(Color(token: Tokens.carrot).opacity(Tokens.Underline.opacity), style: StrokeStyle(lineWidth: Tokens.Underline.stroke, lineCap: .round))
-            .frame(width: width, height: 3)
+            .frame(width: width, height: AlternativesLayout.underlineHeight)
             .onAppear {
                 guard draws else { return }
                 withAnimation(Motion.curve(Motion.easeOut, Tokens.Underline.draw)) { drawn = 1 }

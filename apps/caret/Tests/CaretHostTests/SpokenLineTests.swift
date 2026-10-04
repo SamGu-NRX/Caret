@@ -33,6 +33,33 @@ final class SpokenLineTests: XCTestCase {
         )
     }
 
+    /// A pop-up says everything it shows, so nothing on it is out of VoiceOver's reach before Tab.
+    func testAnEventCardSaysItsWhenAndSource() {
+        XCTAssertEqual(
+            SurfaceCoordinator.spoken(.popup(Gallery.eventCard, highlight: nil)),
+            "Coffee with Dana. Thursday Oct 9, 3:00 to 3:30 pm. Personal. From your message to Dana. Tab: Add. Command 2: Change time. Escape closes it."
+        )
+    }
+
+    func testAFillPreviewSaysEveryFieldAndValue() {
+        XCTAssertEqual(
+            SurfaceCoordinator.spoken(.popup(Gallery.fillPreview, highlight: nil)),
+            "Fill 4 fields. From Mail, Invoice 2041. Name: Dana Reyes. Email: dana@northline.example. Company: Northline, unsure. Amount: $1,240.00. Tab: Fill all. Down arrow: Review one by one. Escape closes it."
+        )
+    }
+
+    /// After the pop-up was announced whole, ↓ says only the new choice.
+    func testAMovedHighlightSaysOnlyTheNewChoice() {
+        XCTAssertEqual(SlipSpeech.popupHighlight(Gallery.picker, highlight: 2), "Dana Okafor, dentist, highlighted.")
+        XCTAssertNil(SlipSpeech.popupHighlight(Gallery.fillPreview, highlight: nil))
+    }
+
+    func testTheQuestionsKeysAreInTheSlipsValue() {
+        let line = LineContent(figure: .done, lead: "Added", text: "to Tracker", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")],
+                               question: WorkLines.question(Gallery.skillOffer(.promote)))
+        XCTAssertEqual(SlipSpeech.value(line), "Command Z undoes it. Tab: Do it on its own. Escape: Keep asking.")
+    }
+
     /// One offer from shown to added, as the coordinator would announce it with the machine's own
     /// lines: the working line is said once when work starts and once when Esc Stop joins it, not
     /// every second.

@@ -81,6 +81,13 @@ final class SlipEdgeTests: XCTestCase {
         let rightmost = try XCTUnwrap(render.rightmost { $0.0 - $0.2 > 50 && $0.0 > $0.1 }, "an underline is drawn")
         XCTAssertLessThanOrEqual(CGFloat(rightmost) / 2, end + 1.5, "the underline runs past its text")
         XCTAssertGreaterThanOrEqual(CGFloat(rightmost) / 2, end - 3, "the underline reaches its text's end")
+
+        // And it sits 2 pt under the baseline, whatever room is below the caret.
+        let rows = (0..<render.height).filter { y in (0..<render.width).contains { x in let p = render.rgb(y * render.width + x); return p.0 - p.2 > 50 && p.0 > p.1 } }
+        let middle = CGFloat(rows.first! + rows.last! + 1) / 4
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let caretTop = (24 - lineHeight) / 2
+        XCTAssertEqual(middle, caretTop + lineHeight * 0.78 + 2, accuracy: 1, "the underline's middle is 2 pt under the baseline")
     }
 }
 
@@ -92,13 +99,14 @@ final class ReduceMotionTests: XCTestCase {
             XCTAssertEqual(Motion.Entrance.panel(popup: popup, reduce: true), Motion.Entrance(duration: 0.12, scale: nil, settle: 0))
         }
         XCTAssertEqual(Motion.Entrance.panel(popup: false, reduce: false), Motion.Entrance(duration: 0.16, scale: 0.97, settle: 2))
-        XCTAssertEqual(Motion.Entrance.panel(popup: true, reduce: false), Motion.Entrance(duration: 0.18, scale: 0.96, settle: 3))
+        XCTAssertEqual(Motion.Entrance.panel(popup: true, reduce: false), Motion.Entrance(duration: 0.18, scale: 0.96, settle: 2))
     }
 
-    /// Every exit is a fade of at most 0.12 s.
-    func testExitsAreCappedAt012() {
+    /// Every exit that fades is a 0.12 s fade; one that is at once stays at once.
+    func testExitsFadeAt012() {
         XCTAssertEqual(Motion.exit(0.22, reduce: true), 0.12)
-        XCTAssertEqual(Motion.exit(0.08, reduce: true), 0.08)
+        XCTAssertEqual(Motion.exit(0.08, reduce: true), 0.12)
+        XCTAssertEqual(Motion.exit(0, reduce: true), 0)
         XCTAssertEqual(Motion.exit(0.22, reduce: false), 0.22)
     }
 

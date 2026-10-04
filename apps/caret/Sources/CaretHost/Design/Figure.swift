@@ -557,25 +557,57 @@ struct Gesture {
         }
     }
 
-    /// Done: squash 1.12 by 0.86 at 0, 0.97 by 1.04 at 60%, rest at 260 ms; the eyes squint to
-    /// 0.45 between 30% and 70% of 420 ms; the glow to 2.4 times at 35% of 600 ms. Needs you: two
-    /// 1.5 unit bobs, 600 ms each.
+    /// Done, each on its own track so the longer ones never stretch the squash: the body 1.12 by
+    /// 0.86 at once, 0.97 by 1.04 at 156 ms (60%), rest at 260 ms; the eyes squint to 0.45 from
+    /// 126 to 294 ms of 420 (30% to 70%); the glow 2.4 times at 210 ms of 600 (35%). Needs you:
+    /// two 1.5 unit bobs, 600 ms each.
+    @KeyframesBuilder<Gesture>
     static func track(for state: FigureState, plan: FigureMotion) -> some Keyframes<Gesture> {
-        KeyframeTrack(\Gesture.self) {
-            if plan.gesture, state == .done {
-                CubicKeyframe(Gesture(scaleX: 1.12, scaleY: 0.86, eyeSquash: 1, glow: 1.3), duration: 0.001)
-                CubicKeyframe(Gesture(scaleX: 1.04, scaleY: 0.96, eyeSquash: 0.45, glow: 1.9), duration: 0.125)
-                CubicKeyframe(Gesture(scaleX: 0.97, scaleY: 1.04, eyeSquash: 0.45, glow: 2.4), duration: 0.085)
-                CubicKeyframe(Gesture(eyeSquash: 0.45, glow: 2.2), duration: 0.084)
-                CubicKeyframe(Gesture(eyeSquash: 1, glow: 1.6), duration: 0.125)
-                CubicKeyframe(.rest, duration: 0.18)
-            } else if plan.gesture, state == .needsYou {
-                CubicKeyframe(Gesture(lift: -1.5), duration: 0.3)
-                CubicKeyframe(.rest, duration: 0.3)
-                CubicKeyframe(Gesture(lift: -1.5), duration: 0.3)
-                CubicKeyframe(.rest, duration: 0.3)
+        let done = plan.gesture && state == .done
+        let needs = plan.gesture && state == .needsYou
+        KeyframeTrack(\Gesture.scaleX) {
+            if done {
+                LinearKeyframe(1.12, duration: 0.001)
+                CubicKeyframe(0.97, duration: 0.155)
+                CubicKeyframe(1, duration: 0.104)
             } else {
-                CubicKeyframe(.rest, duration: 0.01)
+                LinearKeyframe(1, duration: 0.01)
+            }
+        }
+        KeyframeTrack(\Gesture.scaleY) {
+            if done {
+                LinearKeyframe(0.86, duration: 0.001)
+                CubicKeyframe(1.04, duration: 0.155)
+                CubicKeyframe(1, duration: 0.104)
+            } else {
+                LinearKeyframe(1, duration: 0.01)
+            }
+        }
+        KeyframeTrack(\Gesture.eyeSquash) {
+            if done {
+                CubicKeyframe(0.45, duration: 0.126)
+                LinearKeyframe(0.45, duration: 0.168)
+                CubicKeyframe(1, duration: 0.126)
+            } else {
+                LinearKeyframe(1, duration: 0.01)
+            }
+        }
+        KeyframeTrack(\Gesture.glow) {
+            if done {
+                CubicKeyframe(2.4, duration: 0.21)
+                CubicKeyframe(1, duration: 0.39)
+            } else {
+                LinearKeyframe(1, duration: 0.01)
+            }
+        }
+        KeyframeTrack(\Gesture.lift) {
+            if needs {
+                CubicKeyframe(-1.5, duration: 0.3)
+                CubicKeyframe(0, duration: 0.3)
+                CubicKeyframe(-1.5, duration: 0.3)
+                CubicKeyframe(0, duration: 0.3)
+            } else {
+                LinearKeyframe(0, duration: 0.01)
             }
         }
     }

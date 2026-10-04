@@ -11,9 +11,10 @@ public enum SlipSpeech {
         caption(line)
     }
 
-    /// The accessibility value: what the keys do ("Tab adds it to Calendar"), or nil with no keys.
+    /// The accessibility value: what the keys do ("Tab adds it to Calendar"), the question's keys
+    /// included, or nil with no keys.
     public static func value(_ line: LineContent) -> String? {
-        let phrases = line.hints.map { phrase($0, line: line) }
+        let phrases = line.hints.map { phrase($0, line: line) } + (line.question?.hints.map { phrase($0, line: nil) } ?? [])
         return phrases.isEmpty ? nil : sentences(phrases)
     }
 
@@ -28,25 +29,63 @@ public enum SlipSpeech {
         return sentences(parts)
     }
 
-    /// A pop-up: its title, the highlighted choice, and its actions.
+    /// A pop-up, everything it shows in reading order: the title, each fact, the source, each
+    /// field's destination, value and state, the highlighted choice, a change, the steps, and what
+    /// its keys do. The pop-up is one element with these words, so nothing on it is out of reach
+    /// of VoiceOver before Tab acts on it.
     public static func popup(_ spec: PopupSpec, highlight: Int?) -> String {
         var parts: [String] = []
         for block in spec.blocks {
             switch block.content {
             case .header(let header): parts.append(header.title.text)
+            case .facts(let facts):
+                parts += facts.rows.map { row in [row.label, row.value.text].compactMap { $0 }.joined(separator: ": ") }
+            case .source(let source): parts.append("From \(source.value.text)")
+            case .fields(let fields):
+                parts += fields.rows.map { row in
+                    let value = row.value?.text ?? "kept as it is"
+                    let note: String?
+                    switch row.state {
+                    case .ready, .kept: note = nil
+                    case .unsure: note = "unsure"
+                    case .done: note = "filled"
+                    case .failed: note = "not filled"
+                    }
+                    return ["\(row.destination.text): \(value)", note].compactMap { $0 }.joined(separator: ", ")
+                }
+                if fields.more > 0 { parts.append("And \(fields.more) more") }
             case .choices(let choices):
-                let index = highlight ?? choices.selected
-                if choices.rows.indices.contains(index) {
-                    let row = choices.rows[index]
-                    parts.append([row.label.text, row.hint?.text].compactMap { $0 }.joined(separator: ", ") + ", highlighted")
+                if let chosen = choice(choices, highlight: highlight) { parts.append(chosen) }
+            case .diff(let diff):
+                parts.append([diff.label.map { "\($0):" }, "\(diff.before.text) becomes \(diff.after.text)"].compactMap { $0 }.joined(separator: " "))
+            case .steps(let steps):
+                parts += steps.rows.map { row in
+                    switch row.state {
+                    case .pending: return row.label
+                    case .running: return "\(row.label), now"
+                    case .done: return "\(row.label), done"
+                    case .failed: return "\(row.label), failed"
+                    }
                 }
             case .actions(let actions):
                 parts += actions.items.map { "\(spokenKey(Hint.key($0.key))): \($0.label)" }
                 parts.append("Escape closes it")
-            case .facts, .source, .fields, .diff, .steps: break
             }
         }
         return sentences(parts)
+    }
+
+    /// What ↑ or ↓ changed on a pop-up already announced: only the newly highlighted choice.
+    public static func popupHighlight(_ spec: PopupSpec, highlight: Int?) -> String? {
+        guard let choices = spec.choices, let chosen = choice(choices, highlight: highlight) else { return nil }
+        return sentences([chosen])
+    }
+
+    static func choice(_ choices: PopupSpec.Choices, highlight: Int?) -> String? {
+        let index = highlight ?? choices.selected
+        guard choices.rows.indices.contains(index) else { return nil }
+        let row = choices.rows[index]
+        return [row.label.text, row.hint?.text].compactMap { $0 }.joined(separator: ", ") + ", highlighted"
     }
 
     /// The words to post now, or nil when they are what was last said for this panel.

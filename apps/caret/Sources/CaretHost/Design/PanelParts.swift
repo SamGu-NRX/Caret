@@ -12,8 +12,8 @@ private struct OwnSurfaceKey: EnvironmentKey {
     static let defaultValue = false
 }
 
-/// Below macOS 26 the material is `NSVisualEffectView`, which carries no tint of its own: the
-/// view lays the glass color over it.
+/// On screen the panel's material (system glass or `NSVisualEffectView`) carries no color of its
+/// own: the view lays the glass color over it.
 private struct GlassTintKey: EnvironmentKey {
     static let defaultValue = false
 }
@@ -268,6 +268,9 @@ struct LineView: View {
     @Environment(\.reducesMotion) private var reducesMotion
 
     private var moves: Bool { animated && !reduceMotion && !reducesMotion }
+    /// Reduce Motion: changes that would move fade instead, at 0.12 s.
+    private var fades: Bool { animated && (reduceMotion || reducesMotion) }
+    private var fade: Animation { .linear(duration: Motion.Duration.reduced) }
     private var figureSize: CGFloat { compact ? Tokens.FigureSize.compact : Tokens.FigureSize.line }
     /// Where the words start: the padding, the figure's seat and the gap.
     private var indent: CGFloat { Tokens.Shape.slipLeading + figureSize + Tokens.Shape.gap }
@@ -300,7 +303,7 @@ struct LineView: View {
                 StepBar(progress: progress)
             }
         }
-        .animation(moves ? Motion.curve(Motion.easeOut, Motion.Duration.grow) : nil, value: content.question != nil)
+        .animation(moves ? Motion.curve(Motion.easeOut, Motion.Duration.grow) : fades ? fade : nil, value: content.question != nil)
         .panelChrome(radius: compact ? Tokens.Shape.compactRadius : Tokens.Shape.slipRadius)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(SlipSpeech.label(content) + (content.question.map { " " + SlipSpeech.sentences([$0.text, $0.detail ?? ""]) } ?? ""))
@@ -327,7 +330,7 @@ struct LineView: View {
                 }
             }
             .frame(width: figureSize, height: figureSize)
-            .animation(moves ? Motion.curve(Motion.easeOut, Motion.Duration.figureEnter) : nil, value: content.figure == .absent)
+            .animation(moves ? Motion.curve(Motion.easeOut, Motion.Duration.figureEnter) : fades ? fade : nil, value: content.figure == .absent)
             Spacer().frame(width: compact ? 6 : Tokens.Shape.gap)
             if let app = content.app {
                 AppGlyph(app: app, size: compact ? 12 : 14)
@@ -344,7 +347,7 @@ struct LineView: View {
         .padding(.leading, compact ? 5 : Tokens.Shape.slipLeading)
         .padding(.trailing, compact ? 5 : Tokens.Shape.slipTrailing)
         .frame(height: rowHeight)
-        .animation(moves ? Motion.curve(Motion.easeOut, Motion.Duration.swapIn) : nil, value: SlipSpeech.withoutSeconds(content.text))
+        .animation(moves ? Motion.curve(Motion.easeOut, Motion.Duration.swapIn) : fades ? fade : nil, value: SlipSpeech.withoutSeconds(content.text))
     }
 
     /// The figure leaves its seat with a 4 pt rise and returns with a 2 pt settle from 0.9.
@@ -366,7 +369,7 @@ struct LineView: View {
             .id(SlipSpeech.caption(LineContent(figure: content.figure, lead: content.lead, text: base)))
             .transition(moves
                 ? .asymmetric(insertion: .modifier(active: SwapIn(amount: 1), identity: SwapIn(amount: 0)), removal: .identity)
-                : .identity)
+                : fades ? .asymmetric(insertion: .opacity, removal: .identity) : .identity)
     }
 
     private var voice: Font { compact ? .system(size: 12, weight: .medium, design: face.design) : Tokens.Font.voice(face) }

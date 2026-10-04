@@ -282,11 +282,13 @@ final class FillOverlay {
         onChange?()
     }
 
-    /// Typing: 80 ms. Timeout: 220 ms. A waiting slip takes the stage after it.
+    /// Typing: 80 ms. Timeout: 220 ms. A slip waiting behind it takes its panel and moves there,
+    /// rather than the result fading while a new slip enters.
     func hideToast(byTyping: Bool) {
-        endToast(exit: byTyping ? Motion.Duration.typed : Motion.Duration.toastExit)
-        if let waiting = deferred, ghost.isVisible {
+        if let waiting = deferred, ghost.isVisible, line?.role == .toast {
             showLine(caption: waiting.caption, sourceApp: waiting.sourceApp, field: waiting.field, pid: waiting.pid)
+        } else {
+            endToast(exit: byTyping ? Motion.Duration.typed : Motion.Duration.toastExit)
         }
         onChange?()
     }

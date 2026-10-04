@@ -279,8 +279,8 @@ struct AlternativesScene: View {
                 // The decor, as the host draws it from the caret's top right.
                 HStack(alignment: .bottom, spacing: 0) {
                     VStack(alignment: .leading, spacing: 0) {
+                        if collapsed { UnevenUnderline(width: layout.underlineWidth, animated: false).padding(.top, layout.underlineTop) }
                         Spacer(minLength: 0)
-                        if collapsed { UnevenUnderline(width: layout.underlineWidth, animated: false) }
                     }
                     .frame(width: layout.textSpan, height: layout.decorHeight, alignment: .leading)
                     if layout.showsTag { tag.padding(.leading, layout.tagGap).padding(.bottom, layout.tagBottom) }

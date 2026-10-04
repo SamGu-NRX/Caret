@@ -22,6 +22,13 @@ public struct AlternativesLayout: Equatable, Sendable {
     public var decorHeight: CGFloat
     /// From the decor's bottom up to the baseline, where the tag's bottom sits.
     public var tagBottom: CGFloat
+    /// From the caret's top to the underline's 3 pt frame, so its middle sits 2 pt under the
+    /// baseline (baseline estimated at 0.78 of the caret's height), whatever room is below.
+    public var underlineTop: CGFloat
+
+    /// The underline's frame height, and how far under the baseline its middle sits.
+    public static let underlineHeight: CGFloat = 3
+    public static let belowBaseline: CGFloat = 2
 
     /// The space kept free at the field's right edge.
     public static let edge: CGFloat = 2
@@ -35,6 +42,7 @@ public struct AlternativesLayout: Equatable, Sendable {
         textSpan = showsTag ? textWidth : underlineWidth
         decorHeight = max(caret.height, min(caret.height + 4, field.maxY - caret.minY))
         tagBottom = max(0, decorHeight - caret.height * 0.78)
+        underlineTop = caret.height * 0.78 + Self.belowBaseline - Self.underlineHeight / 2
     }
 
     /// The tag's frame for a tag `width` wide and `height` tall, global top-left, or nil when it is
