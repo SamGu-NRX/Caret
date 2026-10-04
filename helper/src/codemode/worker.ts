@@ -94,6 +94,8 @@ let asks = 0;
 let plan: { ref: string; basedOn: string; steps: PlanStep[] } | null = null;
 /** Set while plan() reads its argument, whose getters can call back into the API. */
 let planning = false;
+/** Set while the host reads a thrown value; its getters must not start API work such as a Jev call. */
+let readingError = false;
 
 function issue(s: PlanningSnapshot): void {
   issuedSnapshots.set(s.snapshot, s);
@@ -197,6 +199,7 @@ type Impl = (...args: QuickJSHandle[]) => QuickJSHandle | { error: QuickJSHandle
 /** Wraps an API function: a Violation is recorded and thrown into the guest, and the guest is interrupted. */
 function api(name: string, impl: Impl): QuickJSHandle {
   return vm.newFunction(name, (...args) => {
+    if (readingError) return { error: vm.newError(`${name}: the API is closed while the run is ending`) };
     try {
       return impl(...args);
     } catch (e) {
@@ -378,6 +381,7 @@ function shortString(h: QuickJSHandle): string {
  * never serialized whole. Inside a slice, because a property read can run a guest getter.
  */
 function errorOf(h: QuickJSHandle): [string, string] {
+  readingError = true;
   return slice(() => {
     try {
       const t = vm.typeof(h);
@@ -395,6 +399,8 @@ function errorOf(h: QuickJSHandle): [string, string] {
       return [read("name") || "Error", read("message")];
     } catch {
       return ["Error", "(the error could not be read)"];
+    } finally {
+      readingError = false;
     }
   });
 }

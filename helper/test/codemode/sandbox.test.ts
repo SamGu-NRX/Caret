@@ -385,4 +385,35 @@ describe("review regressions", () => {
     expect(refusal(o).kind).toBe("cpu");
     expect(o.stats.wallMs).toBeLessThan(1500);
   });
+
+  test("a getter on a thrown value cannot start a Jev call while the run is ending", async () => {
+    let calls = 0;
+    const o = await raw(`await caret.readWindow(); throw { get name() { caret.choose(["o:tue", "o:wed"]); return "Error"; }, message: "failed" };`, {}, async () => {
+      calls++;
+      return null;
+    });
+    expect(refusal(o).kind).toBe("guestError");
+    expect(calls).toBe(0);
+  });
+
+  test("replies answered out of order still resume the watchdog", async () => {
+    // The second choose is answered first; the worker then runs native code past the watchdog.
+    const resolvers: ((v: string | null) => void)[] = [];
+    const o = await raw(
+      `const w = await caret.readWindow(); const opts = w.questions[0].options.map((o) => o.ref);
+       await Promise.all([caret.choose(opts), caret.choose(opts)]);
+       let o = {}; for (let i = 0; i < 5e4; i++) o = { o }; JSON.stringify(o); ${plain()}`,
+      {},
+      () =>
+        new Promise<string | null>((r) => {
+          resolvers.push(r);
+          if (resolvers.length === 2) {
+            resolvers[1]!(null);
+            setTimeout(() => resolvers[0]!(null), 50);
+          }
+        }),
+    );
+    expect(refusal(o).kind).toBe("cpu");
+    expect(o.stats.wallMs).toBeLessThan(2500);
+  });
 });

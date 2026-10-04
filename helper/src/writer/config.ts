@@ -52,5 +52,34 @@ export const GATEWAY_GPT_OSS_120B: ChatRoute = {
 
 export const CANDIDATES: readonly ChatRoute[] = [GROQ_GPT_OSS_120B, GROQ_GPT_OSS_20B, GROQ_QWEN_3_8_27B];
 
-/** Filled in from the measured run; see the table above WRITER_ROUTE. */
-export const WRITER_ROUTE: ChatRoute = GROQ_GPT_OSS_120B;
+/*
+ * Measured 2026-10-04 with scripts/writer-eval.ts on the ten synthetic cases in
+ * test/codemode/writer-corpus.ts, one request at a time from the development Mac. "Correct" means the sandbox
+ * accepted the program and the plan's fills, presses and asks equal the expected ones. The gateway could
+ * not be measured (HTTP 403, see GATEWAY_GPT_OSS_120B), so all three candidates are Groq-hosted.
+ *
+ * Run 3 (final prompt and sandbox, output cap 1,000 tokens, no rate-limit retries):
+ * | model               | correct | valid | p50 ms | p95 ms | mean in/out tok (reasoning) | $/plan  |
+ * | qwen/qwen3.8-27b    | 9/10    | 10/10 |    747 |   2006 | 1277 / 209 (0)              | 0.00186 |
+ * | openai/gpt-oss-20b  | 8/10    | 10/10 |    617 |   1645 | 1244 / 313 (91)             | 0.00019 |
+ * | openai/gpt-oss-120b | 7/10    |  8/10 |   1323 |   2669 | 1244 / 425 (178)            | 0.00044 |
+ *
+ * Run 2 (same corpus, before switch was allowed and before choose required every option):
+ * qwen3.8-27b 6/10 correct, two of the misses Groq 429s; p50 670, p95 986 ms.
+ * gpt-oss-20b 8/10; p50 756, p95 1222 ms. gpt-oss-120b 8/10, both misses a refused switch; p50 882,
+ * p95 1928 ms. Spend over runs 1-3: $0.057.
+ *
+ * Pick: qwen3.8-27b. Best correctness in run 3, no reasoning tokens, and its misses fail safe: it left
+ * out the Save press on "create the event" in both runs, and once passed a non-string to press, which the
+ * sandbox refused. gpt-oss-20b pressed "Continue to payment" when only asked to fill the shipping
+ * address in both runs. gpt-oss-120b once filled a date without calling choose, and once spent its
+ * 1,000-token cap on reasoning and returned no program. Ten cases per run is small: a one- or two-case
+ * difference is within run-to-run variation, so this pick is provisional.
+ *
+ * Limits that matter for the product: Groq's on-demand tier allows qwen3.8-27b 1,000 output tokens a
+ * minute (about five plans) and the gpt-oss models 8,000 tokens a minute (about five plans).
+ */
+export const WRITER_ROUTE: ChatRoute = GROQ_QWEN_3_8_27B;
+
+/** Longest qwen3.8 plan in runs 2 and 3 was 400 output tokens; 1,000 also stays under its per-minute limit. */
+export const WRITER_MAX_OUTPUT_TOKENS = 1000;
