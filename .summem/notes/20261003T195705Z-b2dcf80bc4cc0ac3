@@ -1,1 +1,0 @@
-helper/fixtures/golden/protocol.ndjson line 32 still holds the host's pre-calendar default roles; HelperProtocolTests compares it with calendar removed until the screen track rewrites the line (A13).

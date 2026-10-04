@@ -1,1 +1,0 @@
-Caret's ask field lives in the activity list panel (OverlayPanel keyable, non-activating); Return/Tab/Esc are intercepted in the panel's sendEvent, because the field editor eats Tab and Esc before SwiftUI onKeyPress (A13).
