@@ -110,17 +110,28 @@ public struct Claim: Equatable, Sendable {
         self.choice = choice
     }
 
-    /// Ghost text and fill values are inserted; action lines and pop-ups are handed to the helper.
+    /// Ghost text, fill values and writing fixes are written into the field; action lines and
+    /// pop-ups are handed to the helper.
     public var insertsText: Bool {
         switch offer.kind {
         case .ghost, .fill: return !choice.fillAll
+        case .writing: return rangeEdit != nil
         case .action, .popup: return false
         }
     }
 
-    /// What Tab inserts: the offer minus the part the user already typed.
+    /// What Tab inserts: the offer minus the part the user already typed. For a writing fix, the
+    /// chosen replacement.
     public var insertionText: String {
-        String(offer.text.dropFirst(typedSinceOffer.count))
+        if let rangeEdit { return rangeEdit.replacement }
+        return String(offer.text.dropFirst(typedSinceOffer.count))
+    }
+
+    /// The range edit a writing claim applies: the chosen alternative's. Nil for every other kind,
+    /// and for Original, which changes nothing.
+    public var rangeEdit: RangeEdit? {
+        guard let writing = offer.kind.writing, writing.alternatives.indices.contains(choice.candidate) else { return nil }
+        return writing.alternatives[choice.candidate].edit
     }
 
     /// The edit this claim authorizes, against the field as it should look now: the published

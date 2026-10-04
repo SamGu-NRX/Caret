@@ -109,7 +109,7 @@ extension OfferAccept {
         case .action(let line):
             if let row = claim.choice.row { overrides["variants"] = row }
             return OfferAccept(offerId: line.offerKey, actionId: actionID, overrides: overrides, at: at)
-        case .ghost, .fill:
+        case .ghost, .fill, .writing:
             return nil
         }
     }

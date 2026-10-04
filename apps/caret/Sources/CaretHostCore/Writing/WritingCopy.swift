@@ -78,6 +78,37 @@ public enum WritingCopy {
         text.allSatisfy({ $0 == " " }) ? String(repeating: "␣", count: text.count) : text
     }
 
+    // MARK: After Tab and ⌘Z
+
+    /// Why Tab changed nothing, by the executor's refusal code. Short enough for one line.
+    public static func notFixed(_ code: String) -> String {
+        switch code {
+        case "writeRefused", "writeIgnored": return "This app didn't take the fix, so nothing changed."
+        case "composing": return "Caret doesn't fix text while an input method is on."
+        case "revoked": return "Caret is paused, so nothing changed."
+        default: return "The text changed, so nothing was fixed."
+        }
+    }
+
+    public static let undoneLead = "Undone"
+    public static let undoFailed = "The text changed after the fix, so it was left as it is."
+
+    /// The line after ⌘Z took a fix back: what came back, as words.
+    public static func undone(_ alternative: WritingOffer.Alternative) -> LineContent {
+        let text: String
+        switch alternative.kind {
+        case .fixAll: text = fixedAll(alternative.diff.count)
+        default:
+            let change = alternative.diff.first
+            text = "“\(visible(change?.original ?? ""))” is back"
+        }
+        return LineContent(figure: .done, lead: undoneLead, text: text, emphasis: .plain)
+    }
+
+    public static func error(_ text: String) -> LineContent {
+        LineContent(figure: .error, text: text, emphasis: .plain)
+    }
+
     // MARK: VoiceOver
 
     /// The line, spoken: what is wrong, the fix, and the keys.
