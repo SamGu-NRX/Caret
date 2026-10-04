@@ -53,7 +53,19 @@ export interface Snippet {
 export interface Declared {
   snippets: readonly Snippet[];
   charged: Readonly<Record<string, number>>;
+  /** Windows the user's instruction named, which gave this request up to WINDOW_CHARS (SnippetLedger consented). */
+  consented?: readonly string[];
 }
+
+/**
+ * What a window the user's Ask names may give that one request (B26 lead decision 1): up to WINDOW_CHARS, whether it
+ * is a conversation, a mixed note or a card, with no prose share. Naming a window is consent to read it for the request
+ * that names it ("from my note", "Bea's email", "the Saturday Chris mentioned"), as asking is consent in the design's
+ * lead decision 6. Before it, a mail an Ask named was held under half and to 600 characters as a conversation, and B25's
+ * held-out asks that named one found nothing in it (held-12, held-14). Every other window, and every fill on focus,
+ * keeps windowBudget; a window with more text than WINDOW_CHARS still never goes out whole.
+ */
+const CONSENTED: WindowShare = { budget: WINDOW_CHARS, prose: null };
 
 /** Collapses whitespace as every request builder does before it quotes a line. */
 /** Whitespace flat() would change: a run, a tab or line break, or space at either end. Testing first spares the copy for most lines. */
@@ -461,16 +473,27 @@ export class SnippetLedger {
   private readonly partials = new Map<string, [string, string[]][]>();
   readonly snippets: Snippet[] = [];
 
-  /** `windows`: every window whose lines a request's text could reveal, normally all of the screen model's. */
-  constructor(windows: Iterable<WindowState>) {
+  private readonly consented: ReadonlySet<string>;
+
+  /**
+   * `windows`: every window whose lines a request's text could reveal, normally all of the screen model's.
+   * `consented`: windows the user's Ask names, which this request may read up to WINDOW_CHARS (CONSENTED).
+   */
+  constructor(windows: Iterable<WindowState>, o: { consented?: ReadonlySet<string> } = {}) {
     for (const w of windows) this.known.set(w.window.windowId, w);
+    this.consented = o.consented ?? new Set();
   }
 
   private entry(w: WindowState): Entry {
     const id = w.window.windowId;
     let e = this.entries.get(id);
-    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), marks: new Map(), chars: 0, prose: 0, share: windowShare(w) }));
+    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), marks: new Map(), chars: 0, prose: 0, share: this.consented.has(id) ? CONSENTED : windowShare(w) }));
     return e;
+  }
+
+  /** The characters this request may take from a window: its budget, or WINDOW_CHARS when the Ask named it. */
+  budget(w: WindowState): number {
+    return this.consented.has(w.window.windowId) ? CONSENTED.budget : windowBudget(w);
   }
 
   /** A window a take names that the ledger was not built over (a closed source a task kept) is known from then on. */
@@ -694,9 +717,9 @@ export class SnippetLedger {
     return Object.fromEntries([...this.entries].filter(([, e]) => e.chars > 0).map(([id, e]) => [id, e.chars]));
   }
 
-  /** What a request built from this ledger declares: its screen text, and what each window was charged. */
+  /** What a request built from this ledger declares: its screen text, what each window was charged, and the windows the Ask named. */
   declared(): Declared {
-    return { snippets: this.snippets, charged: this.charges() };
+    return { snippets: this.snippets, charged: this.charges(), ...(this.consented.size === 0 ? {} : { consented: [...this.consented] }) };
   }
 
   /** Characters taken from a window so far. */

@@ -41,6 +41,11 @@ export interface JevRequest {
    * what it held to the window's budget. Never sent; privacy.test.ts checks its own measure against it.
    */
   charged: Readonly<Record<string, number>>;
+  /**
+   * Windows the user's Ask named, which may give this request up to WINDOW_CHARS whatever their kind (privacy.ts
+   * CONSENTED). Never sent; privacy.test.ts holds every other window to its usual rules.
+   */
+  consented?: readonly string[];
 }
 
 const ChoiceAnswer = z.object({ choice: z.string(), confidence: z.number() }).loose();

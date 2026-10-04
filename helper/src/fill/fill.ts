@@ -331,6 +331,7 @@ export function buildFillRequest(
     questions,
     snippets: declared.snippets,
     charged: declared.charged,
+    ...(declared.consented === undefined ? {} : { consented: declared.consented }),
   };
   // A staged request (B24) carries only some of the asked text: it declares only the snippets it sends, as the
   // planner's requests do (privacy.test.ts fails a request that declares text it does not send). The ledger
@@ -444,6 +445,10 @@ export interface FillScope {
   person: string | null;
   /** Exact spans of the instruction tied to fields, by node key; each is offered only in its field's question. */
   literals: ReadonlyMap<string, string>;
+  /** Windows the instruction names, which this fill may read up to WINDOW_CHARS (privacy.ts CONSENTED); none when absent. */
+  consented?: ReadonlySet<string>;
+  /** People whose lines go first in the windows the instruction names: the name that named one, and its sender. */
+  first?: readonly string[];
 }
 
 /** The inputs a scope names, in its order: text fields (filled or not, never one Caret never types) and empty controls. */
@@ -526,8 +531,8 @@ export async function proposeFill(
   // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
   // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
-  const ledger = new SnippetLedger(model.windows.values());
   const scope = opts.scope;
+  const ledger = new SnippetLedger(model.windows.values(), scope?.consented === undefined ? {} : { consented: scope.consented });
   // An Ask's instruction is in every question; it may quote a window, which pays for what it quotes.
   if (scope !== undefined && !ledger.plan([scope.instruction])) throw new FillError("the instruction quotes more of an open window than one question to Jev may carry");
   const title = ledger.take(w, "descriptor", [w.window.title]) ? w.window.title : null;
@@ -584,6 +589,7 @@ export async function proposeFill(
     ...(opts.relevance === false ? {} : { fields: fields.map((f) => f.terms) }),
     ...(opts.kindsByCost === false ? { kindsByCost: false } : {}),
     ...(opts.nameGroup === false ? { nameGroup: false } : {}),
+    ...(scope?.consented !== undefined && scope.consented.size > 0 && (scope.first?.length ?? 0) > 0 ? { first: { windows: scope.consented, names: scope.first ?? [] } } : {}),
   });
   // A value a window shows is offered as that window's candidate, which names where it is; the same text
   // from memory would only repeat it.
@@ -749,7 +755,7 @@ export async function proposeFill(
   // window was still charged for them, which errs on the side of saying less.
   const sent = new Set(asked.flatMap((f) => f.texts));
   const unsent = new Set(fields.filter((f) => !asked.includes(f)).flatMap((f) => f.texts).filter((t) => t !== null && !sent.has(t) && t !== title));
-  const declared: Declared = { snippets: ledger.snippets.filter((x) => !(x.kind === "descriptor" && x.windowId === windowId && unsent.has(x.text))), charged: ledger.charges() };
+  const declared: Declared = { ...ledger.declared(), snippets: ledger.snippets.filter((x) => !(x.kind === "descriptor" && x.windowId === windowId && unsent.has(x.text))), charged: ledger.charges() };
 
   // The second ask sees the same candidates in another order under other ids, so neither position
   // nor id can carry a choice from one ask to the other. Windows keep their recency order and only

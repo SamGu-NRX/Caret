@@ -412,3 +412,56 @@ describe("what an Ask says when it refuses or asks (B26 lead decision 3)", () =>
     expect((e as AskRefused).detail).toContain("429");
   });
 });
+
+describe("where an Ask copies from (B26: source words never scope, a named window is read with consent)", () => {
+  it("reads the window the instruction names when the maker said only 'instruction', with consent", () => {
+    // "Rental notes.txt" is the note; "from my note" names it whatever source the maker chose.
+    const s = snapOf("fill in the landlord phone from my note");
+    expect(s.named.map((n) => n.windowId)).toEqual(["note"]);
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], sources: ["instruction"] }), s);
+    expect(c.route === "fill" && [...(c.scope.windows ?? [])]).toEqual(["note"]);
+    expect(c.route === "fill" && [...(c.scope.consented ?? [])]).toEqual(["note"]);
+  });
+
+  it("reads every source when the maker said only 'instruction' and nothing is named, unless every field has a spelled-out value", () => {
+    const s = snapOf("make my wife the landlord contact");
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], sources: ["instruction"] }), s);
+    expect(c.route === "fill" && c.scope.windows).toBeNull();
+    expect(c.route === "fill" && c.scope.memory).toBe(true);
+    expect(c.route === "fill" && c.scope.consented?.size).toBe(0);
+    const t = snapOf("delivery at 8:15 pm");
+    const d = checkIntent(intent({ fields: [refOf(t, "Delivery time")], sources: ["instruction"], literals: [{ field: refOf(t, "Delivery time"), text: "8:15 pm" }] }), t);
+    expect(d.route === "fill" && d.scope.windows?.size).toBe(0);
+  });
+
+  it("does not take a person named only as the source as whose details go in", () => {
+    const s = snapOf("fill in the landlord phone from Gary's note");
+    const p = s.persons.find((x) => x.span === "Gary")?.ref ?? "missing";
+    const c = checkIntent(intent({ fields: [refOf(s, "Landlord phone")], whose: p }), s);
+    expect(c.route === "fill" && c.scope.person).toBeNull();
+    const t = snapOf("use Gary for the landlord part");
+    const q = t.persons.find((x) => x.span === "Gary")?.ref ?? "missing";
+    const d = checkIntent(intent({ fields: [refOf(t, "Landlord phone")], whose: q }), t);
+    expect(d.route === "fill" && d.scope.person).toBe("Gary");
+  });
+
+  it("asks Jev about a field whose name only shares a word with the source ('note' in Notes), as about any unnamed field", async () => {
+    const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : null);
+    const jev = jevBy(pick, () => "user", (q) => (q.includes("'Notes'") ? "no" : "yes"));
+    const d = await planAsk("fill in my email from my note", desk(), memory, about, { askJev: jev.ask, maker: maker((s) => ({ fields: [refOf(s, "Email"), refOf(s, "Notes")] })), writer: null, offerKey: "src-1", windowId: "form", now: 2000 });
+    const confirms = jev.seen.flatMap((r) => Object.values(r.questions).map((q) => String(q.instructions))).filter((t) => t.includes("Does that ask to fill in or change the field"));
+    expect(confirms.some((t) => t.includes("'Notes'"))).toBe(true);
+    expect(confirms.some((t) => t.includes("'Email'"))).toBe(false);
+    expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("email")]);
+  });
+
+  it("reads an empty list for an instruction that names no field as the whole form, once Jev confirms it", async () => {
+    const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : q.includes("'Landlord name'") ? "Gary Pruitt" : null);
+    const yes = jevBy(pick, () => "user", () => "yes");
+    const d = await planAsk("can you get this done from what I jotted down", desk(), memory, about, { askJev: yes.ask, maker: maker({ scope: "list", fields: [] }), writer: null, offerKey: "src-2", windowId: "form", now: 2000 });
+    expect(yes.seen.some((r) => "all" in r.questions)).toBe(true);
+    expect(d.checked.writes.length).toBeGreaterThan(0);
+    const no = await planAsk("can you get this done from what I jotted down", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "list", fields: [] }), writer: null, offerKey: "src-3", windowId: "form", now: 2000 }).catch((x: unknown) => x);
+    expect((no as AskRefused).message).toBe(SAYS.whichFields);
+  });
+});

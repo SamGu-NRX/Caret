@@ -17,6 +17,7 @@ import { asksToFillForm, namesShortLabel, PLAN_CUTOFF, planTask, relevance, task
 import { planWithCode, type WriterUse } from "./codeplan.ts";
 import { checkIntent, intentSnapshot, leftToYouSays, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import { SAYS, SaidError, saysAmbiguous, saysFor, saysNoValue, saysPress, saysUnsure } from "./says.ts";
+import { fieldWords } from "./sources.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { handoffWhy, PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 
@@ -105,9 +106,17 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
     throw e;
   };
+  // The words that may name fields are the instruction without its source phrases (sources.ts): "from my note"
+  // never names the form's "Add a gift note" (B25 held-08).
+  const words = fieldWords(instruction);
+  const namesField = (f: IntentField): boolean => relevance(words, f.name) > 0 || namesShortLabel(words, f.name);
+  // A writer's fill with an empty list, for an instruction whose field words name no field, is read as the whole form,
+  // which Jev must then confirm (confirmScope): B25's writer gave "can you get this enrollment form done from what I
+  // jotted down" an empty list, and the Ask refused it as a field the form does not have (held-07).
+  const inferredAll = o.maker.name === "writer" && intent.route === "fill" && intent.scope === "list" && intent.fields.length === 0 && !snap.fields.some(namesField);
   let checked: ReturnType<typeof checkIntent>;
   try {
-    checked = checkIntent(intent, snap);
+    checked = checkIntent(inferredAll ? { ...intent, scope: "all" } : intent, snap);
   } catch (e) {
     return refused(e);
   }
@@ -125,7 +134,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // has had since B24, codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
   if (checked.route === "fill" && o.maker.name === "writer") {
     try {
-      checked = await confirmScope(instruction, checked, intent, snap, askJev);
+      checked = await confirmScope(instruction, checked, inferredAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField);
     } catch (e) {
       return refused(e);
     }
@@ -235,14 +244,23 @@ const CONFIRM_ALL = [
  * answering yes at PLAN_CUTOFF; an "all" or section scope the instruction does not state is confirmed the same way.
  * Throws PlannerError when nothing in scope is left, or the whole form is not confirmed.
  */
-async function confirmScope(instruction: string, checked: Extract<ReturnType<typeof checkIntent>, { route: "fill" }>, intent: AskIntent, snap: IntentSnapshot, askJev: AskJev): Promise<Extract<ReturnType<typeof checkIntent>, { route: "fill" }>> {
-  const named = (f: IntentField): boolean => relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.name);
+async function confirmScope(
+  instruction: string,
+  checked: Extract<ReturnType<typeof checkIntent>, { route: "fill" }>,
+  scope: AskIntent["scope"] | "inferred",
+  section: string,
+  snap: IntentSnapshot,
+  askJev: AskJev,
+  named: (f: IntentField) => boolean,
+): Promise<Extract<ReturnType<typeof checkIntent>, { route: "fill" }>> {
+  const words = fieldWords(instruction);
   // "Every field" stands on the writer's word unless the instruction names some field of the form ("Fill only Email;
   // do not change Full name", the review's case): then it may be asking for less, and Jev must confirm it. An
   // instruction that names no field asks for nothing narrower than the form ("fill out the Northgate application").
+  // A whole form code inferred from an empty list always needs Jev's yes.
   const whole =
-    intent.scope === "all" ? !asksToFillForm(instruction) && snap.fields.some(named) : intent.scope === "section" ? relevance(instruction, snap.sections.find((x) => x.ref === intent.section)?.name ?? "") === 0 : false;
-  const unnamed = intent.scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
+    scope === "inferred" ? true : scope === "all" ? !asksToFillForm(words) && snap.fields.some(named) : scope === "section" ? relevance(words, snap.sections.find((x) => x.ref === section)?.name ?? "") === 0 : false;
+  const unnamed = scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
   if (!whole && unnamed.length === 0) return checked;
   const declared = snap.ledger.declared();
   const req = (wording: 0 | 1): JevRequest => {

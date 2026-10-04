@@ -13,12 +13,12 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls, inWebArea, type Control } from "../fill/controls.ts";
-import { labelledLines } from "../fill/candidates.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
 import { mentionedKind, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
 import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
+import { namedSources, onlyInSources, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
 import { SAYS, SaidError, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn } from "./says.ts";
 
@@ -70,6 +70,8 @@ export interface IntentSnapshot {
   persons: { ref: string; span: string }[];
   /** Values the instruction spells out, as exact spans of it (spans.ts), for a maker that can only choose. */
   literals: string[];
+  /** Windows the instruction names as its source, resolved by code (sources.ts): read with consent (privacy.ts). */
+  named: NamedSource[];
   ledger: SnippetLedger;
 }
 
@@ -152,13 +154,13 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     if (windows.length >= MAX_INTENT_WINDOWS) break;
     if (!ledger.take(o, "candidate", [o.window.title])) continue;
     // A mail's sender names it as people do ("Ines's email", "the slot Chris offered"); its subject often does not.
-    const fromLine = labelledLines(o).find((l) => /^from$/i.test(l.label));
-    const sender = fromLine === undefined ? null : (/^\s*"?([^"<>]+?)"?\s*(?:<[^>]*>)?\s*$/u.exec(fromLine.value)?.[1]?.trim() ?? null);
+    const sender = senderOf(o);
     const from = sender !== null && sender.length <= 60 && ledger.take(o, "candidate", [sender]) ? sender : null;
     windows.push({ ref: `w${windows.length + 1}`, windowId: o.window.windowId, app: o.app.name, title: o.window.title, from });
   }
   const labels = [...new Set(memory.map((m) => m.label))];
   const memoryLabels = labels.length > 0 && ledger.memory(labels) ? labels : [];
+  const persons = personSpans(instruction);
   return {
     instruction,
     window: w,
@@ -167,8 +169,9 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
     sections,
     windows,
     memory: memoryLabels,
-    persons: personSpans(instruction).map((span, i) => ({ ref: `p${i + 1}`, span })),
+    persons: persons.map((span, i) => ({ ref: `p${i + 1}`, span })),
     literals: instructionValues(instruction),
+    named: namedSources(instruction, model, w, persons),
     ledger,
   };
 }
@@ -257,20 +260,6 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   const fields = scoped.filter((f) => f.neverTyped === null);
   if (fields.length === 0) stop(leftToYou.length > 0 ? "neverTyped" : "noSuchField", snap, leftToYou);
 
-  const any = intent.sources.length === 0 || intent.sources.includes("any");
-  const windows = new Set<string>();
-  let memory = any;
-  for (const s of intent.sources) {
-    // The instruction is always a source of its own literals; naming it adds nothing else.
-    if (s === "any" || s === "instruction") continue;
-    if (s === "memory") memory = true;
-    else windows.add((snap.windows.find((x) => x.ref === s) ?? bad(`names source '${s}', which the snapshot does not list`)).windowId);
-  }
-
-  let person: string | null = null;
-  if (intent.whose === "unnamed") stop("otherPersonUnnamed", snap);
-  else if (intent.whose !== "user") person = (snap.persons.find((p) => p.ref === intent.whose) ?? bad(`names person '${intent.whose}', whom the instruction does not name`)).span;
-
   const literals = new Map<string, string>();
   for (const l of intent.literals) {
     const f = byRef.get(l.field) ?? bad(`ties a value to field '${l.field}', which the snapshot does not list`);
@@ -283,6 +272,32 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
     literals.set(f.key, text);
   }
 
+  let any = intent.sources.length === 0 || intent.sources.includes("any");
+  const windows = new Set<string>();
+  let memory = any;
+  for (const s of intent.sources) {
+    // The instruction is always a source of its own literals; naming it adds nothing else.
+    if (s === "any" || s === "instruction") continue;
+    if (s === "memory") memory = true;
+    else windows.add((snap.windows.find((x) => x.ref === s) ?? bad(`names source '${s}', which the snapshot does not list`)).windowId);
+  }
+  // The windows the instruction names, as code resolved them (sources.ts), are read whatever windows the maker chose.
+  // The instruction alone gives only its own literals: a field in scope with none reads the named windows, or every
+  // source when it names none. B25's maker answered "instruction" for "put Bea down as my guest with her meal" and
+  // "make my wife the emergency contact", and fill then read no window at all (held-11, held-12, held-14).
+  const named = snap.named.map((n) => n.windowId);
+  if (!any && windows.size === 0 && !memory && fields.some((f) => !literals.has(f.key))) {
+    if (named.length === 0) (any = true), (memory = true);
+  }
+  if (!any) for (const id of named) windows.add(id);
+
+  let person: string | null = null;
+  if (intent.whose === "unnamed") stop("otherPersonUnnamed", snap);
+  else if (intent.whose !== "user") person = (snap.persons.find((p) => p.ref === intent.whose) ?? bad(`names person '${intent.whose}', whom the instruction does not name`)).span;
+  // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
+  // is not whose details go in: the source's words never set the scope.
+  if (person !== null && onlyInSources(snap.instruction, person)) person = null;
+
   const scope: FillScope = {
     fields: fields.map((f) => f.key),
     windows: any ? null : windows,
@@ -290,6 +305,8 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
     instruction: snap.instruction,
     person,
     literals,
+    consented: new Set(named),
+    first: [...new Set(snap.named.flatMap((n) => n.names))],
   };
   // The fill engine's trigger: the focused field when it is in scope, else the first field in scope.
   const focused = snap.window.focusedKey;
