@@ -115,8 +115,11 @@ function guiLockHeldByUs(): boolean {
   }
   return false;
 }
+// 300 s on Sam's Mac (long-run GUI rules). The rig's VM has no user and its idle count starts at boot,
+// so its job lowers this (CARET_DRAWN_IDLE_MIN=30, as the A10 VM job does for its own bar).
+const IDLE_MIN = Number(process.env.CARET_DRAWN_IDLE_MIN ?? "300");
 if (DRAWN !== null) {
-  const why = !guiLockHeldByUs() ? "refused: run under lockf -k ~/.long-run/locks/gui.lock" : quietNow() ? "deferred: quiet window" : hidIdle() < 300 ? `deferred: user active (idle ${Math.round(hidIdle())} s)` : null;
+  const why = !guiLockHeldByUs() ? "refused: run under lockf -k ~/.long-run/locks/gui.lock" : quietNow() ? "deferred: quiet window" : hidIdle() < IDLE_MIN ? `deferred: user active (idle ${Math.round(hidIdle())} s)` : null;
   if (why !== null) {
     console.log(why);
     process.exit(75);
@@ -377,6 +380,24 @@ async function closeForm(windowId: string): Promise<void> {
 const dump = async (): Promise<Record<string, string>> => ((await fx("form dump intake")) as unknown as { fields: Record<string, string> }).fields;
 // MARK: - drawn: the form where the user is, and pictures of it
 
+/**
+ * One window capture by number. In the rig's VM only the job's bash is approved for screen capture, so
+ * CARET_SHOT_SERVER names a directory where the job's bash takes requests: this writes the arguments,
+ * tab-separated, to req-<n>, and the server runs screencapture with them and writes done-<n>.
+ */
+let shotSeq = 0;
+async function capture(args: string[]): Promise<void> {
+  const server = process.env.CARET_SHOT_SERVER;
+  if (server === undefined) {
+    execFileSync("screencapture", args);
+    return;
+  }
+  const n = ++shotSeq;
+  writeFileSync(join(server, `req-${n}.tmp`), args.join("\t"));
+  execFileSync("mv", [join(server, `req-${n}.tmp`), join(server, `req-${n}`)]);
+  await until(`capture ${n}`, () => (existsSync(join(server, `done-${n}`)) ? true : null), 10_000, 50);
+}
+
 const ax = (...args: string[]): Record<string, unknown> =>
   (guard(), JSON.parse(execFileSync(FIXTURE_AX, args, { encoding: "utf8", env: { ...process.env, CARET_TEST_PIDS: String(fixturePid) } })) as Record<string, unknown>);
 /** The form window Caret is filling, by title, for the pictures. */
@@ -456,16 +477,16 @@ async function shot(name: string): Promise<void> {
   }
   const layers: string[] = [];
   const basePath = join(dir, `${name}-window.png`);
-  execFileSync("screencapture", ["-x", "-o", `-l${base.window_id}`, basePath]);
+  await capture(["-x", "-o", `-l${base.window_id}`, basePath]);
   layers.push(`${basePath}:${base.bounds.x},${base.bounds.y},${base.bounds.width},${base.bounds.height}`);
   const state = await hostCommand("state");
   const sf = (state.surface ?? {}) as Record<string, Panel | undefined>;
   const panels = [sf.ghostPanel, sf.decor, sf.panel, sf.list].filter((p): p is Panel => p !== undefined && p !== null && !(p.text ?? "").startsWith("(exiting)"));
-  panels.forEach((p, i) => {
+  for (const [i, p] of panels.entries()) {
     const path = join(dir, `${name}-host${i}.png`);
-    execFileSync("screencapture", ["-x", "-o", `-l${p.windowNumber}`, path]);
+    await capture(["-x", "-o", `-l${p.windowNumber}`, path]);
     layers.push(`${path}:${p.frame.join(",")}`);
-  });
+  }
   const out = join(dir, `${name}.png`);
   execFileSync(COMPOSE, [out, ...layers]);
   for (const l of layers) rmSync(l.slice(0, l.lastIndexOf(":")), { force: true });
