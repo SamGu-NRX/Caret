@@ -201,17 +201,17 @@ export class MemoryDocumentStore {
    * Brings the cache up to date with the files for `scope`: lstat each, reread and reparse those whose stamp moved
    * (every one with `verify`). Differences from what Caret last read or wrote are recorded as external changes.
    */
-  refresh(scope: RecordKind | "all", verify = false): void {
+  refresh(scope: RecordKind | "all", verify = false): boolean {
     const docs: DocId[] = scope === "all" ? [...ROOT_DOCS, ...this.skillDocs()] : scope === "skill" ? this.skillDocs() : [docFor({ id: "x", kind: scope })];
-    this.sync(docs, verify);
+    return this.sync(docs, verify);
   }
 
   /** Loads `docs` and records how the usable records differ from before: what someone other than Caret changed. */
-  private sync(docs: readonly DocId[], verify: boolean): void {
+  private sync(docs: readonly DocId[], verify: boolean): boolean {
     const before = new Map(this.index);
     let moved = false;
     for (const doc of docs) moved = this.load(doc, verify) || moved;
-    if (!moved) return;
+    if (!moved) return false;
     this.reindex();
     for (const id of new Set([...before.keys(), ...this.index.keys()])) {
       const x = before.get(id)?.parsed;
@@ -223,6 +223,7 @@ export class MemoryDocumentStore {
       if (was !== null && y !== undefined && recordDigest(was) === y.digest) this.changes.delete(id);
       else this.changes.set(id, { id, kind, before: was, after: y?.record ?? null });
     }
+    return true;
   }
 
   /**
@@ -257,6 +258,7 @@ export class MemoryDocumentStore {
       if (this.crossDuplicates.has(id)) throw new MemoryConflictError(file, this.disabledWhy(id, docKind(doc)) ?? `${id} is duplicated`, l.revision);
       if (l.parsed?.broken.has(id) === true) throw new MemoryConflictError(file, this.disabledWhy(id, docKind(doc)) ?? `${file}: ${id} has errors`, l.revision);
       const text = next(l.parsed);
+      if (text !== null && l.parsed !== null && text === l.parsed.lines.join(l.parsed.eol)) return;
       try {
         if (text === null) {
           if (l.revision !== null) this.removeFile(doc, l.revision);

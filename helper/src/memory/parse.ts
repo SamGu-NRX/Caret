@@ -318,7 +318,7 @@ function readRecord(lines: string[], fenced: Set<number>, start: number, end: nu
     const name = (m[1] as string).trim();
     const key = KEY_BY_NAME.get(name.toLowerCase().replace(/\s+/g, " "));
     if (key === undefined || !allowed.has(key)) {
-      diag(i, name, "warning", `not a field Caret reads in a ${kind} record; it changes nothing`, id);
+      diag(i, name, "warning", `not a field Caret reads in ${kind === "about" ? "an" : "a"} ${kind} record; it changes nothing`, id);
       continue;
     }
     if (got.has(key)) {

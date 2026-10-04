@@ -120,7 +120,8 @@ describe("memoryRequest add", () => {
   it("refuses what is not a typed About entry, saying what was wrong, and stores nothing", () => {
     const refusals: [Record<string, unknown>, Record<string, unknown>, RegExp][] = [
       [{ label: "Name", value: "Dana", source: "typed" }, { id: "about-1" }, /takes no id/],
-      [{ alias: "Dana", name: "Dana Reyes" }, { kind: "people" }, /About entries you typed, not people/],
+      // M1: add also keeps a person (memory-markdown.test.ts); other kinds are still refused.
+      [{ rule: "format", valueKind: "phone", template: "###-###-####" }, { kind: "preference" }, /About entries and people you tell Caret, not preference/],
       [{ label: "Name", value: "Dana", source: "typed" }, { kind: undefined }, /without a kind/],
       [{ label: "Name", value: "Dana", source: "contacts" }, {}, /source/],
       [{ label: "Name", value: "Dana" }, {}, /source/],
