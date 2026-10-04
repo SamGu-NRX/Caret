@@ -263,14 +263,13 @@ export class Skills {
    * promote offer, and a clean run of a routine that is not a skill may bring the keep offer.
    */
   afterRun(taskId: string, routineId: string, plan: Plan, cells: readonly FactCell[], r: Pick<TaskResult, "outcome" | "step">, at: number): void {
-    try {
-      this.countRun(taskId, routineId, plan, cells, r, at);
-    } finally {
-      const run = this.runs.get(taskId);
-      if (run !== undefined && !run.counted) {
-        run.counted = true;
-        this.deps.onCounted?.(taskId);
-      }
+    // A count that throws (the memory store refusing the write) is not acknowledged: the run's recovery row stays, and
+    // the next start puts the skill back on Tab from it (B23 second review).
+    this.countRun(taskId, routineId, plan, cells, r, at);
+    const run = this.runs.get(taskId);
+    if (run !== undefined && !run.counted) {
+      run.counted = true;
+      this.deps.onCounted?.(taskId);
     }
   }
 

@@ -24,12 +24,12 @@ describe("the helper's start", () => {
     expect(statSync(data).mode & 0o777).toBe(0o700);
   });
 
-  it.each(["0", "-5", "soon"])("refuses --status-every %s before it listens", (every) => {
+  it.each(["0", "-5", "soon", "2147484"])("refuses --status-every %s before it listens", (every) => {
     const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
     const sock = join(dir, "sock", "s.sock");
     const r = spawnSync(process.execPath, [main, "--no-jev", "--socket", sock, "--data-dir", join(dir, "data"), `--status-every=${every}`], { encoding: "utf8", timeout: 10_000 });
     expect(r.status).not.toBe(0);
-    expect(r.stderr).toContain(`--status-every must be a positive number of seconds, not '${every}'`);
+    expect(r.stderr).toContain(`--status-every must be a positive number of seconds up to 2147483, not '${every}'`);
     expect(existsSync(sock)).toBe(false);
   });
 });

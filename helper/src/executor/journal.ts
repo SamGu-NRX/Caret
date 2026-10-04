@@ -113,26 +113,40 @@ export class RecoveryJournal {
   }
 
   /**
-   * Every row a run left, oldest first. `skills`: the skill of every row found, expired and unreadable ones included,
-   * all of which go back on Tab. `records`: the rows younger than JOURNAL_KEEP_MS that open, whose runs are offered
-   * for undo; older rows are dropped after their skills are read. A row that does not open or parse is left in place
-   * and named in `unreadable`, so the helper can say so rather than guess.
+   * Every row a run left, oldest first. Nothing is deleted here: the caller demotes `skills` first and then calls
+   * pruneExpired, so a crash between the two loses no marker (B23 second review).
+   * - `skills`: the skill of every row, expired and unreadable ones included, from the clear column, or for a row
+   *   written before that column, from the sealed record. All go back on Tab.
+   * - `unknownSkill`: some row that cannot be opened was written before the column, so its skill is unknown; the
+   *   caller puts every skill that runs on its own back on Tab.
+   * - `records`: the rows younger than JOURNAL_KEEP_MS that open, whose runs are offered for undo.
+   * - `unreadable`: rows that do not open or parse; they stay for inspection.
    */
-  load(now: number): { records: JournalRecord[]; unreadable: string[]; skills: string[] } {
+  load(now: number): { records: JournalRecord[]; unreadable: string[]; skills: string[]; unknownSkill: boolean } {
     const all = this.db.prepare("SELECT task_id, saved_at, sealed, skill_id FROM journal ORDER BY saved_at").all() as { task_id: string; saved_at: number; sealed: Uint8Array; skill_id: string | null }[];
-    const skills = [...new Set(all.flatMap((r) => (r.skill_id === null ? [] : [r.skill_id])))];
+    const skills = new Set<string>();
     const records: JournalRecord[] = [];
     const unreadable: string[] = [];
+    let unknownSkill = false;
     for (const row of all) {
-      if (Number(row.saved_at) < now - JOURNAL_KEEP_MS) continue;
+      if (row.skill_id !== null) skills.add(row.skill_id);
+      let r: JournalRecord | null = null;
       try {
-        records.push(JournalRecord.parse(JSON.parse(open(this.key, Buffer.from(row.sealed)))));
+        r = JournalRecord.parse(JSON.parse(open(this.key, Buffer.from(row.sealed))));
       } catch {
         unreadable.push(row.task_id);
+        if (row.skill_id === null) unknownSkill = true;
       }
+      if (r === null) continue;
+      if (r.skillId !== null) skills.add(r.skillId);
+      if (Number(row.saved_at) >= now - JOURNAL_KEEP_MS) records.push(r);
     }
+    return { records, unreadable, skills: [...skills], unknownSkill };
+  }
+
+  /** Deletes rows older than JOURNAL_KEEP_MS; called once their skills have been put back on Tab. */
+  pruneExpired(now: number): void {
     this.db.prepare("DELETE FROM journal WHERE saved_at < ?").run(now - JOURNAL_KEEP_MS);
-    return { records, unreadable, skills };
   }
 
   /** The raw rows, for tests that check nothing is stored in the clear. */

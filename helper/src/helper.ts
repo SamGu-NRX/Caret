@@ -426,10 +426,15 @@ export class Helper {
    */
   private recoverInterrupted(): void {
     const now = this.now();
-    const { records, unreadable, skills } = this.journal.load(now);
+    const { records, unreadable, skills, unknownSkill } = this.journal.load(now);
     for (const id of unreadable) this.opts.warn?.(`recovery: the saved run ${id} cannot be read; its undo is lost and it is left in the journal`);
-    // Every skill a row names, expired and unreadable rows' too, goes back on Tab first (B23 review).
-    for (const skillId of skills) this.patterns.skills.interrupted(skillId, now);
+    // Every skill a row names, expired and unreadable rows' too, goes back on Tab first (B23 review). A row that cannot be
+    // read and predates the clear skill column could be any skill's, so then every skill that runs on its own goes back.
+    const back = new Set(skills);
+    if (unknownSkill) for (const e of this.memory.list("skill")) if (e.kind === "skill" && e.fields.onItsOwn) back.add(e.id);
+    for (const skillId of back) this.patterns.skills.interrupted(skillId, now);
+    // Only now, with every marker acted on, are expired rows deleted.
+    this.journal.pruneExpired(now);
     // A recovered run keeps its id, which the reader's calendar knows its events by. Offer and event ids count from 1
     // in every helper process, so the generators skip ids in use (idTaken): the crash test caught a new offer taking it.
     for (const r of records) {

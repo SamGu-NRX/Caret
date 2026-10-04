@@ -32,9 +32,11 @@ const { values: args } = parseArgs({
   },
 });
 
+/** Node's longest timer delay; a longer one runs every millisecond. */
+const TIMEOUT_MAX = 2_147_483_647;
 const statusMs = Number(args["status-every"]) * 1000;
 // Node runs any delay outside 1 ms to TIMEOUT_MAX every millisecond, which would flood the log (CodeRabbit on PR #5).
-if (!Number.isFinite(statusMs) || statusMs <= 0) throw new Error(`--status-every must be a positive number of seconds, not '${args["status-every"]}'`);
+if (!Number.isFinite(statusMs) || statusMs <= 0 || statusMs > TIMEOUT_MAX) throw new Error(`--status-every must be a positive number of seconds up to ${Math.floor(TIMEOUT_MAX / 1000)}, not '${args["status-every"]}'`);
 
 const warn = (line: string): void => {
   process.stderr.write(`[caret-helper ${new Date().toISOString()}] ${line}\n`);

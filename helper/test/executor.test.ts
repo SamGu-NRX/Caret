@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
-import { CalendarRefused, FakeCalendar } from "../src/executor/means.ts";
+import { CalendarBlocked, CalendarRefused, FakeCalendar } from "../src/executor/means.ts";
 import { RecoveryJournal } from "../src/executor/journal.ts";
 import { classifyLabel, classifyPress } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
@@ -503,6 +503,32 @@ describe("executor", () => {
     expect(again.tasks.get("event-1")).toMatchObject({ state: "failed", detail: "Stopped when Caret restarted, after its last step", undoable: true });
     expect(await again.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "event-1", action: "undo" })).toMatchObject({ restored: 1, notRestored: [] });
     expect(calendar.events.size).toBe(0);
+    again.journal.close();
+  });
+
+  // B23 second review: a recovered row an undo could not finish stayed for every start, even once its reader was gone,
+  // and a calendar undo refused for want of Calendar access settled its entry for good.
+  it("keeps a recovered calendar run's row while Calendar access is missing, and drops it once a reader launched since connects", async () => {
+    const p = plan([{ says: "Lunch is on Caret Test", end: { kind: "calendarEvent", calendar: "Caret Test", title: "Lunch", start: "2026-10-08T12:00:00-05:00", end: "2026-10-08T12:30:00-05:00" } }], "lunch");
+    const hello = (h: Helper, session: string) => void h.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "t", session });
+    hello(helper, "reader-launch-1");
+    app.show();
+    expect(await helper.executor.run("event-1", p, {}, undefined, { grant: true })).toMatchObject({ outcome: "done" });
+    const journal = new RecoveryJournal(join(dir, "data"));
+    journal.save({ taskId: "event-1", startedAt: 1, savedAt: Date.now(), plan: p, unprompted: false, granted: true, readerId: "reader-launch-1", next: 1, ledger: [...helper.executor.ledger("event-1")], pending: null, skillId: null, window: null });
+    journal.close();
+    const again = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, calendar });
+    hello(again, "reader-launch-1");
+    const get = calendar.get.bind(calendar);
+    calendar.get = async () => {
+      throw new CalendarBlocked("tcc", "blocked: tcc");
+    };
+    expect(await again.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "event-1", action: "undo" })).toMatchObject({ restored: 0, notRestored: [{ step: 0 }] });
+    calendar.get = get;
+    expect(again.journal.rawRows()).toHaveLength(1);
+    // A reader launched since can never undo it: the row goes.
+    hello(again, "reader-launch-2");
+    expect(again.journal.rawRows()).toEqual([]);
     again.journal.close();
   });
 

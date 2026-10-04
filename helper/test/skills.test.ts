@@ -625,6 +625,80 @@ describe("skills in the helper", () => {
     expect(skills()[0]!.fields.onItsOwn).toBe(false);
   });
 
+  // B23 second review: a row written before the clear skill column has a null there.
+  it("puts the skill back on Tab from a row older than the skill column, read from its sealed record, or every skill when it cannot be read", async () => {
+    const { c, skillId } = await crashAt(1);
+    let db = journalDb();
+    db.prepare("UPDATE journal SET skill_id = NULL").run();
+    db.close();
+    restart(c);
+    expect(skills()[0]).toMatchObject({ id: skillId, fields: { onItsOwn: false } });
+    expect(interrupted()).toHaveLength(1);
+    // Promoted again, interrupted again, and this time the old row cannot be opened either.
+    const own = await (async () => {
+      for (let i = 1; i <= PROMOTE_AFTER; i++) {
+        const r = await caretRun();
+        finish(r);
+        const promote = r.skillOffers.find((o) => o.kind === "promote");
+        if (promote !== undefined) answer(promote, "accept");
+      }
+      return skills()[0]!;
+    })();
+    expect(own.fields.onItsOwn).toBe(true);
+    db = journalDb();
+    db.prepare("UPDATE journal SET skill_id = NULL, sealed = ?").run(Buffer.from("not sealed by this key"));
+    db.close();
+    restart(c);
+    expect(skills()[0]).toMatchObject({ fields: { onItsOwn: false } });
+  });
+
+  it("reads expired rows' skills before it deletes them, and deletes them only when asked", async () => {
+    const { skillId } = await crashAt(1);
+    const db = journalDb();
+    db.prepare("UPDATE journal SET saved_at = ?").run(Date.now() - 25 * 60 * 60 * 1000);
+    db.close();
+    const loaded = helper.journal.load(Date.now());
+    expect(loaded).toMatchObject({ records: [], skills: [skillId], unknownSkill: false });
+    expect(helper.journal.rawRows()).toHaveLength(1);
+    helper.journal.pruneExpired(Date.now());
+    expect(helper.journal.rawRows()).toEqual([]);
+  });
+
+  // B23 second review: afterRun acknowledged the count in a finally, so a count the store refused still dropped the row.
+  it("keeps a skill run's row when the store refuses to count the run", async () => {
+    await promoted();
+    const update = helper.memory.updateSkill.bind(helper.memory);
+    helper.memory.updateSkill = () => {
+      throw new Error("the memory store refused the write");
+    };
+    desk.rewriteNext = (v) => v.toUpperCase();
+    const bad = await caretRun();
+    helper.memory.updateSkill = update;
+    finish(bad);
+    expect(bad.progress.at(-1)).toMatchObject({ phase: "stopped", unprompted: true });
+    expect(helper.journal.rawRows()).toHaveLength(1);
+  });
+
+  it("drops a paused run's row once the user stops it", async () => {
+    await keep();
+    const at = sent.length;
+    const c = open();
+    await helper.patterns.unpromptedSettled();
+    const offer = since("patternOffer", at).find((o) => o.kind === "routine")!;
+    let paused = false;
+    desk.afterWrite = () => {
+      if (paused) return;
+      paused = true;
+      void helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: offer.id, action: "pause" });
+    };
+    expect(await helper.handleOffer({ type: "offerControl", v: PROTOCOL_VERSION, offerId: offer.id, action: "take" })).toMatchObject({ outcome: "paused" });
+    desk.afterWrite = null;
+    expect(helper.journal.rawRows()).toHaveLength(1);
+    helper.executor.stop(offer.id);
+    expect(helper.journal.rawRows()).toEqual([]);
+    finish({ offer, result: null, progress: [], skillOffers: [], window: c });
+  });
+
   // B23 review: an undo stopped partway dropped the row, so a second crash lost the rest.
   it("keeps what an interrupted undo of a recovered run did not try, for the next start", async () => {
     const { c } = await crashAt(2);
