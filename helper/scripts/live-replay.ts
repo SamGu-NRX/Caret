@@ -31,6 +31,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveNumber } from "./flags.ts";
 import { ScreenModel } from "../src/model.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
@@ -58,8 +59,7 @@ const { values: a } = parseArgs({
   },
 });
 /** The run stops before spending more than this on Jev (--spend-limit). B14's brief allows $0.15; B13's full run spent $0.113. */
-const SPEND_LIMIT_USD = Number(a["spend-limit"]);
-if (!(SPEND_LIMIT_USD > 0)) throw new Error(`--spend-limit must be a positive number of dollars, not ${a["spend-limit"]}`);
+const SPEND_LIMIT_USD = positiveNumber("spend-limit", a["spend-limit"]);
 
 /**
  * The earlier run to compare with, read before any request so a bad file costs nothing; a file that is
@@ -99,13 +99,26 @@ interface Call {
   charged: Record<string, number>;
 }
 const calls: Call[] = [];
+/** Thrown by ask once the spend limit is reached. The run then starts no new condition and still writes its report. */
+class BudgetStop extends Error {}
+/** Conditions a Jev error or the spend limit cut short; the report lists them. */
+const errors: { condition: string; error: string }[] = [];
+let stopped = false;
+const failed = (e: unknown): void => {
+  errors.push({ condition, error: e instanceof Error ? e.message : String(e) });
+  if (e instanceof BudgetStop) stopped = true;
+  process.stderr.write(`${condition}: ${errors.at(-1)?.error}\n`);
+};
 let part: Call["part"] = "fill";
 let condition = "";
 /** The model the current asks read from, to tell which source windows the conversation rule held. */
 let current: ScreenModel | null = null;
 const ask: AskJev = async (req: JevRequest) => {
   const spent = calls.reduce((n, c) => n + c.costUsd, 0);
-  if (spent >= SPEND_LIMIT_USD) throw new Error(`spent $${spent.toFixed(4)}, the run's limit is $${SPEND_LIMIT_USD}`);
+  if (spent >= SPEND_LIMIT_USD) {
+    stopped = true;
+    throw new BudgetStop(`spent $${spent.toFixed(4)}, the run's limit is $${SPEND_LIMIT_USD}`);
+  }
   const r = await jev(req);
   const taken: Record<string, number> = {};
   for (const s of new Map(req.snippets.filter((x) => x.kind === "candidate").map((x) => [`${x.windowId}\u0000${x.text}`, x])).values()) taken[s.windowId] = (taken[s.windowId] ?? 0) + s.text.length;
@@ -227,6 +240,7 @@ for (const set of (a.sets ?? "").split(",").filter((s) => s !== "")) {
     for (const on of CAPS) {
       for (const fix of FIXES) {
         if (a.fixes !== undefined && !a.fixes.split(",").includes(fix.name)) continue;
+        if (stopped) continue;
         // The comparison runs where conversations are cut: the Messages variants with the rule on.
         if (fix.name !== MAIN && !(variant !== "as recorded" && on)) continue;
         if (variant === "long Messages threads" && !on) continue;
@@ -252,7 +266,14 @@ for (const set of (a.sets ?? "").split(",").filter((s) => s !== "")) {
           }
           const trigger = [...byKey.keys()][0] as string;
           const r = rng(hashSeed(`${set}/${form.window}`));
-          const p = await proposeFill(model, ask, s.window.windowId, trigger, last + 1000, { rand: (n) => Math.floor(r() * n), ...fix.opts });
+          let p: Awaited<ReturnType<typeof proposeFill>>;
+          try {
+            p = await proposeFill(model, ask, s.window.windowId, trigger, last + 1000, { rand: (n) => Math.floor(r() * n), ...fix.opts });
+          } catch (e) {
+            failed(e);
+            if (stopped) break;
+            continue;
+          }
           for (const f of p.fields) {
             const g = byKey.get(f.key);
             if (g === undefined) continue;
@@ -316,6 +337,7 @@ interface LookRow {
 const lookRows: LookRow[] = [];
 for (const desk of a["no-look"] === true ? [] : DESKS) {
   for (const on of CAPS) {
+    if (stopped) continue;
     setConversationCap(on);
     part = "firstLook";
     condition = `${desk.name}, ${capName(on)}`;
@@ -353,6 +375,8 @@ for (const desk of a["no-look"] === true ? [] : DESKS) {
         for (const [label, want] of Object.entries(desk.want.values ?? {})) proposal.push({ label, want, got: p.fields.find((f) => f.descriptor.includes(`'${label}'`))?.value ?? null });
       }
       lookRows.push({ desk: desk.name, rule: capName(on), outcome: reply.outcome, family: found?.family ?? null, window: found?.window.title ?? null, header: header?.type === "header" ? header.title.text : null, right, values, proposal, ms, error: reply.error });
+    } catch (e) {
+      failed(e);
     } finally {
       helper.shutdown();
       helper.memory.close();
@@ -476,7 +500,12 @@ for (const r of lookRows) {
 }
 const total = calls.reduce((n, c) => n + c.costUsd, 0);
 lines.push("", `Jev asks in all: ${calls.length}; input tokens ${calls.reduce((n, c) => n + c.inputTokens, 0)}; spend $${total.toFixed(4)} at $0.042 per million input tokens.`);
+if (errors.length > 0 || stopped) {
+  lines.push("", `## Errors${stopped ? " (stopped at the spend limit; later conditions did not run)" : ""}`, "");
+  for (const e of errors) lines.push(`- ${e.condition}: ${e.error}`);
+}
 
 writeFileSync(join(a.out, "live-replay.md"), `${lines.join("\n")}\n`);
-writeFileSync(join(a.out, "live-replay.json"), `${JSON.stringify({ fillRows, lookRows, calls, sourceSigns }, null, 2)}\n`);
+writeFileSync(join(a.out, "live-replay.json"), `${JSON.stringify({ fillRows, lookRows, calls, sourceSigns, errors, stopped }, null, 2)}\n`);
 process.stdout.write(`${lines.join("\n")}\n`);
+process.exitCode = errors.length > 0 || stopped ? 1 : 0;

@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveNumber } from "./flags.ts";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
@@ -45,7 +46,7 @@ if (a.bin === undefined || a.out === undefined) throw new Error("--bin and --out
 if (a.jev !== "fake" && a.jev !== "live") throw new Error("--jev is fake or live");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
-const MAX_USD = Number(a["max-usd"]);
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 const TITLE = "Caret Fixture — Executor";
 
 // MARK: - the cases
