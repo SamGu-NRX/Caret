@@ -123,7 +123,7 @@ final class AskCaretTests: XCTestCase {
         let card = try proposed()
         XCTAssertEqual(card.title, "Fill Reference in Caret Fixture", "a sentence, not the helper's echo of the window title")
         XCTAssertEqual(card.steps, [
-            AskCaret.Step(text: "Put \u{201C}ORD-2026-48213\u{201D} in Reference"),
+            AskCaret.Step(text: "Put \u{201C}ORD-2026-48213\u{201D} in Reference", field: "Reference"),
             AskCaret.Step(text: "Press Send", yours: true),
         ])
         XCTAssertEqual(card.action, "Fill 1 field")
@@ -331,6 +331,39 @@ final class AskCaretTests: XCTestCase {
         clock.advance(by: SurfaceMachine.stopConfirmWait)
         XCTAssertEqual(dropped, 1, "the ending answered the stop, card or no card")
         _ = card
+    }
+
+    /// A second run's stop does not take over the first one's deadline (A17 fix-check): each stop
+    /// waits for its own task's ending.
+    func testEveryStopKeepsItsOwnDeadline() throws {
+        _ = try proposed()
+        ask.tab()
+        var dropped = 0
+        ask.dropSession = { dropped += 1 }
+        ask.escape()
+        ask.escape()
+        clock.advance(by: 4)
+        ask.edit("Put the order number in Reference")
+        ask.submit()
+        var p = try goldenProposal(answering: asked())
+        p.offerKey = "plan-2-ask-2"
+        ask.receive(p)
+        ask.tab()
+        ask.escape()
+        ask.receive(progress("plan-2-ask-2", .stopped, step: 0, steps: 2, reason: .you))
+        clock.advance(by: SurfaceMachine.stopConfirmWait - 4)
+        XCTAssertEqual(dropped, 1, "the first run never answered its stop")
+    }
+
+    /// "Filled N fields" counts the fields the card shows written, each once.
+    func testFilledCountsEachFieldOnce() {
+        let card = AskCaret.Card(title: "t", app: "a", steps: [
+            AskCaret.Step(text: "Put “A” in Name", state: .done, field: "Name"),
+            AskCaret.Step(text: "Put “B” in Name", state: .done, field: "Name"),
+            AskCaret.Step(text: "Put “C” in Email", state: .pending, field: "Email"),
+            AskCaret.Step(text: "Press Send", yours: true, state: .done),
+        ], more: 0, action: "Fill", offerKey: "k", actionId: "run", writes: 3, press: "Send")
+        XCTAssertEqual(AskCaret.filled(card), 1)
     }
 
     // MARK: - ⌘Z (q1 bug 8)

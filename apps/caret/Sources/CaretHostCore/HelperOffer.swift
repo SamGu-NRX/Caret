@@ -290,20 +290,23 @@ public struct HandedField: Equatable, Sendable {
         self.why = why
     }
 
+    /// Both sentences are anchored at both ends, so a label that holds the words around it ("Name
+    /// field when Caret focused it") is read whole, and a cut-off sentence names nothing.
     public static func parse(_ detail: String?) -> HandedField? {
         guard let detail else { return nil }
-        let moved = "focus moved away from ", movedEnd = " when Caret focused it, so Caret did not write it"
-        if detail.hasPrefix(moved), let end = detail.range(of: movedEnd) {
-            return label(String(detail[detail.index(detail.startIndex, offsetBy: moved.count)..<end.lowerBound])).map { HandedField(label: $0, why: .focusMoved) }
+        let moved = "focus moved away from ", movedEnd = " when Caret focused it, so Caret did not write it; it is yours to fill"
+        if detail.hasPrefix(moved), detail.hasSuffix(movedEnd), detail.count > moved.count + movedEnd.count {
+            return label(String(detail.dropFirst(moved.count).dropLast(movedEnd.count))).map { HandedField(label: $0, why: .focusMoved) }
         }
-        let took = " did not take the text for ", tookEnd = ", so Caret left it to you"
-        if let start = detail.range(of: took), detail.hasSuffix(tookEnd) {
-            var field = String(detail[start.upperBound..<detail.index(detail.endIndex, offsetBy: -tookEnd.count)])
-            let background = " while its window was in the background"
-            if field.hasSuffix(background) { field.removeLast(background.count) }
-            return label(field).map { HandedField(label: $0, why: .appDropped) }
-        }
-        return nil
+        // "<App> did not take the text for <field>": the field is what follows the last
+        // " did not take the text for ", and must read "the <Label> field" or "this field".
+        let tookEnd = ", so Caret left it to you", background = " while its window was in the background"
+        guard detail.hasSuffix(tookEnd) else { return nil }
+        var body = String(detail.dropLast(tookEnd.count))
+        if body.hasSuffix(background) { body.removeLast(background.count) }
+        let took = " did not take the text for "
+        guard let start = body.range(of: took, options: .backwards) else { return nil }
+        return label(String(body[start.upperBound...])).map { HandedField(label: $0, why: .appDropped) }
     }
 
     /// "the Name field" gives "Name", "this field" gives nil (the outer nil: not a field at all).

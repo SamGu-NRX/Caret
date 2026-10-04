@@ -98,6 +98,9 @@ def phone_frame(pids, pid, gold_path):
 # posted only in the rig VM, which cannot hold the Jev key this walk needs, so on Sam's desktop the
 # walk runs this way; the event tap's own delivery is checked by the VM runs.
 TAB_HOOK = os.environ.get("CARET_A14_TAB") == "hook"
+# Whether the hook's last Tab was taken by the host. A hook Tab is not an event, so the event tap's
+# own consumed counter does not move for it.
+HOOK_TAKEN = {"last": None}
 
 
 def tab(pids, pid):
@@ -108,7 +111,7 @@ def tab(pids, pid):
         raise SystemExit(why)
     before = fa.host().get("lastClaim") or {}
     if TAB_HOOK:
-        fa.host(f"key tab {pid}")
+        HOOK_TAKEN["last"] = fa.host(f"key tab {pid}").get("consumed")
     else:
         env = dict(os.environ, CARET_TEST_PIDS=",".join(map(str, pids)))
         # The run's own key resets HID idle; only the second the send takes is excused, not more.
@@ -215,7 +218,8 @@ def walk(out_dir):
         ins = tab(pids, fx_a.pid)
         value = fa.ax(pids, "value", fx_a.pid, fa.frame_arg(frame))["value"]
         check(f"A {label}: a real Tab writes it, with no source window to recheck",
-              ins is not None and ins.get("ok") and value == want and fa.host()["tap"]["consumed"] == tap_before + 1,
+              ins is not None and ins.get("ok") and value == want
+              and (HOOK_TAKEN["last"] is True if TAB_HOOK else fa.host()["tap"]["consumed"] == tap_before + 1),
               insertion=ins, value=value)
         time.sleep(0.3)
         toast = fa.host()["fill"].get("toast") or {}

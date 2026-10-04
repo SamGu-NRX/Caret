@@ -256,16 +256,19 @@ public final class HostRuntime {
         // (q1 bug 8). A run that ends while the list is closed shows no card, so it takes no ⌘Z there
         // (A17 review); closing the list puts an ended card away, which withdraws its offer.
         let askToast = AskToast()
-        perch.ask.onUndoChanged = { [weak perch] offer in
+        // Matches the toast to the card's offer and the list's visibility; both can change.
+        let syncAskToast = { [weak perch] in
             if let id = askToast.id { arbiter.dismissToast(grantID: id) }
             askToast.id = nil
-            guard let offer, perch?.listOpen == true else { return }
+            guard let perch, let offer = perch.ask.undoOffer, perch.listOpen else { return }
             let target = TargetIdentity(pid: offer.pid, bundleID: "", windowID: "", elementID: "", elementRevision: "")
             askToast.id = arbiter.showToast(UndoGrant.task(offer.taskId, target: target))
             // The arbiter has one toast slot: a fill's or a line's toast that held it is gone now.
             surface.toastChanged()
             fill.toastChanged()
         }
+        perch.ask.onUndoChanged = { _ in syncAskToast() }
+        perch.onListChanged = { _ in syncAskToast() }
         // The helper's gate holds the same roles, level and pause: sent after every hello and on
         // every change (B10). The client drops a change that leaves all three as they were.
         let gateClient = helper

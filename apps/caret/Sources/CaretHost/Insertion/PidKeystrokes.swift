@@ -23,6 +23,8 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
     private let stillTarget: () -> Bool
     private let source = CGEventSource(stateID: .privateState)
     private(set) var refusedPosts = 0
+    /// ⌘V key-downs actually posted: only these can have put text anywhere.
+    private(set) var pastesPosted = 0
 
     private static let keyV: CGKeyCode = 9
     private static let keyDelete: CGKeyCode = 51
@@ -36,9 +38,13 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
         source?.userData = SynthesizedEventMarker.userData
     }
 
-    func paste() { post(Self.keyV, flags: .maskCommand) }
+    func paste() {
+        if post(Self.keyV, flags: .maskCommand) { pastesPosted += 1 }
+    }
 
-    func pasteAndMatchStyle() { post(Self.keyV, flags: [.maskCommand, .maskAlternate, .maskShift]) }
+    func pasteAndMatchStyle() {
+        if post(Self.keyV, flags: [.maskCommand, .maskAlternate, .maskShift]) { pastesPosted += 1 }
+    }
 
     func deleteBackward() { post(Self.keyDelete, flags: []) }
 
@@ -62,7 +68,9 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
     /// The target is asked again immediately before the key-down, which is what the app acts on.
     /// The key-up of a key-down already posted is sent whatever the answer: it changes nothing in the
     /// app, and leaving the key down would. That is the one post made without the check.
-    private func post(_ keyCode: CGKeyCode, flags: CGEventFlags, text: String? = nil) {
+    /// True when the key-down was posted.
+    @discardableResult
+    private func post(_ keyCode: CGKeyCode, flags: CGEventFlags, text: String? = nil) -> Bool {
         func event(_ keyDown: Bool) -> CGEvent? {
             guard let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: keyDown) else { return nil }
             event.flags = flags
@@ -72,13 +80,14 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
             }
             return event
         }
-        guard let down = event(true), let up = event(false) else { return }
+        guard let down = event(true), let up = event(false) else { return false }
         guard stillTarget() else {
             refusedPosts += 1
-            return
+            return false
         }
         down.postToPid(pid)
         up.postToPid(pid)
+        return true
     }
 }
 

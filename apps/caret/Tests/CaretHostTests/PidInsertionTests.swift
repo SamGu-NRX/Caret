@@ -31,6 +31,7 @@ final class PidInsertionTests: XCTestCase {
         synthesizer.paste()
         XCTAssertEqual(checks, 2, "asked before each post, not once")
         XCTAssertEqual(synthesizer.refusedPosts, 2)
+        XCTAssertEqual(synthesizer.pastesPosted, 0, "a refused paste is never counted as sent, so no stray is looked for")
     }
 
     /// A17: the AX write comes first; an app that refuses or ignores it is remembered for paste.

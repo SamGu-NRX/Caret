@@ -44,17 +44,18 @@ extension Gallery {
     }
 
     /// Skills as the helper lists them, in each state the list names, beside the base entries'
-    /// permissions so the permissions page has its rows. `wrote` is where the skill on its own wrote
-    /// (nil: the helper does not say, as today's does not), and `elsewhere` the rule for Undoable
-    /// changes in other apps.
-    static func skillEntries(wrote: Set<HelperMemory.ActionType>? = nil, elsewhere: HelperMemory.Rule = .ask) -> [HelperMemory.Entry] {
+    /// permissions so the permissions page has its rows. `wrote` is where the skill on its own wrote,
+    /// and `elsewhere` the rule for Undoable changes in other apps.
+    static func skillEntries(wrote: Set<HelperMemory.ActionType> = [.writeHere], elsewhere: HelperMemory.Rule = .ask) -> [HelperMemory.Entry] {
         func skill(_ id: String, _ name: String, onItsOwn: Bool, clean: Int, runs: Int, handsOff: String = "null", status: HelperMemory.Status) -> HelperMemory.Entry {
-            // `wrote` is required since B23; the gallery's skills on Tab wrote nothing that counts yet.
-            let rules = "[" + ((onItsOwn ? wrote : nil).map { $0.map { "\"\($0.rawValue)\"" }.sorted() } ?? []).joined(separator: ",") + "]"
-            let json = #"{"routineId":"r-\#(id)","name":"\#(name)","trigger":"\#(skillTrigger)","runs":\#(runs),"cleanRuns":\#(clean),"needed":10,"onItsOwn":\#(onItsOwn),"handsOff":\#(handsOff),"wrote":\#(rules)}"#
+            // `wrote` is required since B23, in the fields and on the entry alike, as the decoder
+            // reads it; the gallery's skills on Tab wrote nothing that counts yet.
+            let rules = onItsOwn ? wrote : []
+            let list = "[" + rules.map { "\"\($0.rawValue)\"" }.sorted().joined(separator: ",") + "]"
+            let json = #"{"routineId":"r-\#(id)","name":"\#(name)","trigger":"\#(skillTrigger)","runs":\#(runs),"cleanRuns":\#(clean),"needed":10,"onItsOwn":\#(onItsOwn),"handsOff":\#(handsOff),"wrote":\#(list)}"#
             let fields = try! JSONDecoder().decode(SkillFields.self, from: Data(json.utf8))
             return .init(id: id, status: status, says: name, evidence: .init(count: runs, lastSeen: 1_790_000_100_000, app: "Tracker"), fields: .skill(fields),
-                         wrote: onItsOwn ? wrote : nil)
+                         wrote: rules)
         }
         let skills: [HelperMemory.Entry] = [
             skill("skill-1", skillName, onItsOwn: true, clean: 11, runs: 11, status: .active),

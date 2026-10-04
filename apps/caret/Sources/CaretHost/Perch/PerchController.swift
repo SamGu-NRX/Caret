@@ -50,6 +50,8 @@ final class PerchController {
     private var drawnHint = false
     /// "What Caret knows" at the foot of the list.
     var onOpenMemory: (() -> Void)?
+    /// The list opened (true) or closed (false).
+    var onListChanged: ((Bool) -> Void)?
 
     /// The menu bar's "Show Perch" choice. Hidden stops drawing; the list still opens from the menu.
     var hidden: Bool {
@@ -368,6 +370,7 @@ final class PerchController {
 
     func openList() {
         listOpen = true
+        defer { onListChanged?(true) }
         center.acknowledge()
         renderList()
         anchorList()
@@ -401,6 +404,7 @@ final class PerchController {
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
         list.exit(duration: exit)
+        onListChanged?(false)
     }
 
     private func renderList() {

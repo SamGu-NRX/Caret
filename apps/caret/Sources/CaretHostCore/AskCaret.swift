@@ -38,12 +38,21 @@ public final class AskCaret {
         /// A press the plan leaves to the user: the card marks it "You do this", and Caret never makes it.
         public var yours: Bool
         public var state: State
+        /// The field a write step writes, so "Filled N fields" counts each field once.
+        public var field: String?
 
-        public init(text: String, yours: Bool = false, state: State = .pending) {
+        public init(text: String, yours: Bool = false, state: State = .pending, field: String? = nil) {
             self.text = text
             self.yours = yours
             self.state = state
+            self.field = field
         }
+    }
+
+    /// The fields the card shows written: its done write steps, each field once (A17 review: two
+    /// writes to one field are one field filled).
+    static func filled(_ card: Card) -> Int {
+        Set(card.steps.filter { !$0.yours && $0.state == .done }.map { $0.field ?? $0.text }).count
     }
 
     /// The helper's proposal, reduced to what the card shows and what Tab sends.
@@ -105,9 +114,10 @@ public final class AskCaret {
     public private(set) var linked = false
     /// Where the helper's ending for a run Esc stopped can still correct the line (`SurfaceMachine.confirmStop`).
     private var stopping: String?
-    /// The delivered stop's deadline, independent of the card (A17 review): if no ending answers it
-    /// within `SurfaceMachine.stopConfirmWait`, the session closes, even after the card was put away.
-    private var stopDeadline: (taskId: String, timer: SurfaceTimer)?
+    /// Each delivered stop's deadline, by task, independent of the card (A17 review): if no ending
+    /// answers it within `SurfaceMachine.stopConfirmWait`, the session closes, even after the card
+    /// was put away or another run was stopped since.
+    private var stopDeadlines: [String: SurfaceTimer] = [:]
     /// Fields the run verified, from its progress, so its ending knows whether ⌘Z has anything to undo.
     private var wrote = 0
     /// The ended run's writes ⌘Z may undo; nil once undone, asked or put away.
@@ -217,13 +227,12 @@ public final class AskCaret {
             settle(.ended(card, WorkLines.stopping))
             stopping = card.offerKey
             let key = card.offerKey
-            stopDeadline?.timer.cancel()
-            stopDeadline = (key, clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
-                guard let self, self.stopDeadline?.taskId == key else { return }
-                self.stopDeadline = nil
+            stopDeadlines[key]?.cancel()
+            stopDeadlines[key] = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
+                guard let self, self.stopDeadlines.removeValue(forKey: key) != nil else { return }
                 self.dropSession()
                 if self.stopping == key, case .ended(let card, _) = self.phase { self.settle(.ended(card, WorkLines.stopUnreached)) }
-            })
+            }
             return true
         case .asking, .proposed, .failed, .ended:
             settle(.idle)
@@ -242,8 +251,8 @@ public final class AskCaret {
         linked = up
         guard !up else { return onChange() }
         // The closed connection makes the helper revoke this session's work (B22): nothing waits on it.
-        stopDeadline?.timer.cancel()
-        stopDeadline = nil
+        for timer in stopDeadlines.values { timer.cancel() }
+        stopDeadlines.removeAll()
         switch phase {
         case .asking: settle(.failed(AskCopy.helperDown))
         // Its offer went with the helper: Tab could only send a key nobody holds.
@@ -288,10 +297,7 @@ public final class AskCaret {
 
     public func receive(_ progress: TaskProgress) {
         // Any ending answers a stop sent for this task, whether or not its card still shows.
-        if progress.taskId == stopDeadline?.taskId, [.stopped, .done, .paused, .handoff].contains(progress.phase) {
-            stopDeadline?.timer.cancel()
-            stopDeadline = nil
-        }
+        if [.stopped, .done, .paused, .handoff].contains(progress.phase) { stopDeadlines.removeValue(forKey: progress.taskId)?.cancel() }
         guard let tracking, progress.taskId == tracking else { return }
         if case .ended(var card, let line) = phase, stopping == tracking {
             // The helper's own ending for a run Esc stopped: the step it stopped before, or Done when
@@ -308,7 +314,7 @@ public final class AskCaret {
             case .paused:
                 corrected = WorkLines.stoppedByYou(next: progress.step ?? nextStep, of: progress.steps > 0 ? progress.steps : steps)
             case .handoff:
-                corrected = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: wrote, field: HandedField.parse(progress.detail))
+                corrected = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: Self.filled(card), field: HandedField.parse(progress.detail))
             default:
                 return
             }
@@ -347,8 +353,13 @@ public final class AskCaret {
             let reason = progress.stopReason ?? .error
             settle(.ended(card, WorkLines.stopped(app: card.app, reason: reason, next: progress.step ?? nextStep, steps: steps, fillFilled: nil)))
         case .handoff:
-            for i in card.steps.indices where !card.steps[i].yours { card.steps[i].state = .done }
-            let line = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: wrote, field: HandedField.parse(progress.detail))
+            let field = HandedField.parse(progress.detail)
+            // A press is handed over after every write; a field handed over (B20, B23) is the step
+            // the run stopped at, so only the writes before it are done.
+            let handedAt = field == nil ? nil : progress.step.flatMap { Self.cardIndex(ofPlanStep: $0, in: card) }
+            for i in card.steps.indices where !card.steps[i].yours && handedAt.map({ i < $0 }) ?? true { card.steps[i].state = .done }
+            if let handedAt { card.steps[handedAt].state = .pending }
+            let line = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: Self.filled(card), field: field)
             settle(.ended(card, line))
         case .paused:
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .pending }
@@ -404,7 +415,7 @@ public final class AskCaret {
                 more = list.more
                 for row in list.rows {
                     fields.append(row.destination.text)
-                    steps.append(Step(text: AskCopy.write(row.value?.text ?? "", into: row.destination.text)))
+                    steps.append(Step(text: AskCopy.write(row.value?.text ?? "", into: row.destination.text), field: row.destination.text))
                 }
             }
         }

@@ -306,10 +306,10 @@ final class InsertionExecutor: @unchecked Sendable {
         }
         var step = WriteFallback.afterPaste(settle, postError: postError)
         var stray: String?
-        // The paste was posted and the approved element did not take it: it may have gone to the
-        // element that took focus between the last check and the app handling the event. A refused
-        // post sent nothing, so nothing is looked for.
-        if step != .verified, postError == nil, FieldReader.read(element)?.value == before.value,
+        // A ⌘V was posted and the approved element did not take it: it may have gone to the element
+        // that took focus between the last check and the app handling the event. With no paste
+        // posted (refused, never built, or a typed strategy) nothing is looked for.
+        if step != .verified, synthesizer.pastesPosted > 0, FieldReader.read(element)?.value == before.value,
            let field = strayField(pid: pid, approved: element, inserted: approved.replacement) {
             step = .failed("wroteElsewhere")
             stray = field

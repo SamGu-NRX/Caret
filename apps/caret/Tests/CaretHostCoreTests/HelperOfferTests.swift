@@ -262,6 +262,11 @@ final class OfferLifecycleTests: XCTestCase {
                        HandedField(label: "Email", why: .appDropped))
         XCTAssertEqual(HandedField.parse("Electron Fixture did not take the text for the Ship to address field, so Caret left it to you"),
                        HandedField(label: "Ship to address", why: .appDropped))
+        // A label that holds the sentence's own words is read whole, not cut at their first match.
+        let odd = "Name field when Caret focused it, so Caret did not write it again"
+        XCTAssertEqual(HandedField.parse("focus moved away from the \(odd) field when Caret focused it, so Caret did not write it; it is yours to fill"),
+                       HandedField(label: odd, why: .focusMoved))
+        XCTAssertNil(HandedField.parse("focus moved away from the Name field when Caret focused it, so Caret did not write it"), "cut off before its ending")
         for other in [nil, "", "'Send' reads as outbound; Caret leaves that press to you", "focus moved away from Name when Caret focused it, so Caret did not write it",
                       "Mail did not take the text for Name, so Caret left it to you", "focus moved away from the  field when Caret focused it, so Caret did not write it"] {
             XCTAssertNil(HandedField.parse(other), other ?? "nil")

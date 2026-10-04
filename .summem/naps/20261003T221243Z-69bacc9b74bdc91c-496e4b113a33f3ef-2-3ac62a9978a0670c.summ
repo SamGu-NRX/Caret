@@ -1,0 +1,1 @@
+B19: real-time skill evals need Eager (8 offers/hour) and writeElsewhere at actIfApproved, since a background fixture is never the user's window. caret-fixture AX value writes land in the cell; reformat via the cell's setters and accessibilityValue().
