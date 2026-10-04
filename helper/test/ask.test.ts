@@ -320,6 +320,9 @@ describe("planAsk", () => {
     // The reviewer's case: the instruction rules Full name out; a writer's scope of every field is not taken on its word.
     const all = await planAsk("Fill only Email; do not change Full name", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "all" }), writer: null, offerKey: "c1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
     expect((all as AskRefused).code).toBe("unsure");
+    // An instruction that names no field asks for nothing narrower than the form: "all" stands without Jev's yes.
+    const form = await planAsk("fill this out from my note", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "all" }), writer: null, offerKey: "c0", windowId: "form", now: 2000 });
+    expect(form.checked.writes.length).toBeGreaterThan(0);
     // A listed field the instruction does not name, which Jev does not confirm, is dropped; the named one stays.
     const list = await planAsk("my email please", desk(), memory, about, {
       askJev: jevBy(pick, () => "user", (q) => (q.includes("'Full name'") ? "no" : "yes")).ask,

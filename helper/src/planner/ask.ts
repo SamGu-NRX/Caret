@@ -211,7 +211,11 @@ const CONFIRM_ALL = [
  */
 async function confirmScope(instruction: string, checked: Extract<ReturnType<typeof checkIntent>, { route: "fill" }>, intent: AskIntent, snap: IntentSnapshot, askJev: AskJev): Promise<Extract<ReturnType<typeof checkIntent>, { route: "fill" }>> {
   const named = (f: IntentField): boolean => relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.name);
-  const whole = intent.scope === "all" ? !asksToFillForm(instruction) : intent.scope === "section" ? relevance(instruction, snap.sections.find((x) => x.ref === intent.section)?.name ?? "") === 0 : false;
+  // "Every field" stands on the writer's word unless the instruction names some field of the form ("Fill only Email;
+  // do not change Full name", the review's case): then it may be asking for less, and Jev must confirm it. An
+  // instruction that names no field asks for nothing narrower than the form ("fill out the Northgate application").
+  const whole =
+    intent.scope === "all" ? !asksToFillForm(instruction) && snap.fields.some(named) : intent.scope === "section" ? relevance(instruction, snap.sections.find((x) => x.ref === intent.section)?.name ?? "") === 0 : false;
   const unnamed = intent.scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
   if (!whole && unnamed.length === 0) return checked;
   const declared = snap.ledger.declared();
