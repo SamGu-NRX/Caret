@@ -663,17 +663,40 @@ describe("executor", () => {
       expect(kinds()).toEqual(["actGrant", "actRevoke"]);
     });
 
-    it("a pause keeps the grant to the step boundary, gives it back there, and resume grants again", async () => {
+    // S1 audit #3: before B22 an ordinary pause kept the grant to the step boundary.
+    it("a pause revokes the grant the moment it is recorded, and resume grants again", async () => {
       app.afterVerb = (a, v) => {
         if (v.kind !== "write" || v.key !== K("textfield:name~0")) return;
         a.afterVerb = null;
         helper.executor.pause("t1", false);
-        expect(kinds()).toEqual(["actGrant"]);
+        expect(kinds()).toEqual(["actGrant", "actRevoke"]);
       };
       expect(await helper.executor.run("t1", two(), {}, undefined, { grant: true })).toMatchObject({ outcome: "paused", step: 1 });
       expect(kinds()).toEqual(["actGrant", "actRevoke"]);
       expect(await helper.executor.resume("t1")).toMatchObject({ outcome: "done" });
       expect(kinds()).toEqual(["actGrant", "actRevoke", "actGrant", "actRevoke"]);
+    });
+
+    it("a pause for the user's own input, from the host or the reader, revokes the grant at once and the act on its way is refused", async () => {
+      for (const [id, how] of [
+        ["t1", "host"],
+        ["t2", "reader"],
+      ] as const) {
+        app.setValue(K("textfield:name~0"), "");
+        app.setValue(K("textfield:email~0"), "old@example.com");
+        app.show();
+        app.beforeVerb = (a, v) => {
+          if (v.kind !== "write" || v.key !== K("textfield:email~0")) return;
+          a.beforeVerb = null;
+          if (how === "host") helper.executor.pause(id, false, "input");
+          else helper.executor.onUserInput({ type: "userInput", v: PROTOCOL_VERSION, at: 1, pid: FIXTURE_APP.pid, kind: "mouse", point: [150, 50] });
+        };
+        const before = app.grants.log.length;
+        const r = await helper.executor.run(id, two(), {}, undefined, { grant: true });
+        expect(r, how).toMatchObject({ outcome: "paused", step: 1 });
+        expect(app.node(K("textfield:email~0"))?.value, how).toBe("old@example.com");
+        expect(app.grants.log.slice(before).map((m) => m.type), how).toEqual(["actGrant", "actRevoke"]);
+      }
     });
 
     it("undo of a granted run is granted the run's window for the restore, then revoked", async () => {

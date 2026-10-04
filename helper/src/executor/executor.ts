@@ -7,7 +7,9 @@
 //      window, and compare what changed against the prediction. A mismatch stops the run at that step.
 // Real input in a window the task acts in, or a pause or take-over from a consumer, pauses it at the
 // next step boundary: before the next step starts, or before the current step acts if its reads are
-// still under way. A stop ends it there. Every write goes in an undo ledger with the value it replaced.
+// still under way. A stop ends it there. Every pause and stop revokes the task's act grant the moment it
+// is recorded, so an act already queued in the reader is refused. Every write goes in an undo ledger with
+// the value it replaced.
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt } from "node:crypto";
@@ -319,7 +321,10 @@ export class Executor {
     return this.loop(task);
   }
 
-  /** Real input from the reader: pause any task acting in that window at its next step boundary. */
+  /**
+   * Real input from the reader: pause any task acting in that window. The grant ends here, not at the next
+   * step boundary (S1 audit #3): a write already queued in the reader behind a slow call is refused there.
+   */
   onUserInput(m: UserInput): void {
     for (const task of this.tasks.values()) {
       if (task.finished !== null || task.interrupt?.kind === "stop") continue;
@@ -327,17 +332,22 @@ export class Executor {
         const w = this.deps.model.windows.get(windowId);
         if (w === undefined || w.app.pid !== m.pid) continue;
         const inside = m.kind === "mouse" ? m.point !== null && w.window.frame !== null && contains(w.window.frame, m.point) : w.focused;
-        if (inside) task.interrupt = { kind: "pause", by: "input", why: `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'` };
+        if (!inside) continue;
+        task.interrupt = { kind: "pause", by: "input", why: `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'` };
+        this.revokeGrant(task);
       }
     }
   }
 
   /**
-   * Pauses a running task at its next step boundary; the running `run` or `resume` call then resolves
-   * as paused. `takeOver` hands the run back to the user: the paused phase names the step it reached.
-   * Taking over an already paused task reports it again as handed back. A pause for `input` (the host
-   * saw the user's own input) leaves a pending pause from the reader's userInput as it is, since that one
-   * names what the user did and where; a userInput after it replaces its wording in turn.
+   * Pauses a running task; the running `run` or `resume` call then resolves as paused at its next step
+   * boundary. Every pause ends the grant at once, as a take-over and a stop do (S1 audit #3): the user has
+   * the window from the moment they ask, so an act already on its way to the reader is refused there. An
+   * act the reader has already dispatched to the app cannot be called back. `takeOver` hands the run back
+   * to the user: the paused phase names the step it reached. Taking over an already paused task reports it
+   * again as handed back. A pause for `input` (the host saw the user's own input) leaves a pending pause
+   * from the reader's userInput as it is, since that one names what the user did and where; a userInput
+   * after it replaces its wording in turn.
    */
   pause(taskId: string, takeOver: boolean, reason?: "input"): void {
     const task = this.need(taskId);
@@ -350,8 +360,7 @@ export class Executor {
     if (task.finished !== null) throw new PlanError(`task ${taskId} is ${task.finished}; there is nothing to pause`);
     if (task.interrupt?.kind === "stop" || (by === "input" && task.interrupt?.by === "input")) return;
     task.interrupt = { kind: "pause", by, why: takeOver ? "you took over" : by === "input" ? "your input" : "you paused it" };
-    // The user has the window now: an act already on its way to the reader is refused there.
-    if (takeOver) this.revokeGrant(task);
+    this.revokeGrant(task);
   }
 
   /** Ends a running task at its next step boundary, or a paused one now. What it wrote stays; undo restores it. */
