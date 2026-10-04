@@ -360,7 +360,7 @@ public final class OfferArbiter: @unchecked Sendable {
             return take(Choice(candidate: s.ui.candidate))
         case (.tab, _):
             return takeAction(spec?.actions.first { $0.key == .tab } ?? offer.kind.actionLine?.primary)
-        case (.shiftTab, _):
+        case (.optionRight, _):
             return take(Choice(candidate: s.ui.candidate, wordOnly: true))
 
         case (.escape, .alternatives):
@@ -448,7 +448,8 @@ public final class OfferArbiter: @unchecked Sendable {
         s.ui = OfferUI()
     }
 
-    /// Leading spaces, then one word: what Shift+Tab takes (`OPEN-QUESTIONS.md` 4, pick a).
+    /// Leading spaces, then one word: what ⌥→ takes (`OPEN-QUESTIONS.md` 4, pick a; the key moved
+    /// from Shift+Tab in A18).
     static func nextWord(_ text: String) -> String {
         let leading = text.prefix { $0.isWhitespace }
         let word = text.dropFirst(leading.count).prefix { !$0.isWhitespace }

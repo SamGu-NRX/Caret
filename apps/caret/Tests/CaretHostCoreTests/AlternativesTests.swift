@@ -90,14 +90,38 @@ final class AlternativesTests: XCTestCase {
         XCTAssertEqual(arbiter.handleKeyDown(down), .pass(.dismissed))
     }
 
-    func testShiftTabTakesOneWordOfTheCurrentCandidate() throws {
+    func testOptionRightTakesOneWordOfTheCurrentCandidate() throws {
         let arbiter = OfferArbiter()
         arbiter.publish(K.ghost([" summary to the team", "x"]))
-        let taken = try claim(arbiter.handleKeyDown(key(KeyStroke.tabKeyCode, shift: true)))
+        let taken = try claim(arbiter.handleKeyDown(KeyStroke(keyCode: KeyStroke.rightKeyCode, option: true, targetPID: pid)))
         XCTAssertEqual(taken.insertionText, " summary")
         XCTAssertTrue(taken.choice.wordOnly)
         XCTAssertEqual(OfferArbiter.nextWord("word"), "word")
         XCTAssertEqual(OfferArbiter.nextWord("  two words"), "  two")
+    }
+
+    /// Bug 17 (A18): Tab takes the whole visible phrase, not one word, and Shift+Tab is the host's.
+    func testTabTakesTheWholePhraseAndShiftTabIsTheHosts() throws {
+        let arbiter = OfferArbiter()
+        arbiter.publish(K.ghost([" I think that is"]))
+        XCTAssertEqual(arbiter.handleKeyDown(key(KeyStroke.tabKeyCode, shift: true)), .pass(.dismissed))
+        arbiter.publish(K.ghost([" I think that is"]))
+        let taken = try claim(arbiter.handleKeyDown(.tab(to: pid)))
+        XCTAssertEqual(taken.insertionText, " I think that is")
+        XCTAssertFalse(taken.choice.wordOnly)
+    }
+
+    /// ⌥→ with Shift or Command is a selection or line move, which stays the host's.
+    func testOnlyAPlainOptionRightTakesAWord() {
+        for chord in [
+            KeyStroke(keyCode: KeyStroke.rightKeyCode, option: true, shift: true, targetPID: pid),
+            KeyStroke(keyCode: KeyStroke.rightKeyCode, command: true, option: true, targetPID: pid),
+            KeyStroke(keyCode: KeyStroke.rightKeyCode, command: true, targetPID: pid),
+        ] {
+            let arbiter = OfferArbiter()
+            arbiter.publish(K.ghost([" summary to the team"]))
+            XCTAssertEqual(arbiter.handleKeyDown(chord), .pass(.dismissed), "\(chord)")
+        }
     }
 
     // MARK: - Pop-ups

@@ -68,6 +68,9 @@ public final class TapThread: @unchecked Sendable {
         var targetFromEvent: UInt64 = 0
         var targetMissing: UInt64 = 0
         var mouseDowns: UInt64 = 0
+        var tabs: UInt64 = 0
+        var tabsPassed: UInt64 = 0
+        var hookKeys: UInt64 = 0
     }
 
     private let arbiter: OfferArbiter
@@ -134,7 +137,7 @@ public final class TapThread: @unchecked Sendable {
         // Copy under the lock and sort outside it, so a socket read never holds up the callback.
         let s = stats.withLock { $0 }
         let sorted = s.recentCallbackNanos.sorted().map { Double($0) / 1_000 }
-        return DebugState.Tap(
+        var tap = DebugState.Tap(
             running: s.running,
             enabled: enabled,
             keyDowns: s.keyDowns,
@@ -147,6 +150,10 @@ public final class TapThread: @unchecked Sendable {
             mouseTap: mousePort.withLockUnchecked { $0 } != nil,
             mouseDowns: s.mouseDowns
         )
+        tap.tabs = s.tabs
+        tap.tabsPassed = s.tabsPassed
+        tap.hookKeys = s.hookKeys
+        return tap
     }
 
     // MARK: - Tap thread
@@ -245,15 +252,32 @@ public final class TapThread: @unchecked Sendable {
         let key = KeyStroke(event: event)
         stats.withLock { key.targetPID == nil ? ($0.targetMissing &+= 1) : ($0.targetFromEvent &+= 1) }
         let consumed = route(key, stampedAt: started)
-        record(started: started, consumed: consumed)
+        record(started: started)
         return consumed ? nil : Unmanaged.passUnretained(event)
     }
 
     /// Decides one key and hands the result on. True when the key is Caret's and must not reach
     /// the app. The tap callback calls this for every user key-down; the debug socket's test hook
     /// calls it with a constructed key, so tests exercise this exact path without a global event.
+    ///
+    /// Every key routed here is counted, from the tap or the hook (`fromHook`), so a run driven
+    /// through the hook reads the same counters as one driven by real keys (A18, bug 18).
     @discardableResult
-    public func route(_ key: KeyStroke, stampedAt uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
+    public func route(_ key: KeyStroke, stampedAt uptimeNanos: UInt64 = DispatchTime.now().uptimeNanoseconds, fromHook: Bool = false) -> Bool {
+        let consumed = decide(key, stampedAt: uptimeNanos)
+        stats.withLock { s in
+            s.keyDowns &+= 1
+            if consumed { s.consumed &+= 1 }
+            if fromHook { s.hookKeys &+= 1 }
+            if key.isPlainTab {
+                s.tabs &+= 1
+                if !consumed { s.tabsPassed &+= 1 }
+            }
+        }
+        return consumed
+    }
+
+    private func decide(_ key: KeyStroke, stampedAt uptimeNanos: UInt64) -> Bool {
         callbacks.keyDown(uptimeNanos)
         if let pid = key.targetPID { callbacks.realKey(pid) }
         switch arbiter.handleKeyDown(key) {
@@ -287,11 +311,9 @@ public final class TapThread: @unchecked Sendable {
         }
     }
 
-    private func record(started: UInt64, consumed: Bool) {
+    private func record(started: UInt64) {
         let elapsed = DispatchTime.now().uptimeNanoseconds &- started
         stats.withLock { s in
-            s.keyDowns &+= 1
-            if consumed { s.consumed &+= 1 }
             s.maxCallbackNanos = max(s.maxCallbackNanos, elapsed)
             s.recentCallbackNanos.append(elapsed)
             if s.recentCallbackNanos.count > 512 { s.recentCallbackNanos.removeFirst(256) }

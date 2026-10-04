@@ -26,6 +26,8 @@ public enum Surface: Equatable, Sendable {
 /// A key-down reduced to the classes the ownership table talks about.
 public enum KeyClass: Equatable, Sendable, CustomStringConvertible {
     case tab, shiftTab, up, down, left, right, escape, returnKey, delete, space
+    /// ⌥→ with no other modifier: takes the next word of the ghost text (brief A18, bug 17).
+    case optionRight
     case commandDigit(Int)
     case commandZ
     /// Text-producing keys: letters, digits, punctuation.
@@ -45,6 +47,7 @@ public enum KeyClass: Equatable, Sendable, CustomStringConvertible {
         case .returnKey: return "return"
         case .delete: return "delete"
         case .space: return "space"
+        case .optionRight: return "opt-right"
         case .commandDigit(let n): return "cmd-\(n)"
         case .commandZ: return "cmd-z"
         case .typing: return "typing"
@@ -61,6 +64,7 @@ public enum KeyClass: Equatable, Sendable, CustomStringConvertible {
         case KeyStroke.downKeyCode where plain && !key.shift: self = .down
         case KeyStroke.upKeyCode where plain && !key.shift: self = .up
         case KeyStroke.leftKeyCode: self = .left
+        case KeyStroke.rightKeyCode where key.option && !key.command && !key.control && !key.shift: self = .optionRight
         case KeyStroke.rightKeyCode: self = .right
         case KeyStroke.returnKeyCode: self = .returnKey
         case KeyStroke.deleteKeyCode: self = .delete
@@ -82,19 +86,24 @@ public enum KeyOwnership {
     /// only for a numbered action or row that is visible, and the arrows only where they move
     /// something. A consumed key that does nothing visible would break the host's own shortcut
     /// (Command-1 switches browser tabs) for no gain.
+    ///
+    /// Ghost text: Tab takes the whole phrase and ⌥→ the next word, so "Tab Tab Tab" walks through
+    /// short phrases as in Cursor (brief A18, bug 17). ⌥→ moves the caret a word in every Mac text
+    /// view, which is the same motion the word takes. Shift+Tab used to take a word and is the
+    /// host's again: in a form it moves focus back, and a second word key was one too many.
     public static func owns(_ surface: Surface, _ key: KeyClass) -> Bool {
         switch surface {
         case .nothing:
             return false
         case .ghost(let candidates):
             switch key {
-            case .tab, .shiftTab, .escape: return true
+            case .tab, .optionRight, .escape: return true
             case .down: return candidates >= 2
             default: return false
             }
         case .alternatives(let count):
             switch key {
-            case .tab, .shiftTab, .up, .down, .escape: return true
+            case .tab, .optionRight, .up, .down, .escape: return true
             case .commandDigit(let n): return n <= count
             default: return false
             }

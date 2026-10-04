@@ -149,7 +149,7 @@ final class HostCoordinator {
         if let current = arbiter.snapshot().current, current.id > claim.offer.id { return }
         cancelGeneration()
         overlay.hide()
-        // Shift+Tab took one word: keep the suggestion, so the field change that follows re-offers
+        // ⌥→ took one word: keep the suggestion, so the field change that follows re-offers
         // the rest of it (SuggestionAnchor.remaining) instead of generating anew.
         if !claim.choice.wordOnly { anchor = nil }
         lastContextKey = nil

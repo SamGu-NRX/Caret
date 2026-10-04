@@ -113,11 +113,12 @@ final class OfferArbiterTests: XCTestCase {
     }
 
     func testModifiedTabIsNotAnAccept() {
-        // Shift+Tab takes one word (KeyOwnershipTests); the other chords keep their meaning.
+        // ⌥→ takes one word (KeyOwnershipTests); every modified Tab keeps its meaning.
         for key in [
             KeyStroke(keyCode: KeyStroke.tabKeyCode, command: true, targetPID: 4242),
             KeyStroke(keyCode: KeyStroke.tabKeyCode, control: true, targetPID: 4242),
             KeyStroke(keyCode: KeyStroke.tabKeyCode, option: true, targetPID: 4242),
+            KeyStroke(keyCode: KeyStroke.tabKeyCode, shift: true, targetPID: 4242),
         ] {
             let arbiter = OfferArbiter()
             arbiter.publish(offer())
