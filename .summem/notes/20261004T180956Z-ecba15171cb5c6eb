@@ -1,0 +1,1 @@
+W2: headless Chrome for Testing registers with LaunchServices, so caret-screen --only-pids <pid> reads it; accept.ts uses that for the AXManualAccessibility log check (Electron fixture via helper/scripts/electron-setup.sh).

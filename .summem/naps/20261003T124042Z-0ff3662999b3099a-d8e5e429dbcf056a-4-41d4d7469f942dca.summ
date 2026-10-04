@@ -1,0 +1,1 @@
+B15 grants and real targets: acts need a helper actGrant (120 s, monotonic; a stop revokes at once); Chrome builds web AX late, takes AXValue, ignores AXSelectedText; background WKWebView drops writes; wait for form fields, trust the walk check.
