@@ -153,6 +153,8 @@ interface Watch {
   dstShapeHash: string;
   label: string;
   app: string;
+  /** The destination window's title, where Caret noticed the correction (M1 provenance). */
+  windowTitle: string | null;
   until: number;
   pending: { value: string; at: number } | null;
 }
@@ -725,7 +727,13 @@ export class PatternEngine {
       const typedMatch = (label: string): string => this.deps.hash(typedAboutKey(label));
       if (m.op === "add") {
         if (m.id !== undefined) throw new MemoryError("add makes a new entry, so it takes no id; use edit to change one");
-        if (m.kind !== "about") throw new MemoryError(`add keeps About entries you typed, not ${m.kind === undefined ? "an entry without a kind" : `${m.kind} entries`}`);
+        // "Remember this" (M1): an About value or a person, active at once in its file.
+        if (m.kind === "people") {
+          if (m.fields === undefined) throw new MemoryError("add needs fields: alias and name");
+          // The same key a person learned from an edit has (preferences.ts), so telling Caret replaces what it noticed.
+          return reply([memory.addPerson(m.fields, (alias) => this.deps.hash(`people\u0000${alias.trim().toLowerCase()}`), now)]);
+        }
+        if (m.kind !== "about") throw new MemoryError(`add keeps About entries and people you tell Caret, not ${m.kind === undefined ? "an entry without a kind" : `${m.kind} entries`}`);
         if (m.fields === undefined) throw new MemoryError("add needs fields: label, value and source typed");
         return reply([memory.addTyped(m.fields, typedMatch, now)]);
       }
@@ -1126,6 +1134,21 @@ export class PatternEngine {
     this.deps.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.clock, id: o.msg.id, reason, ...(replacedBy === undefined ? {} : { replacedBy }) });
   }
 
+  /**
+   * Memory entries changed outside Caret: in an editor, the memory window's document editor, or by "Not right"
+   * (M1). Every open offer that used one is withdrawn as stale, and a skill among them loses any promote offer and
+   * its routine's offers. The store has already put an edited skill back on Tab (MemoryStore.applyOutside).
+   */
+  memoryChanged(ids: readonly { id: string; kind: string }[]): void {
+    for (const c of ids) {
+      this.withdrawDependents(c.id);
+      if (c.kind !== "skill") continue;
+      this.skills.backOnTab(c.id);
+      const routineId = this.deps.memory.skill(c.id)?.routineId;
+      if (routineId !== undefined) this.withdrawDependents(routineId);
+    }
+  }
+
   /** The user's settings no longer allow these families: every open offer of theirs is withdrawn as `settings`. */
   withdrawFamilies(families: readonly Family[]): void {
     for (const o of this.offers.values()) if (o.state === "open" && families.includes(familyOf(o.msg.kind))) this.withdraw(o, "settings");
@@ -1176,6 +1199,7 @@ export class PatternEngine {
       dstShapeHash: c.dstShapeHash,
       label: (c.dstLabel ?? "").trim().slice(0, 80) || "Field",
       app: w?.app.name ?? "",
+      windowTitle: w?.window.title ?? null,
       until: this.clock + EDIT_WATCH_MS,
       pending: null,
     });
@@ -1186,7 +1210,7 @@ export class PatternEngine {
     // The user changed what the run wrote: for a skill, as good as an undo.
     this.skills.reversed(w.taskId, w.pending.at);
     try {
-      captureEdit(this.deps.memory, this.deps.hash, { source: w.source, written: w.written, edited: w.pending.value, kind: w.kind, dstShapeHash: w.dstShapeHash, fieldLabel: w.label, app: w.app }, w.pending.at);
+      captureEdit(this.deps.memory, this.deps.hash, { source: w.source, written: w.written, edited: w.pending.value, kind: w.kind, dstShapeHash: w.dstShapeHash, fieldLabel: w.label, app: w.app, windowTitle: w.windowTitle }, w.pending.at);
     } catch (e) {
       // An edit memory cannot hold (an over-long value) is not learned; it must not stop the tick.
       if (!(e instanceof MemoryError)) throw e;

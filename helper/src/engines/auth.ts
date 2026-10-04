@@ -31,9 +31,14 @@ function hmac(secret: Buffer, ...parts: string[]): string {
   return createHmac("sha256", secret).update(parts.join("\n"), "utf8").digest("hex");
 }
 
-/** What the bridge must send for this challenge and its own nonce. */
-export function bridgeProof(secret: Buffer, challenge: string, bridgeNonce: string): string {
-  return hmac(secret, BRIDGE_LABEL, challenge, bridgeNonce);
+/**
+ * What the connecting side must send for this challenge and its own nonce, bound to the pid of the helper it sees as its
+ * socket's peer (LOCAL_PEERPID). The helper checks it with its own pid, so a same-user process that swapped the socket
+ * path and passed the host's hello through to the real helper gets nothing: the host bound that hello to the swapper's
+ * pid (W3 review #1). The helper's own proof is bound to its pid the other way.
+ */
+export function bridgeProof(secret: Buffer, challenge: string, bridgeNonce: string, helperPid: number): string {
+  return hmac(secret, BRIDGE_LABEL, challenge, bridgeNonce, String(helperPid));
 }
 
 /** What the helper with process id `pid` answers, proving to the bridge it holds the same key. */

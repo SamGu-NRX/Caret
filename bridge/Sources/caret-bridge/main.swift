@@ -76,14 +76,6 @@ final class FrameOut: @unchecked Sendable {
     }
 }
 
-/// A flag set once, read from any thread.
-final class Flag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    var isSet: Bool { lock.withLock { value } }
-    func set() { lock.withLock { value = true } }
-}
-
 func run() -> Never {
     let args = CommandLine.arguments
     guard args.count >= 2, let extensionId = Relay.extensionId(fromOrigin: args[1]) else {
@@ -92,12 +84,10 @@ func run() -> Never {
     signal(SIGPIPE, SIG_IGN)
     let service = ProcessInfo.processInfo.environment["CARET_BRIDGE_SERVICE"] ?? BridgeTrust.machService
     let out = FrameOut()
-    // Before the engine opens, a closed connection is open's failure, reported below with exit 1; after, a normal end.
-    let opened = Flag()
+    // The link calls onClose only once it was open; a close before that is open's failure, reported below with exit 1.
     let link = XPCHostLink(service: service, hostRequirement: BridgeTrust.hostRequirement,
                            onLine: { out.line($0) },
                            onClose: { why in
-                               guard opened.isSet else { return }
                                log(why)
                                exit(0)
                            })
@@ -106,7 +96,6 @@ func run() -> Never {
     case let .failure(why): fail("relaying nothing: \(why)")
     case let .success(e): engine = e
     }
-    opened.set()
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     guard let ready = try? encoder.encode(EngineReady(engine: engine)) else { fail("cannot encode engineReady") }

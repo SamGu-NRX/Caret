@@ -1,6 +1,6 @@
 // caret-helper: listens on the screen socket for caret-screen and for consumers, and on page.sock beside it for the
 // page engines (Caret for Chrome, through caret-bridge; browser layer W2).
-//   node src/main.ts --auth-fd N [--socket PATH] [--page-socket PATH | --no-page] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
+//   node src/main.ts --auth-fd N [--socket PATH] [--page-socket PATH | --no-page] [--data-dir DIR] [--memory-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
 // --auth-fd names an inherited descriptor holding the 32-byte launch secret, which caret-screen also got from the
 // launcher (src/launch.ts); the helper answers the reader's challenge with it, and page.sock's handshake uses a key
 // derived from it (engines/auth.ts). It never comes on argv or in the environment. Without it page.sock is not started.
@@ -10,7 +10,7 @@
 // --audit-probe-every it also times the generator on the real windows at that interval.
 // The Jev key comes from TYPESAFE_API_KEY or the .env file named by CARET_ENV_FILE, read when a request is made.
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { closeSync, readFileSync, writeFileSync } from "node:fs";
 import { Helper } from "./helper.ts";
@@ -35,10 +35,12 @@ function writerFromEnv(say: (line: string) => void): WriterPort | null {
   return makeWriterPort(WRITER_ROUTE);
 }
 
+const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "CaretV2");
+
 const { values: args } = parseArgs({
   options: {
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "screen.sock") },
-    "data-dir": { type: "string", default: join(homedir(), "Library", "Application Support", "CaretV2") },
+    "data-dir": { type: "string", default: DEFAULT_DATA_DIR },
     shadow: { type: "boolean", default: false },
     "no-jev": { type: "boolean", default: false },
     "allow-background-focus": { type: "boolean", default: false },
@@ -50,8 +52,15 @@ const { values: args } = parseArgs({
     "auth-fd": { type: "string" },
     "page-socket": { type: "string" },
     "no-page": { type: "boolean", default: false },
+    // The markdown memory folder (M1). Lead decision 1: Application Support, not Documents, which may sync to iCloud.
+    "memory-dir": { type: "string" },
   },
 });
+// The user's memory folder goes with the user's data directory: the default one, whether named or not (Caret.app
+// always passes --data-dir, and its own default home is this directory; CaretHome.swift). Any other data directory
+// (a test home, an evaluation, the crash test) keeps memory inside itself, so only the user's helper reads and
+// migrates the real folder.
+const memoryDir = args["memory-dir"] ?? (resolve(args["data-dir"]) === resolve(DEFAULT_DATA_DIR) ? join(homedir(), "Library", "Application Support", "Caret", "Memory") : join(args["data-dir"], "Memory"));
 
 /** Node's longest timer delay; a longer one runs every millisecond. */
 const TIMEOUT_MAX = 2_147_483_647;
@@ -104,6 +113,8 @@ const pages: PageHost | null = args["no-page"] || secret === null
   : pageHost({ path: args["page-socket"] ?? defaultPageSocket(args.socket), secret, reader: readerSocket, apply: (m) => void helper.handleReader(m), warn });
 helper = new Helper({
   store,
+  memoryDir,
+  watchMemory: true,
   askJev: args["no-jev"] ? null : makeJevClient(() => loadJevKey()),
   shadow: args.shadow,
   allowBackgroundFocus: args["allow-background-focus"],

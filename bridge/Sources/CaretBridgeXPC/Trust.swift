@@ -78,12 +78,19 @@ public enum ProcessTrust {
     }
 
     /// The browser that launched bridge `pid`: its parent, when that parent satisfies one of `requirements`; else why not.
+    ///
+    /// Pids are numbers, not identities, so the parent is read again after its signature is checked: a parent that
+    /// exited meanwhile reparents the bridge (to launchd, pid 1), and a different number is refused. The bridge itself
+    /// is alive throughout (it is waiting on open's reply), so its own pid cannot be reused. The XPC peer's audit token
+    /// would bind this tighter, but NSXPCConnection exposes it only through private API (W3 review #14).
     public static func launchingBrowser(of pid: pid_t, requirements: [String]) -> Result<BrowserRef, BridgeRefusal> {
         guard let ppid = parent(of: pid), ppid > 1 else { return .failure(.parent("the bridge has no parent process (its browser exited)")) }
         guard requirements.contains(where: { satisfies(pid: ppid, requirement: $0) }) else {
             return .failure(.parent("the bridge's parent, process \(ppid), is not a browser Caret knows by its signature"))
         }
-        return .success(browserRef(pid: ppid))
+        let browser = browserRef(pid: ppid)
+        guard parent(of: pid) == ppid else { return .failure(.parent("the bridge's parent changed while Caret checked it")) }
+        return .success(browser)
     }
 }
 

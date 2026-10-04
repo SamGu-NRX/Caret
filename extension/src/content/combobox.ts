@@ -186,11 +186,15 @@ export async function chooseOption(el: Element, verb: ChooseVerb, check: () => A
   const stopped = async (why: ActAnswer, stage: string, matches: string[] = []): Promise<ActAnswer> => {
     const tidy = why.outcome !== "notAllowed" && why.outcome !== "excluded" && (await alive()) && check() === null;
     if (tidy) await restore();
-    const outcome = why.outcome === "notAllowed" ? "notAllowed" : "failed";
     const detail = `${why.detail ?? why.outcome} (${stage}); ${tidy ? "Caret put the control back and stopped" : "Caret stopped without touching the control again"}`;
-    // No reading of a control that is no longer one Caret may read (it left, or turned into an excluded field): W1 review round 2, #3.
-    if (check() !== null) return answer(outcome, detail, { choice: choice(matches) });
+    // No reading of a control that is no longer one Caret may read (it left, or turned into an excluded field): W1 review
+    // round 2, #3. The list was opened and maybe filtered, so it may show what Caret typed: failed with no readings,
+    // which the helper reads as "may have landed" and records for undo.
+    if (check() !== null) return answer("failed", detail, { choice: choice(matches) });
     const now = shownValue(el, f);
+    // A stop that left the filter text in the control (a revoke between filtering and the pick) changed what it shows,
+    // so it is failed with that reading, never notAllowed, which would leave the change out of undo (W3 review #10).
+    const outcome = why.outcome === "notAllowed" && now === before ? "notAllowed" : "failed";
     return answer(outcome, detail, { readings: { before, afterInput: now, afterBlur: now, invalid: invalidNow(el), error: errorText(el) }, choice: choice(matches) });
   };
   const gate = async (stage: string): Promise<ActAnswer | null> => {

@@ -35,10 +35,28 @@ export function navigationEntry(): string {
   return id === undefined ? `length:${history.length}` : `entry:${id}`;
 }
 
+/** Undo marks one frame keeps; past this the oldest is forgotten and its undo refused. As the helper's MAX_MARKS. */
+const MAX_MARKS = 512;
+
 export class Registry {
   private readonly entries = new Map<string, Entry>();
   private readonly ids = new WeakMap<Element, string>();
+  /** The element each marked write reached (W3 review #2), held weakly like every other registry reference. */
+  private readonly marks = new Map<string, WeakRef<Element>>();
   private next = 1;
+
+  /** Keeps `el` under `mark`: the element a forward write is about to change. */
+  mark(mark: string, el: Element): void {
+    this.marks.delete(mark);
+    this.marks.set(mark, new WeakRef(el));
+    while (this.marks.size > MAX_MARKS) this.marks.delete(this.marks.keys().next().value as string);
+  }
+
+  /** The element kept under `mark`, if it is still alive in this document. */
+  marked(mark: string): Element | null {
+    const el = this.marks.get(mark)?.deref();
+    return el !== undefined && el.isConnected && el.ownerDocument === document ? el : null;
+  }
 
   /** The element's id, the same across walks while the element lives. */
   idOf(el: Element): string {
@@ -57,6 +75,7 @@ export class Registry {
   /** Forgets everything: the document came back from the back-forward cache, so every earlier walk is stale. */
   clear(): void {
     this.entries.clear();
+    this.marks.clear();
   }
 
   entry(id: string): Entry | undefined {

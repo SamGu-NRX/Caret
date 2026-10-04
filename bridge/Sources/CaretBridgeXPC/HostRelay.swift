@@ -12,11 +12,11 @@ public struct HostRelayConfig: Sendable {
     /// The browser that launched the bridge with this pid, or why it is refused (ProcessTrust.launchingBrowser).
     public var launchingBrowser: @Sendable (pid_t) -> Result<BrowserRef, BridgeRefusal>
     /// Time the helper has to challenge and then welcome. Assumed: both come from memory within milliseconds.
-    public var handshakeSeconds: Int32
+    public var handshakeSeconds: Double
 
     public init(socketPath: String, pageKey: Data, bridgeRequirement: String = BridgeTrust.bridgeRequirement,
                 launchingBrowser: @escaping @Sendable (pid_t) -> Result<BrowserRef, BridgeRefusal> = { ProcessTrust.launchingBrowser(of: $0, requirements: BridgeTrust.browserRequirements) },
-                handshakeSeconds: Int32 = 5) {
+                handshakeSeconds: Double = 5) {
         self.socketPath = socketPath
         self.pageKey = pageKey
         self.bridgeRequirement = bridgeRequirement
@@ -70,6 +70,8 @@ final class RelaySession: NSObject, CaretBridgeHost, @unchecked Sendable {
     private var opened = false
     private var ended = false
     private var helper: LineSocket?
+    /// The page.sock connection while its handshake runs, so the bridge leaving can cut it short (W3 review #12).
+    private var pending: LineSocket?
 
     init(connection: NSXPCConnection, config: HostRelayConfig, log: @escaping @Sendable (String) -> Void) {
         self.connection = connection
@@ -102,13 +104,13 @@ final class RelaySession: NSObject, CaretBridgeHost, @unchecked Sendable {
         case let .success((s, e)): (sock, engine) = (s, e)
         }
         let live = lock.withLock { () -> Bool in
+            pending = nil
             if ended { return false }
             helper = sock
             return true
         }
         guard live else {
-            sock.close()
-            Darwin.close(sock.fd)
+            sock.closeDescriptor()
             return refuse("the bridge left during the handshake")
         }
         log("engine \(engine) open for bridge process \(pid), \(browser.name) (\(browser.pid)), extension \(extensionId)")
@@ -128,15 +130,17 @@ final class RelaySession: NSObject, CaretBridgeHost, @unchecked Sendable {
 
     /// Ends the session once: page.sock closes, so the helper ends the engine and the worker its grants.
     func end(_ why: String) {
-        let (h, wasOpen, first) = lock.withLock { () -> (LineSocket?, Bool, Bool) in
+        let (h, p, wasOpen, first) = lock.withLock { () -> (LineSocket?, LineSocket?, Bool, Bool) in
             let first = !ended
             ended = true
             let h = helper
             helper = nil
-            return (h, opened, first)
+            return (h, pending, opened, first)
         }
         guard first else { return }
-        h?.close()
+        // Shut down only: the thread reading each socket closes its descriptor after its last read.
+        h?.shutdown()
+        p?.shutdown()
         // A connection whose code fails the bridge requirement is invalidated before it can call open, so it ends here.
         log(wasOpen ? "bridge process \(pid): \(why)" : "a connection from process \(pid) ended before it opened an engine: \(why)")
     }
@@ -150,8 +154,8 @@ final class RelaySession: NSObject, CaretBridgeHost, @unchecked Sendable {
         }
         (connection?.remoteObjectProxy as? CaretBridgeClient)?.closed("the helper closed page.sock")
         end("the helper closed page.sock")
-        // Only this thread reads the descriptor, so only it closes it, once the read has ended (end() shut it down).
-        Darwin.close(sock.fd)
+        // Only this thread reads the descriptor, so only it closes it, once the read has ended.
+        sock.closeDescriptor()
         connection?.invalidate()
     }
 
@@ -168,10 +172,15 @@ final class RelaySession: NSObject, CaretBridgeHost, @unchecked Sendable {
         }
         let sock = LineSocket(fd: fd)
         let fail = { (why: String) -> Result<(LineSocket, String), BridgeRefusal> in
-            sock.close()
-            Darwin.close(fd)
+            self.lock.withLock { self.pending = nil }
+            sock.closeDescriptor()
             return .failure(.helper(why))
         }
+        guard lock.withLock({ () -> Bool in
+            if ended { return false }
+            pending = sock
+            return true
+        }) else { return fail("the bridge left before the handshake") }
         let decoder = JSONDecoder()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -179,7 +188,7 @@ final class RelaySession: NSObject, CaretBridgeHost, @unchecked Sendable {
               case let .engineChallenge(challenge)? = try? decoder.decode(PageMessage.self, from: challengeLine) else { return fail("the helper sent no challenge") }
         let nonce = Handshake.nonce()
         let hello = EngineHello(browser: browser, extensionId: extensionId, bridgeVersion: bridgeVersion, nonce: nonce,
-                                proof: Handshake.bridgeProof(secret: config.pageKey, challenge: challenge.nonce, nonce: nonce))
+                                proof: Handshake.bridgeProof(secret: config.pageKey, challenge: challenge.nonce, nonce: nonce, helperPid: Int(peerPid)))
         guard let helloLine = try? encoder.encode(hello), sock.write(line: helloLine) else { return fail("cannot send the hello") }
         guard let welcomeLine = sock.next(timeout: config.handshakeSeconds),
               case let .engineWelcome(welcome)? = try? decoder.decode(PageMessage.self, from: welcomeLine) else { return fail("the helper did not welcome this engine (wrong page key?)") }

@@ -63,11 +63,12 @@ private final class FakeHelper: @unchecked Sendable {
         let challenge = Handshake.nonce()
         _ = s.write(line: Data(#"{"type":"engineChallenge","v":1,"nonce":"\#(challenge)"}"#.utf8))
         guard let line = s.next(timeout: 5), case let .engineHello(h)? = try? JSONDecoder().decode(PageMessage.self, from: line),
-              Handshake.matches(Handshake.bridgeProof(secret: key, challenge: challenge, nonce: h.nonce), h.proof) else { s.close(); return }
+              Handshake.matches(Handshake.bridgeProof(secret: key, challenge: challenge, nonce: h.nonce, helperPid: Int(getpid())), h.proof) else { s.closeDescriptor(); return }
         let pid = Int(getpid())
         _ = s.write(line: Data(#"{"type":"engineWelcome","v":1,"engine":"eng-test","pid":\#(pid),"proof":"\#(Handshake.helperProof(secret: key, challenge: challenge, nonce: h.nonce, pid: pid))"}"#.utf8))
         lock.withLock { client = s; got.append(line) }
         while let l = s.next() { lock.withLock { got.append(l) } }
+        s.closeDescriptor()
     }
 
     var received: [String] { lock.withLock { got.map { String(decoding: $0, as: UTF8.self) } } }
@@ -75,7 +76,7 @@ private final class FakeHelper: @unchecked Sendable {
 
     func stop() {
         close(listenFd)
-        lock.withLock { client }?.close()
+        lock.withLock { client }?.shutdown()
         try? FileManager.default.removeItem(atPath: dir)
     }
 }
@@ -200,5 +201,137 @@ private func waitUntil(_ cond: () -> Bool, seconds: Double = 5) -> Bool {
         #expect(ProcessTrust.parses(BridgeTrust.bridgeRequirement) && ProcessTrust.parses(BridgeTrust.hostRequirement))
         #expect(BridgeTrust.browserRequirements.allSatisfy(ProcessTrust.parses))
         #expect(BridgeTrust.bridgeRequirement == #"anchor apple generic and identifier "dev.caret.bridge" and certificate leaf[subject.OU] = "DWGXWVUR2B""#)
+    }
+}
+
+// W3 review: lifetimes and deadlines.
+
+/// A page.sock that sends its challenge one byte every 200 ms and never ends the line.
+private final class Trickler: @unchecked Sendable {
+    let dir: String
+    let path: String
+    private let listenFd: Int32
+    init() throws {
+        dir = NSTemporaryDirectory() + "cw3t-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        path = dir + "/page.sock"
+        listenFd = socket(AF_UNIX, SOCK_STREAM, 0)
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+            for (i, b) in path.utf8.enumerated() { raw[i] = b }
+        }
+        let bound = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listenFd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+        precondition(bound == 0 && listen(listenFd, 4) == 0)
+        let fd = listenFd
+        Thread {
+            let c = accept(fd, nil, nil)
+            if c < 0 { return }
+            for b in Array(#"{"type":"engineChallenge","v":1,"nonce":"aaaa"#.utf8) {
+                var x = b
+                if write(c, &x, 1) != 1 { break }
+                usleep(200_000)
+            }
+            close(c)
+        }.start()
+    }
+    func stop() {
+        close(listenFd)
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+}
+
+/// A host that replies to open and drops the connection at once.
+private final class ReplyThenDrop: NSObject, NSXPCListenerDelegate, CaretBridgeHost, @unchecked Sendable {
+    let listener = NSXPCListener.anonymous()
+    private var conn: NSXPCConnection?
+    override init() {
+        super.init()
+        listener.delegate = self
+        listener.resume()
+    }
+    func listener(_ l: NSXPCListener, shouldAcceptNewConnection c: NSXPCConnection) -> Bool {
+        c.exportedInterface = BridgeInterfaces.host()
+        c.exportedObject = self
+        c.remoteObjectInterface = BridgeInterfaces.client()
+        conn = c
+        c.resume()
+        return true
+    }
+    func open(extensionId: String, bridgeVersion: String, reply: @escaping @Sendable (String?, String?) -> Void) {
+        reply("eng-dropped", nil)
+        conn?.invalidate()
+    }
+    func send(_ line: Data) {}
+}
+
+@Suite(.serialized) struct BridgeLifetimes {
+    @Test func writesNothingAfterShutdownAndClosesItsDescriptorOnce() {
+        var fds: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        defer { close(fds[1]) }
+        let a = LineSocket(fd: fds[0])
+        #expect(a.write(line: Data("x".utf8)))
+        a.shutdown()
+        a.shutdown()
+        #expect(!a.write(line: Data("y".utf8)))
+        #expect(a.next(timeout: 0.2) == nil)
+        a.closeDescriptor()
+        a.closeDescriptor()
+        #expect(!a.write(line: Data("z".utf8)))
+    }
+
+    @Test func shutdownEndsAWriteBlockedOnAPeerThatStoppedReading() {
+        var fds: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        var one: Int32 = 1
+        setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        defer { close(fds[1]) }
+        let a = LineSocket(fd: fds[0])
+        let result = Locked<Bool?>(nil)
+        // Far past any socket buffer, and the other end never reads: the write blocks.
+        let big = Data(repeating: 0x61, count: 16 * 1024 * 1024)
+        Thread { result.set(a.write(line: big)) }.start()
+        usleep(300_000)
+        #expect(result.value == nil, "the write did not block")
+        let start = Date()
+        a.shutdown()
+        #expect(Date().timeIntervalSince(start) < 1, "shutdown waited on the blocked write")
+        #expect(waitUntil({ result.value == false }, seconds: 3), "the blocked write did not fail after shutdown")
+        a.closeDescriptor()
+    }
+
+    @Test func aHelperThatTricklesItsChallengeIsCutOffAtTheDeadline() throws {
+        let me = try ownRequirement()
+        let t = try Trickler(); defer { t.stop() }
+        let config = HostRelayConfig(socketPath: t.path, pageKey: Handshake.pageKey(launchSecret: launch), bridgeRequirement: me,
+                                     launchingBrowser: { _ in .success(BrowserRef(pid: 1, bundleId: "b", name: "B")) }, handshakeSeconds: 1)
+        let listener = BridgeListener(listener: NSXPCListener.anonymous(), config: config, log: { _ in }); listener.resume(); defer { listener.invalidate() }
+        let link = XPCHostLink(endpoint: listener.endpoint, hostRequirement: me, onLine: { _ in }, onClose: { _ in }); defer { link.close() }
+        let start = Date()
+        let r = link.open(extensionId: X, bridgeVersion: "t", timeout: 8)
+        let took = Date().timeIntervalSince(start)
+        guard case let .failure(.host(why)) = r else { Issue.record("expected the host's refusal: \(r)"); return }
+        #expect(why.contains("sent no challenge"), "\(why)")
+        // One second for the whole line, though a byte came every 200 ms.
+        #expect(took < 3, "took \(took) s")
+    }
+
+    @Test func aCloseRightAfterASuccessfulOpenIsNeverALiveLookingLink() throws {
+        let me = try ownRequirement()
+        for _ in 0..<5 {
+            let host = ReplyThenDrop()
+            let closed = Lines()
+            let link = XPCHostLink(endpoint: host.listener.endpoint, hostRequirement: me, onLine: { _ in }, onClose: closed.close)
+            switch link.open(extensionId: X, bridgeVersion: "t", timeout: 5) {
+            case .success:
+                // Opened before the drop was seen: the drop must then reach onClose.
+                #expect(waitUntil({ closed.closedWhy != nil }, seconds: 2), "opened, and the close never reached onClose")
+            case let .failure(why):
+                #expect(closed.closedWhy == nil, "a close while opening reached onClose: \(why)")
+            }
+            link.close()
+            host.listener.invalidate()
+        }
     }
 }

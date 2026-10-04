@@ -23,6 +23,11 @@ import {
   type FirstLook,
   type FirstLookReply,
   type Focus,
+  type MemoryDocument,
+  type MemoryDocumentReply,
+  type MemoryDocumentRequest,
+  type MemoryNotRight,
+  type MemoryProvenance,
   type MemoryReply,
   type MemoryRequest,
   type OfferAccept,
@@ -48,7 +53,9 @@ import type { Change, WindowState } from "./model.ts";
 import { Executor, type Authorization, type ExecutorDeps, type Revocation, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
 import { RecoveryJournal, type JournalRecord } from "./executor/journal.ts";
-import { MemoryStore } from "./patterns/memory.ts";
+import { MemoryError, MemoryStore } from "./patterns/memory.ts";
+import { MemoryConflictError, MemoryDocumentError, type DocumentInfo } from "./memory/documents.ts";
+import type { DocId } from "./memory/parse.ts";
 import { PatternEngine } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
@@ -110,6 +117,13 @@ export interface HelperOptions {
   calendar?: CalendarPort | "reader" | null;
   /** Memory entries, the decision log and reactions. Defaults to a store beside `store`'s database. */
   memory?: MemoryStore;
+  /**
+   * The markdown memory folder for the default store (M1). Defaults to "Memory" inside the data directory, so a
+   * helper on a temporary directory never opens the user's real folder; main.ts passes the app's.
+   */
+  memoryDir?: string;
+  /** Watch the memory folder for edits (main.ts); reads check revisions either way. */
+  watchMemory?: boolean;
   /** Where runs are saved before each act, for recovery after a crash (B23). Defaults to one beside `store`'s database. */
   journal?: RecoveryJournal;
   urls?: UrlOpener | null;
@@ -200,6 +214,11 @@ export class Helper {
   private readonly inflight = new Set<string>();
   /** When each About entry was added through memoryRequest add, by id: the newer entries a form has not been asked about (B21). */
   private readonly aboutAddedAt = new Map<string, number>();
+  /**
+   * The memory entries each offer was built from, by offer key (a patternOffer's id): taking it confirms the noticed
+   * ones (lead decision 3), and its memoryProvenance names them.
+   */
+  private readonly offerMemory = new Map<string, string[]>();
   /** Forms whose fill was in flight when an About entry was added; the focused field is asked about again when that fill ends. */
   private readonly refillAfter = new Set<string>();
   /** Recent proposals, by id: the window and each proposed field's value, so fillResult can be checked and matched. */
@@ -374,7 +393,17 @@ export class Helper {
       },
       ...opts.executorHooks,
     });
-    this.memory = opts.memory ?? new MemoryStore(opts.store.dir);
+    this.memory =
+      opts.memory ??
+      new MemoryStore(opts.store.dir, {
+        ...(opts.memoryDir === undefined ? {} : { documents: opts.memoryDir }),
+        watch: opts.watchMemory === true,
+        warn: (line) => opts.warn?.(line),
+      });
+    if (this.memory.migration.outcome === "failed") opts.store.count("memory.migration_failed", 1);
+    if (this.memory.migration.outcome === "migrated" || this.memory.migration.outcome === "resumed") opts.store.count("memory.migrated", this.memory.migration.moved);
+    // An edit in an editor or the memory window withdraws the offers that used it and revokes tasks that copy it.
+    this.memory.onOutsideChange = (changes) => this.memoryChangedOutside(changes);
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.patterns = new PatternEngine({
@@ -846,6 +875,7 @@ export class Helper {
     const checked = HelperMessage.safeParse(msg);
     if (!checked.success) return fail("schema", `the proposal's pop-up failed the protocol check: ${checked.error.issues[0]?.message ?? "invalid"}`);
     this.offers.record(msg, () => this.acceptPlan(offerKey));
+    this.rememberOfferMemory(offerKey, msg);
     this.recordShownOffer(offerKey, w.window.windowId, specSays(spec));
     const expect = { [w.window.windowId]: Object.fromEntries(draft.checked.writes.map((wr) => [wr.node.key, wr.node.value ?? ""])) };
     this.planOffers.set(offerKey, { at: this.now(), draft, instruction: m.instruction, expect });
@@ -912,9 +942,128 @@ export class Helper {
    * Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. `session`: the
    * host session it came from (HelperServer), which a taken offer's run is bound to; absent in process.
    */
-  handleOffer(m: OfferControl, session?: string): Promise<TaskResult | null> {
-    if (m.action === "take") this.bindNew(m.offerId, session);
-    return this.patterns.control(m);
+  async handleOffer(m: OfferControl, session?: string): Promise<TaskResult | null> {
+    if (m.action !== "take") return this.patterns.control(m);
+    const stale = this.checkMemoryBeforeAccept(m.offerId);
+    if (stale !== null) {
+      this.error(`offer ${m.offerId}: ${stale}`);
+      return null;
+    }
+    this.bindNew(m.offerId, session);
+    const used = this.offerMemory.get(m.offerId) ?? [];
+    const out = await this.patterns.control(m);
+    if (out !== null) this.confirmMemory(used);
+    return out;
+  }
+
+  /**
+   * Right before an offer is taken, the memory files are checked by content, not by stat (plan section 6): an edit
+   * the watcher has not reported yet withdraws what it invalidates now. Returns why this offer can no longer be
+   * taken, or null.
+   */
+  private checkMemoryBeforeAccept(offerId: string): string | null {
+    const changes = [...this.memory.takeOutsideChanges(), ...this.memory.verify()];
+    if (changes.length === 0) return null;
+    const used = new Set(this.offerMemory.get(offerId) ?? []);
+    this.memoryChangedOutside(changes);
+    const hit = changes.find((c) => used.has(c.id));
+    return hit === undefined ? null : `what it uses from memory (${hit.id}) changed since it was offered`;
+  }
+
+  /** The user took an offer: the noticed facts it was built from are confirmed (lead decision 3). */
+  private confirmMemory(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    // An accept resolves when its run ends, which can be after the helper shut its store: a failed confirmation is
+    // said, never thrown into a promise nobody awaits.
+    try {
+      const confirmed = this.memory.confirm(ids);
+      if (confirmed.length > 0) this.opts.store.count("memory.confirmed", confirmed.length);
+    } catch (e) {
+      this.opts.warn?.(`memory: confirming ${ids.join(", ")} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * Memory changed outside Caret: in an editor, the memory window's editor, or by "Not right". Offers built from a
+   * changed entry are withdrawn as stale, an edited skill's offers too, and every live task is checked again, so one
+   * that copies a changed value or runs a changed skill is revoked before its next act (S1 audit #4).
+   */
+  private memoryChangedOutside(changes: readonly { id: string; kind: string }[]): void {
+    if (changes.length === 0) return;
+    this.opts.store.count("memory.outside_change", changes.length);
+    for (const c of changes) this.withdrawMemoryOffers(c.id);
+    this.patterns.memoryChanged(changes);
+    this.executor.recheck();
+  }
+
+  /** "Not right" on an offer, about one fact it used (memoryNotRight, lead decision 3). The reply goes to the asker only. */
+  handleMemoryNotRight(m: MemoryNotRight): MemoryReply {
+    const reply = (entries: MemoryReply["entries"], error: string | null): MemoryReply => ({ type: "memoryReply", v: PROTOCOL_VERSION, requestId: m.requestId, error, entries });
+    try {
+      const kind = this.memory.get(m.memoryId).kind;
+      const e = this.memory.notRight(m.memoryId, m.correction, Math.max(this.now(), Date.now()));
+      this.opts.store.count(m.correction === null ? "memory.not_right_forget" : "memory.not_right_fix", 1);
+      this.memoryChangedOutside([{ id: m.memoryId, kind }]);
+      return reply(e === null ? [] : [e], null);
+    } catch (e) {
+      if (e instanceof MemoryError) return reply([], e.message);
+      throw e;
+    }
+  }
+
+  /** The memory window's documents: list, read, or save from its editor (memoryDocumentRequest). To the asker only. */
+  handleMemoryDocument(m: MemoryDocumentRequest): MemoryDocumentReply {
+    const base = { type: "memoryDocumentReply", v: PROTOCOL_VERSION, requestId: m.requestId, folder: this.memory.folder } as const;
+    const wire = (d: DocumentInfo): MemoryDocument => ({ doc: d.doc, file: d.file, path: d.path, revision: d.revision, bytes: d.bytes, diagnostics: d.diagnostics.map((x) => ({ line: x.line, field: x.field, severity: x.severity, message: x.message })) });
+    const fail = (error: string, conflict: { revision: string | null } | null = null, documents: MemoryDocument[] = []): MemoryDocumentReply => ({ ...base, error, conflict, documents, text: null });
+    try {
+      switch (m.op) {
+        case "list":
+          return { ...base, error: null, conflict: null, documents: this.memory.documents().map(wire), text: null };
+        case "read": {
+          const r = this.memory.readDocument(m.doc as DocId);
+          return { ...base, error: null, conflict: null, documents: [wire(r.info)], text: r.text };
+        }
+        case "save": {
+          const info = this.memory.saveDocument(m.doc as DocId, m.baseRevision ?? null, m.text ?? "");
+          this.opts.store.count("memory.document_saved", 1);
+          // The user's edits reach offers and tasks before the reply goes out.
+          this.memoryChangedOutside(this.memory.takeOutsideChanges());
+          return { ...base, error: null, conflict: null, documents: [wire(info)], text: null };
+        }
+      }
+    } catch (e) {
+      if (e instanceof MemoryConflictError) {
+        this.opts.store.count("memory.save_conflict", 1);
+        let current: MemoryDocument[] = [];
+        try {
+          current = [wire(this.memory.readDocument(m.doc as DocId).info)];
+        } catch {
+          // The reply still says there was a conflict.
+        }
+        return fail(e.message, { revision: e.current }, current);
+      }
+      if (e instanceof MemoryDocumentError || e instanceof MemoryError) return fail(e.message);
+      throw e;
+    }
+  }
+
+  /** The noticed facts a plan proposal was built from, sent with it to its asker; null when it used none. */
+  provenanceFor(offerKey: string | null): MemoryProvenance | null {
+    return offerKey === null ? null : this.provenance(offerKey);
+  }
+
+  private provenance(offerKey: string): MemoryProvenance | null {
+    const facts = this.memory.noticedAmong(this.offerMemory.get(offerKey) ?? []);
+    if (facts.length === 0) return null;
+    const now = this.now();
+    return {
+      type: "memoryProvenance",
+      v: PROTOCOL_VERSION,
+      at: now,
+      offerKey,
+      facts: facts.map((f) => ({ memoryId: f.id, kind: f.kind, label: f.label, says: noticedSays(f.noticed.app, f.noticed.at, now), noticed: { app: f.noticed.app, windowTitle: f.noticed.window, at: f.noticed.at } })),
+    };
   }
 
   /**
@@ -926,6 +1075,8 @@ export class Helper {
    */
   async handleOfferAccept(m: OfferAccept, session?: string): Promise<TaskResult | null> {
     if (this.mode !== "live") return this.refuseAccept(m.offerId, "the helper is in shadow mode and does not act");
+    const stale = this.checkMemoryBeforeAccept(m.offerId);
+    if (stale !== null) return this.refuseAccept(m.offerId, stale);
     const r = this.offers.get(m.offerId);
     if (r === undefined) return this.refuseAccept(m.offerId, "no such offer, or it expired");
     if (r.accepted) return this.refuseAccept(m.offerId, "already accepted");
@@ -934,13 +1085,16 @@ export class Helper {
     if (r.accept === null) return this.refuseAccept(m.offerId, "the offer has nothing to run");
     r.accepted = true;
     this.bindNew(m.offerId, session);
+    const used = this.offerMemory.get(m.offerId) ?? [];
     let out: AcceptResult;
     try {
       out = await r.accept(m);
     } catch (e) {
       return this.refuseAccept(m.offerId, e instanceof Error ? e.message : String(e));
     }
-    return "refused" in out ? this.refuseAccept(m.offerId, out.refused) : out;
+    if ("refused" in out) return this.refuseAccept(m.offerId, out.refused);
+    this.confirmMemory(used);
+    return out;
   }
 
   /** Esc on running work: a stop for the task the offer started. */
@@ -1004,6 +1158,14 @@ export class Helper {
   private addedSince(since: number, w: WindowState, key: string): boolean {
     const fresh = this.aboutValues().filter((a) => (this.aboutAddedAt.get(a.id) ?? -Infinity) >= since);
     return formAsksFor(w, key, fresh);
+  }
+
+  /** Notes which memory entries an offer was built from, by the refs its message carries. */
+  private rememberOfferMemory(offerKey: string, m: unknown): void {
+    const ids = new Set<string>();
+    memoryRefs(m, ids);
+    if (ids.size > 0) this.offerMemory.set(offerKey, [...ids]);
+    else this.offerMemory.delete(offerKey);
   }
 
   private withdrawMemoryOffers(memoryId: string): void {
@@ -1476,9 +1638,19 @@ export class Helper {
         return false;
       }
       this.offers.record(m as HostOffer, accept ?? null);
-    } else if (m.type === "offerWithdrawn") this.offers.remove(m.id);
+    } else if (m.type === "offerWithdrawn") {
+      this.offers.remove(m.id);
+      this.offerMemory.delete(m.id);
+    }
     this.opts.publish(m);
     this.recordShown(m);
+    // Right after an offer built from a noticed fact: where that fact came from, for the offer's "Not right".
+    if (HOST_OFFER_TYPES.has(m.type) || m.type === "patternOffer") {
+      const key = m.type === "patternOffer" ? m.id : String((m as HostOffer).offerKey);
+      this.rememberOfferMemory(key, m);
+      const p = this.provenance(key);
+      if (p !== null) this.opts.publish(p);
+    }
     // A first look's key that reports this offer ends with it.
     if (m.type === "offerWithdrawn") {
       for (const [k, f] of [...this.firstLooks]) if (f.underlying === m.id) this.withdrawFirstLook(k, m.reason === "reoffered" ? "stale" : m.reason);
@@ -1566,6 +1738,42 @@ function andList(xs: readonly string[]): string {
 }
 
 /** Whether a value anywhere in an offer message is a {memory: id} ref to this entry (popup.ts PopupRef). */
+/**
+ * Every memory id an offer message refers to: a popup ref {memory}, a pattern cell's memory list, a fill field's
+ * memory {id}.
+ */
+function memoryRefs(v: unknown, out: Set<string>): void {
+  if (Array.isArray(v)) {
+    for (const x of v) memoryRefs(x, out);
+    return;
+  }
+  if (v === null || typeof v !== "object") return;
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (k === "memory") {
+      if (typeof x === "string") out.add(x);
+      else if (Array.isArray(x)) {
+        for (const y of x) if (typeof y === "string") out.add(y);
+      } else if (x !== null && typeof x === "object" && typeof (x as { id?: unknown }).id === "string") out.add((x as { id: string }).id);
+    }
+    memoryRefs(x, out);
+  }
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "from what Caret noticed in Mail, Tue": the app when known, and the day in words near now, else the date. */
+export function noticedSays(app: string | null, at: number, now: number): string {
+  const day = (t: number): number => {
+    const d = new Date(t);
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000;
+  };
+  const ago = day(now) - day(at);
+  const d = new Date(at);
+  const when = ago === 0 ? "today" : ago === 1 ? "yesterday" : ago > 1 && ago < 7 ? (WEEKDAYS[d.getDay()] as string) : `${MONTHS[d.getMonth()] as string} ${d.getDate()}${d.getFullYear() === new Date(now).getFullYear() ? "" : `, ${d.getFullYear()}`}`;
+  return `from what Caret noticed${app === null ? "" : ` in ${app}`}, ${when}`;
+}
+
 function refersToMemory(v: unknown, id: string): boolean {
   if (Array.isArray(v)) return v.some((x) => refersToMemory(x, id));
   if (v === null || typeof v !== "object") return false;

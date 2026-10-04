@@ -62,15 +62,18 @@ describe("memory store", () => {
     expect(() => m.forget("permission-read", 1)).toThrow(MemoryError);
   });
 
-  it("keeps about-you, people and preference values sealed on disk", () => {
+  it("keeps about-you and people values in the markdown memory folder only, never in the database (M1)", () => {
     const id = m.upsert("about", "k1", { label: "Work email", value: "dana@lumen.example", source: "typed" }, 1, null);
     m.upsert("people", "k2", { alias: "Dana", name: "Dana Reyes" }, 1, "Mail");
     m.close();
     for (const f of readdirSync(dir)) {
+      if (f === "Memory") continue;
       const bytes = readFileSync(join(dir, f)).toString("latin1");
       expect(bytes.includes("lumen.example"), f).toBe(false);
       expect(bytes.includes("Reyes"), f).toBe(false);
     }
+    expect(readFileSync(join(dir, "Memory", "about-me.md"), "utf8")).toContain("- Value: dana@lumen.example");
+    expect(readFileSync(join(dir, "Memory", "people.md"), "utf8")).toContain("- Name: Dana Reyes");
     m = new MemoryStore(dir);
     expect(m.get(id).says).toBe("Work email: dana@lumen.example (you typed this)");
   });

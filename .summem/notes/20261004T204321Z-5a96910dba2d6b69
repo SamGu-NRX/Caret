@@ -1,0 +1,1 @@
+W3: Helium 0.18 loads --load-extension on a temp --user-data-dir and reads Native Messaging manifests from <user-data-dir>/NativeMessagingHosts (accept.ts --browser passes 42/42); its Web Store page offers Add to Helium.

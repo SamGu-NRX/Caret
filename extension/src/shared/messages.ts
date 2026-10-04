@@ -73,6 +73,10 @@ interface TargetFields {
   taskId: string;
   /** false: only the element the walk retained; a replaced one is notSameElement, never rebound (undo, W3). */
   rebind?: false;
+  /** A forward write's undo mark: the element the act reaches is kept under it. */
+  mark?: string;
+  /** An undo's: the element at `id` must be the one kept under this mark. */
+  sameAs?: string;
 }
 
 export type ActVerb =
@@ -104,11 +108,11 @@ export interface FrameReport {
 /**
  * Worker to content script. `caret` marks the extension's own messages. `guard` arms the frame's report of the
  * user's own input until `until` (epoch ms; 0 disarms): sent when a grant for the frame arrives and when its last one
- * ends (W3).
+ * ends (W3). An act arms its document too, until `guardUntil` (its grant's end), so no act runs unarmed.
  */
 export type ToContent =
   | { caret: 1; op: "walk" }
-  | { caret: 1; op: "act"; verb: ActVerb; deadline: number }
+  | { caret: 1; op: "act"; verb: ActVerb; deadline: number; guardUntil: number }
   | { caret: 1; op: "guard"; until: number };
 
 /** Content script to worker, on its own: the document moved in history (pageshow from the back-forward cache, popstate, hashchange). */

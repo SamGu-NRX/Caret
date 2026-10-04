@@ -121,11 +121,20 @@ describe("W3 page findings, helper side", () => {
   });
 
   describe("1a: undo never rebinds", () => {
-    it("an undo's page verb says rebind: false; a forward write does not", async () => {
+    it("an undo's page verb says rebind: false and names the forward write's mark; the forward write carries the mark", async () => {
       expect((await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "", value: "Ada", taskId: "t1", mark: "m1" })).outcome).toBe("ok");
       await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "Ada", value: "", taskId: "t1", sameAs: "m1" });
-      const writes = page.verbs.filter((v) => v.kind === "pageWrite");
-      expect(writes.map((v) => (v as { rebind?: false }).rebind)).toEqual([undefined, false]);
+      const writes = page.verbs.filter((v) => v.kind === "pageWrite").map((v) => ({ rebind: v.rebind, mark: v.mark, sameAs: v.sameAs }));
+      expect(writes).toEqual([{ rebind: undefined, mark: "m1", sameAs: undefined }, { rebind: false, mark: undefined, sameAs: "m1" }]);
+    });
+
+    it("leaves the element's identity to the page: an undo goes on when a rebind gave the field another registry id (W3 review #2)", async () => {
+      expect((await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "", value: "Ada", taskId: "t1", mark: "m1" })).outcome).toBe("ok");
+      // The page re-rendered First name; the forward write rebound to the replacement, which the next walk names e9.
+      page.controls[0] = { ...page.controls[0]!, id: "e9" };
+      await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
+      await host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.first, role: "AXTextField", attribute: "value", expect: "Ada", value: "", taskId: "t1", sameAs: "m1" });
+      expect(page.verbs.filter((v) => v.kind === "pageWrite").at(-1)).toMatchObject({ id: "e9", sameAs: "m1", rebind: false });
     });
 
     it("the page's notSameElement reaches the executor as notSameElement, so the restore is settled as refused", () => {
@@ -203,6 +212,31 @@ describe("W3 page findings, helper side", () => {
       expect(r.outcome).toBe("done");
       expect(page.verbs.find((v) => v.kind === "pageSelect")).toMatchObject({ expect: "", value: "ca" });
       expect(helper.model.windows.get(WIN)?.nodes.get(KEY.country)?.value).toBe("Canada");
+    });
+  });
+
+  describe("review #8: a native select is written by one exact option label", () => {
+    const write = (value: string, expect: string) => host.link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: KEY.country, role: "AXPopUpButton", attribute: "value", expect, value, taskId: "t1" });
+    const setOptions = async (options: { value: string; label: string; selected: boolean }[]): Promise<void> => {
+      page.controls[1] = { ...page.controls[1]!, options };
+      await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
+    };
+
+    it("picks the option labelled the value, never one whose value merely equals it", async () => {
+      await setOptions([{ value: "", label: "Choose one", selected: true }, { value: "Canada", label: "United States", selected: false }, { value: "ca", label: "Canada", selected: false }]);
+      expect((await write("Canada", "Choose one")).outcome).toBe("ok");
+      expect(page.verbs.filter((v) => v.kind === "pageSelect")).toEqual([expect.objectContaining({ expect: "", value: "ca" })]);
+    });
+
+    it("refuses two options with the label, and a select that no longer shows the expected label, sending the page nothing", async () => {
+      await setOptions([{ value: "", label: "Choose one", selected: true }, { value: "a", label: "Canada", selected: false }, { value: "b", label: "Canada", selected: false }]);
+      expect((await write("Canada", "Choose one")).outcome).toBe("noElement");
+      await setOptions([{ value: "", label: "Choose one", selected: false }, { value: "us", label: "United States", selected: true }, { value: "ca", label: "Canada", selected: false }]);
+      expect((await write("Canada", "Choose one")).outcome).toBe("changed");
+      // Two labels, one value: setting the value would pick the first of them.
+      await setOptions([{ value: "", label: "Choose one", selected: true }, { value: "x", label: "Canada", selected: false }, { value: "x", label: "Mexico", selected: false }]);
+      expect((await write("Mexico", "Choose one")).outcome).toBe("noElement");
+      expect(page.verbs.filter((v) => v.kind === "pageSelect")).toEqual([]);
     });
   });
 

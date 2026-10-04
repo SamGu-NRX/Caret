@@ -47,7 +47,7 @@ private func goldenLines() throws -> [Data] {
         let lines = try goldenLines()
         guard case let .pageCommand(undo) = try JSONDecoder().decode(PageMessage.self, from: lines[31]),
               case let .write(t, expect, value) = undo.verb else { Issue.record("line 32 is not an undo write"); return }
-        #expect(t.rebind == false && expect == "Ada" && value == "")
+        #expect(t.rebind == false && t.sameAs == "m1" && t.mark == nil && expect == "Ada" && value == "")
         guard case let .pageResult(refused) = try JSONDecoder().decode(PageMessage.self, from: lines[32]),
               case let .pageInput(input) = try JSONDecoder().decode(PageMessage.self, from: lines[33]),
               case let .pageSnapshot(snap) = try JSONDecoder().decode(PageMessage.self, from: lines[6]) else { Issue.record("lines 33, 34 and 7"); return }
@@ -118,7 +118,8 @@ private func goldenLines() throws -> [Data] {
     @Test func agreesWithTheHelpersProofs() throws {
         let v = try JSONSerialization.jsonObject(with: Data(contentsOf: authVector)) as! [String: String]
         let secret = try #require(Data(hex: v["secret"]!))
-        #expect(Handshake.bridgeProof(secret: secret, challenge: v["challenge"]!, nonce: v["bridgeNonce"]!) == v["bridgeProof"])
+        #expect(Handshake.bridgeProof(secret: secret, challenge: v["challenge"]!, nonce: v["bridgeNonce"]!, helperPid: Int(v["helperPid"]!)!) == v["bridgeProof"])
+        #expect(Handshake.bridgeProof(secret: secret, challenge: v["challenge"]!, nonce: v["bridgeNonce"]!, helperPid: Int(v["helperPid"]!)! + 1) != v["bridgeProof"])
         let pid = try #require(Int(v["helperPid"]!))
         #expect(Handshake.helperProof(secret: secret, challenge: v["challenge"]!, nonce: v["bridgeNonce"]!, pid: pid) == v["helperProof"])
         // Another pid gives another proof: a relay's peer pid cannot reuse the helper's answer.

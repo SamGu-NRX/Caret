@@ -14,8 +14,10 @@ public enum Handshake {
         Data(HMAC<SHA256>.authenticationCode(for: Data("caret-page-key".utf8), using: SymmetricKey(data: launchSecret)))
     }
 
-    public static func bridgeProof(secret: Data, challenge: String, nonce: String) -> String {
-        hmac(secret, "caret-page-bridge\n\(challenge)\n\(nonce)")
+    /// Bound to the pid of the helper this side sees as its socket's peer, so a hello passed through by a process that
+    /// took over the socket path does not authenticate that process's own connection to the real helper (W3 review #1).
+    public static func bridgeProof(secret: Data, challenge: String, nonce: String, helperPid: Int) -> String {
+        hmac(secret, "caret-page-bridge\n\(challenge)\n\(nonce)\n\(helperPid)")
     }
 
     public static func helperProof(secret: Data, challenge: String, nonce: String, pid: Int) -> String {

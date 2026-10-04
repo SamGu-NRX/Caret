@@ -1,0 +1,1 @@
+W3: headless Chrome for Testing gives focus to a window CDP Target.createTarget opens and Target.activateTarget does not move it back; chrome.windows focused is reported in headless. Page window focus = active tab of the focused, last-focused window.

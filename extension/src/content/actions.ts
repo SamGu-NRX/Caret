@@ -62,17 +62,23 @@ export async function act(reg: Registry, verb: ActVerb, deadline: number, alive:
   const expect = verb.kind === "pageWrite" || verb.kind === "pageSelect" || verb.kind === "pageChooseOption" ? verb.expect : null;
   const r = reg.resolve(verb.id, expect, verb.rebind !== false);
   if ("missing" in r) return answer(r.replaced && verb.rebind === false ? "notSameElement" : "noElement", r.missing);
+  // An undo reaches only the object its write reached: the one kept under its mark, alive in this document (W3 review #2).
+  if (verb.sameAs !== undefined && reg.marked(verb.sameAs) !== r.el) {
+    return answer("notSameElement", reg.marked(verb.sameAs) === null ? "this page keeps no element under the undo's mark (it was replaced, or the page reloaded)" : "the element at this place is not the one Caret wrote");
+  }
   const entry = reg.entry(verb.id);
   const check = (): ActAnswer | null => ineligible(r.el, verb, entry, deadline);
   const first = check();
   if (first !== null) return first;
+  // Kept before anything is touched, so an act that stops midway ("may have landed") can still be undone on it.
+  if (verb.mark !== undefined) reg.mark(verb.mark, r.el);
   let a: ActAnswer;
   if (verb.kind === "pageChooseOption") {
     a = verb.control === "combobox" ? await chooseOption(r.el, verb, check, alive) : answer("unsupported", `a ${verb.control} is not a custom listbox; a native select takes pageSelect`);
   } else if (verb.kind === "pageAttachFile") {
     a = await attachFile(r.el, verb, check, alive);
   } else {
-    a = await actOn(r.el, verb, check, gateWith(alive, check));
+    a = await actOn(r.el, verb, check, alive);
   }
   // A rebind is the one way an act reaches an element other than the walked object; the receipt says so.
   return r.rebound && (a.outcome === "ok" || a.outcome === "alreadyTrue") ? { ...a, detail: a.detail === null ? "rebound by its strong key" : `${a.detail}; rebound by its strong key` } : a;
@@ -89,8 +95,17 @@ function gateWith(alive: () => Promise<boolean>, check: () => ActAnswer | null):
   };
 }
 
-async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null, gate: Gate): Promise<ActAnswer> {
-  const disabled = (el as HTMLInputElement).disabled === true || el.getAttribute("aria-disabled") === "true" || (el as HTMLInputElement).readOnly === true;
+async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null, alive: () => Promise<boolean>): Promise<ActAnswer> {
+  // :disabled also covers a control in a disabled <fieldset> and an option in a disabled <optgroup> (W3 second review #4).
+  const locked = (): boolean => el.matches(":disabled") || el.getAttribute("aria-disabled") === "true" || (el as HTMLInputElement).readOnly === true;
+  const disabled = locked();
+  // Every gate also asks again whether the field still takes the value: a focus handler, or page code running while a
+  // gate awaits the worker, can disable it, make a select take several choices, or remove or disable the option (W3 review #9).
+  const optionOk = (): boolean => verb.kind !== "pageSelect" || !(el instanceof HTMLSelectElement) || [...el.options].some((o) => o.value === verb.value && !o.matches(":disabled"));
+  const multiple = (): boolean => el instanceof HTMLSelectElement && el.multiple;
+  const checkWrite = (): ActAnswer | null =>
+    check() ?? (locked() ? answer("failed", "the field became disabled or read-only") : multiple() ? answer("unsupported", "the select now takes several choices") : !optionOk() ? answer("failed", "the option is gone or disabled") : null);
+  const gate = gateWith(alive, checkWrite);
   switch (verb.kind) {
     case "pageWrite": {
       if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return answer("unsupported", "only text inputs and text areas take a pageWrite in v1");
@@ -102,10 +117,12 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null,
     }
     case "pageSelect": {
       if (!(el instanceof HTMLSelectElement)) return answer("unsupported", "only a native select takes a pageSelect; a custom listbox is pageChooseOption");
+      // One value cannot say which of several selections to keep, and undo could not put them all back (W3 review #7).
+      if (multiple()) return answer("unsupported", "a list that holds several choices is yours to set; Caret writes one value");
       const before = el.value;
       if (before === verb.value) return answer("alreadyTrue", null);
       if (before !== verb.expect) return answer("stale", "the select shows another option than when it was walked");
-      if (![...el.options].some((o) => o.value === verb.value)) return answer("failed", "the select has no option with that value");
+      if (!optionOk()) return answer("failed", "the select has no enabled option with that value");
       if (disabled) return answer("failed", "the select is disabled");
       return writeValue(el, verb.value, before, verb.expect, check, gate);
     }

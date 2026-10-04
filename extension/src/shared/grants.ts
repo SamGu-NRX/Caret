@@ -57,6 +57,11 @@ export class GrantTable {
     return [...this.byTask].filter(([, held]) => held.some((h) => h.scope.tabId === tabId && h.scope.frameId === frameId)).map(([t]) => t);
   }
 
+  /** When the last live grant covering this frame ends (epoch ms), or 0 when none covers it. */
+  coverUntil(tabId: number, frameId: number): number {
+    return Math.max(0, ...this.tasksIn(tabId, frameId).map((t) => this.check(t, tabId, frameId)).map((g) => (g.ok ? g.expires : 0)));
+  }
+
   /** Whether any task holds a live grant for this frame. */
   covers(tabId: number, frameId: number): boolean {
     return this.tasksIn(tabId, frameId).some((t) => this.check(t, tabId, frameId).ok);

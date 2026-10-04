@@ -29,6 +29,6 @@
 {"type":"pageFocus","v":1,"at":1790000004200,"tabId":7,"frameId":0}
 {"type":"pageSitesOff","v":1,"origins":["http://127.0.0.1:4310","https://jobs.example.test"]}
 {"type":"pageResult","v":1,"id":"c11","at":1790000004300,"outcome":"siteOff","detail":"Caret is off on http://127.0.0.1:4310"}
-{"type":"pageCommand","v":1,"id":"c12","expires":1790000006000,"verb":{"kind":"pageWrite","tabId":7,"frameId":0,"documentId":"DOC0","id":"e1","control":"text","name":"First name","taskId":"t4","rebind":false,"expect":"Ada","value":""}}
+{"type":"pageCommand","v":1,"id":"c12","expires":1790000006000,"verb":{"kind":"pageWrite","tabId":7,"frameId":0,"documentId":"DOC0","id":"e1","control":"text","name":"First name","taskId":"t4","rebind":false,"sameAs":"m1","expect":"Ada","value":""}}
 {"type":"pageResult","v":1,"id":"c12","at":1790000004400,"outcome":"notSameElement","detail":"the element Caret wrote was replaced, and an undo never rebinds to its replacement"}
 {"type":"pageInput","v":1,"at":1790000004500,"tabId":7,"frameId":0,"kind":"mouse"}

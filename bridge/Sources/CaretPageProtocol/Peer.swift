@@ -69,24 +69,45 @@ public enum Peer {
     }
 }
 
-/// NDJSON lines over a connected socket, read with a deadline during a handshake and without one after.
+/// NDJSON lines over a connected socket, with one reader thread and any number of writers.
+///
+/// The socket owns its descriptor (W3 review #3). Its state and a count of writers in flight sit behind one condition
+/// lock that no I/O is done under, so `shutdown` takes effect at once even while a write is blocked on a full buffer:
+/// the blocked write then fails (W3 second review #2). No write starts after shutdown began, and `closeDescriptor`
+/// waits for the writers in flight before it closes, once, so no write ever reaches a recycled descriptor. Only the
+/// thread that reads (or, before a reader exists, the thread that set the socket up) closes it, after its last read.
 public final class LineSocket: @unchecked Sendable {
     public let fd: Int32
     private var buffer = Data()
-    private let writeLock = NSLock()
+    private let cond = NSCondition()
+    private enum State { case open, shut, closed }
+    private var state = State.open
+    private var writers = 0
+    /// Keeps each line whole among writers; never held by shutdown or close.
+    private let order = NSLock()
     public init(fd: Int32) { self.fd = fd }
 
-    /// The next line without its newline; nil at end of stream, on error, or when `timeout` (seconds) passes first.
-    public func next(timeout: Int32? = nil) -> Data? {
+    private var isOpen: Bool {
+        cond.lock(); defer { cond.unlock() }
+        return state == .open
+    }
+
+    /// The next line without its newline; nil at end of stream, on error, after shutdown, or when `timeout` seconds
+    /// pass first. The timeout is one deadline for the whole line, however it arrives (W3 review #12).
+    public func next(timeout: Double? = nil) -> Data? {
+        let end = timeout.map { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + UInt64($0 * 1_000_000_000) }
         while true {
             if let nl = buffer.firstIndex(of: 0x0A) {
                 let line = Data(buffer[buffer.startIndex..<nl])
                 buffer = Data(buffer[(nl + 1)...])
                 return line
             }
-            if let t = timeout {
+            if !isOpen { return nil }
+            if let end {
+                let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                guard now < end else { return nil }
                 var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-                if poll(&p, 1, t * 1000) <= 0 { return nil }
+                if poll(&p, 1, Int32(min((end - now) / 1_000_000 + 1, UInt64(Int32.max)))) <= 0 { return nil }
             }
             var chunk = [UInt8](repeating: 0, count: 65536)
             let n = read(fd, &chunk, chunk.count)
@@ -96,9 +117,19 @@ public final class LineSocket: @unchecked Sendable {
         }
     }
 
-    /// Writes one line and its newline, whole, from any thread.
+    /// Writes one line and its newline, whole; false once the socket is shut down or the write fails.
     public func write(line: Data) -> Bool {
-        writeLock.lock(); defer { writeLock.unlock() }
+        order.lock(); defer { order.unlock() }
+        cond.lock()
+        guard state == .open else { cond.unlock(); return false }
+        writers += 1
+        cond.unlock()
+        defer {
+            cond.lock()
+            writers -= 1
+            cond.broadcast()
+            cond.unlock()
+        }
         var d = line
         d.append(0x0A)
         return d.withUnsafeBytes { raw -> Bool in
@@ -112,5 +143,22 @@ public final class LineSocket: @unchecked Sendable {
         }
     }
 
-    public func close() { shutdown(fd, SHUT_RDWR) }
+    /// Ends both directions: a blocked read or write returns, and no later write starts. From any thread, any number of times.
+    public func shutdown() {
+        cond.lock(); defer { cond.unlock() }
+        guard state == .open else { return }
+        Darwin.shutdown(fd, SHUT_RDWR)
+        state = .shut
+    }
+
+    /// Shuts down, waits for writers in flight, and closes the descriptor, once. Only the reading thread calls it, after its last read.
+    public func closeDescriptor() {
+        cond.lock(); defer { cond.unlock() }
+        if state == .closed { return }
+        if state == .open { Darwin.shutdown(fd, SHUT_RDWR) }
+        state = .shut
+        while writers > 0 { cond.wait() }
+        Darwin.close(fd)
+        state = .closed
+    }
 }
