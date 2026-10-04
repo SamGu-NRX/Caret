@@ -1,1 +1,0 @@
-The agent host sets ELECTRON_RUN_AS_NODE for its children; an eval that starts Electron must drop it or Electron runs as plain Node and cannot require('electron') (B20).

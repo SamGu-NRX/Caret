@@ -1,0 +1,1 @@
+I2: page-link.ts toWindowSnapshot must match Chrome AX for fill/controls.ts: time is AXTimeField, radios sit under an AXGroup per name attribute, select options are AXMenuItem children. PageControl has no fieldset legend, so page radio groups have no label.
