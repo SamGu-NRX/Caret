@@ -97,7 +97,8 @@ const PLAN: Plan = { id: "six-fields", title: "Fill the six fields", slots: {}, 
 
 // MARK: - the host, hidden
 
-const host: ChildProcess = spawn(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--allow-pids", String(FIXTURE_APP.pid), "--perch", "hidden"]);
+// --test-hooks: `key`, `control` and `click` on the debug socket need it (CodeRabbit on PR #9).
+const host: ChildProcess = spawn(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost", "--allow-pids", String(FIXTURE_APP.pid), "--perch", "hidden"]);
 host.stderr?.setEncoding("utf8");
 host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));
 process.on("exit", () => host.kill("SIGTERM"));

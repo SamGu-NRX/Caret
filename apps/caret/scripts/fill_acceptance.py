@@ -300,7 +300,8 @@ def rig(out_dir, ghost=False, act=False):
     pid_list = ",".join(map(str, pids))
     start_with_secret("reader", [os.path.join(SCREEN_BIN, "caret-screen"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", pid_list,
                      "--event-pids", pid_list, "--record", record] + (["--act-pids", pid_list] if act else []), out_dir)
-    host_args = [CARET, "--socket", HOST_SOCK, "--helper-socket", HELPER_SOCK, "--allow-pids", pid_list]
+    # --test-hooks: the debug socket's `key` needs it (CodeRabbit on PR #9).
+    host_args = [CARET, "--socket", HOST_SOCK, "--helper-socket", HELPER_SOCK, "--test-hooks", "--allow-pids", pid_list]
     if not ghost:
         host_args.append("--no-ghost")
     start("host", host_args, out_dir, env=dict(os.environ, CARET_FILL_ADVANCE=os.environ.get("CARET_FILL_ADVANCE", "off")))

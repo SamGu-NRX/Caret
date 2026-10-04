@@ -92,6 +92,11 @@ public final class HostRuntime {
     /// Comma-separated pids, as `CARET_ALLOW_PIDS` and `--allow-pids` take them.
     public nonisolated static func pids(_ raw: String?) -> Set<Int32>? { TargetPolicy.pids(from: raw) }
 
+    /// The same list, strictly: every entry a positive pid. The error says what is wrong with it.
+    public nonisolated static func allowedPIDs(_ raw: String?) throws -> Set<Int32> {
+        try TargetPolicy.strictPids(raw).get()
+    }
+
     /// `CARET_ALLOW_BUNDLES`, comma-separated bundle identifiers.
     public nonisolated static var allowedBundleIDsFromEnvironment: Set<String>? {
         guard let raw = ProcessInfo.processInfo.environment["CARET_ALLOW_BUNDLES"], !raw.isEmpty else { return nil }
@@ -662,6 +667,21 @@ public final class HostRuntime {
         return services.report()
     }
 
+    /// Why the debug socket refuses `words`, or nil. Commands that act for the user need `--test-hooks`: `key` routes a
+    /// key through the tap to the claim and undo callbacks, `control` presses a row's button, `click` clicks in an app,
+    /// and `settings set` changes the user's settings. The socket is the user's own (mode 0600), but any process of the
+    /// user's can open it, and the host now runs at every login (CodeRabbit on PR #9). Reads stay open.
+    nonisolated static func testHookRefusal(_ words: [String], testHooks: Bool) -> String? {
+        guard !testHooks, let verb = words.first else { return nil }
+        let name: String
+        switch verb {
+        case "key", "control", "click": name = verb
+        case "settings" where words.count > 1 && words[1] == "set": name = "settings set"
+        default: return nil
+        }
+        return "{\"error\":\"\(name) is a test hook: start the host with --test-hooks\"}"
+    }
+
     nonisolated static func nowMs() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
 
     nonisolated static func jsonString(_ text: String) -> String {
@@ -676,6 +696,7 @@ public final class HostRuntime {
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let words = command.split(separator: " ").map(String.init)
+        if let refusal = testHookRefusal(words, testHooks: hooks.testHooks) { return Data((refusal + "\n").utf8) }
         switch words.first ?? "state" {
         case "ping":
             return Data("{\"ok\":true}\n".utf8)

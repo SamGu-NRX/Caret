@@ -40,6 +40,8 @@ fi
 [[ "$(uname -m)" == arm64 ]] || { echo "build-app.sh: Caret ships for arm64 only; this Mac is $(uname -m)" >&2; exit 2; }
 
 lock="$HOME/.caret-run/locks/build.lock"
+# lockf creates the lock file but not its directory, which a fresh checkout does not have yet (CodeRabbit on PR #9).
+mkdir -p "$(dirname "$lock")"
 run() {
   if [[ -n "${CARET_NO_LOCK:-}" ]]; then "$@"; else /usr/bin/lockf -k "$lock" "$@"; fi
 }

@@ -154,7 +154,8 @@ async function closeSession(s: Session): Promise<void> {
 // MARK: - the host, headless
 
 const host: ChildProcess = spawn(CARET, [
-  "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden", "--surfaces", "headless",
+  // --test-hooks: the debug socket's `key` drives the tap's routing, and needs it (CodeRabbit on PR #9).
+  "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden", "--surfaces", "headless", "--test-hooks",
   "--allow-pids", PIDS.join(","),
   // Nothing on screen, not even the menu bar item, and a settings file of the run's own.
   "--status-item", "off", "--settings", join(SOCKETS, "a5-offers-settings.json"),

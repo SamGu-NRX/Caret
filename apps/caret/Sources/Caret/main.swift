@@ -71,6 +71,14 @@ if CommandLine.arguments.dropFirst().first == "--probe" {
 var appearanceName = ProcessInfo.processInfo.environment["CARET_APPEARANCE"]
 var showsStatusItem = ProcessInfo.processInfo.environment["CARET_STATUS_ITEM"] != "off"
 let environment = ProcessInfo.processInfo.environment
+if let raw = environment["CARET_ALLOW_PIDS"], !raw.isEmpty {
+    do {
+        configuration.allowedPIDs = try HostRuntime.allowedPIDs(raw)
+    } catch {
+        FileHandle.standardError.write(Data("caret: CARET_ALLOW_PIDS \(error)\n".utf8))
+        exit(2)
+    }
+}
 var homeOverride = environment["CARET_HOME"]
 var manifestDirectory = environment["CARET_NMH_DIR"]
 var namedHelperSocket = environment["CARET_SCREEN_SOCKET"].flatMap { $0.isEmpty ? nil : $0 }
@@ -88,7 +96,14 @@ while let argument = arguments.next() {
             hostSocketNamed = true
         }
     case "--model": if let value = arguments.next() { configuration.modelURL = URL(fileURLWithPath: value) }
-    case "--allow-pids": configuration.allowedPIDs = HostRuntime.pids(arguments.next())
+    case "--allow-pids":
+        // A missing or mistyped list would lift the restriction it was meant to set; refuse it instead.
+        do {
+            configuration.allowedPIDs = try HostRuntime.allowedPIDs(arguments.next())
+        } catch {
+            FileHandle.standardError.write(Data("caret: --allow-pids \(error)\n".utf8))
+            exit(2)
+        }
     case "--helper-socket":
         if let value = arguments.next() {
             configuration.helperSocketPath = value

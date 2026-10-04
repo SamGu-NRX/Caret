@@ -46,4 +46,29 @@ struct TargetPolicy: Sendable {
         guard let raw, !raw.isEmpty else { return nil }
         return Set(raw.split(separator: ",").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) })
     }
+
+    /// `--allow-pids` and `CARET_ALLOW_PIDS` as the app shell reads them: every entry a positive pid, or why not. A
+    /// missing or mistyped list must not quietly lift the restriction it was meant to set (CodeRabbit on PR #9).
+    static func strictPids(_ raw: String?) -> Result<Set<Int32>, PidListError> {
+        guard let raw, !raw.trimmingCharacters(in: .whitespaces).isEmpty else { return .failure(.empty) }
+        var out = Set<Int32>()
+        for part in raw.split(separator: ",", omittingEmptySubsequences: false) {
+            let t = part.trimmingCharacters(in: .whitespaces)
+            guard let pid = Int32(t), pid > 0 else { return .failure(.notAPid(t)) }
+            out.insert(pid)
+        }
+        return .success(out)
+    }
+
+    enum PidListError: Error, Equatable, CustomStringConvertible {
+        case empty
+        case notAPid(String)
+
+        var description: String {
+            switch self {
+            case .empty: return "needs a comma-separated list of pids"
+            case .notAPid(let t): return "'\(t)' is not a pid"
+            }
+        }
+    }
 }

@@ -332,7 +332,8 @@ try {
   started.push(reader);
   reader.stderr?.setEncoding("utf8");
   reader.stderr?.on("data", (d: string) => log.push(`reader: ${d.trim().slice(0, 300)}`));
-  host = spawn(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--allow-pids", String(fixturePid), "--perch", a.perch === "shown" ? "shown" : "hidden"]);
+  // --test-hooks: `key` and `control` on the debug socket need it (CodeRabbit on PR #9).
+  host = spawn(CARET, ["--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--test-hooks", "--no-ghost", "--allow-pids", String(fixturePid), "--perch", a.perch === "shown" ? "shown" : "hidden"]);
   started.push(host);
   host.stderr?.setEncoding("utf8");
   host.stderr?.on("data", (d: string) => log.push(`host: ${d.trim().slice(0, 300)}`));
