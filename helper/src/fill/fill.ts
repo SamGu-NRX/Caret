@@ -20,6 +20,7 @@ import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { consentLike, describeControl, formControls, inWebArea, optionInText, type Control, type FormControl } from "./controls.ts";
 import { fieldPart, joinName, namePart, partFits, splitAddress, splitName, type FieldPart } from "./derive.ts";
 import { clockTime, readDate } from "./when.ts";
+import { neverTypedField, type NeverTyped } from "./never-typed.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 
 export const NONE = "none";
@@ -58,13 +59,23 @@ export const WHOSE_CUTOFF = 0.5;
 
 export class FillError extends Error {}
 
+/**
+ * The kind of a field Caret never types (never-typed.ts), read from its label, nearest label and placeholder
+ * as describeField finds them; null for any other field. Fill and the planner both leave such a field to the
+ * user, as they leave a secure field.
+ */
+export function neverTypedNode(w: WindowState, n: Node): NeverTyped | null {
+  const d = describeField(w, n);
+  return neverTypedField([d.label ?? d.nearest, d.placeholder]);
+}
+
 /** The empty fillable fields of the trigger's window, nearest the trigger first. The trigger is always included. */
 export function formFields(w: WindowState, triggerKey: string, max = MAX_FIELDS): Node[] {
   const trigger = w.nodes.get(triggerKey);
   if (trigger === undefined) throw new FillError(`field ${triggerKey} is not in window ${w.window.windowId}`);
   if (trigger.editable !== true) throw new FillError(`field ${triggerKey} is not editable`);
   const fields = [...w.nodes.values()].filter(
-    (n) => n.key === triggerKey || (n.editable === true && FILLABLE_ROLES.has(n.role) && (n.value ?? "") === "" && !n.states?.includes("secure")),
+    (n) => n.key === triggerKey || (n.editable === true && FILLABLE_ROLES.has(n.role) && (n.value ?? "") === "" && !n.states?.includes("secure") && neverTypedNode(w, n) === null),
   );
   const center = (n: Node): [number, number] => (n.frame === undefined ? [0, 0] : [n.frame[0] + n.frame[2] / 2, n.frame[1] + n.frame[3] / 2]);
   const [tx, ty] = center(trigger);
@@ -101,7 +112,7 @@ export function emptyInput(w: WindowState, key: string): FormInput | null {
   const n = w.nodes.get(key);
   if (n === undefined) return null;
   if (FILLABLE_ROLES.has(n.role) && n.editable === true) {
-    if ((n.value ?? "") !== "" || n.states?.includes("secure")) return null;
+    if ((n.value ?? "") !== "" || n.states?.includes("secure") || neverTypedNode(w, n) !== null) return null;
     return n.role === "AXComboBox" && inWebArea(w, n) ? { node: n, control: "combobox", form: { node: n, control: "combobox", label: fieldLabelText(n.label), options: null, members: [] } } : { node: n, control: "text", form: null };
   }
   const c = formControls(w).find((x) => x.node.key === key);
@@ -459,6 +470,8 @@ export async function proposeFill(
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
   for (const x of inputs) {
     const n = x.node;
+    // formFields keeps the trigger whatever it is; one Caret never types (an SSN, a card number) is left to the user.
+    if (x.control === "text" && neverTypedNode(w, n) !== null) continue;
     const d = describeField(w, n);
     const c = x.form;
     const label = c === null ? d.label : c.label;

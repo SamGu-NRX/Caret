@@ -20,7 +20,7 @@ import { randomInt } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
-import { FILL_CUTOFF, FILLABLE_ROLES, shuffled } from "../fill/fill.ts";
+import { FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts, misfit } from "../fill/kinds.ts";
@@ -352,7 +352,8 @@ export function writableFields(w: WindowState): Field[] {
   const out: Field[] = [];
   for (const n of w.nodes.values()) {
     if (out.length >= MAX_PLAN_FIELDS) break;
-    if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure")) continue;
+    // A field Caret never types (an SSN, a card number, a password or a code) is the user's, as fill leaves it (B25).
+    if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure") || neverTypedNode(w, n) !== null) continue;
     // A web page's combobox (react-select) takes a pick from its list, not typed text: a named hand-off (B24).
     if (n.role === "AXComboBox" && inWebArea(w, n)) continue;
     const d = describeField(w, n);

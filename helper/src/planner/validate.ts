@@ -16,6 +16,7 @@ import type { Node, PlanErrorCode } from "../protocol.ts";
 import { traceValue, type MemoryValue, type Trace } from "./trace.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { misfit } from "../fill/kinds.ts";
+import { NEVER_TYPED_SAYS, neverTypedField, neverTypedValue } from "../fill/never-typed.ts";
 
 export class PlannerError extends Error {
   readonly code: PlanErrorCode;
@@ -91,10 +92,15 @@ export function validatePlan(raw: unknown, slots: Record<string, string>, ctx: P
     if (end.kind === "valueEquals") {
       if (node.editable !== true) throw new PlannerError("notEditable", `${at}: ${node.label === undefined ? "its target" : `'${node.label}'`} is not a field Caret can write`);
       if (node.states?.includes("secure")) throw new PlannerError("notEditable", `${at}: its target is a password field, which is left to you`);
+      // Caret never types these, from any source; fill leaves the same fields and values out (fill/never-typed.ts, B25).
+      const d = describeField(w, node);
+      const neverField = neverTypedField([d.label ?? d.nearest, d.placeholder]);
+      if (neverField !== null) throw new PlannerError("notEditable", `${at}: its target asks for ${NEVER_TYPED_SAYS[neverField]}, which Caret never types; that is left to you`);
+      const neverValue = neverTypedValue(end.value);
+      if (neverValue !== null) throw new PlannerError("notEditable", `${at}: its value reads as ${NEVER_TYPED_SAYS[neverValue]}, which Caret never types; that is left to you`);
       const trace = traceValue(end.value, ctx.model, ctx.memory, ctx.instruction);
       if (trace === null) throw new PlannerError("untracedValue", `${at}: '${clip(end.value)}' is not in any window, in memory or in your instruction`);
       // The field's own label, nearest label or placeholder, as the planner names it (planner.ts Field.label).
-      const d = describeField(w, node);
       const bad = misfit(end.value, [d.label ?? d.nearest ?? d.placeholder]);
       if (bad !== null) throw new PlannerError("wrongKind", `${at}: ${bad}`);
       writes.push({ step: i, node, value: end.value, trace });

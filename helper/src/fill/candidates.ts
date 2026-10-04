@@ -7,6 +7,7 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
+import { neverTypedValue } from "./never-typed.ts";
 
 export interface Candidate {
   id: string;
@@ -307,6 +308,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     };
     for (const v of w.values) {
       const node = w.nodes.get(v.nodeKey);
+      if (neverTypedValue(v.text) !== null) continue;
       if (node !== undefined && !note(node, v.text, lineHolding(nodeText(node), v.text), valueKinds(v), null)) return;
     }
     for (const node of w.nodes.values()) {
@@ -376,7 +378,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (outOfTime()) return false;
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
-      if (node === undefined) continue;
+      if (node === undefined || neverTypedValue(v.text) !== null) continue;
       const line = lineHolding(nodeText(node), v.text);
       const terms = termsOf(node, line, [v.kind]);
       const names = wantsNames ? namesOutside(line, valuesOf.get(node.key)) : [];
@@ -514,7 +516,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (full() || outOfTime()) return stop();
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
-      if (node === undefined) continue;
+      if (node === undefined || neverTypedValue(v.text) !== null) continue;
       add(w, node, v.text, v.kind, () => contextFor(w, node, v.text));
     }
   }
@@ -555,8 +557,10 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
   if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line)) return null;
   if (line.endsWith(":")) return null; // a label, not a value
   const m = LABELLED.exec(line);
-  if (m !== null && m[1] !== undefined && m[2] !== undefined) return { line, text: m[2].trim(), label: m[1].trim() };
-  return { line, text: line, label: null };
+  // A value Caret never types (an SSN, a card number, a password or a code by its label) is no span: it is never
+  // offered, so no fill or plan can choose it, and it never goes out in a question (never-typed.ts).
+  if (m !== null && m[1] !== undefined && m[2] !== undefined) return neverTypedValue(m[2], m[1]) === null ? { line, text: m[2].trim(), label: m[1].trim() } : null;
+  return neverTypedValue(line) === null ? { line, text: line, label: null } : null;
 }
 
 /**
