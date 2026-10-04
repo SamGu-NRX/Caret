@@ -94,6 +94,8 @@ public final class AskCaret {
     public private(set) var linked = false
     /// Where the helper's ending for a run Esc stopped can still correct the line (`SurfaceMachine.confirmStop`).
     private var stopping: String?
+    /// A failed ask is showing: the next keys typed start a new instruction (`edit`).
+    public private(set) var replacesOnType = false
     /// The task Tab started, followed while its card is up: a paused run resumed from the activity
     /// list, or undone there, moves the same card. Nil once the card is put away.
     private var tracking: String?
@@ -120,9 +122,17 @@ public final class AskCaret {
     // MARK: - From the user
 
     /// The field's text changed. A new instruction replaces a card that is not running, and an
-    /// answer still on its way is no longer wanted.
+    /// answer still on its way is no longer wanted. The first keys typed after a failed ask start
+    /// a new instruction rather than add to the one that failed (A18, bug 14): typed onto the end
+    /// of it, they replace it. Any other edit (deleting, or the view's own select-all being
+    /// typed over) is taken as it is.
     public func edit(_ text: String) {
         guard text != self.text else { return }
+        var text = text
+        if replacesOnType {
+            replacesOnType = false
+            if !self.text.isEmpty, text.count > self.text.count, text.hasPrefix(self.text) { text = String(text.dropFirst(self.text.count)) }
+        }
         self.text = text
         switch phase {
         case .asking, .proposed, .failed, .ended: settle(.idle)
@@ -189,7 +199,13 @@ public final class AskCaret {
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .pending }
             settle(.ended(card, WorkLines.stoppedByYou(next: nextStep ?? (steps > 0 ? 0 : nil), of: steps)))
             return true
-        case .asking, .proposed, .failed, .ended:
+        case .failed, .ended:
+            // One Esc puts away the answer and the instruction it answered (A18, bug 14).
+            text = ""
+            settle(.idle)
+            return true
+        case .asking, .proposed:
+            // The instruction stays to edit: the plan, or the wait for one, is what goes.
             settle(.idle)
             return true
         case .idle:
@@ -348,6 +364,7 @@ public final class AskCaret {
         case .running, .ended: break
         case .idle, .asking, .proposed, .failed: tracking = nil
         }
+        if case .failed = next { replacesOnType = true } else { replacesOnType = false }
         phase = next
         onChange()
     }

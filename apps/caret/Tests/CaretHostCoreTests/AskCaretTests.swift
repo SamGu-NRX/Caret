@@ -147,6 +147,42 @@ final class AskCaretTests: XCTestCase {
         XCTAssertFalse(ask.escape(), "then the list closes")
     }
 
+    // MARK: - Bug 14 (A18): a failed ask
+
+    private func failed() {
+        ask.edit("fill my name and email")
+        connected = false
+        XCTAssertTrue(ask.submit())
+        connected = true
+        XCTAssertEqual(ask.phase, .failed(AskCopy.helperDown))
+    }
+
+    func testOneEscClearsAFailedAskLineAndText() {
+        failed()
+        XCTAssertTrue(ask.escape())
+        XCTAssertEqual(ask.phase, .idle)
+        XCTAssertEqual(ask.text, "", "the instruction goes with its answer")
+        XCTAssertFalse(ask.escape(), "the next Esc closes the list")
+    }
+
+    func testTypingAfterAFailedAskStartsANewInstruction() {
+        failed()
+        ask.edit("fill my name and emailP")
+        XCTAssertEqual(ask.text, "P")
+        XCTAssertEqual(ask.phase, .idle)
+        ask.edit("Pu")
+        XCTAssertEqual(ask.text, "Pu", "only the first keys replace")
+    }
+
+    func testEditingAFailedAskKeepsWhatIsLeft() {
+        failed()
+        ask.edit("fill my name and emai")
+        XCTAssertEqual(ask.text, "fill my name and emai", "Delete edits the instruction")
+        failed()
+        ask.edit("Put Riley in Name")
+        XCTAssertEqual(ask.text, "Put Riley in Name", "a select-all typed over arrives whole")
+    }
+
     func testTypingReplacesTheCard() throws {
         _ = try proposed()
         ask.edit("Set Name to Priya Raman")
