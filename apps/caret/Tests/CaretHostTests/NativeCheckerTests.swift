@@ -56,6 +56,19 @@ final class NativeCheckerTests: XCTestCase {
         XCTAssertEqual(found, [])
     }
 
+    func testCommandsMentionsAndMeantRepeatsAreLeftAlone() async {
+        for text in [
+            "Run pnpm install, then ssh into the box.",
+            "Never write “definately” in a report.",
+            "What we need is is a plan.",
+        ] {
+            let found = await check(text)
+            XCTAssertEqual(found.filter { $0.kind == .spelling }, [], text)
+        }
+        let repeated = await check("The answer is is simple.")
+        XCTAssertTrue(repeated.isEmpty || repeated.allSatisfy { !WritingCheck.isMeantRepeat($0.original) })
+    }
+
     func testOnlyTheGivenSentenceIsReported() async {
         let text = "Teh first one is here. Teh second one is there."
         let found = await check(text)

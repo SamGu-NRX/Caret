@@ -120,12 +120,25 @@ final class WritingCheckTests: XCTestCase {
         assertClean("It was a historic day, an historic day.")
         assertClean("Plan a is fine.")
         assertClean("Choose part a or part b.")
-        assertClean("It was a 8-hour day.")
         assertClean("It was an honest mistake.")
         assertClean("Paste a URL here, or a url.")
         assertClean("That was a one-off.")
         assertClean("It is an uninformed guess.")
         assertClean("Use a 'apple' token.")
+    }
+
+    func testArticleBeforeNumbersAndTwoCapitals() {
+        assertFix("It was a 8-hour day.", "a", "an", .article)
+        assertFix("We hired an 2-person team.", "an", "a", .article)
+        assertFix("It is a 11-digit code.", "a", "an", .article)
+        assertFix("We scheduled an UX review.", "an", "a", .article)
+        assertFix("She has a MS in biology.", "a", "an", .article)
+        assertClean("It was an 8-hour day, a 100-mile ride and an 18-hole round.")
+        // Read more than one way, or a word in capitals, or "aitch" against "haitch".
+        assertClean("It cost a 1100 dollars or so.")
+        assertClean("It was a NO vote.")
+        assertClean("She leads an HR team, or a HR team.")
+        assertClean("It is a 0.5 ratio.")
     }
 
     func testArticleReasonNamesTheWord() {
@@ -203,5 +216,13 @@ final class WritingCheckTests: XCTestCase {
         XCTAssertTrue(WritingCheck.looksLikeName("iOS", atSentenceStart: true))
         XCTAssertTrue(WritingCheck.looksLikeName("v2beta", atSentenceStart: false))
         XCTAssertFalse(WritingCheck.looksLikeName("recieve", atSentenceStart: false))
+        XCTAssertTrue(WritingCheck.looksLikeName("npm", atSentenceStart: false), "no vowel: a command, not a word")
+    }
+
+    func testMeantRepeatsAreSharedWithOtherProducers() {
+        XCTAssertTrue(WritingCheck.isMeantRepeat("is is"))
+        XCTAssertTrue(WritingCheck.isMeantRepeat("Had had"))
+        XCTAssertFalse(WritingCheck.isMeantRepeat("the the"))
+        XCTAssertFalse(WritingCheck.isMeantRepeat("is"))
     }
 }

@@ -101,7 +101,7 @@ public final class NativeChecker {
     /// - Spelling: the checker's autocorrection if it has one, else its first guess, with up to two
     ///   more guesses. A flagged word with no guess has no fix to offer and is dropped, as is a
     ///   word that looks like a name, an acronym or an identifier (`WritingCheck.looksLikeName`),
-    ///   or one inside a link, an address or code.
+    ///   one quoted on its own, or one inside a link, an address or code.
     /// - Grammar: each detail with at least one correction. Its range is relative to the result's
     ///   sentence range (`NSSpellServer.h`, `NSGrammarRange`). The reason is the checker's own
     ///   description when it gives one.
@@ -118,7 +118,9 @@ public final class NativeChecker {
                 let span = UTF16Span(result.range)
                 guard sentence.contains(span), !span.isEmpty, !protected.contains(where: { $0.overlaps(span) }) else { continue }
                 let word = ns.substring(with: result.range)
-                guard !WritingCheck.looksLikeName(word, atSentenceStart: startsSentence(span, sentence: sentence, in: ns)) else { continue }
+                guard !WritingCheck.looksLikeName(word, atSentenceStart: startsSentence(span, sentence: sentence, in: ns)),
+                      !isQuotedMention(span, in: ns)
+                else { continue }
                 let (correction, all) = guesses(result.range)
                 let ranked = ([correction].compactMap { $0 } + all).filter { $0 != word }
                 var unique: [String] = []
@@ -137,6 +139,9 @@ public final class NativeChecker {
                           !protected.contains(where: { $0.overlaps(span) })
                     else { continue }
                     let original = ns.substring(with: range)
+                    // "What it is is", "had had": the static rules' list of meant repeats holds
+                    // for the system checker too.
+                    guard !WritingCheck.isMeantRepeat(original) else { continue }
                     let fixes = ((detail[NSGrammarCorrections] as? [String]) ?? []).filter { $0 != original }
                     guard let best = fixes.first else { continue }
                     let description = (detail[NSGrammarUserDescription] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -151,6 +156,13 @@ public final class NativeChecker {
             }
         }
         return out.sorted { $0.span.start < $1.span.start }
+    }
+
+    /// A word quoted on its own is being mentioned, not used: The word "recieve" is misspelled.
+    nonisolated private static func isQuotedMention(_ span: UTF16Span, in ns: NSString) -> Bool {
+        guard span.start > 0, span.end < ns.length else { return false }
+        let quotes: Set<unichar> = [0x22, 0x27, 0x201C, 0x201D, 0x2018, 0x2019]
+        return quotes.contains(ns.character(at: span.start - 1)) && quotes.contains(ns.character(at: span.end))
     }
 
     /// Whether only spaces and opening quotes lie between the sentence's start and `span`.

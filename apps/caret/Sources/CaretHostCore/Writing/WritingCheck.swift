@@ -80,16 +80,25 @@ public enum WritingCheck {
         return (preferred + kept).sorted { $0.span.start < $1.span.start }
     }
 
-    /// Whether a word the spell checker flagged is probably a name, an acronym or an identifier,
-    /// which Caret leaves alone: capitalized away from a sentence start, all capitals, mixed case
-    /// inside the word, or containing a digit.
+    /// Whether a word the spell checker flagged is probably a name, an acronym, a command or an
+    /// identifier, which Caret leaves alone: capitalized away from a sentence start, all capitals,
+    /// mixed case inside the word, containing a digit, or with no vowel at all ("npm", "ssh").
     public static func looksLikeName(_ word: String, atSentenceStart: Bool) -> Bool {
         guard let first = word.first else { return true }
         if word.contains(where: \.isNumber) { return true }
+        if !word.lowercased().contains(where: { "aeiouy".contains($0) }) { return true }
         let letters = word.filter(\.isLetter)
         if letters.count >= 2, letters.allSatisfy(\.isUppercase) { return true }
         if letters.dropFirst().contains(where: \.isUppercase) { return true }
         return first.isUppercase && !atSentenceStart
+    }
+
+    /// Whether `text` is one word said twice in a way people often mean ("had had", "is is"),
+    /// which no producer may call an error.
+    public static func isMeantRepeat(_ text: String) -> Bool {
+        let parts = text.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard parts.count == 2, parts[0].lowercased() == parts[1].lowercased() else { return false }
+        return Scan.meantRepeats.contains(parts[0].lowercased())
     }
 
     // MARK: - Helpers
@@ -405,6 +414,29 @@ private struct Scan {
 
     enum Sound { case vowel, consonant }
 
+    /// Two capitals that are also words, said as words ("a NO vote"), not letter by letter.
+    static let capsWords: Set<String> = [
+        "NO", "SO", "GO", "DO", "TO", "ME", "MY", "BE", "WE", "HE", "OF", "ON", "OR", "IN", "IS", "IT", "AT",
+        "AS", "AN", "UP", "US", "OK", "OH", "HI", "BY", "IF", "AM", "OX", "AX", "EX", "LO", "YO", "MA", "PA",
+    ]
+
+    /// The sound a capital letter's name starts with: "ef", "em", "ess" with a vowel; "you",
+    /// "double-u", "why" with a consonant. "H" is "aitch" or "haitch", so it says nothing.
+    static func letterSound(_ letter: Character) -> Sound? {
+        if letter == "H" { return nil }
+        return "AEFILMNORSX".contains(letter) ? .vowel : .consonant
+    }
+
+    /// The sound a number starts with when read aloud: "an 8", "an 11", "an 18", "an 80";
+    /// "a 1", "a 7", "a 100". Longer numbers and those starting with 0 can be read more than one
+    /// way ("1100" as "eleven hundred" or "one thousand"), so Caret cannot tell.
+    static func numberSound(_ word: String) -> Sound? {
+        let digits = String(word.prefix(while: \.isNumber))
+        guard let first = digits.first, first != "0" else { return nil }
+        if first == "8" || digits == "11" || digits == "18" { return .vowel }
+        return digits.count <= 3 ? .consonant : nil
+    }
+
     /// Stems of words spelled with "u" that start with a "you" sound: "unit" covers "units",
     /// "united", "unity". Every other "u" word starts with a vowel sound ("umbrella", "unusual",
     /// "uninformed").
@@ -431,10 +463,15 @@ private struct Scan {
     /// The sound a word starts with, or nil when Caret cannot tell: a digit, an acronym, a single
     /// letter, a word without vowels ("sql"), or a word that takes either article.
     static func sound(of word: String) -> Sound? {
-        guard let firstChar = word.first, firstChar.isLetter else { return nil }
+        guard let firstChar = word.first else { return nil }
+        if firstChar.isNumber { return numberSound(word) }
+        guard firstChar.isLetter else { return nil }
         let letters = word.filter(\.isLetter)
-        // Acronyms and initialisms: "an FBI agent", "a NASA probe". Which one depends on how
-        // it is said.
+        // Two capitals are said letter by letter: "a UX review", "an MA". Longer ones may be
+        // said as a word ("a NASA probe", "a SQL" or "an SQL"), so Caret cannot tell.
+        if letters.count == 2, letters.allSatisfy(\.isUppercase), word.count == 2 {
+            return capsWords.contains(word) ? nil : letterSound(firstChar)
+        }
         if letters.count >= 2, letters.allSatisfy(\.isUppercase) { return nil }
         let lower = word.lowercased()
         let head = lower.split(separator: "-").first.map(String.init) ?? lower
