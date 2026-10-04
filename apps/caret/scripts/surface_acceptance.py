@@ -1,0 +1,768 @@
+#!/usr/bin/env python3
+"""Alternatives, pop-ups and the fill line, on caret-fixture's synthetic forms.
+
+  surface_acceptance.py alternatives <evidence_dir> [light|dark]
+  surface_acceptance.py fill <evidence_dir> [light|dark]
+  surface_acceptance.py realkeys <evidence_dir> [light|dark]
+  surface_acceptance.py compact <evidence_dir> [light|dark]
+
+realkeys: one real down arrow, Command-2 and Tab through the event tap, posted at the HID level by
+fixture-keys, which refuses every key unless the fixture owns both the frontmost app and the
+focused element. Needs the foreground run (300 s idle, gui.lock).
+
+Starts, and stops on exit, only processes it records: one caret-fixture (Reference and Claim form)
+and the host limited to that pid, with ghost text off and no helper. Posts no keyboard or mouse
+event anywhere. Focus moves by AX writes on the fixture (fixture-ax refuses pids it was not given);
+keys go through the host's debug-socket test hook, which runs the event tap's own routing for a
+key headed for the fixture pid; offers arrive through the socket's `inject` command (a fill
+proposal is injected as the helper line it would be).
+
+alternatives: an injected offer appears; the down arrow opens it; Command-2 selects; Tab takes and
+the field holds the chosen text; one typed character removes every panel by the next read; the
+three pop-ups and an action line take their actions; the frontmost app and the fixture's focused
+element never change because of a panel, and no panel is ever key.
+
+Every pop-up and action line is checked against the form: the host's panel frame may cover no
+field but the focused one (the fixture's own frames, read through Accessibility), and the host's
+placement must report no overlap with any element it probed (A10, FieldPanelPlacement).
+
+CARET_SURFACE_FILLED=1 types nothing but gives Full name, Email and Phone some text first (an
+AXValue write), so every offer is shown in a field that already holds text; Tab must then add the
+chosen alternative to that text.
+
+fill: the toast and the next field's offer give way to each other, and in the tight form the line
+covers no neighbor. Screenshots in the given appearance (both host and fixture).
+
+compact (A13, part 3): A12's small screen, stood in for by the host's `placement-bounds` test hook
+around the claim form. The event card at Phone has no spot that covers nothing, so it is drawn as
+its compact line, which covers no field and whose placement probed nothing under it; ↓ opens the full
+card. With bounds too tight for the compact line as well, nothing is drawn and Tab passes through.
+"""
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+import fixture_app
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+# CaretFixture.app, exec'd with --foreground (fixture_app.py). Executed only, never rebuilt or
+# edited from here; CARET_FIXTURE_BIN_DIR names the build.
+CARET = os.path.join(ROOT, "apps", "caret", ".build", "Caret.app", "Contents", "MacOS", "Caret")
+AX = os.path.join(ROOT, "apps", "caret", ".build", "fixture-ax")
+COMPOSE = os.path.join(ROOT, "apps", "caret", ".build", "compose-shot")
+GOLDEN = os.path.join(ROOT, "apps", "caret", "Tests", "CaretHostCoreTests", "Fixtures", "popup-specs.json")
+SOCKETS = os.path.expanduser("~/.caret-run/sockets")
+HOST_SOCK = os.path.join(SOCKETS, "a3-host.sock")
+NO_HELPER = os.path.join(SOCKETS, "a3-no-helper.sock")
+
+CLAIM = "Caret Fixture — Claim form"
+REFERENCE = "Caret Fixture — Reference"
+
+STARTED = []
+# pid to name for the frontmost-app timeline: only processes this run started are named.
+NAMES = {}
+# Run before the processes stop: the fixture hands the foreground back while it still can.
+BEFORE_STOP = []
+CLEANUP = []
+CHECKS = []
+KEY_PANELS = []
+RUN_START = None
+# Launched without --background-only, caret-fixture took the foreground (measured 2026-10-02:
+# lsappinfo front was the fixture pid within 0.5 s, three runs between 10:56 and 11:01 CDT). Now it
+# is launched with --background-only under gui.lock, the frontmost app is checked after launch, and
+# a fixture that is frontmost anyway is killed at once (checked on every socket read).
+#
+# Since the host draws only in the frontmost app's focused field (SurfaceGate), a run that checks
+# what is drawn needs the fixture in front, and so needs the Mac to itself: the lead's rule after
+# a test panel appeared over Sam's Messages window. The run starts only with the gui lease, under
+# gui.lock, after 300 s without input and outside a quiet window. It starts by asking the fixture
+# for the foreground (`activate legacy`), confirms it is frontmost, hands the foreground back to
+# the app that had it when it ends (`quit PID`), and stops (killing its own fixture and host) the
+# moment input arrives that is not the host's own pid-posted keys.
+IDLE_MIN = float(os.environ.get("CARET_SURFACE_IDLE_MIN", "300"))
+FILLED = os.environ.get("CARET_SURFACE_FILLED") == "1"
+# Text already in a field before its offer arrives (CARET_SURFACE_FILLED).
+PREFILL = {"Full name": "Dana ", "Email": "dana", "Phone": "+1 512 "}
+FOREGROUND = IDLE_MIN > 0
+
+
+def hid_idle_seconds():
+    out = subprocess.run(["ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if "HIDIdleTime" in line:
+            return int(line.split()[-1]) / 1e9
+    return 0.0
+
+
+# The host's own pid-posted keys (the paste after Tab, the Tab that moves a form's focus) reset
+# HIDIdleTime too (measured: idle fell to 0 at the Tab step, then grew steadily with nobody at the
+# Mac). Each Tab this script routes opens a window in which a reset is the host's, not a person's.
+SYNTHETIC = []
+IDLE_LOG = []
+
+
+def expect_synthetic(seconds=3.0):
+    SYNTHETIC.append((time.time(), time.time() + seconds))
+
+
+def guard_user():
+    """Any HID input since the run began, outside the host's own key windows, is someone using
+    the Mac: stop at once. A fixture that became frontmost is killed."""
+    if RUN_START is None:
+        return
+    fixture = next((p for n, p in STARTED if n == "fixture" and p.poll() is None), None)
+    if fixture is not None and not FOREGROUND:
+        now = front_pid()
+        if fixture.pid in (now.get("pid"), now.get("lsappinfo")):
+            fixture.kill()
+            CHECKS.append({"check": "fixture never frontmost", "ok": False, "front": now, "killed": fixture.pid})
+            raise SystemExit(f"fixture {fixture.pid} became frontmost during the run; killed it")
+    idle = hid_idle_seconds()
+    last_input = time.time() - idle
+    IDLE_LOG.append((round(time.time() - RUN_START, 2), round(idle, 2)))
+    if IDLE_MIN > 0 and idle < 5 and last_input > RUN_START + 0.5 and not any(a - 0.2 <= last_input <= b for a, b in SYNTHETIC):
+        raise SystemExit(f"deferred: user active during the run (input at {time.strftime('%H:%M:%S', time.localtime(last_input))})")
+
+
+def log(*parts):
+    print(time.strftime("%H:%M:%S"), *parts, flush=True)
+
+
+def check(name, ok, **detail):
+    CHECKS.append({"check": name, "ok": bool(ok), **detail})
+    log("PASS" if ok else "FAIL", name, json.dumps(detail)[:300] if detail else "")
+    return ok
+
+
+def start(name, args, out_dir, env=None, stdin=None):
+    out = open(os.path.join(out_dir, f"{name}.log"), "w")
+    proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, stdin=stdin)
+    STARTED.append((name, proc))
+    NAMES[proc.pid] = name
+    log("started", name, proc.pid)
+    return proc
+
+
+def stop_all():
+    for name, proc in reversed(STARTED):
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            log("stopped", name, proc.pid)
+
+
+def host(command="state"):
+    guard_user()
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect(HOST_SOCK)
+    s.sendall((command + "\n").encode())
+    try:
+        s.shutdown(socket.SHUT_WR)
+    except OSError:
+        # The host answered and closed first (seen as ENOTCONN when polling every 20 ms); the
+        # reply is still in the socket's buffer.
+        pass
+    chunks = []
+    while True:
+        c = s.recv(65536)
+        if not c:
+            break
+        chunks.append(c)
+    s.close()
+    reply = json.loads(b"".join(chunks))
+    if command == "state":
+        note_key_panels(reply)
+    return reply
+
+
+def note_key_panels(state):
+    """Every panel the host reports, on every read: none may ever be the key window."""
+    panels = dict((state.get("surface") or {}))
+    overlay = (state.get("fill") or {}).get("overlay") or {}
+    for kind in ("panel", "decor", "list"):
+        p = panels.get(kind)
+        if p and p.get("isKey"):
+            KEY_PANELS.append(kind)
+    for kind in ("ghost", "line", "toast"):
+        p = overlay.get(kind)
+        if p and p.get("isKey"):
+            KEY_PANELS.append(kind)
+
+
+def ax(pid, *args):
+    env = dict(os.environ, CARET_TEST_PIDS=str(pid))
+    out = subprocess.run([AX, *map(str, args)], capture_output=True, text=True, env=env)
+    if out.returncode != 0:
+        raise RuntimeError(f"fixture-ax {args[0]} failed: {out.stderr.strip()}")
+    return json.loads(out.stdout)
+
+
+def wait_for(predicate, timeout, interval=0.02):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(interval)
+    return None
+
+
+def key(name, pid):
+    if name == "tab":
+        expect_synthetic()
+    return host(f"key {name} {pid}")
+
+
+def inject(obj):
+    return host("inject " + json.dumps(obj, separators=(",", ":")))
+
+
+def frame_arg(frame):
+    return ",".join(str(v) for v in frame)
+
+
+def watch(pid):
+    """Frontmost app (NSWorkspace and lsappinfo) and the fixture's focused element."""
+    return {"front": ax(pid, "frontmost"), "focused": ax(pid, "focused", pid)}
+
+
+def shot(out_dir, fixture_pid, host_pid, name):
+    """The fixture's Claim window plus every on-screen window of the host, each captured by window
+    id and joined. Region captures are never used: the fixture sits behind other windows, and a
+    region capture would record whatever covers it."""
+    shots = os.path.join(out_dir, "shots")
+    os.makedirs(shots, exist_ok=True)
+    listing = lambda pid: json.loads(subprocess.run(["cua-driver", "list_windows", json.dumps({"pid": pid})],
+                                                    capture_output=True, text=True).stdout or "{}").get("windows", [])
+    base = next((w for w in listing(fixture_pid) if w.get("title") == CLAIM), None)
+    if base is None:
+        return None
+    layers = []
+    path = os.path.join(shots, f"{name}-window.png")
+    subprocess.run(["screencapture", "-x", "-o", f"-l{base['window_id']}", path], check=True)
+    b = base["bounds"]
+    layers.append(f"{path}:{b['x']},{b['y']},{b['width']},{b['height']}")
+    # The host's panels, by the window numbers and frames its debug socket reports.
+    state = host()
+    surface = state.get("surface") or {}
+    overlay = (state.get("fill") or {}).get("overlay") or {}
+    panels = [surface.get(k) for k in ("ghostPanel", "decor", "panel", "list")] + [overlay.get(k) for k in ("ghost", "line", "toast")]
+    for i, p in enumerate(x for x in panels if x and not (x.get("text") or "").startswith("(exiting)")):
+        path_i = os.path.join(shots, f"{name}-host{i}.png")
+        if subprocess.run(["screencapture", "-x", "-o", f"-l{p['windowNumber']}", path_i]).returncode == 0 and os.path.exists(path_i):
+            layers.append(path_i + ":" + ",".join(str(v) for v in p["frame"]))
+    out = os.path.join(shots, f"{name}.png")
+    subprocess.run([COMPOSE, out, *layers], check=True, capture_output=True)
+    for layer in layers:
+        os.remove(layer.rsplit(":", 1)[0])
+    return out
+
+
+def front_pid():
+    """NSWorkspace's and LaunchServices' frontmost pids, from fixture-ax (no pid needed)."""
+    out = subprocess.run([AX, "frontmost"], capture_output=True, text=True, env=dict(os.environ, CARET_TEST_PIDS="1"))
+    return json.loads(out.stdout) if out.returncode == 0 else {}
+
+
+def launch_fixture(out_dir, appearance):
+    before = front_pid()
+    if FOREGROUND:
+        # The Mac is idle, the lease granted and gui.lock held: the fixture asks for the front on
+        # purpose and must actually be frontmost before any check runs.
+        fx = start("fixture", fixture_app.args("--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
+                                               "--duration", "900", "--appearance", appearance), out_dir, stdin=subprocess.PIPE)
+        BEFORE_STOP.append(lambda: fixture_app.hand_back(fx, before.get("pid")))
+        time.sleep(1)
+        ok, now = fixture_app.activate(fx, front_pid)
+        if not ok:
+            raise SystemExit(f"deferred: foreground (activate legacy, front={now})")
+        check("fixture activated and frontmost (NSWorkspace and lsappinfo)", True, before=before, after=now)
+        return fx
+    # --foreground lets windows be key; the fixture still hands back any activation it gets.
+    fx = start("fixture", fixture_app.args("--windows", "reference,claim", "--gold", os.path.join(out_dir, "gold.json"),
+                                           "--duration", "900", "--appearance", appearance), out_dir)
+    # Watch the first two seconds: the fixture must never be frontmost.
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        now = front_pid()
+        if fx.pid in (now.get("pid"), now.get("lsappinfo")):
+            fx.kill()
+            fx.wait()
+            CHECKS.append({"check": "fixture never frontmost", "ok": False, "before": before, "after": now, "killed": fx.pid})
+            raise SystemExit(f"fixture {fx.pid} became frontmost; killed it")
+        time.sleep(0.1)
+    after = front_pid()
+    check("fixture launched without changing the frontmost app", after.get("pid") == before.get("pid"), before=before, after=after)
+    return fx
+
+
+def rig(out_dir, appearance):
+    global RUN_START
+    os.makedirs(out_dir, exist_ok=True)
+    why = fixture_app.why_not_foreground(IDLE_MIN) if FOREGROUND else (
+        None if fixture_app.gui_lock_held() else "refused: run under lockf -k ~/.long-run/locks/gui.lock")
+    if why:
+        raise SystemExit(why)
+    RUN_START = time.time()
+    CHECKS.append({"check": "front app before launch", "ok": True,
+                   "front": subprocess.run(["lsappinfo", "front"], capture_output=True, text=True).stdout.strip()})
+    if os.path.exists(HOST_SOCK):
+        raise SystemExit(f"{HOST_SOCK} exists; another run may be live")
+    fx = launch_fixture(out_dir, appearance)
+    wait_for(lambda: os.path.exists(os.path.join(out_dir, "gold.json")), 10, 0.1)
+    time.sleep(1)
+    fields = [f for f in ax(fx.pid, "fields", fx.pid) if f["window"] == CLAIM]
+    with open(os.path.join(out_dir, "gold.json")) as f:
+        gold = next(form for form in json.load(f)["forms"] if form["window"] == CLAIM)["fields"]
+    # The fixture writes view frames; Accessibility reports them 1 pt larger on every side.
+    for g in gold:
+        g["frame"] = next(f["frame"] for f in fields if all(abs(a - b) <= 2 for a, b in zip(f["frame"], g["frame"])))
+    # A settings file of the run's own: an injected helper line takes the helper's route, gate
+    # included (A12), so a paused Caret or Fill turned off in the user's settings would refuse it.
+    settings = os.path.join(out_dir, "settings.json")
+    if os.path.exists(settings):
+        os.remove(settings)
+    args = [CARET, "--socket", HOST_SOCK, "--helper-socket", NO_HELPER, "--allow-pids", str(fx.pid), "--no-ghost", "--test-hooks",
+            "--appearance", appearance, "--settings", settings]
+    h = start("host", args, out_dir)
+    if not wait_for(lambda: os.path.exists(HOST_SOCK), 15, 0.1):
+        raise SystemExit("host did not open its socket")
+    time.sleep(1)
+    r = ax(fx.pid, "key-window", fx.pid, CLAIM)
+    check("key-window switch leaves the frontmost app alone", r["frontAfter"] == r["frontBefore"]
+          and (FOREGROUND or r["frontAfter"] != fx.pid), result=r)
+    return fx.pid, h.pid, gold
+
+
+def prefill(pid, field):
+    """In a filled run, writes the field's existing text, focuses the field with the caret after
+    that text, and returns it; otherwise focuses the field and returns ''."""
+    text = PREFILL.get(field["label"], "") if FILLED else ""
+    if text:
+        r = ax(pid, "set-field", pid, frame_arg(field["frame"]), text)
+        check(f"{field['label']} holds text before its offer", r.get("ok") and r.get("value") == text, result=r)
+    ax(pid, "focus", pid, frame_arg(field["frame"]))
+    if text:
+        time.sleep(0.2)
+        r = ax(pid, "caret-end", pid, frame_arg(field["frame"]))
+        check(f"{field['label']}: caret after its text", r.get("ok"), result=r)
+    return text
+
+
+def intersects(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+def check_clear(name, gold, focused):
+    """The panel covers no field of the form but the focused one, and the host's own placement
+    found nothing under it."""
+    sf = host().get("surface") or {}
+    panel, placed = sf.get("panel"), sf.get("panelPlacement")
+    if not panel:
+        return check(f"{name}: covers no other field", False, panel=None)
+    covered = [g["label"] for g in gold if g["label"] != focused["label"] and intersects(panel["frame"], g["frame"])]
+    return check(f"{name}: covers no other field", not covered and bool(placed) and placed.get("overlap") == 0,
+                 frame=panel["frame"], placement=placed, covered=covered)
+
+
+def golden(name):
+    with open(GOLDEN) as f:
+        return json.load(f)["valid"][name]
+
+
+def alternatives(out_dir, appearance):
+    pid, host_pid, gold = rig(out_dir, appearance)
+    by_label = {g["label"]: g for g in gold}
+    results = {"pid": pid, "appearance": appearance, "steps": []}
+
+    def step(name, **data):
+        results["steps"].append({"step": name, **data})
+
+    # --- Alternatives in the Full name field --------------------------------------------------
+    field = by_label["Full name"]
+    existing = prefill(pid, field)
+    time.sleep(0.3)
+    before = watch(pid)
+    candidates = ["Dana Whitfield", "Dana R. Whitfield", "D. Whitfield", "Dana Whitfield-Ames"]
+    if existing:
+        candidates = ["Whitfield", "R. Whitfield", "Whitfield-Ames", "W."]
+    reply = inject({"kind": "alternatives", "pid": pid, "candidates": candidates})
+    s = host()
+    sf = s.get("surface") or {}
+    check("injected alternatives appear collapsed: the faint value alone", reply.get("ok") and sf.get("ghost") == candidates[0]
+          and not sf.get("decor") and not sf.get("list"), reply=reply, ghost=sf.get("ghost"), decor=bool(sf.get("decor")))
+    step("shown", shot=shot(out_dir, pid, host_pid, "alt-1-shown"), surface=sf)
+
+    k = key("down", pid)
+    s = host()
+    sf = s.get("surface") or {}
+    ui = sf.get("ui") or {}
+    check("down opens them on candidate 2", k.get("consumed") and ui.get("open") and ui.get("candidate") == 1
+          and sf.get("ghost") == candidates[1] and sf.get("list") and "2 of 4" in (sf.get("decor") or {}).get("text", ""),
+          key=k, ui=ui, ghost=sf.get("ghost"), list=(sf.get("list") or {}).get("text"))
+    step("open", shot=shot(out_dir, pid, host_pid, "alt-2-open"), surface=sf)
+
+    key("down", pid)
+    k = key("cmd-2", pid)
+    s = host()
+    sf = s.get("surface") or {}
+    check("command-2 selects candidate 2 while open", k.get("consumed") and (sf.get("ui") or {}).get("candidate") == 1
+          and sf.get("ghost") == candidates[1], key=k, ui=sf.get("ui"))
+    step("cmd-2", shot=shot(out_dir, pid, host_pid, "alt-3-cmd2"), surface=sf)
+
+    mid = watch(pid)
+    check("showing and opening alternatives left the frontmost app and focused element alone",
+          mid["front"] == before["front"] and mid["focused"] == before["focused"], before=before, after=mid)
+
+    last = (s.get("lastInsertion") or {}).get("claimID", 0)
+    k = key("tab", pid)
+    ins = wait_for(lambda: (lambda st: st["lastInsertion"] if st.get("lastInsertion") and st["lastInsertion"]["claimID"] > last else None)(host()), 5)
+    value = ax(pid, "value", pid, frame_arg(field["frame"]))["value"]
+    s = host()
+    # With text already there, the chosen alternative is added after it, where the caret is.
+    expected = {existing + candidates[1]}
+    check("tab takes the selected alternative into the field", k.get("consumed") and value in expected
+          and (s.get("lastClaim") or {}).get("candidate") == 1 and (s.get("surface") or {}).get("lastAccepted", {}).get("candidate") == 1,
+          key=k, value=value, lastClaim=s.get("lastClaim"), insertion=ins)
+    step("taken", value=value, insertion=ins, lastClaim=s.get("lastClaim"))
+
+    # --- One typed character removes everything ----------------------------------------------
+    field = by_label["Email"]
+    prefill(pid, field)
+    time.sleep(0.3)
+    inject({"kind": "alternatives", "pid": pid, "candidates": ["dana@lumenlabs.example", "dana.whitfield@lumenlabs.example"]})
+    key("down", pid)
+    open_state = host().get("surface") or {}
+    k = key("char:x", pid)
+    s = host()
+    sf = s.get("surface") or {}
+    gone = not s.get("offer") and not sf.get("ghost") and not sf.get("decor") and not sf.get("list") and not sf.get("panel")
+    check("one typed character removes the panel by the next read", bool(open_state.get("list")) and not k.get("consumed") and gone,
+          key=k, before=bool(open_state.get("list")), after={kk: sf.get(kk) for kk in ("ghost", "decor", "list", "panel")}, offer=s.get("offer"))
+
+    # --- Pop-ups -------------------------------------------------------------------------------
+    field = by_label["Phone"]
+    prefill(pid, field)
+    time.sleep(0.3)
+    before = watch(pid)
+    reply = inject({"kind": "popup", "pid": pid, "offerKey": "card-1", "spec": golden("eventCard")})
+    time.sleep(0.3)
+    s = host()
+    check("event card appears", reply.get("ok") and (s.get("surface") or {}).get("panel"), reply=reply)
+    check_clear("event card", gold, field)
+    step("card", shot=shot(out_dir, pid, host_pid, "card-1-shown"), placement=(host().get("surface") or {}).get("panelPlacement"))
+    k = key("cmd-2", pid)
+    s = host()
+    check("command-2 reveals the times", k.get("consumed") and ((s.get("surface") or {}).get("ui") or {}).get("revealed") == "changeTime",
+          ui=(s.get("surface") or {}).get("ui"))
+    check_clear("event card with the times revealed", gold, field)
+    step("card-time", shot=shot(out_dir, pid, host_pid, "card-2-change-time"), placement=(host().get("surface") or {}).get("panelPlacement"))
+    key("down", pid)
+    k = key("tab", pid)
+    time.sleep(0.25)
+    s = host()
+    acc = (s.get("surface") or {}).get("lastAccepted") or {}
+    check("tab reports the accepted action with the chosen time", k.get("consumed") and acc.get("actionId") == "add"
+          and acc.get("overrides") == {"time": 2} and acc.get("offerKey") == "card-1", accepted=acc)
+    step("working", shot=shot(out_dir, pid, host_pid, "card-3-working"), accepted=acc)
+    time.sleep(3.3)
+    s = host()
+    line_text = (s.get("surface") or {}).get("lineText") or ""
+    check("after 3 s the working line counts seconds (and offers Esc Stop)",
+          any(f", {n} s" in line_text for n in range(3, 10)), line=line_text)
+    step("working-3s", shot=shot(out_dir, pid, host_pid, "card-4-working-3s"))
+    host("progress done")
+    time.sleep(0.4)
+    step("done", shot=shot(out_dir, pid, host_pid, "card-5-done"), line=(host().get("surface") or {}).get("lineText"))
+    after = watch(pid)
+    check("the card never moved the frontmost app or the focused element", after["front"] == before["front"]
+          and after["focused"] == before["focused"], before=before, after=after)
+    time.sleep(5.5)
+
+    reply = inject({"kind": "popup", "pid": pid, "offerKey": "which-1", "spec": golden("picker")})
+    time.sleep(0.3)
+    check_clear("picker", gold, field)
+    step("picker", shot=shot(out_dir, pid, host_pid, "picker-1-shown"), placement=(host().get("surface") or {}).get("panelPlacement"))
+    key("cmd-3", pid)
+    step("picker-3", shot=shot(out_dir, pid, host_pid, "picker-2-cmd3"))
+    k = key("tab", pid)
+    time.sleep(0.2)
+    acc = (host().get("surface") or {}).get("lastAccepted") or {}
+    check("picker: command-3 then tab takes row 3", k.get("consumed") and acc.get("actionId") == "choose" and acc.get("row") == 2, accepted=acc)
+    host("progress error")
+    time.sleep(0.4)
+    step("error", shot=shot(out_dir, pid, host_pid, "picker-3-error"))
+    k = key("esc", pid)
+    s = host()
+    check("esc closes the error line", k.get("consumed") and not ((s.get("surface") or {}).get("lineText")), key=k)
+
+    reply = inject({"kind": "popup", "pid": pid, "offerKey": "fill-1", "spec": golden("fillPreview")})
+    time.sleep(0.3)
+    check_clear("fill preview", gold, field)
+    step("fill-preview", shot=shot(out_dir, pid, host_pid, "fill-preview"), placement=(host().get("surface") or {}).get("panelPlacement"))
+    k = key("esc", pid)
+    s = host()
+    check("esc closes a pop-up", k.get("consumed") and not s.get("offer"), key=k)
+
+    line = {"kind": "action", "pid": pid, "offerKey": "line-1", "app": "Calendar",
+            "endState": {"text": "Coffee with Dana, Thu 3:00 to 3:30", "ref": {"node": "4242-1/compose/body", "quote": "coffee with Dana on Thursday at 3"}},
+            "actions": [{"id": "add", "label": "Add", "key": "tab"}], "variants": golden("picker")}
+    inject(line)
+    time.sleep(0.3)
+    check_clear("action line", gold, field)
+    step("action-line", shot=shot(out_dir, pid, host_pid, "line-1-shown"), placement=(host().get("surface") or {}).get("panelPlacement"))
+    k1 = key("cmd-1", pid)
+    s = host()
+    check("command-1 on an action line with nothing numbered passes through and dismisses", not k1.get("consumed") and not s.get("offer"), key=k1)
+    inject(line)
+    time.sleep(0.2)
+    key("down", pid)
+    step("action-variants", shot=shot(out_dir, pid, host_pid, "line-2-variants"))
+    key("down", pid)
+    k = key("tab", pid)
+    time.sleep(0.2)
+    acc = (host().get("surface") or {}).get("lastAccepted") or {}
+    check("down opens an action line's variants; tab takes the highlighted one", k.get("consumed") and acc.get("overrides") == {"variants": 1}, accepted=acc)
+    host("progress done")
+
+    check("no panel was ever the key window", not KEY_PANELS, keyPanels=KEY_PANELS)
+    results["checks"] = CHECKS
+    results["final"] = host()
+    return results
+
+
+def fill(out_dir, appearance):
+    pid, host_pid, gold = rig(out_dir, appearance)
+    by_label = {g["label"]: g for g in gold}
+    results = {"pid": pid, "appearance": appearance, "steps": []}
+    labels = ["Full name", "Email", "Phone", "Company", "Order number"]
+    proposal = {
+        "type": "fillProposal", "v": 1, "id": "a3-fill-1", "at": int(time.time() * 1000), "windowId": f"{pid}-2",
+        "bundleId": "dev.caret.fixture", "triggerKey": "claim/name",
+        "fields": [{
+            "key": f"claim/{label.lower().replace(' ', '-')}", "frame": by_label[label]["frame"],
+            "descriptor": f"Text field. Label: '{label}'.", "choice": f"c{i}", "confidence": 0.97,
+            "value": by_label[label]["gold"],
+            "source": {"windowId": f"{pid}-1", "bundleId": "dev.caret.fixture", "appName": "Caret Fixture",
+                       "windowTitle": REFERENCE, "nodeKey": f"reference/{i}", "kind": None},
+            "withheld": None,
+            "asks": [{"choice": f"c{i}", "confidence": 0.97, "value": by_label[label]["gold"]}] * 2,
+        } for i, label in enumerate(labels)],
+        "candidates": len(labels), "cutoff": 0.9,
+        "jev": {"model": "synthetic", "latencyMs": 0, "inputTokens": 0, "costUsd": 0},
+    }
+    ax(pid, "focus", pid, frame_arg(by_label["Full name"]["frame"]))
+    time.sleep(0.3)
+    before = watch(pid)
+    reply = inject({"kind": "helperLine", "line": proposal})
+    offer = wait_for(lambda: (lambda s: s.get("offer") if (s.get("offer") or {}).get("kind") == "fill" else None)(host()), 5)
+    s = host()
+    ov = (s.get("fill") or {}).get("overlay") or {}
+    check("fill offer for the first field", reply.get("ok") and offer is not None, reply=reply, lastSkip=(s.get("fill") or {}).get("lastSkip"))
+    results["steps"].append({"step": "first", "placement": ov.get("placement"), "shot": shot(out_dir, pid, host_pid, "fill-1-first-offer")})
+
+    def take_and_follow(label, next_label, name):
+        last = (host().get("lastInsertion") or {}).get("claimID", 0)
+        key("tab", pid)
+        wait_for(lambda: (lambda st: st.get("lastInsertion") and st["lastInsertion"]["claimID"] > last)(host()), 5)
+        # The host posts Tab to the fixture's pid to move focus; the next field's offer follows.
+        nxt = wait_for(lambda: (lambda st: st["offer"] if (st.get("offer") or {}).get("kind") == "fill"
+                                and (st["offer"].get("fill") or {}).get("fieldKey", "").endswith(next_label.lower().replace(" ", "-")) else None)(host()), 5)
+        time.sleep(0.35)
+        st = host()
+        ov = (st.get("fill") or {}).get("overlay") or {}
+        value = ax(pid, "value", pid, frame_arg(by_label[label]["frame"]))["value"]
+        stacked = bool(ov.get("line")) and bool(ov.get("toast"))
+        check(f"{label}: filled, and the toast and the next offer do not stack", value == by_label[label]["gold"] and nxt is not None
+              and not stacked and ov.get("toast") and ov.get("lineDeferred"),
+              value=value, nextOffer=bool(nxt), line=bool(ov.get("line")), toast=bool(ov.get("toast")), deferred=ov.get("lineDeferred"),
+              placement=ov.get("placement"))
+        results["steps"].append({"step": name, "placement": ov.get("placement"), "toast": ov.get("toast"), "shot": shot(out_dir, pid, host_pid, name)})
+        return ov
+
+    take_and_follow("Full name", "Email", "fill-2-toast-then-email")
+    take_and_follow("Email", "Phone", "fill-3-toast-then-phone")
+    # The toast lives 5 s; then the waiting offer's line takes the stage, placed so it covers
+    # neither neighbor in this tight form.
+    time.sleep(5.6)
+    s = host()
+    ov = (s.get("fill") or {}).get("overlay") or {}
+    line = ov.get("line")
+    covered = []
+    if line:
+        lx, ly, lw, lh = line["frame"]
+        for g in gold:
+            gx, gy, gw, gh = g["frame"]
+            if g["label"] != "Phone" and lx < gx + gw and gx < lx + lw and ly < gy + gh and gy < ly + lh:
+                covered.append(g["label"])
+    check("after the toast, the next offer's line appears and covers no other field", line is not None and not covered and not ov.get("toast"),
+          placement=ov.get("placement"), covered=covered, frame=line and line["frame"])
+    results["steps"].append({"step": "after-toast", "placement": ov.get("placement"), "shot": shot(out_dir, pid, host_pid, "fill-4-line-after-toast")})
+    after = watch(pid)
+    check("fill never moved the frontmost app", after["front"] == before["front"], before=before["front"], after=after["front"])
+    check("no panel was ever the key window", not KEY_PANELS, keyPanels=KEY_PANELS)
+    results["checks"] = CHECKS
+    results["final"] = host()
+    return results
+
+
+KEYS = os.path.join(ROOT, "apps", "caret", ".build", "fixture-keys")
+
+
+def real_key(name, pid):
+    """One real key at the HID level, headed for the frontmost fixture. fixture-keys checks
+    LaunchServices' front app and the focused element's pid itself and exits 3 otherwise."""
+    guard_user()
+    now = front_pid()
+    if not (now.get("pid") == pid and now.get("lsappinfo") == pid):
+        raise SystemExit(f"deferred: foreground (front={now} before {name})")
+    expect_synthetic()
+    out = subprocess.run([KEYS, str(pid), "key", name], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"deferred: foreground (fixture-keys {name}: {out.stderr.strip()})")
+    time.sleep(0.15)
+
+
+def compact(out_dir, appearance):
+    pid, host_pid, gold = rig(out_dir, appearance)
+    by_label = {g["label"]: g for g in gold}
+    results = {"pid": pid, "appearance": appearance, "steps": []}
+    field = by_label["Phone"]
+    prefill(pid, field)
+    time.sleep(0.3)
+    # The form and its labels, and nothing beside or under it: no room right of the fields, 8 pt
+    # under the last one, the labels' column on the left.
+    left = min(g["frame"][0] for g in gold) - 170
+    top = min(g["frame"][1] for g in gold) - 40
+    right = max(g["frame"][0] + g["frame"][2] for g in gold) + 8
+    bottom = max(g["frame"][1] + g["frame"][3] for g in gold) + 8
+    r = host(f"placement-bounds {left} {top} {right - left} {bottom - top}")
+    check("the test bounds are set", r.get("ok"), reply=r)
+    before = watch(pid)
+    reply = inject({"kind": "popup", "pid": pid, "offerKey": "card-c", "spec": golden("eventCard")})
+    time.sleep(0.3)
+    sf = host().get("surface") or {}
+    panel = sf.get("panel") or {}
+    check("no clear spot for the card: its compact line is drawn instead", reply.get("ok") and (sf.get("ui") or {}).get("compact") is True
+          and bool(panel) and panel["frame"][3] <= 24, reply=reply, ui=sf.get("ui"), panel=panel)
+    check_clear("compact line", gold, field)
+    results["steps"].append({"step": "compact", "shot": shot(out_dir, pid, host_pid, "compact-1-line"), "placement": sf.get("panelPlacement"), "text": panel.get("text")})
+    k = key("down", pid)
+    time.sleep(0.2)
+    sf = host().get("surface") or {}
+    check("down opens the full card", k.get("consumed") and not (sf.get("ui") or {}).get("compact") and (sf.get("panel") or {}).get("frame", [0, 0, 0, 0])[3] > 24,
+          key=k, ui=sf.get("ui"))
+    # The card the user asked for: where it went and whether it covers something, recorded, not judged.
+    results["steps"].append({"step": "card", "shot": shot(out_dir, pid, host_pid, "compact-2-card"), "placement": sf.get("panelPlacement")})
+    k = key("tab", pid)
+    time.sleep(0.25)
+    acc = (host().get("surface") or {}).get("lastAccepted") or {}
+    check("tab on the opened card takes its action", k.get("consumed") and acc.get("offerKey") == "card-c" and acc.get("actionId") == "add", accepted=acc)
+    host("progress done")
+    time.sleep(5.5)
+    # Too tight for the compact line too: the bounds are the Phone field alone.
+    f = field["frame"]
+    host(f"placement-bounds {f[0]} {f[1]} {f[2]} {f[3]}")
+    reply = inject({"kind": "popup", "pid": pid, "offerKey": "card-d", "spec": golden("eventCard")})
+    time.sleep(0.3)
+    s = host()
+    sf = s.get("surface") or {}
+    check("no clear spot even for the compact line: nothing is drawn", reply.get("held") == "noClearSpot" and not sf.get("panel") and not s.get("offer"),
+          reply=reply, panel=sf.get("panel"))
+    k = key("tab", pid)
+    check("and Tab is the app's", not k.get("consumed"), key=k)
+    host("placement-bounds clear")
+    after = watch(pid)
+    check("the fallback never moved the frontmost app or the focused element", after["front"] == before["front"] and after["focused"] == before["focused"],
+          before=before, after=after)
+    check("no panel was ever the key window", not KEY_PANELS, keyPanels=KEY_PANELS)
+    results["final"] = host()
+    return results
+
+
+def realkeys(out_dir, appearance):
+    if not FOREGROUND:
+        raise SystemExit("deferred: realkeys needs the foreground run (CARET_SURFACE_IDLE_MIN > 0)")
+    pid, host_pid, gold = rig(out_dir, appearance)
+    field = next(g for g in gold if g["label"] == "Full name")
+    ax(pid, "focus", pid, frame_arg(field["frame"]))
+    time.sleep(0.3)
+    candidates = ["Dana Whitfield", "Dana R. Whitfield", "D. Whitfield", "Dana Whitfield-Ames"]
+    inject({"kind": "alternatives", "pid": pid, "candidates": candidates})
+    s0 = host()
+    taps0 = s0["tap"]["keyDowns"]
+    real_key("down", pid)
+    sf = host().get("surface") or {}
+    check("a real down arrow through the tap opens the alternatives", (sf.get("ui") or {}).get("open") and sf.get("ghost") == candidates[1],
+          ui=sf.get("ui"), ghost=sf.get("ghost"))
+    real_key("down", pid)
+    real_key("cmd-2", pid)
+    sf = host().get("surface") or {}
+    check("a real Command-2 selects candidate 2", (sf.get("ui") or {}).get("candidate") == 1 and sf.get("ghost") == candidates[1], ui=sf.get("ui"))
+    last = (host().get("lastInsertion") or {}).get("claimID", 0)
+    real_key("tab", pid)
+    wait_for(lambda: (lambda st: st.get("lastInsertion") and st["lastInsertion"]["claimID"] > last)(host()), 5)
+    value = ax(pid, "value", pid, frame_arg(field["frame"]))["value"]
+    s1 = host()
+    check("a real Tab takes candidate 2 into the field", value == candidates[1], value=value)
+    check("the tap saw all four keys and consumed them", s1["tap"]["keyDowns"] - taps0 >= 4 and s1["tap"]["consumed"] - s0["tap"]["consumed"] >= 4,
+          keyDowns=s1["tap"]["keyDowns"] - taps0, consumed=s1["tap"]["consumed"] - s0["tap"]["consumed"])
+    check("no panel was ever the key window", not KEY_PANELS, keyPanels=KEY_PANELS)
+    return {"pid": pid, "value": value, "final": s1}
+
+
+if __name__ == "__main__":
+    if len(sys.argv) not in (3, 4) or sys.argv[1] not in ("alternatives", "fill", "realkeys", "compact"):
+        raise SystemExit(__doc__)
+    mode, out = sys.argv[1], sys.argv[2]
+    appearance = sys.argv[3] if len(sys.argv) == 4 else "light"
+    results = {}
+    lease = fixture_app.GuiLease() if FOREGROUND else None
+    dog = fixture_app.Watchdog(lambda t: any(a - 0.2 <= t <= b for a, b in SYNTHETIC), front_pid, NAMES) if FOREGROUND else None
+    stopped_by = None
+    try:
+        if lease:
+            lease.__enter__()
+        if dog:
+            dog.__enter__()
+        results = {"alternatives": alternatives, "fill": fill, "realkeys": realkeys, "compact": compact}[mode](out, appearance)
+    except KeyboardInterrupt:
+        stopped_by = f"deferred: user active (input at {dog.tripped})" if dog and dog.tripped else "interrupted"
+        log(stopped_by)
+    finally:
+        if dog:
+            dog.__exit__()
+        for hand_back in BEFORE_STOP:
+            hand_back()
+        stop_all()
+        if lease:
+            lease.__exit__()
+        if dog:
+            # One reading after the hand-back: whose app is in front now.
+            dog.timeline.append((round(time.time() - dog.start, 2), front_pid().get("pid"), "after hand-back"))
+            results["frontTimeline"] = dog.timeline
+        if stopped_by:
+            results["stoppedBy"] = stopped_by
+        for undo in CLEANUP:
+            undo()
+        os.makedirs(out, exist_ok=True)
+        results["checks"] = CHECKS
+        results["idleLog"] = IDLE_LOG
+        results["passed"] = sum(c["ok"] for c in CHECKS)
+        results["failed"] = sum(not c["ok"] for c in CHECKS)
+        with open(os.path.join(out, "results.json"), "w") as f:
+            json.dump(results, f, indent=2, sort_keys=True, default=str)
+        log("summary", results["passed"], "passed,", results["failed"], "failed")
+    # The compact case fails its command on a failed check (review A13); the older modes keep
+    # their exit status for the scripts that call them.
+    if mode == "compact":
+        sys.exit(76 if stopped_by else (1 if results["failed"] else 0))

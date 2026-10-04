@@ -1,0 +1,337 @@
+import AppKit
+import ApplicationServices
+import CaretHostCore
+import MacContextCapture
+import SwiftUI
+
+/// A borderless, non-activating, click-through panel that never becomes key or main, so the app
+/// being typed in keeps focus and every key keeps going to it.
+final class OverlayPanel: NSPanel {
+    static func make() -> OverlayPanel {
+        let panel = OverlayPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle, .fullScreenAuxiliary]
+        panel.contentView = NSView()
+        return panel
+    }
+
+    /// The activity list holds the ask field, so it may become key while that field is used. It
+    /// stays non-activating: the app the user was in keeps the foreground (`.nonactivatingPanel`).
+    var keyable = false
+    /// Keys the ask field's owner takes before the field editor does: Return, Tab and Esc inside a
+    /// text field are otherwise consumed by AppKit (Tab moves focus, Esc cancels). True: handled.
+    var interceptKey: ((NSEvent) -> Bool)?
+
+    override var canBecomeKey: Bool { keyable }
+    override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, isKeyWindow, let interceptKey, interceptKey(event) { return }
+        super.sendEvent(event)
+    }
+}
+
+/// Takes the first click in a window that is not key, so a button in a panel that never becomes
+/// key works on the first press.
+extension FocusedFieldSnapshot {
+    /// The caret in Accessibility coordinates (global, top-left origin), the space the visibility
+    /// gate, the surfaces and the perch work in. KeyType's resolver returns `caretRect` in AppKit
+    /// coordinates (bottom-left; AXCaretGeometryResolver converts with `cocoaRect`), which only
+    /// its own ghost renderer should read. A9: passed unconverted, the gate tested a point mirrored
+    /// across the main display, found another app's window there, and held every ghost offer in a
+    /// field with text as `covered`.
+    var caretRectAX: CGRect? { caretRect.map { Screen.ax($0) } }
+}
+
+final class FirstMouseHostingView: NSHostingView<AnyView> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+enum Screen {
+    /// Accessibility frames are global, top-left origin on the primary display; AppKit's are
+    /// bottom-left.
+    static func cocoa(_ ax: CGRect) -> NSRect {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSRect(x: ax.minX, y: primaryHeight - ax.maxY, width: ax.width, height: ax.height)
+    }
+
+    static func ax(_ cocoa: NSRect) -> CGRect {
+        ax(cocoa, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+    }
+
+    static func ax(_ cocoa: NSRect, primaryHeight: CGFloat) -> CGRect {
+        CGRect(x: cocoa.minX, y: primaryHeight - cocoa.maxY, width: cocoa.width, height: cocoa.height)
+    }
+
+    static func containing(_ rect: NSRect) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.intersects(rect) } ?? NSScreen.main
+    }
+
+    /// The visible frame of the screen holding an Accessibility rect, in Accessibility coordinates.
+    static func axVisibleFrame(around ax: CGRect) -> CGRect {
+        let screen = containing(cocoa(ax))
+        return Self.ax(screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900))
+    }
+}
+
+/// One SwiftUI surface in an `OverlayPanel` over the system popover material.
+///
+/// The panel keeps one corner pinned (`Anchor`), the corner nearest what it describes, so content
+/// that grows or shrinks (a toast replacing an offer, a reveal adding rows) never moves away from
+/// it, and the entrance scales from that corner.
+@MainActor
+final class HostedPanel {
+    enum Corner { case topLeft, topRight, bottomLeft, bottomRight }
+
+    struct Anchor: Equatable {
+        var corner: Corner
+        /// Cocoa coordinates.
+        var point: NSPoint
+    }
+
+    let panel = OverlayPanel.make()
+    private let material = NSVisualEffectView()
+    private let host: NSHostingView<AnyView> = FirstMouseHostingView(rootView: AnyView(EmptyView()))
+    private(set) var anchor = Anchor(corner: .topLeft, point: .zero)
+    /// What the panel says, for the debug socket.
+    var text = ""
+    private(set) var isExiting = false
+
+    /// `material: false` for decoration drawn straight over the app (the underline and count),
+    /// which has no surface, blur or shadow of its own. `interactive: true` for a panel with
+    /// buttons (the activity list): it takes clicks, still without ever becoming key.
+    init(radius: CGFloat, material hasMaterial: Bool = true, interactive: Bool = false) {
+        panel.ignoresMouseEvents = !interactive
+        host.autoresizingMask = [.width, .height]
+        // The panel sizes the host from its fitting size; no constraints of its own.
+        host.sizingOptions = []
+        if hasMaterial {
+            material.material = .popover
+            material.blendingMode = .behindWindow
+            material.state = .active
+            material.wantsLayer = true
+            material.layer?.cornerRadius = radius
+            material.layer?.cornerCurve = .continuous
+            material.layer?.masksToBounds = true
+            material.autoresizingMask = [.width, .height]
+            material.addSubview(host)
+            panel.contentView = material
+            panel.hasShadow = true
+        } else {
+            host.wantsLayer = true
+            panel.contentView = host
+            bare = true
+        }
+    }
+
+    /// True for a panel with no material: `host` sits directly in the content view.
+    private var bare = false
+
+    var isVisible: Bool { panel.isVisible && !isExiting }
+
+    /// Replaces the content and resizes about the anchor. No animation: content changes come from
+    /// keys (an arrow, a reveal) or from results, which should land at once.
+    func setContent<V: View>(_ view: V) {
+        // Measured on a fresh hosting view: the panel's own host has no sizing constraints (so
+        // AppKit never resizes the panel behind our back), and so reports no fitting size.
+        let size = measure(view)
+        host.rootView = AnyView(view)
+        setFrame(size: size)
+    }
+
+    var size: NSSize { panel.frame.size }
+
+    /// The content's size without placing it, for choosing among placements.
+    func measure<V: View>(_ view: V) -> NSSize {
+        let probe = NSHostingView(rootView: view)
+        return probe.fittingSize
+    }
+
+    func pin(_ anchor: Anchor) {
+        self.anchor = anchor
+        setFrame(size: panel.frame.size)
+    }
+
+    private func setFrame(size: NSSize) {
+        var origin = anchor.point
+        switch anchor.corner {
+        case .topLeft: origin.y -= size.height
+        case .topRight: origin.x -= size.width; origin.y -= size.height
+        case .bottomLeft: break
+        case .bottomRight: origin.x -= size.width
+        }
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        material.frame = NSRect(origin: .zero, size: size)
+        host.frame = NSRect(origin: .zero, size: size)
+    }
+
+    /// Opacity 0 to 1, scale 0.96 to 1 and a 2 pt settle toward the anchor, 160 ms `--ease-out`,
+    /// scaled about the anchored corner. Reduce Motion keeps a 120 ms fade and drops the movement.
+    func enter() {
+        isExiting = false
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        let reduce = Motion.reduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduce ? 0.12 : 0.16
+            context.timingFunction = Motion.caCurve(Motion.easeOut)
+            panel.animator().alphaValue = 1
+        }
+        guard !reduce, let layer = (bare ? host : material).layer else { return }
+        let w = panel.frame.width, h = panel.frame.height
+        // Layer space is bottom-left; the pivot is the anchored corner.
+        let px: CGFloat = (anchor.corner == .topRight || anchor.corner == .bottomRight) ? w : 0
+        let py: CGFloat = (anchor.corner == .topLeft || anchor.corner == .topRight) ? h : 0
+        // Settle 2 pt toward the anchor: from above when pinned at the top, from below otherwise.
+        let settle: CGFloat = py == h ? 2 : -2
+        let start = CATransform3DConcat(
+            CATransform3DMakeTranslation(-px, -py, 0),
+            CATransform3DConcat(CATransform3DMakeScale(0.96, 0.96, 1), CATransform3DMakeTranslation(px, py + settle, 0))
+        )
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = NSValue(caTransform3D: start)
+        animation.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        animation.duration = 0.16
+        animation.timingFunction = Motion.caCurve(Motion.easeOut)
+        layer.add(animation, forKey: "enter")
+    }
+
+    /// Opacity to 0, linear: 100 ms on Esc or timeout, 80 ms on typing, 0 for at once.
+    func exit(duration: TimeInterval) {
+        guard duration > 0, panel.isVisible else {
+            isExiting = false
+            panel.orderOut(nil)
+            return
+        }
+        isExiting = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .linear)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.isExiting else { return }
+                self.isExiting = false
+                self.panel.orderOut(nil)
+            }
+        }
+    }
+
+    func debugInfo() -> DebugState.Panel? {
+        guard panel.isVisible else { return nil }
+        let f = panel.frame
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return DebugState.Panel(
+            windowNumber: panel.windowNumber,
+            frame: [f.minX, primaryHeight - f.maxY, f.width, f.height].map { Double($0) },
+            isKey: panel.isKeyWindow,
+            text: isExiting ? "(exiting) " + text : text
+        )
+    }
+}
+
+/// What a panel would cover: the frames of the app's own elements under each candidate spot,
+/// found by Accessibility hit-testing a grid of points per candidate. Containers (groups, scroll
+/// areas) are empty space; anything else (a field, a label, a button) is in the way, and so is a
+/// window's title bar, which hit-tests as the window itself.
+///
+/// The grid has a row every `rowPitch` points and a column every `columnPitch`, at least two rows
+/// and four columns, so a 28 pt line is probed on its two rows as before and a 170 pt card has no
+/// gap a 16 pt tall or 20 pt wide label could hide in; a narrower label still can. A point inside
+/// an element already found is not asked again, so a wide field costs one hit per row, and a point
+/// outside every one of the app's windows is not asked at all: nothing of the app is there, and in
+/// A10's on-screen run asking about the empty space beside a form cost a full 150 ms grid.
+enum ObstacleProbe {
+    static let rowPitch: CGFloat = 14
+    static let columnPitch: CGFloat = 20
+    /// Per hit-test: an app that does not answer in time is treated as empty there, so a hung app
+    /// cannot stall the main thread for AX's default six seconds.
+    static let messagingTimeout: Float = 0.05
+
+    /// A standard macOS title bar. Assumed: Accessibility exposes no title bar frame, and windows
+    /// with a toolbar or a hidden title bar differ.
+    static let titleBarHeight: CGFloat = 28
+
+    static let containerRoles: Set<String> = ["AXWindow", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXUnknown", "AXSheet"]
+
+    /// Fractions across a span of `length`, the outer two `edge` in from each end and no two more
+    /// than `pitch` points apart.
+    static func fractions(length: CGFloat, pitch: CGFloat, minimum: Int, edge: CGFloat) -> [CGFloat] {
+        let count = max(minimum, Int((length * (1 - 2 * edge) / pitch).rounded(.up)) + 1)
+        return (0..<count).map { edge + (1 - 2 * edge) * CGFloat($0) / CGFloat(count - 1) }
+    }
+
+    static func points(in rect: CGRect) -> [CGPoint] {
+        let columns = fractions(length: rect.width, pitch: columnPitch, minimum: 4, edge: 0.04)
+        // A line keeps the two rows, 20% in, the probe has always used for it.
+        let rows = rect.height > 2 * rowPitch ? fractions(length: rect.height, pitch: rowPitch, minimum: 2, edge: 0.04) : [0.2, 0.8]
+        return rows.flatMap { fy in columns.map { fx in CGPoint(x: rect.minX + rect.width * fx, y: rect.minY + rect.height * fy) } }
+    }
+
+    static func obstacles(pid: pid_t, under candidates: [CGRect]) -> [CGRect] {
+        Session(pid: pid, until: nil).under(candidates) ?? []
+    }
+
+    /// One placement's probing: the app's window frames are read once, and every hit-test stops
+    /// at `until` (uptime nanoseconds).
+    final class Session {
+        let pid: pid_t
+        let deadline: UInt64?
+        private let app: AXUIElement
+        /// Points outside these frames are not asked. Nil when the list could not be read whole,
+        /// within the deadline: then every point is asked, as before.
+        private lazy var windows: [CGRect]? = readWindows()
+
+        init(pid: pid_t, until deadline: UInt64?) {
+            self.pid = pid
+            self.deadline = deadline
+            app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        }
+
+        private var expired: Bool { deadline.map { DispatchTime.now().uptimeNanoseconds > $0 } ?? false }
+
+        private func readWindows() -> [CGRect]? {
+            var frames: [CGRect] = []
+            for window in AXRead.elements(kAXWindowsAttribute, on: app) {
+                // A window whose frame cannot be read could hold the point: skip no point then.
+                guard !expired, let frame = AXRead.frame(of: window) else { return nil }
+                frames.append(frame)
+            }
+            return frames.isEmpty ? nil : frames
+        }
+
+        /// The frames of the app's elements under `candidates`; nil when some point was never
+        /// asked, so a slow app's half-probed spot is not taken for a clear one.
+        func under(_ candidates: [CGRect]) -> [CGRect]? {
+            if expired { return nil }
+            let windows = self.windows
+            var found: [CGRect] = []
+            for rect in candidates {
+                for point in points(in: rect) where !found.contains(where: { $0.contains(point) }) {
+                    if let windows, !windows.contains(where: { $0.contains(point) }) { continue }
+                    if expired { return nil }
+                    var hit: AXUIElement?
+                    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
+                          let hit, AXRead.pid(of: hit) == pid else { continue }
+                    let role = AXRead.string(kAXRoleAttribute, on: hit) ?? "AXUnknown"
+                    if role == "AXWindow", let window = AXRead.frame(of: hit), point.y < window.minY + titleBarHeight {
+                        let bar = CGRect(x: window.minX, y: window.minY, width: window.width, height: titleBarHeight)
+                        if !found.contains(bar) { found.append(bar) }
+                        continue
+                    }
+                    guard !containerRoles.contains(role), let frame = AXRead.frame(of: hit) else { continue }
+                    if !found.contains(frame) { found.append(frame) }
+                }
+            }
+            return found
+        }
+    }
+}
