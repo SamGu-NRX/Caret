@@ -102,14 +102,21 @@ public struct SkillFields: Codable, Equatable, Sendable {
     public var onItsOwn: Bool
     /// A press the skill always leaves to the user, such as Send. A skill with one never runs on its own.
     public var handsOff: HandsOff?
+    /// The write rules its clean runs in a row wrote under, each once (protocol.ts SkillFields.wrote).
+    public var wrote: [WriteRule]
 
-    enum CodingKeys: String, CodingKey { case routineId, name, trigger, runs, cleanRuns, needed, onItsOwn, handsOff }
+    /// The two rules a skill's runs write under: in the window the user is in, or in another.
+    public enum WriteRule: String, Codable, Sendable { case writeHere, writeElsewhere }
+
+    enum CodingKeys: String, CodingKey { case routineId, name, trigger, runs, cleanRuns, needed, onItsOwn, handsOff, wrote }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         routineId = try c.decode(String.self, forKey: .routineId); name = try c.decode(String.self, forKey: .name)
         trigger = try c.decode(String.self, forKey: .trigger); runs = try c.decode(Int.self, forKey: .runs)
         cleanRuns = try c.decode(Int.self, forKey: .cleanRuns); needed = try c.decode(Int.self, forKey: .needed)
         onItsOwn = try c.decode(Bool.self, forKey: .onItsOwn); handsOff = try c.decodeNullable(HandsOff.self, forKey: .handsOff)
+        wrote = try c.decode([WriteRule].self, forKey: .wrote)
+        if Set(wrote).count != wrote.count { throw ProtocolError("a skill's wrote names a rule twice") }
         if runs < 0 || cleanRuns < 0 || needed < 1 { throw ProtocolError("skill counts are never negative, and it needs at least one clean run") }
         if onItsOwn && handsOff != nil { throw ProtocolError("a skill that hands a press to the user never runs on its own") }
     }
@@ -117,7 +124,7 @@ public struct SkillFields: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(routineId, forKey: .routineId); try c.encode(name, forKey: .name); try c.encode(trigger, forKey: .trigger)
         try c.encode(runs, forKey: .runs); try c.encode(cleanRuns, forKey: .cleanRuns); try c.encode(needed, forKey: .needed)
-        try c.encode(onItsOwn, forKey: .onItsOwn); try c.encode(handsOff, forKey: .handsOff)
+        try c.encode(onItsOwn, forKey: .onItsOwn); try c.encode(handsOff, forKey: .handsOff); try c.encode(wrote, forKey: .wrote)
     }
 }
 
@@ -160,6 +167,8 @@ public struct MemoryEntry: Codable, Equatable, Sendable {
         evidence = try c.decode(Evidence.self, forKey: .evidence); fields = try c.decode(JSON.self, forKey: .fields)
         uses = try c.decodeOptional(JSON.self, forKey: .uses)
         skill = kind == .skill ? try c.decode(SkillFields.self, forKey: .fields) : nil
+        // Only a skill says what it wrote, as protocol.ts refuses `wrote` in any other kind's fields.
+        if kind != .skill, case .object(let o) = fields, o["wrote"] != nil { throw ProtocolError("only a skill's fields say what it wrote; this is a \(kind.rawValue)") }
         if let s = skill, (s.onItsOwn ? Status.active : Status.learning) != status, status != .paused {
             throw ProtocolError("skill \(id) is \(status.rawValue), but its fields say \(s.onItsOwn ? "active" : "learning")")
         }

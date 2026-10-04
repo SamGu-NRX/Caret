@@ -1016,6 +1016,10 @@ export type PressRisk = z.infer<typeof PressRisk>;
  * the naming check (patterns/naming.ts: at most six words, names the destination app or a field, holds
  * no value seen in the routine) or the user typed it.
  */
+/** The two write rules a skill's runs can write under (B19): in the window the user is in, or in another. */
+export const WriteRule = z.enum(["writeHere", "writeElsewhere"]);
+export type WriteRule = z.infer<typeof WriteRule>;
+
 export const SkillFields = z.object({
   routineId: z.string().min(1),
   name: z.string().min(1).max(80),
@@ -1031,6 +1035,12 @@ export const SkillFields = z.object({
   onItsOwn: z.boolean(),
   /** A press the skill always leaves to the user, such as Send. A skill with one is never run on its own. */
   handsOff: z.object({ label: z.string().min(1), why: PressRisk }).nullable(),
+  /**
+   * The write rules its clean runs in a row wrote under, each once: what running it on its own would do unasked. The
+   * host's permissions page lists the skill under each (A16; the host's memory.ndjson host-memory-7). Empty after any
+   * reset.
+   */
+  wrote: z.array(WriteRule).refine((w) => new Set(w).size === w.length, "wrote names a rule twice"),
 });
 
 /** How a use of a permission ended: done; handed off to the user; stopped partway; or tried and failed. */
@@ -1055,13 +1065,15 @@ const entryBase = {
   says: z.string(),
   evidence: z.object({ count: z.number().int().nonnegative(), lastSeen: ms, app: z.string().nullable() }),
 };
+/** Only a skill says what it wrote: the key is refused in any other kind's fields, not dropped. */
+const notWrote = { wrote: z.never().optional() };
 export const MemoryEntry = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("about"), ...entryBase, fields: AboutFields }),
-  z.object({ kind: z.literal("people"), ...entryBase, fields: PeopleFields }),
-  z.object({ kind: z.literal("preference"), ...entryBase, fields: PreferenceFields }),
-  z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields }),
+  z.object({ kind: z.literal("about"), ...entryBase, fields: AboutFields.extend(notWrote) }),
+  z.object({ kind: z.literal("people"), ...entryBase, fields: PeopleFields.extend(notWrote) }),
+  z.object({ kind: z.literal("preference"), ...entryBase, fields: PreferenceFields.and(z.object(notWrote)) }),
+  z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields.extend(notWrote) }),
   /** `uses`: the permission's last MAX_PERMISSION_USES uses, newest first; this helper always sends it, empty when none. */
-  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields, uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
+  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields.extend(notWrote), uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
   /**
    * Status: `learning` while it runs on Tab, `active` once it runs on its own, `paused` when the user paused
    * it. A skill that hands a press to the user never runs on its own. CaretScreenCore's MemoryEntry refuses

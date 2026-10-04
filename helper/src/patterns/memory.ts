@@ -130,8 +130,6 @@ export interface RoutineRecord {
 const SkillJson = SkillFields.extend({
   /** The "on its own" offer: never made or expired unanswered (null), out now, or declined, which is never asked again. */
   promote: z.enum(["offered", "declined"]).nullable(),
-  /** The permissions the skill's clean runs in a row wrote under (writeHere, writeElsewhere): what promoting it would let it do unasked. */
-  wrote: z.array(z.enum(["writeHere", "writeElsewhere"])),
   /**
    * The user put it back on Tab (B22 lead decision): Caret never makes the promote offer for it on its own
    * again; only the user's request from the skill's row (memoryRequest offerOnItsOwn) does. Absent on rows
@@ -782,7 +780,8 @@ export class MemoryStore {
         return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}`, uses: this.uses(f.action) };
       }
       case "skill": {
-        const { promote: _p, wrote: _w, putBack: _b, ...f } = SkillJson.parse(this.fields(r));
+        // `wrote` goes to the host too, for its permissions page (A16); the promote state and putBack stay here.
+        const { promote: _p, putBack: _b, ...f } = SkillJson.parse(this.fields(r));
         const status: MemoryStatus = paused ? "paused" : f.onItsOwn ? "active" : "learning";
         const how = paused
           ? "paused"

@@ -515,6 +515,7 @@ private func goldenLines() throws -> [Data] {
         #expect(skills.count == 2)
         #expect(skills[0].fields.name == "Subject and To into Mail Fixture" && skills[0].fields.cleanRuns == 10 && skills[0].fields.handsOff == nil)
         #expect(skills[1].fields.handsOff == SkillFields.HandsOff(label: "Send", why: .outbound))
+        #expect(skills[0].fields.wrote == [.writeElsewhere] && skills[1].fields.wrote == [.writeHere])
         #expect(reply.entries[2].kind == .routine && reply.entries[2].skill == nil)
         #expect(started.unprompted == true && done.unprompted == true && done.written == 3)
     }
@@ -532,6 +533,22 @@ private func goldenLines() throws -> [Data] {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[47], #""accept""#, #""later""#)) }
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[52], #""unprompted":true"#, #""unprompted":false"#)) }
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[48], #""onItsOwn":false,"handsOff":{"#, #""onItsOwn":true,"handsOff":{"#)) }
+        // B23: a skill says what it wrote, each rule once; no other kind says it.
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[48], #","wrote":["writeHere"]"#, "")) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[48], #""wrote":["writeHere"]"#, #""wrote":["writeHere","writeHere"]"#)) }
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: swap(lines[48], #""srcApps":["#, #""wrote":[],"srcApps":["#)) }
+    }
+
+    /// The host's contract line for its permissions page (v2/host memory.ndjson host-memory-7, the last line of
+    /// helper/fixtures/golden/memory.ndjson): a skill's fields carry `wrote`.
+    @Test func readsTheHostsSkillLineWithWrote() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("helper/fixtures/golden/memory.ndjson")
+        let last = try #require(try String(contentsOf: url, encoding: .utf8).split(separator: "\n").last)
+        guard case .memoryReply(let reply) = try JSONDecoder().decode(Message.self, from: Data(last.utf8)) else { Issue.record("not a memoryReply"); return }
+        #expect(reply.skills.map(\.fields.wrote) == [[.writeElsewhere]])
+        let again = try JSONSerialization.jsonObject(with: try NDJSON.encoder().encode(Message.memoryReply(reply))) as! NSDictionary
+        #expect(again == (try JSONSerialization.jsonObject(with: Data(last.utf8)) as! NSDictionary))
     }
 
     @Test func rejectsAWrongVersionAndAnUnknownType() {

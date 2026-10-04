@@ -2378,6 +2378,9 @@
                               "typed",
                               "edit"
                             ]
+                          },
+                          "wrote": {
+                            "not": {}
                           }
                         },
                         "required": [
@@ -2459,6 +2462,9 @@
                             "type": "string",
                             "minLength": 1,
                             "maxLength": 200
+                          },
+                          "wrote": {
+                            "not": {}
                           }
                         },
                         "required": [
@@ -2532,6 +2538,9 @@
                           {
                             "type": "object",
                             "properties": {
+                              "wrote": {
+                                "not": {}
+                              },
                               "rule": {
                                 "type": "string",
                                 "const": "format"
@@ -2554,6 +2563,9 @@
                           {
                             "type": "object",
                             "properties": {
+                              "wrote": {
+                                "not": {}
+                              },
                               "rule": {
                                 "type": "string",
                                 "const": "useInstead"
@@ -2575,6 +2587,9 @@
                           {
                             "type": "object",
                             "properties": {
+                              "wrote": {
+                                "not": {}
+                              },
                               "rule": {
                                 "type": "string",
                                 "const": "dontOffer"
@@ -2706,6 +2721,9 @@
                               "misses"
                             ],
                             "additionalProperties": false
+                          },
+                          "wrote": {
+                            "not": {}
                           }
                         },
                         "required": [
@@ -2803,6 +2821,9 @@
                           },
                           "fixed": {
                             "type": "boolean"
+                          },
+                          "wrote": {
+                            "not": {}
                           }
                         },
                         "required": [
@@ -2975,6 +2996,16 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "wrote": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "writeHere",
+                                "writeElsewhere"
+                              ]
+                            }
                           }
                         },
                         "required": [
@@ -2985,7 +3016,8 @@
                           "cleanRuns",
                           "needed",
                           "onItsOwn",
-                          "handsOff"
+                          "handsOff",
+                          "wrote"
                         ],
                         "additionalProperties": false
                       }

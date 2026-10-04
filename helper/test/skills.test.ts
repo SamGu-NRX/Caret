@@ -383,6 +383,19 @@ describe("skills in the helper", () => {
     expect(asked).toHaveLength(1);
   });
 
+  it("sends each skill's wrote, in the host's shape (memory.ndjson's last line), and empties it when the skill goes back on Tab", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    await keep();
+    const r = await caretRun();
+    finish(r);
+    const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/memory.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { entries?: { fields: Record<string, unknown> }[] });
+    const hostFields = golden.at(-1)?.entries?.[0]?.fields ?? {};
+    const [skill] = skills();
+    expect(skill!.fields.wrote).toEqual(["writeElsewhere"]);
+    expect(Object.keys(skill!.fields).sort()).toEqual(Object.keys(hostFields).sort());
+    expect(ask("edit", { id: skill!.id, fields: { onItsOwn: false } }).entries[0]).toMatchObject({ fields: { wrote: [] } });
+  });
+
   it("keeps the first name: a keep offer made while Jev's answer is on its way shows code's name, and the late answer changes nothing", async () => {
     let release: () => void = () => undefined;
     namingHeld = new Promise<void>((r) => (release = r));
