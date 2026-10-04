@@ -470,6 +470,45 @@ describe("skills in the helper", () => {
     expect(needsTab.progress.every((p) => p.unprompted === undefined)).toBe(true);
   });
 
+  /** Kept, ten clean runs, and the promote offer accepted: the skill runs on its own from the next trigger. */
+  const promoted = async (): Promise<string> => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await keep();
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    expect(skills()[0]).toMatchObject({ status: "active", fields: { onItsOwn: true } });
+    return skillId;
+  };
+  const undoOf = (taskId: string) => helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action: "undo" });
+
+  // S1 audit #15: before B22 the skill went back on Tab only after the restore returned.
+  it("puts a skill back on Tab the moment its undo is asked for, before the first restore lands", async () => {
+    await promoted();
+    const own = await caretRun();
+    expect(own.offer).toBeNull();
+    const during: string[] = [];
+    desk.afterWrite = () => during.push(skills()[0]!.status);
+    expect(await undoOf(own.progress[0]!.taskId)).toMatchObject({ restored: 3 });
+    desk.afterWrite = null;
+    expect(during).toEqual(["learning", "learning", "learning"]);
+    finish(own);
+  });
+
+  it("puts a skill back on Tab when its undo is refused, as after a reader restart (S1 audit #15)", async () => {
+    await promoted();
+    const own = await caretRun();
+    expect(own.offer).toBeNull();
+    finish(own);
+    void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "restarted" });
+    const errors = sent.length;
+    expect(await undoOf(own.progress[0]!.taskId)).toBeNull();
+    expect(since("error", errors)[0]?.message).toMatch(/earlier reader session/);
+    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+  });
+
   it("resets on a take over, and never offers again after a declined promote offer", async () => {
     frontmost = "mail";
     await keep();

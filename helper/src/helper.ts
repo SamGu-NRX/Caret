@@ -888,12 +888,12 @@ export class Helper {
       switch (m.action) {
         case "resume":
           return await this.executor.resume(m.taskId);
-        case "undo": {
-          const undone = await this.executor.undo(m.taskId);
-          // Undoing a skill's run resets its clean runs and puts it back on Tab (B19).
+        case "undo":
+          // Asking to undo a skill's run resets its clean runs and puts it back on Tab (B19), before the restore
+          // is awaited: a restore that is refused or fails (a reader restart since the run, S1 audit #15) must
+          // not leave the skill running on its own.
           this.patterns.skills.reversed(m.taskId, this.now());
-          return undone;
-        }
+          return await this.executor.undo(m.taskId);
         case "pause":
         case "takeOver":
           // The run's own promise resolves as paused at the next step boundary.
