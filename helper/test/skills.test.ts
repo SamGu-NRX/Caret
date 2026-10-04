@@ -1,8 +1,9 @@
 // B19: Caret names a proven routine, offers once to keep it as a skill, counts the skill's clean runs,
 // and after PROMOTE_AFTER of them offers to run it without a Tab. Everything here is synthetic.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
@@ -537,6 +538,58 @@ describe("skills in the helper", () => {
     expect(desk.pressed).toEqual([]);
     expect(desk.verbs.some((v) => v.kind === "press")).toBe(false);
     expect(buttonKey(compose(1, buttons), "Send")).toMatch(/button:send~0$/);
+  });
+
+  it("puts a skill that runs on its own back on Tab when the host asks, and never lets an edit make one run on its own (B21)", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await keep();
+    // An edit cannot grant autonomy, before or after the offer.
+    expect(ask("edit", { id: skillId, fields: { onItsOwn: true } }).error).toMatch(/only after you accept Caret's offer/);
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    expect(skills()[0]!.fields).toMatchObject({ onItsOwn: true });
+    const own = await caretRun();
+    finish(own);
+    expect(own.offer).toBeNull();
+    // The host's line (fixtures/golden/memory.ndjson host-memory-6), sent for this skill.
+    const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/memory.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const line = golden.find((l) => l.requestId === "host-memory-6" && l.type === "memoryRequest")!;
+    const want = golden.find((l) => l.requestId === "host-memory-6" && l.type === "memoryReply") as unknown as MemoryReply;
+    const reply = helper.handleMemory(ConsumerMessage.parse({ ...line, id: skillId }) as Parameters<typeof helper.handleMemory>[0]);
+    expect(reply.error).toBeNull();
+    expect(reply.entries[0]).toMatchObject({ kind: "skill", id: skillId, status: want.entries[0]!.status, fields: { onItsOwn: false, cleanRuns: 0, needed: PROMOTE_AFTER } });
+    expect(reply.entries[0]?.says).toMatch(/asks first; 0 of 10 clean runs in a row\)$/);
+    // The next run needs Tab, and the count starts again from there.
+    const needsTab = await caretRun();
+    finish(needsTab);
+    expect(needsTab.offer).not.toBeNull();
+    expect(needsTab.progress.every((p) => p.unprompted === undefined)).toBe(true);
+    expect(skills()[0]!.fields).toMatchObject({ onItsOwn: false, cleanRuns: 1 });
+    // Still never through an edit, and an edit that names nothing is refused.
+    expect(ask("edit", { id: skillId, fields: { onItsOwn: true } }).error).toMatch(/only after you accept Caret's offer/);
+    expect(ask("edit", { id: skillId, fields: {} }).error).toMatch(/changes its name or puts it back on Tab/);
+    expect(skills()[0]!.fields.onItsOwn).toBe(false);
+  });
+
+  it("withdraws a promote offer still out when the skill is put back on Tab (B21)", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await keep();
+    let promote: SkillOffer | undefined;
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      promote = r.skillOffers.find((o) => o.kind === "promote") ?? promote;
+    }
+    expect(promote).toBeDefined();
+    expect(ask("edit", { id: skillId, fields: { onItsOwn: false } }).error).toBeNull();
+    expect(sent.some((m) => m.type === "offerWithdrawn" && m.id === promote!.id && m.reason === "stale")).toBe(true);
+    expect(skills()[0]!.fields).toMatchObject({ onItsOwn: false, cleanRuns: 0 });
+    // Accepting the withdrawn offer is refused and changes nothing.
+    answer(promote!, "accept");
+    expect(skills()[0]!.fields.onItsOwn).toBe(false);
   });
 
   it("forgets a skill without relearning the keep offer, pauses its offers with it, and renames it", async () => {

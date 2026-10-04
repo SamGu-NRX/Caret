@@ -706,6 +706,7 @@ export class PatternEngine {
           const e = memory.edit(m.id, m.fields, now);
           // A typed entry is found by its label, so a renamed one answers to its new label.
           if (e.kind === "about" && e.fields.source === "typed") memory.rekey(e.id, typedMatch(e.fields.label));
+          if (e.kind === "skill" && m.fields.onItsOwn === false) this.skills.backOnTab(e.id);
           this.withdrawDependents(m.id);
           return reply([e]);
         }

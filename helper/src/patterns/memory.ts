@@ -330,9 +330,19 @@ export class MemoryStore {
         break;
       }
       case "skill": {
-        const e = parseEdit(z.strictObject({ name: z.string().trim().min(1).max(80) }), raw);
-        if (ONE_LINE_BREAKS.test(e.name)) throw new MemoryError("invalid edit: a skill's name must be one line of text");
-        next = { ...SkillJson.parse(fields), name: e.name };
+        // The user can always take a skill's autonomy back (the host's "Put back on Tab": onItsOwn false), never
+        // grant it here: running on its own comes only from accepting Caret's promote offer (B21).
+        if (raw.onItsOwn === true) throw new MemoryError("a skill runs on its own only after you accept Caret's offer; an edit can only put it back on Tab");
+        const e = parseEdit(
+          z.strictObject({ name: z.string().trim().min(1).max(80).optional(), onItsOwn: z.literal(false).optional() }).refine((x) => x.name !== undefined || x.onItsOwn !== undefined, "a skill edit changes its name or puts it back on Tab"),
+          raw,
+        );
+        if (e.name !== undefined && ONE_LINE_BREAKS.test(e.name)) throw new MemoryError("invalid edit: a skill's name must be one line of text");
+        const s = SkillJson.parse(fields);
+        // Back on Tab as after a failed run (skills.ts reset): the clean count starts again, and a declined promote
+        // offer stays declined; otherwise Caret may offer again after another PROMOTE_AFTER clean runs.
+        const back = e.onItsOwn === false ? { onItsOwn: false, cleanRuns: 0, wrote: [], promote: s.promote === "declined" ? ("declined" as const) : null } : {};
+        next = { ...s, ...(e.name === undefined ? {} : { name: e.name }), ...back };
         break;
       }
       case "permission": {

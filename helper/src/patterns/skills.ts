@@ -254,6 +254,14 @@ export class Skills {
     if (s !== null) this.reset(s, at);
   }
 
+  /**
+   * The user put the skill back on Tab (memoryRequest edit onItsOwn false; memory.ts resets its fields): a promote
+   * offer still out for it is withdrawn, and its next run needs Tab.
+   */
+  backOnTab(skillId: string): void {
+    for (const o of [...this.offers.values()]) if (o.msg.kind === "promote" && o.msg.skillId === skillId) this.close(o, "stale");
+  }
+
   /** Any failure, mismatch, undo or take over: the count starts again and the skill goes back on Tab. A declined promote offer stays declined. */
   private reset(s: SkillRecord, at: number): void {
     for (const o of [...this.offers.values()]) if (o.msg.kind === "promote" && o.msg.skillId === s.id) this.close(o, "stale");
