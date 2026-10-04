@@ -53,6 +53,7 @@ private func goldenLines() throws -> [Data] {
             case .memoryReply: "memoryReply"
             case .userPress: "userPress"
             case .helperAuth: "helperAuth"
+            case .pageEngine: "pageEngine"
             }
         }
         #expect(kinds == ["hello", "snapshot", "focus", "appSwitch", "windowClosed", "pasteboard", "fillRequest", "fillProposal", "error",
@@ -68,7 +69,8 @@ private func goldenLines() throws -> [Data] {
                           "readerCommand", "userPress",
                           "planRequest", "planProposal", "userPress",
                           "skillOffer",
-                          "hello", "helperAuth", "hello", "readerCommand", "verbResult", "readerCommand", "verbResult"])
+                          "hello", "helperAuth", "hello", "readerCommand", "verbResult", "readerCommand", "verbResult",
+                          "pageEngine", "pageEngine"])
     }
 
     @Test func readsB23sHelloFieldsProofMarksAndRefusals() throws {
@@ -111,6 +113,19 @@ private func goldenLines() throws -> [Data] {
         let long = String(repeating: "\u{1F469}\u{200D}\u{1F4BB}", count: 17)
         #expect(long.count == 17 && long.utf16.count == 85)
         let bad = line.replacingOccurrences(of: #""name":"\#(offer.name)""#, with: #""name":"\#(long)""#)
+        #expect(bad != line)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+    }
+
+    /// W2: the host's signal that Caret cannot see a browser's pages yet, then that it can.
+    @Test func readsThePageEngineState() throws {
+        let lines = try goldenLines()
+        guard case .pageEngine(let missing) = try JSONDecoder().decode(Message.self, from: lines[66]),
+              case .pageEngine(let connected) = try JSONDecoder().decode(Message.self, from: lines[67]) else { Issue.record("lines 67 and 68 are not pageEngine"); return }
+        #expect(missing == PageEngineState(at: 1_790_000_900_000, browser: AppRef(pid: 6100, bundleId: "com.google.Chrome", name: "Google Chrome"), state: .missing))
+        #expect(connected.state == .connected && connected.browser == missing.browser)
+        let line = String(decoding: lines[66], as: UTF8.self)
+        let bad = line.replacingOccurrences(of: #""state":"missing""#, with: #""state":"maybe""#)
         #expect(bad != line)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
     }

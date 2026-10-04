@@ -1,1 +1,0 @@
-B18 planner: asks only about fields the instruction names unless asksToFillForm (no field named: nothingToDo); PlanErrorCode gained wrongKind, which v2/host's exhaustive planError switch needs a sentence for.

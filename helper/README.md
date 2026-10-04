@@ -11,7 +11,7 @@ pnpm schema      # regenerate schemas/screen-protocol.schema.json after editing 
 
 Node 24 or later; the store uses the built-in `node:sqlite`.
 
-`src/launch.ts` starts the helper and `caret-screen` with one launch secret, handed to each on its standard input (`--auth-fd 0`). The reader sends nothing and acts on nothing until the helper answers its challenge with that secret (`helperAuth`; the reader's README has the threat model). `node src/main.ts` alone runs a helper that no current reader will talk to.
+`src/launch.ts` starts the helper and `caret-screen` with one launch secret, handed to each on its standard input (`--auth-fd 0`). The reader sends nothing and acts on nothing until the helper answers its challenge with that secret (`helperAuth`; the reader's README has the threat model). `node src/main.ts` alone runs a helper that no current reader will talk to. With the launch secret the helper also listens on `page.sock` beside the screen socket for the page engines (`caret-bridge`), whose handshake uses a key derived from that secret (`src/engines/auth.ts`); `--no-page` turns it off, and without `--auth-fd` it is not started.
 
 ## Protocol
 

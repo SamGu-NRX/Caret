@@ -1,1 +1,0 @@
-swift test under heavy.sh peaks at 0.25-0.44 GB RSS (/usr/bin/time -l, B18); a 6 GiB lease estimate is refused below ~17 GiB free disk, so ask for 2 GiB.

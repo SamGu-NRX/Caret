@@ -64,3 +64,5 @@
 {"type":"verbResult","v":1,"id":"cmd-6","at":1790000900100,"outcome":"focusMoved","detail":"focus is on another field of the window"}
 {"type":"readerCommand","v":1,"id":"cmd-7","expires":1790000901000,"verb":{"kind":"write","pid":5150,"windowId":"5150-7","key":"dev.caret.fixture/standard/textfield:name~0","role":"AXTextField","attribute":"value","expect":"Dana Whitfield","value":"","taskId":"offer-15","sameAs":"8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60"}}
 {"type":"verbResult","v":1,"id":"cmd-7","at":1790000901100,"outcome":"notSameElement","detail":"another element now has this key"}
+{"type":"pageEngine","v":1,"at":1790000900000,"browser":{"pid":6100,"bundleId":"com.google.Chrome","name":"Google Chrome"},"state":"missing"}
+{"type":"pageEngine","v":1,"at":1790000930000,"browser":{"pid":6100,"bundleId":"com.google.Chrome","name":"Google Chrome"},"state":"connected"}

@@ -87,6 +87,16 @@ export interface HelperOptions {
   /** Replaces the socket link to the reader, for tests that simulate the reader in process. */
   readerLink?: ReaderLink;
   /**
+   * The reader's socket link when `readerLink` wraps it (the page engines' RoutedReaderLink, main.ts): the reader's
+   * verbResults are answered here, and a reader counts as connected only from its hello, as without `readerLink`.
+   */
+  readerAnswers?: SocketReaderLink;
+  /**
+   * Whether a page engine is connected for this browser process (engines/registry.ts forBrowser). A reader focus in
+   * such a browser then asks for no fill: that browser's pages are filled from the page engine (engines/page-focus.ts).
+   */
+  pageCovers?: (pid: number) => boolean;
+  /**
    * Where calendar end states are written: a port, "reader" for the reader's EventKit adapter over the
    * same link the executor acts through (ReaderCalendar), or null for none.
    */
@@ -270,7 +280,7 @@ export class Helper {
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) }, opts.offersPerHour ?? null);
-    this.readerConnected = opts.readerLink !== undefined;
+    this.readerConnected = opts.readerLink !== undefined && opts.readerAnswers === undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
     // Recorded once the request has gone and been answered, or as failed: a client that throws before
@@ -474,9 +484,18 @@ export class Helper {
     return null;
   }
 
+  private readonly readerListeners = new Set<(m: ReaderMessage) => void>();
+
+  /** Sees every reader message before the helper handles it (the page engines' presence signal, main.ts). Returns the way to stop. */
+  onReaderMessage(l: (m: ReaderMessage) => void): () => void {
+    this.readerListeners.add(l);
+    return () => this.readerListeners.delete(l);
+  }
+
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
   handleReader(m: ReaderMessage): Promise<FillProposal | null> | null {
     const store = this.opts.store;
+    for (const l of this.readerListeners) l(m);
     switch (m.type) {
       case "hello":
         // A new reader numbers windows from scratch and walks everything again, so the old session's
@@ -553,7 +572,9 @@ export class Helper {
           this.openApp.onFocus(m);
           this.onFillFocus(m);
         }
-        const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus);
+        // A browser with a page engine is filled from the engine's own page window, not from Accessibility's view of it.
+        const pageCovered = !m.windowId.startsWith("page:") && this.opts.pageCovers?.(m.app.pid) === true;
+        const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus) && !pageCovered;
         if (!triggers || m.key === null) return null;
         return this.fill(m.windowId, m.key, false);
       }
@@ -583,7 +604,7 @@ export class Helper {
         store.count("reader.pasteboard_change", 1, m.at);
         return null;
       case "verbResult":
-        this.socketLink?.answer(m);
+        (this.socketLink ?? this.opts.readerAnswers)?.answer(m);
         return null;
       case "userInput":
         this.executor.onUserInput(m);

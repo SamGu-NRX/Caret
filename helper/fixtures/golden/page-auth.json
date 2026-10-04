@@ -1,0 +1,10 @@
+{
+  "about": "W1, on B23's scheme since I1: the bridge handshake both sides must agree on (helper/src/engines/auth.ts, bridge CaretPageProtocol/Auth.swift). launchSecret is the launcher's 32 bytes; secret is the page key derived from it, HMAC-SHA256(launchSecret, 'caret-page-key'), the raw 32 bytes the hex names. Proofs are lowercase hex HMAC-SHA256; the helper's names its pid.",
+  "launchSecret": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+  "secret": "5173ceb2b6a5dbd8a830dfaef7934558bfde23fd5a8607eafdfef99f413c5afa",
+  "challenge": "1111111111111111111111111111111111111111111111111111111111111111",
+  "bridgeNonce": "2222222222222222222222222222222222222222222222222222222222222222",
+  "bridgeProof": "81b5d7ce7f29337e93e32c33cd41382b382f906c8268e0004a4d9f686bbbb395",
+  "helperPid": "4242",
+  "helperProof": "90f2b7aa602efb9566eb1b6a68ff60b123fe79497979e9e525b1c4152f759e48"
+}

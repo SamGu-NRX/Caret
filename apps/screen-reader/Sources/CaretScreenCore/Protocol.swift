@@ -1046,6 +1046,7 @@ public enum Message: Codable, Equatable, Sendable {
     case planRequest(PlanRequest), planProposal(PlanProposal), calendarGrant(CalendarGrant)
     case skillOffer(SkillOffer), skillAnswer(SkillAnswer), memoryReply(MemoryReply), userPress(UserPress)
     case helperAuth(HelperAuth)
+    case pageEngine(PageEngineState)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -1085,6 +1086,7 @@ public enum Message: Codable, Equatable, Sendable {
         case MemoryReply.type: self = .memoryReply(try MemoryReply(from: decoder))
         case UserPress.type: self = .userPress(try UserPress(from: decoder))
         case HelperAuth.type: self = .helperAuth(try HelperAuth(from: decoder))
+        case PageEngineState.type: self = .pageEngine(try PageEngineState(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -1126,6 +1128,7 @@ public enum Message: Codable, Equatable, Sendable {
         case .memoryReply(let m): try m.encode(to: encoder)
         case .userPress(let m): try m.encode(to: encoder)
         case .helperAuth(let m): try m.encode(to: encoder)
+        case .pageEngine(let m): try m.encode(to: encoder)
         }
     }
 }

@@ -1,1 +1,0 @@
-TextEdit cannot host a B19 routine: a shape is (source template, part, destination template) with no positions, a document is one text area, values copied from list lines share one source template, and engine.plan writes one value per field (B20).

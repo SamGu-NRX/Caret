@@ -34,6 +34,7 @@ describe("golden protocol fixture", () => {
       "planRequest", "planProposal", "userPress",
       "skillOffer",
       "hello", "helperAuth", "hello", "readerCommand", "verbResult", "readerCommand", "verbResult",
+      "pageEngine", "pageEngine",
     ]);
   });
 
@@ -54,6 +55,16 @@ describe("golden protocol fixture", () => {
     const verb = (write as { verb: Record<string, unknown> }).verb;
     expect(HelperToReader.safeParse({ ...write, verb: { ...verb, sameAs: "x" } }).success).toBe(false);
     expect(HelperToReader.safeParse({ ...write, verb: { ...verb, mark: "" } }).success).toBe(false);
+  });
+
+  it("carries W2's page engine state for the host: a browser Caret cannot see yet, then the same browser connected", () => {
+    const [missing, connected] = lines.slice(66, 68).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(HelperMessage.parse(missing)).toEqual({ type: "pageEngine", v: 1, at: 1790000900000, browser: { pid: 6100, bundleId: "com.google.Chrome", name: "Google Chrome" }, state: "missing" });
+    expect(HelperMessage.parse(connected)).toMatchObject({ type: "pageEngine", state: "connected" });
+    for (const bad of [{ ...missing, state: "unknown" }, { ...missing, browser: undefined }, { ...missing, v: 2 }]) expect(HelperMessage.safeParse(bad).success).toBe(false);
+    // A host message only: neither the reader nor a consumer may send it.
+    expect(ReaderMessage.safeParse(missing).success).toBe(false);
+    expect(ConsumerMessage.safeParse(missing).success).toBe(false);
   });
 
   it("carries B21's planRequest window, named as a host knows it, and the error for a window the reader has not read", () => {

@@ -1,0 +1,16 @@
+# Caret for Chrome
+
+The MV3 extension that is Caret's page engine: a second reader, beside the Swift Accessibility reader, for web content (`~/.caret-run/plans/browser-layer.md`). Same build for Chrome and Helium.
+
+- `src/content.ts`: the content script, in every http(s) frame and the about:blank and srcdoc frames they own. Dormant until the worker asks: no observer, no timer, and one focusin listener that tells the worker only that focus moved in a visible, focused document. It walks controls only (`content/walker.ts`), drops excluded controls by code before anything leaves the frame, keeps each element in a per-frame `WeakRef` registry (`content/registry.ts`), and performs the act the worker hands it after its own recheck (`content/actions.ts`).
+- `src/content/combobox.ts`: `pageChooseOption` for generic ARIA comboboxes and react-select. It is the one place a page press is made: only on the control it was given and that control's own listbox options, each stage behind a grant-liveness question to the worker, and the pick verified by the control's shown text, react-select's hidden input and `aria-expanded=false`. Option matching is `shared/choose.ts`: exactly one option whose normalized name equals the value, or a stop that names the candidates.
+- `src/content/attach.ts`: `pageAttachFile` through `DataTransfer`, into a file input or dropped on a dropzone, verified by `input.files[0]` and by the page now showing the file's name. The worker checks the bytes against the verb's size and SHA-256 before any page sees them.
+- `src/worker.ts`: the service worker. The only holder of the Native Messaging port to `caret-bridge`. It keeps the grant table (`shared/grants.ts`) and each frame's navigation generation (`worker/frames.ts`), checks every mutating verb's grant, document, generation and origin, and hands it to the frame's content script pinned to the exact document. It keeps the helper's "Not on this site" list: no walk, act or focus report for a frame at one of those origins, and `siteOff` for a tab whose top frame is.
+- `manifest.json` carries a fixed `key`, so the id is always `EXTENSION_ID` (`idbkbnaepbamcdecogahbinlcodkbmmj`). The private key is not in the repository. `storage` holds a random per-profile id, so two profiles of one browser are two engines. `scripting` gives tabs open before install a content script.
+
+```
+pnpm install && pnpm build    # dist/, for --load-extension
+pnpm test                     # tsc, then the unit tests
+```
+
+The browser checks are in `fixtures/web-form/accept.ts`.

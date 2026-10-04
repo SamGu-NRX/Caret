@@ -1,1 +1,0 @@
-A listen-only tap per pid sees clicks posted to that pid; the global NSEvent monitor and a session tap do not (B20, 6 of 6 vs 0 of 6). A background-only caret-fixture takes no posted click and cannot hit-test a covered window; --foreground (accessory) does both.
