@@ -330,6 +330,8 @@ interface Surface {
   working?: number;
   workingOn?: string;
   toast?: { kind: string; caption: string; grantID?: number };
+  /** Why the line's watch last took it down, and what covered it (A15). */
+  lineHidden?: Record<string, unknown>;
 }
 const surface = async (): Promise<Surface> => ((await hostCommand("state")).surface ?? {}) as Surface;
 
@@ -371,7 +373,7 @@ function sampleHost(frame: [number, number, number, number]): { stop: () => Prom
         const all = (st.counters ?? {}) as Record<string, number>;
         const counters = Object.fromEntries(Object.entries(all).filter(([k]) => LINE_COUNTERS.test(k)));
         const moved = Object.entries(counters).filter(([k, v]) => last[k] !== v).map(([k, v]) => `${k}=${v}`);
-        const row: Record<string, unknown> = { ms: Date.now() - t0, lineText: s.lineText ?? null, workingOn: s.workingOn ?? null, working: s.working ?? null, toast: s.toast?.caption ?? null };
+        const row: Record<string, unknown> = { ms: Date.now() - t0, lineText: s.lineText ?? null, workingOn: s.workingOn ?? null, working: s.working ?? null, toast: s.toast?.caption ?? null, lineHidden: s.lineHidden ?? null };
         if (moved.length > 0 && Object.keys(last).length > 0) {
           row.moved = moved;
           row.windows = await windowsOver(frame);

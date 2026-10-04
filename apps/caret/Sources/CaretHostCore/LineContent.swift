@@ -315,9 +315,21 @@ public enum WorkLines {
         ])
     }
 
-    /// What Tab on the question did. No keys: the row now reports.
-    public static func answered(_ offer: SkillOffer, sent: Bool) -> LineContent.Question {
-        guard sent else { return LineContent.Question(text: "Caret's helper isn't running, so nothing changed.") }
+    /// Tab said yes and the helper has not confirmed it yet.
+    public static func answering(_ offer: SkillOffer) -> LineContent.Question {
+        LineContent.Question(text: offer.kind == .keep ? "Keeping it as \(offer.name)" : "Letting \(offer.name) run on its own")
+    }
+
+    /// Tab's yes did not reach the helper.
+    public static let answerUnsent = LineContent.Question(text: "Caret's helper isn't running, so nothing changed.")
+    /// The helper withdrew the question another way than taking it (it expired, or its routine or
+    /// skill was forgotten meanwhile): it applied nothing.
+    public static let answerNotTaken = LineContent.Question(text: "Caret couldn't save that, so nothing changed.")
+    /// No word from the helper in time: whether it took the answer is not known here.
+    public static let answerUnconfirmed = LineContent.Question(text: "Caret didn't confirm that.", detail: "Skills in What Caret knows says where it stands.")
+
+    /// What Tab on the question did, once the helper confirmed it. No keys: the row now reports.
+    public static func answered(_ offer: SkillOffer) -> LineContent.Question {
         switch offer.kind {
         case .keep: return LineContent.Question(text: "Kept as \(offer.name)", detail: "Caret will offer it when you start it again.")
         case .promote: return LineContent.Question(text: "\(offer.name) runs on its own from now on", detail: "You'll see each run, and ⌘Z undoes it.")

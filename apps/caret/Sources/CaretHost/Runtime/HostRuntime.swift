@@ -302,7 +302,10 @@ public final class HostRuntime {
                 DispatchQueue.main.async { MainActor.assumeIsolated { surface.stopWork(line) } }
             },
             realKey: { pid in pauser.key(pid: pid) },
-            mouseDown: { point in pauser.click(at: point) }
+            mouseDown: { point in pauser.click(at: point) },
+            closedOffer: { offerID in
+                DispatchQueue.main.async { MainActor.assumeIsolated { surface.offerClosed(offerID) } }
+            }
         ))
         let tap = self.tap
         // Accessibility granted in onboarding: a key tap the system refused at launch is made now.

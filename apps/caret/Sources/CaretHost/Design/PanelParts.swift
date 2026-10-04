@@ -238,20 +238,38 @@ struct QuestionRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shown = false
 
+    /// The words' room when they must wrap: the 520 pt panel less the figure's indent and the
+    /// trailing padding, and with keys, less the gap and two key hints ("Tab Keep  Esc No thanks").
+    private var wrapWidth: CGFloat { question.hints.isEmpty ? 484 : 290 }
+
+    /// Wider than its room on one line. The panel is sized from its content's ideal size, which
+    /// for text is one line; a column given a width wraps there and reports its full height.
+    private var wraps: Bool {
+        func width(_ text: String, _ font: NSFont) -> CGFloat { (text as NSString).size(withAttributes: [.font: font]).width }
+        return width(question.text, .systemFont(ofSize: 13, weight: .semibold)) > wrapWidth
+            || question.detail.map { width($0, .systemFont(ofSize: 12)) > wrapWidth } == true
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
             VStack(alignment: .leading, spacing: 1) {
+                // A skill's name runs to 80 characters (memory.ts): the question wraps rather than
+                // cut it, and the panel stays within its 520 pt.
                 Text(question.text)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color(token: Tokens.ink))
-                    .lineLimit(1)
+                    // 80 characters at the 290 pt the keys leave take three lines.
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let detail = question.detail {
                     Text(detail)
                         .font(.system(size: 12))
                         .foregroundStyle(Color(token: Tokens.secondary))
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .frame(width: wraps ? wrapWidth : nil, alignment: .leading)
             if !question.hints.isEmpty {
                 Spacer(minLength: 16)
                 HStack(spacing: 12) {

@@ -119,6 +119,7 @@ final class SurfaceCoordinator {
     func gateClosed() { machine.gateClosed() }
     func stopWork(_ line: StatusLine) { machine.stopWork(line) }
     func skillOffer(_ offer: SkillOffer) { machine.skillOffer(offer) }
+    func offerClosed(_ offerID: UInt64) { machine.offerClosed(offerID) }
     func activity(_ record: TaskRecord) { machine.activity(record) }
 
     func insertionFinished(_ result: InsertionExecutor.Result) {

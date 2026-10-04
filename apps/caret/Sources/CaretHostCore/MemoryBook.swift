@@ -508,6 +508,8 @@ public final class MemoryBook {
         public var confirmingForget: String?
         public var typed: [TypedInfo]
         public var sent: [String]
+        /// The skills the permissions page names as running on their own, by name.
+        public var onTheirOwn: [String]
     }
 
     public func debugInfo() -> DebugInfo {
@@ -536,7 +538,8 @@ public final class MemoryBook {
                 }()
                 return DebugInfo.TypedInfo(id: t.id, label: t.label, valueLength: t.value.utf16.count, phase: phase, reason: reason)
             },
-            sent: sentLog
+            sent: sentLog,
+            onTheirOwn: MemoryPage.exceptions(state).map(\.name)
         )
     }
 

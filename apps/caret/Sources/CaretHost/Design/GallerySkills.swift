@@ -10,12 +10,12 @@ extension Gallery {
     static let skillTrigger = "a Tracker window opens with Order, Carrier and Tracking empty"
 
     /// A skill question in the helper's words. Decoded, since the wire type has no memberwise init.
-    static func skillOffer(_ kind: SkillOffer.Kind) -> SkillOffer {
+    static func skillOffer(_ kind: SkillOffer.Kind, name: String = skillName) -> SkillOffer {
         let keep = kind == .keep
         let json = """
         {"type":"skillOffer","v":1,"id":"skill-offer-\(kind.rawValue)","at":1790000300000,"kind":"\(kind.rawValue)","taskId":"offer-5",\
-        "routineId":"routine-1","skillId":\(keep ? "null" : "\"skill-1\""),"name":"\(skillName)",\
-        "says":"\(keep ? "Keep this as \(skillName)?" : "Do this one on your own from now on?")",\
+        "routineId":"routine-1","skillId":\(keep ? "null" : "\"skill-1\""),"name":"\(name)",\
+        "says":"\(keep ? "Keep this as \(name)?" : "Do this one on your own from now on?")",\
         "detail":"\(keep ? "Caret will offer it when you start it again." : "You'll see it happen and can undo it.")",\
         "actions":[{"id":"accept","label":"\(keep ? "Keep" : "Do it on its own")"},{"id":"decline","label":"\(keep ? "No thanks" : "Keep asking")"}]}
         """
@@ -33,7 +33,9 @@ extension Gallery {
         return [
             line("skill-keep", toast(WorkLines.question(skillOffer(.keep)))),
             line("skill-promote", toast(WorkLines.question(skillOffer(.promote)))),
-            line("skill-kept", toast(WorkLines.answered(skillOffer(.keep), sent: true))),
+            // The longest a name runs (80 characters, memory.ts): the question wraps inside 520 pt.
+            line("skill-keep-long", toast(WorkLines.question(skillOffer(.keep, name: "Customer, email and order number from the order queue into the Intake form")))),
+            line("skill-kept", toast(WorkLines.answered(skillOffer(.keep)))),
             line("skill-on-its-own", WorkLines.onItsOwn(skillName, app: "Tracker").content),
             line("skill-on-its-own-done", WorkLines.doneOnItsOwn(skillName).content),
             line("skill-took-over", WorkLines.tookOver(next: 1, of: 3).content),

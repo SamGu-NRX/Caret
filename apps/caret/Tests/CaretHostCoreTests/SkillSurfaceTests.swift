@@ -58,9 +58,11 @@ final class SkillSurfaceTests: XCTestCase {
         rig.press(Fx.tab())
         XCTAssertEqual(rig.sent.last, "skill accept skill-offer-1")
         XCTAssertTrue(undoOwned(rig), "Tab answers the question and leaves ⌘Z with the run")
-        XCTAssertEqual(rig.machine.debugInfo().question, "Kept as Subject and To into Mail Fixture")
+        XCTAssertEqual(rig.machine.debugInfo().question, "Keeping it as Subject and To into Mail Fixture", "pending until the helper says it took it")
         XCTAssertEqual(rig.machine.debugInfo().questionAnswered, true)
         XCTAssertNil(rig.arbiter.snapshot().current, "a second Tab finds nothing")
+        rig.machine.withdrawn(OfferWithdrawn(at: 1, id: "skill-offer-1", reason: .taken))
+        XCTAssertEqual(rig.machine.debugInfo().question, "Kept as Subject and To into Mail Fixture")
         rig.clock.advance(by: SurfaceMachine.answerHold)
         XCTAssertNil(rig.machine.lineText, "the answer shows for a moment, then the line goes")
         XCTAssertFalse(undoOwned(rig))
@@ -136,7 +138,117 @@ final class SkillSurfaceTests: XCTestCase {
         XCTAssertEqual(q.hints, [Hint(key: "Tab", label: "Do it on its own"), Hint(key: "Esc", label: "Keep asking")])
         rig.press(Fx.tab())
         XCTAssertEqual(rig.sent.last, "skill accept skill-offer-2")
+        XCTAssertEqual(rig.machine.debugInfo().question, "Letting Subject and To into Mail Fixture run on its own")
+        rig.machine.withdrawn(OfferWithdrawn(at: 1, id: "skill-offer-2", reason: .taken))
         XCTAssertEqual(rig.machine.debugInfo().question, "Subject and To into Mail Fixture runs on its own from now on")
+    }
+
+    // MARK: - Review fixes (A15)
+
+    /// The tap took Tab or Esc on the question, then main drew a newer offer before the key's
+    /// callback ran: the answer still goes, and goes once.
+    func testAKeyTakenOnAQuestionIsAnsweredEvenIfANewerOfferReplacedItsLine() throws {
+        let tab = doneRun()
+        tab.machine.skillOffer(try Self.offer("keep"))
+        tab.pressLate(Fx.tab())
+        tab.machine.receive(Fx.action(key: "offer-6"))
+        tab.deliver()
+        XCTAssertEqual(tab.sent, ["accept offer-5 finish", "skill accept skill-offer-1"])
+        let esc = doneRun()
+        esc.machine.skillOffer(try Self.offer("keep"))
+        esc.pressLate(Fx.esc())
+        esc.machine.receive(Fx.action(key: "offer-6"))
+        esc.deliver()
+        XCTAssertEqual(esc.sent, ["accept offer-5 finish", "skill decline skill-offer-1"])
+        XCTAssertEqual(esc.machine.shown?.offerKey, "offer-6", "the newer offer stays")
+    }
+
+    func testTheHelperLeavingOrAPauseTakesTheQuestionsKeys() throws {
+        let gone = doneRun()
+        gone.machine.skillOffer(try Self.offer("keep"))
+        gone.machine.helperGone()
+        XCTAssertNil(gone.arbiter.snapshot().current, "Tab is the app's again")
+        let paused = doneRun()
+        paused.machine.skillOffer(try Self.offer("keep"))
+        paused.machine.gateClosed()
+        XCTAssertNil(paused.arbiter.snapshot().current)
+        guard case .line(let drawn)? = paused.panels.last else { return XCTFail("no line") }
+        XCTAssertNil(drawn.question, "the toast stays, without the question")
+    }
+
+    func testAYesTheHelperDidNotTakeOrNeverConfirmedIsNotShownAsDone() throws {
+        let expired = doneRun()
+        expired.machine.skillOffer(try Self.offer("keep"))
+        expired.press(Fx.tab())
+        expired.machine.withdrawn(OfferWithdrawn(at: 1, id: "skill-offer-1", reason: .expired))
+        XCTAssertEqual(expired.machine.debugInfo().question, "Caret couldn't save that, so nothing changed.")
+        let silent = doneRun()
+        silent.machine.skillOffer(try Self.offer("keep"))
+        silent.press(Fx.tab())
+        silent.clock.advance(by: SurfaceMachine.answerWait)
+        XCTAssertEqual(silent.machine.debugInfo().question, "Caret didn't confirm that.")
+        silent.clock.advance(by: SurfaceMachine.answerHold)
+        XCTAssertNil(silent.machine.lineText)
+    }
+
+    /// B19 counts a run that ends at its planned hand-off (Send left to the user) as clean, and may ask
+    /// to keep it. The hand-off line has no toast; the question sits under it and keys the same way.
+    func testAQuestionAfterAHandOffSitsUnderItsLine() throws {
+        func handedOff() throws -> SurfaceRig {
+            let rig = SurfaceRig()
+            rig.screen.front()
+            rig.machine.receive(Fx.action())
+            rig.press(Fx.tab())
+            rig.machine.taskProgress(Fx.progress("offer-5", .handoff, step: 2, steps: 3))
+            XCTAssertEqual(rig.machine.lineText, "Your turn in Sheet Fixture")
+            rig.machine.skillOffer(try Self.offer("keep"))
+            XCTAssertNotNil(rig.arbiter.snapshot().current)
+            return rig
+        }
+        let tab = try handedOff()
+        tab.press(Fx.tab())
+        XCTAssertEqual(tab.sent.last, "skill accept skill-offer-1")
+        XCTAssertNotNil(tab.arbiter.snapshot().statusLine, "the hand-off line stays")
+        let esc = try handedOff()
+        esc.press(Fx.esc())
+        XCTAssertEqual(esc.sent.last, "skill decline skill-offer-1")
+        XCTAssertNil(esc.machine.lineText)
+        XCTAssertNil(esc.arbiter.snapshot().statusLine)
+    }
+
+    /// The question makes the panel taller, so it is placed again around the run's field rather than
+    /// grown where it stood.
+    func testTheTallerPanelIsPlacedAgainAroundTheField() throws {
+        let rig = doneRun()
+        rig.takeLog()
+        rig.machine.skillOffer(try Self.offer("keep"))
+        XCTAssertEqual(rig.takeLog(), ["panel redraw Done, in Sheet Fixture"])
+    }
+
+    func testARunWithNoTabDoesNotTakeThePanelFromOtherWork() {
+        let rig = runningOnItsOwn()
+        rig.machine.receive(Fx.action())
+        rig.press(Fx.tab())
+        XCTAssertEqual(rig.machine.workingOn, "offer-5")
+        rig.machine.taskProgress(Self.unprompted(.verified, step: 1))
+        XCTAssertEqual(rig.machine.workingOn, "offer-5", "a run already drawn once is not drawn again")
+        let busy = SurfaceRig()
+        busy.screen.front()
+        busy.machine.receive(Fx.action())
+        busy.press(Fx.tab())
+        busy.machine.activity(Self.record())
+        busy.machine.taskProgress(Self.unprompted(.started))
+        XCTAssertEqual(busy.machine.workingOn, "offer-5", "Tab'd work keeps the panel")
+        XCTAssertTrue(busy.counts.contains("surface.unprompted.workRunning"))
+    }
+
+    func testARunInAnotherWindowOfTheSameAppIsNotDrawnAtThisCaret() {
+        let rig = SurfaceRig()
+        rig.screen.front()
+        rig.machine.activity(Self.record(window: "Order queue"))
+        rig.machine.taskProgress(Self.unprompted(.started))
+        XCTAssertNil(rig.machine.workingOn)
+        XCTAssertTrue(rig.counts.contains("surface.unprompted.otherWindow"))
     }
 
     func testTheInboundDecoderRoutesSkillOffersAndIgnoresEchoedAnswers() throws {
@@ -147,8 +259,8 @@ final class SkillSurfaceTests: XCTestCase {
 
     // MARK: - A run with no Tab
 
-    static func record(_ id: String = "offer-15", says: String = "Subject and To into Mail Fixture", state: String = "running") -> TaskRecord {
-        let json = #"{"id":"\#(id)","kind":"plan","state":"\#(state)","cause":null,"says":"\#(says)","app":{"pid":\#(Fx.app),"bundleId":"dev.caret.fixture","name":"Caret Fixture"},"windowId":"5150-1","windowTitle":"Contact details","frame":[100,100,600,400],"step":0,"steps":3,"stepSays":null,"remaining":[],"detail":null,"undoable":false,"startedAt":1,"updatedAt":2,"pending":null}"#
+    static func record(_ id: String = "offer-15", says: String = "Subject and To into Mail Fixture", state: String = "running", window: String = "Contact details") -> TaskRecord {
+        let json = #"{"id":"\#(id)","kind":"plan","state":"\#(state)","cause":null,"says":"\#(says)","app":{"pid":\#(Fx.app),"bundleId":"dev.caret.fixture","name":"Caret Fixture"},"windowId":"5150-1","windowTitle":"\#(window)","frame":[100,100,600,400],"step":0,"steps":3,"stepSays":null,"remaining":[],"detail":null,"undoable":false,"startedAt":1,"updatedAt":2,"pending":null}"#
         return try! JSONDecoder().decode(TaskRecord.self, from: Data(json.utf8))
     }
 

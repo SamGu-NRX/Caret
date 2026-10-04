@@ -262,6 +262,26 @@ public struct DebugState: Codable, Equatable, Sendable {
     }
 
     /// Alternatives, action lines, pop-ups and the lines after an accepted action.
+    /// A line its watch took down: the gate's answer and, when covered, the window over the anchor
+    /// and whether the app's focused frame could be read at that moment.
+    public struct LineHidden: Codable, Equatable, Sendable {
+        public var hold: String
+        public var coverPID: Int32?
+        public var coverLayer: Int?
+        public var coverAgent: Bool?
+        public var coverBounds: [Double]?
+        public var focusedFrameRead: Bool?
+
+        public init(hold: String, coverPID: Int32? = nil, coverLayer: Int? = nil, coverAgent: Bool? = nil, coverBounds: [Double]? = nil, focusedFrameRead: Bool? = nil) {
+            self.hold = hold
+            self.coverPID = coverPID
+            self.coverLayer = coverLayer
+            self.coverAgent = coverAgent
+            self.coverBounds = coverBounds
+            self.focusedFrameRead = focusedFrameRead
+        }
+    }
+
     public struct SurfaceInfo: Codable, Equatable, Sendable {
         /// The host runs with `--surfaces headless`: offers are decided, never drawn.
         public var headless: Bool?
@@ -292,6 +312,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var workingOn: String?
         /// The work was started by a skill with no Tab (B19).
         public var unprompted: Bool?
+        /// Why a working or result line was last taken down by its watch.
+        public var lineHidden: LineHidden?
         /// The keep or promote question under the result line, as its row reads (asked or answered).
         public var question: String?
         public var questionAnswered: Bool?

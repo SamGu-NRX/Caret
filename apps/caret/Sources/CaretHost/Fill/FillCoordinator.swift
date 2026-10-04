@@ -159,12 +159,25 @@ private final class FillWorldAdapter: FillWorld {
     }
 
     /// The app is running and one of its windows has the source's title: SourceCheck's first test,
-    /// without the walk for the value.
+    /// without the walk for the value. Closed only when that is known: the process is gone, or every
+    /// window's title was read and none matches. A read that fails or times out (a busy app) is
+    /// unknown, and the value stays offered; SourceCheck rechecks it before the write.
     nonisolated func sourceOpen(_ source: FillOrigin.Window) -> Bool? {
         guard let pid = source.pid else { return nil }
         guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return false }
-        let windows = AXRead.elements(kAXWindowsAttribute, on: AXUIElementCreateApplication(pid))
-        return windows.contains { AXRead.string(kAXTitleAttribute, on: $0) == source.title }
+        var list: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &list) == .success,
+              let windows = list as? [AnyObject] else { return nil }
+        var unread = false
+        for item in windows where CFGetTypeID(item) == AXUIElementGetTypeID() {
+            var title: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(unsafeBitCast(item, to: AXUIElement.self), kAXTitleAttribute as CFString, &title) == .success else {
+                unread = true
+                continue
+            }
+            if (title as? String) == source.title { return true }
+        }
+        return unread ? nil : false
     }
 }
 

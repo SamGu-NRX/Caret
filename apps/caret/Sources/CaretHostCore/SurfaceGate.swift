@@ -67,11 +67,16 @@ public enum SurfaceGate {
     /// `covered` under it. Geometry alone cannot prove such a window transparent, so a regular
     /// app's window, or one at the normal layer, always counts.
     public static func topPID(at point: CGPoint, windows: [Window], ownPID: Int32, displays: [CGRect] = [], field: CGRect? = nil) -> Int32? {
+        topWindow(at: point, windows: windows, ownPID: ownPID, displays: displays, field: field)?.pid
+    }
+
+    /// The window `topPID` names, for the debug state's record of what covered a line.
+    public static func topWindow(at point: CGPoint, windows: [Window], ownPID: Int32, displays: [CGRect] = [], field: CGRect? = nil) -> Window? {
         for window in windows {
             guard window.pid != ownPID, window.alpha > 0.01, window.bounds.contains(point) else { continue }
             if window.layer > 0, displays.contains(where: { window.bounds.contains($0) }) { continue }
             if window.layer > 0, window.agent, let field, ringsField(window.bounds, field) { continue }
-            return window.pid
+            return window
         }
         return nil
     }

@@ -261,7 +261,7 @@ public final class OfferArbiter: @unchecked Sendable {
                     // A question about the run this toast reports on (B19 keep or promote) shares its
                     // keys: ⌘Z still undoes the run, Tab answers and leaves the toast, Esc declines and
                     // closes both. Any other key dismisses both, as it would either alone.
-                    let question = s.current.flatMap { $0.kind.actionLine?.answersToast == true && key.isHeaded(to: $0.target.pid) ? $0 : nil }
+                    let question = Self.question(s, for: key)
                     if key.isUndo {
                         s.toast = nil
                         return .undo(toast)
@@ -280,12 +280,23 @@ public final class OfferArbiter: @unchecked Sendable {
                 }
             }
             if let line = s.statusLine, key.isHeaded(to: line.pid) {
-                s.statusLine = nil
-                if KeyOwnership.owns(line.surface(at: now), keyClass) {
-                    if case .working = line.kind { return .stopWork(line) }
-                    return .closeStatus(line)
+                // A result line with a question about its run (a hand-off that may be kept as a
+                // skill) shares keys as the toast does: Tab answers and leaves the line, Esc declines
+                // and closes both.
+                let question = line.isWorking ? nil : Self.question(s, for: key)
+                if let question, key.isPlainEscape {
+                    s.statusLine = nil
+                    Self.clearOffer(&s)
+                    return .closeOffer(offerID: question.id)
                 }
-                dismissedLine = dismissedLine ?? .statusDismissed
+                if question == nil || !key.isPlainTab {
+                    s.statusLine = nil
+                    if KeyOwnership.owns(line.surface(at: now), keyClass) {
+                        if case .working = line.kind { return .stopWork(line) }
+                        return .closeStatus(line)
+                    }
+                    dismissedLine = dismissedLine ?? .statusDismissed
+                }
             }
 
             guard let offer = s.current else { return .pass(dismissedLine ?? .noOffer) }
@@ -313,6 +324,13 @@ public final class OfferArbiter: @unchecked Sendable {
             }
             return Self.act(keyClass, on: offer, surface: surface, state: &s, now: now)
         }
+    }
+
+    /// The current offer when it is a question about a run's result (`ActionLine.answersToast`) and
+    /// `key` is headed for its app.
+    private static func question(_ s: State, for key: KeyStroke) -> Offer? {
+        guard let current = s.current, current.kind.actionLine?.answersToast == true, key.isHeaded(to: current.target.pid) else { return nil }
+        return current
     }
 
     /// An owned key on the current offer.

@@ -124,6 +124,11 @@ public struct StatusLine: Equatable, Sendable {
         self.takesOverAtOnce = takesOverAtOnce
     }
 
+    public var isWorking: Bool {
+        if case .working = kind { return true }
+        return false
+    }
+
     public func surface(at now: Date) -> Surface {
         switch kind {
         case .working(let started): return .working(stoppable: takesOverAtOnce || now.timeIntervalSince(started) >= Self.stoppableAfter)

@@ -31,6 +31,9 @@ public final class TapThread: @unchecked Sendable {
         /// Every user mouse-down, at its global top-left-origin point, from a listen-only tap.
         /// Tap thread; enqueue.
         public var mouseDown: @Sendable (CGPoint) -> Void
+        /// Esc closed this offer, called before `offerChanged(.closed)`: a question Esc declined is
+        /// answered by its id, even if main has since drawn something else. Tap thread; enqueue.
+        public var closedOffer: @Sendable (UInt64) -> Void
 
         public init(
             claimed: @escaping @Sendable (Claim) -> Void,
@@ -40,8 +43,10 @@ public final class TapThread: @unchecked Sendable {
             navigated: @escaping @Sendable (UInt64, OfferUI) -> Void = { _, _ in },
             stopWork: @escaping @Sendable (StatusLine) -> Void = { _ in },
             realKey: @escaping @Sendable (Int32) -> Void = { _ in },
-            mouseDown: @escaping @Sendable (CGPoint) -> Void = { _ in }
+            mouseDown: @escaping @Sendable (CGPoint) -> Void = { _ in },
+            closedOffer: @escaping @Sendable (UInt64) -> Void = { _ in }
         ) {
+            self.closedOffer = closedOffer
             self.claimed = claimed
             self.offerChanged = offerChanged
             self.undo = undo
@@ -264,7 +269,8 @@ public final class TapThread: @unchecked Sendable {
         case .navigate(let offerID, let ui):
             callbacks.navigated(offerID, ui)
             return true
-        case .closeOffer:
+        case .closeOffer(let offerID):
+            callbacks.closedOffer(offerID)
             callbacks.offerChanged(.closed, key)
             return true
         case .stopWork(let line):

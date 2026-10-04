@@ -67,6 +67,8 @@ extension SurfaceMachine {
             return finishUndo(progress)
         }
         if progress.unprompted == true, work?.offerKey != progress.taskId, stoppedWork?.offerKey != progress.taskId {
+            // Drawn once already, and since replaced: the perch and the activity list carry it on.
+            if unpromptedDrawn.contains(progress.taskId) { return publish() }
             // A skill's run with no Tab: drawn at the caret once its record says where (`activity`).
             // One that ends before then, or is never drawn, is the perch's and the activity list's.
             if OfferLifecycle.ending(of: progress, workKey: progress.taskId) != nil || progress.phase == .undone {
@@ -114,7 +116,7 @@ extension SurfaceMachine {
             takeLineDown(exit: 0)
             return publish()
         }
-        result = Result(taskID: work.offerKey, target: work.target, line: WorkLines.undoing)
+        result = Result(taskID: work.offerKey, target: work.target, anchor: work.anchor, line: WorkLines.undoing)
         switch ending {
         case .done:
             if work.unprompted, (work.written ?? 0) > 0 {
@@ -235,7 +237,7 @@ extension SurfaceMachine {
             return publish()
         }
         resultStatusID = arbiter.showStatus(StatusLine(pid: line.pid, kind: .result, offerKey: line.offerKey))
-        result = Result(taskID: work.offerKey, target: work.target, line: WorkLines.undoing)
+        result = Result(taskID: work.offerKey, target: work.target, anchor: work.anchor, line: WorkLines.undoing)
         // Where it stopped: the helper stops before the step it has not finished, as the activity
         // list says it.
         let steps = work.steps ?? 0
@@ -330,13 +332,18 @@ extension SurfaceMachine {
         publish()
     }
 
-    /// Draws a result line, with the question under it when one is asked.
+    /// Draws a result line, with the question under it when one is asked. With a question the
+    /// panel is taller, so it is placed again around the run's field: the grown panel may cover
+    /// nothing the line did not (`SurfaceCoordinator.show`, the growth check).
     func drawResult(_ line: WorkLine) {
         var content = line.content
         content.question = question?.row
         lineText = line.text
         figure = content.figure
-        if !headless, !lineSuppressed {
+        guard !headless, !lineSuppressed else { return }
+        if question != nil, let result, let anchor = result.anchor {
+            showPanel(.line(content), text: line.text, placement: .atField(field: anchor.field, caret: anchor.caret, pid: result.target.pid, entering: false))
+        } else {
             showPanel(.line(content), text: line.text, placement: .inPlace)
         }
     }
@@ -349,14 +356,17 @@ extension SurfaceMachine {
 
     // MARK: - Skills (B19)
 
-    /// A keep or promote question from the helper. It is asked under the toast of the run it is about,
-    /// at the caret where that run was taken, and nowhere else: offered with what the user just saw,
-    /// never forced. One whose run's toast is gone (typed through, closed, or another line took the
-    /// panel) is not shown and not answered; the helper keeps it, and may ask again after a later run.
+    /// A keep or promote question from the helper. It is asked under the result of the run it is
+    /// about (its toast, or a hand-off's line), at the caret where that run was taken, and nowhere
+    /// else: offered with what the user just saw, never forced. One whose run's line is gone (typed
+    /// through, closed, or another line took the panel) is not shown and not answered; the helper
+    /// keeps it, and may ask again after a later run.
     public func skillOffer(_ offer: SkillOffer) {
         count("surface.skill.\(offer.kind.rawValue)")
-        guard let result, result.taskID == offer.taskId, question == nil, headless || !lineSuppressed,
-              let grantID = toastGrantID, arbiter.snapshot().toast?.id == grantID else {
+        let snapshot = arbiter.snapshot()
+        let toastUp = toastGrantID != nil && snapshot.toast?.id == toastGrantID
+        let lineUp = resultStatusID != nil && snapshot.statusLine?.id == resultStatusID
+        guard let result, result.taskID == offer.taskId, question == nil, resultTimer != nil, headless || !lineSuppressed, toastUp || lineUp else {
             count("surface.skill.notShown")
             return publish()
         }
@@ -373,32 +383,64 @@ extension SurfaceMachine {
             count("surface.skill.refused")
             return publish()
         }
+        let now = clock.now
+        asked = asked.filter { now.timeIntervalSince($0.value.at) < 2 * Self.questionLifetime }
+        asked[offerID] = (offer, now)
         question = Question(offer: offer, offerID: offerID, row: WorkLines.question(offer))
         // ⌘Z keeps its run for as long as the question shows.
-        toastGrantID = arbiter.showToast(UndoGrant.task(result.taskID, target: result.target, createdAt: clock.now, lifetimeSeconds: Self.questionLifetime))
-        toastInfo?.grantID = toastGrantID
+        if toastUp {
+            toastGrantID = arbiter.showToast(UndoGrant.task(result.taskID, target: result.target, createdAt: now, lifetimeSeconds: Self.questionLifetime))
+            toastInfo?.grantID = toastGrantID
+        }
         count("surface.skill.shown")
         showResult(result.line, lifetime: Self.questionLifetime)
     }
 
-    /// Tab on the question: the helper hears yes, and the row says what that did for a moment. The
-    /// toast keeps ⌘Z until the line leaves.
-    func answerQuestion() {
-        guard var q = question, !q.answered else { return }
-        let sent = sendToHelper(.skillAnswer(SkillAnswer(id: q.offer.id, answer: .accept, at: nowMs)))
-        count(sent ? "surface.skill.accepted" : "surface.skill.unsent")
-        q.answered = true
-        q.row = WorkLines.answered(q.offer, sent: sent)
-        question = q
-        guard let result else { return publish() }
-        showResult(result.line, lifetime: Self.answerHold)
+    /// Esc closed this offer (the tap's `closeOffer`, before `offerChanged`): if it was a question,
+    /// that is a no, whatever main has drawn since.
+    public func offerClosed(_ offerID: UInt64) {
+        guard asked[offerID] != nil else { return }
+        answer(offerID, .decline)
     }
 
-    /// The question goes unanswered: its offer leaves the arbiter, and the row the line.
+    /// Sends the answer to the question the tap took a key on. A no ends there; the line goes with
+    /// Esc. A yes shows until the helper confirms it (`withdrawn`, taken), or `answerWait` passes.
+    func answer(_ offerID: UInt64, _ choice: SkillAnswer.Answer) {
+        guard let offer = asked.removeValue(forKey: offerID)?.offer else { return publish() }
+        let sent = sendToHelper(.skillAnswer(SkillAnswer(id: offer.id, answer: choice, at: nowMs)))
+        count(sent ? (choice == .accept ? "surface.skill.accepted" : "surface.skill.declined") : "surface.skill.unsent")
+        guard var q = question, q.offerID == offerID, q.state == .asked else { return publish() }
+        guard choice == .accept else {
+            question = nil
+            return publish()
+        }
+        q.state = sent ? .pending : .settled
+        q.row = sent ? WorkLines.answering(offer) : WorkLines.answerUnsent
+        question = q
+        guard let result else { return publish() }
+        guard sent else { return showResult(result.line, lifetime: Self.answerHold) }
+        // The line stays while the helper is asked; the timer below decides when it gives up.
+        showResult(result.line, lifetime: Self.answerWait + Self.answerHold)
+        questionTimer?.cancel()
+        questionTimer = clock.schedule(after: Self.answerWait, repeats: false) { [weak self] in
+            guard let self, var q = self.question, q.offerID == offerID, q.state == .pending else { return }
+            self.questionTimer = nil
+            q.state = .settled
+            q.row = WorkLines.answerUnconfirmed
+            self.question = q
+            self.count("surface.skill.unconfirmed")
+            if let result = self.result { self.showResult(result.line, lifetime: Self.answerHold) }
+        }
+    }
+
+    /// The question goes: unanswered, its offer leaves the arbiter (a Tab the tap already took on it
+    /// is still answered, through `asked`); and the row leaves the line.
     func dropQuestion(_ counter: String) {
+        questionTimer?.cancel()
+        questionTimer = nil
         guard let q = question else { return }
         question = nil
-        guard !q.answered else { return }
+        guard q.state == .asked else { return }
         arbiter.invalidate(offerID: q.offerID)
         count(counter)
     }
@@ -422,7 +464,12 @@ extension SurfaceMachine {
     /// known, then once: a run in an app behind is reported by the perch and the activity list only.
     @discardableResult
     func startUnprompted(_ taskID: String) -> Bool {
-        guard unpromptedSeen.contains(taskID), work?.offerKey != taskID, let record = records[taskID], let app = record.app else { return false }
+        guard unpromptedSeen.contains(taskID), !unpromptedDrawn.contains(taskID), let record = records[taskID], let app = record.app else { return false }
+        // Work the user is watching (a Tab'd run, or another skill's) keeps the panel.
+        guard work == nil else {
+            count("surface.unprompted.workRunning")
+            return false
+        }
         unpromptedSeen.remove(taskID)
         let pid = Int32(truncatingIfNeeded: app.pid)
         guard world.allows(pid: pid) else {
@@ -438,6 +485,12 @@ extension SurfaceMachine {
             guard world.frontmostPID == pid, let field = world.focusedField(pid: pid), case .at(let caret) = world.caret(of: field),
                   gate(field.identity, anchors: [CGPoint(x: caret.midX, y: caret.midY)], requireFocus: false) == nil else {
                 count("surface.unprompted.offCaret")
+                return false
+            }
+            // The user's field must be in the window the run acts in, by title: another window of
+            // the same app is somewhere else, and the line there would describe work it cannot see.
+            if let acting = record.windowTitle, let here = field.window?.title, acting != here {
+                count("surface.unprompted.otherWindow")
                 return false
             }
             target = field.identity
@@ -457,13 +510,15 @@ extension SurfaceMachine {
         started.unprompted = true
         started.name = record.says
         started.figureLeft = true
+        started.anchor = anchor.map { Anchor(field: $0.field, caret: $0.caret) }
         work = started
+        unpromptedDrawn.insert(taskID)
         let line = WorkLines.onItsOwn(record.says, app: app.name)
         lineText = line.text
         figure = line.content.figure
         if let anchor {
             showPanel(.line(line.content), text: line.text, placement: .atField(field: anchor.field, caret: anchor.caret, pid: pid, entering: true))
-            startWatch(.line, target: target, anchors: [CGPoint(x: anchor.caret.midX, y: anchor.caret.midY)], requireFocus: false)
+            startWatch(.line, target: target, anchors: [CGPoint(x: anchor.caret.midX, y: anchor.caret.midY)], requireFocus: false, field: anchor.field)
         }
         workTimers.append(clock.schedule(after: 1, repeats: true) { [weak self] in self?.renderWorking() })
         emit(.workingChanged(true))

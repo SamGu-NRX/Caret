@@ -37,14 +37,24 @@ final class FillSourceGoneTests: XCTestCase {
         XCTAssertEqual(rig.machine.status.lastSkip, "sourceGone")
     }
 
-    func testItIsNotOfferedAgainWhenTheFieldIsLookedAtAgain() {
+    func testItIsOfferedAgainOnlyOnceItsSourceIsOpenAgain() {
         let rig = shown()
         rig.world.closedSources = ["Reference"]
         rig.clock.advance(by: FillMachine.recheckInterval)
         rig.takeLog()
-        rig.world.closedSources = []
         rig.machine.fieldChanged(pid: Fx.app, at: 2)
-        XCTAssertNil(rig.arbiter.snapshot().current, "a source that closed once is not trusted for this value again; the helper proposes anew")
+        XCTAssertNil(rig.arbiter.snapshot().current, "still closed: still not offered")
+        rig.world.closedSources = []
+        rig.machine.fieldChanged(pid: Fx.app, at: 3)
+        XCTAssertEqual(rig.arbiter.snapshot().current?.text, FillFx.email, "nothing is remembered against the value: the window is back")
+    }
+
+    /// A read that fails says nothing about the window: the value stays offered.
+    func testAnUnknownSourceIsNotTakenForAClosedOne() {
+        let rig = shown()
+        rig.world.unknownSources = ["Reference"]
+        rig.clock.advance(by: FillMachine.recheckInterval)
+        XCTAssertNotNil(rig.arbiter.snapshot().current)
     }
 
     func testAValueFromMemoryHasNoWindowToClose() {

@@ -347,10 +347,9 @@ public final class FillMachine {
         }
         // A value whose source window has closed is not offered: Tab would only be refused
         // (SourceCheck), and "from Mail, Invoice 2041" would name a window that is gone (A14 walk-3).
-        if sourceGone(origin) {
-            suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: value))
-            return withdraw("sourceGone")
-        }
+        // Checked on every evaluation, not remembered: a source that opens again, or a newer proposal
+        // from another source, is offered as usual.
+        if sourceGone(origin) { return withdraw("sourceGone") }
 
         let offer = Offer(
             text: value, kind: .fill(origin), target: field.identity, fieldValue: field.value,
@@ -428,7 +427,6 @@ public final class FillMachine {
         // toast after a write stays: its undo needs only the field written.
         if let shownOfferID, let current = arbiter.snapshot().current, current.id == shownOfferID,
            let origin = current.kind.fillOrigin, sourceGone(origin) {
-            suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: current.text))
             count("fill.withdrawn.sourceGone")
             withdraw("sourceGone")
             if toast == nil { stopWatch() }

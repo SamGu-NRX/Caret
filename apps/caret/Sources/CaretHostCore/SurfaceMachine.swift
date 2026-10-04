@@ -79,6 +79,14 @@ public final class SurfaceMachine {
         /// A skill started it with no Tab (B19 `taskProgress.unprompted`); `name` is the skill's.
         var unprompted = false
         var name: String?
+        /// The field and caret the line was first drawn at, global top-left points: a result that
+        /// grows (a question under it) is placed again around them.
+        var anchor: Anchor?
+    }
+
+    struct Anchor {
+        let field: CGRect
+        let caret: CGRect
     }
 
     /// The run whose result or toast is on the panel, and the line it shows: what a skill question
@@ -86,16 +94,26 @@ public final class SurfaceMachine {
     struct Result {
         let taskID: String
         let target: TargetIdentity
+        let anchor: Anchor?
         var line: WorkLine
     }
 
     /// A keep or promote question under `result` (B19 `skillOffer`), the arbiter offer that holds its
     /// Tab and Esc, and the row as drawn: the question, or what Tab did.
     struct Question {
+        enum State: Equatable {
+            /// On screen with its keys.
+            case asked
+            /// Tab said yes; waiting for the helper's withdrawal that says it took it.
+            case pending
+            /// The row reports how it ended.
+            case settled
+        }
         let offer: SkillOffer
         let offerID: UInt64
         var row: LineContent.Question
-        var answered = false
+        var state = State.asked
+        var answered: Bool { state != .asked }
     }
 
     /// What a visibility watch protects, and what losing it does.
@@ -111,6 +129,9 @@ public final class SurfaceMachine {
         let target: TargetIdentity
         let anchors: [CGPoint]
         let requireFocus: Bool
+        /// The field the surface was drawn for: the frame a writing aid's ring is measured against
+        /// when the app's focused frame cannot be read at a recheck.
+        let field: CGRect?
         let timer: SurfaceTimer
     }
 
@@ -143,6 +164,9 @@ public final class SurfaceMachine {
     public static let questionLifetime: TimeInterval = 15
     /// How long the answer to a question stays before the line leaves. Assumed.
     public static let answerHold: TimeInterval = 2
+    /// How long a yes waits for the helper to confirm it (`offerWithdrawn` taken) before the row
+    /// says it was not confirmed. Assumed: the helper answers in the same turn it reads the line.
+    public static let answerWait: TimeInterval = 2
     /// How long ⌘Z belongs to the done line of a run nobody asked for. Assumed: longer than a Tab'd
     /// run's 5 s (`UndoGrant.defaultLifetime`), since the user did not start it and may look up
     /// late; the activity list keeps its Undo after that.
@@ -171,12 +195,20 @@ public final class SurfaceMachine {
     var stoppedWork: Work?
     var result: Result?
     var question: Question?
+    /// Questions asked, by their arbiter offer id, until answered or 2 lifetimes old: a Tab or Esc the
+    /// tap took on one is answered even if main took its line down before the key's callback ran.
+    var asked: [UInt64: (offer: SkillOffer, at: Date)] = [:]
+    var questionTimer: SurfaceTimer?
+    /// Runs with no Tab already drawn once: a later progress of one never takes the panel back.
+    var unpromptedDrawn: Set<String> = []
     /// Runs a skill started with no Tab, seen in progress and not drawn yet: each is drawn once its
     /// activity record names the app and the skill (`activity`), or never.
     var unpromptedSeen: Set<String> = []
     /// Recent activity records by task id, for those runs.
     var records: [String: TaskRecord] = [:]
     var swap: Swap?
+    /// What the last `covered` answer found over the anchor.
+    var lastCovered: DebugState.LineHidden?
     /// Set by `present` when it redrew a re-sent offer in place; read by `receive`.
     var replacedInPlace = false
     var workTimers: [SurfaceTimer] = []
@@ -190,6 +222,8 @@ public final class SurfaceMachine {
     /// The working or result line was taken down because its app went behind or was covered; it
     /// stays down until the next offer.
     public internal(set) var lineSuppressed = false
+    /// Why the working or result line was last taken down by its watch, and what covered it.
+    public internal(set) var lastLineHidden: DebugState.LineHidden?
     public internal(set) var lastAccepted: Accepted?
     /// What the panel says, and its figure. Kept on a headless host too, for the debug state.
     public internal(set) var lineText: String?
@@ -271,6 +305,9 @@ public final class SurfaceMachine {
     /// doing will send no `taskProgress`, so its working line ends now; the activity list starts
     /// again with the next helper.
     public func helperGone() {
+        // An answer can no longer reach the helper, and a new one will ask again.
+        dropQuestion("surface.skill.helperGone")
+        asked.removeAll()
         if let work, work.source == .helper {
             count("surface.work.helperGone")
             end(with: .helperDown)
@@ -288,13 +325,27 @@ public final class SurfaceMachine {
     /// The helper withdrew an offer: take it down if it is shown, forget it if it is held, or swap
     /// it for its replacement if it was `reoffered`. Work already accepted from it goes on.
     public func withdrawn(_ message: OfferWithdrawn) {
-        if let q = question, q.offer.id == message.id {
-            // An answered question's withdrawal (taken, dismissed) is the helper confirming it.
-            guard !q.answered else { return publish() }
-            arbiter.invalidate(offerID: q.offerID)
-            question = nil
-            count("surface.skill.withdrawn.\(message.reason.rawValue)")
-            redrawResult()
+        asked = asked.filter { $0.value.offer.id != message.id || $0.key == question?.offerID }
+        if var q = question, q.offer.id == message.id {
+            switch q.state {
+            case .asked:
+                arbiter.invalidate(offerID: q.offerID)
+                asked[q.offerID] = nil
+                question = nil
+                count("surface.skill.withdrawn.\(message.reason.rawValue)")
+                redrawResult()
+            case .pending:
+                // The helper's answer to Tab: taken is done; anything else means it did not apply it.
+                q.state = .settled
+                q.row = message.reason == .taken ? WorkLines.answered(q.offer) : WorkLines.answerNotTaken
+                question = q
+                count(message.reason == .taken ? "surface.skill.confirmed" : "surface.skill.notTaken")
+                questionTimer?.cancel()
+                questionTimer = nil
+                if let result { showResult(result.line, lifetime: Self.answerHold) }
+            case .settled:
+                break
+            }
             return publish()
         }
         // CaretScreenCore's decoder refuses `reoffered` without `replacedBy`, so a line off the
@@ -362,7 +413,7 @@ public final class SurfaceMachine {
         }
         guard let offer = incoming.offer(for: field, createdAt: clock.now) else { return #"{"error":"nothing to show"}"# }
         if let reply = replaceInPlace(incoming, with: offer, caret: caret, field: field.frame ?? caret, readID: field.readID) {
-            startWatch(.offer(shown!.offerID), target: field.identity, anchors: anchors, requireFocus: true)
+            startWatch(.offer(shown!.offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
             return reply
         }
         // An action line or pop-up needs a spot that covers none of the app's fields or labels: its
@@ -399,7 +450,7 @@ public final class SurfaceMachine {
         // A reoffered line's replacement is drawn over it where it stands, without an exit and entry.
         draw(ui: arbiter.snapshot().ui, entering: !swapping)
         if swapping { count("surface.reoffer.swapped") }
-        startWatch(.offer(offerID), target: field.identity, anchors: anchors, requireFocus: true)
+        startWatch(.offer(offerID), target: field.identity, anchors: anchors, requireFocus: true, field: field.frame)
         count("surface.shown.\(offer.source.rawValue).\(offer.kind.name)")
         return #"{"ok":true,"offerId":\#(offerID)}"#
     }
@@ -505,7 +556,7 @@ public final class SurfaceMachine {
     /// Nil when a surface for `target` may be drawn at `anchors`; otherwise why not.
     /// `requireFocus: false` is for a line that reports on work, not on a field: the form may have
     /// moved focus on, but the app must be in front and the anchor uncovered.
-    func gate(_ target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) -> SurfaceGate.Hold? {
+    func gate(_ target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool, drawnFor: CGRect? = nil) -> SurfaceGate.Hold? {
         let front = world.frontmostPID
         // Cheapest test first: no Accessibility read for an app that is not in front.
         guard front == target.pid else { return .appNotFront }
@@ -515,20 +566,32 @@ public final class SurfaceMachine {
             focused = live?.elementID == target.elementID && live?.windowID == target.windowID
         }
         let stack = world.windowStack()
-        return SurfaceGate.check(
+        // The app's focused field as it is now, wherever it moved: what a decoration rings. A read
+        // that fails (a busy app's Accessibility times out, as TextEdit's did mid-run in A15's Esc
+        // runs) says nothing about the ring, so the field the surface was drawn for stands in.
+        let live = world.focusedFrame(pid: target.pid)
+        let field = live ?? drawnFor
+        let hold = SurfaceGate.check(
             targetPID: target.pid, frontmostPID: front, fieldIsFocused: focused, anchors: anchors,
-            windows: stack.windows, ownPID: stack.ownPID, displays: stack.displays,
-            // The app's focused field as it is now, wherever it moved: what a decoration rings.
-            field: world.focusedFrame(pid: target.pid)
+            windows: stack.windows, ownPID: stack.ownPID, displays: stack.displays, field: field
         )
+        if let hold, hold == .covered, let anchor = anchors.first {
+            let top = SurfaceGate.topWindow(at: anchor, windows: stack.windows, ownPID: stack.ownPID, displays: stack.displays, field: field)
+            lastCovered = DebugState.LineHidden(
+                hold: hold.rawValue, coverPID: top?.pid, coverLayer: top?.layer, coverAgent: top?.agent,
+                coverBounds: top.map { [$0.bounds.minX, $0.bounds.minY, $0.bounds.width, $0.bounds.height].map(Double.init) },
+                focusedFrameRead: live != nil
+            )
+        }
+        return hold
     }
 
     /// Rechecks what is shown every half second, and on `recheckVisibility` (another app
     /// activated), and acts once when the gate closes.
-    func startWatch(_ watched: Watched, target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) {
+    func startWatch(_ watched: Watched, target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool, field: CGRect? = nil) {
         stopWatch()
         let timer = clock.schedule(after: Self.recheckInterval, repeats: true) { [weak self] in self?.recheckVisibility() }
-        watch = Watch(watched: watched, target: target, anchors: anchors, requireFocus: requireFocus, timer: timer)
+        watch = Watch(watched: watched, target: target, anchors: anchors, requireFocus: requireFocus, field: field, timer: timer)
     }
 
     func stopWatch() {
@@ -538,7 +601,7 @@ public final class SurfaceMachine {
 
     /// Rechecks the watched surface now. The app calls this when another app activates.
     public func recheckVisibility() {
-        guard let watch, let hold = gate(watch.target, anchors: watch.anchors, requireFocus: watch.requireFocus) else { return }
+        guard let watch, let hold = gate(watch.target, anchors: watch.anchors, requireFocus: watch.requireFocus, drawnFor: watch.field) else { return }
         stopWatch()
         switch watch.watched {
         case .offer(let offerID):
@@ -550,6 +613,7 @@ public final class SurfaceMachine {
             // A line nobody can see owns no key: Esc and ⌘Z are the app's again. The work goes on,
             // and the activity list reports it.
             lineSuppressed = true
+            lastLineHidden = hold == .covered ? lastCovered : DebugState.LineHidden(hold: hold.rawValue)
             if let work { arbiter.clearStatus(id: work.statusID) }
             endResult()
             hidePanel(exit: 0)
@@ -666,16 +730,12 @@ public final class SurfaceMachine {
 
     public func offerChanged(_ reason: OfferArbiter.PassReason) {
         let snapshot = arbiter.snapshot()
-        if let q = question, !q.answered, snapshot.current?.id != q.offerID {
-            // Esc declined the question (and closed the toast with it); any other key dismissed it
-            // unanswered, as typing on dismisses every offer.
+        if let q = question, q.state == .asked, snapshot.current?.id != q.offerID {
+            // A key that passed through took it unanswered, as typing on dismisses every offer. Esc
+            // answered it already (`offerClosed`, which runs first).
             question = nil
-            if reason == .closed {
-                let sent = sendToHelper(.skillAnswer(SkillAnswer(id: q.offer.id, answer: .decline, at: nowMs)))
-                count(sent ? "surface.skill.declined" : "surface.skill.unsent")
-            } else {
-                count("surface.skill.dismissed")
-            }
+            asked[q.offerID] = nil
+            count("surface.skill.dismissed")
         }
         if reason == .typedThrough, let shown, snapshot.current?.id == shown.offerID {
             // The user typed the head of the top candidate: the rest stays as ghost text, and the
@@ -709,7 +769,7 @@ public final class SurfaceMachine {
 
     /// Another producer's offer replaced this one in the arbiter.
     public func displaced(_ offer: Offer) {
-        if let q = question, q.offerID == offer.id, !q.answered {
+        if let q = question, q.offerID == offer.id, q.state == .asked {
             question = nil
             count("surface.skill.displaced")
             redrawResult()
@@ -732,7 +792,8 @@ public final class SurfaceMachine {
     }
 
     public func claimed(_ claim: Claim) {
-        if let q = question, q.offerID == claim.offer.id { return answerQuestion() }
+        // A question's Tab, by the claim's own offer: answered even if main took the line down since.
+        if claim.offer.kind.actionLine?.answersToast == true { return answer(claim.offer.id, .accept) }
         releaseWhatTheKeyCleared()
         let shown: Shown
         if let current = self.shown, current.offerID == claim.offer.id {
@@ -782,10 +843,11 @@ public final class SurfaceMachine {
         stopWatch()
         self.shown = nil
         startWork(claim, offerKey: accept?.offerId ?? "?")
+        work?.anchor = Anchor(field: shown.field, caret: shown.caret)
         guard !headless else { return unsent ? failUnsent() : publish() }
         // The working line and its result follow the same rule as the offer: the app in front and
         // the line's anchor uncovered. Focus may move; the line reports on work, not on a field.
-        startWatch(.line, target: claim.offer.target, anchors: [CGPoint(x: shown.caret.midX, y: shown.caret.midY)], requireFocus: false)
+        startWatch(.line, target: claim.offer.target, anchors: [CGPoint(x: shown.caret.midX, y: shown.caret.midY)], requireFocus: false, field: shown.field)
         if unsent { return failUnsent() }
         publish()
     }
@@ -818,6 +880,8 @@ public final class SurfaceMachine {
     /// The settings closed the gate (pause): the offer shown or held goes, and nothing held is
     /// retried. Work already accepted goes on; its line and toast stay.
     public func gateClosed() {
+        dropQuestion("surface.skill.gateClosed")
+        redrawResult()
         cancelPending()
         guard let shown else { return publish() }
         arbiter.invalidate(offerID: shown.offerID)
@@ -827,6 +891,7 @@ public final class SurfaceMachine {
     }
 
     public func shutdown() {
+        dropQuestion("surface.skill.shutdown")
         cancelPending()
         endSwap(takeDown: false)
         stopWatch()
@@ -849,6 +914,7 @@ public final class SurfaceMachine {
             info.questionAnswered = q.answered
         }
         if work?.unprompted == true { info.unprompted = true }
+        info.lineHidden = lastLineHidden
         if let shown {
             info.offerId = shown.offerID
             info.offerKey = shown.offerKey

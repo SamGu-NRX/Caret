@@ -188,6 +188,41 @@ final class SurfaceStopTests: XCTestCase {
         ]))
     }
 
+    /// A15 part 1, the second failure A14 and A15's on-screen runs hit: the stopped line was taken
+    /// down as `covered` within half a second of Esc. The only window over the caret was Grammarly's
+    /// ring around TextEdit's text area (measured: field grown 64 pt on every side, layer 1, an
+    /// agent app), which the gate forgives only when it can read the app's focused frame. A read
+    /// that failed while TextEdit was busy left nothing to measure the ring against. The watch now
+    /// measures it against the field the line was drawn for.
+    func testAWritingAidsRingDoesNotHideTheLineWhenTheFocusedFrameCannotBeRead() {
+        let field = Fx.Element.email.frame
+        let ring = SurfaceGate.Window(pid: 4242, bounds: field.insetBy(dx: -64, dy: -64), layer: 1, agent: true)
+        play(Transition("Esc, then a recheck while the focused frame is unreadable", [
+            .screen { $0.front(); $0.windows.insert(ring, at: 0) },
+            .offer(Fx.action()), .press(Fx.tab()),
+            .taskLine(Fx.progress("offer-5", .verified, step: 0, steps: 3)),
+            .wait(3), .press(Fx.esc()),
+            .expect(.line("You stopped it before step 2 of 3")),
+            .screen { $0.frameUnreadable = true },
+            .wait(SurfaceMachine.recheckInterval),
+            .expect(.line("You stopped it before step 2 of 3")), .expect(.escOwned(true)),
+            .taskLine(Fx.progress("offer-5", .stopped, reason: .you, step: 1, steps: 3)),
+            .expect(.line("You stopped it before step 2 of 3")),
+        ]))
+        play(Transition("a regular app's window over the caret still hides it", [
+            .screen { $0.front() },
+            .offer(Fx.action()), .press(Fx.tab()),
+            .wait(3), .press(Fx.esc()),
+            .screen { $0.frameUnreadable = true; $0.windows.insert(Fx.cover, at: 0) },
+            .wait(SurfaceMachine.recheckInterval),
+            .expect(.panelUp(false)), .expect(.escOwned(false)), .expect(.counted("surface.lineHidden.covered")),
+            .expect(.custom("the debug state names the cover") { rig in
+                let h = rig.machine.lastLineHidden
+                return h?.hold == "covered" && h?.coverPID == Fx.other && h?.focusedFrameRead == false
+            }),
+        ]))
+    }
+
     func testEscBeforeAnyProgressJustStops() {
         play(Transition("Esc at 3 s with no progress yet", [
             .screen { $0.front() }, .offer(Fx.action()), .press(Fx.tab()),
