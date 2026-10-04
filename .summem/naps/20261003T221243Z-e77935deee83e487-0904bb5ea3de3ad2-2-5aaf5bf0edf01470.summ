@@ -1,0 +1,1 @@
+B19: undoing a skill run resets its clean count (ten more clean runs after run 11's undo); live Jev's first naming ask often misses NAME_CUTOFF, the retry picks. The host never learns the reader's windowId; planRequest.window {pid, number, title} (B21) names it.

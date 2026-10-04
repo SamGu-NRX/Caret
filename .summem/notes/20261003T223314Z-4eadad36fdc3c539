@@ -1,1 +1,0 @@
-planRequest.windowId is the reader's '<pid>-<n>' id, which the host never learns for an arbitrary window; the host sends none until the helper's schema takes pid + window number (A14).
