@@ -258,8 +258,9 @@ struct QuestionRow: View {
                 Text(question.text)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color(token: Tokens.ink))
-                    // 80 characters at the 290 pt the keys leave take three lines.
-                    .lineLimit(3)
+                    // No cap: a name may take more lines than its 80 characters suggest (wide
+                    // glyphs, larger text), and every word of the question is shown.
+                    .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
                 if let detail = question.detail {
                     Text(detail)

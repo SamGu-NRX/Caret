@@ -9,7 +9,7 @@
 //      and the keep question under its toast is accepted with Tab (skillAnswer accept);
 //   2. ten clean runs, each taken with Tab; the promote question comes with the tenth, never before, and
 //      Tab accepts it;
-//   3. run 11 starts with no Tab: the host shows it ("<skill>, on its own") and the perch works on it; it
+//   3. run 11 starts with no Tab: the host shows it ("On its own: <skill>") and the perch works on it; it
 //      ends on a toast naming the skill; the skill is in the host's memory list as on its own and named as
 //      an exception on the permissions page; a ⌘Z restores the fields, read back from the fixture;
 //   4. ten more Tab runs earn it again (an undo resets it, B19's rule), Tab accepts the promote question,
@@ -393,16 +393,16 @@ try {
   await until("run 11 to end", () => since("taskProgress", at11).find((p) => p.taskId === started.taskId && p.phase === "done"), 15_000);
   const toast = await until("the toast naming the skill", async () => {
     const s = await surface();
-    return s.toast?.grantID !== undefined && (s.toast.caption ?? "").startsWith("Done: ") ? s.toast : null;
+    return s.toast?.grantID !== undefined && (s.toast.caption ?? "").startsWith("Done on its own: ") ? s.toast : null;
   }, 3000);
   const filled = await dump();
   const run11: Record<string, unknown> = { taskId: started.taskId, line: working.lineText, perch: perchWorking, toast: toast.caption, fixture: filled };
   result.run11 = run11;
   checks.run11StartedWithNoTab = !fromHost.some((x) => x.type === "offerAccept" && x.detail === started.taskId);
   checks.run11Filled = Object.entries(intakeOf(order11)).every(([k, v]) => filled[k] === v);
-  checks.run11LineNamesTheSkill = working.lineText === `${String(result.skillName)}, on its own`;
+  checks.run11LineNamesTheSkill = working.lineText === `On its own: ${String(result.skillName)}`;
   checks.run11PerchWorking = perchWorking !== null;
-  checks.run11ToastNamesTheSkill = toast.caption === `Done: ${String(result.skillName)}, on its own`;
+  checks.run11ToastNamesTheSkill = toast.caption === `Done on its own: ${String(result.skillName)}`;
   await hostCommand("memory list");
   const listed = await until("the host's list to show it on its own", async () => {
     const m = await memory();

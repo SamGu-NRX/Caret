@@ -164,6 +164,9 @@ public final class SurfaceMachine {
     public static let questionLifetime: TimeInterval = 15
     /// How long the answer to a question stays before the line leaves. Assumed.
     public static let answerHold: TimeInterval = 2
+    /// How long an answer that did not go through stays: as long as other errors (`SURFACES.md` 6),
+    /// since it says what to check.
+    public static let answerFailHold: TimeInterval = 6
     /// How long a yes waits for the helper to confirm it (`offerWithdrawn` taken) before the row
     /// says it was not confirmed. Assumed: the helper answers in the same turn it reads the line.
     public static let answerWait: TimeInterval = 2
@@ -342,7 +345,7 @@ public final class SurfaceMachine {
                 count(message.reason == .taken ? "surface.skill.confirmed" : "surface.skill.notTaken")
                 questionTimer?.cancel()
                 questionTimer = nil
-                if let result { showResult(result.line, lifetime: Self.answerHold) }
+                if let result { showResult(result.line, lifetime: message.reason == .taken ? Self.answerHold : Self.answerFailHold) }
             case .settled:
                 break
             }

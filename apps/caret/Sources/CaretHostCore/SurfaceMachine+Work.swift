@@ -418,7 +418,7 @@ extension SurfaceMachine {
         q.row = sent ? WorkLines.answering(offer) : WorkLines.answerUnsent
         question = q
         guard let result else { return publish() }
-        guard sent else { return showResult(result.line, lifetime: Self.answerHold) }
+        guard sent else { return showResult(result.line, lifetime: Self.answerFailHold) }
         // The line stays while the helper is asked; the timer below decides when it gives up.
         showResult(result.line, lifetime: Self.answerWait + Self.answerHold)
         questionTimer?.cancel()
@@ -429,7 +429,7 @@ extension SurfaceMachine {
             q.row = WorkLines.answerUnconfirmed
             self.question = q
             self.count("surface.skill.unconfirmed")
-            if let result = self.result { self.showResult(result.line, lifetime: Self.answerHold) }
+            if let result = self.result { self.showResult(result.line, lifetime: Self.answerFailHold) }
         }
     }
 

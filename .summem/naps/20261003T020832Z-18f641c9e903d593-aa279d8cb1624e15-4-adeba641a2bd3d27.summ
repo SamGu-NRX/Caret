@@ -1,1 +1,0 @@
-apps/caret: SurfaceMachine/FillMachine decide, coordinators only read and draw; test with SurfaceRig/FillRig and a ManualClock. ImageRenderer draws AppKit controls as placeholders: render SwiftUI-drawn ones. Host tests: own --settings, --status-item off.

@@ -1,0 +1,1 @@
+Helper: leak-check one string per line; mv scripts, never edit a running one; never mutate w.nodes; request walks need frontmostPid; expiry only in lifetimes.ts. Host: machines decide, coordinators draw (Rig+ManualClock); renders need SwiftUI controls; tests own --settings.

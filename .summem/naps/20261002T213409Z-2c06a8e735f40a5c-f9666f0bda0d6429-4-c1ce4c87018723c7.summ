@@ -1,1 +1,0 @@
-Host: repeating KeyframeAnimator redraws off screen (10.9% CPU; use Timer blinks); debug JSON omits nil, test == null. XCTestCase.record(_:) shadows a free record(...): name it taskRecord. Perch checks run headless: real Helper, fake-app.ts reader, --perch hidden, pid 5150.

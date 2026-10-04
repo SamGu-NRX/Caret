@@ -199,6 +199,7 @@ final class SurfaceCoordinator {
         case .clearCaret: clearCaret()
         case .showPanel(let content, let text, let placement):
             show(Self.view(content, character: character), narrows: Self.narrows(content), text: text, placement: placement, content: content)
+            announce(content)
         case .hidePanel(let exit): panel.exit(duration: exit)
         case .workingChanged(let working): onWorkingChanged?(working)
         case .toastSlotTaken: onToastChanged?()
@@ -309,6 +310,25 @@ final class SurfaceCoordinator {
             let shift = (typed as NSString).size(withAttributes: [.font: drawn.font]).width
             drawOwnGhost(remainder, caret: caret.offsetBy(dx: shift, dy: 0), font: drawn.font, color: drawn.style.textColor)
         }
+    }
+
+    /// The panel is another app's window and never takes focus, so VoiceOver hears what needs the
+    /// user once: a skill's run with no Tab starting, and a question under a result or its answer.
+    private var announced: String?
+    private func announce(_ content: PanelContent) {
+        guard case .line(let line) = content else { return }
+        let words: String?
+        if let q = line.question {
+            let keys = q.hints.map { "\($0.key): \($0.label ?? "")" }.joined(separator: ". ")
+            words = [q.text, q.detail, keys.isEmpty ? nil : keys].compactMap { $0 }.joined(separator: ". ")
+        } else if line.lead == "On its own:" {
+            words = "\(line.lead ?? "") \(line.text). Esc takes over."
+        } else {
+            words = nil
+        }
+        guard let words, words != announced else { return }
+        announced = words
+        AccessibilityNotification.Announcement(words).post()
     }
 
     private func clearCaret() {

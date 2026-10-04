@@ -285,19 +285,18 @@ public enum WorkLines {
     /// A skill working with no Tab. It names the skill and that nobody asked, and Esc hands it back
     /// from the first moment. The figure stays on the line, working: this run was not the user's
     /// request, so the line does not look away as a Tab'd one does.
+    /// "On its own" leads, so a long name can be cut but the fact nobody asked for this cannot.
     public static func onItsOwn(_ name: String, app: String) -> WorkLine {
-        let caption = "\(name), on its own"
-        return WorkLine(LineContent(
-            figure: .working, app: app, text: caption, emphasis: .plain, hints: [Hint(key: "Esc", label: "Take over")], appGlyphOnly: true
-        ), text: caption)
+        WorkLine(LineContent(
+            figure: .working, app: app, lead: "On its own:", text: name, emphasis: .plain, hints: [Hint(key: "Esc", label: "Take over")], appGlyphOnly: true
+        ), text: "On its own: \(name)")
     }
 
     /// A skill's run with no Tab finished and wrote something: ⌘Z takes it while the line shows.
     public static func doneOnItsOwn(_ name: String) -> WorkLine {
-        let rest = "\(name), on its own"
-        return WorkLine(
-            LineContent(figure: .done, lead: "Done:", text: rest, emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")]),
-            text: "Done: \(rest)"
+        WorkLine(
+            LineContent(figure: .done, lead: "Done on its own:", text: name, emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")]),
+            text: "Done on its own: \(name)"
         )
     }
 

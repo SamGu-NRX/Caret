@@ -188,6 +188,8 @@ final class SkillSurfaceTests: XCTestCase {
         silent.clock.advance(by: SurfaceMachine.answerWait)
         XCTAssertEqual(silent.machine.debugInfo().question, "Caret didn't confirm that.")
         silent.clock.advance(by: SurfaceMachine.answerHold)
+        XCTAssertNotNil(silent.machine.lineText, "a failure stays as long as other errors")
+        silent.clock.advance(by: SurfaceMachine.answerFailHold - SurfaceMachine.answerHold)
         XCTAssertNil(silent.machine.lineText)
     }
 
@@ -284,7 +286,7 @@ final class SkillSurfaceTests: XCTestCase {
         let rig = runningOnItsOwn()
         XCTAssertEqual(rig.machine.workingOn, "offer-15")
         XCTAssertEqual(rig.machine.debugInfo().unprompted, true)
-        XCTAssertEqual(rig.machine.lineText, "Subject and To into Mail Fixture, on its own")
+        XCTAssertEqual(rig.machine.lineText, "On its own: Subject and To into Mail Fixture")
         guard case .line(let drawn)? = rig.panels.last else { return XCTFail("no line") }
         XCTAssertEqual(drawn.hints, [Hint(key: "Esc", label: "Take over")])
         XCTAssertEqual(drawn.figure, .working)
@@ -308,7 +310,7 @@ final class SkillSurfaceTests: XCTestCase {
     func testADoneRunWithNoTabEndsOnAToastNamingTheSkillWithLongerUndo() {
         let rig = runningOnItsOwn()
         rig.machine.taskProgress(Self.unprompted(.done, written: 3))
-        XCTAssertEqual(rig.machine.toastInfo?.caption, "Done: Subject and To into Mail Fixture, on its own")
+        XCTAssertEqual(rig.machine.toastInfo?.caption, "Done on its own: Subject and To into Mail Fixture")
         rig.clock.advance(by: SurfaceMachine.unpromptedToastLifetime - 0.5)
         XCTAssertTrue(undoOwned(rig))
         rig.press(Fx.cmdZ())

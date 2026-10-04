@@ -542,7 +542,8 @@ struct ExceptionsView: View {
                     Button(MemoryPage.controlTitle(.backOnTab)) { backOnTab(e.id) }
                         .buttonStyle(RowButtonStyle(primary: false))
                         .disabled(e.busy)
-                        .accessibilityLabel("Put \(e.name) back on Tab")
+                        // The visible words first, so voice control finds the button by them.
+                        .accessibilityLabel("\(MemoryPage.controlTitle(.backOnTab)): \(e.name)")
                 }
                 .padding(.vertical, 5)
                 .accessibilityElement(children: .contain)
