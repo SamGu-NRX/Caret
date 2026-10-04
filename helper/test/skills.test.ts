@@ -554,6 +554,32 @@ describe("skills in the helper", () => {
     });
   }
 
+  // B22 review: a run the user accepted with Tab still depends on its routine, its skill and the settings family.
+  for (const [name, change] of [
+    ["the user pauses the skill", () => expect(ask("pause", { id: skills()[0]!.id }).error).toBeNull()],
+    ["the user forgets the skill", () => expect(ask("forget", { id: skills()[0]!.id }).error).toBeNull()],
+    ["the user forgets the routine", () => expect(ask("forget", { id: routines()[0]!.id }).error).toBeNull()],
+    ["the user turns routines off", () => settings({ roles: ["fill", "watch", "calendar", "words"] })],
+  ] as const) {
+    it(`revokes a run the user accepted with Tab at once when ${name}`, async () => {
+      await keep();
+      const { own, revokedAtOnce, landed } = await changeMidRun(change);
+      expect(own.offer).not.toBeNull();
+      expect(revokedAtOnce).toBe(true);
+      expect(landed).toBe(1);
+      expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "you" });
+    });
+  }
+
+  it("lets a run the user accepted with Tab finish when the write permission changes: the user answered for this run", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    await keep();
+    const { own, revokedAtOnce } = await changeMidRun(() => setRule("writeElsewhere", "ask"));
+    expect(own.offer).not.toBeNull();
+    expect(revokedAtOnce).toBe(false);
+    expect(own.progress.at(-1)).toMatchObject({ phase: "done" });
+  });
+
   // S1 audit #5: before B22 nothing tied a run to a host that could show it.
   it("revokes a run with no Tab at once when the host disconnects, as Caret's own stop", async () => {
     await promoted();

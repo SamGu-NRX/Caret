@@ -273,6 +273,17 @@ describe("executor", () => {
     expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 
+  // B22 review: a label that matches no risk word was pressed before; only labels the table knows to be safe are.
+  it("hands a press it cannot classify to the user: no risk word is not evidence of safety", async () => {
+    app.nodes.push({ key: K("button:transmit~0"), parent: null, role: "AXButton", label: "Transmit" });
+    app.show();
+    const p = plan([{ says: "the form is sent", end: { kind: "exists", window: W, target: { label: "Sent!", describe: "sent notice" } }, via: { kind: "press", target: { label: "Transmit", describe: "Transmit button" } } }]);
+    const r = await helper.executor.run("t1", p, {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0 });
+    expect(r.detail).toBe("Caret cannot tell what pressing 'Transmit' does, so it leaves that press to you");
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
   it("names a handoff's reason from the control's label, whatever reason the plan gives", async () => {
     const p = plan([{ says: "You press Send", end: { kind: "handoff", window: W, target: { key: K("button:send~0"), describe: "the Send button" }, why: "unverifiable" } }]);
     expect((await helper.executor.run("t1", p, {})).detail).toBe("'Send' reads as outbound; Caret leaves that press to you");
@@ -731,6 +742,33 @@ describe("executor", () => {
       expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
       expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
       expect(kinds().slice(-2)).toEqual(["actGrant", "actRevoke"]);
+    });
+
+    // B22 review: before, an ordinary pause or the user's input during an undo was refused or ignored.
+    it("a pause or the user's own click during an undo stops it, and the undo watches for input before its first restore", async () => {
+      for (const [id, how, reason] of [
+        ["t1", "pause", "you paused the undo"],
+        ["t2", "click", "you used the window: a click in 'Fixture — Executor'"],
+      ] as const) {
+        app.setValue(K("textfield:name~0"), "");
+        app.setValue(K("textfield:email~0"), "old@example.com");
+        app.show();
+        await helper.executor.run(id, two(), {}, undefined, { grant: true });
+        const from = app.verbs.length;
+        app.afterVerb = (a, v) => {
+          if (v.kind !== "write") return;
+          a.afterVerb = null;
+          if (how === "pause") helper.executor.pause(id, false);
+          else helper.executor.onUserInput({ type: "userInput", v: PROTOCOL_VERSION, at: 1, pid: FIXTURE_APP.pid, kind: "mouse", point: [150, 50] });
+        };
+        const u = await helper.executor.undo(id);
+        expect(u, how).toMatchObject({ restored: 1, notRestored: [{ step: 0, reason }] });
+        expect(app.node(K("textfield:name~0"))?.value, how).toBe("Dana");
+        const verbs = app.verbs.slice(from);
+        const watch = verbs.findIndex((v) => v.kind === "watchInput" && v.pids.includes(FIXTURE_APP.pid));
+        expect(watch, how).toBeGreaterThanOrEqual(0);
+        expect(watch, how).toBeLessThan(verbs.findIndex((v) => v.kind === "write"));
+      }
     });
 
     it("undo of a granted run is granted the run's window for the restore, then revoked", async () => {

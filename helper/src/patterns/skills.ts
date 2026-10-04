@@ -222,6 +222,25 @@ export class Skills {
     return null;
   }
 
+  /**
+   * Why a run of this routine the user accepted with Tab may not go on (B22 review): the routine, or the skill
+   * the run counts for, was forgotten or paused. Putting the skill back on Tab does not stop it: the user
+   * accepted this run.
+   */
+  whyTabRunMayNotContinue(taskId: string, routineId: string): string | null {
+    const memory = this.deps.memory;
+    const run = this.runs.get(taskId);
+    if (run !== undefined) {
+      const s = memory.skill(run.skillId);
+      if (s === null) return "you forgot the skill";
+      if (s.paused) return `you paused ${s.name}`;
+    }
+    const routine = memory.routine(routineId);
+    if (routine === null) return "you forgot the routine";
+    if (routine.paused) return "you paused the routine";
+    return null;
+  }
+
   /** Why the run with this task id, started by a skill with no Tab, may not act now; see whyNotOnItsOwn. */
   whyRunMayNotAct(taskId: string, action: WriteAction | null): string | null {
     const run = this.runs.get(taskId);

@@ -4,9 +4,11 @@
 // the run stops there and the press is handed to the user (fable55 plan section 3, permission table).
 // `system` (B22, S1 audit #10): a permission dialog or system prompt, found by the window's subrole and
 // the process that shows it, not only by English words: "Allow" in a privacy prompt grants an app access
-// to the user's data, whatever it is called in their language. The reader keeps the same table
-// (CaretScreenCore/PressRisk.swift) and refuses at its own boundary any press it does not positively allow;
-// fixtures/golden/press-risk.json is the cases both sides must agree on.
+// to the user's data, whatever it is called in their language. A press is `safe` only when its whole label is
+// one of SAFE_PRESSES; any other label is `unclassified`, and Caret leaves that press to the user too (B22
+// review: "Transmit" or "Enviar" matches no risk word, which is no evidence it is safe). The reader keeps the
+// same table (CaretScreenCore/RiskTable.swift) and refuses at its own boundary any press it does not
+// positively allow; fixtures/golden/press-risk.json is the cases both sides must agree on.
 
 export type RiskClass = "outbound" | "destructive" | "money" | "system" | "safe";
 
@@ -18,6 +20,13 @@ export const RISK_TABLE: Readonly<Record<Exclude<RiskClass, "safe">, readonly st
   // What permission and security prompts press: grant access, trust or install something, or open what the system blocked.
   system: ["allow", "always allow", "allow once", "authorize", "approve", "grant", "grant access", "trust", "install", "open anyway", "unlock"],
 };
+
+/**
+ * The presses Caret may make: reversible navigation and annotation, each the control's whole label. Assumed, not
+ * measured: the labels the executor's own plans press (executor-eval, real-target-eval: Next page, Archive, Add
+ * note) and their plain neighbours. The generated planner and routines hand every press to the user.
+ */
+export const SAFE_PRESSES: readonly string[] = ["next", "next page", "previous", "previous page", "back", "more", "show more", "load more", "expand", "collapse", "archive", "add note", "save draft"];
 
 /**
  * Window subroles of system dialogs and floating system panels (AXSystemDialog, AXSystemFloatingWindow), as
@@ -59,7 +68,13 @@ export function isSystemPrompt(windowKind: string, bundleId: string): boolean {
   return SYSTEM_WINDOW_KINDS.includes(kind) || SYSTEM_PROMPT_APPS.some((b) => bundleId === b || bundleId.startsWith(`${b}.`));
 }
 
-/** A press's risk class: `system` anywhere in a system prompt, whatever the button says; otherwise by its label. */
-export function classifyPress(p: { label: string; windowKind: string; bundleId: string }): RiskClass {
-  return isSystemPrompt(p.windowKind, p.bundleId) ? "system" : classifyLabel(p.label);
+/**
+ * A press's class: `system` anywhere in a system prompt, whatever the button says; a risk class its label reads
+ * as; `safe` only when the whole label is one of SAFE_PRESSES; otherwise `unclassified`.
+ */
+export function classifyPress(p: { label: string; windowKind: string; bundleId: string }): RiskClass | "unclassified" {
+  if (isSystemPrompt(p.windowKind, p.bundleId)) return "system";
+  const risk = classifyLabel(p.label);
+  if (risk !== "safe") return risk;
+  return SAFE_PRESSES.includes(p.label.trim().replace(/\s+/g, " ").toLowerCase()) ? "safe" : "unclassified";
 }

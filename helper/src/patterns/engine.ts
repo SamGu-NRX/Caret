@@ -59,7 +59,7 @@ export interface EngineDeps {
    * Runs a plan through the executor; `expect` holds field values, by window and key, that must still hold
    * at its first read. `unprompted`: a skill started it from its trigger without a Tab (B19).
    */
-  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, opts?: { unprompted?: boolean }) => Promise<TaskResult>;
+  run: (taskId: string, plan: Plan, slots: Record<string, string>, expect?: Record<string, Record<string, string>>, opts?: RunDeps) => Promise<TaskResult>;
   /** Names routines (skills.ts); null with Jev off, when code names them. */
   askJev?: AskJev | null;
   shadow: () => boolean;
@@ -82,6 +82,17 @@ export interface EngineDeps {
 }
 
 type Cell = LoopCell | RoutineCell;
+
+/**
+ * What a pattern run depends on beyond its grant (B22): its offer's settings family and, for a routine's, the
+ * routine itself; turning the family off, or forgetting or pausing the routine or its skill, ends the run.
+ * `unprompted`: a skill started it from its trigger without a Tab (B19).
+ */
+export interface RunDeps {
+  unprompted?: boolean;
+  family: Family;
+  routineId: string | null;
+}
 
 interface OfferState {
   msg: PatternOffer;
@@ -589,7 +600,7 @@ export class PatternEngine {
     if (routineId !== null) this.skills.runStarted(taskId, routineId, this.writeAction(o.msg.windowId));
     let r: TaskResult;
     try {
-      r = await this.deps.run(taskId, o.plan, o.slots, empty, unprompted ? { unprompted: true } : undefined);
+      r = await this.deps.run(taskId, o.plan, o.slots, empty, { ...(unprompted ? { unprompted: true } : {}), family: familyOf(o.msg.kind), routineId: o.routineId });
     } catch (e) {
       // A run that ends in an error (the reader refusing the last watch, say) is a failure like any other.
       if (routineId !== null) this.skills.afterRun(taskId, routineId, o.plan, o.cells, { outcome: "stopped", step: null }, this.clock);

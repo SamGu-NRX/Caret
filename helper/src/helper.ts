@@ -249,6 +249,12 @@ export class Helper {
    * them disconnects, the task is revoked. A task with no entry was started in process, outside a session.
    */
   private readonly taskHosts = new Map<string, ReadonlySet<string>>();
+  /**
+   * What each run from an offer depends on beyond its grant (B22 review): the settings family of the offer it
+   * came from, and for a routine's, the routine. Turning that family off, or forgetting or pausing the routine
+   * or its skill, revokes it, a run the user accepted with Tab included.
+   */
+  private readonly taskDeps = new Map<string, { family: Family | null; routineId: string | null }>();
 
   constructor(opts: HelperOptions) {
     this.opts = opts;
@@ -313,6 +319,7 @@ export class Helper {
       // A run with no Tab is bound to every host session connected as it starts (S1 audit #5); with none,
       // authorize refuses its first act. The engine does not start one while no host is connected.
       run: (taskId, plan, slots, expect, opts) => {
+        if (opts !== undefined) this.taskDeps.set(taskId, { family: opts.family, routineId: opts.routineId });
         if (opts?.unprompted === true) this.taskHosts.set(taskId, new Set(this.hosts));
         return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true });
       },
@@ -345,13 +352,13 @@ export class Helper {
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
     });
     // The open-app line runs only from the host's offerAccept.
-    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }), gate: this.gate, now: this.now });
+    this.openApp = new OpenAppOffers({ model: this.model, publish: (m, accept) => this.publish(m, accept), run: (taskId, plan, slots) => this.runFrom("pending", taskId, plan, slots), gate: this.gate, now: this.now });
     this.events = new EventCards({
       model: this.model,
       askJev: this.ask,
       publish: (m, accept) => this.publish(m, accept),
       // An event card runs only from the host's offerAccept.
-      run: (taskId, plan, slots) => this.executor.run(taskId, plan, slots, undefined, { grant: true }),
+      run: (taskId, plan, slots) => this.runFrom("event", taskId, plan, slots),
       gate: this.gate,
       people: () => this.memory.list("people").flatMap((e) => (e.kind === "people" && e.status !== "paused" ? [{ id: e.id, label: e.fields.alias, text: e.fields.name }] : [])),
       calendar: opts.eventCalendar ?? "Caret",
@@ -370,7 +377,7 @@ export class Helper {
       patterns: this.patterns,
       events: this.events,
       // A first look's offer runs only from the host's offerAccept.
-      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
+      run: (taskId, plan, slots, expect) => this.runFrom(this.firstLooks.get(taskId)?.family ?? null, taskId, plan, slots, expect),
       record: (msg, family, accept, underlying) => {
         this.offers.record(msg, accept);
         this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
@@ -395,6 +402,14 @@ export class Helper {
     if (bound !== undefined && [...bound].some((h) => !this.hosts.has(h))) return { why: "the host that started it disconnected", by: "host" };
     if (a.unprompted && (bound === undefined || bound.size === 0)) return { why: "no host was connected to show it", by: "host" };
     if (this.gate.settings.paused) return { why: "you paused Caret", by: "you" };
+    const deps = this.taskDeps.get(a.taskId);
+    if (deps?.family != null && this.gate.holds(deps.family, this.now()).some((h) => h === "roleOff" || h === "levelOff")) {
+      return { why: "your settings no longer let Caret do this kind of work", by: "you" };
+    }
+    if (deps?.routineId != null) {
+      const why = this.patterns.skills.whyTabRunMayNotContinue(a.taskId, deps.routineId);
+      if (why !== null) return { why, by: "you" };
+    }
     if (a.unprompted) {
       const action = a.action === "writeHere" || a.action === "writeElsewhere" ? a.action : null;
       if (a.action !== null && action === null) return { why: `a skill with no Tab never acts under ${a.action}`, by: "you" };
@@ -589,6 +604,12 @@ export class Helper {
     for (const [taskId, bound] of [...this.taskHosts]) {
       if (bound.has(session)) this.executor.revoke(taskId, { why: "the host that started it disconnected", by: "host" });
     }
+  }
+
+  /** Runs an accepted offer of this settings family under a grant, recording the family it depends on. */
+  private runFrom(family: Family | null, taskId: string, plan: unknown, slots: Record<string, string>, expect?: Record<string, Record<string, string>>): Promise<TaskResult> {
+    if (family !== null) this.taskDeps.set(taskId, { family, routineId: null });
+    return this.executor.run(taskId, plan, slots, expect, { grant: true });
   }
 
   /**
@@ -905,7 +926,10 @@ export class Helper {
   private onTaskEvent(e: TaskEvent): void {
     const state = PHASE_STATE[e.phase];
     // A task that can no longer act needs no host binding; an undo binds it again to the session asking.
-    if (state !== "running" && state !== "paused") this.taskHosts.delete(e.taskId);
+    if (state !== "running" && state !== "paused") {
+      this.taskHosts.delete(e.taskId);
+      this.taskDeps.delete(e.taskId);
+    }
     const cause: TaskCause | null = e.cause ?? (state === "running" ? null : state === "undone" ? "you" : "caret");
     const fields = {
       state,
@@ -1212,7 +1236,7 @@ export class Helper {
     const { plan, slots } = fillPlan(this.model, p);
     this.withdrawFill(p.id, "taken");
     // The destinations were empty just now; one the user fills before the run's first read stops it.
-    return this.executor.run(p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) }, { grant: true });
+    return this.runFrom("fill", p.id, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
   }
 
   /**

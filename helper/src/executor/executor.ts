@@ -385,14 +385,20 @@ export class Executor {
    */
   onUserInput(m: UserInput): void {
     for (const task of this.tasks.values()) {
-      if (task.finished !== null || task.interrupt?.kind === "stop") continue;
+      const acting = task.undoing || (task.finished === null && task.interrupt?.kind !== "stop");
+      if (!acting) continue;
       for (const windowId of task.windows.values()) {
         const w = this.deps.model.windows.get(windowId);
         if (w === undefined || w.app.pid !== m.pid) continue;
         const inside = m.kind === "mouse" ? m.point !== null && w.window.frame !== null && contains(w.window.frame, m.point) : w.focused;
         if (!inside) continue;
-        task.interrupt = { kind: "pause", by: "input", why: `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'` };
-        this.revokeGrant(task);
+        const why = `${m.kind === "key" ? "typing" : "a click"} in '${w.window.title}'`;
+        // An undo under way stops its remaining restores, as a pause of it does (B22 review).
+        if (task.undoing) this.stopUndo(task, `you used the window: ${why}`);
+        else {
+          task.interrupt = { kind: "pause", by: "input", why };
+          this.revokeGrant(task);
+        }
       }
     }
   }
@@ -409,7 +415,8 @@ export class Executor {
    */
   pause(taskId: string, takeOver: boolean, reason?: "input"): void {
     const task = this.need(taskId);
-    if (takeOver && task.undoing) return this.stopUndo(task);
+    // Any pause of an undo under way stops it: the restores not yet made are left as they are (B22 review).
+    if (task.undoing) return this.stopUndo(task, takeOver ? "you took over the undo" : "you paused the undo");
     const by = takeOver ? "takeOver" : reason ?? "control";
     if (task.finished === "paused") {
       if (takeOver) this.progress(task, "paused", this.stepAt(task), this.pauseDetail(task, { kind: "pause", by, why: "" }), "you");
@@ -577,6 +584,12 @@ export class Executor {
     releaseSources(task);
     task.undoing = true;
     task.undoStopped = null;
+    // The user's input in the task's windows stops the undo, so the reader watches them before the first restore.
+    try {
+      await this.updateWatch();
+    } catch {
+      this.stopUndo(task, "the reader cannot watch for your input");
+    }
     // The run is over; a stop or pause still pending from it (a write that ended in axError) is not this undo's.
     task.interrupt = null;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
@@ -614,6 +627,8 @@ export class Executor {
     } finally {
       task.undoing = false;
       this.revokeGrant(task);
+      // The watch for this undo ends with it; a failure here only leaves a watch on, which the next run replaces.
+      await this.updateWatch().catch(() => undefined);
     }
     const detail = `restored ${out.restored}; not restored ${out.notRestored.length}; presses not undoable ${out.notUndoable}`;
     this.progress(task, "undone", null, detail, null, { restored: out.restored, notRestored: out.notRestored.length, notUndoablePresses: out.notUndoable });
@@ -696,7 +711,7 @@ export class Executor {
   private async updateWatch(): Promise<void> {
     const pids = new Set<number>();
     for (const t of this.tasks.values()) {
-      if (t.finished !== null) continue;
+      if (t.finished !== null && !t.undoing) continue;
       for (const id of t.windows.values()) {
         const w = this.deps.model.windows.get(id);
         if (w !== undefined) pids.add(w.app.pid);
@@ -727,8 +742,9 @@ export class Executor {
       const what = label === "" ? end.target.describe : `'${label}'`;
       // The control's own label decides the reason, as for a press: a plan cannot call a Send press unverifiable.
       const risk = classifyPress({ label, windowKind: w.window.kind, bundleId: w.app.bundleId });
-      if (risk !== "safe") task.handedOff = { action: RISK_ACTION[risk], what, windowId: w.window.windowId };
-      throw StepStop.handoff(risk === "safe" ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${risk}; Caret leaves that press to you`);
+      const known = risk === "safe" || risk === "unclassified" ? null : risk;
+      if (known !== null) task.handedOff = { action: RISK_ACTION[known], what, windowId: w.window.windowId };
+      throw StepStop.handoff(known === null ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${known}; Caret leaves that press to you`);
     }
 
     if (end.kind === "valueEquals" || end.kind === "focused") {
@@ -837,6 +853,8 @@ export class Executor {
       throw StepStop.handoff(`${label === "" ? "This control" : `'${label}'`} is in a system prompt; Caret leaves that press to you`);
     }
     if (label === "") throw StepStop.handoff(`the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
+    // Only a press the table positively allows is made (B22 review): one it cannot classify is the user's too.
+    if (risk === "unclassified") throw StepStop.handoff(`Caret cannot tell what pressing '${label}' does, so it leaves that press to you`);
     if (risk !== "safe") {
       task.handedOff = { action: RISK_ACTION[risk], what: `'${label}'`, windowId: w.window.windowId };
       throw StepStop.handoff(`'${label}' reads as ${risk}; Caret leaves that press to you`);
