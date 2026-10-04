@@ -6,6 +6,7 @@
 import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type VerbOutcome, type VerbResult } from "../protocol.ts";
 import type { ReaderLink } from "../executor/means.ts";
 import type { EngineSession } from "./session.ts";
+import type { ConfirmedFiles } from "./attach.ts";
 import { pageWindowId, parsePageWindow } from "./windows.ts";
 
 /** The reader role a page control reads as, so plans and the planner see pages as they see native forms. */
@@ -18,6 +19,12 @@ const ROLE: Record<PageControlKind, string> = {
 
 /** Kinds a pageWrite sets. A contenteditable is a hand-off in v1 (memo section 1, write path). */
 export const TEXT_KINDS: ReadonlySet<PageControlKind> = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]);
+
+/**
+ * How long a combobox pick or a file attach may take. Each waits for the page (the list to open and settle, the pick or
+ * the file name to show: up to about 4 s in content/combobox.ts), so they get longer than COMMAND_TIMEOUT_MS. Assumed.
+ */
+export const SLOW_VERB_TIMEOUT_MS = 10_000;
 
 export interface PageTargetRef {
   frameId: number;
@@ -50,7 +57,8 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         role: ROLE[c.kind],
         label: c.name,
         ...(value === undefined ? {} : { value }),
-        ...(TEXT_KINDS.has(c.kind) ? { editable: true as const } : {}),
+        // A custom listbox takes a value too (pageChooseOption picks the option named exactly that), so fill can ask about it.
+        ...(TEXT_KINDS.has(c.kind) || c.kind === "combobox" ? { editable: true as const } : {}),
         ...(states.length > 0 ? { states } : {}),
       });
     }
@@ -109,6 +117,8 @@ export function toVerbOutcome(r: PageResult): VerbResult {
     case "unsupported":
     case "error":
       return verbResult("axError", detail);
+    case "siteOff":
+      return verbResult("notAllowed", detail);
   }
 }
 
@@ -146,6 +156,9 @@ export class PageEngineLink implements ReaderLink {
           page = { kind: "pageSelect", ...base, expect: had?.value ?? verb.expect, value: want.value };
         } else if (TEXT_KINDS.has(t.control.kind)) {
           page = { kind: "pageWrite", ...base, expect: verb.expect, value: verb.value };
+        } else if (t.control.kind === "combobox") {
+          // The model shows what the control shows (react-select's chip); the handler picks the option named `value`.
+          page = { kind: "pageChooseOption", ...base, expect: verb.expect, value: verb.value };
         } else return verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which takes no value write`);
         return this.act(page, w.tabId);
       }
@@ -170,11 +183,28 @@ export class PageEngineLink implements ReaderLink {
     return a.snapshot === null ? verbResult("axError", "the engine answered the walk without a snapshot") : verbResult("ok", null);
   }
 
+  /**
+   * Attaches the file the user confirmed for `taskId` (attach.ts) to the control `key` names in the tab's last walk:
+   * a file input, or a dropzone. The only way the helper builds a pageAttachFile.
+   */
+  async attachFile(windowId: string, key: string, taskId: string, files: ConfirmedFiles): Promise<{ verb: VerbResult; page: PageResult | null }> {
+    const w = parsePageWindow(windowId);
+    if (w === null || w.engine !== this.session.info.engine) return { verb: verbResult("noWindow", `${windowId} is not a window of engine ${this.session.info.engine}`), page: null };
+    const t = targetFor(this.session.tabs.get(w.tabId), key);
+    if (t === null) return { verb: verbResult("noElement", `no element ${key} in the tab's last walk`), page: null };
+    const file = files.read(taskId);
+    if ("refused" in file) return { verb: verbResult("notAllowed", file.refused), page: null };
+    const verb: PageVerb = { kind: "pageAttachFile", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId, file };
+    const a = await this.session.command(verb, SLOW_VERB_TIMEOUT_MS);
+    if (a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff") await this.session.command({ kind: "pageWalk", tabId: w.tabId });
+    return { verb: toVerbOutcome(a.result), page: a.result };
+  }
+
   /** Acts, then re-walks the tab so the model holds the result before the executor reads the answer. */
   private async act(verb: PageVerb, tabId: number): Promise<VerbResult> {
-    const a = await this.session.command(verb);
+    const a = await this.session.command(verb, verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile" ? SLOW_VERB_TIMEOUT_MS : undefined);
     const out = toVerbOutcome(a.result);
-    if (a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff") await this.session.command({ kind: "pageWalk", tabId });
+    if (a.result.outcome !== "notAllowed" && a.result.outcome !== "handoff" && a.result.outcome !== "siteOff") await this.session.command({ kind: "pageWalk", tabId });
     return out;
   }
 

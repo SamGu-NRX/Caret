@@ -4,7 +4,7 @@
 // the engine refuses to act after the helper stopped waiting. Closing ends every pending command; the worker drops
 // every grant when its port closes, so a new session starts with none.
 import { randomUUID } from "node:crypto";
-import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageHello, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
+import { PROTOCOL_VERSION, type AppRef, type EngineMessage, type HelperToEngine, type PageFocusMoved, type PageHello, type PagePong, type PageResult, type PageSnapshot, type PageVerb, type ScopedActGrant } from "../protocol.ts";
 
 export interface EngineInfo {
   /** The session id the helper issued at the handshake; part of every page window id. */
@@ -38,6 +38,8 @@ export class EngineSession {
   private readonly helloWaiters: ((h: PageHello | null) => void)[] = [];
   /** Called with every snapshot the engine sends, after `tabs` holds it. */
   onSnapshot: ((s: PageSnapshot, session: EngineSession) => void) | null = null;
+  /** Called when focus moved in the tab the user is in (engines/page-focus.ts). */
+  onFocus: ((m: PageFocusMoved, session: EngineSession) => void) | null = null;
 
   constructor(info: EngineInfo, send: (m: HelperToEngine) => boolean, timeoutMs = COMMAND_TIMEOUT_MS) {
     this.info = info;
@@ -72,6 +74,11 @@ export class EngineSession {
 
   revoke(taskId: string): boolean {
     return this.send({ type: "actRevoke", v: PROTOCOL_VERSION, taskId, at: Date.now() });
+  }
+
+  /** "Not on this site": the whole list of origins Caret is off for, replacing the worker's. */
+  sitesOff(origins: readonly string[]): boolean {
+    return this.send({ type: "pageSitesOff", v: PROTOCOL_VERSION, origins: [...origins] });
   }
 
   /** The worker's answer to a ping, or null when none comes within the timeout or the engine closes. */
@@ -131,6 +138,11 @@ export class EngineSession {
         this.pending.delete(m.id);
         clearTimeout(p.timer);
         p.resolve({ result: m, snapshot: p.snapshot });
+        return null;
+      }
+      case "pageFocus": {
+        if (this.hello === null) return "a focus report before the engine's hello; ignored";
+        this.onFocus?.(m, this);
         return null;
       }
       case "pagePong": {

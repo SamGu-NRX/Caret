@@ -15,10 +15,19 @@ export interface RegistryHooks {
   apply(m: Snapshot | WindowClosed): void;
 }
 
+/** Told when a session says hello and when it ends (engines/wire.ts: page focus and the presence signal). */
+export interface SessionListener {
+  onHello(s: EngineSession): void;
+  onRemove(s: EngineSession): void;
+}
+
 export class EngineRegistry implements EngineDirectory {
   private readonly sessions = new Map<string, { session: EngineSession; link: PageEngineLink }>();
   private readonly hooks: RegistryHooks;
   private readonly waiters: { pred: (s: EngineSession) => boolean; resolve: (s: EngineSession) => void }[] = [];
+  private readonly listeners = new Set<SessionListener>();
+  /** "Not on this site", as the helper last set it; every engine gets it after its hello and on each change. */
+  private offSites: readonly string[] = [];
 
   constructor(hooks: RegistryHooks) {
     this.hooks = hooks;
@@ -30,6 +39,8 @@ export class EngineRegistry implements EngineDirectory {
     this.sessions.set(session.info.engine, { session, link });
     void session.waitForHello(30_000).then((h) => {
       if (h === null) return;
+      session.sitesOff(this.offSites);
+      for (const l of this.listeners) l.onHello(session);
       for (const w of [...this.waiters]) {
         if (!w.pred(session)) continue;
         this.waiters.splice(this.waiters.indexOf(w), 1);
@@ -44,7 +55,28 @@ export class EngineRegistry implements EngineDirectory {
     if (e === undefined) return;
     this.sessions.delete(engine);
     e.session.close();
+    for (const l of this.listeners) l.onRemove(e.session);
     for (const tabId of e.session.tabs.keys()) this.hooks.apply({ type: "windowClosed", v: PROTOCOL_VERSION, at: Date.now(), windowId: pageWindowId(engine, tabId) });
+  }
+
+  listen(l: SessionListener): () => void {
+    this.listeners.add(l);
+    return () => this.listeners.delete(l);
+  }
+
+  /** Sets "Not on this site" and sends it to every engine that has said hello. */
+  setSitesOff(origins: readonly string[]): void {
+    this.offSites = [...new Set(origins)].sort();
+    for (const e of this.sessions.values()) if (e.session.hello !== null) e.session.sitesOff(this.offSites);
+  }
+
+  sitesOff(): readonly string[] {
+    return this.offSites;
+  }
+
+  /** The session with a hello whose browser is this process, or undefined. */
+  forBrowser(pid: number): EngineSession | undefined {
+    return this.list().find((s) => s.hello !== null && !s.closed && s.info.browser.pid === pid);
   }
 
   session(engine: string): EngineSession | undefined {

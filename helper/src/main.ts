@@ -1,5 +1,6 @@
-// caret-helper: listens on the screen socket for caret-screen and for consumers.
-//   node src/main.ts [--socket PATH] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
+// caret-helper: listens on the screen socket for caret-screen and for consumers, and on page.sock beside it for the
+// page engines (Caret for Chrome, through caret-bridge; browser layer W2).
+//   node src/main.ts [--socket PATH] [--page-socket PATH | --no-page] [--data-dir DIR] [--shadow] [--no-jev] [--allow-background-focus] [--fill-cutoff C]
 //   node src/main.ts --audit-out FILE --audit-seen FILE --socket PATH --data-dir DIR [--audit-probe-every SECONDS]
 // The second form is the read-only audit (src/audit.ts): shadow mode, Jev off, counts written to
 // --audit-out every minute and at exit, the seen-text hashes to --audit-seen at exit. With
@@ -13,6 +14,9 @@ import { Helper } from "./helper.ts";
 import { HelperServer } from "./server.ts";
 import { Store } from "./store.ts";
 import { loadJevKey, makeJevClient } from "./fill/jev.ts";
+import { SocketReaderLink } from "./executor/means.ts";
+import { defaultPageSocket, pageHost, type PageHost } from "./engines/host.ts";
+import { wirePageEngines } from "./engines/wire.ts";
 
 const { values: args } = parseArgs({
   options: {
@@ -26,6 +30,8 @@ const { values: args } = parseArgs({
     "audit-out": { type: "string" },
     "audit-seen": { type: "string" },
     "audit-probe-every": { type: "string" },
+    "page-socket": { type: "string" },
+    "no-page": { type: "boolean", default: false },
   },
 });
 
@@ -42,13 +48,22 @@ if (auditOut !== undefined) {
   if (!given.includes("--socket") || !given.includes("--data-dir")) throw new Error("the audit needs its own --socket and --data-dir");
   args.shadow = true;
   args["no-jev"] = true;
+  // The audit reads; it opens no page socket beside the helper it audits.
+  args["no-page"] = true;
 }
 
 if (!args["no-jev"] && !args.shadow) loadJevKey(); // fail at start, not at the first focus, when no key is configured
 
 const store = new Store(args["data-dir"]);
 let server: HelperServer | null = null;
-const helper = new Helper({
+// The reader's socket link. With page engines it sits inside the routed link (engines/host.ts), which sends page
+// windows to their engine and everything else here; the helper still answers the reader's verbResults through it.
+const readerSocket = new SocketReaderLink((cmd) => server?.sendToReader(cmd) ?? false);
+let helper: Helper;
+const pages: PageHost | null = args["no-page"]
+  ? null
+  : pageHost({ path: args["page-socket"] ?? defaultPageSocket(args.socket), reader: readerSocket, apply: (m) => void helper.handleReader(m), warn });
+helper = new Helper({
   store,
   askJev: args["no-jev"] ? null : makeJevClient(() => loadJevKey()),
   shadow: args.shadow,
@@ -58,20 +73,25 @@ const helper = new Helper({
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
+  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined }),
   // Event cards add to the reader's EventKit adapter, which answers only when started with --calendar-test.
   calendar: "reader",
   warn,
 });
 server = new HelperServer(args.socket, () => helper, warn);
 await server.listen();
-warn(`listening on ${args.socket}; data in ${args["data-dir"]}; mode ${helper.mode}`);
+if (pages !== null) {
+  wirePageEngines({ host: pages, helper, publish: (m) => server?.publish(m), warn });
+  await pages.server.listen();
+}
+warn(`listening on ${args.socket}${pages === null ? "" : ` and ${args["page-socket"] ?? defaultPageSocket(args.socket)}`}; data in ${args["data-dir"]}; mode ${helper.mode}`);
 
 const tick = setInterval(() => helper.tick(), 250);
 const statusMs = Number(args["status-every"]) * 1000;
 const status = setInterval(() => {
   const mem = process.memoryUsage();
   warn(
-    `status mode=${helper.mode} windows=${helper.model.windows.size} texts=${helper.text.size} transfers10m=${helper.recentTransfers.length} rssMB=${(mem.rss / 1e6).toFixed(1)}`,
+    `status mode=${helper.mode} windows=${helper.model.windows.size} texts=${helper.text.size} transfers10m=${helper.recentTransfers.length} pageEngines=${pages?.registry.list().length ?? "off"} rssMB=${(mem.rss / 1e6).toFixed(1)}`,
   );
 }, statusMs);
 
@@ -94,6 +114,7 @@ const stop = async (signal: string): Promise<void> => {
     writeFileSync(auditSeen, JSON.stringify(helper.audit.seen.toJSON()), { mode: 0o600 });
   }
   await server?.close();
+  await pages?.server.close();
   helper.memory.close();
   store.close();
   warn(`stopped on ${signal}`);
