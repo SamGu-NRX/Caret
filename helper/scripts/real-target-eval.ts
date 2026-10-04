@@ -135,6 +135,10 @@ function finalCleanup(): void {
     while (alive(pid) && Date.now() < deadline) spawnSync("/bin/sleep", ["0.2"]);
     if (alive(pid)) signal(pid, "SIGKILL");
   }
+  const killed = Date.now() + 2000;
+  while ([...own.keys()].some(alive) && Date.now() < killed) spawnSync("/bin/sleep", ["0.2"]);
+  // A folder is deleted only when no process this script started is left.
+  const ownLeft = [...own.keys()].some(alive);
   own.clear();
   for (const d of tempDirs.splice(0)) {
     // Chrome's helpers name the profile as --user-data-dir=<d>; compared as text, not as a pattern.
@@ -148,7 +152,7 @@ function finalCleanup(): void {
     // Deleted only once nothing that used it is left; otherwise kept, and named in the report.
     const until = Date.now() + 5000;
     while (left.some(alive) && Date.now() < until) spawnSync("/bin/sleep", ["0.2"]);
-    if (left.some(alive)) keptDirs.push(d);
+    if (ownLeft || left.some(alive)) keptDirs.push(d);
     else rmSync(d, { recursive: true, force: true });
   }
 }

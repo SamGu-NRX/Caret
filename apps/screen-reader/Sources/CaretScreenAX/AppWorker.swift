@@ -669,6 +669,9 @@ public final class AppWorker: @unchecked Sendable {
                 if let no = refused(windowId) { return no }
                 err = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
             } else {
+                // Classified before the last checks below: its parent reads can block, and a grant that ends meanwhile
+                // must still stop the write (B20 fix-check).
+                let focusFirst = attribute == "focusValue" || (attribute == "value" && focusBeforeValue(el))
                 // The value is read again right before the write, so a change since the walk is caught too.
                 let current: String
                 switch AX.read(el, kAXValueAttribute) {
@@ -690,7 +693,7 @@ public final class AppWorker: @unchecked Sendable {
                 if attribute == "insert" {
                     if let fail = insert(value, into: el, expect: expect, check: stillAllowed) { return fail }
                     err = .success
-                } else if attribute == "focusValue" || isWebKitField(el) {
+                } else if focusFirst {
                     // A WebKit window that is not key applies a bare value write to whichever field has focus, not
                     // the one written to (B20 final table: Email's value landed in Name, focused by the step before),
                     // so a WebKit field is always focused first, whatever the executor asked.
@@ -781,21 +784,24 @@ public final class AppWorker: @unchecked Sendable {
         return nil
     }
 
-    /// Whether the element is a field of a web page WebKit renders: inside an AXWebArea, in an app that is not
-    /// Chromium or Electron. A failed read counts as not, so the write falls back to the executor's own chain.
-    private func isWebKitField(_ el: AXUIElement) -> Bool {
+    /// Whether a value write to the element must focus it first: a field of a web page WebKit renders, inside an
+    /// AXWebArea in an app that is not Chromium or Electron. Only reaching the window with no web area on the way
+    /// says no; a read that fails or a chain past 40 parents says yes, since focusing first is right for any field
+    /// and a bare write can land in another one (B20 fix-check: fail safe, not open).
+    private func focusBeforeValue(_ el: AXUIElement) -> Bool {
         if chromiumFamily { return false }
         var e: AXUIElement? = AX.element(el, kAXParentAttribute)
         for _ in 0..<40 {
-            guard let cur = e else { return false }
+            guard let cur = e else { return true }
             AXUIElementSetMessagingTimeout(cur, AX.elementTimeout)
-            switch AX.string(cur, kAXRoleAttribute) {
-            case "AXWebArea": return true
-            case kAXWindowRole, nil: return false
-            default: e = AX.element(cur, kAXParentAttribute)
+            switch AX.read(cur, kAXRoleAttribute) {
+            case .value(let r) where (r as? String) == "AXWebArea": return true
+            case .value(let r) where (r as? String) == kAXWindowRole: return false
+            case .value: e = AX.element(cur, kAXParentAttribute)
+            case .absent, .failed: return true
             }
         }
-        return false
+        return true
     }
 
     /// Focus, then the value: a WebKit window that is not key drops a bare AXValue write and takes it once the

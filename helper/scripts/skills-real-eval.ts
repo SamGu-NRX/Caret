@@ -68,6 +68,10 @@ function cleanup(): void {
   const deadline = Date.now() + 10_000;
   while (pids.some(alive) && Date.now() < deadline) spawnSync("/bin/sleep", ["0.2"]);
   for (const p of own) if (p.pid !== undefined && alive(p.pid)) p.kill("SIGKILL");
+  const killed = Date.now() + 2000;
+  while (pids.some(alive) && Date.now() < killed) spawnSync("/bin/sleep", ["0.2"]);
+  // A folder is deleted only when no process this script started is left, and none of Chrome's helpers.
+  const ownLeft = pids.some(alive);
   for (const d of tempDirs.splice(0)) {
     const left = execFileSync("/bin/ps", ["-axww", "-o", "pid=,args="], { encoding: "utf8" })
       .split("\n")
@@ -83,7 +87,7 @@ function cleanup(): void {
     }
     const until = Date.now() + 5000;
     while (left.some(alive) && Date.now() < until) spawnSync("/bin/sleep", ["0.2"]);
-    if (!left.some(alive)) rmSync(d, { recursive: true, force: true });
+    if (!ownLeft && !left.some(alive)) rmSync(d, { recursive: true, force: true });
     else process.stderr.write(`kept ${d}: a process using it did not exit\n`);
   }
 }

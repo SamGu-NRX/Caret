@@ -254,7 +254,12 @@ export class PatternEngine {
 
   /** Sends the reader the windows with an occurrence under way, or with recent edits, when that set changed. */
   private syncPressWatch(): void {
-    for (const [id, at] of this.editing) if (this.clock - at > BUNDLE_IDLE_MS || !this.deps.model.windows.has(id)) this.editing.delete(id);
+    for (const [id, at] of this.editing) {
+      if (this.clock - at <= BUNDLE_IDLE_MS && this.deps.model.windows.has(id)) continue;
+      this.editing.delete(id);
+      // Nobody is editing there now: where its elements were is kept only while an occurrence is under way.
+      this.routines.observe(id, false);
+    }
     const ids = [...new Set([...this.routines.openWindows(), ...this.editing.keys()])].sort();
     const key = ids.join(",");
     if (key === this.pressWatch || this.deps.watchPresses === undefined) return;
@@ -759,9 +764,10 @@ export class PatternEngine {
    */
   private onPredictions(preds: SilentPrediction[]): void {
     const sorted = [...preds].sort((a, b) => b.routine.hits - a.routine.hits);
-    // A routine already offered in this window (predicted from fields that arrived first) speaks for it.
+    // A routine already offered in this window (predicted from fields that arrived first), or taken and maybe
+    // running, speaks for it: a fuller prediction is kept silent rather than offered or run beside it.
     const window = sorted[0]?.dstWindowId;
-    let spoken = [...this.offers.values()].some((o) => o.state === "open" && o.msg.kind === "routine" && o.msg.windowId === window);
+    let spoken = [...this.offers.values()].some((o) => o.state !== "closed" && o.msg.kind === "routine" && o.msg.windowId === window);
     for (const p of sorted) {
       const cells = p.cells.filter((c): c is RoutineCell => c !== null);
       const input = { hits: p.routine.hits, misses: p.routine.misses, paused: p.routine.paused || p.routine.skillPaused, grounded: p.grounded };
