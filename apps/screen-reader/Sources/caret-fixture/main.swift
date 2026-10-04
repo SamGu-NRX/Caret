@@ -18,6 +18,7 @@
 //   the seating window takes stdin lines reset | dump. Only one of executor and seating may be open.
 //   --windows jobs adds a test run that counts up under a progress bar, an upload with a spinner,
 //   and a notes window; stdin `jobs reset | finish N | ask N | dump` drives them.
+//   --windows keys adds B21's keyboard press windows (KeyWindows): stdin `keys focus|dump|reset`.
 //   --windows forms adds B19's order queue, whose one record `form next` replaces with a new invented one
 //   (answering with it), and B19's routine destinations, each a new window per `form open`: intake
 //   (Customer, Email, Order number; no buttons) and reply (To, Order number; Save draft and Send, where
@@ -585,6 +586,70 @@ final class SkillForms {
 }
 var skillForms: SkillForms?
 
+/// B21's keyboard presses: a window whose Send is the default button (Return), with a plain Save draft button
+/// and a Note field, and a second window with its own default button OK, which the press tests leave unwatched.
+/// stdin `keys focus send|draft|note|none|other` makes a window key without activating the app and gives that
+/// control first responder (none: the window itself); `keys dump` counts each button's presses, as AppKit ran
+/// them, and the note; `keys reset` zeroes them.
+final class KeyWindows {
+    let main = makeWindow("Caret Fixture — Keys", NSRect(x: 620, y: 360, width: 420, height: 150))
+    let other = makeWindow("Caret Fixture — Keys other", NSRect(x: 620, y: 560, width: 300, height: 100))
+    let note = NSTextField(frame: NSRect(x: 130, y: 100, width: 270, height: 24))
+    var buttons: [String: NSButton] = [:]
+    var pressed: [String: Int] = [:]
+
+    init() {
+        let v = main.contentView!
+        v.addSubview(label("Note:", NSRect(x: 16, y: 102, width: 110, height: 20)))
+        note.setAccessibilityLabel("Note")
+        v.addSubview(note)
+        for (i, t) in ["Save draft", "Send"].enumerated() {
+            let b = NSButton(title: t, target: self, action: #selector(press(_:)))
+            b.frame = NSRect(x: 16 + Double(i) * 130, y: 16, width: 120, height: 30)
+            v.addSubview(b)
+            buttons[t] = b
+        }
+        // AppKit makes the button whose key equivalent is Return the window's default button (AXDefaultButton).
+        buttons["Send"]?.keyEquivalent = "\r"
+        let ok = NSButton(title: "OK", target: self, action: #selector(press(_:)))
+        ok.frame = NSRect(x: 16, y: 16, width: 120, height: 30)
+        ok.keyEquivalent = "\r"
+        other.contentView!.addSubview(ok)
+        buttons["OK"] = ok
+        main.orderBack(nil)
+        other.orderBack(nil)
+    }
+
+    @objc func press(_ b: NSButton) { pressed[b.title, default: 0] += 1 }
+
+    func command(_ parts: [String]) -> [String: Any] {
+        switch parts.first {
+        case "focus" where parts.count == 2:
+            let w = parts[1] == "other" ? other : main
+            w.makeKey()
+            let target: NSResponder? = switch parts[1] {
+            case "send": buttons["Send"]
+            case "draft": buttons["Save draft"]
+            case "note": note
+            case "none", "other": w.contentView
+            default: nil
+            }
+            guard let r = target else { return ["ok": false, "error": "keys focus takes send, draft, note, none or other"] }
+            let took = w.makeFirstResponder(r)
+            return ["ok": took, "isKey": w.isKeyWindow, "key": NSApp.keyWindow?.title ?? NSNull()]
+        case "dump":
+            return ["ok": true, "pressed": pressed, "note": note.stringValue]
+        case "reset":
+            pressed = [:]
+            note.stringValue = ""
+            return ["ok": true]
+        default:
+            return ["ok": false, "error": "keys focus NAME | dump | reset"]
+        }
+    }
+}
+var keyWindows: KeyWindows?
+
 /// Names for the loop fixture, in list order. Invented, like everything here.
 let rosterNames = ["Dana Whitfield", "Priya Raman", "Marcus Lowe", "Ines Okafor", "Tomas Brandt", "Keiko Sato", "Rafael Duarte", "Amara Nwosu"]
 
@@ -758,6 +823,7 @@ for name in windowList {
     case "seating": seatingWindow = SeatingWindow()
     case "jobs": jobWindows = JobWindows()
     case "forms": skillForms = SkillForms()
+    case "keys": keyWindows = KeyWindows()
     default: die("unknown window \(name)")
     }
 }
@@ -1055,6 +1121,9 @@ let stdinCommand: ((String) -> [String: Any])? = { line in
     case "form":
         guard let f = skillForms else { return ["ok": false, "error": "no forms; pass --windows forms"] }
         return f.command(Array(parts.dropFirst()))
+    case "keys":
+        guard let k = keyWindows else { return ["ok": false, "error": "no key windows; pass --windows keys"] }
+        return k.command(Array(parts.dropFirst()))
     default:
         return windowCommand?(line) ?? ["ok": false, "error": "unknown command \(line)"]
     }

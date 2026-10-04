@@ -344,10 +344,16 @@ export type UserInput = z.infer<typeof UserInput>;
 
 /**
  * The user pressed something in a window under a press watch (B20): the pressable element under their
- * click, its role and its label as the element carries it, and when the button went down. `key` is the
- * element's key in the window's latest walk, null when that walk did not keep it. The reader only observes;
- * routines learn the press an occurrence ends with from it (patterns/routines.ts).
+ * click, or the button a key pressed (B21), its role and its label as the reader last read it, and when the
+ * button or key went down. `key` is the element's key in the window's latest walk, null when that walk did
+ * not keep it. `via` says how: `click`; `return` or `enter` (keypad), which press the window's default
+ * button; or `space`, which presses the focused button. A key is read only as one of those three, held with
+ * no Command, Control, Option or Shift, and never while a text field has focus; no other key is reported or
+ * kept. The reader only observes; routines learn the press an occurrence ends with from it
+ * (patterns/routines.ts).
  */
+export const PressVia = z.enum(["click", "return", "enter", "space"]);
+export type PressVia = z.infer<typeof PressVia>;
 export const UserPress = z.object({
   type: z.literal("userPress"),
   v: z.literal(PROTOCOL_VERSION),
@@ -357,6 +363,7 @@ export const UserPress = z.object({
   key: z.string().nullable(),
   role: z.string(),
   label: z.string(),
+  via: PressVia,
 });
 export type UserPress = z.infer<typeof UserPress>;
 

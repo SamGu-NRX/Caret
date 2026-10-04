@@ -249,7 +249,7 @@ export class PatternEngine {
   /** The user pressed something in a window under the press watch: a routine occurrence there may end with it. */
   onUserPress(m: UserPress): void {
     this.clock = Math.max(this.clock, m.at);
-    this.routines.onPress(m.windowId, { at: m.at, key: m.key, role: m.role, label: m.label });
+    this.routines.onPress(m.windowId, { at: m.at, key: m.key, role: m.role, label: m.label, via: m.via });
   }
 
   /** Sends the reader the windows with an occurrence under way, or with recent edits, when that set changed. */

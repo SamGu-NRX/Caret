@@ -83,10 +83,11 @@ export const RoutineFinish = z.object({
    */
   ambiguous: z.boolean().optional(),
   /**
-   * How it was learned (B20): the user's own click on it, which the reader observed, or the window's buttons
-   * when no click was seen. Absent on rows from before B20, which were all learned from buttons.
+   * How it was learned: the user's own press of it, which the reader observed, by a click (B20) or a key
+   * (Return, Enter or Space, B21), or the window's buttons when no press was seen. Absent on rows from
+   * before B20, which were all learned from buttons.
    */
-  by: z.enum(["click", "buttons"]).optional(),
+  by: z.enum(["click", "key", "buttons"]).optional(),
 });
 export type RoutineFinish = z.infer<typeof RoutineFinish>;
 
@@ -466,7 +467,8 @@ export class MemoryStore {
       // The latest occurrence's positions are the best guess for the next one; the rest of the row stays.
       const f = routineJson(this.row(hit.id));
       // A guess from the window's buttons never replaces a press the user was seen making (B20).
-      if (finish?.by !== "click" && f.finish?.by === "click") finish = undefined;
+      const seen = (by: RoutineFinish["by"]): boolean => by === "click" || by === "key";
+      if (!seen(finish?.by) && seen(f.finish?.by)) finish = undefined;
       this.stmt("UPDATE memory SET count = count + 1, last_seen = ?, fields = ? WHERE id = ?").run(at, JSON.stringify({ ...f, steps, ...(finish === undefined ? {} : { finish }) }), hit.id);
       // A press learned after the routine was kept holds its skill on Tab from now on.
       const skill = finish === undefined || finish === null ? null : this.skillFor(hit.id);

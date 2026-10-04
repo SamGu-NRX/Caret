@@ -883,28 +883,34 @@ public struct UserInput: Codable, Equatable, Sendable {
 /// in the window's latest walk, nil when that walk did not keep it. Mirrors UserPress in protocol.ts.
 public struct UserPress: Codable, Equatable, Sendable {
     public static let type = "userPress"
+    /// How the press was made: a click, Return or keypad Enter on the window's default button, or Space on the
+    /// focused button (B21, KeyPresses). protocol.ts PressVia.
+    public enum Via: String, Codable, Sendable { case click, `return`, enter, space }
     public var at: Int64
     public var pid: Int
     public var windowId: String
     public var key: String?
     public var role: String
     public var label: String
-    public init(at: Int64, pid: Int, windowId: String, key: String?, role: String, label: String) {
-        self.at = at; self.pid = pid; self.windowId = windowId; self.key = key; self.role = role; self.label = label
+    public var via: Via
+    public init(at: Int64, pid: Int, windowId: String, key: String?, role: String, label: String, via: Via) {
+        self.at = at; self.pid = pid; self.windowId = windowId; self.key = key; self.role = role; self.label = label; self.via = via
     }
-    enum CodingKeys: String, CodingKey { case at, pid, windowId, key, role, label }
+    enum CodingKeys: String, CodingKey { case at, pid, windowId, key, role, label, via }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
         at = try c.decode(Int64.self, forKey: .at); pid = try c.decode(Int.self, forKey: .pid)
         windowId = try c.decode(String.self, forKey: .windowId); key = try c.decodeNullable(String.self, forKey: .key)
         role = try c.decode(String.self, forKey: .role); label = try c.decode(String.self, forKey: .label)
+        via = try c.decode(Via.self, forKey: .via)
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(at, forKey: .at); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
         try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(label, forKey: .label)
+        try c.encode(via, forKey: .via)
     }
 }
 

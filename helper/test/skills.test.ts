@@ -8,7 +8,7 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { ScreenModel } from "../src/model.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { HelperMessage, PROTOCOL_VERSION, ConsumerMessage, type MemoryEntry, type MemoryReply, type PatternOffer, type SkillOffer, type TaskProgress } from "../src/protocol.ts";
+import { HelperMessage, PROTOCOL_VERSION, ConsumerMessage, type MemoryEntry, type MemoryReply, type PatternOffer, type PressVia, type SkillOffer, type TaskProgress } from "../src/protocol.ts";
 import { checkName, fallbackName, nameCandidates, nameRoutine, safeFacts, type RoutineFacts } from "../src/patterns/naming.ts";
 import { cleanRun, handedPress, mayRunUnasked, PROMOTE_AFTER, trigger } from "../src/patterns/skills.ts";
 import { PRESS_ENDS_MS } from "../src/patterns/routines.ts";
@@ -731,13 +731,13 @@ describe("skills in the helper", () => {
   // MARK: - B20: the press an occurrence ends with, learned from the user's own click
 
   /** The reader saw the user press `label` in the window (protocol.ts UserPress); `keyed` false stands for a walk that did not keep the button. */
-  const press = (g: GridWindow, label: string, keyed = true): void =>
-    void helper.handleReader({ type: "userPress", v: PROTOCOL_VERSION, at: desk.at, pid: g.app.pid, windowId: g.windowId, key: keyed ? buttonKey(g, label) : null, role: "AXButton", label });
+  const press = (g: GridWindow, label: string, keyed = true, via: PressVia = "click"): void =>
+    void helper.handleReader({ type: "userPress", v: PROTOCOL_VERSION, at: desk.at, pid: g.app.pid, windowId: g.windowId, key: keyed ? buttonKey(g, label) : null, role: "AXButton", label, via });
   /** One occurrence by hand that ends with the user pressing `label`, which closes the window as Send does. */
-  const byHandPressing = (label: string | null, keyed = true): void => {
+  const byHandPressing = (label: string | null, keyed = true, via: PressVia = "click"): void => {
     const c = open();
     for (let i = 0; i < 3; i++) desk.fill(c, 0, i, calendar(day).lines[i]!);
-    if (label !== null) press(c, label, keyed);
+    if (label !== null) press(c, label, keyed, via);
     desk.close(c.windowId);
   };
   const pressWatches = (): string[][] =>
@@ -771,6 +771,17 @@ describe("skills in the helper", () => {
     expect(skills()[0]!.fields).toMatchObject({ handsOff: { label: "Send", why: "outbound" }, onItsOwn: false });
     // Read only: the reader was never asked to press.
     expect(desk.pressed).toEqual([]);
+    expect(desk.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  it("learns the Send the user pressed with Return as a press seen by key, which a later guess from the buttons never replaces (B21)", async () => {
+    buttons = ["Send", "Send later"];
+    for (let i = 0; i < 3; i++) byHandPressing("Send", true, "return");
+    const routine = helper.memory.routine(routines()[0]!.id);
+    expect(routine?.finish).toMatchObject({ label: "Send", why: "outbound", by: "key" });
+    expect(routine?.finish?.ambiguous).toBeUndefined();
+    byHandPressing(null);
+    expect(helper.memory.routine(routine!.id)?.finish).toMatchObject({ label: "Send", by: "key" });
     expect(desk.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 

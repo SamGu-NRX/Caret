@@ -725,6 +725,15 @@
             },
             "label": {
               "type": "string"
+            },
+            "via": {
+              "type": "string",
+              "enum": [
+                "click",
+                "return",
+                "enter",
+                "space"
+              ]
             }
           },
           "required": [
@@ -735,7 +744,8 @@
             "windowId",
             "key",
             "role",
-            "label"
+            "label",
+            "via"
           ],
           "additionalProperties": false
         }

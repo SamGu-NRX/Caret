@@ -48,31 +48,74 @@ final class PressIndex: @unchecked Sendable {
         let label: String
         let frame: Frame
     }
+    /// The button Return presses in a window (AXDefaultButton), as of the latest full walk (B21).
+    struct DefaultButton {
+        /// Its key in that walk; nil when the walk did not keep it.
+        let key: String?
+        let role: String
+        let label: String
+        let enabled: Bool
+    }
+    /// The element with focus in the app, as the latest focus change named it, and the role it had then (B21).
+    struct Focused {
+        let window: AXRef
+        let element: AXRef
+        let role: String
+    }
     private struct Entry {
         var id: String
         var number: Int?
         var keys: [AXRef: String]
         var controls: [Control]
+        var defaultButton: DefaultButton?
     }
     private let lock = NSLock()
     private var byWindow: [AXRef: Entry] = [:]
+    private var focus: Focused?
 
-    /// After a full walk: the window's keys and its pressable controls with their frames.
-    func set(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node]) {
+    /// After a full walk: the window's keys, its pressable controls with their frames, and its default button.
+    func set(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node], defaultButton: DefaultButton?) {
         let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
         let controls = nodes.compactMap { n -> Control? in
             guard Roles.pressable.contains(n.role), let f = n.frame else { return nil }
             return Control(key: n.key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines), frame: f)
         }
         lock.lock(); defer { lock.unlock() }
-        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls)
+        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: defaultButton)
     }
 
-    /// After a walk of part of the window: its keys, keeping the controls of the last full walk.
+    /// After a walk of part of the window: its keys, keeping the controls and default button of the last full walk.
     func setKeys(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext]) {
         let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
         lock.lock(); defer { lock.unlock() }
-        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: byWindow[w]?.controls ?? [])
+        byWindow[w] = Entry(id: id, number: number, keys: keys, controls: byWindow[w]?.controls ?? [], defaultButton: byWindow[w]?.defaultButton)
+    }
+
+    func setFocus(_ f: Focused?) {
+        lock.lock(); defer { lock.unlock() }
+        focus = f
+    }
+
+    /// What a press key pressed (KeyPresses), from the focus and the focused window's walk as last recorded: the
+    /// window's id and the control's key, role and label. Nil when it pressed nothing the reader reports, or the
+    /// window was never walked.
+    func keyPress(_ via: UserPress.Via) -> (id: String, key: String?, role: String, label: String)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let f = focus, let e = byWindow[f.window] else { return nil }
+        let d = e.defaultButton
+        switch KeyPresses.target(via, focusedRole: f.role, enabledDefaultButton: d?.enabled == true) {
+        case .defaultButton?:
+            guard let d else { return nil }
+            return (e.id, d.key, d.role, d.label)
+        case .focused?:
+            let key = e.keys[f.element]
+            // The label as the walk read it: a Space that closes the window leaves nothing to read afterwards.
+            let label = e.controls.first { $0.key == key }?.label
+            guard let key, let label else { return nil }
+            return (e.id, key, f.role, label)
+        case nil:
+            return nil
+        }
     }
 
     /// The smallest pressable control of the window with this window-server number whose walked frame holds
@@ -88,11 +131,13 @@ final class PressIndex: @unchecked Sendable {
     func remove(_ w: AXRef) {
         lock.lock(); defer { lock.unlock() }
         byWindow.removeValue(forKey: w)
+        if focus?.window == w { focus = nil }
     }
 
     func removeAll() {
         lock.lock(); defer { lock.unlock() }
         byWindow.removeAll()
+        focus = nil
     }
 
     /// The window's id and the element's key, nil when the reader has not walked that window.
@@ -441,6 +486,8 @@ public final class AppWorker: @unchecked Sendable {
         }
         focusElement = fe
         w = w ?? currentFocusedWindow()
+        // For a key press made in this window (B21): which element had focus, read now rather than when the key goes down.
+        if let fe, let w { pressIndex.setFocus(PressIndex.Focused(window: w, element: fe, role: AX.string(fe.el, kAXRoleAttribute) ?? "AXUnknown")) } else { pressIndex.setFocus(nil) }
         if let prev = focusedWindow, prev != w, windows[prev] != nil {
             walkWindow(prev, reason: .leave, isFocused: false)
         }
@@ -497,7 +544,7 @@ public final class AppWorker: @unchecked Sendable {
         for (h, kc) in result.contexts { contexts[AXRef(walker.elements[h])] = kc }
         info.contexts = contexts
         info.lastWalk = CFAbsoluteTimeGetCurrent()
-        pressIndex.set(w, id: info.id, number: info.number, contexts: contexts, nodes: result.nodes)
+        pressIndex.set(w, id: info.id, number: info.number, contexts: contexts, nodes: result.nodes, defaultButton: defaultButton(of: w, contexts: contexts, nodes: result.nodes))
 
         let frame = AX.frame(of: w.el)
         var h = Hasher()
@@ -517,6 +564,23 @@ public final class AppWorker: @unchecked Sendable {
                             stats: WalkStats(walkMs: (walkMs * 10).rounded() / 10, visited: walker.visited, truncated: walker.truncated))
         ctx.emitter.send(.snapshot(snap))
         return (result.nodes, walker.truncated || walker.clipped)
+    }
+
+    /// The button Return presses in the window: a sheet's default button while the window shows one, since keys go
+    /// to the sheet, else the window's own (AXDefaultButton). Its key, role, label and enabled state are from this
+    /// walk when the walk kept it; otherwise from the element itself, with no key.
+    private func defaultButton(of w: AXRef, contexts: [AXRef: KeyContext], nodes: [Node]) -> PressIndex.DefaultButton? {
+        let sheet = AX.elements(w.el, kAXChildrenAttribute)?.first { AX.string($0, kAXRoleAttribute) == kAXSheetRole }
+        guard let el = AX.element(sheet ?? w.el, kAXDefaultButtonAttribute) else { return nil }
+        AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
+        if let key = contexts[AXRef(el)]?.key, let n = nodes.first(where: { $0.key == key }) {
+            return PressIndex.DefaultButton(key: key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                                            enabled: !n.states.contains(.disabled))
+        }
+        guard let label = liveLabel(el) else { return nil }
+        let enabled = (AX.copy(el, kAXEnabledAttribute) as? Bool) ?? true
+        return PressIndex.DefaultButton(key: nil, role: AX.string(el, kAXRoleAttribute) ?? "AXButton",
+                                        label: label.trimmingCharacters(in: .whitespacesAndNewlines), enabled: enabled)
     }
 
     /// Re-reads just the element a notification named, when it was a kept node whose key does not
@@ -589,7 +653,18 @@ public final class AppWorker: @unchecked Sendable {
         pressQueue.async {
             if self.pressByHitTest(at: point, number: number, time: at, windows: ids) { return }
             guard let n = number, let (id, c) = self.pressIndex.control(number: n, at: point), ids.contains(id) else { return }
-            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: id, key: c.key, role: c.role, label: c.label)))
+            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: id, key: c.key, role: c.role, label: c.label, via: .click)))
+        }
+    }
+
+    /// The user pressed Return, Enter or Space in this app at `at` (B21; the tap read only which of the three it
+    /// was). Reports the button it pressed, when the window that had focus is one of `windows`: the default
+    /// button for Return and Enter, the focused button for Space, as the reader last read them (KeyPresses).
+    /// Nothing is read from the app here, so a key that closes the window is placed all the same. Read only.
+    func observeKey(_ via: UserPress.Via, time at: Int64, windows ids: Set<String>) {
+        pressQueue.async {
+            guard let p = self.pressIndex.keyPress(via), ids.contains(p.id) else { return }
+            self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: p.id, key: p.key, role: p.role, label: p.label, via: via)))
         }
     }
 
@@ -612,7 +687,7 @@ public final class AppWorker: @unchecked Sendable {
               number == nil || AX.windowNumber(of: w.el) == number,
               let label = liveLabel(el) else { return false }
         ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(pid), windowId: id, key: key, role: r,
-                                              label: label.trimmingCharacters(in: .whitespacesAndNewlines))))
+                                              label: label.trimmingCharacters(in: .whitespacesAndNewlines), via: .click)))
         return true
     }
 

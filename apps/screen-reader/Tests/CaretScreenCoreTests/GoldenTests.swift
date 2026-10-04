@@ -65,7 +65,7 @@ private func goldenLines() throws -> [Data] {
                           "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
                           "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
                           "readerCommand", "userPress",
-                          "planRequest", "planProposal"])
+                          "planRequest", "planProposal", "userPress"])
     }
 
     @Test func readsThePressWatch() throws {
@@ -74,12 +74,20 @@ private func goldenLines() throws -> [Data] {
               case .userPress(let press) = try JSONDecoder().decode(Message.self, from: lines[54]) else { Issue.record("lines 54 and 55 are not the press watch"); return }
         #expect(cmd.verb == .watchPresses(windows: [WatchedWindow(pid: 5150, windowId: "5150-7")]))
         #expect(cmd.verb.taskId == nil)
-        #expect(press == UserPress(at: 1_790_000_601_200, pid: 5150, windowId: "5150-7", key: "dev.caret.fixture/standard/button:send~0", role: "AXButton", label: "Send"))
-        let noKey = Data(#"{"type":"userPress","v":1,"at":1,"pid":1,"windowId":"1-1","key":null,"role":"AXButton","label":"Send"}"#.utf8)
+        #expect(press == UserPress(at: 1_790_000_601_200, pid: 5150, windowId: "5150-7", key: "dev.caret.fixture/standard/button:send~0", role: "AXButton", label: "Send", via: .click))
+        let noKey = Data(#"{"type":"userPress","v":1,"at":1,"pid":1,"windowId":"1-1","key":null,"role":"AXButton","label":"Send","via":"click"}"#.utf8)
         guard case .userPress(let unkeyed) = try JSONDecoder().decode(Message.self, from: noKey) else { Issue.record("a press with a null key does not decode"); return }
         #expect(unkeyed.key == nil)
-        let missing = Data(#"{"type":"userPress","v":1,"at":1,"pid":1,"windowId":"1-1","role":"AXButton","label":"Send"}"#.utf8)
+        let missing = Data(#"{"type":"userPress","v":1,"at":1,"pid":1,"windowId":"1-1","role":"AXButton","label":"Send","via":"click"}"#.utf8)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: missing) }
+        // B21: a press by key, and how a press was made is required.
+        guard case .userPress(let byKey) = try JSONDecoder().decode(Message.self, from: lines[57]) else { Issue.record("line 58 is not a userPress"); return }
+        #expect(byKey == UserPress(at: 1_790_000_800_400, pid: 5150, windowId: "5150-7", key: "dev.caret.fixture/standard/button:send~0", role: "AXButton", label: "Send", via: .return))
+        let line = String(decoding: lines[57], as: UTF8.self)
+        for bad in [line.replacingOccurrences(of: #","via":"return""#, with: ""), line.replacingOccurrences(of: #""via":"return""#, with: #""via":"tab""#)] {
+            #expect(bad != line)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(Message.self, from: Data(bad.utf8)) }
+        }
     }
 
     @Test func reencodesEveryLineToTheSameJSON() throws {

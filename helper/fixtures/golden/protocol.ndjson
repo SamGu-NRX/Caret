@@ -52,6 +52,7 @@
 {"type":"taskProgress","v":1,"at":1790000500000,"taskId":"offer-15","planId":"offer-15","step":null,"steps":3,"says":null,"detail":null,"phase":"started","unprompted":true}
 {"type":"taskProgress","v":1,"at":1790000501000,"taskId":"offer-15","planId":"offer-15","step":null,"steps":3,"says":null,"detail":"3 acted, 0 already true","phase":"done","written":3,"unprompted":true}
 {"type":"readerCommand","v":1,"id":"cmd-5","expires":1790000600000,"verb":{"kind":"watchPresses","windows":[{"pid":5150,"windowId":"5150-7"}]}}
-{"type":"userPress","v":1,"at":1790000601200,"pid":5150,"windowId":"5150-7","key":"dev.caret.fixture/standard/button:send~0","role":"AXButton","label":"Send"}
+{"type":"userPress","v":1,"at":1790000601200,"pid":5150,"windowId":"5150-7","key":"dev.caret.fixture/standard/button:send~0","role":"AXButton","label":"Send","via":"click"}
 {"type":"planRequest","v":1,"requestId":"ask-3","at":1790000700000,"instruction":"Put my email in Email","window":{"pid":5150,"number":4821,"title":"Caret Fixture — Executor"}}
 {"type":"planProposal","v":1,"requestId":"ask-4","at":1790000701000,"outcome":"error","offerKey":null,"window":null,"spec":null,"handoff":null,"error":{"code":"unseenWindow","detail":"the reader has not read window 4999 of process 5150"}}
+{"type":"userPress","v":1,"at":1790000800400,"pid":5150,"windowId":"5150-7","key":"dev.caret.fixture/standard/button:send~0","role":"AXButton","label":"Send","via":"return"}

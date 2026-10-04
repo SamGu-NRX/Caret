@@ -13,7 +13,7 @@
 // an offer, and only once enough silent predictions have matched (gate.ts).
 import { normalizeValue } from "../normalize.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
-import type { ValueKind } from "../protocol.ts";
+import type { PressVia, ValueKind } from "../protocol.ts";
 import { classifyLabel } from "../executor/risk.ts";
 import type { MemoryStore, RoutineFinish, RoutineRecord, RoutineStep } from "./memory.ts";
 import { locate, windowIndex, type Part, type PatternTransfer } from "./shape.ts";
@@ -66,6 +66,8 @@ export interface ObservedPress {
   key: string | null;
   role: string;
   label: string;
+  /** A click, or the key that pressed it (B21). */
+  via: PressVia;
 }
 
 /** A press as kept: where the pressed control sat in its window when the press arrived, while the window was whole. */
@@ -408,7 +410,7 @@ export class RoutineRecognizer {
     if (p.role !== "AXButton" || !finishLabel(label)) return undefined;
     const why = classifyLabel(label);
     if (why === "safe") return closedAt !== null && closedAt >= p.at && closedAt - p.at <= PRESS_ENDS_MS ? null : undefined;
-    return { label, why, templateHash: p.slot.templateHash, pos: p.slot.pos, by: "click" };
+    return { label, why, templateHash: p.slot.templateHash, pos: p.slot.pos, by: p.via === "click" ? "click" : "key" };
   }
 
   private step(t: PatternTransfer): RoutineStep {

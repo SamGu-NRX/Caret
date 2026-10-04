@@ -192,11 +192,12 @@ public final class ScreenReader {
     }
 
     /**
-     * Reports the user's clicks on pressable elements in the named windows (B20). Each watched process gets a
-     * listen-only event tap: it observes and cannot change, block or post an event. Only a left button going
-     * down is read: its location and the window it went to, matched to an element of a watched window. A
-     * process no tap can be made for falls back to the global mouse monitor, placed by the frontmost window
-     * under the click.
+     * Reports the user's presses of pressable elements in the named windows: clicks (B20), and Return, Enter or
+     * Space on a button (B21, KeyPresses). Each watched process gets a listen-only event tap: it observes and
+     * cannot change, block or post an event. A left button going down is read for its location and the window
+     * it went to, matched to an element of a watched window; a key going down only for which of the three it
+     * is, placed by the focus and default button the reader last read. A process no tap can be made for falls
+     * back to the global mouse monitor, placed by the frontmost window under the click, and its keys go unseen.
      */
     private func watchPresses(_ byPid: [pid_t: Set<String>]) {
         pressWatch = byPid.filter { !$0.value.isEmpty }
@@ -226,13 +227,27 @@ public final class ScreenReader {
         }
     }
 
+    /// A listen-only tap for the process's clicks and, when the system allows a keyboard tap, its Return, Enter
+    /// and Space (B21). A process whose keyboard cannot be tapped still has its clicks watched; the log says so.
     private func makePressTap(_ pid: pid_t) -> (port: CFMachPort, source: CFRunLoopSource, box: PressTapBox)? {
-        let box = PressTapBox(pid: pid) { [weak self] p, number, at in
+        let click: @Sendable (CGPoint, Int?, Int64) -> Void = { [weak self] p, number, at in
             MainActor.assumeIsolated { self?.tapPress(pid: pid, at: p, number: number, time: at) }
         }
-        let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
-        guard let port = CGEvent.tapCreateForPid(pid: pid, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mask,
-                                                 callback: pressTapCallback, userInfo: Unmanaged.passUnretained(box).toOpaque()) else { return nil }
+        let key: @Sendable (UserPress.Via, Int64) -> Void = { [weak self] via, at in
+            MainActor.assumeIsolated { self?.tapKey(pid: pid, via: via, time: at) }
+        }
+        let mouse = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+        let keys = mouse | CGEventMask(1 << CGEventType.keyDown.rawValue)
+        var box = PressTapBox(pid: pid, onPress: click, onKey: key)
+        var tapped = CGEvent.tapCreateForPid(pid: pid, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: keys,
+                                             callback: pressTapCallback, userInfo: Unmanaged.passUnretained(box).toOpaque())
+        if tapped == nil {
+            ctx.log("press watch: no keyboard tap for \(pid); watching its clicks only")
+            box = PressTapBox(pid: pid, onPress: click, onKey: nil)
+            tapped = CGEvent.tapCreateForPid(pid: pid, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mouse,
+                                             callback: pressTapCallback, userInfo: Unmanaged.passUnretained(box).toOpaque())
+        }
+        guard let port = tapped else { return nil }
         box.port = port
         guard let source = CFMachPortCreateRunLoopSource(nil, port, 0) else {
             CFMachPortInvalidate(port)
@@ -246,6 +261,11 @@ public final class ScreenReader {
     private func tapPress(pid: pid_t, at p: CGPoint, number: Int?, time at: Int64) {
         guard let ids = pressWatch[pid], let w = workers[pid] else { return }
         w.observePress(at: p, number: number, time: at, windows: ids)
+    }
+
+    private func tapKey(pid: pid_t, via: UserPress.Via, time at: Int64) {
+        guard let ids = pressWatch[pid], let w = workers[pid] else { return }
+        w.observeKey(via, time: at, windows: ids)
     }
 
     private func pressSeen(location: NSPoint, at: Int64) {
@@ -374,19 +394,30 @@ final class PressTapBox: @unchecked Sendable {
     let pid: pid_t
     var port: CFMachPort?
     let onPress: @Sendable (CGPoint, Int?, Int64) -> Void
-    init(pid: pid_t, onPress: @escaping @Sendable (CGPoint, Int?, Int64) -> Void) {
+    /// A press key went down (B21): which one, and when. Nil when the tap watches the mouse only.
+    let onKey: (@Sendable (UserPress.Via, Int64) -> Void)?
+    init(pid: pid_t, onPress: @escaping @Sendable (CGPoint, Int?, Int64) -> Void, onKey: (@Sendable (UserPress.Via, Int64) -> Void)?) {
         self.pid = pid
         self.onPress = onPress
+        self.onKey = onKey
     }
 }
 
-/// Runs on the main run loop for each left button going down in a watched process. It only reads the event and
-/// passes it on unchanged.
+/// Runs on the main run loop for each left button or key going down in a watched process. It only reads the
+/// event and passes it on unchanged. Of a key it reads the key code, the modifier flags and whether it repeats,
+/// and drops it at once unless it is Return, Enter or Space held alone (KeyPresses.via); characters are never read.
 private let pressTapCallback: CGEventTapCallBack = { _, type, event, refcon in
     guard let refcon else { return Unmanaged.passUnretained(event) }
     let box = Unmanaged<PressTapBox>.fromOpaque(refcon).takeUnretainedValue()
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let port = box.port { CGEvent.tapEnable(tap: port, enable: true) }
+        return Unmanaged.passUnretained(event)
+    }
+    if type == .keyDown {
+        guard let onKey = box.onKey,
+              let via = KeyPresses.via(keyCode: Int(event.getIntegerValueField(.keyboardEventKeycode)), flags: event.flags.rawValue,
+                                       autorepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0) else { return Unmanaged.passUnretained(event) }
+        onKey(via, nowMs())
         return Unmanaged.passUnretained(event)
     }
     guard type == .leftMouseDown else { return Unmanaged.passUnretained(event) }
