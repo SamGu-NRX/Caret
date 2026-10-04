@@ -290,6 +290,67 @@ describe("whose details a field offered a value from memory wants", () => {
     expect(requests.flatMap((r) => Object.keys(r.questions)).filter((id) => id.endsWith("_whose"))).toEqual([]);
     expect((await fill(answering(SAM, { value: FILL_CUTOFF, whose: 0.99 }).ask, { whose: false }))?.value).toBe("Sam Rivera");
   });
+
+  // B27: a part of the user's Name (fill.ts derived, base memory) passes the same two gates as the whole Name. B26's
+  // "wrong" m21 fills were "Sam" and "Rivera" under "Your details", both whose asks saying the user's at 0.77 to 0.92.
+  describe("a part of the user's Name from memory", () => {
+    /** Sections of fields, as the reader sends a form: each section a labelled group, the first field focused. */
+    const sectioned = (m: ScreenModel, sections: readonly [string, readonly string[]][]): string[] => {
+      const nodes = [];
+      const keys: string[] = [];
+      let i = 0;
+      for (const [section, labels] of sections) {
+        const g = F(`group:${section.toLowerCase()}~0`);
+        nodes.push({ key: g, parent: null, role: "AXGroup", label: section });
+        for (const l of labels) {
+          const k = `${g}/textfield:f${i}~0`;
+          keys.push(k);
+          nodes.push(field(k, "", { parent: g, label: l, frame: [100, 40 + 40 * i++, 200, 24] }));
+        }
+      }
+      m.apply(snap(nodes, { at: 2000, windowId: FORM, title: "Booking", focused: true, focusedKey: keys[0] as string }));
+      return keys;
+    };
+    const PARTS = { "First name": "Sam", "Last name": "Rivera" };
+    const parts = async (ask: AskJev) => {
+      const m = new ScreenModel();
+      const [first, last] = sectioned(m, [["Your details", ["First name", "Last name"]]]);
+      const p = await proposeFill(m, ask, FORM, first as string, 3000, { about: [NAME, EMAIL] });
+      return [first, last].map((k) => p.fields.find((f) => f.key === k));
+    };
+
+    it("fills First name and Last name with the user's parts when both asks say the user's at the whose cutoff", async () => {
+      const [first, last] = await parts(answering(PARTS, { value: MEMORY_CUTOFF, whose: WHOSE_CUTOFF }).ask);
+      expect(first).toMatchObject({ value: "Sam", source: null, memory: { id: NAME.id, part: "first", says: ABOUT_SAYS }, withheld: null });
+      expect(last).toMatchObject({ value: "Rivera", source: null, memory: { id: NAME.id, part: "last", says: ABOUT_SAYS }, withheld: null });
+    });
+
+    it.each<[string, { value: number; whose: number; who?: [Whose, Whose] | Whose }]>([
+      ["someone else's", { value: 0.95, whose: 0.95, who: "other" }],
+      ["unclear", { value: 0.95, whose: 0.95, who: "unclear" }],
+      ["split between the asks", { value: 0.95, whose: 0.95, who: ["user", "other"] }],
+      ["the user's under the whose cutoff", { value: 0.95, whose: WHOSE_CUTOFF - 0.01 }],
+      ["the user's, the pick under the memory cutoff", { value: MEMORY_CUTOFF - 0.01, whose: 0.99 }],
+    ])("withholds the parts when whose is %s", async (_, o) => {
+      for (const f of await parts(answering(PARTS, o).ask)) {
+        expect(f).toMatchObject({ value: null, memory: null, withheld: "lowConfidence", choice: "none" });
+        // Both asks did agree on the user's part: only the gates kept it out.
+        expect(f?.asks.map((a) => a.value)).toEqual(f?.key.includes("f0") ? ["Sam", "Sam"] : ["Rivera", "Rivera"]);
+      }
+    });
+
+    it("fills the user's section and leaves an emergency contact's identical labels blank, however sure the picks", async () => {
+      const m = new ScreenModel();
+      const keys = sectioned(m, [
+        ["Your details", ["First name", "Last name"]],
+        ["Emergency contact", ["First name", "Last name"]],
+      ]);
+      const ask = jevPickingText((_, ins) => PARTS[/Label: '([^']+)'/.exec(ins)?.[1] as keyof typeof PARTS] ?? null, 0.95, (ins) => (ins.includes("Emergency contact") ? "other" : "user"));
+      const p = await proposeFill(m, ask, FORM, keys[0] as string, 3000, { about: [NAME, EMAIL] });
+      expect(keys.map((k) => p.fields.find((f) => f.key === k)?.value ?? null)).toEqual(["Sam", "Rivera", null, null]);
+      expect(keys.slice(2).map((k) => p.fields.find((f) => f.key === k)?.withheld)).toEqual(["lowConfidence", "lowConfidence"]);
+    });
+  });
 });
 
 // Acceptance (B17 brief, 2): over the real socket, the host adds a name and an email, a fresh form's Name

@@ -53,6 +53,15 @@ export const FILL_CUTOFF = 0.75;
  *   cutoffs both passes filled 12 of 20 with no wrong fill. 14 of 20 is the most the code rules offer.
  * WHOSE_CUTOFF sits between 0.36 and 0.58; MEMORY_CUTOFF is a floor that cost nothing on dev. Both rest on
  * one synthetic dev set; recheck on real forms.
+ *
+ * A part of the user's Name (B24, derived from memory) meets both cutoffs the same way (memoryOf). B26's two "wrong"
+ * m21 fills were "Sam" and "Rivera" under "Your details", the user's own: the held-out sets were labelled when fill
+ * copied a value only whole. B27 relabelled them and wrote 14 blind forms that put First/Last name in other people's
+ * sections (evidence/screen/b27/mem-a, three live passes each of B17, B18 and those forms): 0 wrong fills. On 60
+ * judgments of another person's name part, both whose asks never said the user's. On 21 of an unclear field's,
+ * they did at 0.33 to 0.57, twice at or over WHOSE_CUTOFF (a bare "Application form", Last name); the value question
+ * kept both blank. So the 0.36 ceiling above does not hold on unclear fields, and there the value pick is the only
+ * guard left. No wrong fill came of it; not tuned.
  */
 export const MEMORY_CUTOFF = 0.3;
 export const WHOSE_CUTOFF = 0.5;
