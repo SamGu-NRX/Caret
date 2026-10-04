@@ -296,6 +296,9 @@ try:
     for i, case in enumerate(mids):
         before, after = case["before"], case["after"]
         expected = replay_for(before, after)
+        if not check(f"mid {i + 1}: the replay file has the model's outcome for it", expected is not None, before=before, after=after):
+            wrong += 1
+            continue
         pid, wid = textedit(f"mid-{i + 1}.txt", before + after, {"x": 200, "y": 200, "width": 900, "height": 420})
         keys(pid, "key", "right", len(before))
         time.sleep(1.5)
@@ -316,7 +319,9 @@ try:
             ok = offer is None
             silent += 1 if ok else 0
             wrong += 0 if ok else 1
-            check(f"mid {i + 1}: silent, as the model run was ({expected.get('reason') if expected else 'no entry'})", ok, offer=offer)
+            suppressed = {k for k, v in (s.get("counters") or {}).items() if k.startswith("suppressed.")}
+            ok = ok and "suppressed.replayMissing" not in suppressed
+            check(f"mid {i + 1}: silent, as the model run was ({expected.get('reason')})", ok, offer=offer)
         close(pid)
     results["mid"] = {"cases": len(mids), "offeredAndFit": shown, "silent": silent, "wrong": wrong}
 

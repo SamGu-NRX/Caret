@@ -600,6 +600,27 @@ final class MemoryFillTests: XCTestCase {
         XCTAssertEqual(rig.arbiter.snapshot().current?.text, FillFx.email)
     }
 
+    func testNothingIsBoundWhileTheFocusedFieldIsNotOneTheProposalNames() {
+        let rig = FillRig()
+        rig.world.front(.email, value: "typed")
+        rig.world.focused[Fx.app]?.frame = CGRect(x: 10, y: 10, width: 50, height: 20)
+        rig.propose()
+        XCTAssertEqual(rig.world.bindCalls, 0, "no frame match: no evidence this window is the proposal's")
+    }
+
+    func testOnlyTheFocusedWindowsElementsAreBoundAndAPartialBindingIsRetried() {
+        let rig = FillRig()
+        rig.world.bindable = false
+        rig.world.front(.email, value: "typed")
+        rig.propose()
+        XCTAssertEqual(rig.world.bindWindows, ["5150-1"], "bound in the focused field's window")
+        rig.world.bindable = true
+        rig.machine.fieldChanged(pid: Fx.app, at: 2)
+        XCTAssertEqual(rig.world.bindCalls, 2, "a binding that found nothing is tried again")
+        rig.machine.fieldChanged(pid: Fx.app, at: 3)
+        XCTAssertEqual(rig.world.bindCalls, 2, "once every field is bound, no more hit-tests")
+    }
+
     func testTheElementWinsOverAStaleFrame() {
         let proposal = FillFx.proposal()
         let email = Fx.Element.email.frame

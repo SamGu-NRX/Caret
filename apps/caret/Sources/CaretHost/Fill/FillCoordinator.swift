@@ -149,7 +149,7 @@ private final class FillWorldAdapter: FillWorld {
     }
 
     /// Hit-tests each frame's center in the app, at most `bindBudget` in all.
-    nonisolated func elementIDs(pid: Int32, at frames: [String: Frame]) -> [String: String] {
+    nonisolated func elementIDs(pid: Int32, at frames: [String: Frame], window windowID: String) -> [String: String] {
         MainActor.assumeIsolated {
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, ObstacleProbe.messagingTimeout)
@@ -163,7 +163,7 @@ private final class FillWorldAdapter: FillWorld {
                 for _ in 0..<3 {
                     if let at = AXRead.frame(of: element),
                        FillSelection.matches(frame, Frame(x: at.minX, y: at.minY, width: at.width, height: at.height)) {
-                        found[key] = AXRead.token(element)
+                        if AXRead.element(kAXWindowAttribute, on: element).map(AXRead.token) == windowID { found[key] = AXRead.token(element) }
                         break
                     }
                     guard let parent = AXRead.element(kAXParentAttribute, on: element) else { break }

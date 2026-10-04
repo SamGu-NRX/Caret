@@ -99,15 +99,19 @@ enum AXRead {
         return range
     }
 
-    /// The part of `element` on screen, global top-left points: its frame clipped to the scroll
-    /// area holding it (a text view's frame is the whole document), its window and `screen`. Nil
-    /// when its frame or window cannot be read.
-    static func visibleFrame(of element: AXUIElement, frame: CGRect, screen: CGRect) -> CGRect? {
+    /// The part of `element` on screen, global top-left points: its frame clipped to every scroll
+    /// area holding it within `ancestors` levels (a text view's frame is the whole document), its
+    /// window and `screen`. Nil when its frame or window cannot be read.
+    static func visibleFrame(of element: AXUIElement, frame: CGRect, screen: CGRect, ancestors: Int = 4) -> CGRect? {
         guard let window = self.element(kAXWindowAttribute, on: element), let windowFrame = self.frame(of: window) else { return nil }
         var visible = frame.intersection(windowFrame).intersection(screen)
-        if let parent = self.element(kAXParentAttribute, on: element), string(kAXRoleAttribute, on: parent) == "AXScrollArea",
-           let clip = self.frame(of: parent) {
-            visible = visible.intersection(clip)
+        var current = element
+        for _ in 0..<ancestors {
+            guard let parent = self.element(kAXParentAttribute, on: current), !CFEqual(parent, window) else { break }
+            if string(kAXRoleAttribute, on: parent) == "AXScrollArea", let clip = self.frame(of: parent) {
+                visible = visible.intersection(clip)
+            }
+            current = parent
         }
         return visible.isNull || visible.isEmpty ? nil : visible
     }

@@ -118,9 +118,8 @@ final class GhostCapsuleWindowTests: XCTestCase {
         XCTAssertEqual(GhostOverlay.keepCapsuleInWindow(&p, text: " later", font: font, window: window, pid: nil).cause, .capsuleOutsideWindow)
     }
 
-    func testWithNoWindowFrameNothingChanges() {
+    func testWithNoWindowFrameNoCapsuleIsDrawn() {
         var p = capsule(caretX: 790, field: view)
-        XCTAssertNil(GhostOverlay.keepCapsuleInWindow(&p, text: " x", font: font, window: nil, pid: nil).cause)
-        XCTAssertEqual(p.fieldRect, view)
+        XCTAssertEqual(GhostOverlay.keepCapsuleInWindow(&p, text: " x", font: font, window: nil, pid: nil).cause, .capsuleNoWindow)
     }
 }

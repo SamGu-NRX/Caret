@@ -50,9 +50,10 @@ public protocol FillWorld: AnyObject {
     func sourceOpen(_ source: FillOrigin.Window) -> Bool?
     /// The element (`TargetIdentity.elementID`) at each of `frames` in the app now, by the key it
     /// was given: hit-tested at the frame's center and kept only when an element there, or one of
-    /// its two nearest ancestors, has that frame (`FillSelection.matches`). Keys with no such
-    /// element are left out. Time-boxed; a slow app gives fewer keys, never a wrong one.
-    func elementIDs(pid: Int32, at frames: [String: Frame]) -> [String: String]
+    /// its two nearest ancestors, has that frame (`FillSelection.matches`) and lies in the window
+    /// `windowID` names (`TargetIdentity.windowID`). Keys with no such element are left out.
+    /// Time-boxed; a slow app gives fewer keys, never a wrong one.
+    func elementIDs(pid: Int32, at frames: [String: Frame], window windowID: String) -> [String: String]
 }
 
 /// The ghost value in the field and its source line.
@@ -190,8 +191,13 @@ public final class FillMachine {
         /// Each proposed field's element, found where the proposal put it, by field key. Bound once,
         /// at the first evaluation while its app is in front (`bind`).
         var bound: [String: String] = [:]
-        var bindTried = false
+        var bindAttempts = 0
     }
+
+    /// Binding is tried this many times per proposal while some fields stay unbound (one off
+    /// screen, or a slow app's time ran out). Assumed: each try costs up to `bindBudget` of main
+    /// thread, and a form rarely needs more than a scroll or two to show every field.
+    static let bindAttempts = 3
 
     struct Toast {
         let source: String
@@ -331,7 +337,7 @@ public final class FillMachine {
         let focusedFrame = Frame(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
         var skip = FillSelection.Skip.noFieldAtFocus
         for candidate in candidates {
-            let bound = bind(candidate.proposal.windowId, pid: pid)
+            let bound = bind(candidate.proposal.windowId, pid: pid, focused: field, focusedFrame: focusedFrame)
             let changed = Set(memoryChangedAt.filter { $0.value >= candidate.receivedAt }.keys)
             switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: field.value, secure: field.secure,
                                         suppressed: suppressed, changedMemory: changed,
@@ -346,19 +352,31 @@ public final class FillMachine {
         withdraw(skip.rawValue)
     }
 
-    /// Finds each proposed field's element once, while the form is laid out as the reader saw it,
-    /// so a field focused after the page moved (a field scrolled into view, a message inserted
-    /// above it) is still matched (A18, bug 12: HubSpot's Email gave `noFieldAtFocus` after a
-    /// proposal made at First Name). Only while the app is in front: a background app is not read.
-    func bind(_ windowID: String, pid: Int32) -> [String: String] {
+    /// Finds each proposed field's element while the form is laid out as the reader saw it, so a
+    /// field focused after the page moved (a field scrolled into view, a message inserted above
+    /// it) is still matched (A18, bug 12: HubSpot's Email gave `noFieldAtFocus` after a proposal
+    /// made at First Name).
+    ///
+    /// Only while the app is in front (a background app is not read), and only while the focused
+    /// field sits exactly where the proposal put one of its fields: the proposal names its window
+    /// only by the reader's id, so that match is what says the focused window is the proposal's,
+    /// and only elements in that window are bound. Unbound fields are tried again up to
+    /// `bindAttempts` times; a field that has moved by then no longer matches its frame and stays
+    /// unbound, never wrongly bound.
+    func bind(_ windowID: String, pid: Int32, focused: FillFieldRead, focusedFrame: Frame) -> [String: String] {
         guard var entry = held[windowID] else { return [:] }
-        guard !entry.bindTried, world.frontmostPID == pid else { return entry.bound }
         var frames: [String: Frame] = [:]
-        for field in entry.proposal.fields { if let frame = field.frame { frames[field.key] = frame } }
-        entry.bound = world.elementIDs(pid: pid, at: frames)
-        entry.bindTried = true
+        for field in entry.proposal.fields where entry.bound[field.key] == nil {
+            if let frame = field.frame { frames[field.key] = frame }
+        }
+        guard !frames.isEmpty, entry.bindAttempts < Self.bindAttempts, world.frontmostPID == pid,
+              entry.proposal.fields.contains(where: { $0.frame.map { FillSelection.matches($0, focusedFrame) } ?? false })
+        else { return entry.bound }
+        let found = world.elementIDs(pid: pid, at: frames, window: focused.identity.windowID)
+        entry.bound.merge(found) { old, _ in old }
+        entry.bindAttempts += 1
         held[windowID] = entry
-        count("fill.bound.\(entry.bound.count == frames.count ? "all" : entry.bound.isEmpty ? "none" : "some")")
+        count("fill.bound.\(found.count == frames.count ? "all" : found.isEmpty ? "none" : "some")")
         return entry.bound
     }
 

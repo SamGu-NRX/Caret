@@ -269,7 +269,14 @@ final class HostCoordinator {
         executor?.remember(offerID: offerID, context: snapshot.context)
         status.update { $0.presentation = presentation.rawValue }
         let target = field.identity
-        watch.start(check: { Visibility.hold(for: target, anchors: anchors) }, onLost: { [weak self] hold in
+        // A capsule's corners are watched too: a window that shrinks or a window moved over it
+        // takes the offer down, as one over the caret does (A18 review).
+        var watched = anchors
+        if presentation == .capsule, let c = overlay.lastFit?.capsule, c.count == 4 {
+            watched += [CGPoint(x: c[0] + 1, y: c[1] + 1), CGPoint(x: c[0] + c[2] - 1, y: c[1] + 1),
+                        CGPoint(x: c[0] + 1, y: c[1] + c[3] - 1), CGPoint(x: c[0] + c[2] - 1, y: c[1] + c[3] - 1)]
+        }
+        watch.start(check: { Visibility.hold(for: target, anchors: watched) }, onLost: { [weak self] hold in
             self?.status.increment("withdrawn.ghost.\(hold.rawValue)")
             self?.clearOffer()
         })

@@ -37,6 +37,8 @@ public enum GhostFit {
         case capsuleOutsideWindow
         /// Another app's window lies over part of where the capsule would go.
         case capsuleCovered
+        /// The focused window's frame could not be read, so nothing says the capsule stays in it.
+        case capsuleNoWindow
     }
 
     public enum Outcome: String, Codable, Sendable {

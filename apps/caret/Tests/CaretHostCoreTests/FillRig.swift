@@ -30,9 +30,13 @@ final class FakeFillWorld: FillWorld {
 
     func frame(_ element: Fx.Element) -> CGRect { element.frame.offsetBy(dx: 0, dy: layoutShift) }
 
-    func elementIDs(pid: Int32, at frames: [String: Frame]) -> [String: String] {
+    /// The window ids binding was asked for.
+    private(set) var bindWindows: [String] = []
+
+    func elementIDs(pid: Int32, at frames: [String: Frame], window windowID: String) -> [String: String] {
         bindCalls += 1
-        guard bindable else { return [:] }
+        bindWindows.append(windowID)
+        guard bindable, windowID == "5150-1" else { return [:] }
         var found: [String: String] = [:]
         for (key, frame) in frames {
             for element in [Fx.Element.email, .phone] {

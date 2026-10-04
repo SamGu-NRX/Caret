@@ -84,7 +84,11 @@ public enum DevProbe {
         await engine.shutdown()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let json = try? encoder.encode(GhostReplay(entries: entries)) { try? json.write(to: out) }
+        do {
+            try encoder.encode(GhostReplay(entries: entries)).write(to: out)
+        } catch {
+            return lines.joined(separator: "\n") + "\nFAILED to write \(out.path): \(error)\n"
+        }
         return lines.joined(separator: "\n") + "\n"
     }
 

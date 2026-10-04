@@ -186,10 +186,11 @@ final class GhostOverlay {
 
     /// The capsule stays inside the focused window and off other apps' windows (A18, bug 6). Its
     /// field is clamped to the window first, so KeyType's layout slides it left to fit; what still
-    /// leaves the window, or lies under another app's window, is not drawn. The cause is nil when
-    /// it may be; the frame (global top-left) is where it was laid out.
+    /// leaves the window, or lies under another app's window, is not drawn, and neither is one whose
+    /// window's frame is unknown. The cause is nil when it may be drawn; the frame (global
+    /// top-left) is where it was laid out.
     static func keepCapsuleInWindow(_ placement: inout OverlayPlacement, text: String, font: NSFont, window: CGRect?, pid: Int32?) -> (cause: GhostFit.Cause?, frame: CGRect?) {
-        guard let window, !window.isEmpty else { return (nil, nil) }
+        guard let window, !window.isEmpty else { return (.capsuleNoWindow, nil) }
         let field = placement.fieldRect.map { $0.intersection(window) }
         placement.fieldRect = field.flatMap { $0.isNull || $0.isEmpty ? nil : $0 } ?? window
         let width = (text as NSString).size(withAttributes: [.font: font]).width

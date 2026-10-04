@@ -81,6 +81,8 @@ final class PerchController {
     private var relocating = false
     private var clickMonitor: Any?
     private(set) var listOpen = false
+    /// The open list was placed as the desk (Ask Caret), so a perch move does not re-hang it.
+    private var listIsDesk = false
     /// Pages of Done rows the open list shows; "and N more" adds one, closing the list resets it.
     private(set) var donePages = 1
     private var stats = Stats()
@@ -176,7 +178,7 @@ final class PerchController {
             stats.reopened += 1
             listOpen = false
         }
-        if listOpen { anchorList() } else { openList() }
+        if listOpen { anchorList(desk: true) } else { openList(desk: true) }
         guard drawsOnScreen else { return }
         list.panel.orderFrontRegardless()
         list.panel.makeKey()
@@ -389,11 +391,14 @@ final class PerchController {
         listOpen ? closeList() : openList()
     }
 
-    func openList() {
+    /// `desk`: placed as the desk over the window in front even when the perch is on screen
+    /// (the menu's Ask Caret); otherwise it hangs from the perch when there is one.
+    func openList(desk: Bool = false) {
         listOpen = true
+        listIsDesk = desk
         center.acknowledge()
         renderList()
-        anchorList()
+        anchorList(desk: desk)
         if drawsOnScreen { list.enter() }
         if clickMonitor == nil {
             // A click in another app closes the list; clicks in Caret's own panels do not reach
@@ -454,8 +459,9 @@ final class PerchController {
     /// The list grows away from the perch's corner, 6 pt from it. With no perch on screen (opened
     /// from the menu), it is the desk: under the menu bar of the screen holding the window in
     /// front, centered over that window (`DeskPlacement`, A18 bug 13).
-    private func anchorList() {
-        guard let perch = frame, model.presented, drawsOnScreen, !hidden, panel.isVisible else {
+    private func anchorList(desk: Bool? = nil) {
+        if let desk { listIsDesk = desk }
+        guard !listIsDesk, let perch = frame, model.presented, drawsOnScreen, !hidden, panel.isVisible else {
             let window = Self.frontWindow()
             let screens = NSScreen.screens.map { Screen.ax($0.visibleFrame) }
             let visible = DeskPlacement.screen(for: window, screens: screens, fallback: screenFrame())
