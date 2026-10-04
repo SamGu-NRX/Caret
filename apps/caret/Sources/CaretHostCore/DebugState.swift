@@ -92,6 +92,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var kind: String?
         /// Set for a fill offer.
         public var fill: FillInfo?
+        /// Set for a writing offer.
+        public var writing: WritingOfferInfo?
 
         public init(
             id: UInt64, text: String, typedSinceOffer: String, ageMs: Double, pid: Int32,
@@ -106,6 +108,42 @@ public struct DebugState: Codable, Equatable, Sendable {
             self.caretUTF16 = caretUTF16
             self.elementRevision = elementRevision
             self.presentation = presentation
+        }
+    }
+
+    /// A writing offer as the arbiter holds it: where the fix goes and what the rows are, without
+    /// the field's text.
+    public struct WritingOfferInfo: Codable, Equatable, Sendable {
+        /// `line` or `expanded`.
+        public var presentation: String
+        public var activeStart: Int
+        public var activeEnd: Int
+        public var marks: Int
+        /// `fix`, `original` or `fixAll`, in row order.
+        public var rows: [String]
+        public var current: Int
+        public var ownsTab: Bool
+        public var needsChoice: Bool
+
+        public init(_ offer: WritingOffer) {
+            switch offer.presentation {
+            case .mark: presentation = "mark"
+            case .line: presentation = "line"
+            case .expanded: presentation = "expanded"
+            }
+            activeStart = offer.active.span.start
+            activeEnd = offer.active.span.end
+            marks = offer.marks.count
+            rows = offer.alternatives.map {
+                switch $0.kind {
+                case .fix: return "fix"
+                case .original: return "original"
+                case .fixAll: return "fixAll"
+                }
+            }
+            current = offer.current
+            ownsTab = offer.ownsTab
+            needsChoice = offer.active.needsChoice
         }
     }
 
@@ -553,6 +591,47 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// Running apps that also take Tab for their own completions (`OtherTabOwners`). Q1 (A18): with
     /// Cotypist running, its Tab took one word per press while Caret's counters stayed at zero.
     public var otherTabOwners: [String]?
+    /// The writing checks in the focused field: marks, and the panels drawn for them.
+    public var writing: WritingInfo?
+
+    /// What `WritingCoordinator` holds and draws. Spans and frames, never the field's text.
+    public struct WritingInfo: Codable, Equatable, Sendable {
+        /// Checks run at a sentence boundary, and how the last one went.
+        public var checks: Int = 0
+        /// `checked`, `noLanguage` (static rules only), `stale`, `skippedCode`, `skippedComposing`.
+        public var lastCheck: String?
+        public var marks: [Mark] = []
+        /// Underline panels on screen, one per mark that had bounds.
+        public var underlines: [Panel] = []
+        /// The correction line, the open list or the toast.
+        public var panel: Panel?
+        /// `line`, `expanded`, `toast` or `error`.
+        public var panelRole: String?
+        /// The line is placed from the active mark's text bounds (`bounds`) or, with none, under
+        /// the caret (`caret`).
+        public var anchoredBy: String?
+
+        public struct Mark: Codable, Equatable, Sendable {
+            public var start: Int
+            public var end: Int
+            public var kind: String
+            public var declined: Bool
+            public var needsChoice: Bool
+            /// `AXBoundsForRange` gave a usable rect on one line.
+            public var hasBounds: Bool
+
+            public init(start: Int, end: Int, kind: String, declined: Bool, needsChoice: Bool, hasBounds: Bool) {
+                self.start = start
+                self.end = end
+                self.kind = kind
+                self.declined = declined
+                self.needsChoice = needsChoice
+                self.hasBounds = hasBounds
+            }
+        }
+
+        public init() {}
+    }
 
     public init(
         pid: Int32, uptimeSeconds: Double, trust: Trust, engine: Engine, focus: Focus?, offer: OfferInfo?,

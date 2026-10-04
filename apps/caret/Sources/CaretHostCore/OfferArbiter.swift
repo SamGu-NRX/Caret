@@ -96,6 +96,9 @@ public final class OfferArbiter: @unchecked Sendable {
         public var publishedCount: UInt64
         public var claimCount: UInt64
         public var refusedPublishCount: UInt64
+        /// The last writing offer the user closed by choosing Original, so its producer can stop
+        /// marking that text.
+        public var keptOriginalOfferID: UInt64?
     }
 
     private struct State {
@@ -118,6 +121,7 @@ public final class OfferArbiter: @unchecked Sendable {
         var publishedCount: UInt64 = 0
         var claimCount: UInt64 = 0
         var refusedPublishCount: UInt64 = 0
+        var keptOriginalOfferID: UInt64?
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -137,7 +141,9 @@ public final class OfferArbiter: @unchecked Sendable {
     /// so the tap never sees a pop-up's keys on a line that shows none of its rows.
     public func publish(_ offer: Offer, compact: Bool = false) -> UInt64? {
         let (id, displaced): (UInt64?, Offer?) = state.withLock { s in
-            guard s.insertingClaimID == nil, offer.target != s.consumedTarget else {
+            guard s.insertingClaimID == nil, offer.target != s.consumedTarget,
+                  s.current.map({ Self.mayReplace($0, ui: s.ui, with: offer) }) ?? true
+            else {
                 s.refusedPublishCount &+= 1
                 return (nil, nil)
             }
@@ -355,6 +361,10 @@ public final class OfferArbiter: @unchecked Sendable {
             return take(Choice(actionID: action?.id, row: rows > 0 ? s.ui.highlight : nil, revealed: s.ui.revealed, expanded: s.ui.expanded))
         }
 
+        if case .writing(let writing) = offer.kind {
+            return actOnWriting(key, writing, offer: offer, state: &s, now: now)
+        }
+
         switch (key, surface) {
         case (.tab, .ghost), (.tab, .alternatives), (.tab, .ghostFill):
             return take(Choice(candidate: s.ui.candidate))
@@ -410,6 +420,71 @@ public final class OfferArbiter: @unchecked Sendable {
         }
     }
 
+    /// An owned key on a writing offer: `WritingOffer.send` decides, and the offer keeps its new
+    /// state (open, the highlighted row) in the slot, mirrored into `OfferUI` for the drawing.
+    private static func actOnWriting(_ key: KeyClass, _ writing: WritingOffer, offer: Offer, state s: inout State, now: Date) -> Decision {
+        let event: WritingOffer.Event
+        switch key {
+        case .tab: event = .tab
+        case .down: event = .down
+        case .up: event = .up
+        case .escape: event = .escape
+        case .commandDigit(let n): event = .commandDigit(n)
+        default: return .pass(.noOffer)
+        }
+        var next = writing
+        let effect = next.send(event)
+        var updated = offer
+        updated.kind = .writing(next)
+        switch effect {
+        case .handled:
+            s.current = updated
+            s.ui.open = next.presentation == .expanded
+            s.ui.candidate = next.current
+            return .navigate(offerID: offer.id, ui: s.ui)
+        case .apply:
+            return .consume(claim(updated, choice: Choice(candidate: next.current, expanded: next.presentation == .expanded), state: &s, now: now))
+        case .keepOriginal:
+            // Original changes nothing and records no undo (`action-engine-v2.md` section 7).
+            s.keptOriginalOfferID = offer.id
+            clearOffer(&s)
+            return .closeOffer(offerID: offer.id)
+        case .dismiss:
+            clearOffer(&s)
+            return .closeOffer(offerID: offer.id)
+        case .passThrough:
+            // Unreachable while `KeyOwnership` and `WritingOffer.send` agree; pass rather than swallow.
+            return .pass(.noOffer)
+        }
+    }
+
+    /// Whether `incoming` may take the slot from `current`. When either is a writing offer, in
+    /// `WritingOffer.incomingWins` order: a correction line takes the slot from ghost text, ghost
+    /// text cannot take it from a correction line, and nothing but an explicit request replaces
+    /// a list the user is moving through. Offers from the helper rank as an explicit request: the
+    /// helper has already judged them worth the slot, and the host has no message to refuse one
+    /// it was sent. Between two other offers the newer wins, as before writing existed.
+    static func mayReplace(_ current: Offer, ui: OfferUI, with incoming: Offer) -> Bool {
+        guard current.kind.writing != nil || incoming.kind.writing != nil else { return true }
+        return WritingOffer.incomingWins(producer(of: incoming), over: slot(of: current, ui: ui))
+    }
+
+    static func producer(of offer: Offer) -> WritingOffer.Producer {
+        switch offer.kind {
+        case .writing(let writing): return writing.producer
+        case .ghost: return .completion
+        case .fill, .action, .popup: return .explicitRequest
+        }
+    }
+
+    static func slot(of offer: Offer, ui: OfferUI) -> WritingOffer.Slot {
+        switch offer.kind {
+        case .writing(let writing): return writing.slot
+        case .ghost: return WritingOffer.Slot(producer: .completion, holdsKeys: true, navigating: ui.open)
+        case .fill, .action, .popup: return WritingOffer.Slot(producer: .explicitRequest, holdsKeys: true, navigating: false)
+        }
+    }
+
     private static func claim(_ offer: Offer, choice: Choice, state s: inout State, now: Date) -> Claim {
         var chosen = offer
         var typed = s.typedSinceOffer
@@ -430,7 +505,7 @@ public final class OfferArbiter: @unchecked Sendable {
             claimedAt: now,
             insertionLength: claim.insertsText ? claim.insertionText.count : 0,
             outcome: claim.insertsText ? .pending : .accepted,
-            candidate: offer.kind.name == "ghost" ? choice.candidate : nil,
+            candidate: offer.kind.name == "ghost" || offer.kind.writing != nil ? choice.candidate : nil,
             actionID: choice.actionID,
             row: choice.row,
             wordOnly: choice.wordOnly ? true : nil
@@ -470,6 +545,12 @@ public final class OfferArbiter: @unchecked Sendable {
                 return .popup(rows: variants.rowCount, numbered: variants.numberedDigits, hasDown: variants.hasDownAction)
             }
             return .actionLine(numbered: Set(line.actions.compactMap(\.key.digit)), hasVariants: line.variants != nil)
+        case .writing(let writing):
+            switch writing.presentation {
+            case .mark: return .nothing
+            case .line: return .writingLine(tabFixes: writing.ownsTab)
+            case .expanded: return .writingList(rows: writing.alternatives.count)
+            }
         case .popup:
             // As its compact line it keys as an action line whose ↓ opens the card: Tab takes the
             // primary action, and no row or Command-digit is owned while none is visible.
@@ -513,6 +594,24 @@ public final class OfferArbiter: @unchecked Sendable {
         return result
     }
 
+    /// Checks a writing claim's range edit against a fresh read of the field, before anything is
+    /// selected or written. A refusal ends the claim; nothing is written.
+    public func confirmRange(_ claim: Claim, live: RangeEdit.Live, now: Date = Date()) -> Result<RangeEdit.Approved, RangeEdit.Refusal> {
+        let result: Result<RangeEdit.Approved, RangeEdit.Refusal> = claim.rangeEdit.map { $0.validate(live, phase: .observed, now: now) }
+            ?? .failure(.approvalMismatch)
+        state.withLock { s in
+            switch result {
+            case .success:
+                s.consumedTarget = live.target
+                Self.setOutcome(.approved, claimID: claim.claimID, in: &s)
+            case .failure(let refusal):
+                Self.setOutcome(.rejected(refusal.code), claimID: claim.claimID, in: &s)
+                if s.insertingClaimID == claim.claimID { s.insertingClaimID = nil }
+            }
+        }
+        return result
+    }
+
     /// Ends a claim that was refused before the guard ran (the target app is no longer allowed,
     /// the field cannot be read, a fill's source is gone). Nothing was written.
     public func abandon(claimID: UInt64, reason: String) {
@@ -545,7 +644,8 @@ public final class OfferArbiter: @unchecked Sendable {
                 ui: s.ui,
                 publishedCount: s.publishedCount,
                 claimCount: s.claimCount,
-                refusedPublishCount: s.refusedPublishCount
+                refusedPublishCount: s.refusedPublishCount,
+                keptOriginalOfferID: s.keptOriginalOfferID
             )
         }
     }

@@ -54,6 +54,21 @@ enum AXRead {
         return AXValueGetValue(axValue, type, pointer) ? pointer.pointee : nil
     }
 
+    /// `AXBoundsForRange` for a UTF-16 range: global top-left points. Nil when the element does not
+    /// answer, or answers with an empty rect.
+    static func bounds(location: Int, length: Int, on element: AXUIElement) -> CGRect? {
+        var range = CFRange(location: location, length: length)
+        guard let parameter = AXValueCreate(.cfRange, &range) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(element, kAXBoundsForRangeParameterizedAttribute as CFString, parameter, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID()
+        else { return nil }
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        var rect = CGRect.zero
+        guard AXValueGetType(axValue) == .cgRect, AXValueGetValue(axValue, .cgRect, &rect), rect.width > 0, rect.height > 0 else { return nil }
+        return rect
+    }
+
     @discardableResult
     static func setString(_ attribute: String, _ string: String, on element: AXUIElement) -> AXError {
         AXUIElementSetAttributeValue(element, attribute as CFString, string as CFString)

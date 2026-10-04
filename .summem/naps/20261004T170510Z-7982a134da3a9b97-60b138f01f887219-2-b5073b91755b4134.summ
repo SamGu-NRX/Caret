@@ -1,0 +1,1 @@
+T1 writing: field-value guards use .utf16.elementsEqual or digests, never Swift == (canonical: é equals e+U+0301); NSSpellChecker's orthography option is only a starting point (French passes under en, tres under fr; macOS 26.6).

@@ -26,11 +26,26 @@ public struct UndoGrant: Equatable, Sendable {
     /// helper to undo that task (`taskControl undo`), which restores what its ledger recorded; the
     /// host reverts nothing itself, and the value fields above are empty.
     public var taskID: String?
+    /// Set for a writing fix: the edit that puts the original back over exactly the replaced range,
+    /// as `RangeEdit.verify` built it. ⌘Z runs it through the same range guard as the fix, on its
+    /// own `HostAuthority` grant taken at the key; `UndoGuard`, which reverts an insertion, does not
+    /// apply.
+    public var rangeUndo: RangeEdit?
     public var createdAt: Date
     public var lifetimeSeconds: Double
 
     /// The grant for a helper task's writes. `target` is the field the offer was taken in, so only
     /// a ⌘Z headed for that app takes it.
+    /// The grant for a writing fix. `target` is the field as the fix left it.
+    public static func range(_ undo: RangeEdit, priorValue: String, writtenValue: String, writeID: UInt64, createdAt: Date = Date()) -> UndoGrant {
+        var grant = UndoGrant(
+            target: undo.target, priorValue: priorValue, writtenValue: writtenValue, insertedStart: undo.replace.start,
+            insertedLength: undo.replace.length, origin: nil, writeID: writeID, createdAt: createdAt
+        )
+        grant.rangeUndo = undo
+        return grant
+    }
+
     public static func task(_ taskID: String, target: TargetIdentity, createdAt: Date = Date(), lifetimeSeconds: Double = UndoGrant.defaultLifetime) -> UndoGrant {
         var grant = UndoGrant(
             target: target, priorValue: "", writtenValue: "", insertedStart: 0, insertedLength: 0, origin: nil,

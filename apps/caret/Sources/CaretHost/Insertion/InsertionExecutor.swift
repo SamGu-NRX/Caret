@@ -120,7 +120,11 @@ final class InsertionExecutor: @unchecked Sendable {
     /// Tap thread or debug socket. Takes the claim's authorization at the key, then only enqueues.
     func submit(_ claim: Claim) {
         let grant = authority.grant()
-        queue.async { [self] in run(claim, grant) }
+        if claim.rangeEdit != nil {
+            queue.async { [self] in runRange(claim, grant) }
+        } else {
+            queue.async { [self] in run(claim, grant) }
+        }
     }
 
     /// Tap thread or debug socket. Only enqueues.
@@ -387,6 +391,7 @@ final class InsertionExecutor: @unchecked Sendable {
             status.update { $0.lastUndo = DebugState.UndoInfo(grantID: grant.id, ok: ok, error: error) }
             onUndone(UndoResult(grant: grant, ok: ok, error: error))
         }
+        if grant.rangeUndo != nil { return runRangeUndo(grant, authorization, done: done) }
         let authority = self.authority
         guard authority.isLive(authorization) else { return done(false, "revoked") }
         guard let (_, element, processStart) = written.withLock({ list in list.last { $0.0 == grant.writeID } }) else {
@@ -417,6 +422,182 @@ final class InsertionExecutor: @unchecked Sendable {
             Thread.sleep(forTimeInterval: 0.02)
         } while Date() < deadline
         done(false, "writeMismatch")
+    }
+
+    // MARK: - Range edits (writing fixes)
+
+    /// A writing fix: one range of the field replaced, bound by `RangeEdit` to the field as offered
+    /// (`action-engine-v2.md` section 7). Only through Accessibility, never a paste: a range edit
+    /// selects text the user did not select, and a pid-posted ⌘V lands in whichever field has
+    /// focus when the app reads it (D2-09). An app that refuses the AX write gets nothing.
+    ///
+    /// 1. Reread the focused field of the offer's pid and `confirmRange` it (`.observed`).
+    /// 2. Select the range: the one selection change acceptance authorizes. Reread and validate
+    ///    again (`.rangeSelected`).
+    /// 3. Write the replacement as the selected text, so the app records it as an edit of its own
+    ///    and its undo keeps working.
+    /// 4. Wait for the whole value to read back as predicted, put the user's caret back where it was
+    ///    (carried through the edit), reread, and `verify`: that gives the undo.
+    /// Every step asks first that the authorization is live, the process the same, and the field
+    /// still the focused element.
+    private func runRange(_ claim: Claim, _ authorization: HostAuthority.Grant) {
+        let started = DispatchTime.now().uptimeNanoseconds
+        guard let edit = claim.rangeEdit else { return }
+        let pid = claim.offer.target.pid
+        let authority = self.authority
+        let live = { authority.isLive(authorization) }
+
+        func finish(error: String?, rejected: Bool = false, undo: UndoGrant? = nil) {
+            var insertion = DebugState.Insertion(
+                claimID: claim.claimID, ok: error == nil, error: error, text: edit.replacement,
+                durationMs: Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000,
+                verified: rejected ? nil : error == nil
+            )
+            insertion.kind = claim.offer.kind.name
+            insertion.method = rejected ? nil : FillResult.Method.axSelectedText.rawValue
+            status.update { $0.lastInsertion = insertion }
+            status.increment(error == nil ? "writing.fixed" : "writing.\(error ?? "failed")")
+            onFinished(Result(
+                claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected,
+                method: rejected ? nil : .axSelectedText, strayField: nil
+            ))
+        }
+        func refuse(_ reason: String) {
+            arbiter.abandon(claimID: claim.claimID, reason: reason)
+            finish(error: reason, rejected: true)
+        }
+
+        guard live() else { return refuse("revoked") }
+        guard policy.allowsLive(pid: pid), let processStart = ProcessStart.of(pid) else { return refuse("targetNotAllowed") }
+        guard let (element, before) = FieldReader.readFocused(pid: pid) else { return refuse("fieldUnreadable") }
+        if case .failure(let refusal) = arbiter.confirmRange(claim, live: Self.rangeLive(before)) {
+            return finish(error: refusal.code, rejected: true)
+        }
+        let stillTarget = { [policy] in
+            live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid)
+                && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
+        }
+        let outcome = applyRange(edit, element: element, before: before, stillTarget: stillTarget, refusal: { live() ? "targetNotAllowed" : "revoked" })
+        switch outcome {
+        case .failed(let code):
+            arbiter.finishInsertion(claimID: claim.claimID, error: code)
+            finish(error: code)
+        case .applied(let applied):
+            arbiter.finishInsertion(claimID: claim.claimID, error: nil)
+            let writeID = writeIDs.withLock { id -> UInt64 in
+                id &+= 1
+                return id
+            }
+            written.withLock { list in
+                list.append((writeID, element, processStart))
+                if list.count > 8 { list.removeFirst(list.count - 8) }
+            }
+            finish(error: nil, undo: .range(applied.undo, priorValue: before.value, writtenValue: applied.value, writeID: writeID))
+        }
+    }
+
+    /// ⌘Z on a writing fix's toast: the undo `verify` built, through the same range steps, on the
+    /// grant ⌘Z took. The field must still hold exactly what the fix left and the caret must be
+    /// where the fix put it back; otherwise nothing is written and the toast says why.
+    private func runRangeUndo(_ grant: UndoGrant, _ authorization: HostAuthority.Grant, done: (Bool, String?) -> Void) {
+        guard let undo = grant.rangeUndo else { return done(false, "noUndo") }
+        let authority = self.authority
+        guard authority.isLive(authorization) else { return done(false, "revoked") }
+        guard let (_, element, processStart) = written.withLock({ list in list.last { $0.0 == grant.writeID } }) else {
+            return done(false, "elementUnknown")
+        }
+        let pid = grant.target.pid
+        let stillTarget = { [policy] in
+            authority.isLive(authorization) && policy.allowsLive(pid: pid) && ProcessStart.of(pid) == processStart
+                && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
+        }
+        guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
+        guard let before = FieldReader.read(element) else { return done(false, "fieldUnreadable") }
+        if case .failure(let refusal) = undo.validate(Self.rangeLive(before), phase: .observed) { return done(false, refusal.code) }
+        switch applyRange(undo, element: element, before: before, stillTarget: stillTarget, refusal: { authority.isLive(authorization) ? "targetNotAllowed" : "revoked" }) {
+        case .failed(let code): done(false, code)
+        case .applied: done(true, nil)
+        }
+    }
+
+    private struct AppliedRange {
+        /// The whole value after the write.
+        let value: String
+        let undo: RangeEdit
+    }
+
+    private enum RangeOutcome {
+        case applied(AppliedRange)
+        case failed(String)
+    }
+
+    /// Steps 2 to 4 of `runRange`, for a fix and for its undo. `before` was validated `.observed`.
+    private func applyRange(
+        _ edit: RangeEdit, element: AXUIElement, before: FieldState, stillTarget: () -> Bool, refusal: () -> String
+    ) -> RangeOutcome {
+        // Puts the user's selection back after a refusal, only while the field is exactly as it was
+        // read and the selection is still the range Caret selected: nothing of the fix was written,
+        // and a selection the user made since (a click) is theirs to keep.
+        func restoreSelection() {
+            guard stillTarget(), let live = FieldReader.read(element), live.value.utf16.elementsEqual(before.value.utf16),
+                  live.selection == UTF16Selection(start: edit.replace.start, end: edit.replace.end)
+            else { return }
+            AXRead.setRange(kAXSelectedTextRangeAttribute, location: edit.observedSelection.start, length: edit.observedSelection.end - edit.observedSelection.start, on: element)
+        }
+        guard stillTarget() else { return .failed(refusal()) }
+        guard AXRead.setRange(kAXSelectedTextRangeAttribute, location: edit.replace.start, length: edit.replace.length, on: element) == .success else {
+            return .failed("writeRefused")
+        }
+        guard let selected = FieldReader.read(element) else {
+            restoreSelection()
+            return .failed("fieldUnreadable")
+        }
+        let approved: RangeEdit.Approved
+        switch edit.validate(Self.rangeLive(selected), phase: .rangeSelected) {
+        case .failure(let refusal):
+            restoreSelection()
+            return .failed(refusal.code)
+        case .success(let a):
+            approved = a
+        }
+        guard stillTarget() else {
+            restoreSelection()
+            return .failed(refusal())
+        }
+        guard AXRead.setString(kAXSelectedTextAttribute, edit.replacement, on: element) == .success else {
+            restoreSelection()
+            return .failed("writeRefused")
+        }
+        // Until the whole value is the predicted one, unit for unit; unchanged after `ignoredAfter`
+        // means the app ignored the write, anything else after the timeout a mismatch.
+        let settleStart = Date()
+        while true {
+            let value = FieldReader.read(element)?.value
+            if value?.utf16.elementsEqual(approved.resultingValue.utf16) == true { break }
+            let elapsed = Date().timeIntervalSince(settleStart)
+            if value?.utf16.elementsEqual(before.value.utf16) == true, elapsed > ignoredAfter {
+                restoreSelection()
+                return .failed("writeIgnored")
+            }
+            if elapsed > pasteSettleTimeout { return .failed("writeMismatch") }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        // The app leaves the caret after the new text; the user's goes back where it was.
+        let caret = approved.resultingSelection
+        if stillTarget() {
+            AXRead.setRange(kAXSelectedTextRangeAttribute, location: caret.start, length: caret.end - caret.start, on: element)
+        }
+        guard let after = FieldReader.read(element) else { return .failed("fieldUnreadable") }
+        switch edit.verify(after: Self.rangeLive(after), approved: approved) {
+        case .failure(let refusal): return .failed(refusal.code)
+        case .success(let undo): return .applied(AppliedRange(value: approved.resultingValue, undo: undo))
+        }
+    }
+
+    /// The field as the range guard reads it. Input-method composition is not visible through
+    /// Accessibility; `InputMethodState` says whether the current input source composes at all.
+    static func rangeLive(_ field: FieldState) -> RangeEdit.Live {
+        RangeEdit.Live(target: field.identity, value: field.value, selection: field.selection, secure: field.secure, composing: InputMethodState.shared.composes)
     }
 
     /// Runs async insertion to completion on this serial queue, so the next claim cannot start

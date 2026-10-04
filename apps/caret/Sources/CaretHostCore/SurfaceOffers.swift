@@ -86,7 +86,7 @@ extension Offer {
         case .action(let line):
             guard ui.expanded, let variants = line.variants else { return nil }
             return ui.revealed.map { variants.applyingReveal(of: $0) } ?? variants
-        case .ghost, .fill:
+        case .ghost, .fill, .writing:
             return nil
         }
     }
