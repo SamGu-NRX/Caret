@@ -437,6 +437,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var showsInputMonitoring: Bool?
         public var advancingAfterGrant: Bool?
         public var tryIt: TryItInfo?
+        /// Running apps that also take Tab (`OnboardingFlow.State.otherTabOwners`); nil when none.
+        public var otherTabOwners: [String]?
         /// The `know` screen: how long each typed value is (never the value), and the problem
         /// Continue showed.
         public var about: [String: Int]?

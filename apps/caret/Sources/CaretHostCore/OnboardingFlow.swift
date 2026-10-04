@@ -170,6 +170,9 @@ public final class OnboardingFlow {
         /// (`MemoryBook.State.acceptsAdd`). Without that, what is typed there would be kept by nothing.
         public var showsKnow = false
         public var tryIt = TryIt()
+        /// Running apps that also take Tab for their own completions (`OtherTabOwners`), by name.
+        /// The try-it step says so, since their Tab can reach the app before Caret's does.
+        public var otherTabOwners: [String] = []
         public var firstLook: FirstLookState = .idle
         /// The first look's offer, taken: its work and result (`FirstLookRun`).
         public var firstLookRun: FirstLookRun?
@@ -232,6 +235,8 @@ public final class OnboardingFlow {
         /// What the helper's last memory list said about keeping typed values. The `know` step
         /// joins or leaves the flow; a user already on it stays there.
         case knowAvailable(Bool)
+        /// The host read the running apps that also take Tab (`OtherTabOwners.running`).
+        case otherTabOwners([String])
     }
 
     public enum Pane: String, Codable, Sendable { case accessibility, inputMonitoring }
@@ -358,6 +363,9 @@ public final class OnboardingFlow {
             base = settings
         case .knowAvailable(let available):
             state.showsKnow = available
+        case .otherTabOwners(let names):
+            guard state.otherTabOwners != names else { return }
+            state.otherTabOwners = names
         }
         output(.changed)
     }
@@ -562,6 +570,7 @@ public final class OnboardingFlow {
         info.aboutProblem = state.about.showsProblem ? state.about.problem : nil
         info.showsInputMonitoring = state.showsInputMonitoring
         info.advancingAfterGrant = state.advancingAfterGrant ? true : nil
+        info.otherTabOwners = state.otherTabOwners.isEmpty ? nil : state.otherTabOwners
         info.tryIt = DebugState.OnboardingInfo.TryItInfo(
             value: state.tryIt.value, offerVisible: state.tryIt.offerVisible, completed: state.tryIt.completed,
             declined: state.tryIt.declined, tabs: state.tryIt.tabs

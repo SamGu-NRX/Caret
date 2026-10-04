@@ -17,4 +17,17 @@ public enum OtherTabOwners {
     public static func running(in running: [String]) -> [String] {
         Set(running.compactMap { bundleIDs[$0] }).sorted()
     }
+
+    /// The one line onboarding's try-it step and the menu show while such an app runs (`running`'s
+    /// names), or nil when none does. It names the app and what to do; Caret never touches the
+    /// other app itself.
+    public static func notice(_ names: [String]) -> String? {
+        switch names.count {
+        case 0: return nil
+        case 1: return "\(names[0]) also uses Tab. Quit it or change its shortcut so Tab reaches Caret."
+        default:
+            let list = names.dropLast().joined(separator: ", ") + " and " + names.last!
+            return "\(list) also use Tab. Quit them or change their shortcuts so Tab reaches Caret."
+        }
+    }
 }

@@ -200,6 +200,8 @@ extension Gallery {
             ("try-it", flow(toTryIt)),
             ("try-it-declined", flow(toTryIt + [.key(.character("9"))])),
             ("try-it-filled", flow(toTryIt + [.key(.tab)])),
+            // Another app that also takes Tab is running (Cotypist on Sam's Mac, Q1).
+            ("try-it-tab-owner", flow(toTryIt + [.otherTabOwners(["Cotypist"])])),
             ("first-look-asking", flow(toFirstLook)),
             ("first-look-found", flow(toFirstLook + [.firstLookReply(found)])),
             // Tab taken: the line under the card at four seconds, the figure gone, Esc offered.

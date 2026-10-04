@@ -185,6 +185,23 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.take(), [], "a second Tab takes nothing")
     }
 
+    /// Q1 (A18): Cotypist's Tab took words before Caret saw the key. The try-it step names any
+    /// running app known to take Tab, follows it quitting, and says what to do in one line.
+    func testTryItNamesAnotherAppThatTakesTab() {
+        let rig = Rig.atTryIt()
+        XCTAssertEqual(rig.flow.state.otherTabOwners, [])
+        XCTAssertNil(rig.flow.debugInfo().otherTabOwners)
+        rig.send(.otherTabOwners(["Cotypist"]))
+        XCTAssertEqual(rig.flow.state.otherTabOwners, ["Cotypist"])
+        XCTAssertEqual(rig.flow.debugInfo().otherTabOwners, ["Cotypist"])
+        XCTAssertEqual(OtherTabOwners.notice(rig.flow.state.otherTabOwners), "Cotypist also uses Tab. Quit it or change its shortcut so Tab reaches Caret.")
+        rig.send(.otherTabOwners([]))
+        XCTAssertNil(OtherTabOwners.notice(rig.flow.state.otherTabOwners), "the line goes when the app quits")
+        XCTAssertFalse(rig.flow.state.tryIt.completed, "it changes nothing else")
+        XCTAssertEqual(OtherTabOwners.notice(["Cotypist", "Other"]), "Cotypist and Other also use Tab. Quit them or change their shortcuts so Tab reaches Caret.")
+        XCTAssertEqual(OtherTabOwners.notice(["A", "B", "C"]), "A, B and C also use Tab. Quit them or change their shortcuts so Tab reaches Caret.")
+    }
+
     func testNothingButTabCompletesTryIt() {
         let others: [(String, [OnboardingFlow.Event])] = [
             ("Continue", [.next]),

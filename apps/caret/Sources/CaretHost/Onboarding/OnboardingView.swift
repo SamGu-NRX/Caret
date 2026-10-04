@@ -561,6 +561,15 @@ struct TryItScreen: View {
             }
             .padding(.top, 20)
             hint.padding(.top, 16)
+            // Another app that takes Tab can keep it from reaching Caret in other apps (Q1 bugs 17
+            // and 18: Cotypist). Ink, not secondary: the user has something to do.
+            if let notice = OtherTabOwners.notice(state.otherTabOwners) {
+                Text(notice)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(token: Tokens.ink))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+            }
         }
         .padding(.horizontal, 32)
         .padding(.top, 30)

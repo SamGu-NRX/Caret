@@ -44,6 +44,8 @@ final class OnboardingController {
     private var closeObserver: NSObjectProtocol?
     /// A test run's stand-in for the grants (`onboarding permissions`), read instead of the system.
     private var permissionsOverride: OnboardingPermissions?
+    /// A test run's stand-in for the running apps that also take Tab (`onboarding tab-owners`).
+    private var tabOwnersOverride: [String]?
     /// Sends a request to the helper; false when it is not connected.
     var sendFirstLook: (FirstLookRequest) -> Bool = { _ in false }
     /// Take, stop and undo the first look's offer; each false when the helper is not connected.
@@ -99,6 +101,7 @@ final class OnboardingController {
             token: String(UUID().uuidString.prefix(8)).lowercased(), showsKnow: knowAvailable()
         )
         flow.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
+        flow.send(.otherTabOwners(readTabOwners()))
         self.flow = flow
         model.state = flow.state
         startPolling()
@@ -209,8 +212,16 @@ final class OnboardingController {
         pollTimer = nil
     }
 
+    /// `NSWorkspace.runningApplications` is kept current by AppKit, so reading it costs no walk.
+    private func readTabOwners() -> [String] {
+        tabOwnersOverride ?? OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+    }
+
     private func poll() {
         guard let flow, !flow.state.finished else { return stopPolling() }
+        // An app quit or launched while the flow runs: the try-it line follows it.
+        let owners = readTabOwners()
+        if owners != flow.state.otherTabOwners { flow.send(.otherTabOwners(owners)) }
         let now = readPermissions()
         guard now != flow.state.permissions else { return }
         flow.send(.permissions(now))
@@ -312,6 +323,7 @@ final class OnboardingController {
     ///   onboarding role fill|repeat|watch|calendar|words on|off      onboarding level quiet|balanced|eager
     ///   onboarding key tab|delete|return|esc|cmd-z|cmd-1|cmd-2|cmd-3|other|char:<c>
     ///   onboarding permissions on|off on|off   (Accessibility, Input Monitoring: the run's own grants)
+    ///   onboarding tab-owners none|<name...>   (the running apps that also take Tab, as the run says)
     ///   onboarding reply <firstLookReply json>              onboarding look-again
     ///   onboarding about name|email <text...>               onboarding skip
     func command(_ words: [String]) -> String {
@@ -363,6 +375,9 @@ final class OnboardingController {
         case ("permissions", 3):
             guard let ax = onOff(rest[1]), let im = onOff(rest[2]) else { return #"{"error":"usage: onboarding permissions on|off on|off"}"# }
             permissionsOverride = OnboardingPermissions(accessibility: ax, inputMonitoring: im)
+            poll()
+        case ("tab-owners", _) where rest.count >= 2:
+            tabOwnersOverride = rest[1] == "none" ? [] : Array(rest.dropFirst())
             poll()
         case ("reply", _) where rest.count >= 2:
             let json = rest.dropFirst().joined(separator: " ")

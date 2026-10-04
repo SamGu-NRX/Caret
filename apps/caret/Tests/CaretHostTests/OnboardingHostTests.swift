@@ -181,6 +181,8 @@ final class OnboardingHostTests: XCTestCase {
         XCTAssertEqual(try run("onboarding next").step, "permissions")
         XCTAssertEqual(kept, [[TypedAbout(label: "Name", value: "Dana Whitfield")]], "Continue hands the typed name to memory")
         XCTAssertEqual(try run("onboarding next").step, "tryIt")
+        XCTAssertEqual(try run("onboarding tab-owners Cotypist").otherTabOwners, ["Cotypist"], "the poll passes the running Tab owners on")
+        XCTAssertNil(try run("onboarding tab-owners none").otherTabOwners)
         XCTAssertFalse(try run("onboarding key return").tryIt!.completed)
         XCTAssertTrue(try run("onboarding key tab").tryIt!.completed)
         let looking = try run("onboarding next")

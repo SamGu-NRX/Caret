@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let runtime: HostRuntime
     private var statusItem: NSStatusItem?
     private let stateItem = NSMenuItem(title: "Starting", action: nil, keyEquivalent: "")
+    /// Under the state: another running app also takes Tab (`OtherTabOwners`), so Tab may never
+    /// reach Caret. Hidden while none runs.
+    private let tabOwnerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var signalSources: [DispatchSourceSignal] = []
     private var isTerminating = false
     private var working = false
@@ -72,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         stateItem.title = runtime.engineSummary
+        let notice = OtherTabOwners.notice(OtherTabOwners.running(in: NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)))
+        tabOwnerItem.title = notice ?? ""
+        tabOwnerItem.isHidden = notice == nil
         perchItem.state = runtime.perchHidden ? .off : .on
         let current = FigureSettings.shared.character
         for item in characterItems {
@@ -142,6 +148,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         stateItem.isEnabled = false
         menu.addItem(stateItem)
+        tabOwnerItem.isEnabled = false
+        tabOwnerItem.isHidden = true
+        menu.addItem(tabOwnerItem)
         // Pause stops every offer, ghost text included; work already accepted goes on.
         pauseItem.action = #selector(togglePause(_:))
         pauseItem.target = self
