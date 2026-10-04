@@ -789,12 +789,14 @@ try {
   }, 3000);
   checks.skillInTheMemoryList = listed.book.entries.some((e) => e.kind === "skill" && e.status === "active");
   checks.skillIsAPermissionsException = listed.book.onTheirOwn.includes(String(result.skillName));
-  // Today's helper does not say where a skill wrote, so the page lists it under each write rule that lets
-  // it run now: Write where you are at Ask first, and Undoable changes at Act if approved (set above).
+  // Since B23 the helper says where a skill's runs wrote (`wrote`): the fixture is never the user's
+  // window, so only under Undoable changes in other apps, which runs it at Act if approved (set above),
+  // and not under Write where you are.
   const under = listed.book.underRules ?? [];
   result.underRules = under;
-  checks.permissionsListItWhereItMayRun = ["writeHere", "writeElsewhere"].every((action) =>
-    under.some((u) => u.action === action && u.runs && u.skills.includes(String(result.skillName))));
+  const name = String(result.skillName);
+  checks.permissionsListItWhereItMayRun = under.some((u) => u.action === "writeElsewhere" && u.runs && u.skills.includes(name))
+    && !under.some((u) => u.action === "writeHere" && u.skills.includes(name));
   if (!(await key("cmd-z"))) throw new Error("the host did not take ⌘Z on run 11's toast");
   await until("the undo at the helper", () => fromHost.find((x) => x.type === "taskControl" && x.detail === `undo ${started.taskId}`), 3000);
   await until("the undone progress", () => since("taskProgress", at11).find((p) => p.taskId === started.taskId && p.phase === "undone"), 10_000);
