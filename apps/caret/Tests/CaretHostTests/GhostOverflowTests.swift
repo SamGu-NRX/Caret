@@ -100,7 +100,7 @@ final class GhostCapsuleWindowTests: XCTestCase {
 
     func testNearTheWindowsRightEdgeTheCapsuleSlidesInside() {
         var p = capsule(caretX: 790, field: view)
-        XCTAssertNil(GhostOverlay.keepCapsuleInWindow(&p, text: " in section two", font: font, window: window, pid: nil))
+        XCTAssertNil(GhostOverlay.keepCapsuleInWindow(&p, text: " in section two", font: font, window: window, pid: nil).cause)
         XCTAssertEqual(p.fieldRect, window.intersection(view))
         let frame = GhostTextOverlayWindow.layout(for: " in section two", font: font, placement: p).frame
         XCTAssertTrue(window.contains(frame), "KeyType's own layout now lies in the window: \(frame)")
@@ -109,18 +109,18 @@ final class GhostCapsuleWindowTests: XCTestCase {
     func testACapsuleWiderThanTheWindowIsNotDrawn() {
         let narrow = CGRect(x: 100, y: 200, width: 120, height: 500)
         var p = capsule(caretX: 180, field: narrow)
-        XCTAssertEqual(GhostOverlay.keepCapsuleInWindow(&p, text: " in section two of the draft", font: font, window: narrow, pid: nil), .capsuleOutsideWindow)
+        XCTAssertEqual(GhostOverlay.keepCapsuleInWindow(&p, text: " in section two of the draft", font: font, window: narrow, pid: nil).cause, .capsuleOutsideWindow)
     }
 
     func testOnTheWindowsLastLineTheCapsuleWouldHangBelowItAndIsNotDrawn() {
         var p = OverlayPlacement(cursorRect: CGRect(x: 400, y: 204, width: 1, height: 16), fieldRect: view, cursorRectQuality: .exact)
         p.presentation = .capsule
-        XCTAssertEqual(GhostOverlay.keepCapsuleInWindow(&p, text: " later", font: font, window: window, pid: nil), .capsuleOutsideWindow)
+        XCTAssertEqual(GhostOverlay.keepCapsuleInWindow(&p, text: " later", font: font, window: window, pid: nil).cause, .capsuleOutsideWindow)
     }
 
     func testWithNoWindowFrameNothingChanges() {
         var p = capsule(caretX: 790, field: view)
-        XCTAssertNil(GhostOverlay.keepCapsuleInWindow(&p, text: " x", font: font, window: nil, pid: nil))
+        XCTAssertNil(GhostOverlay.keepCapsuleInWindow(&p, text: " x", font: font, window: nil, pid: nil).cause)
         XCTAssertEqual(p.fieldRect, view)
     }
 }

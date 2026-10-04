@@ -78,6 +78,9 @@ public enum GhostFit {
         public var fieldHeight: Double?
         /// KeyType's caret quality: exact, derived, estimated or unknown.
         public var caretQuality: String?
+        /// Where the capsule was laid out, global top-left points [x, y, width, height], when the
+        /// focused window's frame was known (`GhostOverlay.keepCapsuleInWindow`).
+        public var capsule: [Double]?
 
         public init(outcome: Outcome, cause: Cause?, textWidth: Double, room: Double?, fieldHeight: Double?, caretQuality: String?) {
             self.outcome = outcome

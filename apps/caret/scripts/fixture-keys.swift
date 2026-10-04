@@ -8,7 +8,7 @@
 //
 // Build: swiftc -O fixture-keys.swift -o ../.build/fixture-keys
 // Usage: fixture-keys <pid> type <text> [interval_ms]
-//        fixture-keys <pid> key tab|left|right|down|space|delete|cmd-2|escape|cmd-z [count]
+//        fixture-keys <pid> key tab|left|right|down|space|delete|cmd-2|escape|cmd-z|opt-right [count]
 //        fixture-keys <pid> check
 
 import ApplicationServices
@@ -105,7 +105,7 @@ case "key":
     let codes: [String: (CGKeyCode, String?, CGEventFlags)] = [
         "tab": (48, "\t", []), "left": (123, nil, []), "right": (124, nil, []), "down": (125, nil, []),
         "space": (49, " ", []), "delete": (51, nil, []), "cmd-2": (19, nil, .maskCommand),
-        "escape": (53, "\u{1b}", []), "cmd-z": (6, "z", .maskCommand),
+        "escape": (53, "\u{1b}", []), "cmd-z": (6, "z", .maskCommand), "opt-right": (124, nil, .maskAlternate),
     ]
     guard let (code, text, flags) = codes[args[3]] else { exit(2) }
     for sent in 0..<count {
