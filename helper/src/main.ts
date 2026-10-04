@@ -10,7 +10,7 @@
 // --audit-probe-every it also times the generator on the real windows at that interval.
 // The Jev key comes from TYPESAFE_API_KEY or the .env file named by CARET_ENV_FILE, read when a request is made.
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { closeSync, readFileSync, writeFileSync } from "node:fs";
 import { Helper } from "./helper.ts";
@@ -21,10 +21,12 @@ import { SocketReaderLink } from "./executor/means.ts";
 import { defaultPageSocket, pageHost, type PageHost } from "./engines/host.ts";
 import { wirePageEngines } from "./engines/wire.ts";
 
+const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "CaretV2");
+
 const { values: args } = parseArgs({
   options: {
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "screen.sock") },
-    "data-dir": { type: "string", default: join(homedir(), "Library", "Application Support", "CaretV2") },
+    "data-dir": { type: "string", default: DEFAULT_DATA_DIR },
     shadow: { type: "boolean", default: false },
     "no-jev": { type: "boolean", default: false },
     "allow-background-focus": { type: "boolean", default: false },
@@ -40,9 +42,11 @@ const { values: args } = parseArgs({
     "memory-dir": { type: "string" },
   },
 });
-// A helper given its own --data-dir (tests, evaluations, the crash test) keeps memory inside it, so only the app's
-// own launch, with the default data directory, reads and migrates the user's real memory folder.
-const memoryDir = args["memory-dir"] ?? (process.argv.includes("--data-dir") || process.argv.some((a) => a.startsWith("--data-dir=")) ? join(args["data-dir"], "Memory") : join(homedir(), "Library", "Application Support", "Caret", "Memory"));
+// The user's memory folder goes with the user's data directory: the default one, whether named or not (Caret.app
+// always passes --data-dir, and its own default home is this directory; CaretHome.swift). Any other data directory
+// (a test home, an evaluation, the crash test) keeps memory inside itself, so only the user's helper reads and
+// migrates the real folder.
+const memoryDir = args["memory-dir"] ?? (resolve(args["data-dir"]) === resolve(DEFAULT_DATA_DIR) ? join(homedir(), "Library", "Application Support", "Caret", "Memory") : join(args["data-dir"], "Memory"));
 
 /** Node's longest timer delay; a longer one runs every millisecond. */
 const TIMEOUT_MAX = 2_147_483_647;
