@@ -67,6 +67,9 @@ final class HelperProtocolGoldenTests: XCTestCase {
             // is the host, and a write that marks its element, refused as focusMoved, then an undo
             // write that requires the same element, refused as notSameElement.
             "skip:hello", "skip:helperAuth", "skip:hello", "skip:readerCommand", "skip:verbResult", "skip:readerCommand", "skip:verbResult",
+            // W2: whether Caret can see a browser's pages, missing then connected. The host does not
+            // show it yet ("Caret can't see this page yet" is surface work), so it decodes as unknown.
+            "unknown:pageEngine", "unknown:pageEngine",
         ]
         XCTAssertEqual(kinds, expected)
     }
@@ -75,7 +78,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
     /// withdrawal with its replacement and the withdrawal settings cause.
     func testTheB8LinesDecodeExactly() throws {
         let lines = try goldenLines()
-        XCTAssertEqual(lines.count, 66)
+        XCTAssertEqual(lines.count, 68)
         XCTAssertEqual(try HelperInbound.decode(lines[26]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_122_500, id: "offer-4", reason: .expired)))
         guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { return XCTFail("line 28") }
         XCTAssertEqual(pause, TaskControl(taskId: "task-1", action: .pause, reason: .input))
