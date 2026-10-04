@@ -17,7 +17,7 @@ import { GRANT_MAX_MS, PROTOCOL_VERSION, type ActionType, type AppRef, type UseO
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
-import { classifyLabel, type RiskClass } from "./risk.ts";
+import { classifyPress, type RiskClass } from "./risk.ts";
 import { fillSlots, Plan, PlanError, type EndState, type Step, type Target, type WindowSel } from "./schema.ts";
 import { norm, resolveLocally, resolveTarget, type JevTrace, type Resolution } from "./target.ts";
 
@@ -83,7 +83,8 @@ export interface TaskUse {
 }
 
 /** The permission a press of this risk class falls under (plan section 3); a safe press needs none of these. */
-const RISK_ACTION: Record<Exclude<RiskClass, "safe">, ActionType> = { outbound: "outbound", destructive: "destructive", money: "sensitive" };
+/** A system prompt falls under "Money, passwords, system dialogs", which is always handed off (B22). */
+const RISK_ACTION: Record<Exclude<RiskClass, "safe">, ActionType> = { outbound: "outbound", destructive: "destructive", money: "sensitive", system: "sensitive" };
 
 /** How a run was started. Only a run from an accepted offer may hold an act grant. */
 export interface RunOptions {
@@ -691,7 +692,7 @@ export class Executor {
       const label = (node.label ?? "").trim();
       const what = label === "" ? end.target.describe : `'${label}'`;
       // The control's own label decides the reason, as for a press: a plan cannot call a Send press unverifiable.
-      const risk = label === "" ? "safe" : classifyLabel(label);
+      const risk = classifyPress({ label, windowKind: w.window.kind, bundleId: w.app.bundleId });
       if (risk !== "safe") task.handedOff = { action: RISK_ACTION[risk], what, windowId: w.window.windowId };
       throw StepStop.handoff(risk === "safe" ? `Caret cannot check what pressing ${what} changes, so it leaves that press to you` : `${what} reads as ${risk}; Caret leaves that press to you`);
     }
@@ -796,8 +797,12 @@ export class Executor {
   private async pressStep(task: Task, i: number, w: WindowState, target: Target, step: Step): Promise<void> {
     const node = await this.resolve(task, i, w, target, step.says);
     const label = (node.label ?? "").trim();
+    const risk = classifyPress({ label, windowKind: w.window.kind, bundleId: w.app.bundleId });
+    if (risk === "system") {
+      task.handedOff = { action: RISK_ACTION.system, what: label === "" ? "a control" : `'${label}'`, windowId: w.window.windowId };
+      throw StepStop.handoff(`${label === "" ? "This control" : `'${label}'`} is in a system prompt; Caret leaves that press to you`);
+    }
     if (label === "") throw StepStop.handoff(`the control for '${step.says}' has no label, so its effect cannot be classified; press it yourself`);
-    const risk = classifyLabel(label);
     if (risk !== "safe") {
       task.handedOff = { action: RISK_ACTION[risk], what: `'${label}'`, windowId: w.window.windowId };
       throw StepStop.handoff(`'${label}' reads as ${risk}; Caret leaves that press to you`);

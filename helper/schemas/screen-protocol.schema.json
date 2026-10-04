@@ -2934,7 +2934,8 @@
                                     "enum": [
                                       "outbound",
                                       "destructive",
-                                      "money"
+                                      "money",
+                                      "system"
                                     ]
                                   }
                                 },
@@ -6273,6 +6274,7 @@
                         "outbound",
                         "destructive",
                         "money",
+                        "system",
                         "unverifiable"
                       ]
                     }

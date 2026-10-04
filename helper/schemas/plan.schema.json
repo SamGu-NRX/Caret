@@ -396,6 +396,7 @@
                           "outbound",
                           "destructive",
                           "money",
+                          "system",
                           "unverifiable"
                         ]
                       }
@@ -878,6 +879,7 @@
                 "outbound",
                 "destructive",
                 "money",
+                "system",
                 "unverifiable"
               ]
             }

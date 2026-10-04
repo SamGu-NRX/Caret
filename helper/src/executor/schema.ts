@@ -59,7 +59,7 @@ export const EndState = z.discriminatedUnion("kind", [
    * reads as outbound, destructive or money (risk.ts), or where code cannot predict what the press changes
    * and so could not verify it (`unverifiable`).
    */
-  z.object({ kind: z.literal("handoff"), ...InWindow, why: z.enum(["outbound", "destructive", "money", "unverifiable"]) }),
+  z.object({ kind: z.literal("handoff"), ...InWindow, why: z.enum(["outbound", "destructive", "money", "system", "unverifiable"]) }),
   /** An event with this title, start and end exists in the named calendar. Checked through the calendar interface, not the screen. */
   z.object({
     kind: z.literal("calendarEvent"),

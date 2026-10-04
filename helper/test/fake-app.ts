@@ -16,6 +16,8 @@ export const K = (s: string): string => `dev.caret.fixture/standard/${s}`;
 export class FakeApp implements ReaderLink {
   helper: Helper | null = null;
   title = TITLE;
+  /** The window's kind from its subrole; "systemdialog" makes it a system prompt (B22). */
+  windowKind = "standard";
   nodes: Node[];
   focusedKey: string | null = null;
   readonly verbs: ReaderVerb[] = [];
@@ -67,7 +69,7 @@ export class FakeApp implements ReaderLink {
     this.at += 10;
     const nodes = this.vanished === null ? this.nodes : this.nodes.filter((n) => n.key !== this.vanished?.key);
     void this.helper?.handleReader(
-      snap(structuredClone(nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request", number: WIN_NUMBER }),
+      snap(structuredClone(nodes), { at: this.at, windowId: WIN, title: this.title, focusedKey: this.focusedKey, reason: "request", number: WIN_NUMBER, kind: this.windowKind }),
     );
   }
 

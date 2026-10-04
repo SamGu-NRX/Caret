@@ -64,7 +64,7 @@ public struct PlanProposal: Codable, Equatable, Sendable {
     public enum Outcome: String, Codable, Sendable { case proposed, error }
     /// Why a press is left to the user: its risk class (helper/src/executor/risk.ts), or `unverifiable`
     /// when code cannot predict what it changes.
-    public enum HandoffWhy: String, Codable, Sendable { case outbound, destructive, money, unverifiable }
+    public enum HandoffWhy: String, Codable, Sendable { case outbound, destructive, money, system, unverifiable }
     /// protocol.ts PlanErrorCode has a sentence for each.
     public enum ErrorCode: String, Codable, Sendable {
         case schema, noWindow, unsure, nothingToDo, unsupportedStep, multipleWindows, unknownWindow, ambiguousWindow

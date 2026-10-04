@@ -956,8 +956,8 @@ export const RoutineFields = z.object({
 });
 export const PermissionFields = z.object({ action: ActionType, rule: PermissionRule, fixed: z.boolean() });
 
-/** The risk classes a press can have (executor/risk.ts), as a skill's hand-off names them. */
-export const PressRisk = z.enum(["outbound", "destructive", "money"]);
+/** The risk classes a press can have (executor/risk.ts), as a skill's hand-off names them. `system` (B22): a permission dialog or system prompt. */
+export const PressRisk = z.enum(["outbound", "destructive", "money", "system"]);
 export type PressRisk = z.infer<typeof PressRisk>;
 
 /**
@@ -1268,7 +1268,7 @@ export const PlanProposal = z
     offerKey: z.string().min(1).nullable(),
     window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }).nullable(),
     spec: PopupSpec.nullable(),
-    handoff: z.object({ label: z.string(), why: z.enum(["outbound", "destructive", "money", "unverifiable"]) }).nullable(),
+    handoff: z.object({ label: z.string(), why: z.enum(["outbound", "destructive", "money", "system", "unverifiable"]) }).nullable(),
     error: z.object({ code: PlanErrorCode, detail: z.string().min(1) }).nullable(),
   })
   .superRefine((m, ctx) => {

@@ -1,12 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
-import { classifyLabel } from "../src/executor/risk.ts";
+import { classifyLabel, classifyPress } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { quotedPart } from "../src/executor/target.ts";
@@ -258,6 +259,17 @@ describe("executor", () => {
     expect(app.node(K("statictext:sent!~0"))).toBeUndefined();
     const safe = plan([{ says: "You press Archive", end: { kind: "handoff", window: W, target: { key: K("button:archive~0"), describe: "the Archive button" }, why: "unverifiable" } }], "q");
     expect((await helper.executor.run("t3", safe, {})).detail).toBe("Caret cannot check what pressing 'Archive' changes, so it leaves that press to you");
+    expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
+  });
+
+  // S1 audit #10: before B22 a safe-sounding label in a permission dialog was pressed.
+  it("hands any press in a system prompt to the user, whatever its label says", async () => {
+    app.windowKind = "systemdialog";
+    app.show();
+    const p = plan([{ says: "the next page shows", end: { kind: "exists", window: W, target: { label: "Page 2", describe: "page 2" } }, via: { kind: "press", target: { label: "Next page", describe: "Next page button" } } }]);
+    const r = await helper.executor.run("t1", p, {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0 });
+    expect(r.detail).toBe("'Next page' is in a system prompt; Caret leaves that press to you");
     expect(app.verbs.some((v) => v.kind === "press")).toBe(false);
   });
 
@@ -795,6 +807,16 @@ describe("risk class table", () => {
     ["Add note", "safe"],
   ])("%s is %s", (label, cls) => {
     expect(classifyLabel(label)).toBe(cls);
+  });
+
+  // S1 audit #10: before B22, "Allow" in a permission dialog read as safe. The reader's table must agree (RiskTable.swift).
+  const golden = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/golden/press-risk.json", import.meta.url)), "utf8")) as {
+    cases: { label: string; role: string; windowSubrole: string | null; bundleId: string; risk: string }[];
+  };
+  /** ElementKey.windowKind with no identifier: the subrole without "AX" and "window", lowercased. */
+  const kindOf = (subrole: string | null): string => (subrole ?? "AXStandardWindow").replace(/^AX/, "").toLowerCase().replace(/window/g, "") || "standard";
+  it.each(golden.cases.map((c) => [c.label, c.windowSubrole, c.bundleId, c.risk] as const))("'%s' in a %s window of %s is %s (fixtures/golden/press-risk.json)", (label, subrole, bundleId, risk) => {
+    expect(classifyPress({ label, windowKind: kindOf(subrole), bundleId })).toBe(risk);
   });
 });
 

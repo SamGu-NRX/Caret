@@ -1,0 +1,20 @@
+{
+  "about": "B22: presses both risk tables must agree on: helper/src/executor/risk.ts classifyPress (risk) and CaretScreenCore/RiskTable.swift (risk, and whether the reader lets the press through at its boundary). windowSubrole is the window's raw AXSubrole; null is a window with none. Every bundle id and label is invented or a system process's public id.",
+  "cases": [
+    { "label": "Save draft", "role": "AXButton", "windowSubrole": "AXStandardWindow", "bundleId": "dev.caret.fixture", "risk": "safe", "readerAllows": true },
+    { "label": "Next page", "role": "AXButton", "windowSubrole": "AXStandardWindow", "bundleId": "dev.caret.fixture", "risk": "safe", "readerAllows": true },
+    { "label": "Remember me", "role": "AXCheckBox", "windowSubrole": null, "bundleId": "dev.caret.fixture", "risk": "safe", "readerAllows": true },
+    { "label": "Send", "role": "AXButton", "windowSubrole": "AXStandardWindow", "bundleId": "dev.caret.fixture", "risk": "outbound", "readerAllows": false },
+    { "label": "Delete", "role": "AXButton", "windowSubrole": "AXStandardWindow", "bundleId": "dev.caret.fixture", "risk": "destructive", "readerAllows": false },
+    { "label": "Pay now", "role": "AXButton", "windowSubrole": "AXDialog", "bundleId": "dev.caret.fixture", "risk": "money", "readerAllows": false },
+    { "label": "Allow", "role": "AXButton", "windowSubrole": "AXStandardWindow", "bundleId": "dev.caret.fixture", "risk": "system", "readerAllows": false },
+    { "label": "Don't Allow", "role": "AXButton", "windowSubrole": "AXDialog", "bundleId": "dev.caret.fixture", "risk": "system", "readerAllows": false },
+    { "label": "OK", "role": "AXButton", "windowSubrole": "AXSystemDialog", "bundleId": "dev.caret.fixture", "risk": "system", "readerAllows": false },
+    { "label": "Autoriser", "role": "AXButton", "windowSubrole": "AXSystemDialog", "bundleId": "dev.caret.fixture", "risk": "system", "readerAllows": false },
+    { "label": "Next", "role": "AXButton", "windowSubrole": "AXSystemFloatingWindow", "bundleId": "dev.caret.fixture", "risk": "system", "readerAllows": false },
+    { "label": "OK", "role": "AXButton", "windowSubrole": "AXDialog", "bundleId": "com.apple.UserNotificationCenter", "risk": "system", "readerAllows": false },
+    { "label": "Continue", "role": "AXButton", "windowSubrole": "AXStandardWindow", "bundleId": "com.apple.SecurityAgent", "risk": "system", "readerAllows": false },
+    { "label": "", "role": "AXButton", "windowSubrole": "AXStandardWindow", "bundleId": "dev.caret.fixture", "risk": "safe", "readerAllows": false },
+    { "label": "Next page", "role": "AXStaticText", "windowSubrole": "AXStandardWindow", "bundleId": "dev.caret.fixture", "risk": "safe", "readerAllows": false }
+  ]
+}
