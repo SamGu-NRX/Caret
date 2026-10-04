@@ -376,9 +376,9 @@ export class MemoryDocumentStore {
         try {
           current = readRegular(aside, file).revision;
         } catch (e) {
-          // Not a plain file any more (a symlink or FIFO put in its place): give it back and refuse.
+          // Not a plain file any more (a symlink or FIFO put in its place), or unreadable: give it back and refuse.
           renameBackIfFree(aside, target);
-          tryUnlink(aside);
+          if (existsAt(aside)) keepAsConflict(aside);
           throw e;
         }
         if (current !== base) {
@@ -406,13 +406,15 @@ export class MemoryDocumentStore {
    */
   private dropAside(aside: string, compared: string | null, file: string): void {
     this.hooks.beforeDrop?.(aside);
+    if (!existsAt(aside)) return;
     let now: string | null;
     try {
       now = readRegular(aside, file).revision;
     } catch {
+      // Too large, not UTF-8 any more, or no longer a plain file: not provably what was compared, so kept.
       now = null;
     }
-    if (now === compared || now === null) {
+    if (now !== null && now === compared) {
       tryUnlink(aside);
       return;
     }
@@ -585,7 +587,10 @@ export function sensitiveLine(doc: DocId, text: string): string | null {
   const flagged = p.diagnostics.find((d) => d.severity === "error" && d.message.startsWith("Caret doesn't keep"));
   if (flagged !== undefined) return formatDiagnostic(flagged);
   for (let i = 0; i < p.lines.length; i++) {
-    const s = valueKind(p.lines[i] as string);
+    const line = p.lines[i] as string;
+    // A "- Password: …" line outside any record is a labelled secret too.
+    const f = /^[-*+][ \t]+([A-Za-z][A-Za-z ']{0,30}?)[ \t]*:[ \t]*(.*)$/.exec(line);
+    const s = (f === null ? null : sensitiveKind(f[1], f[2] ?? "")) ?? valueKind(line);
     if (s !== null) return `${p.file}:${i + 1}: ${refusal(s)}`;
   }
   return null;
@@ -616,10 +621,10 @@ function keepAsConflict(p: string): string {
   const when = new Date().toISOString().replace(/[-:]/g, "").replace("T", " ").slice(0, 15);
   for (let n = 1; ; n++) {
     const copy = `${stem} (conflict ${when}${n === 1 ? "" : ` ${n}`}).md`;
-    if (tryLink(p, join(dir, copy))) {
-      tryUnlink(p);
-      return copy;
-    }
+    if (existsAt(join(dir, copy))) continue;
+    // A rename keeps whatever the file is, a symlink included, without following it.
+    renameSync(p, join(dir, copy));
+    return copy;
   }
 }
 

@@ -416,7 +416,8 @@ export class MemoryStore {
     for (const c of changes) {
       if (c.kind !== "skill") {
         // The row's pause column follows the file, so the database never shows a state the file contradicts.
-        if (c.after !== null) this.stmt("UPDATE memory SET paused = ? WHERE id = ?").run(c.after.status === "paused" ? 1 : 0, c.id);
+        // Scoped by kind: a record whose id belongs to another kind's row (a routine's, say) changes nothing there.
+        if (c.after !== null) this.stmt("UPDATE memory SET paused = ? WHERE id = ? AND kind = ?").run(c.after.status === "paused" ? 1 : 0, c.id, c.kind);
         continue;
       }
       const r = this.stmt("SELECT * FROM memory WHERE id = ? AND kind = 'skill'").get(c.id) as Row | undefined;
@@ -442,7 +443,10 @@ export class MemoryStore {
       const rec = this.record(r);
       const now = rec === null ? undefined : recordDigest(rec);
       if (s.fileDigest === undefined) {
-        if (now !== undefined) this.stmt("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify({ ...s, fileDigest: now }), r.id);
+        // No digest yet: the file must match the name, trigger and pause the database kept, else it was edited.
+        const same = rec?.kind === "skill" && rec.fields.name === s.name && rec.fields.trigger === s.trigger && (rec.status === "paused") === (r.paused !== 0);
+        if (same) this.stmt("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify({ ...s, fileDigest: now }), r.id);
+        else if (rec !== null) changes.push({ id: r.id, kind: "skill", before: null, after: rec });
         continue;
       }
       if (now !== s.fileDigest) changes.push({ id: r.id, kind: "skill", before: null, after: rec });
@@ -837,7 +841,9 @@ export class MemoryStore {
     if (!valid.success) throw new MemoryError(`not storing a ${kind} entry: ${valid.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
     this.sync(kind);
     // Where a fact was noticed is screen text: an app name or window title that holds a secret is left out, the fact kept.
-    if (noticed !== null) noticed = { ...noticed, app: noticed.app !== null && valueKind(noticed.app) !== null ? null : noticed.app, window: noticed.window !== null && valueKind(noticed.window) !== null ? null : noticed.window };
+    const clean = (t: string | null): string | null => (t !== null && valueKind(t) !== null ? null : t);
+    if (noticed !== null) noticed = { ...noticed, app: clean(noticed.app), window: clean(noticed.window) };
+    app = clean(app);
     const hit = this.stmt("SELECT * FROM memory WHERE kind = ? AND match = ?").get(kind, match) as Row | undefined;
     if (hit !== undefined) {
       const cur = this.record(hit);

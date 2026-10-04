@@ -5,6 +5,7 @@
 // every folder is a fresh temporary one.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
@@ -299,6 +300,40 @@ describe("authority stays in the protected state", () => {
     const id = m.upsert("people", "dana", { alias: "Dana", name: "Dana Reyes" }, 3, "Mail", { app: "Mail", window: "Token ghp_abcdefghijklmnopqrstuvwxyz0123456789", at: 3 });
     expect(m.get(id)).toMatchObject({ status: "noticed", noticed: { app: "Mail", windowTitle: null, at: 3 } });
     for (const f of ["preferences.md", "people.md"]) expect(readFileSync(join(dir, "Memory", f), "utf8")).not.toMatch(/sk-proj|ghp_/);
+  });
+
+  it("N1 a markdown record carrying a routine's id cannot unpause that routine", () => {
+    const s = newSkill();
+    m.updateSkill(s.id, { onItsOwn: true, cleanRuns: 3 }, 3);
+    const routineId = s.routineId;
+    m.setPaused(routineId, true);
+    m.addTyped({ label: "Name", value: "Dana", source: "typed" }, (l) => `t:${l}`, 4);
+    const about = join(dir, "Memory", "about-me.md");
+    writeFileSync(about, `${readFileSync(about, "utf8")}\n## Sneaky <!-- caret:id=${routineId} kind=about -->\n- Label: X\n- Value: y\n- Source: typed\n- Status: active\n`);
+    m.list();
+    expect(m.routine(routineId)?.paused).toBe(true);
+    expect(m.list("routine")[0]?.status).toBe("paused");
+  });
+
+  it("N3 a store from before fileDigest whose skill file was edited while stopped goes back on Tab", () => {
+    const s = newSkill();
+    m.updateSkill(s.id, { onItsOwn: true, cleanRuns: 3 }, 3);
+    m.close();
+    // As a store left by an earlier build of this branch: no fileDigest on the row.
+    const db = new DatabaseSync(join(dir, "memory.sqlite"));
+    const row = db.prepare("SELECT fields FROM memory WHERE id = ?").get(s.id) as { fields: string };
+    const { fileDigest: _d, ...rest } = JSON.parse(row.fields) as Record<string, unknown>;
+    db.prepare("UPDATE memory SET fields = ? WHERE id = ?").run(JSON.stringify(rest), s.id);
+    db.close();
+    writeFileSync(skillFile(s.id), readFileSync(skillFile(s.id), "utf8").replace("- Name: Copy tracking", "- Name: Copy it all"));
+    m = new MemoryStore(dir);
+    expect(m.skill(s.id)).toMatchObject({ name: "Copy it all", onItsOwn: false, cleanRuns: 0 });
+  });
+
+  it("N6 an app name holding a secret is kept out of the database's evidence too", () => {
+    const id = m.upsert("people", "dana", { alias: "Dana", name: "Dana Reyes" }, 3, "ghp_abcdefghijklmnopqrstuvwxyz0123456789", { app: "ghp_abcdefghijklmnopqrstuvwxyz0123456789", window: null, at: 3 });
+    expect(m.get(id).evidence.app).toBeNull();
+    expect(JSON.stringify(m.rawRows())).not.toContain("ghp_");
   });
 
   it("refuses to keep a secret from any path: a learned edit, 'remember this', an edit, a correction", () => {

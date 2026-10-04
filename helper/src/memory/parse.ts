@@ -257,8 +257,9 @@ export function parseDocument(doc: DocId, text: string): ParsedDocument {
       hidden.add(i);
       continue;
     }
-    const open = l.lastIndexOf("<!--");
-    if (open >= 0 && !l.includes("-->", open + 4)) {
+    // An HTML comment block starts at the start of a line (CommonMark HTML block type 2) and runs to "-->"; a "<!--"
+    // inside a field's value or a sentence is text.
+    if (/^ {0,3}<!--/.test(l) && !l.includes("-->", l.indexOf("<!--") + 4)) {
       comment = true;
       hidden.add(i);
       continue;
@@ -353,6 +354,8 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
     diag(line, field, "error", message, id);
     ok = false;
   };
+  // Every occurrence of every field, duplicates and unknown fields included, for the secret check below.
+  const seen: { key: Key | null; name: string; value: string; line: number }[] = [];
   for (let i = start + 1; i < end; i++) {
     if (hidden.has(i)) continue;
     const l = lines[i] as string;
@@ -364,6 +367,8 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
     if (m === null) continue;
     const name = (m[1] as string).trim();
     const key = KEY_BY_NAME.get(name.toLowerCase().replace(/\s+/g, " "));
+    const raw = decodeValue(m[2] ?? "");
+    seen.push({ key: key ?? null, name, value: raw.ok ? raw.value : (m[2] ?? ""), line: i });
     if (key === undefined || !allowed.has(key)) {
       diag(i, name, "warning", `not a field Caret reads in ${kind === "about" ? "an" : "a"} ${kind} record; it changes nothing`, id);
       continue;
@@ -379,10 +384,13 @@ function readRecord(lines: string[], hidden: Set<number>, start: number, end: nu
     }
     got.set(key, { value: v.value, line: i });
   }
-  // What Caret never keeps is flagged even in a record broken for another reason, and on the field that holds it.
-  for (const [k, g] of got) {
-    const s = k === "value" ? sensitiveKind(got.get("label")?.value, g.value) : valueKind(g.value);
-    if (s !== null) err(g.line, KEY_NAMES[k], `${refusal(s)}, so this record is not used`);
+  // What Caret never keeps is flagged even in a record broken for another reason, on the line that holds it: any
+  // field by its value's shape, an unknown field by its own name ("- Password: …"), and a Value under any Label
+  // the record carries, a second one included.
+  const labels = seen.filter((x) => x.key === "label").map((x) => x.value);
+  for (const x of seen) {
+    const s = x.key === "value" ? (labels.map((label) => sensitiveKind(label, x.value)).find((k) => k !== null) ?? valueKind(x.value)) : x.key === null ? sensitiveKind(x.name, x.value) : valueKind(x.value);
+    if (s !== null) err(x.line, x.key === null ? x.name : KEY_NAMES[x.key], `${refusal(s)}, so this record is not used`);
   }
   if (!ok) return null;
 

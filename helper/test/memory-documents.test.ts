@@ -481,3 +481,42 @@ describe("review findings (M1 fresh review)", () => {
     expect(parseDocument("people", text).diagnostics.map(formatDiagnostic)).toEqual(["people.md:4: Alias: Caret doesn't keep API keys or tokens in memory, so this record is not used"]);
   });
 });
+
+describe("fix-check findings (M1 second review)", () => {
+  let dir: string;
+  let root: string;
+  let store: MemoryDocumentStore;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "caret-memdocs-fixcheck-"));
+    root = join(dir, "Memory");
+    store = new MemoryDocumentStore(root);
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("N2 an aside that became unreadable after the compare (over the size limit) is kept, not deleted", () => {
+    store.put({ id: "about-aaa", kind: "about", status: "active", noticed: null, fields: { label: "Name", value: "one", source: "typed" } });
+    const base = revisionOf(readFileSync(join(root, "about-me.md")));
+    store.hooks.beforeDrop = (aside) => writeFileSync(aside, "x".repeat(MAX_FILE_BYTES + 10));
+    expect(() => store.save("about-me", base, "# About me\n\nCaret's\n")).toThrow(/that version is kept as about-me \(conflict/);
+    const copies = readdirSync(root).filter((f) => f.includes("(conflict"));
+    expect(copies.map((c) => lstatSync(join(root, c)).size)).toEqual([MAX_FILE_BYTES + 10]);
+  });
+
+  it("N4 a value holding '<!--' round-trips and hides nothing after it", () => {
+    const rs: MemoryRecord[] = [
+      { id: "about-c1", kind: "about", status: "active", noticed: null, fields: { label: "Marker", value: "Use <!-- as the opening marker", source: "typed" } },
+      { id: "about-c2", kind: "about", status: "active", noticed: null, fields: { label: "Next", value: "still read", source: "typed" } },
+    ];
+    expect(parseDocument("about-me", newDocument("about-me", rs)).records.map((r) => r.record)).toEqual(rs);
+  });
+
+  it("N5 a second Label, or a field Caret does not read, cannot carry a password past a save", () => {
+    const rec = "## Bank <!-- caret:id=about-bank kind=about -->\n";
+    expect(sensitiveLine("about-me", `# About me\n\n${rec}- Label: Note\n- Label: Password\n- Value: hunter2\n- Source: typed\n- Status: active\n`)).toBe("about-me.md:6: Value: Caret doesn't keep passwords in memory, so this record is not used");
+    expect(sensitiveLine("about-me", `# About me\n\n${rec}- Label: Note\n- Value: x\n- Password: hunter2\n- Source: typed\n- Status: active\n`)).toBe("about-me.md:6: Password: Caret doesn't keep passwords in memory, so this record is not used");
+    expect(sensitiveLine("about-me", "# About me\n\n- PIN: 4821\n")).toBe("about-me.md:3: Caret doesn't keep passwords in memory");
+  });
+});
