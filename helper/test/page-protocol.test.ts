@@ -130,7 +130,8 @@ describe("handshake vector", () => {
     const v = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/golden/page-auth.json", import.meta.url)), "utf8")) as Record<string, string>;
     const key = Buffer.from(v.secret as string, "hex");
     expect(pageKey(Buffer.from(v.launchSecret as string, "hex")).equals(key)).toBe(true);
-    expect(bridgeProof(key, v.challenge as string, v.bridgeNonce as string)).toBe(v.bridgeProof);
+    expect(bridgeProof(key, v.challenge as string, v.bridgeNonce as string, Number(v.helperPid))).toBe(v.bridgeProof);
+    expect(bridgeProof(key, v.challenge as string, v.bridgeNonce as string, Number(v.helperPid) + 1)).not.toBe(v.bridgeProof);
     expect(helperProof(key, v.challenge as string, v.bridgeNonce as string, Number(v.helperPid))).toBe(v.helperProof);
     expect(createHmac("sha256", key).update(`caret-page-helper\n${v.bridgeNonce}\n${v.challenge}\n${v.helperPid}`).digest("hex")).toBe(v.helperProof);
     // Another pid gives another proof: a relay's peer pid cannot reuse the helper's answer.
@@ -141,7 +142,7 @@ describe("handshake vector", () => {
 describe("W3 page messages", () => {
   it("an undo's verb says rebind: false, its refusal is notSameElement, and no other rebind value is accepted", () => {
     const undo = PageCommand.parse(lines[31]);
-    expect(undo.verb).toMatchObject({ kind: "pageWrite", rebind: false });
+    expect(undo.verb).toMatchObject({ kind: "pageWrite", rebind: false, sameAs: "m1" });
     expect(PageResult.parse(lines[32]).outcome).toBe("notSameElement");
     const verb = (lines[31] as { verb: Record<string, unknown> }).verb;
     expect(PageCommand.safeParse({ ...lines[31], verb: { ...verb, rebind: true } }).success).toBe(false);

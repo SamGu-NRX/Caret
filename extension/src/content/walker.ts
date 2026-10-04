@@ -17,7 +17,9 @@ const CANDIDATE = "input, select, textarea, button, a[href], [role=button], [rol
  * Self-identification and consent groups (memo: "consent and self-identification groups by label pattern"). These
  * are the user's to answer: demographic questions on job applications, and agreements.
  */
-const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial|ethnicity|hispanic|latin[oax]|veteran|disabilit(y|ies)|disabled|pronouns?|sexual orientation|transgender|consent|i agree|i accept|i acknowledge|i certify|terms (of|and) (service|use|conditions)|privacy policy|signature|e-?sign)\b/i;
+// W3 real-site pass: Greenhouse's EEO section asked "I consider myself a member of the LGBTQ+ community. (optional)" in a
+// section headed by an h2, not a fieldset, so neither the label nor a group name matched; the identity terms below close it.
+export const SELF_IDENTIFICATION = /\b(self[- ]identif\w*|gender|sex|race|racial|ethnicity|hispanic|latin[oax]|veteran|disabilit(y|ies)|disabled|pronouns?|sexual orientation|sexuality|transgender|lgbt\w*|queer|lesbian|gay|bisexual|non-?binary|intersex|consent|i agree|i accept|i acknowledge|i certify|terms (of|and) (service|use|conditions)|privacy policy|signature|e-?sign)\b/i;
 
 /** Field names and ids that mark a card number or code even without autocomplete. */
 const PAYMENT_NAME = /\b(card.?number|cc.?(num|number|csc|cvc|cvv)|cvc|cvv|csc|security.?code)\b/i;

@@ -7,6 +7,13 @@
 //              dev.caret.host with it (W3: the bridge reaches the host over XPC, and each holds the other to its signature).
 // --other-identity  an identity of another team: the run also signs a bridge and a host with it, and an ad hoc bridge,
 //              and expects each refused.
+// --browser PATH   another Chromium browser's executable instead of the pinned Chrome for Testing (W3: Helium,
+//              hypothesis A), on a temporary profile as always; never the browser's own user data.
+// --sites FILE     instead of the checks, a read-only pass over real pages (W3): FILE is a JSON array of {name, url}.
+//              For each, the run's own tab navigates there, the engine walks it, a DOM census and a full-page
+//              screenshot are read through the DevTools pipe, and the run records what the walk found and missed.
+//              No grant is given, no write verb is sent and nothing on the page is pressed. The census and the
+//              screenshot are taken even when no engine connects (Helium's Web Store check).
 //
 // It builds the extension and the bridge, installs the pinned Chrome for Testing with @puppeteer/browsers, writes
 // the bridge's Native Messaging manifest into Chrome for Testing's own directory (never Chrome's or Helium's),
@@ -90,6 +97,8 @@ const { values: args } = parseArgs({
     "skip-build": { type: "boolean", default: false },
     "sign-identity": { type: "string" },
     "other-identity": { type: "string" },
+    browser: { type: "string" },
+    sites: { type: "string" },
     "nm-probe": { type: "boolean", default: false },
     idle: { type: "string", default: "0" },
     "memory-tabs": { type: "string", default: "0" },
@@ -289,12 +298,21 @@ class Cdp {
     return { targetId: t.targetId, sessionId };
   }
 
-  /** A real (trusted) left click at the centre of `selector`'s box; the box is read with one evaluate. */
-  async click(sessionId: string, selector: string): Promise<void> {
+  /** The centre of `selector`'s box, read with one evaluate (which waits for the page's main thread). */
+  async centre(sessionId: string, selector: string): Promise<[number, number]> {
     const r = (await this.send("Runtime.evaluate", { expression: `(() => { const b = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2]; })()`, returnByValue: true }, sessionId)) as { result: { value: [number, number] } };
-    const [x, y] = r.result.value;
+    return r.result.value;
+  }
+
+  /** A real (trusted) left click at a point; it queues behind a page whose main thread is busy. */
+  async clickAt(sessionId: string, [x, y]: [number, number]): Promise<void> {
     await this.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }, sessionId);
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }, sessionId);
+  }
+
+  /** A real (trusted) left click at the centre of `selector`'s box. */
+  async click(sessionId: string, selector: string): Promise<void> {
+    await this.clickAt(sessionId, await this.centre(sessionId, selector));
   }
 }
 
@@ -793,6 +811,88 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
   });
 }
 
+// ---- W3: the read-only pass over real pages ----
+
+/**
+ * Runs in the page's main world through the DevTools pipe and only reads: every visible field in the top document and
+ * its open shadow roots (closed ones are invisible to page script too), the shadow hosts, the iframes, and the names on
+ * visible buttons. Nothing about a field's value is read.
+ */
+const CENSUS = `(() => {
+  const vis = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 1 && r.height > 1 && cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) > 0.05; };
+  const text = (s) => (s || "").replace(/\\s+/g, " ").trim().slice(0, 80);
+  const label = (el) => text(el.getAttribute("aria-label") || (el.labels && el.labels[0] && el.labels[0].innerText) || (el.getAttribute("aria-labelledby") && el.getAttribute("aria-labelledby").split(" ").map((i) => (el.getRootNode().getElementById?.(i) || document.getElementById(i))?.innerText || "").join(" ")) || el.getAttribute("placeholder") || el.getAttribute("name") || el.id);
+  const all = []; const hosts = []; const stack = [document];
+  while (stack.length) { const root = stack.pop(); for (const el of root.querySelectorAll("*")) { all.push(el); if (el.shadowRoot) { hosts.push(el.tagName.toLowerCase()); stack.push(el.shadowRoot); } } }
+  const sel = "input:not([type=hidden]):not([type=submit]):not([type=button]), select, textarea, [role=combobox], [role=textbox], [contenteditable=''], [contenteditable=true], [role=radio], [role=checkbox], [role=listbox], [role=switch]";
+  const fields = all.filter((el) => el.matches(sel) && vis(el)).map((el) => ({ kind: el.tagName.toLowerCase() + (el.getAttribute("type") ? ":" + el.getAttribute("type") : "") + (el.getAttribute("role") ? "[" + el.getAttribute("role") + "]" : ""), label: label(el), inShadow: el.getRootNode() !== document }));
+  const iframes = [...document.querySelectorAll("iframe")].map((f) => ({ src: (f.getAttribute("src") || "").replace(/[?#].*$/, "").slice(0, 120), visible: vis(f), size: [f.clientWidth, f.clientHeight] }));
+  const buttons = all.filter((el) => el.matches("button, [role=button], input[type=submit]") && vis(el)).map((b) => text(b.innerText || b.value || b.getAttribute("aria-label"))).filter(Boolean);
+  const listboxes = all.filter((el) => el.matches("[role=listbox]")).length;
+  return { title: document.title.slice(0, 120), at: location.origin + location.pathname, ready: document.readyState, fields, hosts: [...new Set(hosts)], shadowCount: hosts.length, iframes, buttons: [...new Set(buttons)].slice(0, 30), listboxes };
+})()`;
+
+const sitesFound: Record<string, unknown>[] = [];
+const norm = (s: string): string => s.toLowerCase().replace(/[*:()\s]+/g, " ").trim();
+
+async function sitesPass(session: EngineSession | null, cdp: Cdp, sites: { name: string; url: string }[], fixture: FixtureSite): Promise<void> {
+  const shots = join(args.evidence, "real");
+  mkdirSync(shots, { recursive: true });
+  const { sessionId } = await cdp.page(fixture.mainOrigin);
+  await cdp.send("Page.enable", {}, sessionId);
+  const evaluate = async <T>(expression: string): Promise<T> => ((await cdp.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)) as { result: { value: T } }).result.value;
+  for (const s of sites) {
+    await check(`real site ${s.name} (read only)`, async () => {
+      await cdp.send("Page.navigate", { url: s.url }, sessionId);
+      for (let i = 0; i < 60 && (await evaluate<string>("document.readyState").catch(() => "loading")) !== "complete"; i++) await sleep(500);
+      // Single-page apps (Ashby, Workday, Lever's apply) render their forms after load.
+      await sleep(6000);
+      const census = await evaluate<{ title: string; at: string; fields: { kind: string; label: string; inShadow: boolean }[]; hosts: string[]; shadowCount: number; iframes: { src: string; visible: boolean; size: [number, number] }[]; buttons: string[]; listboxes: number }>(CENSUS);
+      let snap: PageSnapshot | null = null;
+      let walkNote = "no engine";
+      if (session !== null) {
+        for (let i = 0; i < 3; i++) {
+          const a = await session.command({ kind: "pageWalk", tabId: null }, 15_000);
+          walkNote = a.result.outcome === "ok" ? "ok" : `${a.result.outcome}: ${a.result.detail ?? ""}`;
+          if (a.snapshot !== null && (snap === null || a.snapshot.frames.reduce((n, f) => n + f.controls.length, 0) > snap.frames.reduce((n, f) => n + f.controls.length, 0))) snap = a.snapshot;
+          await sleep(1500);
+        }
+      }
+      const metrics = (await cdp.send("Page.getLayoutMetrics", {}, sessionId)) as { cssContentSize: { width: number; height: number } };
+      const w = Math.min(1280, Math.ceil(metrics.cssContentSize.width));
+      const h = Math.min(8000, Math.ceil(metrics.cssContentSize.height));
+      const png = (await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: w, height: h, scale: 1 } }, sessionId)) as { data: string };
+      const shot = join(shots, `${s.name}.png`);
+      writeFileSync(shot, Buffer.from(png.data, "base64"));
+      const controls = snap?.frames.flatMap((f) => f.controls.map((c) => ({ ...c, frame: `${f.origin}${f.path}` }))) ?? [];
+      const byKind: Record<string, number> = {};
+      for (const c of controls) byKind[c.kind] = (byKind[c.kind] ?? 0) + 1;
+      const walked = new Set(controls.map((c) => norm(c.name)));
+      // Fields the page shows in its top document that no walked control is named like; cross-origin frames are walked but not in the census.
+      const missed = census.fields.filter((f) => f.label !== "" && !walked.has(norm(f.label)) && ![...walked].some((n) => n !== "" && (n.startsWith(norm(f.label)) || norm(f.label).startsWith(n))));
+      const row = {
+        name: s.name,
+        url: s.url,
+        at: census.at,
+        title: census.title,
+        walk: walkNote,
+        frames: snap?.frames.map((f) => ({ origin: f.origin, path: f.path, controls: f.controls.length, excluded: f.excluded, truncated: f.truncated })) ?? [],
+        missingFrames: snap?.missing ?? [],
+        controlsByKind: byKind,
+        controlsInShadow: controls.filter((c) => c.shadow !== undefined).length,
+        comboboxes: controls.filter((c) => c.kind === "combobox").map((c) => c.name),
+        files: controls.filter((c) => c.kind === "file").map((c) => c.name),
+        census: { fields: census.fields.length, kinds: census.fields.reduce<Record<string, number>>((m, f) => ((m[f.kind] = (m[f.kind] ?? 0) + 1), m), {}), inShadow: census.fields.filter((f) => f.inShadow).length, shadowHosts: census.hosts, shadowCount: census.shadowCount, iframes: census.iframes, listboxes: census.listboxes, buttons: census.buttons },
+        missed: missed.map((f) => `${f.kind} '${f.label}'`),
+        walkedNames: controls.map((c) => `${c.kind} '${c.name}'`),
+        screenshot: shot,
+      };
+      sitesFound.push(row);
+      return `walk ${walkNote}: ${controls.length} controls ${JSON.stringify(byKind)} in ${row.frames.length} frames (${row.missingFrames.length} missing); census ${census.fields.length} visible fields, ${census.iframes.length} iframes, ${census.shadowCount} shadow hosts; missed ${missed.length}`;
+    });
+  }
+}
+
 // ---- W3: the bridge's trust over XPC ----
 
 /**
@@ -1000,6 +1100,85 @@ async function batch3(e: Engine, site: FixtureSite): Promise<void> {
     return `${outcome(p.r)}; the page holds ${v}`;
   });
 
+  // ---- the trust-boundary review's findings (W3 review) ----
+
+  await check("W3 review #2: an undo reaches the element its write reached, through a rebind, and no other element", async () => {
+    s = await walk(e);
+    grant(e, "t-w3m");
+    const t = target(s, "Click here", "t-w3m");
+    const was = (await read(site, "#h_click")) ?? "";
+    await site.command({ cmd: "replace", selector: "#h_click" });
+    const fwd = await run(e, { kind: "pageWrite", ...t, mark: "w3-m1", expect: was, value: "marked" });
+    expect(fwd.outcome === "ok" && (fwd.detail ?? "").includes("rebound"), `forward: ${outcome(fwd)}`);
+    s = await walk(e);
+    const wrong = await run(e, { kind: "pageWrite", ...target(s, "Hold on focus", "t-w3m"), rebind: false, sameAs: "w3-m1", expect: "", value: "Not mine" });
+    expect(wrong.outcome === "notSameElement" && (await read(site, "#h_focus")) === "", `undo on another element: ${outcome(wrong)}`);
+    const back = await run(e, { kind: "pageWrite", ...target(s, "Click here", "t-w3m"), rebind: false, sameAs: "w3-m1", expect: "marked", value: was });
+    expect(back.outcome === "ok" && (await read(site, "#h_click")) === was, `undo on the replacement it wrote: ${outcome(back)}`);
+    revoke(e, "t-w3m");
+    return `forward ${fwd.outcome} (rebound); undo on another element ${wrong.outcome}; undo on the written replacement ${back.outcome}`;
+  });
+
+  await check("W3 review #4: a click the user makes while a stage awaits the grant's answer stops the write (the takeover latches)", async () => {
+    const cdp = need(e.cdp, "DevTools pipe");
+    const { sessionId } = await cdp.page(`${site.mainOrigin}/holds`);
+    const at = await cdp.centre(sessionId, "#h_click");
+    s = await walk(e);
+    grant(e, "t-w3l");
+    await sleep(300);
+    const h = site.armHold("focus");
+    const pending = e.session.command({ kind: "pageWrite", ...target(s, "Hold on focus", "t-w3l"), expect: "", value: "Latched" }, 10_000);
+    const held = await Promise.race([h.arrived.then(() => true), sleep(5000).then(() => false)]);
+    // The click waits in the page's input queue while the page is held, and is handled once the write asks for the grant.
+    const click = cdp.clickAt(sessionId, at).catch(() => undefined);
+    await sleep(300);
+    h.release();
+    const r = (await pending).result;
+    await click;
+    const v = await read(site, "#h_focus");
+    expect(held && r.outcome === "notAllowed" && v === "", `held ${held}; ${outcome(r)}; #h_focus holds '${v}'`);
+    return outcome(r);
+  });
+
+  await check("W3 review #9, #7: a field the page disables on focus is not written; a select that holds several choices is refused", async () => {
+    s = await walk(e);
+    grant(e, "t-w3x");
+    const d = await run(e, { kind: "pageWrite", ...target(s, "Disable on focus", "t-w3x"), expect: "", value: "Never" });
+    const dv = await read(site, "#h_disable");
+    expect(d.outcome === "failed" && /disabled or read-only/.test(d.detail ?? "") && dv === "", `disable on focus: ${outcome(d)}; holds '${dv}'`);
+    const m = await run(e, { kind: "pageSelect", ...target(s, "Several sizes", "t-w3x"), expect: "s", value: "l" });
+    const mv = await read(site, "#h_multi");
+    expect(m.outcome === "unsupported" && mv === "s", `multi-select: ${outcome(m)}; first value '${mv}'`);
+    revoke(e, "t-w3x");
+    return `disable on focus ${d.outcome} (${d.detail}); multi-select ${m.outcome}`;
+  });
+
+  await check("W3 second review #4: a select that turns multi-select on focus, and a field in a disabled fieldset, are not written", async () => {
+    s = await walk(e);
+    grant(e, "t-w3y");
+    const tm = await run(e, { kind: "pageSelect", ...target(s, "Becomes several", "t-w3y"), expect: "", value: "g" });
+    const tv = await read(site, "#h_tomulti");
+    expect(tm.outcome === "unsupported" && /several choices/.test(tm.detail ?? "") && tv === "", `turns multi: ${outcome(tm)}; value '${tv}'`);
+    const inLocked = s.frames.flatMap((f) => f.controls).filter((c) => c.name === "In a locked section");
+    let fs = "not walked";
+    if (inLocked.length === 1) {
+      const r = await run(e, { kind: "pageWrite", ...target(s, "In a locked section", "t-w3y"), expect: "", value: "Never" });
+      fs = outcome(r);
+      expect(r.outcome === "failed" && /disabled/.test(r.detail ?? "") && (await read(site, "#h_fieldset")) === "", `locked fieldset: ${fs}`);
+    }
+    revoke(e, "t-w3y");
+    return `turns multi ${tm.outcome}; locked fieldset ${fs}`;
+  });
+
+  await check("W3 review #10: a revoke between the combobox filter and the pick reports what the filter left as possibly landed", async () => {
+    s = await walk(e);
+    const before = control(s, "Hold department").c.value ?? "";
+    grant(e, "t-w3f");
+    const p = await revokeAtHold(e, site, "filter", "t-w3f", { kind: "pageChooseOption", ...target(s, "Hold department", "t-w3f"), expect: before, value: "Engineering" });
+    expect(p.held && p.r.outcome === "failed" && p.r.readings?.afterBlur === "Engineering" && toVerbOutcome(p.r).outcome === "axError", `held ${p.held}; ${outcome(p.r)}; readings ${JSON.stringify(p.r.readings)}`);
+    return `${outcome(p.r)}; shows '${p.r.readings?.afterBlur}' (was '${before}')`;
+  });
+
   // Last of the checks that use the page's control channel: two tabs would both poll it. A new window takes focus
   // (headless Chrome moves focus to a window CDP creates, and Target.activateTarget does not move it back), which
   // leaves this run's tab the selected tab of a background window: exactly the tab that must not count as the user's.
@@ -1176,7 +1355,8 @@ async function main(): Promise<number> {
   if (args["sign-identity"] === undefined) throw new Error("--sign-identity is required: the bridge and the test host are signed with it (W3)");
   preflight();
   build();
-  const exe = await chrome();
+  const exe = args.browser ?? (await chrome());
+  if (!existsSync(exe)) throw new Error(`no browser at ${exe}`);
   const extensionId = readFileSync(join(EXT, "EXTENSION_ID"), "utf8").trim();
   const front0 = frontmost();
 
@@ -1254,7 +1434,7 @@ async function main(): Promise<number> {
   const url = `${site.mainOrigin}/form`;
 
   /** Puts the manifest in `nmDir` only, launches on `profile`, and waits for this launch's engine. */
-  const connect = async (nmDir: string, waitMs: number, profile: string, devtools = false): Promise<{ session: EngineSession | null; stop: () => Promise<void>; cdp: Cdp | null }> => {
+  const connect = async (nmDir: string, waitMs: number, profile: string, devtools = false, keepOnFail = false): Promise<{ session: EngineSession | null; stop: () => Promise<void>; cdp: Cdp | null }> => {
     writeManifest(nmDir, extensionId, bridge);
     const manifest = join(nmDir, `${HOST_NAME}.json`);
     const removeManifest = async (): Promise<void> => {
@@ -1262,7 +1442,8 @@ async function main(): Promise<number> {
       if (u >= 0) await undo.splice(u, 1)[0]?.fn();
     };
     const since = Date.now();
-    const c = launch(exe, profile, [url], env, join(EXT, "dist"), log, [], devtools);
+    // A tall window for the real-site pass, so a page's form is laid out as on a desktop and the screenshot holds it.
+    const c = launch(exe, profile, [url], env, join(EXT, "dist"), log, args.sites === undefined ? [] : ["--window-size=1280,1600"], devtools);
     const stop = async (): Promise<void> => {
       await c.stop();
       await removeManifest();
@@ -1270,6 +1451,7 @@ async function main(): Promise<number> {
     try {
       return { session: await host.registry.waitForEngine((s) => s.info.extensionId === extensionId && s.info.connectedAt >= since, waitMs), stop, cdp: c.cdp };
     } catch {
+      if (keepOnFail) return { session: null, stop, cdp: c.cdp };
       await stop();
       return { session: null, stop, cdp: null };
     }
@@ -1289,7 +1471,12 @@ async function main(): Promise<number> {
   }
   // The checks run with the manifest in the temporary profile, which goes away with it.
   const profile = join(tmp, "profile");
-  const { session, cdp } = await connect(join(profile, "NativeMessagingHosts"), 30_000, profile, true);
+  const { session, cdp } = await connect(join(profile, "NativeMessagingHosts"), 30_000, profile, true, args.sites !== undefined);
+  if (args.sites !== undefined) {
+    results.push({ name: "the engine says hello", pass: session !== null, ms: 0, detail: session === null ? `no engine; log tail: ${tail(log)}` : `engine ${session.info.engine}, browser ${session.info.browser.bundleId}` });
+    await sitesPass(session, need(cdp, "DevTools pipe"), JSON.parse(readFileSync(args.sites, "utf8")) as { name: string; url: string }[], site);
+    return report(front0, { warnings, sites: sitesFound });
+  }
   if (session === null) {
     results.push({ name: "the engine says hello", pass: false, ms: 0, detail: `no engine within the wait; Chrome log tail: ${tail(log)}` });
     return report(front0, { nmProbe, warnings });
@@ -1331,7 +1518,7 @@ async function main(): Promise<number> {
   });
   const idle = Number(args.idle);
   if (idle > 0) await idleCheck(e, idle);
-  if (frontmost() !== front0 && /Chrome for Testing/.test(frontmost())) results.push({ name: "Chrome for Testing never took the front", pass: false, ms: 0, detail: frontmost() });
+  if (frontmost() !== front0 && /Chrome for Testing|Helium/.test(frontmost())) results.push({ name: "the browser never took the front", pass: false, ms: 0, detail: frontmost() });
   return report(front0, { nmProbe, warnings, jevCalls, engineHello: session.hello, pageEngine: published.filter((m) => m.type === "pageEngine") });
 }
 
