@@ -1542,6 +1542,13 @@ const PageTarget = {
    * wrote, not a re-rendered one that took its identifier. Absent: a strong-key rebind is allowed.
    */
   rebind: z.literal(false).optional(),
+  /**
+   * A forward write's undo mark (W3 review #2): the content script keeps the element the act actually reached under it,
+   * after any rebind, before it touches the page. An undo names it in `sameAs` and is notSameElement unless the element
+   * at `id` is that very object, alive in this document. A verb carries one or the other.
+   */
+  mark: z.string().min(1).max(64).optional(),
+  sameAs: z.string().min(1).max(64).optional(),
 };
 
 /**

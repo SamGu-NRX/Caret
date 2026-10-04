@@ -60,15 +60,16 @@ function send(m: object): void {
   }
 }
 
-/** Arms a frame's report of the user's input until `until`, or disarms it (0). Only the frame's current document hears it. */
+/**
+ * Arms a frame's report of the user's input until `until`, or disarms it (0). Sent every time, never skipped from a
+ * cache: the frame may hold a new document since it was last armed (W3 review #6). An act arms its document as well,
+ * so a guard message that does not arrive leaves no act unarmed.
+ */
 function guard(tabId: number, frameId: number, until: number): void {
   const k = `${tabId}:${frameId}`;
   if (until === 0) {
     if (!armed.delete(k)) return;
-  } else {
-    if ((armed.get(k) ?? 0) >= until) return;
-    armed.set(k, until);
-  }
+  } else armed.set(k, until);
   const msg: ToContent = { caret: 1, op: "guard", until };
   chrome.tabs.sendMessage(tabId, msg, { frameId }).catch(() => armed.delete(k));
 }
@@ -204,8 +205,12 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       }
     }),
   );
-  // The window Chrome last focused, read once the frames answered, so the snapshot says where focus is as it is sent.
-  const lastFocused = await chrome.windows.getLastFocused().catch(() => undefined);
+  // The tab and the window Chrome last focused, read again once the frames answered, so the snapshot says where focus is
+  // as it is sent: the user may have switched tabs meanwhile (W3 review #13). Each browser profile is its own engine
+  // with its own last-focused window, so the window must also say it has focus now; with two profiles open, only one
+  // window does.
+  const [tabNow, lastFocused] = await Promise.all([chrome.tabs.get(tab.id).catch(() => undefined), chrome.windows.getLastFocused().catch(() => undefined)]);
+  if (tabNow === undefined) return result(id, { outcome: "noElement", detail: `tab ${tab.id} closed during the walk` });
   const answered = reports.filter((x): x is NonNullable<typeof x> => x !== null).sort((a, b) => a.f.frameId - b.f.frameId);
   // A frame is kept only when its document's own origin (self.origin, which is opaque for a sandboxed frame) is the
   // one the worker derived from Chrome's URL for it (W1 review #8), and, below the top, when it can be shown to sit in
@@ -265,10 +270,10 @@ async function walk(id: string, tabId: number | null): Promise<void> {
     id,
     at: Date.now(),
     tabId: tab.id,
-    browserWindowId: tab.windowId,
-    active: tab.active,
-    inFocusedWindow: lastFocused?.id !== undefined && lastFocused.id === tab.windowId,
-    title: tab.title ?? "",
+    browserWindowId: tabNow.windowId,
+    active: tabNow.active,
+    inFocusedWindow: lastFocused?.id !== undefined && lastFocused.id === tabNow.windowId && lastFocused.focused,
+    title: tabNow.title ?? "",
     frames: kept.map(({ f, r, origin }) => ({
       frameId: f.frameId,
       parentFrameId: f.parentFrameId,
@@ -339,7 +344,7 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   if (live.scope.navGen !== genNow || live.scope.origin !== origin) return { outcome: "stale", detail: `the frame moved during the check (navGen ${live.scope.navGen}, now ${genNow})` };
   const deadline = Math.min(expires, live.expires);
   try {
-    const msg: ToContent = { caret: 1, op: "act", verb, deadline };
+    const msg: ToContent = { caret: 1, op: "act", verb, deadline, guardUntil: live.expires };
     const a = (await withTimeout(chrome.tabs.sendMessage(verb.tabId, msg, { frameId: verb.frameId, documentId: verb.documentId }), Math.max(100, deadline - Date.now() + 1000), "the frame")) as ActAnswer | undefined;
     if (a === undefined || typeof a !== "object" || typeof a.outcome !== "string") return { outcome: "error", detail: "the frame gave no answer" };
     return a;
@@ -392,7 +397,7 @@ chrome.runtime.onMessage.addListener((m: unknown, sender) => {
   lastFocus.set(tabId, now);
   void (async () => {
     const [tab, win, all] = await Promise.all([chrome.tabs.get(tabId).catch(() => undefined), chrome.windows.getLastFocused().catch(() => undefined), chrome.webNavigation.getAllFrames({ tabId })]);
-    if (tab === undefined || !tab.active || win === undefined || tab.windowId !== win.id) return;
+    if (tab === undefined || !tab.active || win === undefined || tab.windowId !== win.id || !win.focused) return;
     const top = frameOrigin(all ?? [], 0);
     const here = frameOrigin(all ?? [], frameId);
     if ((top !== null && sitesOff.has(top)) || (here !== null && sitesOff.has(here))) return;
@@ -435,10 +440,20 @@ chrome.runtime.onMessage.addListener((m: unknown, sender) => {
   return false;
 });
 
-// Tabs open before install have no content script; give them one. A tab that already has one keeps it (content.ts).
+// Tabs open before install have no content script; give them one, for walks. It is marked late first, in the same
+// isolated world, so it takes no act until the page reloads with the script in from document_start: listeners the page
+// registered before ours could hide the user's clicks from it (W3 review #5). A tab that already has one keeps it.
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.tabs.query({ url: ["http://*/*", "https://*/*"] }).then((tabs) => {
-    for (const t of tabs) if (t.id !== undefined) void chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: ["content.js"] }).catch(() => {});
+    for (const t of tabs) {
+      if (t.id === undefined) continue;
+      const target = { tabId: t.id, allFrames: true };
+      void chrome.scripting
+        // A document still loading gets the declared script at document_start, before any page listener; it is not late.
+        .executeScript({ target, func: () => void (globalThis.__caretContent === undefined && document.readyState !== "loading" && (globalThis.__caretLate = true)) })
+        .then(() => chrome.scripting.executeScript({ target, files: ["content.js"] }))
+        .catch(() => {});
+    }
   });
 });
 

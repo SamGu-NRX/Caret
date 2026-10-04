@@ -108,7 +108,8 @@ export class EngineServer {
         if (session === null) {
           const hello = EngineHello.safeParse(json);
           if (!hello.success) return this.refuse(s, "first line is not a valid engineHello");
-          if (!proofMatches(bridgeProof(secret, challenge, hello.data.nonce), hello.data.proof)) return this.refuse(s, "the bridge's proof does not match this launch's key");
+          // Bound to this helper's pid: a hello made for whoever the host saw as its peer passes only here if that was us.
+          if (!proofMatches(bridgeProof(secret, challenge, hello.data.nonce, process.pid), hello.data.proof)) return this.refuse(s, "the bridge's proof does not match this launch's key and this helper");
           clearTimeout(timer);
           const engine = randomBytes(6).toString("hex");
           session = new EngineSession(

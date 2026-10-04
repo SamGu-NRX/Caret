@@ -76,6 +76,9 @@ public struct PageTarget: Equatable, Sendable {
     public var tabId: Int, frameId: Int, documentId: String, id: String, control: PageControlKind, name: String, taskId: String
     /// `false` (an undo, W3): only the element the walk retained; a replaced one is notSameElement, never rebound. nil: rebinding allowed.
     public var rebind: Bool? = nil
+    /// A forward write's undo mark, or an undo's (`sameAs`): the element the write reached, kept by the content script.
+    public var mark: String? = nil
+    public var sameAs: String? = nil
 }
 
 /// The file pageAttachFile carries: its bytes in `data`, base64 (W2).
@@ -90,7 +93,7 @@ public enum PageVerb: Codable, Equatable, Sendable {
     case setChecked(PageTarget, checked: Bool)
     case attachFile(PageTarget, file: PageFile)
 
-    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, expect, value, checked, file }
+    private enum K: String, CodingKey { case kind, tabId, frameId, documentId, id, control, name, taskId, rebind, mark, sameAs, expect, value, checked, file }
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         let kind = try c.decode(String.self, forKey: .kind)
@@ -98,7 +101,8 @@ public enum PageVerb: Codable, Equatable, Sendable {
         let t = PageTarget(tabId: try c.decode(Int.self, forKey: .tabId), frameId: try c.decode(Int.self, forKey: .frameId),
                            documentId: try c.decode(String.self, forKey: .documentId), id: try c.decode(String.self, forKey: .id),
                            control: try c.decode(PageControlKind.self, forKey: .control), name: try c.decode(String.self, forKey: .name),
-                           taskId: try c.decode(String.self, forKey: .taskId), rebind: try c.decodeIfPresent(Bool.self, forKey: .rebind))
+                           taskId: try c.decode(String.self, forKey: .taskId), rebind: try c.decodeIfPresent(Bool.self, forKey: .rebind),
+                           mark: try c.decodeIfPresent(String.self, forKey: .mark), sameAs: try c.decodeIfPresent(String.self, forKey: .sameAs))
         // The wire allows only `false` (protocol.ts PageTarget.rebind).
         if t.rebind == true { throw DecodingError.dataCorruptedError(forKey: .rebind, in: c, debugDescription: "rebind is false or absent") }
         switch kind {
@@ -118,6 +122,8 @@ public enum PageVerb: Codable, Equatable, Sendable {
             try c.encode(t.documentId, forKey: .documentId); try c.encode(t.id, forKey: .id); try c.encode(t.control, forKey: .control)
             try c.encode(t.name, forKey: .name); try c.encode(t.taskId, forKey: .taskId)
             try c.encodeIfPresent(t.rebind, forKey: .rebind)
+            try c.encodeIfPresent(t.mark, forKey: .mark)
+            try c.encodeIfPresent(t.sameAs, forKey: .sameAs)
         }
         switch self {
         case let .walk(tabId): try c.encode("pageWalk", forKey: .kind); try c.encode(tabId, forKey: .tabId)

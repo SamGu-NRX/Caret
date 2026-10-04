@@ -177,18 +177,24 @@ export class PageEngineLink implements ReaderLink {
         if (verb.sameAs !== undefined) {
           const was = this.marks.get(verb.sameAs);
           if (was === undefined) return verbResult("notSameElement", "the page engine holds no element under this mark (it restarted, or never wrote it)");
-          if (was.tabId !== w.tabId || was.frameId !== t.frameId || was.documentId !== t.documentId || was.id !== t.id) return verbResult("notSameElement", `another element now has the key ${verb.key}`);
+          // Same tab, frame and document here; the content script then requires the very object the write reached
+          // (it keeps it under the mark), which a rebind or a re-render can give another registry id (W3 review #2).
+          if (was.tabId !== w.tabId || was.frameId !== t.frameId || was.documentId !== t.documentId) return verbResult("notSameElement", `the key ${verb.key} is now in another document or frame`);
         }
-        // An undo (sameAs) never rebinds by strong key: a re-rendered element that took the identifier is not the one
-        // Caret wrote, and the content script refuses it as notSameElement (W3).
-        const base = { tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId: verb.taskId, ...(verb.sameAs === undefined ? {} : { rebind: false as const }) };
+        // An undo never rebinds by strong key and must reach the object its write reached; a forward write records it (W3).
+        const identity = verb.sameAs !== undefined ? { rebind: false as const, sameAs: verb.sameAs } : verb.mark !== undefined ? { mark: verb.mark } : {};
+        const base = { tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId: verb.taskId, ...identity };
         let page: PageVerb;
         if (t.control.kind === "select") {
-          // The model shows a select's selected label; the page verb names options by value.
-          const want = t.control.options?.find((o) => o.label === verb.value || o.value === verb.value);
-          const had = t.control.options?.find((o) => o.label === verb.expect || o.value === verb.expect);
-          if (want === undefined) return verbResult("noElement", `'${t.control.name}' has no option '${verb.value}'`);
-          page = { kind: "pageSelect", ...base, expect: had?.value ?? verb.expect, value: want.value };
+          // The model shows a select's selected label, so a write names the option by its label: exactly one option may
+          // carry it, and the option values are only what the page verb sends. Before is the option the walk saw
+          // selected, which must still be the label the executor expects (W3 review #8).
+          const options = t.control.options ?? [];
+          const want = options.filter((o) => o.label === verb.value);
+          if (want.length !== 1 || want[0] === undefined) return verbResult("noElement", `'${t.control.name}' has ${want.length} options labelled '${verb.value}'`);
+          const had = options.find((o) => o.selected);
+          if ((had?.label ?? "") !== verb.expect) return verbResult("changed", `'${t.control.name}' shows '${had?.label ?? ""}', not '${verb.expect}'`);
+          page = { kind: "pageSelect", ...base, expect: had?.value ?? "", value: want[0].value };
         } else if (TEXT_KINDS.has(t.control.kind)) {
           page = { kind: "pageWrite", ...base, expect: verb.expect, value: verb.value };
         } else if (t.control.kind === "combobox") {

@@ -67,12 +67,12 @@ describe("page.sock handshake", () => {
   const LAUNCH = randomBytes(32);
   const secret = (): Buffer => pageKey(LAUNCH);
 
-  async function bridge(key: Buffer = secret()): Promise<{ c: LineClient; welcome: Record<string, unknown> | null; nonce: string; challenge: string }> {
+  async function bridge(key: Buffer = secret(), helperPid = process.pid): Promise<{ c: LineClient; welcome: Record<string, unknown> | null; nonce: string; challenge: string }> {
     const c = await LineClient.connect(join(dir, "page.sock"));
     const ch = await c.waitFor((m) => m.type === "engineChallenge");
     const challenge = ch.nonce as string;
     const nonce = newNonce();
-    c.send({ type: "engineHello", v: 1, role: "page", browser, extensionId: X, bridgeVersion: "0.1.0", nonce, proof: bridgeProof(key, challenge, nonce) });
+    c.send({ type: "engineHello", v: 1, role: "page", browser, extensionId: X, bridgeVersion: "0.1.0", nonce, proof: bridgeProof(key, challenge, nonce, helperPid) });
     const welcome = await c.waitFor((m) => m.type === "engineWelcome", 1000).catch(() => null);
     return { c, welcome, nonce, challenge };
   }
@@ -107,7 +107,16 @@ describe("page.sock handshake", () => {
     expect(c.received.map((m) => (m as { type: string }).type)).toEqual(["engineChallenge"]);
     expect(c.s.destroyed || c.s.readableEnded).toBe(true);
     expect(host.registry.list()).toHaveLength(0);
-    expect([...host.server.refused.keys()]).toEqual(["the bridge's proof does not match this launch's key"]);
+    expect([...host.server.refused.keys()]).toEqual(["the bridge's proof does not match this launch's key and this helper"]);
+  });
+
+  it("refuses a hello made for another process: a relay that took over the socket path cannot pass the host's hello on (W3 review #1)", async () => {
+    // The host binds its proof to the pid it sees as its peer; behind a relay that is the relay, not this helper.
+    const { c, welcome } = await bridge(secret(), process.pid + 1);
+    expect(welcome).toBeNull();
+    expect(host.registry.list()).toHaveLength(0);
+    expect([...host.server.refused.keys()]).toEqual(["the bridge's proof does not match this launch's key and this helper"]);
+    c.s.destroy();
   });
 
   it("refuses a peer whose first line is a page message, and one that says nothing", async () => {

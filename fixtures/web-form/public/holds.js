@@ -20,8 +20,13 @@
   const c = document.getElementById("h_check");
   c.addEventListener("focus", () => hold("check"));
 
-  // An ARIA combobox whose option, once picked, holds the page before Caret's next stage.
+  // A field the page disables when it takes focus, as some forms do while they validate.
+  const dis = document.getElementById("h_disable");
+  dis.addEventListener("focus", () => { dis.disabled = true; });
+
+  // An ARIA combobox that holds the page once the filter is typed, and again once an option is picked.
   const d = document.getElementById("hdept");
+  d.addEventListener("input", () => hold("filter"));
   let list = null;
   const close = () => { list?.remove(); list = null; d.setAttribute("aria-expanded", "false"); };
   d.addEventListener("focus", () => {

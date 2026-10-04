@@ -220,8 +220,8 @@ describe("page link: undo writes only the element its write went to (B23 on page
     expect(commands(sent).filter((v) => v.kind === "pageWrite")).toEqual([]);
   });
 
-  it("refuses an undo when the key now names another element, or the same id in another document", async () => {
-    const changes: { id: string; documentId: string }[] = [{ id: "e9", documentId: "D0" }, { id: "e2", documentId: "D1" }];
+  it("refuses an undo when the key is now in another document; another registry id goes to the page, which checks the object under the mark (W3)", async () => {
+    const changes: { id: string; documentId: string; sent: number }[] = [{ id: "e9", documentId: "D0", sent: 2 }, { id: "e2", documentId: "D1", sent: 1 }];
     for (const change of changes) {
       let walks = 0;
       const { session, sent } = rig(undefined, (id) => {
@@ -236,8 +236,9 @@ describe("page link: undo writes only the element its write went to (B23 on page
       expect((await link.run(write({ mark: "m1" }))).outcome).toBe("ok");
       await link.run({ kind: "walk", pid: 4100, windowId: "page:eng1:7" });
       const r = await link.run(write({ sameAs: "m1" }, "", "robin@example.test"));
-      expect(r.outcome, JSON.stringify(change)).toBe("notSameElement");
-      expect(commands(sent).filter((v) => v.kind === "pageWrite")).toHaveLength(1);
+      expect(commands(sent).filter((v) => v.kind === "pageWrite"), JSON.stringify(change)).toHaveLength(change.sent);
+      if (change.sent === 1) expect(r.outcome, JSON.stringify(change)).toBe("notSameElement");
+      else expect(commands(sent).filter((v) => v.kind === "pageWrite").at(-1)).toMatchObject({ id: "e9", sameAs: "m1", rebind: false });
     }
   });
 });

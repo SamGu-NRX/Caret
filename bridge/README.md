@@ -35,7 +35,7 @@ The same user's processes are the boundary, as for the reader's socket. What mac
 - **A bridge signed by another team, or ad hoc,** is refused by the host's requirement before its session sees a message.
 - **The team's bridge started by something that is not a browser** is refused by the host's parent check.
 - **A process that registered the service name first** cannot answer the bridge: its code fails the host requirement. It does see `open`'s two arguments, the extension id and the bridge version.
-- **A relay between the host and the real helper** is refused: the helper's proof names its pid, and the host requires that pid to be its socket's peer.
+- **A relay between the host and the real helper** is refused both ways. Say a same-user process swaps the socket path and passes the host's hello through to the real helper. The host bound that hello to the pid it saw as its peer, the swapper, and the helper accepts only a hello bound to its own pid. The host in turn requires the helper's proof to name its socket's peer.
 - **Injected code.** The bridge is signed with the hardened runtime, so `DYLD_INSERT_LIBRARIES` cannot put code inside it.
 
 What it does not cover: a same-user process that starts a real, signed Chrome with an unpacked extension claiming Caret's id. The id comes from the public `key` in the manifest. That process could point Chrome at the real bridge. See the host spec's residual risks.

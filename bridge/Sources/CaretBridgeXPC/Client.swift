@@ -19,8 +19,11 @@ public final class XPCHostLink: NSObject, HostLink, CaretBridgeClient, @unchecke
     private let connection: NSXPCConnection
     private let onLine: @Sendable (Data) -> Void
     private let onClose: @Sendable (String) -> Void
-    /// Set only by a verified open reply: until then `send` passes nothing to whatever owns the service name.
-    private let isOpen = Locked(false)
+    /// One state for open and close (W3 review #11). Only a verified open reply moves `opening` to `open`, so `send`
+    /// passes nothing to whatever owns the service name before then; a close while opening fails the open instead of
+    /// reaching `onClose`; `onClose` runs once, and only for a link that was open.
+    private enum State { case opening, open, closed }
+    private let state = Locked(State.opening)
 
     /// `onLine` gets each helper line, in order, on the connection's queue; `onClose` when the session ends.
     public convenience init(service: String, hostRequirement: String, onLine: @escaping @Sendable (Data) -> Void, onClose: @escaping @Sendable (String) -> Void) {
@@ -41,9 +44,18 @@ public final class XPCHostLink: NSObject, HostLink, CaretBridgeClient, @unchecke
         connection.remoteObjectInterface = BridgeInterfaces.host()
         connection.exportedInterface = BridgeInterfaces.client()
         connection.exportedObject = self
-        connection.invalidationHandler = { onClose("the connection to the Caret host ended") }
-        connection.interruptionHandler = { onClose("the Caret host went away") }
+        connection.invalidationHandler = { [weak self] in self?.lost("the connection to the Caret host ended") }
+        connection.interruptionHandler = { [weak self] in self?.lost("the Caret host went away") }
         connection.resume()
+    }
+
+    private func lost(_ why: String) {
+        let was = state.update { s -> State in
+            let was = s
+            s = .closed
+            return was
+        }
+        if was == .open { onClose(why) }
     }
 
     public func open(extensionId: String, bridgeVersion: String, timeout: TimeInterval) -> Result<String, BridgeRefusal> {
@@ -63,21 +75,31 @@ public final class XPCHostLink: NSObject, HostLink, CaretBridgeClient, @unchecke
         }
         if done.wait(timeout: .now() + timeout) == .timedOut { return .failure(.timeout("the Caret host did not answer within \(Int(timeout)) s")) }
         let r = answer.value ?? .failure(.timeout("no answer"))
-        if case .success = r { isOpen.set(true) }
-        return r
+        guard case .success = r else { return r }
+        let opened = state.update { s -> Bool in
+            guard s == .opening else { return false }
+            s = .open
+            return true
+        }
+        return opened ? r : .failure(.xpc("the connection to the Caret host ended as the engine opened"))
     }
 
-    /// Passes a line to the host once open succeeded; before that, or after a refused open, drops it.
+    /// Passes a line to the host while the link is open; before a verified open, or after a close, drops it.
     public func send(_ line: Data) {
-        guard isOpen.value else { return }
+        guard state.value == .open else { return }
         (connection.remoteObjectProxy as? CaretBridgeHost)?.send(line)
     }
 
     public func close() { connection.invalidate() }
 
     // CaretBridgeClient
-    public func receive(_ line: Data) { onLine(line) }
-    public func closed(_ why: String) { onClose(why) }
+    /// A line can come between the verified reply and `open` (caret-bridge's FrameOut holds it until engineReady); only a
+    /// closed link drops lines. A host that fails the requirement delivers none at all.
+    public func receive(_ line: Data) {
+        if state.value != .closed { onLine(line) }
+    }
+
+    public func closed(_ why: String) { lost(why) }
 }
 
 /// A value behind a lock.
@@ -87,6 +109,7 @@ final class Locked<T>: @unchecked Sendable {
     init(_ v: T) { self.v = v }
     var value: T { lock.withLock { v } }
     func set(_ new: T) { lock.withLock { v = new } }
+    func update<R>(_ f: (inout T) -> R) -> R { lock.withLock { f(&v) } }
     /// Sets the value when it is nil (for an optional T); true when this call set it.
     func setIfNil<U>(_ new: U) -> Bool where T == U? {
         lock.withLock {

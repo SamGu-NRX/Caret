@@ -18,6 +18,9 @@ import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
 declare global {
   // Set once per isolated world, so a script injected again after install (worker onInstalled) does nothing.
   var __caretContent: true | undefined;
+  // Set by the worker's onInstalled, in this isolated world, just before it injects this script into a document that was
+  // already open: listeners the page registered before ours can hide the user's input from Caret there (W3 review #5).
+  var __caretLate: true | undefined;
 }
 
 function srcOf(f: HTMLIFrameElement): string {
@@ -83,14 +86,21 @@ function walk(reg: Registry): FrameReport {
 function isToContent(m: unknown): m is ToContent {
   if (typeof m !== "object" || m === null) return false;
   const x = m as Record<string, unknown>;
-  return x.caret === 1 && (x.op === "walk" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number"));
+  return x.caret === 1 && (x.op === "walk" || (x.op === "guard" && typeof x.until === "number") || (x.op === "act" && typeof x.verb === "object" && x.verb !== null && typeof x.deadline === "number" && typeof x.guardUntil === "number"));
 }
 
 if (globalThis.__caretContent === undefined) {
   globalThis.__caretContent = true;
   const reg = new Registry();
-  /** Until when the worker armed this frame's report of the user's own input (a grant covers the frame); 0 when not. */
+  /** Until when this document reports the user's own input (a grant covers the frame); 0 when not. */
   let guardUntil = 0;
+  /**
+   * Trusted presses seen while armed. An act notes the count when it starts and stops at any stage once it moved, so a
+   * grant reply already on its way when the user clicked cannot let the next stage through (W3 review #4).
+   */
+  let takeovers = 0;
+  /** Injected after the document loaded: its own earlier listeners may hide the user's input, so it takes no act. */
+  const late = globalThis.__caretLate === true;
 
   chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
@@ -104,10 +114,19 @@ if (globalThis.__caretContent === undefined) {
       reply(true);
       return false;
     }
+    if (late) {
+      reply({ outcome: "notAllowed", detail: "this page was open before Caret was installed; reload it, so Caret can tell your own clicks from its writes there" });
+      return false;
+    }
+    // The act arms this document itself for as long as its grant runs, whatever became of the worker's guard message.
+    guardUntil = Math.max(guardUntil, m.guardUntil);
     const taskId = m.verb.taskId;
+    const start = takeovers;
     const alive = async (): Promise<boolean> => {
+      if (takeovers !== start) return false;
       const q: GrantAlive = { caret: 1, op: "grantAlive", taskId };
-      return chrome.runtime.sendMessage(q).then((r: unknown) => r === true, () => false);
+      const ok = await chrome.runtime.sendMessage(q).then((r: unknown) => r === true, () => false);
+      return ok && takeovers === start;
     };
     act(reg, m.verb, m.deadline, alive).then(reply, (e: unknown) => reply({ outcome: "error", detail: e instanceof Error ? e.message : String(e) }));
     return true;
@@ -138,6 +157,7 @@ if (globalThis.__caretContent === undefined) {
   let lastInput = 0;
   const onInput = (e: Event): void => {
     if (!isUsersOwn(e) || Date.now() >= guardUntil) return;
+    takeovers++;
     const now = Date.now();
     if (now - lastInput < FOCUS_EVERY_MS) return;
     lastInput = now;
