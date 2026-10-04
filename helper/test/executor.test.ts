@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
-import { FakeCalendar } from "../src/executor/means.ts";
+import { CalendarRefused, FakeCalendar } from "../src/executor/means.ts";
+import { RecoveryJournal } from "../src/executor/journal.ts";
 import { classifyLabel, classifyPress } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
 import type { AskJev } from "../src/fill/jev.ts";
@@ -476,6 +477,33 @@ describe("executor", () => {
     expect(helper.executor.ledger("t1")).toEqual([]);
     // No fallback write was tried after it.
     expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(1);
+  });
+
+  // B23 review: recovery renamed the task, and the reader's calendar, which lets only the adding task remove an event, refused.
+  it("undoes a recovered run's calendar event under the task id the calendar knows it by", async () => {
+    const addedBy = new Map<string, string>();
+    const add = calendar.add.bind(calendar);
+    const remove = calendar.remove.bind(calendar);
+    calendar.add = async (cal, title, start, end, taskId) => {
+      const ev = await add(cal, title, start, end, taskId);
+      addedBy.set(ev.id, taskId ?? "");
+      return ev;
+    };
+    calendar.remove = async (id, taskId) => {
+      if (addedBy.get(id) !== taskId) throw new CalendarRefused("notAllowed", "another task added this event; only that task removes it");
+      await remove(id, taskId);
+    };
+    const p = plan([{ says: "Lunch is on Caret Test", end: { kind: "calendarEvent", calendar: "Caret Test", title: "Lunch", start: "2026-10-08T12:00:00-05:00", end: "2026-10-08T12:30:00-05:00" } }], "lunch");
+    expect(await helper.executor.run("event-1", p, {}, undefined, { grant: true })).toMatchObject({ outcome: "done" });
+    // The helper dies with the run's row saved; a new helper on the same data takes it back.
+    const journal = new RecoveryJournal(join(dir, "data"));
+    journal.save({ taskId: "event-1", startedAt: 1, savedAt: Date.now(), plan: p, unprompted: false, granted: true, readerId: null, next: 1, ledger: [...helper.executor.ledger("event-1")], pending: null, skillId: null, window: null });
+    journal.close();
+    const again = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, calendar });
+    expect(again.tasks.get("event-1")).toMatchObject({ state: "failed", detail: "Stopped when Caret restarted, after its last step", undoable: true });
+    expect(await again.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "event-1", action: "undo" })).toMatchObject({ restored: 1, notRestored: [] });
+    expect(calendar.events.size).toBe(0);
+    again.journal.close();
   });
 
   describe("an ambiguous target", () => {

@@ -226,22 +226,25 @@ public struct Hello: Codable, Equatable, Sendable {
 }
 
 /// B23: the helper's answer to the reader's hello challenge, first on the connection: base64 of
-/// HMAC-SHA256(launch secret, "caret-helper-proof\n" + challenge). HelperProof checks it.
+/// HMAC-SHA256(launch secret, "caret-helper-proof\n" + challenge + "\n" + pid), `pid` being the helper's own
+/// process, which the reader checks against its socket's peer. HelperProof checks the rest.
 public struct HelperAuth: Codable, Equatable, Sendable {
     public static let type = "helperAuth"
     public var proof: String
-    public init(proof: String) { self.proof = proof }
-    enum CodingKeys: String, CodingKey { case proof }
+    public var pid: Int
+    public init(proof: String, pid: Int) { self.proof = proof; self.pid = pid }
+    enum CodingKeys: String, CodingKey { case proof, pid }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        proof = try c.decode(String.self, forKey: .proof)
+        proof = try c.decode(String.self, forKey: .proof); pid = try c.decode(Int.self, forKey: .pid)
         if proof.isEmpty { throw ProtocolError("a proof is not empty") }
+        if pid <= 0 { throw ProtocolError("a proof names the helper's pid") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(proof, forKey: .proof)
+        try c.encode(proof, forKey: .proof); try c.encode(pid, forKey: .pid)
     }
 }
 

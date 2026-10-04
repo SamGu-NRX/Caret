@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
@@ -557,6 +558,88 @@ describe("skills in the helper", () => {
     const next = await caretRun();
     finish(next);
     expect(next.offer).not.toBeNull();
+  });
+
+  /** A promoted skill's run left hanging before its act at `step`, then a new helper on the same data: the restart. */
+  const crashAt = async (step: number): Promise<{ c: GridWindow; skillId: string }> => {
+    const skillId = await promoted();
+    hangAtStep = step;
+    const at = sent.length;
+    const c = open();
+    for (let i = 0; i < 500 && !since("taskProgress", at).some((p) => p.phase === "verified" && p.step === step - 1); i++) await new Promise((r) => setImmediate(r));
+    hangAtStep = null;
+    return { c, skillId };
+  };
+  const restart = (c: GridWindow): void => {
+    helper = makeHelper();
+    desk.attach(helper);
+    desk.showList(calendar(day));
+    desk.showGrid(c);
+  };
+  const journalDb = (): DatabaseSync => new DatabaseSync(join(dir, "recovery.sqlite"));
+  const interrupted = () => helper.handleActivity({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" }).tasks.filter((t) => t.detail?.startsWith("Stopped when Caret restarted") === true);
+
+  // B23 review: rows past the day's keep, or that no longer open, were dropped or skipped before their skill was demoted.
+  it("puts the skill back on Tab from a row that expired or no longer opens, and offers no undo for it", async () => {
+    const { c, skillId } = await crashAt(1);
+    const db = journalDb();
+    db.prepare("UPDATE journal SET saved_at = ?").run(Date.now() - 25 * 60 * 60 * 1000);
+    db.close();
+    restart(c);
+    expect(skills()[0]).toMatchObject({ id: skillId, fields: { onItsOwn: false } });
+    expect(interrupted()).toEqual([]);
+    expect(helper.journal.rawRows()).toEqual([]);
+  });
+
+  it("puts the skill back on Tab from a row whose sealed part cannot be opened, and leaves the row for inspection", async () => {
+    const { c, skillId } = await crashAt(1);
+    const db = journalDb();
+    db.prepare("UPDATE journal SET sealed = ?").run(Buffer.from("not sealed by this key"));
+    db.close();
+    restart(c);
+    expect(skills()[0]).toMatchObject({ id: skillId, fields: { onItsOwn: false } });
+    expect(interrupted()).toEqual([]);
+    expect(helper.journal.rawRows()).toHaveLength(1);
+  });
+
+  // B23 review: the row went when the run ended, before afterRun put a failed run's skill back on Tab.
+  it("keeps a skill run's row until the skill has counted the run", async () => {
+    await promoted();
+    const skills_ = helper.patterns.skills;
+    const counted = skills_.afterRun.bind(skills_);
+    const rowsWhenCounted: number[] = [];
+    skills_.afterRun = (...args) => {
+      rowsWhenCounted.push(helper.journal.rawRows().length);
+      counted(...args);
+    };
+    desk.rewriteNext = (v) => v.toUpperCase();
+    const bad = await caretRun();
+    finish(bad);
+    expect(bad.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "mismatch", unprompted: true });
+    expect(rowsWhenCounted).toEqual([1]);
+    expect(helper.journal.rawRows()).toEqual([]);
+    expect(skills()[0]!.fields.onItsOwn).toBe(false);
+  });
+
+  // B23 review: an undo stopped partway dropped the row, so a second crash lost the rest.
+  it("keeps what an interrupted undo of a recovered run did not try, for the next start", async () => {
+    const { c } = await crashAt(2);
+    restart(c);
+    const [row] = interrupted();
+    expect(row?.detail).toBe("Stopped when Caret restarted, at step 3 of 3");
+    // The user stops the undo as its first restore (the newest write, field 2) lands.
+    desk.afterWrite = () => helper.executor.stop(row!.id);
+    const u = await undoOf(row!.id);
+    desk.afterWrite = null;
+    expect(u).toMatchObject({ restored: 1, notRestored: [{ step: 0, reason: "you stopped the undo" }] });
+    expect(values(c)).toEqual([calendar(day).lines[0], "", ""]);
+    expect(helper.journal.load(Date.now()).records[0]?.ledger.map((e) => e.step)).toEqual([0]);
+    // Another start lists it again, and its undo restores the rest.
+    restart(c);
+    const [again] = interrupted();
+    expect(await undoOf(again!.id)).toMatchObject({ restored: 1, notRestored: [] });
+    expect(values(c)).toEqual(["", "", ""]);
+    expect(helper.journal.rawRows()).toEqual([]);
   });
 
   it("keeps a run's saved row sealed: no value it wrote is in the journal's file in the clear", async () => {

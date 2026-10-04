@@ -65,11 +65,12 @@ final class FakeHelperSocket {
         return nil
     }
 
-    /// Reads the reader's hello and answers its challenge with the proof under `secret`. Returns the hello.
+    /// Reads the reader's hello and answers its challenge with the proof under `secret`, naming `pid` (this test
+    /// process, the socket's real peer, unless a test plays a relay). Returns the hello.
     @discardableResult
-    func authenticate(_ secret: Data = testSecret) -> Hello? {
+    func authenticate(_ secret: Data = testSecret, pid: Int = Int(getpid())) -> Hello? {
         guard let line = readLine(timeout: 3), case .hello(let h)? = try? JSONDecoder().decode(Message.self, from: Data(line.utf8)), let challenge = h.challenge else { return nil }
-        send(#"{"type":"helperAuth","v":1,"proof":"\#(HelperProof.proof(secret: secret, challenge: challenge))"}"#)
+        send(#"{"type":"helperAuth","v":1,"proof":"\#(HelperProof.proof(secret: secret, challenge: challenge, pid: pid))","pid":\#(pid)}"#)
         return h
     }
 

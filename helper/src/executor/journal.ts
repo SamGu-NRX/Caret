@@ -7,7 +7,9 @@
 // row says it wrote (helper.ts recoverInterrupted).
 //
 // Rows hold field values and the plan, so each is sealed with AES-256-GCM under the memory key (sealed.ts), in
-// recovery.sqlite beside the memory store. Writes are one statement each in WAL mode.
+// recovery.sqlite beside the memory store. Writes are one statement each in WAL mode. The skill a row's run counts for
+// is also kept in the clear (a skill id, no value), so a row that has expired or cannot be opened still puts its skill
+// back on Tab (B23 review).
 import { mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
@@ -94,13 +96,15 @@ export class RecoveryJournal {
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
-    this.db.exec("CREATE TABLE IF NOT EXISTS journal (task_id TEXT PRIMARY KEY, saved_at INTEGER NOT NULL, sealed BLOB NOT NULL)");
-    this.put = this.db.prepare("INSERT OR REPLACE INTO journal (task_id, saved_at, sealed) VALUES (?, ?, ?)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS journal (task_id TEXT PRIMARY KEY, saved_at INTEGER NOT NULL, sealed BLOB NOT NULL, skill_id TEXT)");
+    const columns = this.db.prepare("PRAGMA table_info(journal)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "skill_id")) this.db.exec("ALTER TABLE journal ADD COLUMN skill_id TEXT");
+    this.put = this.db.prepare("INSERT OR REPLACE INTO journal (task_id, saved_at, sealed, skill_id) VALUES (?, ?, ?, ?)");
     this.del = this.db.prepare("DELETE FROM journal WHERE task_id = ?");
   }
 
   save(r: JournalRecord): void {
-    this.put.run(r.taskId, r.savedAt, seal(this.key, JSON.stringify(JournalRecord.parse(r))));
+    this.put.run(r.taskId, r.savedAt, seal(this.key, JSON.stringify(JournalRecord.parse(r))), r.skillId);
   }
 
   drop(taskId: string): void {
@@ -108,22 +112,26 @@ export class RecoveryJournal {
   }
 
   /**
-   * Every row a run left, oldest first, after dropping rows older than JOURNAL_KEEP_MS. A row that does not
-   * open or parse is left in place and named in `unreadable`, so the helper can say so rather than guess.
+   * Every row a run left, oldest first. `skills`: the skill of every row found, expired and unreadable ones included,
+   * all of which go back on Tab. `records`: the rows younger than JOURNAL_KEEP_MS that open, whose runs are offered
+   * for undo; older rows are dropped after their skills are read. A row that does not open or parse is left in place
+   * and named in `unreadable`, so the helper can say so rather than guess.
    */
-  load(now: number): { records: JournalRecord[]; unreadable: string[] } {
-    this.db.prepare("DELETE FROM journal WHERE saved_at < ?").run(now - JOURNAL_KEEP_MS);
-    const rows = this.db.prepare("SELECT task_id, sealed FROM journal ORDER BY saved_at").all() as { task_id: string; sealed: Uint8Array }[];
+  load(now: number): { records: JournalRecord[]; unreadable: string[]; skills: string[] } {
+    const all = this.db.prepare("SELECT task_id, saved_at, sealed, skill_id FROM journal ORDER BY saved_at").all() as { task_id: string; saved_at: number; sealed: Uint8Array; skill_id: string | null }[];
+    const skills = [...new Set(all.flatMap((r) => (r.skill_id === null ? [] : [r.skill_id])))];
     const records: JournalRecord[] = [];
     const unreadable: string[] = [];
-    for (const row of rows) {
+    for (const row of all) {
+      if (Number(row.saved_at) < now - JOURNAL_KEEP_MS) continue;
       try {
         records.push(JournalRecord.parse(JSON.parse(open(this.key, Buffer.from(row.sealed)))));
       } catch {
         unreadable.push(row.task_id);
       }
     }
-    return { records, unreadable };
+    this.db.prepare("DELETE FROM journal WHERE saved_at < ?").run(now - JOURNAL_KEEP_MS);
+    return { records, unreadable, skills };
   }
 
   /** The raw rows, for tests that check nothing is stored in the clear. */

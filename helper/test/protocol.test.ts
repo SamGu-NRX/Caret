@@ -43,7 +43,7 @@ describe("golden protocol fixture", () => {
     expect(ConsumerMessage.parse(host)).toMatchObject({ role: "consumer", host: true });
     // The proof is the HMAC of the reader's challenge under the launch secret: Emitter.swift checks the same line.
     const secret = Buffer.from("caret-b23-golden-launch-secret!!");
-    expect(HelperToReader.parse(auth)).toEqual({ type: "helperAuth", v: 1, proof: helperProof(secret, String(reader?.challenge)) });
+    expect(HelperToReader.parse(auth)).toEqual({ type: "helperAuth", v: 1, proof: helperProof(secret, String(reader?.challenge), 5555), pid: 5555 });
     expect(HelperToReader.parse(write)).toMatchObject({ verb: { kind: "write", mark: "8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60" } });
     expect(HelperToReader.parse(restore)).toMatchObject({ verb: { kind: "write", sameAs: "8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60" } });
     expect(ReaderMessage.parse(moved)).toMatchObject({ outcome: "focusMoved" });

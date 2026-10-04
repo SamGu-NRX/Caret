@@ -633,6 +633,9 @@ export class Executor {
     task.interrupt = null;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
     const remaining: LedgerEntry[] = [];
+    // Entries this undo was stopped before trying, or could not restore for a reason that may pass (the reader did not
+    // answer or refused for want of a grant): a recovered run's row keeps these for another try after a restart.
+    const retry = new Set<LedgerEntry>();
     // Undo is the user's own request about this task, so a task that held a grant gets one again, for
     // the window its writes went to, until the restore ends.
     const written = task.ledger.find((e) => e.kind === "write");
@@ -648,14 +651,15 @@ export class Executor {
         // Caret paused, or the host gone, since the last restore: the rest are left as they are.
         const blocked = task.undoStopped === null ? this.undoBlocked(task) : null;
         if (blocked !== null) this.stopUndo(task, blocked.why);
+        if (task.session !== this.session || task.undoStopped !== null) retry.add(e);
         const reason =
           task.session !== this.session
             ? "the reader restarted during undo"
             : task.undoStopped !== null
               ? task.undoStopped
               : e.kind === "write"
-                ? await this.undoWrite(task, e)
-                : await this.undoCalendar(task, e);
+                ? await this.undoWrite(task, e, retry)
+                : await this.undoCalendar(task, e, retry);
         // A write a crash cut off that never landed: nothing of Caret's is there, so it counts as neither.
         if (reason === UNTOUCHED) continue;
         if (reason === null) out.restored++;
@@ -668,9 +672,14 @@ export class Executor {
     } finally {
       task.undoing = false;
       this.revokeGrant(task);
-      // A run a crash interrupted keeps its row until the user has asked for its undo. What the undo could not restore
-      // stays in memory for another try in this process; a row kept for it would list the run again at every start.
-      this.journalDrop(task);
+      // A run a crash interrupted keeps its row while some of it may still be restored: what this undo was stopped
+      // before, or could not restore for a passing reason (B23 review). What it found changed or replaced stays in
+      // memory only, since a row kept for it would list the run again at every start.
+      if (task.journaled) {
+        const keep = task.ledger.filter((e) => retry.has(e));
+        if (keep.length > 0) this.journalSave(task, null, keep);
+        else this.journalDrop(task);
+      }
       // The watch for this undo ends with it; a failure here only leaves a watch on, which the next run replaces.
       await this.updateWatch().catch(() => undefined);
     }
@@ -1033,8 +1042,8 @@ export class Executor {
     this.journalSave(task, null);
   }
 
-  /** Saves the task to the journal: its ledger, the step it stands before, and what it is about to dispatch. */
-  private journalSave(task: Task, pending: PendingAct | null): void {
+  /** Saves the task to the journal: its ledger (or `ledger`), the step it stands before, and what it is about to dispatch. */
+  private journalSave(task: Task, pending: PendingAct | null, ledger: LedgerEntry[] = task.ledger): void {
     const j = this.deps.journal;
     if (j === undefined) return;
     const bound = [...task.windows.values()].map((id) => this.deps.model.windows.get(id)).find((w) => w !== undefined);
@@ -1047,7 +1056,7 @@ export class Executor {
       granted: task.granted,
       readerId: task.readerId,
       next: task.next,
-      ledger: task.ledger,
+      ledger,
       pending,
       window: bound === undefined ? null : { app: bound.app, windowId: bound.window.windowId, title: bound.window.title, frame: bound.window.frame },
     });
@@ -1305,7 +1314,7 @@ export class Executor {
 
   // MARK: - undo
 
-  private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>): Promise<string | null | typeof UNTOUCHED> {
+  private async undoWrite(task: Task, e: Extract<LedgerEntry, { kind: "write" }>, retry: Set<LedgerEntry>): Promise<string | null | typeof UNTOUCHED> {
     // Only the element the reader recorded as written may be restored (S1 audit #6): without its mark, a sibling that
     // took the field's key, role and value would pass every other check.
     if (e.mark === null) return "Caret did not record which element it wrote, so it cannot be sure the field is the same one";
@@ -1313,8 +1322,14 @@ export class Executor {
     if (w === undefined) return "the window closed";
     // The reader acts only on an element it saw in a walk the executor asked for, so undo reads first.
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
-    if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
-    if (task.undoStopped !== null) return task.undoStopped;
+    if (walked.outcome !== "ok") {
+      if (walked.outcome === "axError") retry.add(e);
+      return `cannot re-read the window: ${walked.outcome}`;
+    }
+    if (task.undoStopped !== null) {
+      retry.add(e);
+      return task.undoStopped;
+    }
     // A write the crash cut off whose field, read just now, still holds what it held before: it never landed.
     if (e.unconfirmed === true && (this.deps.model.windows.get(e.windowId)?.nodes.get(e.key)?.value ?? "") === e.before) return UNTOUCHED;
     const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id, sameAs: e.mark };
@@ -1344,17 +1359,22 @@ export class Executor {
     } finally {
       off();
     }
-    if (r.outcome !== "ok") return undoRefused(e, r);
+    if (r.outcome !== "ok") {
+      if (r.outcome === "axError" || r.outcome === "notAllowed") retry.add(e);
+      return undoRefused(e, r);
+    }
     const now = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (now === undefined) return "after the restore the field is gone";
     if ((now.value ?? "") !== e.before) return `after the restore the field holds '${clip(now.value ?? "")}'`;
     return null;
   }
 
-  private async undoCalendar(task: Task, e: Extract<LedgerEntry, { kind: "calendar" }>): Promise<string | null> {
+  private async undoCalendar(task: Task, e: Extract<LedgerEntry, { kind: "calendar" }>, retry: Set<LedgerEntry>): Promise<string | null> {
     try {
       return await this.undoCalendarEvent(task, e);
     } catch (err) {
+      // A read or removal the reader could not make (no answer, a failed read, no grant) may succeed later.
+      if (err instanceof CalendarRefused && (err.outcome === "axError" || err.outcome === "notAllowed")) retry.add(e);
       return err instanceof Error ? err.message : String(err);
     }
   }

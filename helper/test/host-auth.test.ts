@@ -48,7 +48,7 @@ describe("the helper's socket, B23", () => {
     const reader = await LineClient.connect(await listen(SECRET));
     reader.send(hello("reader", { session: "reader-launch-1", challenge: CHALLENGE }));
     const first = await reader.waitFor((m) => m.type !== undefined);
-    expect(first).toEqual({ type: "helperAuth", v: PROTOCOL_VERSION, proof: helperProof(SECRET, CHALLENGE) });
+    expect(first).toEqual({ type: "helperAuth", v: PROTOCOL_VERSION, proof: helperProof(SECRET, CHALLENGE, process.pid), pid: process.pid });
     reader.close();
   });
 

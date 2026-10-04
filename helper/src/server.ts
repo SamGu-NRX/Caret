@@ -143,7 +143,7 @@ export class HelperServer {
                 s.destroy();
                 return;
               }
-              s.write(JSON.stringify({ type: "helperAuth", v: PROTOCOL_VERSION, proof: helperProof(this.secret, hello.data.challenge) } satisfies HelperAuth) + "\n");
+              s.write(JSON.stringify({ type: "helperAuth", v: PROTOCOL_VERSION, proof: helperProof(this.secret, hello.data.challenge, process.pid), pid: process.pid } satisfies HelperAuth) + "\n");
             }
             this.revokeOnOldReader(this.reader);
             this.reader = s;
@@ -240,9 +240,12 @@ export class HelperServer {
   }
 }
 
-/** The helper's answer to a reader's challenge: base64 HMAC-SHA256 under the launch secret (Emitter.swift checks it). */
-export function helperProof(secret: Buffer, challenge: string): string {
-  return createHmac("sha256", secret).update(`caret-helper-proof\n${challenge}`).digest("base64");
+/**
+ * The helper's answer to a reader's challenge: base64 HMAC-SHA256 under the launch secret, bound to the helper's pid,
+ * which the reader checks against its socket's peer (Emitter.swift), so a relayed proof does not pass.
+ */
+export function helperProof(secret: Buffer, challenge: string, pid: number): string {
+  return createHmac("sha256", secret).update(`caret-helper-proof\n${challenge}\n${pid}`).digest("base64");
 }
 
 function isAlive(path: string): Promise<boolean> {

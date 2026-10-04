@@ -250,6 +250,8 @@ export class Helper {
   private readonly hosts = new Set<string>();
   /** Every consumer session connected now, hosts included: the work each accepts is bound to it and revoked when it closes. */
   private readonly sessions = new Set<string>();
+  /** Skill runs that ended and whose recovery rows go once the skill has counted them (journal drop above). */
+  private readonly dropWhenCounted = new Set<string>();
   /**
    * The host sessions each task is bound to, by task id: the session that accepted, took, ran, resumed or
    * undid it, or for a run a skill started with no Tab, every session connected when it started. If any of
@@ -306,7 +308,12 @@ export class Helper {
       // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
       journal: {
         save: (r) => this.journal.save({ ...r, skillId: this.patterns.skills.skillOf(r.taskId) }),
-        drop: (id) => this.journal.drop(id),
+        // A skill's run keeps its row until the skill has counted it (Skills.afterRun), which is after the run ends: a
+        // crash in between would leave a failed run's skill on its own with nothing saying so (B23 review).
+        drop: (id) => {
+          if (this.patterns.skills.awaitingCount(id)) this.dropWhenCounted.add(id);
+          else this.journal.drop(id);
+        },
       },
       onChanges: (l) => {
         this.changeListeners.add(l);
@@ -339,6 +346,10 @@ export class Helper {
       hostConnected: () => this.hostPresent,
       // A run of a skill that just went back on Tab, still going with no Tab, is revoked now (B22 review).
       onSkillReset: () => this.executor.recheck(),
+      onRunCounted: (id) => {
+        if (this.dropWhenCounted.delete(id)) this.journal.drop(id);
+      },
+      taken: (id) => this.idTaken(id),
       askJev: this.ask,
       shadow: () => this.mode === "shadow",
       gate: this.gate,
@@ -375,6 +386,7 @@ export class Helper {
       gate: this.gate,
       people: () => this.memory.list("people").flatMap((e) => (e.kind === "people" && e.status !== "paused" ? [{ id: e.id, label: e.fields.alias, text: e.fields.name }] : [])),
       calendar: opts.eventCalendar ?? "Caret",
+      taken: (id) => this.idTaken(id),
       live: () => this.mode === "live",
       now: this.now,
       count: (name) => opts.store.count(name, 1),
@@ -413,19 +425,13 @@ export class Helper {
    */
   private recoverInterrupted(): void {
     const now = this.now();
-    const { records, unreadable } = this.journal.load(now);
+    const { records, unreadable, skills } = this.journal.load(now);
     for (const id of unreadable) this.opts.warn?.(`recovery: the saved run ${id} cannot be read; its undo is lost and it is left in the journal`);
-    for (const saved of records) {
-      // Offer and event ids count from 1 in every helper process, so the new process's next offer would take the
-      // interrupted run's id (the crash test hit this). A recovered task is renamed once with its start time; no
-      // generator makes an id with "@", and its row moves to the new id.
-      const taskId = saved.taskId.includes("@") ? saved.taskId : `${saved.taskId}@${saved.startedAt}`;
-      const r = { ...saved, taskId };
-      if (taskId !== saved.taskId) {
-        this.journal.save(r);
-        this.journal.drop(saved.taskId);
-      }
-      if (r.skillId !== null) this.patterns.skills.interrupted(r.skillId, now);
+    // Every skill a row names, expired and unreadable rows' too, goes back on Tab first (B23 review).
+    for (const skillId of skills) this.patterns.skills.interrupted(skillId, now);
+    // A recovered run keeps its id, which the reader's calendar knows its events by. Offer and event ids count from 1
+    // in every helper process, so the generators skip ids in use (idTaken): the crash test caught a new offer taking it.
+    for (const r of records) {
       this.executor.recover(r);
       this.tasks.create(recoveredRecord(r));
       this.opts.store.count("recovery.interrupted_run", 1);
@@ -618,6 +624,11 @@ export class Helper {
     this.executor.recheck();
   }
 
+  /** Whether a task id is in use by a run or an activity record: new offer ids skip these (B23). */
+  private idTaken(id: string): boolean {
+    return this.executor.has(id) || this.tasks.get(id) !== undefined;
+  }
+
   /** Whether a host session is connected (a consumer whose hello says `host: true`, or an in-process host). */
   get hostPresent(): boolean {
     return this.hosts.size > 0;
@@ -722,7 +733,8 @@ export class Helper {
     if (this.mode !== "live") return fail("unavailable", "the helper is in shadow mode");
     if (this.gate.settings.paused) return fail("unavailable", "Caret is paused");
     if (!this.readerConnected) return fail("unavailable", "no reader is connected");
-    const offerKey = `plan-${++this.planSeq}-${m.requestId}`;
+    let offerKey = `plan-${++this.planSeq}-${m.requestId}`;
+    while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${m.requestId}`;
     const session = this.readerSession;
     let draft: PlanDraft;
     try {
@@ -1477,7 +1489,7 @@ function refersToMemory(v: unknown, id: string): boolean {
 function recoveredRecord(r: JournalRecord): Parameters<TaskRegistry["create"]>[0] {
   const steps = r.plan.steps.length;
   const at = r.next < steps ? r.next : null;
-  const where = at === null ? `after the last of ${steps} steps` : `at step ${at + 1} of ${steps}`;
+  const where = at === null ? "after its last step" : `at step ${at + 1} of ${steps}`;
   const writes = r.ledger.some((e) => e.kind !== "press") || (r.pending !== null && r.pending.kind !== "press");
   return {
     id: r.taskId,

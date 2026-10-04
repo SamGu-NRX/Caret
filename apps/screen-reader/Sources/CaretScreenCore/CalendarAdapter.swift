@@ -71,6 +71,11 @@ public final class CalendarAdapter: @unchecked Sendable {
     private var owned: [String: String] = [:]
     /// Each event this adapter added and has not removed, by id: the name of its calendar and the task that added it.
     private var events: [String: (calendar: String, taskId: String)] = [:]
+    /// Events this adapter removed, by id, with their calendars, newest last: a get of one reads the store, so undo's check
+    /// after a removal is a real read that can fail, never the adapter's own word (B23 review, S1 audit #16).
+    private var removed: [(id: String, calendar: String)] = []
+    /// Removed ids kept for that check. Assumed: undo checks right after it removes.
+    static let removedKept = 64
 
     public init(backend: CalendarBackend, zone: TimeZone = .current) {
         self.backend = backend
@@ -116,6 +121,13 @@ public final class CalendarAdapter: @unchecked Sendable {
                 events[id] = (calendar, taskId)
                 return .ok(record(BackendEvent(id: id, calendarID: cid, title: title, start: s, end: e), calendar))
             case let .calendarGet(id):
+                if events[id] == nil, let gone = removed.last(where: { $0.id == id }) {
+                    // Removed by this adapter: whether it is really gone is read from the store.
+                    let read: BackendEvent?
+                    do { read = try backend.event(id: id) } catch { throw CalendarReadFailed(error) }
+                    guard let ev = read, ev.calendarID == owned[gone.calendar] else { return .ok(nil) }
+                    return .ok(record(ev, gone.calendar))
+                }
                 guard let (ev, calendar) = try ownEvent(id) else { return .ok(nil) }
                 return .ok(record(ev, calendar))
             case let .calendarRemove(id, taskId):
@@ -124,6 +136,8 @@ public final class CalendarAdapter: @unchecked Sendable {
                 if let no = allowed() { return .refused(.notAllowed, no) }
                 try backend.removeEvent(id: id)
                 events.removeValue(forKey: id)
+                removed.append((id, added.calendar))
+                if removed.count > Self.removedKept { removed.removeFirst(removed.count - Self.removedKept) }
                 return .ok(nil)
             case let .calendarDispose(calendar, taskId):
                 if let cid = owned[calendar] {

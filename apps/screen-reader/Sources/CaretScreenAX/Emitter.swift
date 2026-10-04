@@ -118,6 +118,9 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         let sourcesDone = DispatchGroup()
         /// This connection's challenge, in its hello.
         let challenge: String
+        /// The process at the other end of the socket, as the kernel reports it (LOCAL_PEERPID). The helper's proof
+        /// must name it, so a proof relayed from another connection does not pass.
+        let peerPid: pid_t
         /// The control queue's: the helper's proof checked out, so its lines are applied. Read and set under `closeLock`.
         private var proven = false
         /// The main queue's: the proof checked out and the backlog was handed over, so messages go straight out.
@@ -127,9 +130,10 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         /// lock, so a grant cannot land after the drop has cleared the table.
         private let closeLock = NSLock()
         private var closed = false
-        init(fd: Int32, challenge: String) {
+        init(fd: Int32, challenge: String, peerPid: pid_t) {
             self.fd = fd
             self.challenge = challenge
+            self.peerPid = peerPid
         }
 
         /// Runs `f` unless the connection was closed; nothing closes it meanwhile.
@@ -289,9 +293,17 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
             scheduleRetry()
             return
         }
+        var peer: pid_t = 0
+        var peerLen = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(s, SOL_LOCAL, LOCAL_PEERPID, &peer, &peerLen) == 0, peer > 0 else {
+            note("not connecting: cannot read which process listens at \(path)")
+            close(s)
+            scheduleRetry()
+            return
+        }
         var h = hello
         h.challenge = HelperProof.challenge()
-        let c = Connection(fd: s, challenge: h.challenge ?? "")
+        let c = Connection(fd: s, challenge: h.challenge ?? "", peerPid: peer)
         conn = c
         note("connected to \(path); waiting for the helper to prove itself")
         startSources(c)
@@ -382,7 +394,9 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
                 c.withProof { (proven: inout Bool) in
                     if proven { trusted = true; return }
                     guard case .helperAuth(let a) = m else { refused = "the helper's first line was not its proof"; return }
-                    guard HelperProof.verify(a.proof, secret: secret, challenge: c.challenge) else { refused = "the helper's proof did not check out"; return }
+                    // The proof names the helper's own process, which must be this socket's peer: a relay's peer is itself.
+                    guard a.pid == Int(c.peerPid) else { refused = "the proof names process \(a.pid), but the socket's peer is \(c.peerPid)"; return }
+                    guard HelperProof.verify(a.proof, secret: secret, challenge: c.challenge, pid: a.pid) else { refused = "the helper's proof did not check out"; return }
                     proven = true
                     queue.async { self.proven(c) }
                 }

@@ -228,6 +228,8 @@ export interface EventCardDeps {
   live: () => boolean;
   now: () => number;
   count?: (name: string) => void;
+  /** Whether a task id is in use already (a run a crash interrupted keeps its id); a new card skips it (B23). */
+  taken?: (id: string) => boolean;
 }
 
 export class EventCards {
@@ -333,7 +335,8 @@ export class EventCards {
   }
 
   private show(w: WindowState, key: string, c: EventCandidate, field: OfferField): void {
-    const offerKey = `event-${++this.seq}`;
+    let offerKey = `event-${++this.seq}`;
+    while (this.deps.taken?.(offerKey) === true) offerKey = `event-${++this.seq}`;
     const from = { node: `${w.window.windowId}/${key}`, quote: c.sentence };
     const msg: OfferAction = {
       type: "action",

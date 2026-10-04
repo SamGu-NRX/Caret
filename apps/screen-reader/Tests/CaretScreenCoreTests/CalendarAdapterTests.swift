@@ -165,6 +165,13 @@ private let start = "2026-10-08T15:00:00-05:00", end = "2026-10-08T15:30:00-05:0
         // The failed reads forgot nothing: once the store reads again, the event is still the adapter's own.
         b.readFails = false
         #expect(a.perform(.calendarGet(id: added.id)) == .ok(added))
+        // After a removal, the check that it is gone reads the store too: a failed read is an error there as well (B23 review).
+        #expect(a.perform(.calendarRemove(id: added.id, taskId: "t1")) == .ok(nil))
+        b.readFails = true
+        #expect(a.perform(.calendarGet(id: added.id)) == .refused(.axError, "cannot read the calendar: no full Calendar access"))
+        b.readFails = false
+        #expect(a.perform(.calendarGet(id: added.id)) == .ok(nil))
+        #expect(b.calls.filter { $0 == "event \(added.id)" }.count >= 3)
     }
 
     // CodeRabbit on PR #4: before B23 remove and dispose ignored their task.

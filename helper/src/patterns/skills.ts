@@ -84,6 +84,8 @@ export interface SkillsDeps {
   rand?: (n: number) => number;
   /** Called after a skill is put back on Tab by reset (a failed run, an undo, a take over, an edit of what it wrote). */
   onReset?: () => void;
+  /** Called once afterRun has recorded a skill run's outcome in memory (B23 review: the run's recovery row waits for it). */
+  onCounted?: (taskId: string) => void;
 }
 
 interface OpenOffer {
@@ -99,6 +101,8 @@ interface OpenOffer {
 interface SkillRun {
   skillId: string;
   action: WriteAction;
+  /** afterRun has recorded its outcome. */
+  counted: boolean;
 }
 
 export class Skills {
@@ -251,7 +255,7 @@ export class Skills {
   /** A run of a skill started; its result and any undo of it are counted against the skill. */
   runStarted(taskId: string, routineId: string | null, action: WriteAction): void {
     const s = this.activeSkill(routineId);
-    if (s !== null) this.runs.set(taskId, { skillId: s.id, action });
+    if (s !== null) this.runs.set(taskId, { skillId: s.id, action, counted: false });
   }
 
   /**
@@ -259,6 +263,18 @@ export class Skills {
    * promote offer, and a clean run of a routine that is not a skill may bring the keep offer.
    */
   afterRun(taskId: string, routineId: string, plan: Plan, cells: readonly FactCell[], r: Pick<TaskResult, "outcome" | "step">, at: number): void {
+    try {
+      this.countRun(taskId, routineId, plan, cells, r, at);
+    } finally {
+      const run = this.runs.get(taskId);
+      if (run !== undefined && !run.counted) {
+        run.counted = true;
+        this.deps.onCounted?.(taskId);
+      }
+    }
+  }
+
+  private countRun(taskId: string, routineId: string, plan: Plan, cells: readonly FactCell[], r: Pick<TaskResult, "outcome" | "step">, at: number): void {
     this.clock = Math.max(this.clock, at);
     const memory = this.deps.memory;
     const clean = cleanRun(plan, r);
@@ -292,6 +308,15 @@ export class Skills {
   /** The skill a run started by `runStarted` counts for, or null: the in-progress marker the recovery journal saves (B23). */
   skillOf(taskId: string): string | null {
     return this.runs.get(taskId)?.skillId ?? null;
+  }
+
+  /**
+   * Whether this is a skill's run whose outcome afterRun has not yet recorded. Its recovery row stays until then: a
+   * crash between the run ending and the count would otherwise leave a failed run's skill on its own (B23 review).
+   */
+  awaitingCount(taskId: string): boolean {
+    const run = this.runs.get(taskId);
+    return run !== undefined && !run.counted;
   }
 
   /**

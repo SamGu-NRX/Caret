@@ -81,7 +81,7 @@ private func goldenLines() throws -> [Data] {
               case .readerCommand(let restore) = try JSONDecoder().decode(Message.self, from: lines[64]),
               case .verbResult(let notSame) = try JSONDecoder().decode(Message.self, from: lines[65]) else { Issue.record("lines 60 to 66 are not B23's"); return }
         #expect(reader.session == "reader-3f9a6c21d4e8" && reader.challenge != nil && !reader.host)
-        #expect(HelperProof.verify(auth.proof, secret: Data("caret-b23-golden-launch-secret!!".utf8), challenge: reader.challenge!))
+        #expect(auth.pid == 5555 && HelperProof.verify(auth.proof, secret: Data("caret-b23-golden-launch-secret!!".utf8), challenge: reader.challenge!, pid: auth.pid))
         #expect(host.host && host.role == .consumer && host.session == nil)
         guard case let .write(_, _, _, _, _, _, _, _, mark) = write.verb, case let .write(_, _, _, _, _, _, _, _, same) = restore.verb else { Issue.record("not writes"); return }
         #expect(mark == .mark("8f14e45f-ceea-467f-a0e6-1c2b3d4e5f60"))

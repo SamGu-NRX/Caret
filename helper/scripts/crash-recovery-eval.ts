@@ -176,7 +176,8 @@ const connectReader = async (): Promise<LineClient> => {
   const challenge = randomBytes(32).toString("base64");
   r.send({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: process.pid, version: "crash-eval", session: READER_SESSION, challenge });
   const auth = await r.waitFor((m) => m.type === "helperAuth" || m.type === "error", 5000);
-  if (auth.type !== "helperAuth" || auth.proof !== helperProof(secret, challenge)) throw new Error(`the helper did not prove itself: ${JSON.stringify(auth)}`);
+  const pid = child?.pid;
+  if (auth.type !== "helperAuth" || pid === undefined || auth.pid !== pid || auth.proof !== helperProof(secret, challenge, pid)) throw new Error(`the helper did not prove itself: ${JSON.stringify(auth)}`);
   r.onMessage = (raw) => {
     const m = HelperToReader.safeParse(raw);
     if (!m.success || m.data.type === "helperAuth") return;

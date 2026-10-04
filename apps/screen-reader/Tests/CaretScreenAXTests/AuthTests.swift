@@ -31,7 +31,7 @@ private final class Seen: @unchecked Sendable {
         for i in 0..<n { e.send(.pasteboard(Pasteboard(at: 1_790_000_000_000, changeCount: i))) }
     }
 
-    @Test(arguments: ["no proof, a grant first", "a proof under another secret", "no answer at all"])
+    @Test(arguments: ["no proof, a grant first", "a proof under another secret", "no answer at all", "a relayed proof", "a proof naming this pid made for another"])
     func anUnauthenticatedPeerGetsOnlyTheHelloAndCannotGrantOrCommand(_ how: String) throws {
         let helper = try FakeHelperSocket()
         let grants = GrantTable()
@@ -47,7 +47,17 @@ private final class Seen: @unchecked Sendable {
             helper.send(grantLine("t1"))
             helper.send(commandLine("c1"))
         case "a proof under another secret":
-            helper.send(#"{"type":"helperAuth","v":1,"proof":"\#(HelperProof.proof(secret: Data(repeating: 7, count: 32), challenge: h.challenge!))"}"#)
+            helper.send(#"{"type":"helperAuth","v":1,"proof":"\#(HelperProof.proof(secret: Data(repeating: 7, count: 32), challenge: h.challenge!, pid: Int(getpid())))","pid":\#(getpid())}"#)
+            helper.send(grantLine("t1"))
+            helper.send(commandLine("c1"))
+        case "a relayed proof":
+            // A valid proof from a helper in another process, relayed here: it names that process, not this socket's peer.
+            let other = Int(getpid()) + 1
+            helper.send(#"{"type":"helperAuth","v":1,"proof":"\#(HelperProof.proof(secret: testSecret, challenge: h.challenge!, pid: other))","pid":\#(other)}"#)
+            helper.send(grantLine("t1"))
+            helper.send(commandLine("c1"))
+        case "a proof naming this pid made for another":
+            helper.send(#"{"type":"helperAuth","v":1,"proof":"\#(HelperProof.proof(secret: testSecret, challenge: h.challenge!, pid: Int(getpid()) + 1))","pid":\#(getpid())}"#)
             helper.send(grantLine("t1"))
             helper.send(commandLine("c1"))
         default:
@@ -104,10 +114,11 @@ private final class Seen: @unchecked Sendable {
     @Test func checksTheProofAgainstTheGoldenLine() throws {
         // helper/fixtures/golden/protocol.ndjson lines 60 and 61: the reader's hello and the helper's answer to it.
         let challenge = Data("caret-b23-golden-challenge-32byt".utf8).base64EncodedString()
-        let proof = HelperProof.proof(secret: testSecret, challenge: challenge)
-        #expect(proof == "qLMQNx80wKbypKq89Bkght+jlznzuJpJcSkkQ9lbT+Q=")
-        #expect(HelperProof.verify(proof, secret: testSecret, challenge: challenge))
-        #expect(!HelperProof.verify(proof, secret: testSecret, challenge: HelperProof.challenge()))
-        #expect(!HelperProof.verify("not base64", secret: testSecret, challenge: challenge))
+        let proof = HelperProof.proof(secret: testSecret, challenge: challenge, pid: 5555)
+        #expect(proof == "WSI48rvCCB7/H/+Xor8vQXwfgrYHUMt/hgypSYvI7/M=")
+        #expect(HelperProof.verify(proof, secret: testSecret, challenge: challenge, pid: 5555))
+        #expect(!HelperProof.verify(proof, secret: testSecret, challenge: challenge, pid: 5556))
+        #expect(!HelperProof.verify(proof, secret: testSecret, challenge: HelperProof.challenge(), pid: 5555))
+        #expect(!HelperProof.verify("not base64", secret: testSecret, challenge: challenge, pid: 5555))
     }
 }

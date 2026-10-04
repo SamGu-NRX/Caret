@@ -2,8 +2,10 @@
 // process listening at the socket path, so a process of the same user that took the path got every snapshot and
 // could send act grants and commands, borrowing Caret's Accessibility grant. Now the launcher hands the reader and
 // the helper one 32-byte secret on an inherited descriptor; the reader's hello carries a fresh challenge, and the
-// helper must answer with HMAC-SHA256(secret, "caret-helper-proof\n" + challenge) before the reader sends or acts on
-// anything. server.ts helperProof makes the same answer.
+// helper must answer with HMAC-SHA256(secret, "caret-helper-proof\n" + challenge + "\n" + pid) before the reader sends
+// or acts on anything. The pid is the helper's own; the reader requires it to be its socket's peer, so a process that
+// relays a challenge to the real helper and its proof back is refused: the proof names the helper's pid, not the
+// relay's (B23 review). server.ts helperProof makes the same answer.
 import CryptoKit
 import Foundation
 
@@ -23,16 +25,17 @@ public enum HelperProof {
         return "reader-" + (0..<16).map { _ in String(format: "%02x", UInt8.random(in: .min ... .max, using: &g)) }.joined()
     }
 
-    private static func message(_ challenge: String) -> Data { Data("caret-helper-proof\n\(challenge)".utf8) }
+    private static func message(_ challenge: String, _ pid: Int) -> Data { Data("caret-helper-proof\n\(challenge)\n\(pid)".utf8) }
 
-    /// The proof a helper holding `secret` sends for `challenge`.
-    public static func proof(secret: Data, challenge: String) -> String {
-        Data(HMAC<SHA256>.authenticationCode(for: message(challenge), using: SymmetricKey(data: secret))).base64EncodedString()
+    /// The proof a helper with process id `pid` holding `secret` sends for `challenge`.
+    public static func proof(secret: Data, challenge: String, pid: Int) -> String {
+        Data(HMAC<SHA256>.authenticationCode(for: message(challenge, pid), using: SymmetricKey(data: secret))).base64EncodedString()
     }
 
-    /// Whether `proof` is the answer to `challenge` under `secret`, compared in constant time.
-    public static func verify(_ proof: String, secret: Data, challenge: String) -> Bool {
+    /// Whether `proof` is the answer to `challenge` under `secret` from process `pid`, compared in constant time. The
+    /// caller checks that `pid` is its socket's peer.
+    public static func verify(_ proof: String, secret: Data, challenge: String, pid: Int) -> Bool {
         guard let mac = Data(base64Encoded: proof) else { return false }
-        return HMAC<SHA256>.isValidAuthenticationCode(mac, authenticating: message(challenge), using: SymmetricKey(data: secret))
+        return HMAC<SHA256>.isValidAuthenticationCode(mac, authenticating: message(challenge, pid), using: SymmetricKey(data: secret))
     }
 }

@@ -20,6 +20,8 @@ class AdapterStandIn {
   granted = true;
   localSource = true;
   readonly calendars = new Map<string, Map<string, { title: string; start: string; end: string }>>();
+  /** The task that added each event: only it may remove the event, and a calendar holding another's is not disposed (B23). */
+  private readonly addedBy = new Map<string, string>();
   private n = 0;
   answer = (v: CalendarVerb): Pick<VerbResult, "outcome" | "detail" | "event" | "blocked"> => {
     const blocked = (b: CalendarBlock) => ({ outcome: "blocked" as const, detail: null, blocked: b });
@@ -38,6 +40,7 @@ class AdapterStandIn {
         }
         const id = `ev-${++this.n}`;
         this.calendars.get(v.calendar)?.set(id, { title: v.title, start: v.start, end: v.end });
+        this.addedBy.set(id, v.taskId);
         return ok({ id, calendar: v.calendar, title: v.title, start: v.start, end: v.end });
       }
       case "calendarGet": {
@@ -48,12 +51,16 @@ class AdapterStandIn {
       case "calendarRemove": {
         const c = owner(v.id);
         if (c === undefined) return { outcome: "notAllowed", detail: "the event is not in a calendar the reader created" };
+        if (this.addedBy.get(v.id) !== v.taskId) return { outcome: "notAllowed", detail: "another task added this event; only that task removes it" };
         this.calendars.get(c)?.delete(v.id);
         return ok();
       }
-      case "calendarDispose":
+      case "calendarDispose": {
+        const others = [...(this.calendars.get(v.calendar)?.keys() ?? [])].filter((id) => this.addedBy.get(id) !== v.taskId);
+        if (others.length > 0) return { outcome: "notAllowed", detail: "the calendar holds events other tasks added; it is not deleted" };
         this.calendars.delete(v.calendar);
         return ok();
+      }
     }
   };
 }

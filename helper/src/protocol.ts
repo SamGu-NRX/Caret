@@ -323,14 +323,17 @@ export type ActRevoke = z.infer<typeof ActRevoke>;
 
 /**
  * B23: the helper's answer to the reader's hello challenge, sent before anything else on the connection:
- * base64 of HMAC-SHA256(launch secret, "caret-helper-proof\n" + challenge). The launcher hands both
- * processes the secret on an inherited descriptor. A reader that gets no valid proof sends the helper
- * nothing more and acts on none of its lines.
+ * base64 of HMAC-SHA256(launch secret, "caret-helper-proof\n" + challenge + "\n" + pid), where `pid` is the
+ * helper's own process. The launcher hands both processes the secret on an inherited descriptor. The reader
+ * checks that `pid` is its socket's peer (LOCAL_PEERPID), so a proof another process relays from the real
+ * helper names a pid that is not the reader's peer. A reader that gets no valid proof sends the helper nothing
+ * more and acts on none of its lines.
  */
 export const HelperAuth = z.object({
   type: z.literal("helperAuth"),
   v: z.literal(PROTOCOL_VERSION),
   proof: z.string().min(1),
+  pid: z.number().int().positive(),
 });
 export type HelperAuth = z.infer<typeof HelperAuth>;
 
