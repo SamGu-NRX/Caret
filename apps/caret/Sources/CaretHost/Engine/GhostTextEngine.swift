@@ -1,7 +1,9 @@
 import AppCompatibility
 import AutocompleteCore
+import CaretHostCore
 import ConstrainedGeneration
 import Foundation
+import ModelRuntime
 import Prompting
 
 /// One shown-able suggestion: the text KeyType would anchor at `context`'s caret.
@@ -36,10 +38,35 @@ final class GhostTextEngine {
 
     static let maxCompletionTokens = 4
     static let maxDisplayWidth = 60
+    /// Candidates looked at, best first, when the better ones are refused at the seam or do not
+    /// fit the text after the caret. KeyType's own filter still decides about the first.
+    static let candidatesTried = 3
+
+    /// What became of one candidate, for `Caret --probe` and the debug state.
+    struct Note: Equatable {
+        let text: String
+        var refusal: String?
+        /// The refusal is KeyType's filter's.
+        var byKeyType = false
+        /// `SuffixFit` scores: the text after the caret as it is, and after this candidate, per
+        /// scored token (log probabilities, nats).
+        var baseline: [Double]?
+        var joined: [Double]?
+    }
 
     private(set) var state: State = .loading
     private(set) var lastGenerationMs: Double?
+    /// The candidates of the last `suggest`, in order, and how long the fit check took.
+    private(set) var lastNotes: [Note] = []
+    private(set) var lastFitMs: Double?
     private var engine: ConstrainedGenerationEngine?
+    private var scorer: SuffixScorer?
+    /// `Caret --probe-replay`: every candidate is scored, refused or not, for calibration. The
+    /// outcome is decided as in a normal run.
+    var diagnostic = false
+    /// Test hook (`--ghost-replay`): outcomes recorded with the model on another Mac, by context,
+    /// for a VM run that has no model. Never set in a normal run.
+    var replay: GhostReplay?
     private let compatibilityStore: AppCompatibilityStore
     private let filter: DefaultCandidateFilter
     private let promptBuilder = PromptBuilder()
@@ -58,11 +85,18 @@ final class GhostTextEngine {
         switch result {
         case .success(let loaded):
             engine = loaded.engine
+            scorer = SuffixScorer(runtime: loaded.runtime)
             state = .ready
             await warmUp(loaded.engine)
         case .failure(let error):
             state = .unavailable(String(describing: error))
         }
+    }
+
+    /// Ghost text from recorded outcomes (`--ghost-replay`): ready at once, the model never loaded.
+    func useReplay(_ replay: GhostReplay) {
+        self.replay = replay
+        state = .ready
     }
 
     /// Ghost text turned off for this run (`--no-ghost`): the model is never loaded.
@@ -79,6 +113,15 @@ final class GhostTextEngine {
 
     /// Generates for `context`. Throws `CancellationError` when superseded.
     func suggest(for context: TextFieldContext) async throws -> Outcome {
+        if let replay {
+            switch replay.outcome(before: context.beforeCursor, after: context.afterCursor) {
+            case .text(let text)?: return .suggestion(GhostSuggestion(text: text, context: context, generationMs: 0))
+            case .silent(let reason)?: return .suppressed(reason)
+            case nil: return .suppressed("replayMissing")
+            }
+        }
+        lastNotes = []
+        lastFitMs = nil
         guard let engine else { return .suppressed("engineNotReady") }
         let policy = compatibilityStore.policy(for: context)
         guard policy.isCompletionEnabled else { return .suppressed("completionsDisabled") }
@@ -98,12 +141,63 @@ final class GhostTextEngine {
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
         lastGenerationMs = elapsed
 
-        guard let best = candidates.first else { return .suppressed("noCandidate") }
-        if let reason = filter.suppressionReason(for: best, request: request) {
-            return .suppressed(String(describing: reason))
+        guard !candidates.isEmpty else { return .suppressed("noCandidate") }
+        // A18, bugs 6 and 7: a completion must not repeat the words after the caret, end a sentence
+        // that goes on, or copy a phrase from the line above; and between words it must fit before
+        // the ones after it (`SuffixFit`). KeyType's own filter still decides about the best
+        // candidate as before; after that the first candidate that passes is offered, or nothing.
+        var notes: [Note] = []
+        for (index, candidate) in candidates.prefix(Self.candidatesTried).enumerated() {
+            let text = Self.anchorText(for: candidate, request: request)
+            if let reason = filter.suppressionReason(for: candidate, request: request) {
+                notes.append(Note(text: text ?? candidate.text, refusal: String(describing: reason), byKeyType: true))
+                if index == 0, !diagnostic { break }
+                continue
+            }
+            guard let text else {
+                notes.append(Note(text: candidate.text, refusal: "emptyAfterBoundary"))
+                continue
+            }
+            let refusal = GhostSeam.refusal(completion: text, before: context.beforeCursor, after: context.afterCursor)
+            notes.append(Note(text: text, refusal: refusal?.rawValue))
         }
-        guard let text = Self.anchorText(for: best, request: request) else { return .suppressed("emptyAfterBoundary") }
-        return .suggestion(GhostSuggestion(text: text, context: context, generationMs: elapsed))
+        let keyTypeRefusedBest = notes.first?.byKeyType == true
+        let open = keyTypeRefusedBest ? [] : notes.indices.filter { notes[$0].refusal == nil }
+        let midLine = GhostSeam.isMidLine(after: context.afterCursor)
+        // Scored: the open candidates between words, and in `diagnostic` every one with text.
+        let scored = diagnostic ? notes.indices.filter { notes[$0].refusal != "emptyAfterBoundary" } : (midLine ? open : [])
+        var wasScored = false
+        if midLine, !scored.isEmpty {
+            let fitStarted = DispatchTime.now().uptimeNanoseconds
+            let tokens = try await scorer?.tokenScores(
+                prompt: request.prompt, beforeCursor: context.beforeCursor, afterCursor: context.afterCursor,
+                inserts: [""] + scored.map { notes[$0].text }
+            )
+            try Task.checkCancellation()
+            lastFitMs = Double(DispatchTime.now().uptimeNanoseconds - fitStarted) / 1_000_000
+            if let tokens, tokens.count == scored.count + 1 {
+                wasScored = true
+                for (slot, index) in scored.enumerated() {
+                    notes[index].baseline = tokens[0]
+                    notes[index].joined = tokens[slot + 1]
+                    if notes[index].refusal == nil, !SuffixFit.fits(withCompletion: tokens[slot + 1]) {
+                        notes[index].refusal = "doesNotFit"
+                    }
+                }
+            }
+        }
+        lastNotes = notes
+        if keyTypeRefusedBest { return .suppressed(notes[0].refusal ?? "noCandidate") }
+        guard !open.isEmpty else { return .suppressed(notes.first?.refusal ?? "noCandidate") }
+        // Between words, a completion nobody could check against the words after it is not offered.
+        if midLine, !wasScored { return .suppressed("fitUnscored") }
+        guard let chosen = open.first(where: { notes[$0].refusal == nil }) else { return .suppressed("doesNotFit") }
+        return .suggestion(GhostSuggestion(text: notes[chosen].text, context: context, generationMs: elapsed))
+    }
+
+    /// The request `suggest` sends for `context`, under the app's policy.
+    func request(for context: TextFieldContext) -> CompletionRequest {
+        makeRequest(for: context, policy: compatibilityStore.policy(for: context))
     }
 
     private func makeRequest(for context: TextFieldContext, policy: CompletionPolicy) -> CompletionRequest {
@@ -150,13 +244,8 @@ final class GhostTextEngine {
         return anchored.isEmpty ? nil : anchored
     }
 
-    /// True when the text after the caret, on the same line, starts with a lowercase word or a
-    /// number: the sentence goes on past the insertion point. A capital may start a new sentence,
-    /// so it does not count.
     nonisolated static func sentenceContinues(after afterCursor: String) -> Bool {
-        let line = afterCursor.prefix { !$0.isNewline }
-        guard let first = line.first(where: { !$0.isWhitespace }) else { return false }
-        return first.isLowercase || first.isNumber
+        GhostSeam.continuesSentence(after: afterCursor)
     }
 
     /// True when visible text follows the caret on the same line, where inline ghost text would

@@ -223,14 +223,14 @@ final class SurfaceCoordinator {
         let text = draw.currentText
         if draw.entering {
             guard let read = lastRead, read.id == draw.readID, let snapshot = read.snapshot, let style = read.style, let font = read.font else { return }
-            let usesKeyTypeGhost = ghost.show(text, at: snapshot, style: style) != nil
+            let usesKeyTypeGhost = ghost.show(text, at: snapshot, style: style, pid: draw.pid) != nil
             if !usesKeyTypeGhost { drawOwnGhost(text, caret: draw.caret, font: font, color: style.textColor) }
             executor?.remember(offerID: draw.offerID, context: snapshot.context)
             status.increment(usesKeyTypeGhost ? "surface.ghost.keytype" : "surface.ghost.own")
             drawn = Drawn(offerID: draw.offerID, snapshot: usesKeyTypeGhost ? snapshot : nil, style: style, font: font)
         } else if let drawn, drawn.offerID == draw.offerID {
             if let snapshot = drawn.snapshot {
-                ghost.show(text, at: snapshot, style: drawn.style)
+                ghost.show(text, at: snapshot, style: drawn.style, pid: draw.pid)
             } else {
                 drawOwnGhost(text, caret: draw.caret, font: drawn.font, color: drawn.style.textColor)
             }

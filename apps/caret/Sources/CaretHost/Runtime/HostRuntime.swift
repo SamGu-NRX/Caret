@@ -34,6 +34,10 @@ public final class HostRuntime {
         /// What a ghost completion too wide for its line does (`--ghost-overflow`,
         /// `CARET_GHOST_OVERFLOW`): `capsule`, or `drop` to measure KeyType's behavior.
         public var ghostOverflow: GhostFit.OverflowRule
+        /// Test hook (`--ghost-replay <file>`, `CARET_GHOST_REPLAY`, with `--test-hooks` only): ghost
+        /// text comes from outcomes recorded with the model elsewhere (`GhostReplay`); the model is
+        /// not loaded. For the rig's VM, which has no room for it.
+        public var ghostReplayPath: String?
         /// When onboarding opens (`--onboarding`, `CARET_ONBOARDING`): `off` (the menu opens it),
         /// `auto` (at launch until finished once), `show`, or `hidden` (no window; socket only).
         public var onboarding: String
@@ -53,6 +57,7 @@ public final class HostRuntime {
             ghostOverflow: GhostFit.OverflowRule = ProcessInfo.processInfo.environment["CARET_GHOST_OVERFLOW"] == "drop" ? .drop : .capsule
         ) {
             self.ghostOverflow = ghostOverflow
+            self.ghostReplayPath = ProcessInfo.processInfo.environment["CARET_GHOST_REPLAY"]
             self.onboarding = onboarding
             self.perchDrawsOnScreen = perchDrawsOnScreen
             self.surfacesHeadless = surfacesHeadless
@@ -401,6 +406,18 @@ public final class HostRuntime {
         guard configuration.ghostEnabled else {
             engine.disable()
             status.update { $0.engine = DebugState.Engine(state: "disabled", modelFile: modelFile) }
+            return
+        }
+        if configuration.testHooks, let path = configuration.ghostReplayPath {
+            do {
+                let replay = try JSONDecoder().decode(GhostReplay.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+                engine.useReplay(replay)
+                status.update { $0.engine = DebugState.Engine(state: "replay", modelFile: URL(fileURLWithPath: path).lastPathComponent) }
+                focus.requestRead()
+            } catch {
+                engine.disable()
+                status.update { $0.engine = DebugState.Engine(state: "replayUnreadable", modelFile: path) }
+            }
             return
         }
         status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }

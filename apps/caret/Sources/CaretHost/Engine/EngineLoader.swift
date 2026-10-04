@@ -26,6 +26,8 @@ public enum EngineLoader {
 
     struct Loaded {
         let engine: ConstrainedGenerationEngine
+        /// The runtime the engine decodes with (BOS-wrapped for Gemma), for `SuffixScorer`.
+        let runtime: LocalModelRuntime
         let family: String
         let profileBuiltNow: Bool
         let prependsBOS: Bool
@@ -101,7 +103,7 @@ public enum EngineLoader {
             configuration: DecodingConfiguration(enableFillInMiddle: true),
             wordRecognizer: SystemWordRecognizer()
         )
-        return Loaded(engine: engine, family: family, profileBuiltNow: builtNow, prependsBOS: prependsBOS)
+        return Loaded(engine: engine, runtime: decodingRuntime, family: family, profileBuiltNow: builtNow, prependsBOS: prependsBOS)
     }
 
     /// Writes the profile through a temporary sibling so a failed self-check never leaves a usable

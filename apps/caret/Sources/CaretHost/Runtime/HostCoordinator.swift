@@ -85,7 +85,7 @@ final class HostCoordinator {
             // Same field and text, possibly scrolled: re-pin what is shown to the new caret.
             if let shown = overlay.shownText, let rect = snapshot.caretRect, rect != lastCaretRect {
                 lastCaretRect = rect
-                let drawn = overlay.show(shown, at: snapshot, style: FieldStyleProbe.style(of: element))
+                let drawn = overlay.show(shown, at: snapshot, style: FieldStyleProbe.style(of: element), pid: field.identity.pid)
                 noteFit()
                 if drawn == nil { clearOffer() }
             }
@@ -257,7 +257,7 @@ final class HostCoordinator {
             status.increment("discarded.keyDuringPublish")
             return false
         }
-        let drawn = overlay.show(text, at: snapshot, style: style)
+        let drawn = overlay.show(text, at: snapshot, style: style, pid: field.identity.pid)
         noteFit()
         guard let presentation = drawn else {
             arbiter.invalidate(offerID: offerID)

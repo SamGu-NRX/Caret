@@ -30,8 +30,61 @@ public enum DevProbe {
             case .suggestion(let s): lines.append("\(text)⟦\(s.text)⟧  (\(ms) ms)")
             case .suppressed(let reason): lines.append("\(text)⟦SUPPRESS \(reason)⟧  (\(ms) ms)")
             }
+            lines.append(contentsOf: notes(engine))
         }
         await engine.shutdown()
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Each candidate the engine looked at, with its refusal and fit scores.
+    @MainActor
+    static func notes(_ engine: GhostTextEngine) -> [String] {
+        let fit = engine.lastFitMs.map { String(format: " fit %.1f ms", $0) } ?? ""
+        return engine.lastNotes.enumerated().map { i, n in
+            func list(_ xs: [Double]?) -> String { (xs ?? []).map { String(format: "%.2f", $0) }.joined(separator: ",") }
+            let scores = n.baseline.map { b in " baseline [\(list(b))] joined [\(list(n.joined))]" } ?? ""
+            return "    #\(i + 1) \u{201C}\(n.text)\u{201D} \(n.refusal ?? "ok")\(scores)\(i == 0 ? fit : "")"
+        }
+    }
+
+    /// `Caret --probe-replay <cases.json> <out.json>`: runs the engine on each `{"before","after"}`
+    /// case, prints what it did with every candidate, and writes the outcomes as a `GhostReplay`
+    /// file for a run with no model (`--ghost-replay`).
+    @MainActor
+    public static func replay(modelURL: URL, cases: URL, out: URL) async -> String {
+        struct Case: Decodable { let before: String; let after: String }
+        guard let data = try? Data(contentsOf: cases), let list = try? JSONDecoder().decode([Case].self, from: data) else {
+            return "cannot read \(cases.path)\n"
+        }
+        let engine = GhostTextEngine(compatibilityStore: AppCompatibilityStore())
+        await engine.load(modelURL: modelURL)
+        guard engine.state == .ready else { return "engine: \(engine.state)\n" }
+        engine.diagnostic = true
+        var lines: [String] = []
+        var entries: [GhostReplay.Entry] = []
+        for c in list {
+            let context = TextFieldContext(
+                beforeCursor: c.before, afterCursor: c.after,
+                geometry: TextFieldGeometry(isAtEndOfLine: !GhostSeam.isMidLine(after: c.after)),
+                target: AppTarget(bundleIdentifier: "com.apple.TextEdit", appName: "TextEdit"),
+                detectedLanguage: "en"
+            )
+            let outcome = (try? await engine.suggest(for: context)) ?? .suppressed("cancelled")
+            let ms = engine.lastGenerationMs.map { String(format: "%.1f", $0) } ?? "-"
+            switch outcome {
+            case .suggestion(let s):
+                entries.append(.init(before: c.before, after: c.after, text: s.text))
+                lines.append("\(c.before)|\(c.after)  ⟦\(s.text)⟧  (\(ms) ms)")
+            case .suppressed(let reason):
+                entries.append(.init(before: c.before, after: c.after, text: nil, reason: reason))
+                lines.append("\(c.before)|\(c.after)  ⟦SILENT \(reason)⟧  (\(ms) ms)")
+            }
+            lines.append(contentsOf: notes(engine))
+        }
+        await engine.shutdown()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let json = try? encoder.encode(GhostReplay(entries: entries)) { try? json.write(to: out) }
         return lines.joined(separator: "\n") + "\n"
     }
 
