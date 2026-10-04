@@ -15,10 +15,14 @@
 //   insert          AXFocused, AXSelectedTextRange over all, AXSelectedText (the reader's insert)
 //   type-cg         AXFocused, then each character as a keyboard event to the pid (CGEventPostToPid)
 //   type-sl         the same through SkyLight's SLEventPostToPid with an authentication message
-//   paste-cg        AXFocused, the value on the general pasteboard, Command-V to the pid, the pasteboard
-//                   restored. Skipped when the pasteboard holds anything that cannot be copied back exactly.
 //
-// Keyboard events go only to PID, which the caller started. Nothing is posted to the HID or session tap.
+// B20 also had paste-cg, which put the value on the general pasteboard and restored it. It is gone: nothing in
+// Caret's tests may write the user's clipboard, even briefly (BUILD-ORDER clipboard rule, 2026-10-03), and
+// Command-V reads only the general pasteboard, so a paste cannot be tried with a private one.
+//
+// Keyboard events go only to PID, which the caller started. Nothing is posted to the HID or session tap. With
+// CARET_REQUIRE_FRONT=1 (a run that measures the target while it is frontmost), LaunchServices must name PID as
+// the frontmost app immediately before every posted event, or the candidate stops with "deferred: foreground".
 import AppKit
 import ApplicationServices
 import Foundation
@@ -124,7 +128,12 @@ func postSL(_ e: CGEvent) -> Bool {
     post(pid, e)
     return true
 }
+let requireFront = ProcessInfo.processInfo.environment["CARET_REQUIRE_FRONT"] == "1"
 func key(_ code: CGKeyCode, down: Bool, flags: CGEventFlags = [], text: String? = nil, sl: Bool) -> Bool {
+    if requireFront, frontPid() != Int(pid) {
+        markPosting(false)
+        out(["ok": false, "error": "deferred: foreground (frontmost is \(frontPid()), not \(pid))"])
+    }
     guard let e = CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState), virtualKey: code, keyDown: down) else { return false }
     e.flags = flags
     if let t = text { let u = Array(t.utf16); e.keyboardSetUnicodeString(stringLength: u.count, unicodeString: u) }
@@ -170,46 +179,6 @@ case "type-cg", "type-sl":
     let posted = selectAllKeys(sl: sl) && typeText(value, sl: sl)
     markPosting(false)
     detail = "focus=\(f.rawValue) focusedBefore=\(focused) posted=\(posted)"
-    acted = posted
-case "paste-cg":
-    let pb = NSPasteboard.general
-    // Every item and type, copied as data; anything that cannot be read back as data stops the candidate.
-    var saved: [[(NSPasteboard.PasteboardType, Data)]] = []
-    for item in pb.pasteboardItems ?? [] {
-        var kept: [(NSPasteboard.PasteboardType, Data)] = []
-        for t in item.types {
-            guard let d = item.data(forType: t) else { out(["ok": false, "skipped": true, "error": "the pasteboard holds a type that cannot be saved"]) }
-            kept.append((t, d))
-        }
-        saved.append(kept)
-    }
-    let f = set(field, kAXFocusedAttribute, kCFBooleanTrue)
-    usleep(100_000)
-    pb.clearContents()
-    let mine = NSPasteboardItem()
-    mine.setString(value, forType: .string)
-    // Clipboard managers that follow nspasteboard.org leave transient and concealed items out of their history.
-    mine.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
-    mine.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
-    pb.writeObjects([mine])
-    let ours = pb.changeCount
-    markPosting(true)
-    let posted = selectAllKeys(sl: false) && key(9, down: true, flags: .maskCommand, sl: false) && key(9, down: false, flags: .maskCommand, sl: false)
-    markPosting(false)
-    usleep(400_000)
-    // Put back what was there only while the pasteboard still holds this candidate's item: anything written
-    // meanwhile (the user, a clipboard manager) is newer and stays.
-    var restored = false
-    let untouched = pb.changeCount == ours
-    if untouched {
-        pb.clearContents()
-        restored = saved.isEmpty || pb.writeObjects(saved.map { kept in
-            let it = NSPasteboardItem()
-            for (t, d) in kept { it.setData(d, forType: t) }
-            return it
-        })
-    }
-    detail = "focus=\(f.rawValue) posted=\(posted) restored=\(restored) items=\(saved.count)\(untouched ? "" : " (changed meanwhile, left as is)")"
     acted = posted
 default:
     out(["ok": false, "error": "unknown candidate \(cand)"])

@@ -208,6 +208,29 @@ const idleWatch = setInterval(() => {
 function checkAbort(): void {
   if (aborted !== null) throw new Aborted(aborted);
 }
+
+/** The frontmost app's pid as LaunchServices has it (`lsappinfo`), or null when it cannot be read. */
+async function lsFrontPid(): Promise<number | null> {
+  try {
+    const asn = (await run("/usr/bin/lsappinfo", ["front"])).stdout.trim();
+    const m = /"pid"=(\d+)/.exec((await run("/usr/bin/lsappinfo", ["info", "-only", "pid", asn])).stdout);
+    return m?.[1] === undefined ? null : Number(m[1]);
+  } catch {
+    return null;
+  }
+}
+/**
+ * A --front run measures the WebKit fixture while it is the frontmost app, so LaunchServices must say so before
+ * every run; otherwise the run ends as deferred: foreground rather than measuring something else (B21).
+ */
+async function checkFront(): Promise<void> {
+  if (!FRONT) return;
+  const front = await lsFrontPid();
+  if (front !== target.pid) {
+    aborted = `deferred: foreground (LaunchServices names pid ${front ?? "unknown"} frontmost, not the WebKit fixture ${target.pid})`;
+    throw new Aborted(aborted);
+  }
+}
 class Aborted extends Error {}
 
 // MARK: - helper in process
@@ -422,12 +445,22 @@ async function webkitTarget(): Promise<Target> {
     return r.value;
   };
   await until("the page to load", async () => (await ask("web typeof caretState")).value === "function");
-  const t = webTarget(pid, { titleStartsWith: "Caret Fixture — WebKit" }, js, async () => "Caret Fixture — Executor", async () => void fixture.kill("SIGTERM"));
+  // A --front run hands activation back to the app that was frontmost before it (the fixture's `quit PID`).
+  let handBackTo: number | null = null;
+  const stop = async (): Promise<void> => {
+    if (handBackTo !== null) {
+      fixture.stdin.write(`quit ${handBackTo}\n`);
+      await sleep(600);
+    }
+    fixture.kill("SIGTERM");
+  };
+  const t = webTarget(pid, { titleStartsWith: "Caret Fixture — WebKit" }, js, async () => "Caret Fixture — Executor", stop);
   t.responder = async () => {
     const r = await ask("responder webkit");
     if (r.ok !== true) throw new Error(`webkit responder: ${JSON.stringify(r)}`);
   };
   t.front = async () => {
+    handBackTo = await lsFrontPid();
     for (const cmd of ["activate legacy", "focus webkit"]) {
       const r = await ask(cmd);
       if (r.ok !== true) throw new Error(`webkit ${cmd}: ${String(r.error)}`);
@@ -765,13 +798,15 @@ const only = a.plans === undefined ? null : new Set(a.plans.split(","));
 const safety: SafetyRow[] = [];
 const means: MeansRow[] = [];
 // Above the runs, not beside candidatesTable: the runs below call it before the module reaches that point.
-const CANDIDATE_NAMES = ["value", "focus-value", "main-value", "insert", "type-cg", "type-sl", "paste-cg"] as const;
+// B20's paste-cg is gone: it wrote the general pasteboard, which no test may (BUILD-ORDER clipboard rule).
+const CANDIDATE_NAMES = ["value", "focus-value", "main-value", "insert", "type-cg", "type-sl"] as const;
 const candidates: CandidateRow[] = [];
 try {
   for (const [name, pc] of Object.entries(target.plans)) {
     if (only !== null && !only.has(name)) continue;
     for (let r = 0; r < RUNS; r++) {
       checkAbort();
+      await checkFront();
       await reset(pc.seed);
       const before = await target.state();
       const slots = pc.slots(r);
@@ -834,6 +869,7 @@ async function meansTable(): Promise<void> {
   for (const kind of kinds) {
     for (let r = 0; r < MEANS_RUNS; r++) {
       checkAbort();
+      await checkFront();
       await reset({});
       // Insert replaces what is there; value starts from empty, as most fills do.
       if (kind === "insert") await target.seed(sf.name, `old text ${r}`);
@@ -892,6 +928,7 @@ async function candidatesTable(probe: string): Promise<void> {
   for (const candidate of CANDIDATE_NAMES) {
     for (let r = 0; r < MEANS_RUNS; r++) {
       checkAbort();
+      await checkFront();
       await reset({});
       await target.seed("name", `old text ${r}`);
       await sleep(300);
@@ -901,7 +938,9 @@ async function candidatesTable(probe: string): Promise<void> {
       let o: Record<string, unknown>;
       try {
         // The probe marks CARET_SYNTHETIC_FILE around the input it posts, so the idle watch knows it for its own.
-        o = JSON.parse((await run(probe, [String(target.pid), title, "name", candidate, value], { timeout: 30_000 })).stdout) as Record<string, unknown>;
+        // In a --front run the probe checks LaunchServices names the target frontmost before every key it posts.
+        const env = FRONT ? { ...process.env, CARET_REQUIRE_FRONT: "1" } : process.env;
+        o = JSON.parse((await run(probe, [String(target.pid), title, "name", candidate, value], { timeout: 30_000, env })).stdout) as Record<string, unknown>;
       } catch (e) {
         o = { ok: false, error: String(e) };
       }
@@ -956,6 +995,7 @@ async function safetyCases(): Promise<void> {
   const revoke = (taskId: string): void => void server?.sendToReader({ type: "actRevoke", v: PROTOCOL_VERSION, taskId, at: Date.now() });
   const attempt = async (kind: SafetyRow["kind"], r: number): Promise<void> => {
     checkAbort();
+    await checkFront();
     await reset({});
     const seeded = `safety ${kind} ${r}`;
     await target.seed(f.name, seeded);
@@ -1055,9 +1095,9 @@ for (const k of ["pidOutside", "expired", "otherWindow", "control"] as const) {
 if (candidates.length > 0) {
   md.push(
     "",
-    `## Write candidates, each alone (${RESPONDER ? "web view first responder, window not key" : BACKGROUND ? "this script's fixture in front" : "target as launched"})`,
+    `## Write candidates, each alone (${RESPONDER ? "web view first responder, window not key" : BACKGROUND ? "this script's fixture in front" : FRONT ? "WebKit fixture frontmost, its form window key" : "target as launched"})`,
     "",
-    "Landed is read from the page. Claimed is the candidate's own Accessibility read-back saying it landed; claimed but not landed must be 0. Raised: the window moved up the on-screen order. Activated: the target app became active. Collateral: another field or the page's Send changed.",
+    "Landed is read from the page. Claimed is the candidate's own Accessibility read-back saying it landed; claimed but not landed must be 0. Raised: the window moved up the on-screen order. Activated: the target app became active. Collateral: another field or the page's Send changed. B20's paste-cg is not run: it wrote the general pasteboard, which no test may.",
     "",
     "| Candidate | Runs | Landed | Claimed | Claimed, not landed | Raised | Activated | Front app changed | Collateral | Skipped or errors | Example |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
