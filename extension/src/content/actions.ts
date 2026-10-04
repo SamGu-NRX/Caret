@@ -15,40 +15,18 @@
 //
 // Presses are hand-offs in v1, whatever the control is called: a page button runs the page's own script, so a safe
 // name ("Next", or an aria-label over destructive text) is no evidence it sends nothing (W1 review #2; memo lead
-// decision on buttons that send data).
+// decision on buttons that send data). The one exception is the combobox handler (combobox.ts), which presses only
+// the control it was given and that control's own listbox options, and verifies the pick.
 import type { ActAnswer, ActVerb, WriteReadings } from "../shared/messages.ts";
 import { classifyPress } from "../shared/risk.ts";
 import { navigationEntry, type Entry, type Registry } from "./registry.ts";
 import { accessibleName, clean } from "./names.ts";
 import { checkedOf, exclusionOf, kindOf } from "./walker.ts";
+import { errorText, invalidNow, setterFor, settle } from "./dom.ts";
+import { chooseOption } from "./combobox.ts";
+import { attachFile } from "./attach.ts";
 
 const answer = (outcome: ActAnswer["outcome"], detail: string | null, extra: Partial<ActAnswer> = {}): ActAnswer => ({ outcome, detail, ...extra });
-
-/** The next animation frame, or 100 ms in a tab that paints no frames (background tabs pause rAF), then one task. */
-function settle(): Promise<void> {
-  return new Promise((resolve) => {
-    let done = false;
-    const go = (): void => {
-      if (done) return;
-      done = true;
-      setTimeout(resolve, 0);
-    };
-    requestAnimationFrame(go);
-    setTimeout(go, 100);
-  });
-}
-
-function errorText(el: Element): string | null {
-  const ids = [el.getAttribute("aria-errormessage"), el.getAttribute("aria-describedby")].filter((s): s is string => s !== null).join(" ");
-  if (ids === "") return null;
-  const root = el.getRootNode() as Document | ShadowRoot;
-  const t = clean(ids.split(/\s+/).map((id) => root.getElementById(id)?.textContent ?? "").join(" "), 200);
-  return t === "" ? null : t;
-}
-
-function invalidNow(el: Element): boolean {
-  return el.getAttribute("aria-invalid") === "true" || ((el as HTMLInputElement).validity !== undefined && !(el as HTMLInputElement).validity.valid);
-}
 
 type Mutating = Exclude<ActVerb, { kind: "pageChooseOption" | "pageAttachFile" | "pagePress" }>;
 
@@ -66,20 +44,30 @@ function ineligible(el: Element, verb: ActVerb, entry: Entry | undefined, deadli
   return null;
 }
 
-export async function act(reg: Registry, verb: ActVerb, deadline: number): Promise<ActAnswer> {
-  if (verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile") return answer("unsupported", `${verb.kind} arrives in batch 2`);
+/**
+ * Runs one verb the worker has checked. `alive` asks the worker whether the task's grant for this frame still holds;
+ * the multi-stage acts (combobox, attach) ask it before each stage (memo section 2).
+ */
+export async function act(reg: Registry, verb: ActVerb, deadline: number, alive: () => Promise<boolean>): Promise<ActAnswer> {
   if (verb.kind === "pagePress") {
     const risk = classifyPress(verb.name);
     return answer("handoff", `'${clean(verb.name, 60)}' runs the page's own script, so you press it`, { risk: risk === "safe" || risk === "unclassified" ? "pageScript" : risk });
   }
-  const expect = verb.kind === "pageWrite" || verb.kind === "pageSelect" ? verb.expect : null;
+  const expect = verb.kind === "pageWrite" || verb.kind === "pageSelect" || verb.kind === "pageChooseOption" ? verb.expect : null;
   const r = reg.resolve(verb.id, expect);
   if ("missing" in r) return answer("noElement", r.missing);
   const entry = reg.entry(verb.id);
   const check = (): ActAnswer | null => ineligible(r.el, verb, entry, deadline);
   const first = check();
   if (first !== null) return first;
-  const a = await actOn(r.el, verb, check);
+  let a: ActAnswer;
+  if (verb.kind === "pageChooseOption") {
+    a = verb.control === "combobox" ? await chooseOption(r.el, verb, check, alive) : answer("unsupported", `a ${verb.control} is not a custom listbox; a native select takes pageSelect`);
+  } else if (verb.kind === "pageAttachFile") {
+    a = await attachFile(r.el, verb, check, alive);
+  } else {
+    a = await actOn(r.el, verb, check);
+  }
   // A rebind is the one way an act reaches an element other than the walked object; the receipt says so.
   return r.rebound && (a.outcome === "ok" || a.outcome === "alreadyTrue") ? { ...a, detail: a.detail === null ? "rebound by its strong key" : `${a.detail}; rebound by its strong key` } : a;
 }
@@ -118,12 +106,6 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null)
   }
 }
 
-function setterFor(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): (v: string) => void {
-  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-  const set = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-  if (set === undefined) throw new Error("no value setter on the prototype");
-  return (v) => set.call(el, v);
-}
 
 const current = (el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string => (el instanceof HTMLSelectElement ? (el.selectedOptions[0]?.value ?? "") : el.value);
 

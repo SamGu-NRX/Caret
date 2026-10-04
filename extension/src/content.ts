@@ -1,8 +1,10 @@
 // Caret's content script, in every http(s) frame and the about:blank and srcdoc frames they own. It stays dormant:
 // no observer, no timer and no walk until the worker asks. It answers only the extension's own worker (a message
-// with no tab, from this extension's id), never window.postMessage or the page. On its own it tells the worker
-// only that the document moved in history, so the worker bumps the frame's navigation generation at once.
-import type { FrameReport, NavChanged, ToContent } from "./shared/messages.ts";
+// with no tab, from this extension's id), never window.postMessage or the page. On its own it tells the worker two
+// things, neither naming an element: that the document moved in history, so the worker bumps the frame's
+// navigation generation at once; and that focus moved while this document is visible and focused, so the helper
+// can walk the tab the user is in (W2). The second is one focusin listener, at most one message per 150 ms.
+import type { FocusMoved, FrameReport, GrantAlive, NavChanged, ToContent } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
@@ -90,9 +92,31 @@ if (globalThis.__caretContent === undefined) {
       reply(walk(reg));
       return false;
     }
-    act(reg, m.verb, m.deadline).then(reply, (e: unknown) => reply({ outcome: "error", detail: e instanceof Error ? e.message : String(e) }));
+    const taskId = m.verb.taskId;
+    const alive = async (): Promise<boolean> => {
+      const q: GrantAlive = { caret: 1, op: "grantAlive", taskId };
+      return chrome.runtime.sendMessage(q).then((r: unknown) => r === true, () => false);
+    };
+    act(reg, m.verb, m.deadline, alive).then(reply, (e: unknown) => reply({ outcome: "error", detail: e instanceof Error ? e.message : String(e) }));
     return true;
   });
+
+  /** Assumed: one report per burst of focus changes is enough for the helper to walk once. */
+  const FOCUS_EVERY_MS = 150;
+  let focusTimer: ReturnType<typeof setTimeout> | null = null;
+  addEventListener(
+    "focusin",
+    () => {
+      if (focusTimer !== null || document.visibilityState !== "visible" || !document.hasFocus()) return;
+      focusTimer = setTimeout(() => {
+        focusTimer = null;
+        if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+        const m: FocusMoved = { caret: 1, op: "focusMoved" };
+        chrome.runtime.sendMessage(m).catch(() => {});
+      }, FOCUS_EVERY_MS);
+    },
+    { capture: true, passive: true },
+  );
 
   const moved = (why: NavChanged["why"]): void => {
     const m: NavChanged = { caret: 1, op: "navChanged", why };

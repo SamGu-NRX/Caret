@@ -5,6 +5,8 @@ import type { ActVerb, PageVerb } from "../shared/messages.ts";
 const int = (x: unknown): x is number => typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
 const str = (x: unknown): x is string => typeof x === "string";
 const nonEmpty = (x: unknown): x is string => typeof x === "string" && x.length > 0;
+/** An http(s) origin, as pageSitesOff names one: scheme, host and port, nothing after. */
+const SITE = /^https?:\/\/[^/\s]+$/;
 const KINDS = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea", "select", "checkbox", "radio", "combobox", "button", "link", "file", "contenteditable", "range", "color"]);
 
 export function parseVerb(x: unknown): PageVerb | null {
@@ -23,7 +25,9 @@ export function parseVerb(x: unknown): PageVerb | null {
       return typeof v.checked === "boolean" ? (v as unknown as ActVerb) : null;
     case "pageAttachFile": {
       const f = v.file as Record<string, unknown> | undefined;
-      return f !== undefined && nonEmpty(f.name) && str(f.type) && int(f.size) && str(f.sha256) && /^[0-9a-f]{64}$/.test(f.sha256) ? (v as unknown as ActVerb) : null;
+      return f !== undefined && nonEmpty(f.name) && !/[/\\\0]/.test(f.name) && str(f.type) && int(f.size) && str(f.sha256) && /^[0-9a-f]{64}$/.test(f.sha256) && str(f.data) && /^[A-Za-z0-9+/]*={0,2}$/.test(f.data)
+        ? (v as unknown as ActVerb)
+        : null;
     }
     default:
       return null;
@@ -36,7 +40,8 @@ export type FromHelper =
   | { type: "scopedActGrant"; taskId: string; scope: { kind: string; [k: string]: unknown }; at: number; expires: number }
   | { type: "actRevoke"; taskId: string }
   | { type: "pagePing"; id: string }
-  | { type: "pageChunk"; id: string; index: number; count: number; data: string };
+  | { type: "pageChunk"; id: string; index: number; count: number; data: string }
+  | { type: "pageSitesOff"; origins: string[] };
 
 /** A bridge message the worker understands, or null. */
 export function parseFromHelper(x: unknown): FromHelper | null {
@@ -62,6 +67,8 @@ export function parseFromHelper(x: unknown): FromHelper | null {
       return nonEmpty(m.id) ? { type: "pagePing", id: m.id } : null;
     case "pageChunk":
       return nonEmpty(m.id) && int(m.index) && int(m.count) && m.count >= 2 && m.index < m.count && str(m.data) ? { type: "pageChunk", id: m.id, index: m.index, count: m.count, data: m.data } : null;
+    case "pageSitesOff":
+      return Array.isArray(m.origins) && m.origins.every((o) => typeof o === "string" && SITE.test(o)) ? { type: "pageSitesOff", origins: m.origins as string[] } : null;
     default:
       return null;
   }

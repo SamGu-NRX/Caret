@@ -5,6 +5,7 @@
 import type { PageControl, PageControlKind, PageExclusion, Rect } from "../shared/messages.ts";
 import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
 import { accessibleName, clean, composedParent, groupNames } from "./names.ts";
+import { flavorOf, shownValue } from "./flavor.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -93,9 +94,22 @@ export function exclusionOf(el: Element, name: string): PageExclusion | null {
   if (ac !== null) return ac;
   if ((el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) && PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
   if (ariaHidden(el)) return "ariaHidden";
-  if (!visible(el)) return "invisible";
+  if (!visible(el) && !visibleReactSelect(el)) return "invisible";
   if (SELF_IDENTIFICATION.test(name) || groupNames(el).some((g) => SELF_IDENTIFICATION.test(g))) return "selfIdentification";
   return null;
+}
+
+/**
+ * React-select makes its input transparent while the chip shows the chosen value; the control box, which holds both,
+ * is what the user sees. So a react-select input counts as visible when its box does and the input itself is still
+ * rendered with a size. Only the opacity rule is waived, and only inside a visible react-select box (W2).
+ */
+function visibleReactSelect(el: Element): boolean {
+  if (el.getAttribute("role") !== "combobox" || !(el instanceof HTMLInputElement)) return false;
+  const f = flavorOf(el);
+  if (f.kind !== "reactSelect" || !visible(f.box)) return false;
+  const r = el.getBoundingClientRect();
+  return el.checkVisibility({ checkVisibilityCSS: true }) && r.width > 0 && r.height > 0;
 }
 
 /** A length in px or % of `size`, or null when it is neither. */
@@ -198,7 +212,9 @@ export function formIdentity(el: Element, forms: HTMLFormElement[] = [...documen
   return `form@${i < 0 ? "?" : i}`;
 }
 
+/** What the control holds as its value. A combobox's is the text it shows: react-select's chip, not its filter box. */
 export function valueOf(el: Element): string | undefined {
+  if (el.getAttribute("role") === "combobox" && !(el instanceof HTMLSelectElement)) return shownValue(el).slice(0, MAX_VALUE);
   if (el instanceof HTMLInputElement) {
     if (el.type === "checkbox" || el.type === "radio" || el.type === "file" || el.type === "submit" || el.type === "button" || el.type === "reset" || el.type === "image") return undefined;
     return el.value.slice(0, MAX_VALUE);

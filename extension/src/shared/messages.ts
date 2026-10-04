@@ -28,7 +28,7 @@ export interface PageControl {
   shadow?: "open" | "closed";
 }
 
-export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "excluded" | "unsupported" | "error";
+export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "excluded" | "unsupported" | "error" | "siteOff";
 export type HandoffRisk = "outbound" | "destructive" | "money" | "system" | "unclassified" | "submitsForm" | "pageScript";
 
 export interface WriteReadings {
@@ -39,11 +39,28 @@ export interface WriteReadings {
   error: string | null;
 }
 
+/** pageChooseOption's findings (protocol.ts PageChoice). */
+export interface Choice {
+  flavor: "aria" | "reactSelect";
+  matches: string[];
+  expanded: boolean | null;
+  hiddenInput: "set" | "unchanged" | "none";
+}
+
+/** pageAttachFile's findings (protocol.ts PageAttached). */
+export interface Attached {
+  via: "input" | "drop";
+  file: { name: string; size: number } | null;
+  shown: boolean;
+}
+
 export interface ActAnswer {
   outcome: PageOutcome;
   detail: string | null;
   readings?: WriteReadings;
   risk?: HandoffRisk;
+  choice?: Choice;
+  attached?: Attached;
 }
 
 interface TargetFields {
@@ -62,7 +79,7 @@ export type ActVerb =
   | ({ kind: "pageSelect"; expect: string; value: string } & TargetFields)
   | ({ kind: "pageChooseOption"; expect: string; value: string } & TargetFields)
   | ({ kind: "pageSetChecked"; checked: boolean } & TargetFields)
-  | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string } } & TargetFields);
+  | ({ kind: "pageAttachFile"; file: { name: string; type: string; size: number; sha256: string; data: string } } & TargetFields);
 
 export type PageVerb = { kind: "pageWalk"; tabId: number | null } | ActVerb;
 
@@ -92,4 +109,20 @@ export interface NavChanged {
   caret: 1;
   op: "navChanged";
   why: "pageshow" | "popstate" | "hashchange";
+}
+
+/** Content script to worker, on its own: focus moved to another element while this document has focus and is visible. Nothing about the element. */
+export interface FocusMoved {
+  caret: 1;
+  op: "focusMoved";
+}
+
+/**
+ * Content script to worker, during a multi-stage act (combobox, attach): is the task's grant for this very frame
+ * still alive? Asked at each stage boundary, so a revoke that arrives mid-act stops the next stage (memo section 2).
+ */
+export interface GrantAlive {
+  caret: 1;
+  op: "grantAlive";
+  taskId: string;
 }

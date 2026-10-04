@@ -1,5 +1,5 @@
 // The extension's pure pieces: the press table against the cases the helper and the reader share, identifier rules,
-// the grant table, the frame registry and the bridge message checks. DOM behavior is checked in a real browser by
+// the grant table, the frame registry, the bridge message checks and the combobox's option matching. DOM behavior is checked in a real browser by
 // fixtures/web-form/accept.ts.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { authorIdentifier, isGeneratedId, strongKey } from "../src/shared/ids.ts
 import { GRANT_MAX_MS, GrantTable } from "../src/shared/grants.ts";
 import { NavGens, frameOrigin } from "../src/worker/frames.ts";
 import { Chunks, parseFromHelper } from "../src/worker/wire.ts";
+import { matchOptions, normalizeName, whyNoPick } from "../src/shared/choose.ts";
 
 const golden = JSON.parse(readFileSync(fileURLToPath(new URL("../../helper/fixtures/golden/press-risk.json", import.meta.url)), "utf8")) as {
   cases: { label: string; windowSubrole: string | null; bundleId: string; risk: string }[];
@@ -162,5 +163,48 @@ describe("bridge messages", () => {
     expect(c.add({ id: "k2", index: 0, count: 2, data: "x" })).toBeNull();
     expect(c.add({ id: "k2", index: 0, count: 2, data: "y" })).toBeNull();
     expect(c.add({ id: "k3", index: 1, count: 2, data: "z" })).toBeNull();
+  });
+});
+
+describe("W2 bridge messages", () => {
+  const target = { tabId: 7, frameId: 0, documentId: "D", id: "e6", control: "file", name: "Resume", taskId: "t1" };
+  const file = { name: "resume.pdf", type: "application/pdf", size: 9, sha256: "e5c62df5dab5c87b6a015ef3d43597074d1eec433b15f51aec63b8582d0e4ab4", data: "JVBERi0xLjQK" };
+  it("routes an attach only with its bytes and a bare file name", () => {
+    const cmd = (f: object) => parseFromHelper({ type: "pageCommand", v: 1, id: "c", expires: 5, verb: { kind: "pageAttachFile", ...target, file: f } });
+    expect(cmd(file)).not.toBeNull();
+    const { data: _d, ...noData } = file;
+    expect(cmd(noData)).toBeNull();
+    expect(cmd({ ...file, data: "%%%" })).toBeNull();
+    expect(cmd({ ...file, name: "../../etc/passwd" })).toBeNull();
+    expect(cmd({ ...file, name: "a\\b" })).toBeNull();
+  });
+  it("takes Not on this site as a list of http(s) origins and nothing else", () => {
+    expect(parseFromHelper({ type: "pageSitesOff", v: 1, origins: ["http://127.0.0.1:4310", "https://jobs.example.test"] })).toEqual({ type: "pageSitesOff", origins: ["http://127.0.0.1:4310", "https://jobs.example.test"] });
+    expect(parseFromHelper({ type: "pageSitesOff", v: 1, origins: [] })).toEqual({ type: "pageSitesOff", origins: [] });
+    expect(parseFromHelper({ type: "pageSitesOff", v: 1, origins: ["https://jobs.example.test/apply"] })).toBeNull();
+    expect(parseFromHelper({ type: "pageSitesOff", v: 1, origins: "https://jobs.example.test" })).toBeNull();
+    expect(parseFromHelper({ type: "pageSitesOff", v: 1, origins: [7] })).toBeNull();
+  });
+});
+
+describe("combobox option matching", () => {
+  const opts = ["United States", "United States Minor Outlying Islands", "Canada", "Mexico"].map((name) => ({ name }));
+  it("picks the one option named exactly the value, case and spacing aside", () => {
+    const m = matchOptions(opts, "  united   STATES ");
+    expect(m.exact.map((o) => o.name)).toEqual(["United States"]);
+    expect(whyNoPick(m, "united states")).toBeNull();
+    expect(normalizeName("Ｕｎｉｔｅｄ States")).toBe("united states");
+  });
+  it("stops on a filter two options contain, and names both", () => {
+    const why = whyNoPick(matchOptions(opts, "United"), "United");
+    expect(why).toContain("'United States'");
+    expect(why).toContain("'United States Minor Outlying Islands'");
+    expect(why).toContain("2 options");
+  });
+  it("stops on two options with the same name, on one that only contains it, and on none", () => {
+    expect(whyNoPick(matchOptions([{ name: "Springfield" }, { name: "springfield" }], "Springfield"), "Springfield")).toContain("2 options are named");
+    expect(whyNoPick(matchOptions(opts, "Can"), "Can")).toContain("no option is named exactly 'Can'");
+    expect(whyNoPick(matchOptions(opts, "USA"), "USA")).toBe("no option in the list matches 'USA'");
+    expect(whyNoPick(matchOptions(opts, ""), "")).toBe("no option in the list matches ''");
   });
 });

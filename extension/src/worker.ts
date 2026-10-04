@@ -3,6 +3,11 @@
 // frame, expiry, revocation), then the frame as it is now (document, navigation generation, origin), then hands the
 // verb to that frame's content script pinned to the exact document, with a deadline. It walks only when the helper
 // asks, composes a tab from each frame's own report, and drops every grant when the port closes.
+//
+// W2 adds: the combobox and attach verbs (checked like every other act; the file's bytes are checked against its
+// size and digest here, before any page sees them), a grant-liveness answer for a content script mid-act, focus
+// reports from the tab the user is in, and "Not on this site": the helper's list of origins Caret is off for, where
+// the worker walks nothing, acts on nothing and reports no focus.
 import type { ActAnswer, ActVerb, FrameReport, NavChanged, ToContent } from "./shared/messages.ts";
 import { GrantTable } from "./shared/grants.ts";
 import { classifyPress } from "./shared/risk.ts";
@@ -22,6 +27,11 @@ let port: chrome.runtime.Port | null = null;
 let engine: string | null = null;
 let retryMs = 2000;
 let chunks = new Chunks();
+/** "Not on this site": origins the helper says Caret is off for. Kept in this worker only; the helper resends it after every hello. */
+let sitesOff = new Set<string>();
+/** Last focus report per tab, for the 150 ms limit. */
+const lastFocus = new Map<number, number>();
+const FOCUS_EVERY_MS = 150;
 
 function log(...a: unknown[]): void {
   console.log("[caret]", ...a);
@@ -44,7 +54,18 @@ function send(m: object): void {
 }
 
 function result(id: string, a: ActAnswer): void {
-  send({ type: "pageResult", v: 1, id, at: Date.now(), outcome: a.outcome, detail: a.detail, ...(a.readings === undefined ? {} : { readings: a.readings }), ...(a.risk === undefined ? {} : { risk: a.risk }) });
+  send({
+    type: "pageResult",
+    v: 1,
+    id,
+    at: Date.now(),
+    outcome: a.outcome,
+    detail: a.detail,
+    ...(a.readings === undefined ? {} : { readings: a.readings }),
+    ...(a.risk === undefined ? {} : { risk: a.risk }),
+    ...(a.choice === undefined ? {} : { choice: a.choice }),
+    ...(a.attached === undefined ? {} : { attached: a.attached }),
+  });
 }
 
 function connect(): void {
@@ -59,6 +80,7 @@ function connect(): void {
     engine = null;
     grants.clear();
     chunks = new Chunks();
+    sitesOff = new Set();
     setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 60_000);
   });
@@ -80,7 +102,7 @@ async function onHelper(raw: unknown): Promise<void> {
     case "engineReady":
       engine = m.engine;
       retryMs = 2000;
-      send({ type: "pageHello", v: 1, extensionId: chrome.runtime.id, version: VERSION, profile: await profileId(), instance, startedAt, capabilities: ["pageWalk", "pageWrite", "pageSelect", "pageSetChecked", "pagePress"] });
+      send({ type: "pageHello", v: 1, extensionId: chrome.runtime.id, version: VERSION, profile: await profileId(), instance, startedAt, capabilities: ["pageWalk", "pageWrite", "pageSelect", "pageSetChecked", "pagePress", "pageChooseOption", "pageAttachFile", "pageFocus", "pageSitesOff"] });
       return;
     case "pagePing":
       send({ type: "pagePong", v: 1, id: m.id, at: Date.now(), instance, startedAt });
@@ -94,6 +116,9 @@ async function onHelper(raw: unknown): Promise<void> {
       grants.revoke(m.taskId);
       return;
     case "pageChunk":
+      return;
+    case "pageSitesOff":
+      sitesOff = new Set(m.origins);
       return;
     case "pageCommand":
       if (engine === null) return;
@@ -115,12 +140,19 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   const tab = tabId === null ? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0] : await chrome.tabs.get(tabId).catch(() => undefined);
   if (tab?.id === undefined) return result(id, { outcome: "noElement", detail: tabId === null ? "no active tab in the focused window" : `no tab ${tabId}` });
   const frames = (await chrome.webNavigation.getAllFrames({ tabId: tab.id })) ?? [];
+  const top = frameOrigin(frames, 0);
+  if (top !== null && sitesOff.has(top)) return result(id, { outcome: "siteOff", detail: `Caret is off on ${top}` });
   const missing: { frameId: number; reason: string }[] = [];
   const reports = await Promise.all(
     frames.map(async (f) => {
       const origin = frameOrigin(frames, f.frameId);
       if (origin === null) {
         missing.push({ frameId: f.frameId, reason: "not an http(s) frame" });
+        return null;
+      }
+      // Not asked at all: a frame on a site Caret is off for is never walked.
+      if (sitesOff.has(origin)) {
+        missing.push({ frameId: f.frameId, reason: "Caret is off on this site" });
         return null;
       }
       try {
@@ -217,8 +249,26 @@ async function walk(id: string, tabId: number | null): Promise<void> {
   result(id, { outcome: "ok", detail: null });
 }
 
+/** Hex SHA-256 of `bytes`. */
+async function sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Why the file's bytes are not the file the verb describes, or null. Checked before any page sees them. */
+async function fileProblem(f: { size: number; sha256: string; data: string }): Promise<string | null> {
+  let bin: string;
+  try {
+    bin = atob(f.data);
+  } catch {
+    return "the file's data is not base64";
+  }
+  if (bin.length !== f.size) return `the file's data holds ${bin.length} bytes, not ${f.size}`;
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return (await sha256(bytes)) === f.sha256 ? null : "the file's data does not match its digest";
+}
+
 async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
-  if (verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile") return { outcome: "unsupported", detail: `${verb.kind} arrives in batch 2` };
   if (verb.kind === "pagePress") {
     // Every page press is a hand-off in v1: the button runs the page's own script (content/actions.ts). The page is not touched.
     const risk = classifyPress(verb.name);
@@ -226,6 +276,11 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   }
   const g = grants.check(verb.taskId, verb.tabId, verb.frameId);
   if (!g.ok) return { outcome: "notAllowed", detail: g.reason };
+  if (sitesOff.has(g.scope.origin)) return { outcome: "siteOff", detail: `Caret is off on ${g.scope.origin}` };
+  if (verb.kind === "pageAttachFile") {
+    const bad = await fileProblem(verb.file);
+    if (bad !== null) return { outcome: "error", detail: bad };
+  }
   const frame = await chrome.webNavigation.getFrame({ tabId: verb.tabId, frameId: verb.frameId }).catch(() => null);
   if (frame === null || frame === undefined) return { outcome: "stale", detail: "the frame is gone" };
   if (frame.documentId !== verb.documentId) return { outcome: "stale", detail: "the frame holds another document than when it was walked" };
@@ -234,6 +289,8 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId })) ?? [];
   const origin = frameOrigin(all, verb.frameId);
   if (origin !== g.scope.origin) return { outcome: "notAllowed", detail: `the grant covers ${g.scope.origin}, the frame is at ${String(origin)}` };
+  const topNow = frameOrigin(all, 0);
+  if (topNow !== null && sitesOff.has(topNow)) return { outcome: "siteOff", detail: `Caret is off on ${topNow}` };
   // The frame lookups above awaited; a revoke or expiry that landed meanwhile stops the act here, before the page.
   const live = grants.check(verb.taskId, verb.tabId, verb.frameId);
   if (!live.ok) return { outcome: "notAllowed", detail: live.reason };
@@ -258,7 +315,51 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
 chrome.webNavigation.onCommitted.addListener((d) => void navGens.bump(d.tabId, d.frameId));
 chrome.webNavigation.onHistoryStateUpdated.addListener((d) => void navGens.bump(d.tabId, d.frameId));
 chrome.webNavigation.onReferenceFragmentUpdated.addListener((d) => void navGens.bump(d.tabId, d.frameId));
-chrome.tabs.onRemoved.addListener((tabId) => navGens.forgetTab(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  navGens.forgetTab(tabId);
+  lastFocus.delete(tabId);
+});
+
+/**
+ * A content script mid-act asks whether its task's grant still covers its own frame: the grant is live, the frame's
+ * navigation generation is the one the grant pinned, and its site is not off. Answered only for the asking frame.
+ */
+chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
+  const x = m as { caret?: unknown; op?: unknown; taskId?: unknown } | null;
+  if (x?.caret !== 1 || x.op !== "grantAlive" || typeof x.taskId !== "string") return false;
+  if (sender.id !== chrome.runtime.id || sender.tab?.id === undefined || sender.frameId === undefined) {
+    reply(false);
+    return false;
+  }
+  const g = grants.check(x.taskId, sender.tab.id, sender.frameId);
+  reply(g.ok && navGens.get(sender.tab.id, sender.frameId) === g.scope.navGen && !sitesOff.has(g.scope.origin));
+  return false;
+});
+
+/**
+ * Focus moved in a frame of a tab. Passed to the helper only when the tab is the active tab of the last focused
+ * browser window, its site and its frame's site are not off, an engine is connected, and the tab sent none in the
+ * last 150 ms. Nothing about the element travels.
+ */
+chrome.runtime.onMessage.addListener((m: unknown, sender) => {
+  const x = m as { caret?: unknown; op?: unknown } | null;
+  if (x?.caret !== 1 || x.op !== "focusMoved") return false;
+  if (sender.id !== chrome.runtime.id || sender.tab?.id === undefined || sender.frameId === undefined || engine === null) return false;
+  const tabId = sender.tab.id;
+  const frameId = sender.frameId;
+  const now = Date.now();
+  if (now - (lastFocus.get(tabId) ?? 0) < FOCUS_EVERY_MS) return false;
+  lastFocus.set(tabId, now);
+  void (async () => {
+    const [tab, win, all] = await Promise.all([chrome.tabs.get(tabId).catch(() => undefined), chrome.windows.getLastFocused().catch(() => undefined), chrome.webNavigation.getAllFrames({ tabId })]);
+    if (tab === undefined || !tab.active || win === undefined || tab.windowId !== win.id) return;
+    const top = frameOrigin(all ?? [], 0);
+    const here = frameOrigin(all ?? [], frameId);
+    if ((top !== null && sitesOff.has(top)) || (here !== null && sitesOff.has(here))) return;
+    send({ type: "pageFocus", v: 1, at: now, tabId, frameId });
+  })();
+  return false;
+});
 
 // A frame's own word that its document moved. Accepted only from this extension's content script in a tab, for the
 // document Chrome says that frame holds now, at the origin its URL has.
