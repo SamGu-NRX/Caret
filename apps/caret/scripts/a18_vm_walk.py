@@ -300,9 +300,16 @@ try:
             wrong += 1
             continue
         pid, wid = textedit(f"mid-{i + 1}.txt", before + after, {"x": 200, "y": 200, "width": 900, "height": 420})
-        keys(pid, "key", "right", len(before))
+        # Every caret position on the way is a context too, with no recorded outcome; only the
+        # last one must find its entry.
+        if len(before) > 1:
+            keys(pid, "key", "right", len(before) - 1)
+        time.sleep(0.8)
+        missing0 = counter(host(), "suppressed.replayMissing")
+        keys(pid, "key", "right", 1)
         time.sleep(1.5)
         s = host()
+        missing = counter(s, "suppressed.replayMissing") - missing0
         offer = s.get("offer") if (s.get("offer") or {}).get("pid") == pid else None
         fits = s.get("ghostFits") or []
         last = fits[-1] if fits else {}
@@ -319,9 +326,8 @@ try:
             ok = offer is None
             silent += 1 if ok else 0
             wrong += 0 if ok else 1
-            suppressed = {k for k, v in (s.get("counters") or {}).items() if k.startswith("suppressed.")}
-            ok = ok and "suppressed.replayMissing" not in suppressed
-            check(f"mid {i + 1}: silent, as the model run was ({expected.get('reason')})", ok, offer=offer)
+            ok = ok and missing == 0
+            check(f"mid {i + 1}: silent, as the model run was ({expected.get('reason')})", ok, offer=offer, replayMissing=missing)
         close(pid)
     results["mid"] = {"cases": len(mids), "offeredAndFit": shown, "silent": silent, "wrong": wrong}
 
