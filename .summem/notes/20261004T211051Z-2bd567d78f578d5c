@@ -1,0 +1,1 @@
+B25: Ask intents go to INTENT_ROUTE (gpt-oss-120b), plan programs to WRITER_ROUTE (qwen3.8); qwen3.8's Groq 200k tokens/day ran out during dev runs, and gpt-oss strict json_schema can 400 'does not match the expected schema'.

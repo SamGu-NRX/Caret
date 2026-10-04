@@ -1,0 +1,1 @@
+B25: eval writers that space calls must give the request a fresh AbortSignal after the wait; a 15 s gap aborted every intent in planner-eval's first GUI run.
