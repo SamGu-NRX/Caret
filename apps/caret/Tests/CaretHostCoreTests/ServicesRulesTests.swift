@@ -52,8 +52,10 @@ final class CaretHomeTests: XCTestCase {
         XCTAssertEqual(h.denyList, "/Users/robin/Library/Application Support/CaretV2/deny-apps.txt")
     }
 
-    func testAnEmptyOverrideIsNoOverride() throws {
-        XCTAssertFalse(try CaretHome.resolve(override: "", userHome: "/Users/robin").isOverride)
+    func testAnEmptyOverrideIsRefusedNotReadAsTheUsersHome() {
+        XCTAssertThrowsError(try CaretHome.resolve(override: "", userHome: "/Users/robin")) { e in
+            XCTAssertEqual(e as? CaretHome.Problem, .notAbsolute(""))
+        }
     }
 
     func testAnOverrideHoldsEverythingIncludingTheHostsSocketAndSettings() throws {
@@ -86,8 +88,8 @@ final class CaretHomeTests: XCTestCase {
 }
 
 final class LaunchRoleTests: XCTestCase {
-    private func facts(marker: Bool = false, launchd: Bool = true, signed: Bool = true, home: Bool = false) -> LaunchRole.Facts {
-        .init(agentMarker: marker, parentIsLaunchd: launchd, teamSigned: signed, homeOverridden: home)
+    private func facts(marker: Bool = false, launchd: Bool = true, ls: Bool = true, signed: Bool = true, home: Bool = false) -> LaunchRole.Facts {
+        .init(agentMarker: marker, parentIsLaunchd: launchd, openedByLaunchServices: ls, teamSigned: signed, homeOverridden: home)
     }
 
     func testOnlyTheMarkedLaunchdJobIsTheAgent() {
@@ -106,16 +108,23 @@ final class LaunchRoleTests: XCTestCase {
     }
 
     func testNothingElseEverRegistersTheAgent() {
-        // Every combination but the one above runs in-process: a direct exec, a debug build, a run with --home.
+        // Every combination but the one above runs in-process: a direct exec (even one reparented to launchd), a copy
+        // LaunchServices did not open, a debug build, a run with --home.
         for launchd in [false, true] {
-            for signed in [false, true] {
-                for home in [false, true] where !(launchd && signed && !home) {
-                    guard case .inProcess = LaunchRole.decide(facts(launchd: launchd, signed: signed, home: home)) else {
-                        return XCTFail("launchd \(launchd) signed \(signed) home \(home) would register the agent")
+            for ls in [false, true] {
+                for signed in [false, true] {
+                    for home in [false, true] where !(launchd && ls && signed && !home) {
+                        guard case .inProcess = LaunchRole.decide(facts(launchd: launchd, ls: ls, signed: signed, home: home)) else {
+                            return XCTFail("launchd \(launchd) ls \(ls) signed \(signed) home \(home) would register the agent")
+                        }
                     }
                 }
             }
         }
+    }
+
+    func testADirectExecReparentedToLaunchdDoesNotHandOff() {
+        XCTAssertEqual(LaunchRole.decide(facts(launchd: true, ls: false)), .inProcess(reason: "started directly, not opened by LaunchServices"))
     }
 
     func testTheReasonSaysWhichRuleHeldItBack() {

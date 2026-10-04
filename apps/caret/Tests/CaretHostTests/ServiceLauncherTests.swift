@@ -132,6 +132,29 @@ final class ServiceLauncherTests: XCTestCase {
         XCTAssertEqual(mode, 0o700)
     }
 
+    /// A host killed outside launchd leaves its children running; the next launcher in the same home stops them, and
+    /// only them: a record whose start time no longer matches is someone else's process now.
+    func testTheNextLauncherStopsChildrenAKilledOneLeftAndNothingElse() throws {
+        let sleeper = try script("orphan.sh", "cat > /dev/null\nexec sleep 30\n")
+        guard case .success(let left) = ServiceLauncher.spawnWithSecret(path: sleeper, args: [], env: ["PATH": "/usr/bin:/bin"], secret: Data(count: 32)),
+              case .success(let other) = ServiceLauncher.spawnWithSecret(path: sleeper, args: [], env: ["PATH": "/usr/bin:/bin"], secret: Data(count: 32)) else {
+            return XCTFail("spawn failed")
+        }
+        defer { kill(other, SIGKILL); _ = waitForExit(other) }
+        usleep(300_000)
+        let leftRecord = try XCTUnwrap(ServiceLauncher.childRecord(left))
+        let otherRecord = try XCTUnwrap(ServiceLauncher.childRecord(other))
+        XCTAssertTrue(leftRecord.path.hasSuffix("/sleep"), leftRecord.path)
+        let reused = ServiceLauncher.ChildRecord(pid: other, startMicros: otherRecord.startMicros + 1, path: otherRecord.path)
+        let file = "\(dir)/children.json"
+        try JSONEncoder().encode([leftRecord, reused]).write(to: URL(fileURLWithPath: file))
+        XCTAssertEqual(ServiceLauncher.stopStale(file: file, log: { _ in }), [left])
+        let status = try XCTUnwrap(waitForExit(left, seconds: 5))
+        XCTAssertEqual(ServiceLauncher.describe(status), "signal \(SIGTERM)")
+        XCTAssertEqual(ServiceLauncher.childRecord(other), otherRecord, "a process that only shares a pid was touched")
+        XCTAssertEqual(ServiceLauncher.stopStale(file: "\(dir)/missing.json", log: { _ in }), [])
+    }
+
     func testRestartAfterAStopStartsAgainWithFreshBudgets() async throws {
         let helper = try script("helper.sh", "cat > /dev/null\nexit 1\n")
         let reader = try script("reader.sh", "cat > /dev/null\nexec sleep 60\n")
@@ -142,12 +165,14 @@ final class ServiceLauncherTests: XCTestCase {
         while launcher.stopped == nil, Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
         XCTAssertNotNil(launcher.stopped)
         XCTAssertEqual(launcher.helper.starts, 6)
-        // Restart at once, before the stop has finished: the new helper must still start, and run.
+        // Restart at once, before the stop has finished, twice: one new helper starts, once.
+        launcher.restart()
         launcher.restart()
         let again = Date().addingTimeInterval(5)
         while launcher.helper.starts < 7, Date() < again { try await Task.sleep(nanoseconds: 50_000_000) }
         XCTAssertNil(launcher.stopped)
-        XCTAssertEqual(launcher.helper.starts, 7)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(launcher.helper.starts, 7, "a second Restart started another helper")
         await launcher.stop()
     }
 }

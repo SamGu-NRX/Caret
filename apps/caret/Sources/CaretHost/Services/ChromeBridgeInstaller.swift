@@ -42,6 +42,10 @@ public enum ChromeBridgeInstaller {
         let manifest = NativeMessagingManifest(bridgePath: bridgePath)
         let file = (directory as NSString).appendingPathComponent(manifest.fileName)
         let existing = FileManager.default.contents(atPath: file)
+        // A file there that cannot be read is not ours to replace (H4 review).
+        if existing == nil, FileManager.default.fileExists(atPath: file) {
+            return .refused("\(file) is there but Caret can't read it; Caret left it alone")
+        }
         switch manifest.plan(existing: existing) {
         case .refuse(let why):
             return .refused(why)
@@ -66,7 +70,9 @@ public enum ChromeBridgeInstaller {
     }
 
     static func manifestDirectory(home: CaretHome, override: String?, userHome: String) -> Destination {
-        if let override, !override.isEmpty { return .directory(override) }
+        if let override {
+            return override.isEmpty ? .refused("the manifest directory given is empty") : .directory(override)
+        }
         if home.isOverride { return .refused("this run has its own Caret home; give it --nmh-dir to say where the manifest goes") }
         return .directory(BridgeBrowser.chrome.nativeMessagingDirectory(userHome: userHome))
     }

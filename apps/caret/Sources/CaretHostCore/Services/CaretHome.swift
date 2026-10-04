@@ -38,11 +38,14 @@ public struct CaretHome: Equatable, Sendable {
     /// The host's debug socket and settings move into an overridden home, so a test run reads and writes only its own.
     public var hostSocket: String { socketsDirectory + "/host.sock" }
     public var settingsFile: String { root + "/host-settings.json" }
+    /// The helper and reader this home's Caret started, so the next Caret can stop any a killed one left running.
+    public var childrenFile: String { root + "/services-children.json" }
 
     /// `override` is `--home` or `CARET_HOME`; `userHome` is the user's home directory.
     public static func resolve(override: String?, userHome: String) throws -> CaretHome {
         let home: CaretHome
-        if let override, !override.isEmpty {
+        if let override {
+            // An empty --home or CARET_HOME is a mistake, not a request for the user's real home (H4 review).
             home = CaretHome(root: Self.trimmed(override), isOverride: true)
         } else {
             home = CaretHome(root: Self.trimmed(userHome) + "/Library/Application Support/CaretV2", isOverride: false)

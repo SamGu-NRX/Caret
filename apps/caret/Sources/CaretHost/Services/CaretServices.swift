@@ -52,6 +52,7 @@ public final class CaretServices {
                             environment: [String: String]) -> Launch {
         let facts = LaunchRole.Facts(
             agentMarker: environment[LaunchRole.agentMarker] == "1", parentIsLaunchd: getppid() == 1,
+            openedByLaunchServices: environment[LaunchRole.launchServicesMarker] == "1",
             teamSigned: PageBridgeVendor.isTeamSigned(), homeOverridden: home.isOverride
         )
         var role = LaunchRole.decide(facts)
@@ -159,7 +160,7 @@ extension CaretServices {
                                        environment: [String: String]) -> String {
         let role = LaunchRole.decide(.init(
             agentMarker: environment[LaunchRole.agentMarker] == "1", parentIsLaunchd: getppid() == 1,
-            teamSigned: PageBridgeVendor.isTeamSigned(), homeOverridden: true
+            openedByLaunchServices: false, teamSigned: PageBridgeVendor.isTeamSigned(), homeOverridden: true
         ))
         let log: @Sendable (String) -> Void = { line in
             FileHandle.standardError.write(Data("[caret-host \(ISO8601DateFormatter().string(from: Date()))] \(line)\n".utf8))

@@ -14,8 +14,8 @@
 # $IDENTITY is team DWGXWVUR2B's Apple Development certificate, as its SHA-1 (security find-identity -v -p codesigning).
 # Never commit it: the certificate's name holds an email address.
 #
-# Only one bundle stays on disk: building one variant deletes the other. Swift runs under the shared build lock unless
-# CARET_NO_LOCK is set (for a caller that already holds it).
+# Only one bundle stays on disk: building one variant deletes the other. The whole script runs under the shared build
+# lock unless CARET_NO_LOCK is set (for a caller that already holds it).
 #
 #   Contents/MacOS/Caret                       the host (dev.caret.host)
 #   Contents/Helpers/node                      Node, pinned below (dev.caret.node, Bundle/node.entitlements)
@@ -26,6 +26,7 @@
 #   Contents/Library/LaunchAgents/dev.caret.host.plist   the agent SMAppService registers
 #   Contents/Frameworks/llama.framework
 set -euo pipefail
+script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 mode="${1:-release}"
 case "$mode" in
@@ -39,12 +40,14 @@ if [[ "$mode" != debug && -z "${IDENTITY:-}" ]]; then
 fi
 [[ "$(uname -m)" == arm64 ]] || { echo "build-app.sh: Caret ships for arm64 only; this Mac is $(uname -m)" >&2; exit 2; }
 
-lock="$HOME/.caret-run/locks/build.lock"
-# lockf creates the lock file but not its directory, which a fresh checkout does not have yet (CodeRabbit on PR #9).
-mkdir -p "$(dirname "$lock")"
-run() {
-  if [[ -n "${CARET_NO_LOCK:-}" ]]; then "$@"; else /usr/bin/lockf -k "$lock" "$@"; fi
-}
+# The lock covers compiling, copying and signing together: release and acceptance share swift's release products, so
+# a build that took the lock only per compile could copy the other variant's binary into its bundle (H4 review).
+if [[ -z "${CARET_NO_LOCK:-}" ]]; then
+  lock="$HOME/.caret-run/locks/build.lock"
+  # lockf creates the lock file but not its directory, which a fresh checkout does not have yet (CodeRabbit on PR #9).
+  mkdir -p "$(dirname "$lock")"
+  exec /usr/bin/lockf -k "$lock" env CARET_NO_LOCK=1 "$script" "$@"
+fi
 
 # Node v26.5.0, the runtime the helper's tests pass on. The SHA-256 of node-v26.5.0-darwin-arm64.tar.gz is the one in
 # https://nodejs.org/dist/v26.5.0/SHASUMS256.txt, whose signature by release key
@@ -69,11 +72,11 @@ node="$PWD/$node"
 # Swift: the host, the reader and the bridge.
 swiftflags=()
 [[ "$mode" == acceptance ]] && swiftflags=(-Xswiftc -DCARET_ACCEPTANCE_HOST)
-run swift build -c "$config" --product Caret ${swiftflags[@]+"${swiftflags[@]}"}
+swift build -c "$config" --product Caret ${swiftflags[@]+"${swiftflags[@]}"}
 bin="$(swift build -c "$config" --show-bin-path)"
-run swift build -c "$config" --package-path ../screen-reader --product caret-screen
+swift build -c "$config" --package-path ../screen-reader --product caret-screen
 reader_bin="$(swift build -c "$config" --package-path ../screen-reader --show-bin-path)"
-run swift build -c "$config" --package-path ../../bridge --product caret-bridge
+swift build -c "$config" --package-path ../../bridge --product caret-bridge
 bridge_bin="$(swift build -c "$config" --package-path ../../bridge --show-bin-path)"
 
 # The helper, bundled by the pinned runtime, and the extension.
@@ -94,6 +97,12 @@ contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Frameworks" "$contents/Helpers" "$contents/Resources" "$contents/Library/LaunchAgents"
 cp Bundle/Info.plist "$contents/Info.plist"
 cp "$bin/Caret" "$contents/MacOS/Caret"
+# Only the acceptance build may carry the acceptance code (Sources/Caret/Acceptance.swift), and it must.
+if LC_ALL=C grep -q "ACCEPTANCE BUILD" "$contents/MacOS/Caret"; then has_acceptance=1; else has_acceptance=0; fi
+if [[ "$mode" == acceptance && $has_acceptance == 0 ]] || [[ "$mode" != acceptance && $has_acceptance == 1 ]]; then
+  echo "build-app.sh $mode: the host binary in $bin is the wrong variant (acceptance code present: $has_acceptance); not packaging it" >&2
+  exit 1
+fi
 ditto "$bin/llama.framework" "$contents/Frameworks/llama.framework"
 cp "$node" "$contents/Helpers/node"
 cp "$reader_bin/caret-screen" "$contents/Helpers/caret-screen"

@@ -81,6 +81,10 @@ if let raw = environment["CARET_ALLOW_PIDS"], !raw.isEmpty {
 }
 var homeOverride = environment["CARET_HOME"]
 var manifestDirectory = environment["CARET_NMH_DIR"]
+if manifestDirectory?.isEmpty == true {
+    FileHandle.standardError.write(Data("caret: CARET_NMH_DIR is set but empty\n".utf8))
+    exit(2)
+}
 var namedHelperSocket = environment["CARET_SCREEN_SOCKET"].flatMap { $0.isEmpty ? nil : $0 }
 var hostSocketNamed = environment["CARET_HOST_SOCKET"].map { !$0.isEmpty } ?? false
 var settingsNamed = environment["CARET_SETTINGS_PATH"].map { !$0.isEmpty } ?? false
@@ -109,8 +113,13 @@ while let argument = arguments.next() {
             configuration.helperSocketPath = value
             namedHelperSocket = value
         }
-    case "--home": homeOverride = arguments.next()
-    case "--nmh-dir": manifestDirectory = arguments.next()
+    case "--home", "--nmh-dir":
+        // A missing or empty value would fall back to the user's real home or browser (H4 review); refuse it.
+        guard let value = arguments.next(), !value.isEmpty, !value.hasPrefix("--") else {
+            FileHandle.standardError.write(Data("caret: \(argument) needs a directory\n".utf8))
+            exit(2)
+        }
+        if argument == "--home" { homeOverride = value } else { manifestDirectory = value }
     case "--no-ghost": configuration.ghostEnabled = false
     case "--ghost-replay": configuration.ghostReplayPath = arguments.next()
     case "--no-fill-advance": configuration.fillAdvances = false

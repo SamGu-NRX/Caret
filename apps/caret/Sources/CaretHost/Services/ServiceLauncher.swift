@@ -48,6 +48,11 @@ final class ServiceLauncher {
     private var stopping = false
     /// The stop that follows a crash past the budget; a Restart waits for it, so it cannot stop the new children.
     private var stopTask: Task<Void, Never>?
+    /// Bumped by every start and stop. A delayed restart from before it does nothing, so a stop or a Restart cannot
+    /// leave a stale timer that starts a second reader later (H4 review).
+    private var generation = 0
+    /// A Restart is waiting for the stop to finish; a second one is ignored.
+    private var restartPending = false
     private var sources: [pid_t: DispatchSourceProcess] = [:]
 
     private func update(_ which: Which, _ body: (inout Service) -> Void) {
@@ -84,6 +89,7 @@ final class ServiceLauncher {
     var helperSocket: String { home.screenSocket }
 
     func start() {
+        generation += 1
         stopping = false
         stopped = nil
         do {
@@ -91,27 +97,34 @@ final class ServiceLauncher {
         } catch {
             return stopAll(because: "Caret could not prepare \(home.root): \(error)")
         }
+        for pid in Self.stopStale(file: home.childrenFile, log: log) {
+            log("stopped process \(pid), which an earlier Caret in \(home.root) left running")
+        }
         startHelper()
         startReaderWhenTrusted()
     }
 
     /// The user chose Restart after a stop: fresh budgets, the same secret.
     func restart() {
-        guard stopped != nil else { return }
+        guard stopped != nil, !restartPending else { return }
+        restartPending = true
         helper.budget.reset()
         reader.budget.reset()
         log("restarting the helper and the reader at the user's request")
         let pending = stopTask
-        stopTask = nil
         Task { [weak self] in
             await pending?.value
-            self?.start()
+            guard let self else { return }
+            self.stopTask = nil
+            self.restartPending = false
+            self.start()
         }
     }
 
     /// Stops both children: SIGTERM, then SIGKILL after `grace` seconds. Returns once both are reaped.
     func stop(grace: TimeInterval = 3) async {
         stopping = true
+        generation += 1
         accessibilityPoll?.invalidate()
         accessibilityPoll = nil
         let pids = [helper.status, reader.status].compactMap { s -> pid_t? in if case .running(let p) = s { return p } else { return nil } }
@@ -129,6 +142,7 @@ final class ServiceLauncher {
         }
         helper.status = .stopped
         reader.status = .stopped
+        recordChildren()
     }
 
     // MARK: - Starting
@@ -209,6 +223,7 @@ final class ServiceLauncher {
             }
             log("started the \(which.rawValue), process \(pid)")
             watch(pid, which)
+            recordChildren()
             onChange?()
         }
     }
@@ -287,6 +302,7 @@ final class ServiceLauncher {
         guard let source = sources.removeValue(forKey: pid) else { return }
         source.cancel()
         let how = r == pid ? Self.describe(status) : "gone"
+        recordChildren()
         guard !stopping else { return }
         exited(which, how: how)
     }
@@ -311,9 +327,10 @@ final class ServiceLauncher {
             log("the \(name) exited (\(how)); starting it again with the same secret")
             update(which) { $0.status = .restarting }
             onChange?()
+            let generation = self.generation
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 MainActor.assumeIsolated {
-                    guard let self, !self.stopping, self.stopped == nil else { return }
+                    guard let self, self.generation == generation, !self.stopping, self.stopped == nil else { return }
                     switch which {
                     case .helper: self.startHelper()
                     case .reader: self.startReaderWhenTrusted()
@@ -334,6 +351,56 @@ final class ServiceLauncher {
             self?.onChange?()
         }
         onChange?()
+    }
+
+    // MARK: - Children a killed Caret left
+
+    /// A child as the next Caret can recognize it: the same pid alone could be another process by then.
+    struct ChildRecord: Codable, Equatable {
+        let pid: Int32
+        let startMicros: UInt64
+        let path: String
+    }
+
+    /// The running, non-zombie process `pid`, or nil.
+    static func childRecord(_ pid: pid_t) -> ChildRecord? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, info.pbi_status != UInt32(SZOMB) else { return nil }
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return nil }
+        let path = String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return ChildRecord(pid: pid, startMicros: UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec), path: path)
+    }
+
+    /// Writes this home's running children, so a Caret that starts after this one was killed can stop them (a host
+    /// killed outside launchd leaves its helper and reader running; under launchd the job's process group goes too).
+    private func recordChildren() {
+        var records: [ChildRecord] = []
+        for s in [helper, reader] {
+            if case .running(let pid) = s.status, let r = Self.childRecord(pid) { records.append(r) }
+        }
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        FileManager.default.createFile(atPath: home.childrenFile, contents: data, attributes: [.posixPermissions: 0o600])
+    }
+
+    /// Stops each recorded child that still runs as the same process (pid, start time and executable): SIGTERM, then
+    /// SIGKILL after 2 s. Returns the pids it stopped. Anything else is left alone.
+    static func stopStale(file: String, log: (String) -> Void) -> [pid_t] {
+        guard let data = FileManager.default.contents(atPath: file),
+              let records = try? JSONDecoder().decode([ChildRecord].self, from: data) else { return [] }
+        var stopped: [pid_t] = []
+        for r in records where childRecord(r.pid) == r {
+            kill(r.pid, SIGTERM)
+            let deadline = Date().addingTimeInterval(2)
+            while Date() < deadline, childRecord(r.pid) == r { usleep(20_000) }
+            if childRecord(r.pid) == r {
+                log("process \(r.pid) did not stop within 2 s of SIGTERM; killing it")
+                kill(r.pid, SIGKILL)
+            }
+            stopped.append(r.pid)
+        }
+        return stopped
     }
 
     // MARK: - Report
