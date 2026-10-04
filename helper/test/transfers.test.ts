@@ -36,6 +36,7 @@ describe("transfer detection on the recorded synthetic session", () => {
     replay(helper, SESSION);
   });
   afterEach(() => {
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
