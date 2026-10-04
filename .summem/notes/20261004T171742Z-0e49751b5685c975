@@ -1,1 +1,0 @@
-B23: only a consumer hello with host: true counts as the host; other consumers bind their own work but keep no run with no Tab alive. v2/host must send host: true, or no skill runs on its own. In-process evals still call helper.hostConnected(id).

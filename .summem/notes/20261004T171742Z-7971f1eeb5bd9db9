@@ -1,1 +1,0 @@
-B23: the reader connects only to a socket whose directory is 0700 and the user's own (never /tmp itself; HelperServer chmods its dir). Tests and evals put sockets in mkdtemp directories.
