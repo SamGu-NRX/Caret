@@ -38,6 +38,8 @@ public struct FillFieldRead: Equatable, Sendable {
 public protocol FillWorld: AnyObject {
     /// `TargetPolicy`: the pid (and its bundle, when known) may be offered into.
     func allows(pid: Int32, bundleID: String?) -> Bool
+    /// NSWorkspace's frontmost app.
+    var frontmostPID: Int32? { get }
     func bundleID(pid: Int32) -> String?
     /// The app's focused field. Nil when it cannot be read or reports no frame.
     func focusedField(pid: Int32) -> FillFieldRead?
@@ -46,6 +48,12 @@ public protocol FillWorld: AnyObject {
     /// Whether a fill's source window is still open: its app runs and has a window with that title.
     /// Nil when the source names no process to look in. Cheap: one app's window titles, no walk.
     func sourceOpen(_ source: FillOrigin.Window) -> Bool?
+    /// The element (`TargetIdentity.elementID`) at each of `frames` in the app now, by the key it
+    /// was given: hit-tested at the frame's center and kept only when an element there, or one of
+    /// its two nearest ancestors, has that frame (`FillSelection.matches`) and lies in the window
+    /// `windowID` names (`TargetIdentity.windowID`). Keys with no such element are left out.
+    /// Time-boxed; a slow app gives fewer keys, never a wrong one.
+    func elementIDs(pid: Int32, at frames: [String: Frame], window windowID: String) -> [String: String]
 }
 
 /// The ghost value in the field and its source line.
@@ -183,7 +191,16 @@ public final class FillMachine {
     struct Held {
         let proposal: FillProposal
         let receivedAt: Date
+        /// Each proposed field's element, found where the proposal put it, by field key. Bound once,
+        /// at the first evaluation while its app is in front (`bind`).
+        var bound: [String: String] = [:]
+        var bindAttempts = 0
     }
+
+    /// Binding is tried this many times per proposal while some fields stay unbound (one off
+    /// screen, or a slow app's time ran out). Assumed: each try costs up to `bindBudget` of main
+    /// thread, and a form rarely needs more than a scroll or two to show every field.
+    static let bindAttempts = 3
 
     struct Toast {
         let source: String
@@ -323,9 +340,11 @@ public final class FillMachine {
         let focusedFrame = Frame(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
         var skip = FillSelection.Skip.noFieldAtFocus
         for candidate in candidates {
+            let bound = bind(candidate.proposal.windowId, pid: pid, focused: field, focusedFrame: focusedFrame)
             let changed = Set(memoryChangedAt.filter { $0.value >= candidate.receivedAt }.keys)
             switch FillSelection.select(candidate.proposal, focusedFrame: focusedFrame, focusedValue: field.value, secure: field.secure,
-                                        suppressed: suppressed, changedMemory: changed) {
+                                        suppressed: suppressed, changedMemory: changed,
+                                        focusedElementID: field.identity.elementID, bound: bound) {
             case .offer(let proposed, let origin):
                 return present(proposed, origin: origin, field: field, trigger: trigger)
             case .skip(let reason):
@@ -336,9 +355,39 @@ public final class FillMachine {
         withdraw(skip.rawValue)
     }
 
+    /// Finds each proposed field's element while the form is laid out as the reader saw it, so a
+    /// field focused after the page moved (a field scrolled into view, a message inserted above
+    /// it) is still matched (A18, bug 12: HubSpot's Email gave `noFieldAtFocus` after a proposal
+    /// made at First Name).
+    ///
+    /// Only while the app is in front (a background app is not read), and only while the focused
+    /// field sits exactly where the proposal put one of its fields: the proposal names its window
+    /// only by the reader's id, so that match is what says the focused window is the proposal's,
+    /// and only elements in that window are bound. Unbound fields are tried again up to
+    /// `bindAttempts` times; a field that has moved by then no longer matches its frame and stays
+    /// unbound, never wrongly bound.
+    func bind(_ windowID: String, pid: Int32, focused: FillFieldRead, focusedFrame: Frame) -> [String: String] {
+        guard var entry = held[windowID] else { return [:] }
+        var frames: [String: Frame] = [:]
+        for field in entry.proposal.fields where entry.bound[field.key] == nil {
+            if let frame = field.frame { frames[field.key] = frame }
+        }
+        guard !frames.isEmpty, entry.bindAttempts < Self.bindAttempts, world.frontmostPID == pid,
+              entry.proposal.fields.contains(where: { $0.frame.map { FillSelection.matches($0, focusedFrame) } ?? false })
+        else { return entry.bound }
+        let found = world.elementIDs(pid: pid, at: frames, window: focused.identity.windowID)
+        entry.bound.merge(found) { old, _ in old }
+        entry.bindAttempts += 1
+        held[windowID] = entry
+        count("fill.bound.\(found.count == frames.count ? "all" : found.isEmpty ? "none" : "some")")
+        return entry.bound
+    }
+
     func present(_ proposed: FillField, origin: FillOrigin, field: FillFieldRead, trigger: FillTrigger) {
         guard let value = proposed.value else { return withdraw(FillSelection.Skip.answerNone.rawValue) }
-        let key = [origin.proposalID, origin.fieldKey, field.identity.elementID, field.identity.elementRevision].joined(separator: "\u{1}")
+        // The frame is part of it: a field matched by its element after it moved is drawn again
+        // where it is now (A18, bug 12).
+        let key = [origin.proposalID, origin.fieldKey, field.identity.elementID, field.identity.elementRevision, "\(field.frame)"].joined(separator: "\u{1}")
         if key == shownKey, let shownOfferID, arbiter.snapshot().current?.id == shownOfferID { return }
         // The value is drawn in the field and the line by its top right corner: both must be
         // visible, in the frontmost app's focused field (SurfaceGate). Otherwise hold the proposal

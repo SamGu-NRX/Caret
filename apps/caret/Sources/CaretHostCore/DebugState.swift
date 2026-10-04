@@ -332,8 +332,26 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// (`SurfaceGate.Hold`), drawn nowhere meanwhile.
         public var held: String?
         public var lastAccepted: AcceptInfo?
+        /// The last offer withdrawn without ever being drawn (A18, bug 2).
+        public var lastUnshown: Unshown?
 
         public init() {}
+    }
+
+    /// An offer the host never drew and withdrew: its key, kind, why it could not be drawn, and
+    /// how long it waited first (0 when it could never be drawn).
+    public struct Unshown: Codable, Equatable, Sendable {
+        public var offerKey: String?
+        public var kind: String
+        public var reason: String
+        public var heldMs: Int
+
+        public init(offerKey: String?, kind: String, reason: String, heldMs: Int) {
+            self.offerKey = offerKey
+            self.kind = kind
+            self.reason = reason
+            self.heldMs = heldMs
+        }
     }
 
     public struct PanelPlacementInfo: Codable, Equatable, Sendable {
@@ -475,6 +493,13 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// The listen-only mouse tap exists (clicks can pause a run), and the clicks it saw.
         public var mouseTap: Bool?
         public var mouseDowns: UInt64?
+        /// Plain Tabs decided, and those that went on to the app because Caret held no offer for it.
+        /// Tabs another app's tap took before Caret's never arrive, so neither counts them.
+        public var tabs: UInt64?
+        public var tabsPassed: UInt64?
+        /// Keys the debug socket's `key` hook routed. They count in `keyDowns` and `consumed` as
+        /// well, since they take offers through the same path as the tap's.
+        public var hookKeys: UInt64?
 
         public init(
             running: Bool, enabled: Bool, keyDowns: UInt64, consumed: UInt64,
@@ -523,6 +548,9 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// The ghost overlay's recent attempts to draw a completion, oldest first: how each fit, or
     /// why it was not drawn, with the room it had. Geometry only, never text.
     public var ghostFits: [GhostFit.Record]?
+    /// Running apps that also take Tab for their own completions (`OtherTabOwners`). Q1 (A18): with
+    /// Cotypist running, its Tab took one word per press while Caret's counters stayed at zero.
+    public var otherTabOwners: [String]?
 
     public init(
         pid: Int32, uptimeSeconds: Double, trust: Trust, engine: Engine, focus: Focus?, offer: OfferInfo?,

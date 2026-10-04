@@ -133,7 +133,7 @@ working line (done, stopped, handoff, paused). Esc on the working line after 3 s
 command per connection with JSON: `state` (default), `latency-reset`, `ping`, and test hooks
 (`inject` and `progress` only when the host runs with `--test-hooks` or `CARET_TEST_HOOKS=1`):
 
-- `key <tab|shift-tab|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:c> <pid>`
+- `key <tab|shift-tab|opt-right|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:c> <pid>`
   routes a key headed for `<pid>` through the event tap's own decision code without posting any
   event, and replies after the main thread has handled it.
 - `inject <json>` shows an offer for the focused field of the pid it names: alternatives, an

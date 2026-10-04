@@ -60,7 +60,7 @@ public enum OfferSource: String, Codable, Sendable {
     case debug
 }
 
-/// What the user took with Tab (or Shift+Tab, or a Command-digit action).
+/// What the user took with Tab (or ⌥→, or a Command-digit action).
 public struct Choice: Equatable, Sendable {
     /// Index into `Offer.candidates`.
     public var candidate: Int
@@ -68,7 +68,7 @@ public struct Choice: Equatable, Sendable {
     public var actionID: String?
     /// For a pop-up with choice rows: the highlighted row when the action was taken.
     public var row: Int?
-    /// Shift+Tab: only the next word of the candidate.
+    /// ⌥→: only the next word of the candidate.
     public var wordOnly: Bool
     /// Command-1 over ghost fill: every empty field.
     public var fillAll: Bool

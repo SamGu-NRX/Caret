@@ -39,9 +39,10 @@ final class GhostOverlay {
     }
 
     /// Shows `text` at the snapshot's caret. Nil when there is no usable placement, in which case
-    /// nothing is on screen and `lastFit` says why.
+    /// nothing is on screen and `lastFit` says why. `pid` owns the field: a capsule is drawn only
+    /// where no other app's window lies over it.
     @discardableResult
-    func show(_ text: String, at snapshot: FocusedFieldSnapshot, style: OverlayTextStyle) -> Presentation? {
+    func show(_ text: String, at snapshot: FocusedFieldSnapshot, style: OverlayTextStyle, pid: Int32? = nil) -> Presentation? {
         let live = snapshot.context
         guard !text.isEmpty else {
             lastFit = nil
@@ -94,6 +95,17 @@ final class GhostOverlay {
             return nil
         }
 
+        var capsuleAX: CGRect?
+        if placement.presentation == .capsule {
+            let kept = Self.keepCapsuleInWindow(&placement, text: text, font: font, window: snapshot.windowFrame, pid: pid)
+            capsuleAX = kept.frame
+            if let cause = kept.cause {
+                lastFit = Self.record(.declined, cause, text: text, font: font, placement: placement, context: live, capsule: capsuleAX)
+                hide()
+                return nil
+            }
+        }
+
         presenter.show(
             candidate: CompletionCandidate(text: text, mode: .prose),
             placement: placement,
@@ -110,7 +122,7 @@ final class GhostOverlay {
         let shown: Presentation = placement.presentation == .capsule ? .capsule : (canMirror ? .mirror : .inline)
         capsuleShow = shown == .capsule ? (placement, effective) : nil
         let outcome: GhostFit.Outcome = decision == .capsule ? .overflowCapsule : GhostFit.Outcome(rawValue: shown.rawValue) ?? .inline
-        lastFit = Self.record(outcome, nil, text: text, font: font, placement: placement, context: live)
+        lastFit = Self.record(outcome, nil, text: text, font: font, placement: placement, context: live, capsule: capsuleAX)
         presentation = shown
         shownText = text
         return shown
@@ -127,7 +139,7 @@ final class GhostOverlay {
 
     private static func record(
         _ outcome: GhostFit.Outcome, _ cause: GhostFit.Cause?, text: String, font: NSFont?, placement: OverlayPlacement?,
-        context: TextFieldContext
+        context: TextFieldContext, capsule: CGRect? = nil
     ) -> GhostFit.Record {
         let font = font ?? .systemFont(ofSize: NSFont.systemFontSize)
         let width = (text as NSString).size(withAttributes: [.font: font]).width
@@ -137,10 +149,12 @@ final class GhostOverlay {
             guard let caret, let field, !field.isEmpty else { return nil }
             return Double(context.geometry.isRightToLeft ? caret.minX - field.minX : field.maxX - caret.maxX)
         }()
-        return GhostFit.Record(
+        var record = GhostFit.Record(
             outcome: outcome, cause: cause, textWidth: Double(ceil(width)), room: room,
             fieldHeight: field.map { Double($0.height) }, caretQuality: context.geometry.cursorRectQuality.rawValue
         )
+        record.capsule = capsule.map { [$0.minX, $0.minY, $0.width, $0.height].map(Double.init) }
+        return record
     }
 
     /// Redraws the ghost text without its head right after the user typed it, before the AX
@@ -168,6 +182,37 @@ final class GhostOverlay {
         presentation = nil
         shownText = nil
         capsuleShow = nil
+    }
+
+    /// The capsule stays inside the focused window and off other apps' windows (A18, bug 6). Its
+    /// field is clamped to the window first, so KeyType's layout slides it left to fit; what still
+    /// leaves the window, or lies under another app's window, is not drawn, and neither is one whose
+    /// window's frame is unknown. The cause is nil when it may be drawn; the frame (global
+    /// top-left) is where it was laid out.
+    static func keepCapsuleInWindow(_ placement: inout OverlayPlacement, text: String, font: NSFont, window: CGRect?, pid: Int32?) -> (cause: GhostFit.Cause?, frame: CGRect?) {
+        guard let window, !window.isEmpty else { return (.capsuleNoWindow, nil) }
+        let field = placement.fieldRect.map { $0.intersection(window) }
+        placement.fieldRect = field.flatMap { $0.isNull || $0.isEmpty ? nil : $0 } ?? window
+        let width = (text as NSString).size(withAttributes: [.font: font]).width
+        let approximate = placement.cursorRectQuality == .derived || placement.cursorRectQuality == .estimated
+        let laid = GhostFit.capsuleFrame(
+            caret: placement.cursorRect, field: placement.fieldRect, textWidth: width,
+            fontLineHeight: ceil(font.ascender - font.descender), approximateCaret: approximate
+        )
+        let frame = laid.frame.offsetBy(dx: CGFloat(placement.horizontalOffset), dy: -CGFloat(placement.verticalOffset(Double(laid.lineHeight))))
+        let ax = Screen.ax(frame)
+        if let cause = GhostFit.capsuleCause(frame: frame, window: window) { return (cause, ax) }
+        guard let pid else { return (nil, ax) }
+        let points = [CGPoint(x: ax.minX + 1, y: ax.minY + 1), CGPoint(x: ax.maxX - 1, y: ax.minY + 1),
+                      CGPoint(x: ax.minX + 1, y: ax.maxY - 1), CGPoint(x: ax.maxX - 1, y: ax.maxY - 1), CGPoint(x: ax.midX, y: ax.midY)]
+        let windows = Visibility.windows()
+        let own = ProcessInfo.processInfo.processIdentifier
+        let displays = NSScreen.screens.map { Screen.ax($0.frame) }
+        let fieldAX = Screen.ax(placement.fieldRect ?? window)
+        for point in points where SurfaceGate.topPID(at: point, windows: windows, ownPID: own, displays: displays, field: fieldAX) != pid {
+            return (.capsuleCovered, ax)
+        }
+        return (nil, ax)
     }
 
     /// The capsule's bottom stays above the bottom of the caret's display. Its height is KeyType's

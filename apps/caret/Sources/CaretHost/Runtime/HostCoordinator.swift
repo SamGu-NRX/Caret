@@ -85,7 +85,7 @@ final class HostCoordinator {
             // Same field and text, possibly scrolled: re-pin what is shown to the new caret.
             if let shown = overlay.shownText, let rect = snapshot.caretRect, rect != lastCaretRect {
                 lastCaretRect = rect
-                let drawn = overlay.show(shown, at: snapshot, style: FieldStyleProbe.style(of: element))
+                let drawn = overlay.show(shown, at: snapshot, style: FieldStyleProbe.style(of: element), pid: field.identity.pid)
                 noteFit()
                 if drawn == nil { clearOffer() }
             }
@@ -149,7 +149,7 @@ final class HostCoordinator {
         if let current = arbiter.snapshot().current, current.id > claim.offer.id { return }
         cancelGeneration()
         overlay.hide()
-        // Shift+Tab took one word: keep the suggestion, so the field change that follows re-offers
+        // ⌥→ took one word: keep the suggestion, so the field change that follows re-offers
         // the rest of it (SuggestionAnchor.remaining) instead of generating anew.
         if !claim.choice.wordOnly { anchor = nil }
         lastContextKey = nil
@@ -257,7 +257,7 @@ final class HostCoordinator {
             status.increment("discarded.keyDuringPublish")
             return false
         }
-        let drawn = overlay.show(text, at: snapshot, style: style)
+        let drawn = overlay.show(text, at: snapshot, style: style, pid: field.identity.pid)
         noteFit()
         guard let presentation = drawn else {
             arbiter.invalidate(offerID: offerID)
@@ -269,7 +269,14 @@ final class HostCoordinator {
         executor?.remember(offerID: offerID, context: snapshot.context)
         status.update { $0.presentation = presentation.rawValue }
         let target = field.identity
-        watch.start(check: { Visibility.hold(for: target, anchors: anchors) }, onLost: { [weak self] hold in
+        // A capsule's corners are watched too: a window that shrinks or a window moved over it
+        // takes the offer down, as one over the caret does (A18 review).
+        var watched = anchors
+        if presentation == .capsule, let c = overlay.lastFit?.capsule, c.count == 4 {
+            watched += [CGPoint(x: c[0] + 1, y: c[1] + 1), CGPoint(x: c[0] + c[2] - 1, y: c[1] + 1),
+                        CGPoint(x: c[0] + 1, y: c[1] + c[3] - 1), CGPoint(x: c[0] + c[2] - 1, y: c[1] + c[3] - 1)]
+        }
+        watch.start(check: { Visibility.hold(for: target, anchors: watched) }, onLost: { [weak self] hold in
             self?.status.increment("withdrawn.ghost.\(hold.rawValue)")
             self?.clearOffer()
         })

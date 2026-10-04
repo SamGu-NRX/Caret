@@ -4,7 +4,7 @@ import CaretHost
 // Launch by direct exec of Caret.app/Contents/MacOS/Caret so the process inherits the launching
 // app's Accessibility grant. Flags: --socket <path>, --model <path>, --allow <bundle,ids>,
 // --allow-pids <pid,pid>, --helper-socket <path>, --no-ghost, --no-fill-advance,
-// --appearance light|dark, --perch hidden|shown, --surfaces headless|shown, --test-hooks,
+// --appearance light|dark, --perch hidden|shown, --surfaces headless|shown, --test-hooks, --ghost-replay <file>,
 // --settings <path>, --onboarding auto|show|hidden|off, --status-item off, --ghost-overflow capsule|drop.
 // Environment equivalents: CARET_HOST_SOCKET, CARET_MODEL_PATH, CARET_ALLOW_BUNDLES,
 // CARET_ALLOW_PIDS, CARET_SCREEN_SOCKET, CARET_GHOST=off, CARET_FILL_ADVANCE=off, CARET_PERCH=hidden,
@@ -20,6 +20,21 @@ if CommandLine.arguments.dropFirst().first == "--probe-typing", CommandLine.argu
     MainActor.assumeIsolated {
         Task {
             print(await DevProbe.typing(modelURL: modelURL, text: text), terminator: "")
+            exit(0)
+        }
+    }
+    RunLoop.main.run()
+}
+
+// Dev mode: `Caret --probe-replay <cases.json> <out.json>` records the engine's outcome for each
+// case as a `--ghost-replay` file, and prints every candidate's refusal and fit scores.
+if CommandLine.arguments.dropFirst().first == "--probe-replay", CommandLine.arguments.count >= 4 {
+    let cases = URL(fileURLWithPath: CommandLine.arguments[2])
+    let out = URL(fileURLWithPath: CommandLine.arguments[3])
+    let modelURL = configuration.modelURL
+    MainActor.assumeIsolated {
+        Task {
+            print(await DevProbe.replay(modelURL: modelURL, cases: cases, out: out), terminator: "")
             exit(0)
         }
     }
@@ -56,6 +71,7 @@ while let argument = arguments.next() {
     case "--allow-pids": configuration.allowedPIDs = HostRuntime.pids(arguments.next())
     case "--helper-socket": if let value = arguments.next() { configuration.helperSocketPath = value }
     case "--no-ghost": configuration.ghostEnabled = false
+    case "--ghost-replay": configuration.ghostReplayPath = arguments.next()
     case "--no-fill-advance": configuration.fillAdvances = false
     case "--appearance": appearanceName = arguments.next()
     case "--perch":

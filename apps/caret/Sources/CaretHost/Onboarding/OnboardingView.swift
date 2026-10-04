@@ -571,7 +571,8 @@ struct TryItScreen: View {
         let t = state.tryIt
         HStack(spacing: 6) {
             if t.completed {
-                Text("That's it. Tab takes what Caret offers, and typing says no.")
+                // Ghost text is the offer seen most, so its word key is taught here (A18, bug 17).
+                Text("That's it. Tab takes the offer, \u{2325}\u{2192} one word of it. Typing says no.")
             } else if t.offerVisible {
                 Keycap(text: "Tab")
                 Text("takes it. Keep typing to say no.")

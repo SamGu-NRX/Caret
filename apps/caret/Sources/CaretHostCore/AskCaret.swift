@@ -123,6 +123,8 @@ public final class AskCaret {
     /// The ended run's writes ⌘Z may undo; nil once undone, asked or put away.
     public private(set) var undoOffer: UndoOffer?
     private var undoTimer: SurfaceTimer?
+    /// A failed ask is showing: the next keys typed start a new instruction (`edit`).
+    public private(set) var replacesOnType = false
     /// The task Tab started, followed while its card is up: a paused run resumed from the activity
     /// list, or undone there, moves the same card. Nil once the card is put away.
     private var tracking: String?
@@ -154,9 +156,17 @@ public final class AskCaret {
     // MARK: - From the user
 
     /// The field's text changed. A new instruction replaces a card that is not running, and an
-    /// answer still on its way is no longer wanted.
+    /// answer still on its way is no longer wanted. The first keys typed after a failed ask start
+    /// a new instruction rather than add to the one that failed (A18, bug 14): typed onto the end
+    /// of it, they replace it. Any other edit (deleting, or the view's own select-all being
+    /// typed over) is taken as it is.
     public func edit(_ text: String) {
         guard text != self.text else { return }
+        var text = text
+        if replacesOnType {
+            replacesOnType = false
+            if !self.text.isEmpty, text.count > self.text.count, text.hasPrefix(self.text) { text = String(text.dropFirst(self.text.count)) }
+        }
         self.text = text
         switch phase {
         case .asking, .proposed, .failed, .ended: settle(.idle)
@@ -234,7 +244,13 @@ public final class AskCaret {
                 if self.stopping == key, case .ended(let card, _) = self.phase { self.settle(.ended(card, WorkLines.stopUnreached)) }
             }
             return true
-        case .asking, .proposed, .failed, .ended:
+        case .failed, .ended:
+            // One Esc puts away the answer and the instruction it answered (A18, bug 14).
+            text = ""
+            settle(.idle)
+            return true
+        case .asking, .proposed:
+            // The instruction stays to edit: the plan, or the wait for one, is what goes.
             settle(.idle)
             return true
         case .idle:
@@ -466,6 +482,7 @@ public final class AskCaret {
             undoTimer?.cancel()
             undoTimer = nil
         }
+        if case .failed = next { replacesOnType = true } else { replacesOnType = false }
         phase = shown
         if offer != undoOffer {
             undoOffer = offer
@@ -543,7 +560,7 @@ public enum AskCopy {
     ///   Fill 3 fields in Caret Fixture
     ///   You press Send in Mail            (a plan that only hands a press over)
     public static func title(fields: [String], writes: Int, press: String?, app: String) -> String {
-        let names = fields.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let names = fields.map(fieldName)
         let named = names.count == writes && !names.contains(where: \.isEmpty)
         switch writes {
         case 0: return press.map { "You press \($0) in \(app)" } ?? "Nothing to fill in \(app)"
@@ -555,7 +572,28 @@ public enum AskCopy {
 
     /// A field write in plain words: Put “Priya Raman” in Name.
     public static func write(_ value: String, into field: String) -> String {
-        "Put \u{201C}\(value)\u{201D} in \(field)"
+        let name = fieldName(field)
+        return "Put \u{201C}\(value)\u{201D} in \(name.isEmpty ? field.trimmingCharacters(in: .whitespacesAndNewlines) : name)"
+    }
+
+    /// A field's label as a title names it: without the marker a form puts after a required
+    /// field's label. Q1 (A18, bug 16) showed "Fill Email * in Google Chrome" with the asterisk
+    /// wrapped onto its own line. Strips trailing asterisks (ASCII, full-width, heavy), a trailing
+    /// "(required)" in any case, and a colon left before them. A label that is only a marker comes
+    /// back empty, so a title counts that field rather than naming it.
+    public static func fieldName(_ label: String) -> String {
+        var name = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let markers: Set<Character> = ["*", "\u{FF0A}", "\u{2731}", "\u{2217}"]
+        while true {
+            let before = name
+            while let last = name.last, markers.contains(last) { name.removeLast() }
+            if name.lowercased().hasSuffix("(required)") { name.removeLast("(required)".count) }
+            name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if name.hasSuffix(":") { name.removeLast() }
+            name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if name == before { break }
+        }
+        return name
     }
 
     static let unlabelled = "the unlabelled button"

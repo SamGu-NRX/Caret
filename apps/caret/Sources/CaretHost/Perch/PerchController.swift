@@ -83,6 +83,8 @@ final class PerchController {
     private var relocating = false
     private var clickMonitor: Any?
     private(set) var listOpen = false
+    /// The open list was placed as the desk (Ask Caret), so a perch move does not re-hang it.
+    private var listIsDesk = false
     /// Pages of Done rows the open list shows; "and N more" adds one, closing the list resets it.
     private(set) var donePages = 1
     private var stats = Stats()
@@ -92,6 +94,10 @@ final class PerchController {
         var shows = 0
         var leaves = 0
         var lastMoveReason: String?
+        /// The list was marked open but was not on screen when Ask Caret was chosen.
+        var reopened = 0
+        /// Where the list last opened: under the perch, or as the desk under the menu bar.
+        var listAnchor: String?
     }
 
     init(center: ActivityCenter, drawsOnScreen: Bool) {
@@ -120,9 +126,24 @@ final class PerchController {
     private func askChanged() {
         if askModel.text != ask.text { askModel.text = ask.text }
         if askModel.phase != ask.phase { askModel.phase = ask.phase }
+        let newlyFailed: Bool = { if case .failed = ask.phase, drawnAsk != ask.phase { return true } else { return false } }()
         // A new phase can change the list's height; typing alone does not, and redrawing the panel
         // on each key would cost a measure per keystroke.
         if listOpen, drawnAsk != ask.phase || drawnHint != AskSection.showsHint(text: ask.text, phase: ask.phase) { renderList() }
+        if newlyFailed { selectFailedInstruction() }
+    }
+
+    /// A failed ask's instruction is selected, so the field shows that typing replaces it (A18,
+    /// bug 14; `AskCaret.edit` replaces it either way). After the redraw has given the field back
+    /// its focus, which happens on the next turn of the run loop.
+    private func selectFailedInstruction() {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, case .failed = self.ask.phase, self.list.panel.isKeyWindow,
+                      let editor = self.list.panel.firstResponder as? NSTextView else { return }
+                editor.selectAll(nil)
+            }
+        }
     }
 
     /// Return, Tab, Esc and ⌘Z while the list is key, before the field editor sees them. ⌘Z undoes an
@@ -155,9 +176,18 @@ final class PerchController {
 
     /// The menu's Ask Caret: the list opens with the field focused, Caret still behind the app the
     /// user is in.
+    ///
+    /// Opened whenever it is not on screen, whatever `listOpen` says (A18, bug 15: right after
+    /// onboarding the first press did nothing), and placed again when it is, so it opens near the
+    /// window in front now rather than where it last was.
     func openAsk() {
-        if !listOpen { openList() }
+        if listOpen, drawsOnScreen, !list.isVisible {
+            stats.reopened += 1
+            listOpen = false
+        }
+        if listOpen { anchorList(desk: true) } else { openList(desk: true) }
         guard drawsOnScreen else { return }
+        list.panel.orderFrontRegardless()
         list.panel.makeKey()
         askModel.focusToken &+= 1
     }
@@ -368,12 +398,15 @@ final class PerchController {
         listOpen ? closeList() : openList()
     }
 
-    func openList() {
+    /// `desk`: placed as the desk over the window in front even when the perch is on screen
+    /// (the menu's Ask Caret); otherwise it hangs from the perch when there is one.
+    func openList(desk: Bool = false) {
         listOpen = true
         defer { onListChanged?(true) }
+        listIsDesk = desk
         center.acknowledge()
         renderList()
-        anchorList()
+        anchorList(desk: desk)
         if drawsOnScreen { list.enter() }
         if clickMonitor == nil {
             // A click in another app closes the list; clicks in Caret's own panels do not reach
@@ -432,10 +465,21 @@ final class PerchController {
         list.setContent(view)
     }
 
-    /// The list grows away from the perch's corner, 6 pt from it; with no perch on screen (opened
-    /// from the menu), from the bottom-right home.
-    private func anchorList() {
-        let perch = frame ?? PerchPlacement.frame(.bottomRight, size: PerchModel.size, in: screenFrame())
+    /// The list grows away from the perch's corner, 6 pt from it. With no perch on screen (opened
+    /// from the menu), it is the desk: under the menu bar of the screen holding the window in
+    /// front, centered over that window (`DeskPlacement`, A18 bug 13).
+    private func anchorList(desk: Bool? = nil) {
+        if let desk { listIsDesk = desk }
+        guard !listIsDesk, let perch = frame, model.presented, drawsOnScreen, !hidden, panel.isVisible else {
+            let window = Self.frontWindow()
+            let screens = NSScreen.screens.map { Screen.ax($0.visibleFrame) }
+            let visible = DeskPlacement.screen(for: window, screens: screens, fallback: screenFrame())
+            let p = DeskPlacement.topLeft(width: list.size.width, visible: visible, window: window)
+            stats.listAnchor = window == nil ? "desk" : "desk.window"
+            list.pin(.init(corner: .topLeft, point: NSPoint(x: p.x, y: Screen.cocoa(CGRect(origin: p, size: .zero)).maxY)))
+            return
+        }
+        stats.listAnchor = "perch"
         let c = Screen.cocoa(perch)
         let anchor: HostedPanel.Anchor
         switch home ?? .bottomRight {
@@ -445,6 +489,16 @@ final class PerchController {
         case .topLeft: anchor = .init(corner: .topLeft, point: NSPoint(x: c.minX, y: c.minY - 6))
         }
         list.pin(anchor)
+    }
+
+    /// The frontmost ordinary window of another app, global top-left points: what the desk opens
+    /// over. Window-server order, so it is right even when Caret itself is the active app (after
+    /// onboarding). Tiny windows (a status item's, a tooltip) are skipped.
+    static func frontWindow() -> CGRect? {
+        let own = ProcessInfo.processInfo.processIdentifier
+        return Visibility.windows().first { w in
+            w.pid != own && w.layer == 0 && w.alpha > 0.01 && w.bounds.width >= 120 && w.bounds.height >= 80
+        }?.bounds
     }
 
     func shutdown() {
@@ -483,6 +537,8 @@ final class PerchController {
         var listWindowNumber: Int
         var listOpen: Bool
         var listOnScreen: Bool
+        /// The list's frame while on screen, global top-left points.
+        var listFrame: [Double]?
         var rows: [ActivityRow]
         /// Done rows behind "and N more", and the pages shown.
         var more: Int
@@ -511,6 +567,7 @@ final class PerchController {
             isKey: panel.isKeyWindow || list.panel.isKeyWindow,
             askEditing: list.panel.isKeyWindow && list.panel.firstResponder is NSTextView,
             windowNumber: panel.windowNumber, listWindowNumber: list.panel.windowNumber, listOpen: listOpen, listOnScreen: list.panel.isVisible,
+            listFrame: list.panel.isVisible ? box(Screen.ax(list.panel.frame)) : nil,
             rows: center.page(pages: donePages).rows, more: center.page(pages: donePages).more, donePages: donePages,
             incomplete: center.feed.incomplete, feedSeq: center.feed.seq, listed: center.feed.listed,
             pausable: Dictionary(uniqueKeysWithValues: pause.running.map { (String($0.key), $0.value.sorted()) }),

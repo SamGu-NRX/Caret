@@ -22,6 +22,31 @@ final class FakeFillWorld: FillWorld {
         source.pid == nil || unknownSources.contains(source.title) ? nil : !closedSources.contains(source.title)
     }
 
+    /// How far the fixture's fields have moved down since the proposal (a page that scrolled or
+    /// put a message above them), and whether binding finds their elements.
+    var layoutShift: CGFloat = 0
+    var bindable = true
+    private(set) var bindCalls = 0
+
+    func frame(_ element: Fx.Element) -> CGRect { element.frame.offsetBy(dx: 0, dy: layoutShift) }
+
+    /// The window ids binding was asked for.
+    private(set) var bindWindows: [String] = []
+
+    func elementIDs(pid: Int32, at frames: [String: Frame], window windowID: String) -> [String: String] {
+        bindCalls += 1
+        bindWindows.append(windowID)
+        guard bindable, windowID == "5150-1" else { return [:] }
+        var found: [String: String] = [:]
+        for (key, frame) in frames {
+            for element in [Fx.Element.email, .phone] {
+                let f = self.frame(element)
+                if FillSelection.matches(frame, Frame(x: f.minX, y: f.minY, width: f.width, height: f.height)) { found[key] = element.rawValue }
+            }
+        }
+        return found
+    }
+
     func allows(pid: Int32, bundleID: String?) -> Bool { allowed?.contains(pid) ?? true }
     func bundleID(pid: Int32) -> String? { "dev.caret.fixture" }
 
@@ -50,7 +75,7 @@ final class FakeFillWorld: FillWorld {
     func focus(_ element: Fx.Element, value: String = "") {
         focused[Fx.app] = FillFieldRead(
             identity: Fx.identity(element, window: "5150-1", value: value), value: value,
-            selection: .caret(UTF16Text.length(value)), secure: false, frame: element.frame, readID: 7
+            selection: .caret(UTF16Text.length(value)), secure: false, frame: frame(element), readID: 7
         )
     }
 }

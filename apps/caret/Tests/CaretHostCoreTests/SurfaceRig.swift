@@ -203,6 +203,7 @@ final class SurfaceRig {
     /// Commands since the last `takeLog`, in a short readable form; `publish` and counts left out.
     private(set) var log: [String] = []
     private(set) var counts: [String] = []
+    private(set) var logged: [String] = []
     private(set) var sent: [String] = []
     /// The `at` of each offerAccept and offerStop sent, in milliseconds.
     private(set) var sentAt: [Int64] = []
@@ -245,6 +246,7 @@ final class SurfaceRig {
         switch command {
         case .publish: return
         case .count(let name): counts.append(name)
+        case .log(let line): logged.append(line)
         case .drawAlternatives(let d):
             log.append("alternatives \(d.entering ? "enter" : "redraw") \(d.currentText)\(d.ui.open ? " open" : "")\(d.quoted ? " quoted" : "")")
         case .typedThrough(_, _, let remainder, _): log.append("typed rest \(remainder)")

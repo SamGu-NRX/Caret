@@ -146,6 +146,17 @@ public enum SurfaceIncoming: Equatable, Sendable {
         }
     }
 
+    /// The offer's kind as the debug state names it.
+    public var kindName: String {
+        switch self {
+        case .helper(let offer, _): return offer.kindName
+        case .injected(.alternatives): return "alternatives"
+        case .injected(.action): return "action"
+        case .injected(.popup): return "popup"
+        case .injected(.helperLine): return "helperLine"
+        }
+    }
+
     /// The helper's key, for withdrawal. Injected offers are never withdrawn by the helper.
     public var helperKey: String? {
         if case .helper(let offer, _) = self { return offer.offerKey }

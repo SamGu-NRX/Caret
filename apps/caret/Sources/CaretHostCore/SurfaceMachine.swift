@@ -426,7 +426,7 @@ public final class SurfaceMachine {
             let ghostRect = CGRect(x: caret.maxX, y: caret.minY, width: widest, height: caret.height)
             let textAfter = field.selection.end < UTF16Text.length(field.value)
             if !SurfaceGate.fitsInField(ghost: ghostRect, field: frame, textAfterCaret: textAfter) {
-                return hold(incoming, .wouldOverlapText, retry: false)
+                return unshown(incoming, .wouldOverlapText, since: clock.now)
             }
         }
         guard let offer = incoming.offer(for: field, createdAt: clock.now) else { return #"{"error":"nothing to show"}"# }
@@ -444,8 +444,9 @@ public final class SurfaceMachine {
                 guard let small = Self.compactContent(for: offer, ui: OfferUI(initialFor: offer)),
                       world.panelIsClear(small, field: frame, caret: caret, pid: pid) else {
                     // Only the screen around the field could change the answer, and probing it again
-                    // every half second costs main-thread hit-tests; the helper offers again on change.
-                    return hold(incoming, .noClearSpot, retry: false)
+                    // every half second costs main-thread hit-tests; the helper offers again on
+                    // change. Never drawn, so withdrawn and logged rather than kept (A18, bug 2).
+                    return unshown(incoming, .noClearSpot, since: clock.now)
                 }
                 compact = true
                 count("surface.compact.\(offer.kind.name)")
@@ -532,25 +533,18 @@ public final class SurfaceMachine {
         if case .ghost = offer.kind { takeLineDown(exit: 0) }
     }
 
-    /// Nothing is drawn; the offer waits, and is tried again every half second for 30 s (or not at
-    /// all when only the field's own content could change the answer).
-    func hold(_ incoming: SurfaceIncoming, _ reason: SurfaceGate.Hold, retry: Bool = true) -> String {
+    /// Nothing is drawn; the offer waits, and is tried again every half second for 30 s, then
+    /// withdrawn (`unshown`). An offer only the field's own content could ever let through goes to
+    /// `unshown` at once instead.
+    func hold(_ incoming: SurfaceIncoming, _ reason: SurfaceGate.Hold) -> String {
         count("surface.held.\(reason.rawValue)")
         // A reoffered line whose replacement cannot be drawn now goes, rather than sit with no key.
         if let key = incoming.helperKey, swap?.newKey == key { endSwap(takeDown: true) }
-        if !retry {
-            // Only the field's own content could change the answer; an older held offer is
-            // superseded too, so nothing is retried.
-            pendingTimer?.cancel()
-            pendingTimer = nil
-            pending = nil
-        } else {
-            // The same offer keeps its first hold time; a different one starts over.
-            let since = pending.flatMap { $0.incoming.offerKey == incoming.offerKey ? $0.since : nil } ?? clock.now
-            pending = Pending(incoming: incoming, since: since, hold: reason)
-            if pendingTimer == nil {
-                pendingTimer = clock.schedule(after: Self.recheckInterval, repeats: true) { [weak self] in self?.retryPending() }
-            }
+        // The same offer keeps its first hold time; a different one starts over.
+        let since = pending.flatMap { $0.incoming.offerKey == incoming.offerKey ? $0.since : nil } ?? clock.now
+        pending = Pending(incoming: incoming, since: since, hold: reason)
+        if pendingTimer == nil {
+            pendingTimer = clock.schedule(after: Self.recheckInterval, repeats: true) { [weak self] in self?.retryPending() }
         }
         publish()
         return #"{"held":"\#(reason.rawValue)"}"#
@@ -558,8 +552,32 @@ public final class SurfaceMachine {
 
     func retryPending() {
         guard let pending else { return cancelPending() }
-        if clock.now.timeIntervalSince(pending.since) > Self.holdLimit { return cancelPending() }
+        if clock.now.timeIntervalSince(pending.since) > Self.holdLimit {
+            _ = unshown(pending.incoming, pending.hold, since: pending.since)
+            return
+        }
         _ = present(pending.incoming)
+    }
+
+    /// The last offer withdrawn without being drawn, for the debug state.
+    public internal(set) var lastUnshown: DebugState.Unshown?
+
+    /// An offer that was never drawn is withdrawn, counted and logged, never kept waiting: one
+    /// that can never be drawn (no clear spot) at once, one held for `holdLimit` when that ends
+    /// (A18, bug 2). A held offer owns no key, so Tab and the arrows stay the app's throughout.
+    /// The helper is not told: the protocol has no host-to-helper message for an offer not shown.
+    func unshown(_ incoming: SurfaceIncoming, _ reason: SurfaceGate.Hold, since: Date) -> String {
+        count("surface.held.\(reason.rawValue)")
+        count("surface.unshown.\(reason.rawValue)")
+        if let key = incoming.helperKey, swap?.newKey == key { endSwap(takeDown: true) }
+        pendingTimer?.cancel()
+        pendingTimer = nil
+        pending = nil
+        let heldMs = Int((clock.now.timeIntervalSince(since) * 1000).rounded())
+        lastUnshown = DebugState.Unshown(offerKey: incoming.offerKey, kind: incoming.kindName, reason: reason.rawValue, heldMs: heldMs)
+        emit(.log("\(incoming.kindName) \(incoming.offerKey ?? "(injected)") withdrawn unshown: \(reason.rawValue) after \(heldMs) ms"))
+        publish()
+        return #"{"held":"\#(reason.rawValue)","unshown":true}"#
     }
 
     func cancelPending() {
@@ -950,6 +968,7 @@ public final class SurfaceMachine {
         info.workingOn = work?.offerKey
         info.toast = toastInfo
         info.held = pending?.hold.rawValue
+        info.lastUnshown = lastUnshown
         info.lastAccepted = lastAccepted.map {
             DebugState.AcceptInfo(offerKey: $0.offerKey, actionId: $0.actionId, candidate: $0.candidate, row: $0.row, overrides: $0.overrides, source: $0.source, kind: $0.kind)
         }

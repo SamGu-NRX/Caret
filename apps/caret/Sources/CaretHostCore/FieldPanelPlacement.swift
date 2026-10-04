@@ -89,6 +89,33 @@ public enum FieldPanelPlacement {
         return CGRect(x: field.minX, y: caret.minY, width: field.width, height: caret.height)
     }
 
+    /// Where the compact line goes in a text view: hung from the caret's line, inside `visible`,
+    /// with no hit-testing. Nil for a one-line field, which `choose` places, and when the visible
+    /// part of the view has no room for the line under or over the caret's line.
+    ///
+    /// Q1 (A18, bug 2) held every action line and event card in a full-window TextEdit document as
+    /// `noClearSpot`: the view fills its window, so every spot `choose` probes is in the window, and
+    /// the compact line never took over. Inside a text view the only thing under the caret's line
+    /// is the document's own text, which the offer line has always been allowed to cover (`choose`
+    /// keeps only the caret's line clear), so this spot needs no probe and cannot be refused by a
+    /// slow app. Below the caret's line first, covering the text after it; above only when the
+    /// caret's line is the last visible one.
+    ///
+    /// `visible` is the part of the view on screen: the view's frame clipped to its scroll area,
+    /// its window and the screen's visible frame (global, top-left origin).
+    public static func caretLineSpot(field: CGRect, caret: CGRect, size: CGSize, visible: CGRect) -> Choice? {
+        let hang = anchor(field: field, caret: caret)
+        guard hang != field else { return nil }
+        let area = visible.insetBy(dx: margin, dy: margin)
+        guard !area.isNull, area.width >= size.width, size.height > 0 else { return nil }
+        let x = min(max(caret.minX - caretInset, area.minX), area.maxX - size.width)
+        let below = CGRect(x: x, y: hang.maxY + gap, width: size.width, height: size.height)
+        if area.contains(below) { return Choice(frame: below, spot: .below, overlap: 0, probed: 0) }
+        let above = CGRect(x: x, y: hang.minY - gap - size.height, width: size.width, height: size.height)
+        if area.contains(above) { return Choice(frame: above, spot: .above, overlap: 0, probed: 0) }
+        return nil
+    }
+
     /// The candidate frames in the order they are tried. `narrow` is the panel's size at its
     /// narrowest width, when that is narrower than `size`; a line has none.
     public static func candidates(field: CGRect, caret: CGRect, size: CGSize, narrow: CGSize?, bounds: CGRect) -> [(Spot, CGRect)] {

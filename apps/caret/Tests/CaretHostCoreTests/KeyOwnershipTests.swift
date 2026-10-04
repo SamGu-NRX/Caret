@@ -16,6 +16,7 @@ final class KeyOwnershipTests: XCTestCase {
         ("down", KeyStroke(keyCode: KeyStroke.downKeyCode, targetPID: pid)),
         ("left", KeyStroke(keyCode: KeyStroke.leftKeyCode, targetPID: pid)),
         ("right", KeyStroke(keyCode: KeyStroke.rightKeyCode, targetPID: pid)),
+        ("opt-right", KeyStroke(keyCode: KeyStroke.rightKeyCode, option: true, targetPID: pid)),
         ("esc", KeyStroke(keyCode: KeyStroke.escapeKeyCode, targetPID: pid)),
         ("return", KeyStroke(keyCode: KeyStroke.returnKeyCode, targetPID: pid)),
         ("delete", KeyStroke(keyCode: KeyStroke.deleteKeyCode, targetPID: pid)),
@@ -89,11 +90,11 @@ final class KeyOwnershipTests: XCTestCase {
 
     static let rows: [Row] = [
         Row(name: "nothing", owned: [], setUp: { _ in }, isGone: { _ in true }),
-        Row(name: "ghost text, one candidate", owned: ["tab", "shift-tab", "esc"],
+        Row(name: "ghost text, one candidate", owned: ["tab", "opt-right", "esc"],
             setUp: { $0.publish(ghost()) }, isGone: offerGone),
-        Row(name: "ghost text, four candidates", owned: ["tab", "shift-tab", "esc", "down"],
+        Row(name: "ghost text, four candidates", owned: ["tab", "opt-right", "esc", "down"],
             setUp: { $0.publish(ghost(four)) }, isGone: offerGone),
-        Row(name: "alternatives open", owned: ["tab", "shift-tab", "up", "down", "esc", "cmd-1", "cmd-2", "cmd-3"],
+        Row(name: "alternatives open", owned: ["tab", "opt-right", "up", "down", "esc", "cmd-1", "cmd-2", "cmd-3"],
             setUp: { $0.publish(ghost(four)); _ = $0.handleKeyDown(KeyStroke(keyCode: KeyStroke.downKeyCode, targetPID: pid)) },
             isGone: offerGone),
         Row(name: "action line with a numbered action and variants", owned: ["tab", "esc", "cmd-2", "down"],

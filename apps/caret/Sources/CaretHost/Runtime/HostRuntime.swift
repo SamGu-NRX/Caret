@@ -34,6 +34,10 @@ public final class HostRuntime {
         /// What a ghost completion too wide for its line does (`--ghost-overflow`,
         /// `CARET_GHOST_OVERFLOW`): `capsule`, or `drop` to measure KeyType's behavior.
         public var ghostOverflow: GhostFit.OverflowRule
+        /// Test hook (`--ghost-replay <file>`, `CARET_GHOST_REPLAY`, with `--test-hooks` only): ghost
+        /// text comes from outcomes recorded with the model elsewhere (`GhostReplay`); the model is
+        /// not loaded. For the rig's VM, which has no room for it.
+        public var ghostReplayPath: String?
         /// When onboarding opens (`--onboarding`, `CARET_ONBOARDING`): `off` (the menu opens it),
         /// `auto` (at launch until finished once), `show`, or `hidden` (no window; socket only).
         public var onboarding: String
@@ -57,6 +61,7 @@ public final class HostRuntime {
             ghostOverflow: GhostFit.OverflowRule = ProcessInfo.processInfo.environment["CARET_GHOST_OVERFLOW"] == "drop" ? .drop : .capsule
         ) {
             self.ghostOverflow = ghostOverflow
+            self.ghostReplayPath = ProcessInfo.processInfo.environment["CARET_GHOST_REPLAY"]
             self.onboarding = onboarding
             self.perchDrawsOnScreen = perchDrawsOnScreen
             self.surfacesHeadless = surfacesHeadless
@@ -442,6 +447,18 @@ public final class HostRuntime {
             status.update { $0.engine = DebugState.Engine(state: "disabled", modelFile: modelFile) }
             return
         }
+        if configuration.testHooks, let path = configuration.ghostReplayPath {
+            do {
+                let replay = try JSONDecoder().decode(GhostReplay.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+                engine.useReplay(replay)
+                status.update { $0.engine = DebugState.Engine(state: "replay", modelFile: URL(fileURLWithPath: path).lastPathComponent) }
+                focus.requestRead()
+            } catch {
+                engine.disable()
+                status.update { $0.engine = DebugState.Engine(state: "replayUnreadable", modelFile: path) }
+            }
+            return
+        }
         status.update { $0.engine = DebugState.Engine(state: "loading", modelFile: modelFile) }
         let modelURL = configuration.modelURL
         engineTask = Task { [weak self] in
@@ -642,7 +659,7 @@ public final class HostRuntime {
             guard words.count == 3, let pid = Int32(words[2]), let key = TestKeys.key(words[1], pid: pid) else {
                 return Data("{\"error\":\"usage: key \(TestKeys.names) <pid>\"}\n".utf8)
             }
-            let consumed = tap.route(key)
+            let consumed = tap.route(key, fromHook: true)
             // The tap's callbacks post to main; wait for them, so the next read sees their effect.
             DispatchQueue.main.sync {}
             return Data("{\"ok\":true,\"consumed\":\(consumed)}\n".utf8)
@@ -691,6 +708,9 @@ public final class HostRuntime {
         case "state":
             var state = makeState(arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
             state.surface = DispatchQueue.main.sync { hooks.surface() }
+            let running = DispatchQueue.main.sync { NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier) }
+            let others = OtherTabOwners.running(in: running)
+            state.otherTabOwners = others.isEmpty ? nil : others
             return ((try? encoder.encode(state)) ?? Data("{}".utf8)) + Data("\n".utf8)
         default:
             return Data("{\"error\":\"unknown command\"}\n".utf8)
@@ -757,12 +777,13 @@ public final class HostRuntime {
 
 /// Keys the debug socket's test hook can route.
 enum TestKeys {
-    static let names = "tab|shift-tab|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
+    static let names = "tab|shift-tab|opt-right|esc|up|down|left|right|return|space|cmd-z|cmd-1|cmd-2|cmd-3|char:<c>"
 
     static func key(_ name: String, pid: Int32) -> KeyStroke? {
         switch name {
         case "tab": return .tab(to: pid)
         case "shift-tab": return KeyStroke(keyCode: KeyStroke.tabKeyCode, shift: true, targetPID: pid)
+        case "opt-right": return KeyStroke(keyCode: KeyStroke.rightKeyCode, option: true, targetPID: pid)
         case "up": return KeyStroke(keyCode: KeyStroke.upKeyCode, targetPID: pid)
         case "down": return KeyStroke(keyCode: KeyStroke.downKeyCode, targetPID: pid)
         case "left": return KeyStroke(keyCode: KeyStroke.leftKeyCode, targetPID: pid)
