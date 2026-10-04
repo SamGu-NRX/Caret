@@ -1,1 +1,0 @@
-Tests whose answers must not depend on CPU load fix the generator's budget clock with setGeneratorClock(() => 0) (candidates.ts); find exposed tests by making the wall clock jump 1 s per read and rerunning the suite (B14).
