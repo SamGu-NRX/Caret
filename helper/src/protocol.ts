@@ -1360,7 +1360,7 @@ export const PageControl = z.object({
   id: z.string().min(1),
   /** Structural key (ancestors, role, name, ordinal). Fills Node.key; never a basis for rebinding. */
   key: z.string().min(1),
-  /** (origin, form, name|id|data-automation-id, kind) when the page author named it; null for a generated or missing identifier. */
+  /** JSON array (origin, form, name|id|data-automation-id, kind) when the page author named it; null for a generated or missing identifier. */
   strongKey: z.string().nullable(),
   kind: PageControlKind,
   /** The ARIA role the control has or implies. */
@@ -1449,8 +1449,8 @@ const PageTarget = {
  * expiry, revocation) and the content script's (element alive or strongly rebound, kind, name, value before).
  * `pageWrite` sets a text control: `expect` is the value it must hold right before. `pageSelect` picks the
  * option of a native <select> whose value is `value`; `expect` is the selected value before. `pageSetChecked`
- * sets a checkbox or radio. `pagePress` presses only a control whose visible name is on the safe list, and
- * hands every other press to the user. `pageChooseOption` (custom listbox) and `pageAttachFile` arrive in
+ * sets a checkbox or radio. `pagePress` is always a hand-off in v1: the engine names the risk and leaves the press to
+ * the user, without touching the page. `pageChooseOption` (custom listbox) and `pageAttachFile` arrive in
  * batch 2 and answer `unsupported` until then.
  */
 export const PageVerb = z.discriminatedUnion("kind", [
@@ -1484,7 +1484,7 @@ export const PageOutcome = z.enum([
   "stale",
   /** Caret acted and the page did not take it: a value that returned to `before` is "the page kept the old value". */
   "failed",
-  /** A press Caret leaves to the user: it sends, submits, deletes, pays, or is not on the safe list. */
+  /** A press Caret leaves to the user: in v1, every page press. */
   "handoff",
   /** The element is gone and no strong key rebinds it. */
   "noElement",
@@ -1516,8 +1516,12 @@ export const PageResult = z
     outcome: PageOutcome,
     detail: z.string().nullable(),
     readings: PageWriteReadings.optional(),
-    /** On a handoff: the risk class the visible name read as, or unclassified. */
-    risk: z.enum(["outbound", "destructive", "money", "system", "unclassified", "submitsForm"]).optional(),
+    /**
+     * On a handoff: the risk class the visible name reads as. `pageScript`: a page press whose name reads as no risk;
+     * every page press is a hand-off in v1, since the button runs the page's own script. `unclassified` and
+     * `submitsForm` are kept for a later build that presses.
+     */
+    risk: z.enum(["outbound", "destructive", "money", "system", "unclassified", "submitsForm", "pageScript"]).optional(),
   })
   .refine((r) => (r.outcome === "handoff") === (r.risk !== undefined), { message: "risk comes with outcome handoff, and handoff needs it", path: ["risk"] });
 export type PageResult = z.infer<typeof PageResult>;

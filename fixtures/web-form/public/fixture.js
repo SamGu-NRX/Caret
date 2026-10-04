@@ -10,6 +10,15 @@
     }
   });
 
+  // Radios inside a shadow root, under a sensitive legend outside it.
+  customElements.define("x-yesno", class extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: "open" });
+      root.innerHTML = '<label><input type="radio" name="yn" value="y"> Yes</label> <label><input type="radio" name="yn" value="n"> No</label>';
+    }
+  });
+
   // An ARIA combobox whose listbox lives in a portal at the end of <body>.
   const dept = document.getElementById("dept");
   const DEPTS = ["Engineering", "Design", "Research"];

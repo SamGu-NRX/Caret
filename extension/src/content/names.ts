@@ -54,18 +54,30 @@ export function accessibleName(el: Element): string {
   return "";
 }
 
-/** The name of the group the control sits in: a fieldset's legend or an ARIA group's name. Empty when none. */
-export function groupName(el: Element): string {
-  for (let p: Element | null = el.parentElement; p !== null; p = p.parentElement) {
+/** The element's parent in the composed tree: through a shadow root to its host. */
+export function composedParent(n: Node): Element | null {
+  const p = n.parentNode;
+  if (p instanceof ShadowRoot) return p.host;
+  return p instanceof Element ? p : null;
+}
+
+/**
+ * The names of every group the control sits in, nearest first: fieldset legends and ARIA groups, through shadow
+ * roots to their hosts. All of them, since a nested group with a plain name must not hide a sensitive outer one
+ * (W1 review #6).
+ */
+export function groupNames(el: Element): string[] {
+  const out: string[] = [];
+  for (let p = composedParent(el); p !== null; p = composedParent(p)) {
     if (p instanceof HTMLFieldSetElement) {
       const legend = p.querySelector(":scope > legend");
-      if (legend !== null) return clean(legend.textContent);
+      if (legend !== null) out.push(clean(legend.textContent));
     }
     const role = p.getAttribute("role");
     if (role === "group" || role === "radiogroup") {
       const n = accessibleName(p);
-      if (n !== "") return n;
+      if (n !== "") out.push(n);
     }
   }
-  return "";
+  return out;
 }

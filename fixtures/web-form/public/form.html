@@ -54,6 +54,11 @@
       <label for="gender">Gender</label><select id="gender" name="gender"><option value="">Decline</option><option value="x">Other</option></select>
     </fieldset>
     <p><label><input type="checkbox" name="agree"> I agree to the terms of service</label></p>
+    <p><label for="transparent">Transparent</label><input id="transparent" name="transparent" style="opacity:0"></p>
+    <div style="overflow:hidden; width:200px; height:30px"><div style="margin-left:400px"><label for="clipped">Clipped away</label><input id="clipped" name="clipped"></div></div>
+    <p><label for="expmonth">Expiry month</label><select id="expmonth" name="exp" autocomplete="cc-exp-month"><option>01</option><option>02</option></select></p>
+    <fieldset><legend>Do you identify as transgender?</legend><x-yesno></x-yesno></fieldset>
+    <iframe id="hidden-frame" title="Hidden" src="/frame/hidden" style="display:none"></iframe>
   </section>
   <section>
     <h2>Elsewhere on the page</h2>

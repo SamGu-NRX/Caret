@@ -29,7 +29,7 @@ export interface PageControl {
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "excluded" | "unsupported" | "error";
-export type HandoffRisk = "outbound" | "destructive" | "money" | "system" | "unclassified" | "submitsForm";
+export type HandoffRisk = "outbound" | "destructive" | "money" | "system" | "unclassified" | "submitsForm" | "pageScript";
 
 export interface WriteReadings {
   before: string;

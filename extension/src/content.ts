@@ -25,7 +25,8 @@ function srcOf(f: HTMLIFrameElement): string {
 
 function walk(reg: Registry): FrameReport {
   const href = location.href;
-  const out = walkControls((el) => reg.idOf(el), (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, form: c.form }));
+  const histLen = history.length;
+  const out = walkControls((el) => reg.idOf(el), (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, histLen, form: c.form }));
   const active = deepActiveElement();
   let focused: FrameReport["focused"] = null;
   if (active !== null) {

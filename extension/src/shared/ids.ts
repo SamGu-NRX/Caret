@@ -30,7 +30,10 @@ export function authorIdentifier(attrs: { name?: string | null; id?: string | nu
   return null;
 }
 
-/** (origin, form, identifier, kind), or null without an author-chosen identifier. */
+/**
+ * (origin, form, identifier, kind) as a JSON array, or null without an author-chosen identifier. JSON, not a joined
+ * string: the parts are page-controlled, and "a|b" + "c" must not equal "a" + "b|c" (W1 review #7).
+ */
 export function strongKey(origin: string, form: string | null, ident: string | null, kind: string): string | null {
-  return ident === null ? null : `${origin}|${form ?? "-"}|${ident}|${kind}`;
+  return ident === null ? null : JSON.stringify([origin, form, ident, kind]);
 }

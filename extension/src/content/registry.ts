@@ -14,6 +14,11 @@ export interface Entry {
   name: string;
   /** location.href when a walk last saw it: an act from a later URL in this document is stale. */
   href: string;
+  /**
+   * history.length then. A pushState, even to the same URL, adds an entry the isolated world can see, so an act
+   * that reaches the page after a history change the worker had not yet counted is still stale (W1 review #4).
+   */
+  histLen: number;
   form: string | null;
 }
 

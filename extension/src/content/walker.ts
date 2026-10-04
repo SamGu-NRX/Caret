@@ -4,7 +4,7 @@
 // code, before anything leaves the frame: such controls are counted by reason and never named or read.
 import type { PageControl, PageControlKind, PageExclusion, Rect } from "../shared/messages.ts";
 import { authorIdentifier, isGeneratedId, strongKey } from "../shared/ids.ts";
-import { accessibleName, clean, groupName } from "./names.ts";
+import { accessibleName, clean, composedParent, groupNames } from "./names.ts";
 
 export const MAX_CONTROLS = 1000;
 const MAX_VALUE = 2000;
@@ -62,11 +62,18 @@ const IMPLIED_ROLE: Record<PageControlKind, string> = {
 };
 
 function ariaHidden(el: Element): boolean {
-  for (let n: Node | null = el; n !== null; ) {
-    if (n instanceof Element && (n.getAttribute("aria-hidden") === "true" || n.hasAttribute("inert"))) return true;
-    n = n.parentNode instanceof ShadowRoot ? n.parentNode.host : n.parentNode;
+  for (let n: Element | null = el; n !== null; n = composedParent(n)) {
+    if (n.getAttribute("aria-hidden") === "true" || n.hasAttribute("inert")) return true;
   }
   return false;
+}
+
+/** Sensitive autocomplete tokens, on any control: a <select autocomplete="cc-exp-month"> is a card field too (W1 review #5). */
+function autocompleteExclusion(el: Element): PageExclusion | null {
+  const ac = (el.getAttribute("autocomplete") ?? "").toLowerCase();
+  if (/(^|\s)cc-/.test(ac)) return "payment";
+  if (/(^|\s)one-time-code(\s|$)/.test(ac)) return "oneTimeCode";
+  return null;
 }
 
 /** Why a control must not leave the frame, or null. */
@@ -74,23 +81,38 @@ export function exclusionOf(el: Element, name: string): PageExclusion | null {
   if (el instanceof HTMLInputElement) {
     if (el.type === "hidden") return "hidden";
     if (el.type === "password") return "password";
-    const ac = (el.getAttribute("autocomplete") ?? "").toLowerCase();
-    if (/(^|\s)cc-/.test(ac)) return "payment";
-    if (/(^|\s)one-time-code(\s|$)/.test(ac)) return "oneTimeCode";
-    if (PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
   }
+  const ac = autocompleteExclusion(el);
+  if (ac !== null) return ac;
+  if ((el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) && PAYMENT_NAME.test(`${el.name} ${el.id}`)) return "payment";
   if (ariaHidden(el)) return "ariaHidden";
   if (!visible(el)) return "invisible";
-  if (SELF_IDENTIFICATION.test(name) || SELF_IDENTIFICATION.test(groupName(el))) return "selfIdentification";
+  if (SELF_IDENTIFICATION.test(name) || groupNames(el).some((g) => SELF_IDENTIFICATION.test(g))) return "selfIdentification";
   return null;
 }
 
-/** Rendered, not zero-size (1 px is the visually-hidden trick), and not placed left of or above the document. */
+/**
+ * Something a person could see: rendered and not transparent (opacity counts: a field at opacity 0 is the hidden
+ * field the memo forbids filling, W1 review #5), larger than the 1 px visually-hidden trick, not placed outside
+ * everything the document can scroll to, and not clipped away by an ancestor with overflow hidden or clip. A
+ * scrolling ancestor (overflow auto or scroll) does not hide what it holds; the user can scroll to it.
+ */
 export function visible(el: Element): boolean {
-  if (!el.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true })) return false;
+  if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
   const r = el.getBoundingClientRect();
   if (r.width <= 1 || r.height <= 1) return false;
-  if (r.right + window.scrollX <= 0 || r.bottom + window.scrollY <= 0) return false;
+  const left = r.left + window.scrollX;
+  const top = r.top + window.scrollY;
+  const doc = document.documentElement;
+  if (left + r.width <= 0 || top + r.height <= 0) return false;
+  if (left >= Math.max(doc.scrollWidth, window.innerWidth) || top >= Math.max(doc.scrollHeight, window.innerHeight)) return false;
+  for (let p = composedParent(el); p !== null && p !== doc; p = composedParent(p)) {
+    const cs = getComputedStyle(p);
+    const clips = (v: string): boolean => v === "hidden" || v === "clip";
+    if (!clips(cs.overflowX) && !clips(cs.overflowY)) continue;
+    const b = p.getBoundingClientRect();
+    if ((clips(cs.overflowX) && (r.right <= b.left || r.left >= b.right)) || (clips(cs.overflowY) && (r.bottom <= b.top || r.top >= b.bottom))) return false;
+  }
   return true;
 }
 

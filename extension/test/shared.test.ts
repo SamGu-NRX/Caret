@@ -50,9 +50,12 @@ describe("author identifiers", () => {
     expect(authorIdentifier({ name: ":r1:", id: "mui-3", automationId: null })).toBeNull();
   });
   it("makes a strong key only with an author identifier", () => {
-    expect(strongKey("http://a", "form#apply", "name=first", "text")).toBe("http://a|form#apply|name=first|text");
-    expect(strongKey("http://a", null, "name=first", "text")).toBe("http://a|-|name=first|text");
+    expect(strongKey("http://a", "form#apply", "name=first", "text")).toBe('["http://a","form#apply","name=first","text"]');
+    expect(strongKey("http://a", null, "name=first", "text")).toBe('["http://a",null,"name=first","text"]');
     expect(strongKey("http://a", "form#apply", null, "text")).toBeNull();
+  });
+  it("cannot be forged by moving a separator between page-controlled parts (review #7)", () => {
+    expect(strongKey("http://a", "form#a|name=b", "name=c", "text")).not.toBe(strongKey("http://a", "form#a", "name=b|name=c", "text"));
   });
 });
 

@@ -135,7 +135,30 @@ async function walk(id: string, tabId: number | null): Promise<void> {
       }
     }),
   );
-  const kept = reports.filter((x): x is NonNullable<typeof x> => x !== null).sort((a, b) => a.f.frameId - b.f.frameId);
+  const answered = reports.filter((x): x is NonNullable<typeof x> => x !== null).sort((a, b) => a.f.frameId - b.f.frameId);
+  // A frame is kept only when its own script reports the origin the worker derived (a sandboxed srcdoc frame has an
+  // opaque origin, not its parent's: W1 review #8) and, below the top, when its parent shows a visible <iframe> for
+  // it (an iframe hidden by its embedder hides every control inside, which the frame cannot see for itself).
+  const kept: typeof answered = [];
+  for (const k of answered.filter((x) => x.f.parentFrameId < 0).concat(answered.filter((x) => x.f.parentFrameId >= 0))) {
+    if (k.r.origin !== k.origin) {
+      missing.push({ frameId: k.f.frameId, reason: `its document's origin ${k.r.origin} is not ${k.origin}` });
+      continue;
+    }
+    if (k.f.parentFrameId >= 0) {
+      const parent = kept.find((p) => p.f.frameId === k.f.parentFrameId);
+      const src = k.f.url.startsWith("about:") ? "about:srcdoc" : (() => {
+        const u = new URL(k.f.url);
+        return `${u.origin}${u.pathname}`;
+      })();
+      if (parent === undefined || !parent.r.iframes.some((i) => i.src === src || (src === "about:srcdoc" && i.src.startsWith("about")))) {
+        missing.push({ frameId: k.f.frameId, reason: "its <iframe> is not visible in the parent frame" });
+        continue;
+      }
+    }
+    kept.push(k);
+  }
+  kept.sort((a, b) => a.f.frameId - b.f.frameId);
   if (kept.length === 0) return result(id, { outcome: "noElement", detail: `no frame of tab ${tab.id} answered: ${missing.map((m) => m.reason).join("; ")}` });
   const focusedFrame = kept.filter((k) => k.r.focused !== null).sort((a, b) => Number(b.r.hasFocus) - Number(a.r.hasFocus))[0];
   send({
@@ -169,6 +192,11 @@ async function walk(id: string, tabId: number | null): Promise<void> {
 
 async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   if (verb.kind === "pageChooseOption" || verb.kind === "pageAttachFile") return { outcome: "unsupported", detail: `${verb.kind} arrives in batch 2` };
+  if (verb.kind === "pagePress") {
+    // Every page press is a hand-off in v1: the button runs the page's own script (content/actions.ts). The page is not touched.
+    const risk = classifyPress(verb.name);
+    return { outcome: "handoff", detail: `'${verb.name}' runs the page's own script, so you press it`, risk: risk === "safe" || risk === "unclassified" ? "pageScript" : risk };
+  }
   const g = grants.check(verb.taskId, verb.tabId, verb.frameId);
   if (!g.ok) return { outcome: "notAllowed", detail: g.reason };
   const frame = await chrome.webNavigation.getFrame({ tabId: verb.tabId, frameId: verb.frameId }).catch(() => null);
@@ -179,12 +207,13 @@ async function act(verb: ActVerb, expires: number): Promise<ActAnswer> {
   const all = (await chrome.webNavigation.getAllFrames({ tabId: verb.tabId })) ?? [];
   const origin = frameOrigin(all, verb.frameId);
   if (origin !== g.scope.origin) return { outcome: "notAllowed", detail: `the grant covers ${g.scope.origin}, the frame is at ${String(origin)}` };
-  if (verb.kind === "pagePress") {
-    // Judged first on the name the helper planned with; the content script judges again on the name it reads now.
-    const risk = classifyPress(verb.name);
-    if (risk !== "safe") return { outcome: "handoff", detail: `'${verb.name}' is left to you`, risk };
-  }
-  const deadline = Math.min(expires, g.expires);
+  // The frame lookups above awaited; a revoke or expiry that landed meanwhile stops the act here, before the page.
+  const live = grants.check(verb.taskId, verb.tabId, verb.frameId);
+  if (!live.ok) return { outcome: "notAllowed", detail: live.reason };
+  // Read the generation again now, not the one taken before the awaits: a history change meanwhile is stale (W1 review #4).
+  const genNow = navGens.get(verb.tabId, verb.frameId);
+  if (live.scope.navGen !== genNow || live.scope.origin !== origin) return { outcome: "stale", detail: `the frame moved during the check (navGen ${live.scope.navGen}, now ${genNow})` };
+  const deadline = Math.min(expires, live.expires);
   try {
     const msg: ToContent = { caret: 1, op: "act", verb, deadline };
     const a = (await withTimeout(chrome.tabs.sendMessage(verb.tabId, msg, { frameId: verb.frameId, documentId: verb.documentId }), Math.max(100, deadline - Date.now() + 1000), "the frame")) as ActAnswer | undefined;
