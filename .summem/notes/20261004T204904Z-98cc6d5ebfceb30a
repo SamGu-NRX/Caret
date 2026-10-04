@@ -1,0 +1,1 @@
+Personal memory is markdown (helper/src/memory): MemoryStore(dir) keeps it in <dir>/Memory unless told otherwise, and main.ts uses ~/Library/Application Support/Caret/Memory only when --data-dir is not given, so tests and evals never open the real folder.

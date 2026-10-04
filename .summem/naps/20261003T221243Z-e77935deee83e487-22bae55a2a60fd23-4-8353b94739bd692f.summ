@@ -1,0 +1,1 @@
+B19-B20: a skill undo resets its clean count; live Jev's first naming ask often misses NAME_CUTOFF; only a per-pid listen tap sees pid-posted clicks (fixture needs --foreground); pid-posted input resets HIDIdleTime, so evals log their last post; TextEdit can't host a routine.
