@@ -97,6 +97,19 @@ final class ClipboardReconcileTests: XCTestCase {
         XCTAssertEqual(clipboard.restore(), .raced, "the debug state says so; nothing can bring it back")
     }
 
+    /// A type the pasteboard lists but will not give data for cannot be restored: the save says
+    /// which, for the debug state, rather than restoring less and calling it whole.
+    func testATypeThatCannotBeReadIsReportedAsLost() {
+        let pb = FakePasteboard()
+        pb.items = [rich, PasteboardItemData([], unreadable: ["public.file-url"])]
+        let clipboard = ReconcilingClipboard(backend: pb)
+        clipboard.save()
+        XCTAssertEqual(clipboard.lost, ["item 2: public.file-url"])
+        clipboard.writeOwn("Lumen Labs")
+        XCTAssertEqual(clipboard.restore(), .restored)
+        XCTAssertEqual(pb.items.first, rich)
+    }
+
     func testNothingIsRestoredWhenCaretNeverWrote() {
         let pb = FakePasteboard()
         pb.items = [rich]

@@ -3,13 +3,19 @@ import Foundation
 /// One pasteboard item: every type it carries, in the order the pasteboard listed them, with its data.
 public struct PasteboardItemData: Equatable, Sendable {
     public var entries: [(type: String, data: Data)]
+    /// Types the pasteboard listed for the item whose data could not be read, so a restore cannot
+    /// bring them back. Reported, never guessed at.
+    public var unreadable: [String]
 
-    public init(_ entries: [(type: String, data: Data)]) { self.entries = entries }
+    public init(_ entries: [(type: String, data: Data)], unreadable: [String] = []) {
+        self.entries = entries
+        self.unreadable = unreadable
+    }
 
     public var types: [String] { entries.map { $0.type } }
 
     public static func == (a: Self, b: Self) -> Bool {
-        a.entries.count == b.entries.count && zip(a.entries, b.entries).allSatisfy { $0.type == $1.type && $0.data == $1.data }
+        a.unreadable == b.unreadable && a.entries.count == b.entries.count && zip(a.entries, b.entries).allSatisfy { $0.type == $1.type && $0.data == $1.data }
     }
 }
 
@@ -35,9 +41,10 @@ public protocol PasteboardBackend: AnyObject {
 ///    Caret's. Any other count means someone wrote in between (the user copied), and their copy
 ///    stays. An empty saved pasteboard is restored as empty.
 ///
-/// NSPasteboard has no compare-and-swap, so a copy made in the instant between the count check and
-/// the clear is overwritten. The clear's own count shows that it happened (`Outcome.raced`), and
-/// the debug state reports it; nothing can bring that copy back.
+/// Known limit: NSPasteboard has no compare-and-swap, so a copy made in the instant between the
+/// restore's count check and its clear (two adjacent calls on one thread) is overwritten. The clear's
+/// own count shows that it happened (`Outcome.raced`), and the debug state reports it; nothing can
+/// bring that copy back. Closing it would take not restoring at all.
 public final class ReconcilingClipboard {
     public enum Outcome: String, Codable, Equatable, Sendable {
         /// The saved contents are back.
@@ -60,13 +67,18 @@ public final class ReconcilingClipboard {
 
     private let backend: PasteboardBackend
     private var saved: [PasteboardItemData]?
+    /// The types the last save could not read, item by item ("item 2: public.file-url"): a restore
+    /// cannot bring them back. Empty when every type was read.
+    public private(set) var lost: [String] = []
     /// The change count Caret's own write produced.
     public private(set) var ownCount: Int?
 
     public init(backend: PasteboardBackend) { self.backend = backend }
 
     public func save() {
-        saved = backend.read()
+        let items = backend.read()
+        saved = items
+        lost = items.enumerated().flatMap { i, item in item.unreadable.map { "item \(i + 1): \($0)" } }
         ownCount = nil
     }
 
@@ -75,10 +87,10 @@ public final class ReconcilingClipboard {
     public func writeOwn(_ text: String) -> Int {
         var entries: [(type: String, data: Data)] = [(Self.plainText, Data(text.utf8))]
         for marker in Self.markerTypes { entries.append((marker, Data())) }
-        _ = backend.replace(with: [PasteboardItemData(entries)])
-        // Read after the write, not taken from the clear: whether writing items moves the count
-        // too is AppKit's business (GeneralPasteboardTests pins what it does today).
-        let count = backend.changeCount
+        // The clear's own count, never one read afterwards: a copy made between the write and a later
+        // read would otherwise be taken for Caret's and overwritten by the restore (A17 review). Writing
+        // the items does not move the count (GeneralPasteboardTests pins this).
+        let count = backend.replace(with: [PasteboardItemData(entries)])
         ownCount = count
         return count
     }

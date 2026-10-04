@@ -105,7 +105,9 @@ public final class AskCaret {
     public private(set) var linked = false
     /// Where the helper's ending for a run Esc stopped can still correct the line (`SurfaceMachine.confirmStop`).
     private var stopping: String?
-    private var stopTimer: SurfaceTimer?
+    /// The delivered stop's deadline, independent of the card (A17 review): if no ending answers it
+    /// within `SurfaceMachine.stopConfirmWait`, the session closes, even after the card was put away.
+    private var stopDeadline: (taskId: String, timer: SurfaceTimer)?
     /// Fields the run verified, from its progress, so its ending knows whether ⌘Z has anything to undo.
     private var wrote = 0
     /// The ended run's writes ⌘Z may undo; nil once undone, asked or put away.
@@ -215,11 +217,13 @@ public final class AskCaret {
             settle(.ended(card, WorkLines.stopping))
             stopping = card.offerKey
             let key = card.offerKey
-            stopTimer = clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
-                guard let self, self.stopping == key, case .ended(let card, _) = self.phase else { return }
+            stopDeadline?.timer.cancel()
+            stopDeadline = (key, clock.schedule(after: SurfaceMachine.stopConfirmWait, repeats: false) { [weak self] in
+                guard let self, self.stopDeadline?.taskId == key else { return }
+                self.stopDeadline = nil
                 self.dropSession()
-                self.settle(.ended(card, WorkLines.stopUnreached))
-            }
+                if self.stopping == key, case .ended(let card, _) = self.phase { self.settle(.ended(card, WorkLines.stopUnreached)) }
+            })
             return true
         case .asking, .proposed, .failed, .ended:
             settle(.idle)
@@ -237,6 +241,9 @@ public final class AskCaret {
     public func linkChanged(_ up: Bool) {
         linked = up
         guard !up else { return onChange() }
+        // The closed connection makes the helper revoke this session's work (B22): nothing waits on it.
+        stopDeadline?.timer.cancel()
+        stopDeadline = nil
         switch phase {
         case .asking: settle(.failed(AskCopy.helperDown))
         // Its offer went with the helper: Tab could only send a key nobody holds.
@@ -280,6 +287,11 @@ public final class AskCaret {
     }
 
     public func receive(_ progress: TaskProgress) {
+        // Any ending answers a stop sent for this task, whether or not its card still shows.
+        if progress.taskId == stopDeadline?.taskId, [.stopped, .done, .paused, .handoff].contains(progress.phase) {
+            stopDeadline?.timer.cancel()
+            stopDeadline = nil
+        }
         guard let tracking, progress.taskId == tracking else { return }
         if case .ended(var card, let line) = phase, stopping == tracking {
             // The helper's own ending for a run Esc stopped: the step it stopped before, or Done when
@@ -422,10 +434,9 @@ public final class AskCaret {
             waitTimer?.cancel()
             waitTimer = nil
         }
-        // Any new line ends the wait for a stop's answer; `escape` sets it again after its own settle.
+        // Any new line ends the card's wait for a stop's answer (`escape` sets it again after its own
+        // settle); the stop's deadline goes on without it.
         stopping = nil
-        stopTimer?.cancel()
-        stopTimer = nil
         switch next {
         case .running, .ended: break
         case .idle, .asking, .proposed, .failed: tracking = nil

@@ -63,6 +63,11 @@ extension SurfaceMachine {
     /// The helper's progress on a task. The work an accepted offer started runs as the task whose
     /// id is the offer's key; its last phase (done, stopped, handoff or paused) ends the line.
     public func taskProgress(_ progress: TaskProgress) {
+        // Any ending answers a stop sent for this task, whether or not its line still shows.
+        switch progress.phase {
+        case .stopped, .done, .paused, .handoff: stopDeadlines.removeValue(forKey: progress.taskId)?.cancel()
+        case .started, .skipped, .acting, .verified, .undone: break
+        }
         if progress.phase == .undone, undoing == progress.taskId {
             return finishUndo(progress)
         }
@@ -237,6 +242,8 @@ extension SurfaceMachine {
         if !delivered {
             count("surface.stop.unsent")
             emit(.dropHelperSession)
+        } else if helperWork {
+            armStopDeadline(work.offerKey)
         }
         guard !lineSuppressed else {
             // The tap took Esc, then the line went down before this ran: nobody sees the line, so
@@ -257,23 +264,23 @@ extension SurfaceMachine {
         // Esc 1 of 3; A15 part 1): the line waits for that ending, and lives its 3 s from there.
         stoppedWork = work
         showResult(WorkLines.stopping, lifetime: Self.stopConfirmWait + Self.stopUnreachedLifetime)
-        let statusID = resultStatusID
-        stopWaitTimer?.cancel()
-        stopWaitTimer = clock.schedule(after: Self.stopConfirmWait, repeats: false) { [weak self] in
-            guard let self, self.stoppedWork != nil, self.resultStatusID == statusID else { return }
-            self.stopWaitTimer = nil
+    }
+
+    /// The stop's deadline (`stopDeadlines`): missed, the session closes so the helper revokes the
+    /// run (B22), and a "Stopping…" line still up for it says the run may still be going.
+    func armStopDeadline(_ taskID: String) {
+        stopDeadlines[taskID]?.cancel()
+        stopDeadlines[taskID] = clock.schedule(after: Self.stopConfirmWait, repeats: false) { [weak self] in
+            guard let self, self.stopDeadlines.removeValue(forKey: taskID) != nil else { return }
             self.count("surface.stop.unconfirmed")
-            self.stopUnconfirmed(dropSession: true)
+            self.emit(.dropHelperSession)
+            if self.stoppedWork?.offerKey == taskID { self.stopUnconfirmed() } else { self.publish() }
         }
     }
 
-    /// The helper never said the run stopped: the line says so plainly, and, unless the connection
-    /// is already gone, closing it makes the helper revoke the session's work (B22).
-    func stopUnconfirmed(dropSession: Bool) {
+    /// The helper never said the run stopped: the "Stopping…" line, if it is still up, says so plainly.
+    func stopUnconfirmed() {
         stoppedWork = nil
-        stopWaitTimer?.cancel()
-        stopWaitTimer = nil
-        if dropSession { emit(.dropHelperSession) }
         guard let statusID = resultStatusID, arbiter.snapshot().statusLine?.id == statusID, headless || !lineSuppressed else { return publish() }
         if let r = result { resultStatusID = arbiter.showStatus(StatusLine(pid: r.target.pid, kind: .error, offerKey: r.taskID)) }
         showResult(WorkLines.stopUnreached, lifetime: Self.stopUnreachedLifetime)
@@ -287,8 +294,6 @@ extension SurfaceMachine {
         guard let statusID = resultStatusID, resultTimer != nil, arbiter.snapshot().statusLine?.id == statusID,
               !lineSuppressed || headless else {
             stoppedWork = nil
-            stopWaitTimer?.cancel()
-            stopWaitTimer = nil
             return
         }
         let steps = progress.steps > 0 ? progress.steps : (stopped.steps ?? 0)
@@ -316,8 +321,6 @@ extension SurfaceMachine {
             return
         }
         stoppedWork = nil
-        stopWaitTimer?.cancel()
-        stopWaitTimer = nil
         // What Esc alone would have said; the helper's ending differs when a step finished first.
         let predicted = stopped.unprompted
             ? WorkLines.tookOver(next: stopped.nextStep ?? (steps > 0 ? 0 : nil), of: steps)
@@ -332,8 +335,6 @@ extension SurfaceMachine {
         dropQuestion("surface.skill.lineEnded")
         result = nil
         stoppedWork = nil
-        stopWaitTimer?.cancel()
-        stopWaitTimer = nil
         cancelResultTimer()
         if let id = resultStatusID { arbiter.clearStatus(id: id) }
         resultStatusID = nil

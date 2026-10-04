@@ -18,13 +18,15 @@ import TextInsertion
 /// 3. Let `OfferArbiter.confirm` run the insertion guard against that reread.
 /// 4. Write, rechecking before every AX call and every posted event that the claim's authorization
 ///    is still live (`HostAuthority`), the process is the same and the approved element still has
-///    focus. By default an `AXSelectedText` replacement on the element itself, which the app records
-///    as an edit of its own. An app that refuses it, or ignores it, gets a ⌘V posted to its pid
-///    through the reconciled pasteboard (`ReconcilingPasteboard`) instead, and is remembered
-///    (`WriteMethodTable`).
+///    focus. By default an `AXSelectedText` replacement on the element itself. An app that refuses
+///    it with an AX error gets a ⌘V posted to its pid through the reconciled pasteboard
+///    (`ReconcilingPasteboard`) instead, and is remembered (`WriteMethodTable`). An app that takes
+///    the AX write and shows nothing gets no second write now, since the first may still land; the
+///    claim fails and the app pastes from its next one.
 /// 5. Reread until the field holds exactly the value the guard predicted. After a paste, put the
 ///    user's clipboard back only if nobody wrote to it since Caret did, and if the field did not
-///    take the paste, look for it in the element that has focus now (`WriteFallback.strayInsertion`).
+///    take the paste, name the element that has focus now if the paste shows there
+///    (`WriteFallback.strayInsertion`), without changing it.
 final class InsertionExecutor: @unchecked Sendable {
     struct Result: Sendable {
         let claim: Claim
@@ -61,10 +63,6 @@ final class InsertionExecutor: @unchecked Sendable {
     /// How long a write may leave the field untouched before the app is judged to ignore it.
     /// Assumed, not measured across apps: TextEdit applied A1's pastes within one 20 ms poll.
     private let ignoredAfter: TimeInterval = 0.5
-    /// After a paste that replaced an AX write the app accepted and seemed to ignore, how long to
-    /// watch for that AX write landing late. Assumed, not measured; only apps that accept an AX
-    /// write and show no change are watched at all, once per app per launch.
-    private let lateAXWindow: TimeInterval = 0.3
     /// Move focus to the next field after a verified fill (SURFACES.md section 5).
     private let advanceAfterFill: Bool
     /// Test hooks only: how long Caret's item stays on the pasteboard after the field settles
@@ -143,8 +141,8 @@ final class InsertionExecutor: @unchecked Sendable {
 
         func finish(
             ok: Bool, error: String?, verified: Bool?, method: FillResult.Method? = nil, fellBack: Bool = false,
-            undo: UndoGrant? = nil, rejected: Bool = false, repaired: Bool = false, stray: String? = nil,
-            clipboard: ReconcilingClipboard.Outcome? = nil
+            undo: UndoGrant? = nil, rejected: Bool = false, stray: String? = nil,
+            clipboard: ReconcilingClipboard.Outcome? = nil, lost: [String] = []
         ) {
             var insertion = DebugState.Insertion(
                 claimID: claim.claimID, ok: ok, error: error, text: text,
@@ -154,9 +152,9 @@ final class InsertionExecutor: @unchecked Sendable {
             insertion.kind = claim.offer.kind.name
             insertion.method = method?.rawValue
             insertion.fellBack = fellBack
-            insertion.repairedLatePaste = repaired
             insertion.strayField = stray
             insertion.clipboard = clipboard?.rawValue
+            insertion.clipboardLost = lost.isEmpty ? nil : lost
             status.update { $0.lastInsertion = insertion }
             if let clipboard { status.increment("clipboard.\(clipboard.rawValue)") }
             onFinished(Result(claim: claim, insertion: insertion, undo: undo, reason: error, rejected: rejected, method: method, strayField: stray))
@@ -195,34 +193,32 @@ final class InsertionExecutor: @unchecked Sendable {
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
         }
         let refusal = { live() ? "targetNotAllowed" : "revoked" }
-        // A stray paste is repaired in whatever element has focus now, so this omits the focus check.
-        let mayRepair = { [policy] in live() && ProcessStart.of(pid) == processStart && policy.allowsLive(pid: pid) }
         var method: FillResult.Method = writeMethods.method(for: appKey) == .axSelectedText ? .axSelectedText : .pastePid
         var fellBack = false
-        var repaired = false
         var stray: String?
         var clipboard: ReconcilingClipboard.Outcome?
         var step: WriteFallback.Step
 
         if method == .axSelectedText {
-            let ax = axInsert(approved, element: element, unchanged: before.value, stillTarget: stillTarget, refusal: refusal)
-            step = ax.step
-            if step == .fallBackToPaste {
-                // The app refused or ignored the AX write; it takes pid pastes from now on. A
-                // refusal leaves nothing pending, but an AX write it accepted may still land.
-                let accepted = ax.accepted
+            step = axInsert(approved, element: element, unchanged: before.value, stillTarget: stillTarget, refusal: refusal)
+            switch step {
+            case .fallBackToPaste:
+                // The app refused the AX write with an error, so nothing of it is pending: paste now,
+                // and from now on.
                 writeMethods.record(.pastePid, for: appKey)
                 method = .pastePid
                 fellBack = true
-                let paste = pasteInsert(claim, approved: approved, element: element, before: before, stillTarget: stillTarget, mayRepair: mayRepair, refusal: refusal)
+                let paste = pasteInsert(claim, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
                 (step, stray, clipboard) = (paste.step, paste.stray, paste.clipboard)
-                if accepted, step == .verified,
-                   let duplicate = WriteFallback.lateDuplicate(original: before.value, start: approved.replaceStart, end: approved.replaceEnd, replacement: approved.replacement) {
-                    repaired = repairLateDuplicate(element: element, duplicate: duplicate, approved: approved, stillTarget: mayRepair)
-                }
+            case .failed("writeIgnored"):
+                // The app took the AX write and showed nothing. It may still apply it, so a paste now
+                // could double the text (A17 review): this claim fails, and the next one pastes.
+                writeMethods.record(.pastePid, for: appKey)
+            default:
+                break
             }
         } else {
-            let paste = pasteInsert(claim, approved: approved, element: element, before: before, stillTarget: stillTarget, mayRepair: mayRepair, refusal: refusal)
+            let paste = pasteInsert(claim, approved: approved, element: element, before: before, stillTarget: stillTarget, refusal: refusal)
             (step, stray, clipboard) = (paste.step, paste.stray, paste.clipboard)
         }
 
@@ -255,35 +251,34 @@ final class InsertionExecutor: @unchecked Sendable {
         }
         finish(
             ok: error == nil, error: error, verified: verified, method: method, fellBack: fellBack, undo: grant,
-            repaired: repaired, stray: stray, clipboard: clipboard
+            stray: stray, clipboard: clipboard, lost: clipboard == nil ? [] : pasteboard.lastLost
         )
     }
 
     /// Replaces the approved span through `AXSelectedText` on the element itself: the selection,
-    /// then the text, each only while the target still holds. `accepted` is true when the app took
-    /// the text write without an error, whatever the field then showed.
+    /// then the text, each only while the target still holds.
     private func axInsert(
         _ edit: InsertionGuard.ApprovedEdit, element: AXUIElement, unchanged: String,
         stillTarget: () -> Bool, refusal: () -> String
-    ) -> (step: WriteFallback.Step, accepted: Bool) {
-        guard stillTarget() else { return (.failed(refusal()), false) }
+    ) -> WriteFallback.Step {
+        guard stillTarget() else { return .failed(refusal()) }
         guard AXRead.setRange(kAXSelectedTextRangeAttribute, location: edit.replaceStart, length: edit.replaceEnd - edit.replaceStart, on: element) == .success else {
-            return (WriteFallback.afterAX(nil, refused: true), false)
+            return WriteFallback.afterAX(nil, refused: true)
         }
-        guard stillTarget() else { return (.failed(refusal()), false) }
+        guard stillTarget() else { return .failed(refusal()) }
         guard AXRead.setString(kAXSelectedTextAttribute, edit.replacement, on: element) == .success else {
             // Only the selection moved, to the approved span, which the paste then replaces.
-            return (WriteFallback.afterAX(nil, refused: true), false)
+            return WriteFallback.afterAX(nil, refused: true)
         }
-        return (WriteFallback.afterAX(waitForSettle(element: element, expected: edit, unchanged: unchanged), refused: false), true)
+        return WriteFallback.afterAX(waitForSettle(element: element, expected: edit, unchanged: unchanged), refused: false)
     }
 
     /// A ⌘V posted to the target's pid through KeyType's inserter and the reconciled pasteboard;
-    /// an injection strategy types the text instead and never touches the pasteboard. If the field
-    /// did not take it, the after-read looks for it in the element that has focus now.
+    /// an injection strategy types the text instead and never touches the pasteboard. If a posted
+    /// paste did not reach the field, the after-read looks for it in the element that has focus now.
     private func pasteInsert(
         _ claim: Claim, approved: InsertionGuard.ApprovedEdit, element: AXUIElement, before: FieldState,
-        stillTarget: @escaping () -> Bool, mayRepair: () -> Bool, refusal: () -> String
+        stillTarget: @escaping () -> Bool, refusal: () -> String
     ) -> (step: WriteFallback.Step, stray: String?, clipboard: ReconcilingClipboard.Outcome?) {
         let pid = claim.offer.target.pid
         let synthesizer = PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget)
@@ -311,35 +306,30 @@ final class InsertionExecutor: @unchecked Sendable {
         }
         var step = WriteFallback.afterPaste(settle, postError: postError)
         var stray: String?
-        // The approved element did not take it: the paste may have gone to the element that took
-        // focus between the last check and the app handling the event.
-        if step != .verified, FieldReader.read(element)?.value == before.value,
-           let found = afterReadStray(pid: pid, approved: element, inserted: approved.replacement, mayRepair: mayRepair) {
-            step = .failed(found.code)
-            stray = found.field
+        // The paste was posted and the approved element did not take it: it may have gone to the
+        // element that took focus between the last check and the app handling the event. A refused
+        // post sent nothing, so nothing is looked for.
+        if step != .verified, postError == nil, FieldReader.read(element)?.value == before.value,
+           let field = strayField(pid: pid, approved: element, inserted: approved.replacement) {
+            step = .failed("wroteElsewhere")
+            stray = field
         }
         return (step, stray, clipboard)
     }
 
-    /// Finds a stray paste in the element of `pid` that has focus now and removes exactly it, while
-    /// the claim is still authorized. Returns the failure code and the field's label, or nil when
-    /// the paste is nowhere to be seen.
-    private func afterReadStray(pid: pid_t, approved: AXUIElement, inserted: String, mayRepair: () -> Bool) -> (code: String, field: String)? {
-        guard let focused = AXRead.focusedElement(pid: pid), let field = FieldReader.read(focused) else { return nil }
-        guard let span = WriteFallback.strayInsertion(
-            focusIsApproved: CFEqual(focused, approved), value: field.value, caret: field.selection.isEmpty ? field.selection.start : nil, inserted: inserted
-        ) else { return nil }
-        let name = Self.label(of: focused)
+    /// The label of the element of `pid` that has focus now, if it is not the approved one and the
+    /// pasted text ends exactly at its caret. Nothing is changed there: the text before the caret
+    /// could be the user's own, and nothing recorded says it is not (A17 review), so the failure names
+    /// the field for the user to check.
+    private func strayField(pid: pid_t, approved: AXUIElement, inserted: String) -> String? {
+        guard let focused = AXRead.focusedElement(pid: pid), let field = FieldReader.read(focused),
+              WriteFallback.strayInsertion(
+                  focusIsApproved: CFEqual(focused, approved), value: field.value,
+                  caret: field.selection.isEmpty ? field.selection.start : nil, inserted: inserted
+              ) != nil
+        else { return nil }
         status.increment("insertion.stray")
-        guard mayRepair(),
-              AXRead.setRange(kAXSelectedTextRangeAttribute, location: span.start, length: span.length, on: focused) == .success,
-              mayRepair(),
-              AXRead.setString(kAXSelectedTextAttribute, "", on: focused) == .success
-        else { return ("wroteElsewhere", name) }
-        let restored = UTF16Text.slice(field.value, start: 0, end: span.start).flatMap { prefix in
-            UTF16Text.slice(field.value, start: span.start + span.length, end: UTF16Text.length(field.value)).map { prefix + $0 }
-        }
-        return (FieldReader.read(focused)?.value == restored ? "wroteElsewhereRepaired" : "wroteElsewhere", name)
+        return Self.label(of: focused)
     }
 
     /// A field's name as the user sees it: its title, description or placeholder, else its role.
@@ -351,26 +341,6 @@ final class InsertionExecutor: @unchecked Sendable {
             return title
         }
         return "another field"
-    }
-
-    /// After a paste that replaced an AX write the app accepted and seemed to ignore, watches
-    /// briefly for that AX write landing late, which leaves the text twice. Only that exact value is
-    /// repaired, by removing the second copy as an edit, and only while the claim is authorized.
-    private func repairLateDuplicate(element: AXUIElement, duplicate: String, approved: InsertionGuard.ApprovedEdit, stillTarget: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(lateAXWindow)
-        let second = approved.replaceStart + UTF16Text.length(approved.replacement)
-        repeat {
-            if FieldReader.read(element)?.value == duplicate {
-                guard stillTarget(),
-                      AXRead.setRange(kAXSelectedTextRangeAttribute, location: second, length: UTF16Text.length(approved.replacement), on: element) == .success,
-                      stillTarget(),
-                      AXRead.setString(kAXSelectedTextAttribute, "", on: element) == .success
-                else { return false }
-                return FieldReader.read(element)?.value == approved.resultingValue
-            }
-            Thread.sleep(forTimeInterval: 0.02)
-        } while Date() < deadline
-        return false
     }
 
     /// Polls the written element until it holds the predicted value, or it is clear that it will

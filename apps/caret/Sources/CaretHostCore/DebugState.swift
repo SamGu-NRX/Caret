@@ -123,15 +123,15 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var method: String?
         /// The app ignored a pid-posted paste and the write fell back to AX.
         public var fellBack: Bool?
-        /// After the paste fallback, an AX write the app had accepted landed late, doubled the text,
-        /// and the second copy was removed.
-        public var repairedLatePaste: Bool?
         /// The field a pid paste landed in instead of the approved one, by its label (S1 audit #13).
         public var strayField: String?
         /// What the pasteboard reconcile did after a paste: `restored`, `skippedUserCopied` (someone
         /// copied after Caret wrote, and their copy stays), `raced` or `notWritten`. Nil when the
         /// write did not use the pasteboard.
         public var clipboard: String?
+        /// Types of the user's clipboard Caret could not read before pasting, so its restore could not
+        /// bring them back ("item 2: public.file-url"). Nil or empty when every type was read.
+        public var clipboardLost: [String]?
 
         public init(claimID: UInt64, ok: Bool, error: String?, text: String, durationMs: Double, verified: Bool?) {
             self.claimID = claimID

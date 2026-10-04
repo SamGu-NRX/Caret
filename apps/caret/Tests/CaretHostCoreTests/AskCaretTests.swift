@@ -309,6 +309,30 @@ final class AskCaretTests: XCTestCase {
         XCTAssertEqual(after.text, "You stopped it before step 1 of 2", "a late confirmation is still worth showing")
     }
 
+    /// The stop's deadline belongs to the run, not to its card (A17 review): putting the card away
+    /// does not cancel it; only the run's ending, seen even with no card, does.
+    func testTheStopDeadlineOutlivesTheCard() throws {
+        let card = try proposed()
+        ask.tab()
+        var dropped = 0
+        ask.dropSession = { dropped += 1 }
+        ask.escape()
+        XCTAssertTrue(ask.escape(), "the second Esc puts the Stopping card away")
+        XCTAssertEqual(ask.phase, .idle)
+        clock.advance(by: SurfaceMachine.stopConfirmWait)
+        XCTAssertEqual(dropped, 1, "no ending came: the session closes anyway")
+        XCTAssertEqual(ask.phase, .idle, "and no card comes back")
+
+        let second = try proposed()
+        ask.tab()
+        ask.escape()
+        ask.escape()
+        ask.receive(progress(second.offerKey, .stopped, step: 0, steps: 2, reason: .you))
+        clock.advance(by: SurfaceMachine.stopConfirmWait)
+        XCTAssertEqual(dropped, 1, "the ending answered the stop, card or no card")
+        _ = card
+    }
+
     // MARK: - ⌘Z (q1 bug 8)
 
     /// A run that wrote ends with ⌘Z Undo, as a fill's toast does; ⌘Z asks the helper to undo the

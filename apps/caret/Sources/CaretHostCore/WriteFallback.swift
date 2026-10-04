@@ -4,16 +4,15 @@ import Foundation
 /// from the AX and event calls so each case can be tested on its own.
 ///
 /// An `AXSelectedText` replacement on the approved element is tried first (A17): it can only land
-/// in that element, and it leaves the general pasteboard alone. If the app refuses it, or accepts it
-/// and leaves the field exactly as it was after `ignoredAfter`, a pid-posted ⌘V through the
-/// reconciled pasteboard is tried instead, and the app is remembered. Any other outcome (partial
-/// text, other text, another element) is a failure and is never retried, because a second write
-/// could double the value.
+/// in that element, and it leaves the general pasteboard alone. If the app refuses it with an AX
+/// error, a pid-posted ⌘V through the reconciled pasteboard is tried instead, and the app is
+/// remembered. An AX write the app took and did not show is a failure, not a reason to paste: it may
+/// still land, and a second write could double the value. Any other outcome (partial text, other
+/// text, another element) is a failure and is never retried.
 ///
 /// A pid-posted paste goes to whichever element of the app has focus when the app handles it, which
 /// may no longer be the one checked before the post (S1 audit #13). The after-read finds such a
-/// paste in the element that now has focus (`strayInsertion`), and the executor removes it there or
-/// reports a failure that names that field.
+/// paste in the element that now has focus (`strayInsertion`), and the failure names that field.
 public enum WriteFallback {
     public enum Settle: Equatable, Sendable {
         case matched
@@ -24,7 +23,7 @@ public enum WriteFallback {
 
     public enum Step: Equatable, Sendable {
         case verified
-        /// The app ignored the AX write: paste instead.
+        /// The app refused the AX write: paste instead.
         case fallBackToPaste
         case failed(String)
     }
@@ -45,7 +44,7 @@ public enum WriteFallback {
         if refused { return .fallBackToPaste }
         switch settle {
         case .matched?: return .verified
-        case .unchanged?: return .fallBackToPaste
+        case .unchanged?: return .failed("writeIgnored")
         case .different?, nil: return .failed("writeMismatch")
         }
     }
@@ -59,17 +58,6 @@ public enum WriteFallback {
         case .unchanged: return .failed("writeIgnored")
         case .different: return .failed("writeMismatch")
         }
-    }
-
-    /// What the field holds if an AX write the app accepted silently lands after the paste that
-    /// replaced it: the insertion twice at the caret. Only this exact value is repaired; anything
-    /// else may be the user typing and is left alone. Nil for an invalid span.
-    public static func lateDuplicate(original: String, start: Int, end: Int, replacement: String) -> String? {
-        let total = UTF16Text.length(original)
-        guard let prefix = UTF16Text.slice(original, start: 0, end: start),
-              let suffix = UTF16Text.slice(original, start: end, end: total)
-        else { return nil }
-        return prefix + replacement + replacement + suffix
     }
 
     /// The span of a stray paste in the element that has focus after the write, when the write did

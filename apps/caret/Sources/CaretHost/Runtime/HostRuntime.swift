@@ -252,12 +252,14 @@ public final class HostRuntime {
             }
         }
         perch.ask.dropSession = { [weak askClient] in askClient?.dropSession() }
-        // ⌘Z in the app an Ask run acted in, while its card offers it, as a fill's toast does (q1 bug 8).
+        // ⌘Z in the app an Ask run acted in, while its card offers it on screen, as a fill's toast does
+        // (q1 bug 8). A run that ends while the list is closed shows no card, so it takes no ⌘Z there
+        // (A17 review); closing the list puts an ended card away, which withdraws its offer.
         let askToast = AskToast()
-        perch.ask.onUndoChanged = { offer in
+        perch.ask.onUndoChanged = { [weak perch] offer in
             if let id = askToast.id { arbiter.dismissToast(grantID: id) }
             askToast.id = nil
-            guard let offer else { return }
+            guard let offer, perch?.listOpen == true else { return }
             let target = TargetIdentity(pid: offer.pid, bundleID: "", windowID: "", elementID: "", elementRevision: "")
             askToast.id = arbiter.showToast(UndoGrant.task(offer.taskId, target: target))
             // The arbiter has one toast slot: a fill's or a line's toast that held it is gone now.

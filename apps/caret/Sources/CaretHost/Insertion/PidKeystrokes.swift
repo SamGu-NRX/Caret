@@ -59,20 +59,26 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
         return AXRead.setRange(kAXSelectedTextRangeAttribute, location: location, length: length, on: element) == .success
     }
 
+    /// The target is asked again immediately before the key-down, which is what the app acts on.
+    /// The key-up of a key-down already posted is sent whatever the answer: it changes nothing in the
+    /// app, and leaving the key down would. That is the one post made without the check.
     private func post(_ keyCode: CGKeyCode, flags: CGEventFlags, text: String? = nil) {
-        guard stillTarget() else {
-            refusedPosts += 1
-            return
-        }
-        for keyDown in [true, false] {
-            guard let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: keyDown) else { continue }
+        func event(_ keyDown: Bool) -> CGEvent? {
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: keyDown) else { return nil }
             event.flags = flags
             if let text {
                 let units = Array(text.utf16)
                 event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
             }
-            event.postToPid(pid)
+            return event
         }
+        guard let down = event(true), let up = event(false) else { return }
+        guard stillTarget() else {
+            refusedPosts += 1
+            return
+        }
+        down.postToPid(pid)
+        up.postToPid(pid)
     }
 }
 

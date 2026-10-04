@@ -31,12 +31,12 @@ final class WriteFallbackTests: XCTestCase {
         XCTAssertEqual(classify(nil, elapsed: 1.5), .different)
     }
 
-    /// AX first (A17): an AX error or an AX write the app ignored moves to the pid paste; a
-    /// mismatch never retries.
-    func testTheAXRouteComesFirstAndFallsBackToPasteOnlyWhenNothingChanged() {
+    /// AX first (A17): only an AX error moves to the pid paste. An AX write the app took and did not
+    /// show may still land, so it fails rather than risk a second copy; a mismatch never retries.
+    func testTheAXRouteComesFirstAndFallsBackToPasteOnlyWhenTheAppRefusedIt() {
         XCTAssertEqual(WriteFallback.afterAX(.matched, refused: false), .verified)
         XCTAssertEqual(WriteFallback.afterAX(nil, refused: true), .fallBackToPaste, "the app refused the AX write")
-        XCTAssertEqual(WriteFallback.afterAX(.unchanged, refused: false), .fallBackToPaste, "the app took it and showed nothing")
+        XCTAssertEqual(WriteFallback.afterAX(.unchanged, refused: false), .failed("writeIgnored"), "the app took it and showed nothing: no second write")
         XCTAssertEqual(WriteFallback.afterAX(.different, refused: false), .failed("writeMismatch"), "a second write could double the value")
     }
 
@@ -47,17 +47,11 @@ final class WriteFallbackTests: XCTestCase {
         XCTAssertEqual(WriteFallback.afterPaste(.different, postError: "revoked"), .failed("revoked"))
     }
 
-    func testALateAXWriteAfterThePasteIsTheInsertionTwiceAtTheCaret() {
-        XCTAssertEqual(WriteFallback.lateDuplicate(original: "", start: 0, end: 0, replacement: "Lumen Labs"), "Lumen LabsLumen Labs")
-        XCTAssertEqual(WriteFallback.lateDuplicate(original: "Dear , hi", start: 5, end: 5, replacement: "Dana"), "Dear DanaDana, hi")
-        XCTAssertNil(WriteFallback.lateDuplicate(original: "ab", start: 3, end: 3, replacement: "x"))
-    }
-
     // MARK: - S1 audit #13: focus moves between the check and the post
 
     /// The check passed with Name focused; before the app handled the posted ⌘V, focus moved to
     /// Email, and the paste landed there. Name is unchanged, so the after-read looks in Email: the
-    /// pasted text ends exactly at its caret, and only that span is taken back out.
+    /// pasted text ends exactly at its caret, and the failure names Email.
     func testAPasteThatLandedInTheFieldThatTookFocusIsFoundThereByItsSpan() {
         let span = WriteFallback.strayInsertion(focusIsApproved: false, value: "dana@example.comLumen Labs", caret: 26, inserted: "Lumen Labs")
         XCTAssertEqual(span?.start, 16)

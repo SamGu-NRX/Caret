@@ -199,8 +199,10 @@ public final class SurfaceMachine {
     /// The work Esc stopped, kept while its "Stopping…" line waits for the helper's own ending,
     /// which says where it stopped (or that it finished first).
     var stoppedWork: Work?
-    /// Ends the wait for that ending at `stopConfirmWait` (`stopUnconfirmed`).
-    var stopWaitTimer: SurfaceTimer?
+    /// Each delivered stop's deadline, by task, independent of any line: a stop no ending answers
+    /// within `stopConfirmWait` closes the helper session even if its line was dismissed or replaced
+    /// (A17 review). Cleared by the task's ending, or when the connection closes.
+    var stopDeadlines: [String: SurfaceTimer] = [:]
     var result: Result?
     var question: Question?
     /// Questions asked, by their arbiter offer id, until answered or 2 lifetimes old: a Tab or Esc the
@@ -316,10 +318,13 @@ public final class SurfaceMachine {
         // An answer can no longer reach the helper, and a new one will ask again.
         dropQuestion("surface.skill.helperGone")
         asked.removeAll()
-        // A stop still waiting for its answer will get none: say that it is not known to have stopped.
+        // The connection closed, which makes the helper revoke this session's work (B22): no stop is
+        // waiting on it any more. One still on screen gets no answer: say it is not known to have stopped.
+        for timer in stopDeadlines.values { timer.cancel() }
+        stopDeadlines.removeAll()
         if work == nil, stoppedWork != nil {
             count("surface.stop.helperGone")
-            stopUnconfirmed(dropSession: false)
+            stopUnconfirmed()
         }
         if let work, work.source == .helper {
             count("surface.work.helperGone")
@@ -904,6 +909,8 @@ public final class SurfaceMachine {
     }
 
     public func shutdown() {
+        for timer in stopDeadlines.values { timer.cancel() }
+        stopDeadlines.removeAll()
         dropQuestion("surface.skill.shutdown")
         cancelPending()
         endSwap(takeDown: false)

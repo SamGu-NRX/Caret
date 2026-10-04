@@ -201,7 +201,27 @@ final class SurfaceStopTests: XCTestCase {
         ]))
     }
 
-    /// A stop that cannot be written says so at once, with no "Stopping…", and closes the session.
+    /// The stop's deadline belongs to the run, not to its line (A17 review): a key that takes the
+    /// "Stopping…" line down does not cancel it, and only the run's ending does.
+    func testTheStopDeadlineOutlivesItsLine() {
+        play(Transition("Esc, then a key takes the line down, and no ending comes", midRun + [
+            .wait(3), .press(Fx.esc()),
+            .press(Fx.esc()), .expect(.line(nil)),
+            .wait(SurfaceMachine.stopConfirmWait),
+            .expect(.counted("surface.stop.unconfirmed")),
+            .expect(.custom("the session is closed so the helper revokes") { $0.log.contains("drop session") }),
+            .expect(.line(nil)),
+        ]))
+        play(Transition("Esc, the line taken down, then the ending: nothing more", midRun + [
+            .wait(3), .press(Fx.esc()),
+            .press(Fx.esc()), .expect(.line(nil)),
+            .taskLine(Fx.progress("offer-5", .stopped, reason: .you, step: 1, steps: 3)),
+            .wait(SurfaceMachine.stopConfirmWait),
+            .expect(.custom("the session stays open") { !$0.log.contains("drop session") }),
+        ]))
+    }
+
+    /// A stop that cannot be delivered says so at once, with no "Stopping…", and closes the session.
     func testAStopThatCannotBeDeliveredSaysTheRunMayStillBeGoing() {
         play(Transition("the helper's connection is gone when Esc is pressed", midRun + [
             .wait(3), .helperDown,

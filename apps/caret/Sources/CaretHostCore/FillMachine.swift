@@ -609,8 +609,6 @@ public final class FillMachine {
     public static func errorCaption(_ reason: String?, field: String? = nil) -> String {
         switch reason ?? "" {
         // The paste went to the field that took focus as it was sent (S1 audit #13).
-        case "wroteElsewhereRepaired":
-            return "It went into \(field ?? "another field") instead, so Caret took it back out. Nothing was filled."
         case "wroteElsewhere":
             return "It may have gone into \(field ?? "another field") instead. Check that field."
         case "revoked":
