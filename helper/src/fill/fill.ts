@@ -783,14 +783,20 @@ export async function proposeFill(
     // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
     // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
     if (is === "other") return true;
-    // Unsettled, for a field that wants the user's details: a value goes in only when both asks also say it is
-    // the user's, or when the window the user just left labels it ("Name: Jordan Reyes" in their own note). Live,
-    // a contact form's Email took a colleague's address from an open mail beside the user's own from memory, and
-    // an RSVP's Phone the sender's signature phone, the owner question split (evidence/screen/b24/dev-8).
-    // The label must name the field: a mail's "From:" names the sender, not the form's Email (dev-9).
+    // Unsettled, for a field that wants the user's details, when the user's own value of that kind is in memory:
+    // a window's value goes in only when both asks also say it is the user's, or when the window the user just
+    // left labels it for the field ("Email: …" in their own note; a mail's "From:" names the sender, dev-9). Live,
+    // a contact form's Email took a colleague's address from an open mail beside the user's own from memory, the
+    // owner question split (dev-8). Without such a memory value, Jev cannot know who the user is, and requiring
+    // the owner to be settled blanked B13's fill desk, an order confirmation's details on a checkout form (final
+    // live replay, evidence/screen/b24/adv-live-replay-final): there the unsettled owner vetoes nothing.
     const labelsField = c.labelled === true && c.recency === "justLeft" && c.context !== null && overlap(fieldTerms([c.context]), f.terms) > 0;
-    return wants === "user" && is !== "user" && !labelsField;
+    const kind = candidateKinds(model, c).has("email") ? "email" : personName(c) !== null || isNameLike(c.text, c.context) ? "name" : null;
+    return wants === "user" && is !== "user" && kind !== null && memoryKinds.has(kind) && !labelsField;
   };
+  /** Kinds of the user's own values in memory ("email", "name"). */
+  const memoryKinds = new Set<string>((opts.about ?? []).map((a) => a.kind));
+
   /** The value a control takes from a pick: the option it names, "checked", or an ISO date or time; or why it cannot be read. */
   const controlValue = (f: Field, p: Pick): { value: string; display: string } | { why: FillWithheld } => {
     const text = pickText(p);

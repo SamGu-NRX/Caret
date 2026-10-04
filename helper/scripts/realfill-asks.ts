@@ -20,7 +20,7 @@ import { planTask, type PlanDraft } from "../src/planner/planner.ts";
 import { planWithCode, type WriterUse } from "../src/planner/codeplan.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
-import { WRITER_ROUTE } from "../src/writer/config.ts";
+import { CANDIDATES, WRITER_ROUTE } from "../src/writer/config.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
@@ -37,6 +37,11 @@ const { values: a } = parseArgs({
     // Groq allows qwen3.8 1,000 output tokens a minute (writer/config.ts): about one plan every 12 s.
     gap: { type: "string", default: "15" },
     "no-writer": { type: "boolean", default: false },
+    /**
+     * Another of writer/config.ts's measured candidates by model id, for a run while the configured route is out of
+     * quota (Groq allows qwen3.8-27b 200,000 tokens a day on demand). The report names the model used.
+     */
+    "writer-model": { type: "string" },
     seed: { type: "string", default: "24" },
     /** Writes every Jev question and answer to this NDJSON file (synthetic corpus text only), for reading the checks. */
     "log-jev": { type: "string" },
@@ -63,7 +68,9 @@ const askJev: AskJev = async (req) => {
   return r;
 };
 let current = "";
-const port = makeWriterPort(WRITER_ROUTE);
+const route = a["writer-model"] === undefined ? WRITER_ROUTE : CANDIDATES.find((r) => r.model === a["writer-model"]);
+if (route === undefined) throw new Error(`--writer-model ${a["writer-model"]} is not one of ${CANDIDATES.map((r) => r.model).join(", ")}`);
+const port = makeWriterPort(route);
 let lastWrite = 0;
 let retries = 0;
 /** The writer, spaced to the provider's per-minute limit, with one wait-and-retry on 429 (counted; WriterPort itself never retries). */
@@ -165,7 +172,7 @@ const refuseAsks = rows.filter((r) => r.ask.expected === "refuse");
 const md = [
   "# Ask scoreboard (B24)",
   "",
-  `Writer ${WRITER_ROUTE.model} on ${WRITER_ROUTE.provider}; ${rows.filter((r) => r.writer !== null).length} writer plans, $${writerSpent.toFixed(4)}, ${retries} 429 retries. Jev $${jevSpent.toFixed(4)}.`,
+  `Writer ${route.model} on ${route.provider}${route === WRITER_ROUTE ? "" : ` (not the configured ${WRITER_ROUTE.model})`}; ${rows.filter((r) => r.writer !== null).length} writer plans, $${writerSpent.toFixed(4)}, ${retries} 429 retries. Jev $${jevSpent.toFixed(4)}.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, refused ${n("refused")}, **wrong ${n("wrong")}**.`,
   `Of the ${refuseAsks.length} that should be refused: refused ${n("refused", refuseAsks)}, wrong ${n("wrong", refuseAsks)}.`,

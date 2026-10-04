@@ -280,11 +280,21 @@ describe("proposeFill on a real-shaped form (B24)", () => {
     const phoneQuestions = requests.flatMap((r) => Object.entries(r.questions).filter(([, q]) => String(q.instructions).includes("'Phone'") && !Object.keys(q.criteria).includes("user")));
     expect(phoneQuestions).toHaveLength(2);
     for (const [, q] of phoneQuestions) expect(Object.values(q.criteria).join(" ")).not.toContain("(415) 555-0162");
-    // For a field that wants the user's details, an unsettled owner is not enough; the user's own is.
+    // An unsettled owner vetoes nothing when memory holds no value of the kind: Jev cannot know who the user is.
     const unclear = await proposeFill(m, jevPickingText(pick, 0.9, () => "user", () => "unclear"), "form", `${P}/textfield:customer name~0`, 2000);
-    expect(fieldOf(unclear, "textfield:phone")).toMatchObject({ value: null, withheld: "otherPerson" });
-    const own = await proposeFill(m, jevPickingText(pick, 0.9, () => "user", () => "user"), "form", `${P}/textfield:customer name~0`, 2000);
-    expect(fieldOf(own, "textfield:phone")).toMatchObject({ value: "(415) 555-0162", withheld: null });
+    expect(fieldOf(unclear, "textfield:phone")).toMatchObject({ value: "(415) 555-0162", withheld: null });
+  });
+
+  it("holds a window's email of unsettled owner from a field that wants the user's, when the user's own email is in memory", async () => {
+    const m = desk(NOTE);
+    m.apply(snap([text("mail/sig", "dana.whitfield@lumenlabs.example.com")], { at: 950, windowId: "mail", title: "Venue deposit", app: MAIL_APP, focused: true, values: [value("email", "dana.whitfield@lumenlabs.example.com", "mail/sig")] }));
+    m.apply(snap([...page(), field(`${P}/textfield:work email~0`, "", { parent: `${P}/webarea:~0`, label: "Work email", frame: [100, 440, 200, 20] })], { at: 1000, windowId: "form", title: "Order", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${P}/textfield:customer name~0` }));
+    const about = [{ id: "about-2", label: "Email", value: "riley.okafor@example.net", kind: "email" as const }];
+    const pick = (_: string, ins: string): string | null => (ins.includes("'Work email'") ? "dana.whitfield@lumenlabs.example.com" : null);
+    const unsettled = await proposeFill(m, jevPickingText(pick, 0.9, () => "user", () => "unclear"), "form", `${P}/textfield:customer name~0`, 2000, { about });
+    expect(fieldOf(unsettled, "work email")).toMatchObject({ value: null, withheld: "otherPerson" });
+    const own = await proposeFill(m, jevPickingText(pick, 0.9, () => "user", () => "user"), "form", `${P}/textfield:customer name~0`, 2000, { about });
+    expect(fieldOf(own, "work email")).toMatchObject({ value: "dana.whitfield@lumenlabs.example.com", withheld: null });
   });
 
   it("refuses a whole address in a Street field and offers its street line instead", async () => {
