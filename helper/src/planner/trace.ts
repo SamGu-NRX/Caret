@@ -17,7 +17,7 @@ export interface MemoryValue {
 
 export type Trace =
   | { from: "window"; windowId: string; nodeKey: string | null }
-  | { from: "memory"; id: string }
+  | { from: "memory"; id: string; part?: "first" | "middle" | "last" }
   | { from: "instruction" };
 
 const WORD = /[\p{L}\p{N}]/u;
@@ -64,7 +64,9 @@ export function traceValue(value: string, model: ScreenModel, memory: readonly M
   // name from Name "Riley Okafor". Only those parts, never another substring of a memory value.
   for (const m of memory) {
     const s = splitName(flat(m.text));
-    if (s.kind === "split" && [s.first, s.middle, s.last].includes(v)) return { from: "memory", id: m.id };
+    if (s.kind !== "split") continue;
+    const part = s.first === v ? "first" : s.middle === v ? "middle" : s.last === v ? "last" : null;
+    if (part !== null) return { from: "memory", id: m.id, part };
   }
   if (occursBounded(flat(instruction), v)) return { from: "instruction" };
   return null;

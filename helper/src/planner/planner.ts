@@ -250,7 +250,7 @@ async function planIn(
   // the write: forgetting it after accepting the plan stops that write (B17 fix-check).
   const steps2 = plan.steps.map((s, i) => {
     const t = checked.writes.find((wr) => wr.step === i)?.trace;
-    return t?.from === "memory" ? { ...s, memory: t.id } : s;
+    return t?.from === "memory" ? { ...s, memory: t.part === undefined ? t.id : `${t.id}#${t.part}` } : s;
   });
   const withSources: Plan = { ...plan, steps: steps2, ...(Object.keys(sources).length === 0 ? {} : { sources }) };
   return { plan: withSources, slots, checked, answers, withheld, jev };

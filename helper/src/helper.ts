@@ -10,7 +10,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import type { AskJev, JevRequest } from "./fill/jev.ts";
-import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, proposeFill } from "./fill/fill.ts";
+import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -193,6 +193,8 @@ export class Helper {
   private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null }>();
   /** Every Jev request goes through this, which records it as a use of "Read and prepare" (B17). Null when Jev is off. */
   private readonly ask: AskJev | null;
+  /** The configured plan writer, wrapped so each request is recorded (recordRead). */
+  private readonly writer: WriterPort | null;
   /** What the last "Read and prepare" use's request declared, so the two asks of one question, which declare the same text, count once. */
   private lastRead: { declared: string; at: number } | null = null;
   /** Offers already recorded as a use of "Show in Caret's UI", by key; bounded. */
@@ -291,6 +293,25 @@ export class Helper {
               throw e;
             }
           };
+    // The plan writer's requests are recorded as Jev's are, from the declarations the planner attached, whether
+    // the plan then succeeds or not (fix-check review).
+    const writer = opts.writer ?? null;
+    this.writer =
+      writer === null
+        ? null
+        : {
+            route: writer.route,
+            write: async (req) => {
+              try {
+                const r = await writer.write(req);
+                this.recordRead({ snippets: req.disclosed ?? [] }, "done", "the plan writer");
+                return r;
+              } catch (e) {
+                this.recordRead({ snippets: req.disclosed ?? [] }, "failed", "the plan writer");
+                throw e;
+              }
+            },
+          };
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
@@ -308,12 +329,13 @@ export class Helper {
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
       // A plan may write a first, middle or last name code split from a remembered name (B24): the entry must
       // still give exactly that part, by the same split, not any substring.
-      memoryHolds: (id, value) => {
+      memoryHolds: (ref, value) => {
+        const { id, part } = parseMemoryRef(ref);
         const text = this.memory.text(id);
         if (text === null || text === undefined) return false;
-        if (text === value) return true;
-        const s = splitName(text);
-        return s.kind === "split" && [s.first, s.middle, s.last].includes(value);
+        // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
+        // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
+        return memoryValue(text, part) === value;
       },
       authorize: (a) => this.authorize(a),
       onChanges: (l) => {
@@ -702,7 +724,7 @@ export class Helper {
       // An instruction the planner could not ground goes to the code-mode writer, when one is configured (B24).
       // The plan it builds is checked by the same validatePlan and offered the same way; on failure the
       // planner's own error stands, with the writer's reason added.
-      const writer = this.opts.writer ?? null;
+      const writer = this.writer;
       const windowId = CODE_PLAN_AFTER.has(e.code) && writer !== null ? (e.windowId ?? requestedWindow(this.model, m)) : null;
       if (writer === null || windowId === null) return fail(e.code, e.message);
       store.count("plan.codeMode", 1);
@@ -1373,13 +1395,13 @@ export class Helper {
    * snippets), and what the user told Caret. The second ask of a question declares the same text and is
    * not counted again; the comparison is kept in memory only.
    */
-  private recordRead(req: JevRequest, outcome: "done" | "failed"): void {
+  private recordRead(req: Pick<JevRequest, "snippets">, outcome: "done" | "failed", to = "Jev"): void {
     const apps = [...new Set(req.snippets.flatMap((x) => (x.windowId === MEMORY_SNIPPETS || x.windowId === "plan" ? [] : [this.model.windows.get(x.windowId)?.app.name ?? "a closed window"])))];
     const told = req.snippets.some((x) => x.windowId === MEMORY_SNIPPETS);
     const planned = req.snippets.some((x) => x.windowId === "plan");
     const parts = [...(apps.length === 0 ? [] : [`snippets from ${andList(apps)}`]), ...(told ? ["what you told Caret"] : []), ...(planned ? ["your instruction"] : [])];
     const what = parts.length === 0 ? "a question with no screen text" : andList(parts);
-    const says = outcome === "done" ? (parts.length === 0 ? `Asked Jev ${what}` : `Sent ${what} to Jev`) : `Tried to send ${what} to Jev; the request failed`;
+    const says = outcome === "done" ? (parts.length === 0 ? `Asked ${to} ${what}` : `Sent ${what} to ${to}`) : `Tried to send ${what} to ${to}; the request failed`;
     const at = this.now();
     const declared = `${outcome}\u0002${req.snippets.map((x) => `${x.windowId}\u0000${x.text}`).sort().join("\u0001")}`;
     if (this.lastRead !== null && this.lastRead.declared === declared && at - this.lastRead.at < READ_REPEAT_MS) return;

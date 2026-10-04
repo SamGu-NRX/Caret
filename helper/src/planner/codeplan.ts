@@ -127,13 +127,15 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   if (all.length === 0) throw new PlannerError("nothingToDo", `'${w.window.title}' has no field Caret can write`);
   const ledger = new SnippetLedger(model.windows.values());
   if (!ledger.plan([instruction])) throw new PlannerError("privacy", "your instruction quotes more of an open window than one request may carry");
-  if (!ledger.take(w, "descriptor", [w.window.title])) throw new PlannerError("privacy", `'${w.window.title}' is longer than one request may carry`);
+  // The title as the writer sees it, cut to the snapshot's 200 characters, is what the ledger declares (fix-check review).
+  const title = w.window.title.slice(0, 200);
+  if (!ledger.take(w, "descriptor", [title])) throw new PlannerError("privacy", `'${title}' is longer than one request may carry`);
   // A form window gives a request less than half its text (privacy.ts), which may not hold every field's name:
   // the fields the instruction names go first, then the rest in document order, as the planner takes them.
   const fields = byRelevance(instruction, all).filter((f) => ledger.take(w, "descriptor", [f.name]));
   if (fields.length === 0) throw new PlannerError("privacy", `no field name of '${w.window.title}' fits what one request may carry`);
   const targets = fields.map((f, i) => ({ ref: `t${i + 1}`, label: f.name, kind: fieldPart(f.label) ?? "textField", canFill: true, options: [], allowedPressEffects: [] }));
-  const room = WINDOW_CHARS - w.window.title.length - targets.reduce((n, t) => n + t.label.length, 0);
+  const room = WINDOW_CHARS - title.length - targets.reduce((n, t) => n + t.label.length, 0);
   const memoryValues = memory.values();
   const values = valueList(instruction, model, w, memoryValues, ledger, now, room);
   if (values.length === 0) throw new PlannerError("nothingToDo", "nothing on screen, in memory or in your instruction could go in a field");
@@ -147,7 +149,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
       snapshot: "s1",
       window: "w1",
       revision: digest(JSON.stringify([...w.nodes.keys()])),
-      title: w.window.title.slice(0, 200),
+      title,
       targets,
       values: values.filter((v) => v.window === null).map((v) => ({ ref: ref(v), display: v.display, origin: origin(v, "s1") })),
       questions: [],
@@ -156,7 +158,8 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
       snapshot: `s${i + 2}`,
       window: `w${i + 2}`,
       revision: digest(JSON.stringify([...sw.nodes.keys()])),
-      title: sw.window.title.slice(0, 200),
+      // A source window's title went through the ledger whole, as each value's fact; past 200 characters it is left out here.
+      title: sw.window.title.length <= 200 ? sw.window.title : "",
       targets: [],
       values: values.filter((v) => v.window === sw).map((v) => ({ ref: ref(v), display: v.display, origin: origin(v, `s${i + 2}`) })),
       questions: [],
@@ -169,7 +172,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   const writerDisclosure = disclosureFor(ledger.declared().snippets, snapshots, instruction);
   let written: Awaited<ReturnType<WriterPort["write"]>>;
   try {
-    written = await o.writer.write({ kind: "plan", disclosureId: o.offerKey, input: { goal: instruction.slice(0, 500), snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) });
+    written = await o.writer.write({ kind: "plan", disclosureId: o.offerKey, disclosed: writerDisclosure, input: { goal: instruction.slice(0, 500), snapshots }, maxOutputTokens: WRITER_MAX_OUTPUT_TOKENS, signal: o.signal ?? AbortSignal.timeout(15_000) });
   } catch (e) {
     throw new PlannerError("unavailable", `the plan writer failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
   }
@@ -235,7 +238,7 @@ export async function planWithCode(instruction: string, model: ScreenModel, memo
   for (const wr of checked.writes) if (wr.trace.from === "window") sources[`v${wr.step + 1}`] = wr.trace.windowId;
   const withMemory = plan.steps.map((s, i) => {
     const t = checked.writes.find((wr) => wr.step === i)?.trace;
-    return t?.from === "memory" ? { ...s, memory: t.id } : s;
+    return t?.from === "memory" ? { ...s, memory: t.part === undefined ? t.id : `${t.id}#${t.part}` } : s;
   });
   const finalPlan: Plan = { ...plan, steps: withMemory, ...(Object.keys(sources).length === 0 ? {} : { sources }) };
   return {

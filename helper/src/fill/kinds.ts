@@ -197,11 +197,12 @@ const CITY = /\b(?:city|town)\b/;
 const STREET = /\bstreet\b|\baddress line\b/;
 const PERSON_NAME = /\bname\b/;
 /** Fields that ask for one part of a date, by their whole label, and the values that part can be. */
-const DATE_PART: Readonly<Record<string, RegExp>> = {
-  day: /^(?:0?[1-9]|[12]\d|3[01])$/u,
-  month: /^(?:0?[1-9]|1[0-2]|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)$/iu,
-  year: /^\d{4}$/u,
-};
+const DATE_PART: ReadonlyMap<string, RegExp> = new Map([
+  // A day of the month, or a weekday: a scheduling form's Day can take "Monday" (fix-check review).
+  ["day", /^(?:0?[1-9]|[12]\d|3[01]|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)$/iu],
+  ["month", /^(?:0?[1-9]|1[0-2]|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)$/iu],
+  ["year", /^\d{4}$/u],
+]);
 const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
 /** A company's name: up to eight words with no brackets, @ or sentence punctuation ("Ridgeline Outdoor Co", "Acme, Inc.", "3M"). */
 const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^()[\]{}@<>;:!?]+$/u;
@@ -242,10 +243,43 @@ export function dateShaped(value: string): boolean {
   const numeric = /^(\d{1,4})(?:[/.\-](\d{1,4}))?(?:[/.\-](\d{1,4}))?$/u.exec(v);
   if (numeric !== null) return numericDate(numeric.slice(1).filter((x): x is string => x !== undefined).map(Number));
   const ws = v.split(/[\s,]+/u).filter((w) => w !== "");
-  // A date may carry its time ("October 8, 2026 at 3:00 PM"): clock digits and am/pm are date words too.
-  const dateWord = (w: string): boolean => /^\d{1,4}(?:st|nd|rd|th)?[.,]?$/iu.test(w) || /^\d{1,2}:\d{2}(?:[ap]\.?m\.?)?$/iu.test(w) || /^[ap]\.?m\.?$/iu.test(w) || MONTH_OR_DAY_NAME.test(w) || DATE_JOINER.test(w);
-  // Joiners say nothing alone ("at" is not a date): a number or a month or day name must be there (review).
-  return ws.length <= 8 && ws.some((w) => /\d/.test(w) || MONTH_OR_DAY_NAME.test(w)) && ws.every(dateWord);
+  if (ws.length > 8) return false;
+  // Each word read as what it is: a month or day name, a year, a day of the month, a clock time, or a joiner.
+  // Joiners say nothing alone ("at" is not a date), and the parts must make a real day: "2026-02-31", "99 May
+  // 2026" and "at 99:99 PM" are not dates (fix-check review).
+  let month: number | null = null;
+  let day: number | null = null;
+  let year: number | null = null;
+  let evidence = false;
+  for (const w of ws) {
+    const m = MONTH_INDEX.findIndex((re) => re.test(w));
+    if (m >= 0) {
+      if (month !== null) return false;
+      month = m + 1;
+      evidence = true;
+    } else if (MONTH_OR_DAY_NAME.test(w)) evidence = true;
+    else if (/^\d{4}[.,]?$/u.test(w)) {
+      if (year !== null) return false;
+      year = Number.parseInt(w, 10);
+      evidence = true;
+    } else if (/^\d{1,2}(?:st|nd|rd|th)?[.,]?$/iu.test(w)) {
+      const n = Number.parseInt(w, 10);
+      if (day !== null || n < 1 || n > 31) return false;
+      day = n;
+      evidence = true;
+    } else if (/^\d{1,2}:\d{2}(?:[ap]\.?m\.?)?$/iu.test(w) || /^[ap]\.?m\.?$/iu.test(w)) {
+      if (/\d/.test(w) && !timeShaped(w.replace(/([ap])/iu, " $1"))) return false;
+    } else if (!DATE_JOINER.test(w)) return false;
+  }
+  return evidence && (month === null || day === null || day <= daysIn(month, year));
+}
+
+const MONTH_INDEX: readonly RegExp[] = ["jan(?:uary)?", "feb(?:ruary)?", "mar(?:ch)?", "apr(?:il)?", "may", "june?", "july?", "aug(?:ust)?", "sep(?:t(?:ember)?)?", "oct(?:ober)?", "nov(?:ember)?", "dec(?:ember)?"].map((x) => new RegExp(`^${x}\\.?,?$`, "iu"));
+
+/** Days in a month; February has 29 when the year is unknown or a leap year. */
+function daysIn(month: number, year: number | null): number {
+  if (month === 2) return year === null || (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)) ? 29 : 28;
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
 /**
@@ -259,7 +293,10 @@ function numericDate(ns: readonly number[]): boolean {
   if (ns.length === 1) return year(ns[0] as number) || ((ns[0] as number) >= 1 && (ns[0] as number) <= 31);
   if (ns.length === 2) return (year(ns[1] as number) && (ns[0] as number) >= 1 && (ns[0] as number) <= 12) || md(ns[0] as number, ns[1] as number);
   const [a, b, c] = ns as [number, number, number];
-  return (year(a) && md(b, c)) || (year(c) && md(a, b)) || (c >= 0 && c <= 99 && md(a, b));
+  // Month and day in either order, and the day within that month: "2026-02-31" is no date.
+  const real = (m: number, d: number, y: number | null): boolean => m >= 1 && m <= 12 && d >= 1 && d <= daysIn(m, y);
+  const either = (x: number, y2: number, yr: number | null): boolean => real(x, y2, yr) || real(y2, x, yr);
+  return (year(a) && real(b, c, a)) || (year(c) && either(a, b, c)) || (c >= 0 && c <= 99 && either(a, b, null));
 }
 
 /** Whether a whole value reads as a clock time: "3:00 PM", "15:00", "3pm", "noon"; an hour with am or pm is 1 to 12 ("23pm" is not a time). */
@@ -310,8 +347,10 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
   const v = value.trim();
   // A field for one part of a date takes only that part: the B24 corpus's "Day" (under Date of birth) took a
   // whole "04/12/1990" (evidence/screen/b24/after).
-  const part = DATE_PART[words(s).join(" ")];
-  if (part !== undefined && !part.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is not one ${words(s).join(" ")}, and the field takes only that part of a date`;
+  // The field's own label decides (a placeholder "DD" beside "Day" must not hide it; fix-check review).
+  const own = words(labelWords.find((w): w is string => typeof w === "string" && w.trim() !== "") ?? "").join(" ");
+  const part = DATE_PART.get(own);
+  if (part !== undefined && !part.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is not one ${own}, and the field takes only that part of a date`;
   // A company or employer field takes a name, not a sentence about one: the B24 corpus's "Current company" took
   // "Junior Analyst at Ridgeline Outdoor Co (since 2024)" from a note's line (evidence/screen/b24/dev-4).
   // Only a field for the organization's name: "Company email" or "Employer phone" takes an email or a phone,

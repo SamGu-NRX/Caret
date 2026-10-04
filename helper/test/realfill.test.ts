@@ -3,7 +3,7 @@
 // stand-in Jev for the anchor, the derived values, the controls and the owner veto. All text is synthetic.
 import { describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { describeInput, emptyInput, memoryValue, proposeFill } from "../src/fill/fill.ts";
+import { describeInput, emptyInput, memoryRefOf, memoryValue, parseMemoryRef, proposeFill } from "../src/fill/fill.ts";
 import { fieldPart, joinName, partFits, splitAddress, splitName } from "../src/fill/derive.ts";
 import { clockTime, readDate } from "../src/fill/when.ts";
 import { consentLike, formControls, matchOption, optionInText } from "../src/fill/controls.ts";
@@ -378,5 +378,41 @@ describe("B24 review fixes: the owner questions' cap", () => {
     const emailQuestions = requests.flatMap((r) => Object.values(r.questions).filter((q) => String(q.instructions).includes("'Email'") && !("user" in q.criteria)));
     expect(emailQuestions.length).toBe(2);
     for (const q of emailQuestions) expect(Object.values(q.criteria).join(" ")).not.toContain(past);
+  });
+});
+
+describe("B24 fix-check review", () => {
+  const formWith = (m: ScreenModel): void => {
+    m.apply(snap([...page(), field(`${P}/textfield:full name~0`, "", { parent: `${P}/webarea:~0`, label: "Full name", frame: [100, 500, 200, 20] })], { at: 1000, windowId: "form", title: "Order", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: `${P}/textfield:customer name~0` }));
+  };
+  const joinsOffered = async (noteText: string): Promise<boolean> => {
+    const m = new ScreenModel();
+    m.apply(snap([field("te/a", noteText, { role: "AXTextArea" })], { at: 900, windowId: "note", title: "Notes", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true }));
+    formWith(m);
+    const requests: JevRequest[] = [];
+    await proposeFill(m, async (req) => (requests.push(req), jevPickingText(() => null)(req)), "form", `${P}/textfield:customer name~0`, 2000);
+    return requests.some((r) => Object.values(r.questions).some((q) => Object.values(q.criteria).some((d) => d?.includes("joined"))));
+  };
+
+  it("joins a first and a last name only from lines next to each other, even in one text area", async () => {
+    expect(await joinsOffered("Your details\nFirst name: Jordan\n\nLandlord\nLast name: Singh")).toBe(false);
+    expect(await joinsOffered("Guest\nFirst name: Kenji\nLast name: Watanabe")).toBe(true);
+  });
+
+  it("names a remembered name's part in a step's memory reference, and reads it back", () => {
+    expect(memoryRefOf({ id: "about-1", part: "first" })).toBe("about-1#first");
+    expect(memoryRefOf({ id: "about-1" })).toBe("about-1");
+    expect(parseMemoryRef("about-1#last")).toEqual({ id: "about-1", part: "last" });
+    expect(parseMemoryRef("about#odd")).toEqual({ id: "about#odd", part: undefined });
+    // A changed name gives its own parts, not any part that happens to match.
+    expect(memoryValue("Morgan Riley", "first")).toBe("Morgan");
+  });
+
+  it("refuses impossible dates and reads a date part from the field's own label", () => {
+    for (const v of ["2026-02-31", "99 May 2026", "May 3 2026 at 99:99 PM", "2025-02-29"]) expect(misfit(v, ["Date"])).not.toBeNull();
+    for (const v of ["2024-02-29", "May 3 2026 at 3:30 PM", "31/12/2026"]) expect(misfit(v, ["Date"])).toBeNull();
+    expect(misfit("04/12/1990", ["Day", null, "DD"])).not.toBeNull();
+    expect(misfit("Monday", ["Day"])).toBeNull();
+    expect(misfit("abc", ["Constructor"])).toBeNull();
   });
 });

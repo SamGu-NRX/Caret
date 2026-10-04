@@ -7,7 +7,7 @@ import { ABOUT_SAYS, type AboutValue } from "../fill/about.ts";
 import { PROTOCOL_VERSION, type FillField, type FillMemory, type FillProposal, type FillSource, type OfferPopup } from "../protocol.ts";
 import { nodeText, type ScreenModel } from "../model.ts";
 import { describeField } from "../fill/descriptor.ts";
-import { describeInput, emptyInput, memoryValue } from "../fill/fill.ts";
+import { describeInput, emptyInput, memoryRefOf, memoryValue } from "../fill/fill.ts";
 import type { PopupBlock, PopupRef } from "../popup.ts";
 import type { Plan } from "../executor/schema.ts";
 import { offerField } from "./field.ts";
@@ -146,7 +146,8 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
     return {
       says: `{{l${i}}} holds {{v${i}}}`,
       // A value from memory is checked against the entry again right before it is written (executor.ts).
-      ...(f.memory === null ? {} : { memory: f.memory.id }),
+      // A part of a remembered name names its part ("about-1#first"), so the check splits the entry the same way.
+      ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory) }),
       end: {
         kind: "valueEquals" as const,
         window: { bundleId: p.bundleId, title: "{{title}}" },

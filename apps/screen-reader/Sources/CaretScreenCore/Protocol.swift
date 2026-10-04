@@ -448,10 +448,13 @@ public struct FillMemory: Codable, Equatable, Sendable {
     public var id: String
     public var label: String
     public var says: String
-    public init(id: String, label: String, says: String) {
+    /// B24: the part of a remembered name the value is ("first", "middle", "last"); nil for the whole entry.
+    public var part: String?
+    public init(id: String, label: String, says: String, part: String? = nil) {
         self.id = id
         self.label = label
         self.says = says
+        self.part = part
     }
 }
 

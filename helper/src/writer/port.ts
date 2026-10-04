@@ -2,6 +2,7 @@
 // `plan`; `polish` and `memoryProposal` are refused until their schemas exist. The output is untrusted
 // text: a plan program still has to pass compileProgram and the sandbox.
 import { chat, type ChatRoute } from "./chat.ts";
+import type { Snippet } from "../privacy.ts";
 import { readKey } from "./env.ts";
 import { extractProgram, PLAN_SYSTEM, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
 
@@ -9,6 +10,11 @@ export interface WriterRequest {
   kind: "plan" | "polish" | "memoryProposal";
   /** Names the disclosure the caller accounted for this request; required so no write goes out unaccounted. */
   disclosureId: string;
+  /**
+   * The ledger's declarations the request's input carries (planner/codeplan.ts disclosureFor), for the helper's
+   * record of what was sent (B24). Never sent.
+   */
+  disclosed?: readonly Snippet[];
   input: unknown;
   maxOutputTokens: number;
   signal: AbortSignal;

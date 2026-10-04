@@ -168,3 +168,19 @@ describe("planWithCode, review fixes (B24)", () => {
     }
   });
 });
+
+describe("planWithCode, fix-check (B24)", () => {
+  it("declares the title as the writer sees it when it is cut to 200 characters", async () => {
+    const m = desk();
+    const form = m.windows.get("form");
+    if (form === undefined) throw new Error("no form");
+    const long = `Private form ${"X".repeat(210)}`;
+    m.apply(snap([...form.nodes.values()], { at: 1100, windowId: "form", title: long, app: FORM_APP, focused: true }));
+    const seen: WriterRequest[] = [];
+    const r = await planWithCode("do the reference section from my notes", m, memory, { writer: writer(fillByText([["Reference name", "Simone Achebe"]]), seen), askJev: jev().ask, offerKey: "plan-2", windowId: "form", now: 2000 });
+    const sent = (seen.at(-1)?.input as { snapshots: { title: string }[] }).snapshots[0]?.title;
+    expect(sent).toBe(long.slice(0, 200));
+    expect(r.writer.disclosed.some((x) => x.text === long.slice(0, 200))).toBe(true);
+    expect(seen.at(-1)?.disclosed).toEqual(r.writer.disclosed);
+  });
+});

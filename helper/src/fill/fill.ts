@@ -10,7 +10,7 @@
 // to turn those into blanks.
 import { randomInt, randomUUID } from "node:crypto";
 import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
-import type { ScreenModel, WindowState } from "../model.ts";
+import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, type Candidate } from "./candidates.ts";
 import { fieldKinds, fieldTerms, isNameLike, kindTerm, misfit, NAME_TERM, overlap } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
@@ -560,16 +560,16 @@ export async function proposeFill(
             add(v, `"${v ?? ""}" (the ${PART_SAYS[part]} in ${describeAbout(a)})`, { from: "memory", a });
           }
         } else {
-          // A full name joined from labelled first and last names of one block: the same node and section ("First
-          // name: Kenji" and "Last name: Watanabe" in one note). Two blocks can be two people (review: "Your
-          // details / First name: Jordan" and "Landlord / Last name: Singh"), so they are never joined; and the
-          // joined value meets every check through both of the candidates it came from (`also`).
+          // A full name joined from labelled first and last names on two lines next to each other in one node and
+          // section ("First name: Kenji" then "Last name: Watanabe"). Two blocks can be two people, even in one
+          // text area (reviews: "Your details / First name: Jordan" and "Landlord / Last name: Singh"), so nothing
+          // else is joined; and the joined value meets every check through both candidates (`also`).
           const byNode = new Map<string, Candidate[]>();
           for (const c of candidates) if (c.labelled === true) byNode.set(`${c.source.windowId}\u0000${c.source.nodeKey}\u0000${c.section ?? ""}`, [...(byNode.get(`${c.source.windowId}\u0000${c.source.nodeKey}\u0000${c.section ?? ""}`) ?? []), c]);
           for (const cs of byNode.values()) {
             const first = cs.filter((c) => fieldPart(c.context, false) === "first");
             const last = cs.filter((c) => fieldPart(c.context, false) === "last");
-            if (first.length === 1 && last.length === 1) {
+            if (first.length === 1 && last.length === 1 && adjacentLines(model, first[0] as Candidate, last[0] as Candidate)) {
               const [a, b] = [first[0] as Candidate, last[0] as Candidate];
               add(joinName(a.text, b.text), `"${joinName(a.text, b.text)}" (the first name ${describeCandidate(a)} and the last name ${describeCandidate(b)}, joined)`, { from: "window", c: a }, b);
             }
@@ -902,4 +902,27 @@ export async function proposeFill(
 /** What a memory entry gives a field now: the whole value, or the part of the name the proposal took (FillMemory.part). */
 export function memoryValue(value: string, part: FillMemory["part"]): string | null {
   return part === undefined ? value : namePart(splitName(value), part);
+}
+
+/** Whether two candidates' "Label: value" lines are next to each other in their node, with no line between. */
+function adjacentLines(model: ScreenModel, a: Candidate, b: Candidate): boolean {
+  const node = model.windows.get(a.source.windowId)?.nodes.get(a.source.nodeKey);
+  if (node === undefined || a.context === null || b.context === null) return false;
+  const lines = nodeText(node).split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim());
+  const at = (c: Candidate): number => lines.findIndex((l) => l.startsWith(`${c.context}:`) && l.includes(c.text));
+  const i = at(a);
+  const j = at(b);
+  return i >= 0 && j >= 0 && Math.abs(i - j) === 1;
+}
+
+/** A step's memory reference (executor Step.memory): the entry's id, and "#part" for a part of a remembered name. */
+export function memoryRefOf(m: { id: string; part?: FillMemory["part"] }): string {
+  return m.part === undefined ? m.id : `${m.id}#${m.part}`;
+}
+
+/** The entry id and the part a step's memory reference names (memoryRefOf). */
+export function parseMemoryRef(ref: string): { id: string; part: FillMemory["part"] } {
+  const at = ref.lastIndexOf("#");
+  const part = at < 0 ? "" : ref.slice(at + 1);
+  return part === "first" || part === "middle" || part === "last" ? { id: ref.slice(0, at), part } : { id: ref, part: undefined };
 }
