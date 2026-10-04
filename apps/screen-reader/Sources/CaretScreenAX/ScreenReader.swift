@@ -92,13 +92,14 @@ public final class ScreenReader {
         ctx.log("reading \(workers.count) apps; background every \(Int(opts.backgroundInterval)) s; deny list has \(opts.denyList.count) entries")
     }
 
-    /// After the helper reconnects it has no state, so walk everything again. Its watches are gone
-    /// with it, so the reader drops its own until the new helper asks for some. The press watch is kept: a
-    /// resync also follows dropped snapshots with no reconnect, when the helper still counts on it (B20 review),
-    /// and after a reconnect the new helper sends its own list with its next occurrence.
-    public func resync() {
+    /// Walks everything again. After the helper reconnects (`newHelper`) it has no state: its watches are gone
+    /// with it, so the reader drops its own until the new helper asks for some. A resync after dropped snapshots
+    /// keeps the press watch, which the same helper still counts on (B20 review).
+    public func resync(newHelper: Bool) {
+        if newHelper { watchPresses([:]) }
         for w in workers.values {
-            w.setWatched([])
+            // The pending-state watch too: before B20 a drain resync dropped it while the helper still relied on it.
+            if newHelper { w.setWatched([]) }
             w.backgroundPass(reason: .initial, minAge: 0)
         }
         if let f = frontmost { workers[f]?.activate() }

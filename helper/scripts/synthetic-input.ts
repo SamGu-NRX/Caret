@@ -1,54 +1,34 @@
 // Input an evaluation posts to a process it started (CGEventPostToPid: a click, typed characters, a paste) resets
 // the Mac's HIDIdleTime exactly as a person's input does (B20, measured: a key posted to the posting process
 // itself took HIDIdleTime from 196 s to 0.3 s). The GUI gate stops a run when idle drops under 5 s, so it must
-// tell this script's own input from someone using the Mac: input is the user's only when the last event came
-// after the script's last post. The time of that post is shared through CARET_SYNTHETIC_FILE with the gate
-// that runs the script (gui.sh), as "busy" while posting and the end time in epoch milliseconds after.
-import { readFileSync, writeFileSync } from "node:fs";
+// tell the run's own input from someone using the Mac. The programs that post (experiments/write-candidates.swift,
+// experiments/press-observe.swift) write CARET_SYNTHETIC_FILE right around each post: "busy DEADLINE" while
+// posting, then the end time, both in epoch milliseconds. Input is the user's when the last event came more than
+// MARGIN_MS after the last post, or while no post is under way. A "busy" past its deadline (a poster that died
+// mid-post) excuses nothing. gui.sh reads the same file the same way.
+import { readFileSync } from "node:fs";
 
-/** Slack between the post ending and the last event the system recorded for it. Assumed. */
+/** Slack between a post ending and the last event the system recorded for it. Assumed. */
 const MARGIN_MS = 700;
 
-let busy = false;
-let lastPostAt = 0;
+type Mark = { busyUntil: number } | { postedAt: number };
 
-function share(content: string): void {
-  const file = process.env.CARET_SYNTHETIC_FILE;
-  if (file !== undefined && file !== "") writeFileSync(file, content);
-}
-
-/** Runs `post`, which sends input to a process this script started, and records when it ended. */
-export async function posting<T>(post: () => Promise<T>): Promise<T> {
-  busy = true;
-  share("busy");
+function readMark(file: string | undefined): Mark {
+  if (file === undefined || file === "") return { postedAt: 0 };
+  let t: string;
   try {
-    return await post();
-  } finally {
-    busy = false;
-    lastPostAt = Date.now();
-    share(String(lastPostAt));
-  }
-}
-
-/** The batch's shared mark: "busy", the end of the last post by any script in the batch, or 0 when there is none. */
-function sharedMark(): number | "busy" {
-  const file = process.env.CARET_SYNTHETIC_FILE;
-  if (file === undefined || file === "") return 0;
-  try {
-    const t = readFileSync(file, "utf8").trim();
-    return t === "busy" ? "busy" : Number(t) || 0;
+    t = readFileSync(file, "utf8").trim();
   } catch {
-    return 0;
+    return { postedAt: 0 };
   }
+  const busy = /^busy (\d+)$/.exec(t);
+  if (busy?.[1] !== undefined) return { busyUntil: Number(busy[1]) };
+  return { postedAt: Number(t) || 0 };
 }
 
-/**
- * Whether HID idle this low means someone used the Mac: the last event came after the last post by this script
- * or by an earlier step of the same batch (a click the step before posted is still in HID idle at the next start).
- */
-export function userInput(idleSeconds: number, now = Date.now()): boolean {
-  const mark = sharedMark();
-  if (busy || mark === "busy") return false;
-  const lastEventAt = now - idleSeconds * 1000;
-  return lastEventAt > Math.max(lastPostAt, mark) + MARGIN_MS;
+/** Whether HID idle this low means someone used the Mac rather than the run's own posted input. */
+export function userInput(idleSeconds: number, now = Date.now(), file = process.env.CARET_SYNTHETIC_FILE): boolean {
+  const mark = readMark(file);
+  if ("busyUntil" in mark) return now > mark.busyUntil;
+  return now - idleSeconds * 1000 > mark.postedAt + MARGIN_MS;
 }

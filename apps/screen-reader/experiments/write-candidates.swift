@@ -91,6 +91,14 @@ if cand == "describe" {
 
 // MARK: - keyboard events to the pid
 
+/// Posted input resets HIDIdleTime as a person's does, so the GUI gate is told when this program posts: "busy
+/// DEADLINE" in CARET_SYNTHETIC_FILE while posting, then the end time (helper/scripts/synthetic-input.ts).
+func markPosting(_ busy: Bool) {
+    guard let f = ProcessInfo.processInfo.environment["CARET_SYNTHETIC_FILE"], !f.isEmpty else { return }
+    let ms = Int64(Date().timeIntervalSince1970 * 1000)
+    try? (busy ? "busy \(ms + 5000)" : "\(ms)").write(toFile: f, atomically: true, encoding: .utf8)
+}
+
 typealias PostToPid = @convention(c) (pid_t, CGEvent) -> Void
 typealias SetAuth = @convention(c) (CGEvent, AnyObject) -> Void
 typealias MsgFactory = @convention(c) (AnyClass, Selector, UnsafeMutableRawPointer, Int32, UInt32) -> AnyObject?
@@ -158,7 +166,9 @@ case "type-cg", "type-sl":
     let f = set(field, kAXFocusedAttribute, kCFBooleanTrue)
     usleep(100_000)
     let focused = (attr(field, kAXFocusedAttribute) as? Bool) ?? false
+    markPosting(true)
     let posted = selectAllKeys(sl: sl) && typeText(value, sl: sl)
+    markPosting(false)
     detail = "focus=\(f.rawValue) focusedBefore=\(focused) posted=\(posted)"
     acted = posted
 case "paste-cg":
@@ -183,7 +193,9 @@ case "paste-cg":
     mine.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
     pb.writeObjects([mine])
     let ours = pb.changeCount
+    markPosting(true)
     let posted = selectAllKeys(sl: false) && key(9, down: true, flags: .maskCommand, sl: false) && key(9, down: false, flags: .maskCommand, sl: false)
+    markPosting(false)
     usleep(400_000)
     // Put back what was there only while the pasteboard still holds this candidate's item: anything written
     // meanwhile (the user, a clipboard manager) is newer and stays.

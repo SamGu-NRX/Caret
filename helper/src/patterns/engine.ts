@@ -273,7 +273,7 @@ export class PatternEngine {
     const grew = new Set<string>();
     for (const c of changes) {
       this.clock = Math.max(this.clock, c.at);
-      if (c.kind === "windowOpened" || (c.kind === "added" && c.editable && !this.routines.underWay(c.windowId) && !grew.has(c.windowId))) {
+      if (c.kind === "windowOpened" || (c.kind === "added" && c.editable && !grew.has(c.windowId))) {
         if (c.kind === "added") grew.add(c.windowId);
         const preds = this.timings.time("routines.open", () => this.routines.onWindowOpened(c.windowId, c.at));
         if (preds.length > 0) this.onPredictions(preds);
@@ -428,9 +428,10 @@ export class PatternEngine {
     return matched === o.cells.length ? "taken" : "stale";
   }
 
-  /** Called before the window leaves the model. */
-  onWindowClosed(windowId: string): void {
-    const closed = this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId, this.clock));
+  /** Called before the window leaves the model; `at` is when the reader saw it close. */
+  onWindowClosed(windowId: string, at = this.clock): void {
+    this.clock = Math.max(this.clock, at);
+    const closed = this.timings.time("routines.close", () => this.routines.onWindowClosed(windowId, at));
     this.editing.delete(windowId);
     if (closed !== null) this.skills.onBundleClosed(closed, this.clock);
     this.syncPressWatch();
@@ -758,7 +759,9 @@ export class PatternEngine {
    */
   private onPredictions(preds: SilentPrediction[]): void {
     const sorted = [...preds].sort((a, b) => b.routine.hits - a.routine.hits);
-    let spoken = false;
+    // A routine already offered in this window (predicted from fields that arrived first) speaks for it.
+    const window = sorted[0]?.dstWindowId;
+    let spoken = [...this.offers.values()].some((o) => o.state === "open" && o.msg.kind === "routine" && o.msg.windowId === window);
     for (const p of sorted) {
       const cells = p.cells.filter((c): c is RoutineCell => c !== null);
       const input = { hits: p.routine.hits, misses: p.routine.misses, paused: p.routine.paused || p.routine.skillPaused, grounded: p.grounded };

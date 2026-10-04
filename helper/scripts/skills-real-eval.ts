@@ -52,17 +52,22 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const own: ChildProcess[] = [];
 const tempDirs: string[] = [];
-const running = (p: ChildProcess): boolean => p.exitCode === null && p.signalCode === null;
+/** True while `pid` exists and is not a zombie. Read from ps: in the exit handler no child-exit events arrive. */
+function alive(pid: number): boolean {
+  const st = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  return st !== "" && !st.startsWith("Z");
+}
 /**
  * Stops what this script started, waits up to 10 s for it to exit, then stops any process whose arguments carry
- * one of this script's temporary profiles as a whole argument (Chrome's helpers), and only then deletes the
- * directories. Synchronous, so the exit handler can run it on every way out.
+ * one of this script's temporary profiles as a whole argument (Chrome's helpers), waits for those too, and only
+ * then deletes the directories; one still in use is left in place. Synchronous, so the exit handler can run it.
  */
 function cleanup(): void {
-  for (const p of own) if (running(p)) p.kill("SIGTERM");
+  const pids = own.flatMap((p) => (p.pid === undefined || p.exitCode !== null || p.signalCode !== null ? [] : [p.pid]));
+  for (const p of own) if (p.exitCode === null && p.signalCode === null) p.kill("SIGTERM");
   const deadline = Date.now() + 10_000;
-  while (own.some(running) && Date.now() < deadline) spawnSync("/bin/sleep", ["0.2"]);
-  for (const p of own) if (running(p)) p.kill("SIGKILL");
+  while (pids.some(alive) && Date.now() < deadline) spawnSync("/bin/sleep", ["0.2"]);
+  for (const p of own) if (p.pid !== undefined && alive(p.pid)) p.kill("SIGKILL");
   for (const d of tempDirs.splice(0)) {
     const left = execFileSync("/bin/ps", ["-axww", "-o", "pid=,args="], { encoding: "utf8" })
       .split("\n")
@@ -76,7 +81,10 @@ function cleanup(): void {
         // already gone
       }
     }
-    rmSync(d, { recursive: true, force: true });
+    const until = Date.now() + 5000;
+    while (left.some(alive) && Date.now() < until) spawnSync("/bin/sleep", ["0.2"]);
+    if (!left.some(alive)) rmSync(d, { recursive: true, force: true });
+    else process.stderr.write(`kept ${d}: a process using it did not exit\n`);
   }
 }
 process.on("exit", cleanup);

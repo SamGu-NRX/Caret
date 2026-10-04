@@ -157,10 +157,13 @@ var connectedOnce = false
 socket.onConnect = {
     DispatchQueue.main.async {
         MainActor.assumeIsolated {
-            if connectedOnce { reader.resync() }
+            if connectedOnce { reader.resync(newHelper: true) }
             connectedOnce = true
         }
     }
+}
+socket.onResync = {
+    DispatchQueue.main.async { MainActor.assumeIsolated { reader.resync(newHelper: false) } }
 }
 socket.onCommand = { cmd in
     DispatchQueue.main.async { MainActor.assumeIsolated { reader.perform(cmd) } }

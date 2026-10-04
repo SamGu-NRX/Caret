@@ -26,7 +26,7 @@ import type { AskJev } from "../src/fill/jev.ts";
 import type { TaskResult } from "../src/executor/executor.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type PatternOffer, type UserPress } from "../src/protocol.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
-import { posting, userInput } from "./synthetic-input.ts";
+import { userInput } from "./synthetic-input.ts";
 
 const run = promisify(execFile);
 const { values: a } = parseArgs({ options: { bin: { type: "string" }, clicker: { type: "string" }, out: { type: "string" }, foreground: { type: "boolean", default: false } } });
@@ -84,8 +84,12 @@ let reader: ChildProcessWithoutNullStreams | null = null;
 process.on("exit", () => {
   reader?.kill("SIGTERM");
   fixture.kill("SIGTERM");
+  // The reader's socket lives in sockDir: both are deleted once the reader is gone (ps, as no exit events arrive here).
+  const gone = (pid: number | undefined): boolean => pid === undefined || spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim().replace(/^Z.*/, "") === "";
+  const until = Date.now() + 10_000;
+  while (!(gone(reader?.pid) && gone(fixture.pid)) && Date.now() < until) spawnSync("/bin/sleep", ["0.2"]);
   rmSync(dataDir, { recursive: true, force: true });
-  rmSync(sockDir, { recursive: true, force: true });
+  if (gone(reader?.pid)) rmSync(sockDir, { recursive: true, force: true });
 });
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => process.exit(143));
 
@@ -177,7 +181,8 @@ const clicks: Click[] = [];
 async function clickSend(title: string, windowId: string): Promise<void> {
   const before = Number((await fx("form dump invite")).sent);
   const pressesBefore = presses.length;
-  const { stdout } = await posting(() => run(CLICKER, [String(fixturePid), title, "Send"], { timeout: 20_000 }));
+  // The clicker marks CARET_SYNTHETIC_FILE around the click it posts, so the idle watch knows it for its own.
+  const { stdout } = await run(CLICKER, [String(fixturePid), title, "Send"], { timeout: 20_000 });
   const probe = JSON.parse(stdout) as { seen?: Record<string, string[]> };
   await sleep(500);
   const pressedByClick = Number((await fx("form dump invite")).sent) > before;

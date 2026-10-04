@@ -44,7 +44,7 @@ import type { TaskResult, UndoResult } from "../src/executor/executor.ts";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppSwitch, type HelperMessage, type ReaderVerb, type TaskProgress, type VerbResult } from "../src/protocol.ts";
 import { Cdp } from "./cdp.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
-import { posting, userInput } from "./synthetic-input.ts";
+import { userInput } from "./synthetic-input.ts";
 
 const run = promisify(execFile);
 const { values: a } = parseArgs({
@@ -145,7 +145,11 @@ function finalCleanup(): void {
       .filter((p) => p > 1);
     for (const p of left) signal(p, "SIGTERM");
     leftoverHelpers += left.length;
-    rmSync(d, { recursive: true, force: true });
+    // Deleted only once nothing that used it is left; otherwise kept, and named in the report.
+    const until = Date.now() + 5000;
+    while (left.some(alive) && Date.now() < until) spawnSync("/bin/sleep", ["0.2"]);
+    if (left.some(alive)) keptDirs.push(d);
+    else rmSync(d, { recursive: true, force: true });
   }
 }
 /** A process that has exited meanwhile is not an error during cleanup. */
@@ -157,6 +161,8 @@ function signal(pid: number, sig: NodeJS.Signals): void {
   }
 }
 let leftoverHelpers = 0;
+/** Temporary directories left in place because a process that used them did not exit in time. */
+const keptDirs: string[] = [];
 process.on("exit", finalCleanup);
 // Ctrl-C or a kill from the wrapper: leave through exit, so the cleanup above runs.
 process.on("SIGINT", () => process.exit(130));
@@ -890,7 +896,8 @@ async function candidatesTable(probe: string): Promise<void> {
       // The probe acts only on the target's pid, which this script started.
       let o: Record<string, unknown>;
       try {
-        o = JSON.parse((await posting(() => run(probe, [String(target.pid), title, "name", candidate, value], { timeout: 30_000 }))).stdout) as Record<string, unknown>;
+        // The probe marks CARET_SYNTHETIC_FILE around the input it posts, so the idle watch knows it for its own.
+        o = JSON.parse((await run(probe, [String(target.pid), title, "name", candidate, value], { timeout: 30_000 })).stdout) as Record<string, unknown>;
       } catch (e) {
         o = { ok: false, error: String(e) };
       }
@@ -1059,7 +1066,7 @@ if (candidates.length > 0) {
   }
 }
 md.push("", `## Frontmost app changes during the run`, "", switches.length === 0 ? "none" : switches.map((s) => `- ${new Date(s.at).toISOString()} ${s.from?.name ?? "?"} (${s.from?.pid ?? "?"}) -> ${s.to.name} (${s.to.pid})`).join("\n"));
-md.push("", `## Cleanup`, "", `Processes still carrying this run's temporary profile after Chrome exited, then stopped: ${leftoverHelpers}. TextEdit processes before: [${textEditBefore.join(", ")}], after: [${textEditAfter.join(", ")}]. New entries in TextEdit's autosave and saved-state folders: ${JSON.stringify(autosave)}.`);
+md.push("", `## Cleanup`, "", `Processes still carrying this run's temporary profile after Chrome exited, then stopped: ${leftoverHelpers}. Temporary folders kept because one did not exit in time: ${JSON.stringify(keptDirs)}. TextEdit processes before: [${textEditBefore.join(", ")}], after: [${textEditAfter.join(", ")}]. New entries in TextEdit's autosave and saved-state folders: ${JSON.stringify(autosave)}.`);
 md.push("", `Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}. Helper errors: ${errors.length}.`);
 writeFileSync(join(OUT, "real-target-eval.md"), md.join("\n") + "\n");
 writeFileSync(join(OUT, "real-target-eval.json"), JSON.stringify({ target: TARGET, background: BACKGROUND, front: FRONT, responder: RESPONDER, aborted, rows, means, candidates, safety: sr, progress, errors, switches, jevCalls, jevCost, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");

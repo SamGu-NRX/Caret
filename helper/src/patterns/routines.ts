@@ -77,6 +77,8 @@ interface KeptPress extends ObservedPress {
 const PRESSES_PER_WINDOW = 4;
 /** Windows whose presses are kept at once; the oldest goes first. Bounded; no measurement behind either number. */
 const PRESS_WINDOWS = 50;
+/** Elements remembered per window (observe); a page that keeps adding elements stops adding past this. Assumed. */
+const SEEN_PER_WINDOW = 2000;
 /**
  * How soon after a press that does not read as outbound, destructive or money the window must close for that
  * press to count as how the occurrence ended. A safe press followed by more work (a checkbox, then a keyboard
@@ -92,6 +94,11 @@ interface Bundle {
 }
 
 export type Hash = (text: string) => string;
+
+/** A label fit to keep as a finish: a few words, with no address, digits or link in it. */
+export function finishLabel(label: string): boolean {
+  return label !== "" && label.length <= 40 && label.split(/\s+/).length <= 4 && !/[@\d/:]/.test(label);
+}
 
 export class RoutineRecognizer {
   private readonly bundles = new Map<string, Bundle>();
@@ -121,8 +128,14 @@ export class RoutineRecognizer {
   }
 
   /** A window appeared. Predicts every unpaused routine whose destination fields it holds, empty, and keeps each prediction to score when its bundle closes. */
+  /**
+   * Predicts every routine whose destination fields the window holds, empty, that it has not predicted for this
+   * window already; called when the window opens and again as fields arrive (B20 review: a shorter routine that
+   * matched a half-loaded page must not keep a fuller one from being predicted once the rest arrives).
+   */
   onWindowOpened(windowId: string, at: number): SilentPrediction[] {
-    const out = this.predict(windowId, at);
+    const known = new Set(this.bundles.get(windowId)?.predictions.map((p) => p.routine.id) ?? []);
+    const out = this.predict(windowId, at).filter((p) => !known.has(p.routine.id));
     for (const p of out) this.bundle(windowId, at).predictions.push(p);
     return out;
   }
@@ -209,11 +222,15 @@ export class RoutineRecognizer {
 
   /**
    * A window changed: remember where its elements sit, for one with an occurrence under way or that the user is
-   * editing in (`editing`). Merged, never cleared until the occurrence ends, so a state with elements gone keeps
-   * where they were.
+   * editing in (`editing`); for any other window the memory goes. An element keeps the place it was first seen
+   * at: a window coming apart (B20 review) shifts the positions of the elements that are left, and those are
+   * not where the occurrence's edits went.
    */
   observe(windowId: string, editing = false): void {
-    if (!editing && !this.bundles.has(windowId)) return;
+    if (!editing && !this.bundles.has(windowId)) {
+      this.lastSeen.delete(windowId);
+      return;
+    }
     const w = this.model.windows.get(windowId);
     if (w === undefined) return;
     let seen = this.lastSeen.get(windowId);
@@ -221,7 +238,10 @@ export class RoutineRecognizer {
       if (this.lastSeen.size >= PRESS_WINDOWS) this.lastSeen.delete(this.lastSeen.keys().next().value as string);
       this.lastSeen.set(windowId, (seen = new Map()));
     }
-    for (const [k, slot] of windowIndex(w).slots) seen.set(k, slot);
+    for (const [k, slot] of windowIndex(w).slots) {
+      if (seen.size >= SEEN_PER_WINDOW) break;
+      if (!seen.has(k)) seen.set(k, slot);
+    }
   }
 
   /** Where an element of the window was last seen, for one the window as the model has it no longer holds. */
@@ -383,7 +403,10 @@ export class RoutineRecognizer {
     const p = presses.at(-1);
     if (p === undefined || p.slot === null) return undefined;
     const label = p.label.trim();
-    const why = label === "" ? "safe" : classifyLabel(label);
+    // Learned only from a button whose label is a name for an action, as B19's guess from the window's buttons
+    // is: a link or a label that carries an address or a number would put screen data in memory (B20 review).
+    if (p.role !== "AXButton" || !finishLabel(label)) return undefined;
+    const why = classifyLabel(label);
     if (why === "safe") return closedAt !== null && closedAt >= p.at && closedAt - p.at <= PRESS_ENDS_MS ? null : undefined;
     return { label, why, templateHash: p.slot.templateHash, pos: p.slot.pos, by: "click" };
   }

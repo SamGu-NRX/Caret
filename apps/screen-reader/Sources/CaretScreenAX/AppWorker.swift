@@ -159,9 +159,13 @@ public final class AppWorker: @unchecked Sendable {
         "AXLoadComplete", "AXLiveRegionChanged", kAXSelectedRowsChangedNotification,
     ]
 
+    /// Chromium and Electron render web pages themselves; any other app's web area is WebKit's (B20).
+    private let chromiumFamily: Bool
+
     public init(pid: pid_t, app: AppRef, ctx: ReaderContext) {
         self.pid = pid
         self.app = app
+        self.chromiumFamily = NSRunningApplication(processIdentifier: pid)?.bundleURL.map(AppClassifier.isChromiumFamily) ?? false
         self.appPart = ElementKey.appPart(bundleId: app.bundleId.isEmpty ? nil : app.bundleId, name: app.name)
         self.ax = AXUIElementCreateApplication(pid)
         self.queue = DispatchQueue(label: "caret.screen.app.\(pid)", qos: .utility)
@@ -257,9 +261,8 @@ public final class AppWorker: @unchecked Sendable {
         for (w, info) in windows where targets.contains(info.id) {
             if case .failed(.invalidUIElement) = AX.read(w.el, kAXRoleAttribute) {
                 windows.removeValue(forKey: w)
-                pressIndex.remove(w)
                 watched.remove(info.id)
-                closed(info.id)
+                closed(w, info.id)
                 continue
             }
             walkWindow(w, reason: .watch, isFocused: eventDriven && w == focusedWindow)
@@ -291,6 +294,7 @@ public final class AppWorker: @unchecked Sendable {
             self.watchTimer?.cancel()
             self.watchTimer = nil
             self.removeObserver()
+            self.pressQueue.sync {}
             for (_, info) in self.windows { self.ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: info.id))) }
             self.windows.removeAll()
             self.pressIndex.removeAll()
@@ -317,8 +321,7 @@ public final class AppWorker: @unchecked Sendable {
             walkWindow(el, reason: .event, isFocused: el == currentFocusedWindow())
         case kAXUIElementDestroyedNotification:
             if let info = windows.removeValue(forKey: el) {
-                pressIndex.remove(el)
-                closed(info.id)
+                closed(el, info.id)
                 if focusedWindow == el { focusedWindow = nil }
             } else {
                 request(full: true, subtree: nil)
@@ -547,8 +550,7 @@ public final class AppWorker: @unchecked Sendable {
         let live = Set(ws.map(AXRef.init))
         for (w, info) in windows where !live.contains(w) {
             windows.removeValue(forKey: w)
-            pressIndex.remove(w)
-            closed(info.id)
+            closed(w, info.id)
         }
         let focused = eventDriven ? (focusedWindow ?? currentFocusedWindow()) : nil
         let now = CFAbsoluteTimeGetCurrent()
@@ -566,8 +568,10 @@ public final class AppWorker: @unchecked Sendable {
      * a Send has closed the window. The helper learns a routine's finish from the press only if it arrives
      * before the window's close (B20 press-learn run 1: 4 presses reported, none learned).
      */
-    private func closed(_ windowId: String) {
+    private func closed(_ w: AXRef, _ windowId: String) {
+        // Drained first, then the window leaves the index: a press still being resolved may need its frames.
         pressQueue.sync {}
+        pressIndex.remove(w)
         ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: windowId)))
     }
 
@@ -583,14 +587,14 @@ public final class AppWorker: @unchecked Sendable {
     /// frames in the window the event names, with the label that walk read. Read only: nothing is pressed or set.
     func observePress(at point: CGPoint, number: Int?, time at: Int64, windows ids: Set<String>) {
         pressQueue.async {
-            if self.pressByHitTest(at: point, time: at, windows: ids) { return }
+            if self.pressByHitTest(at: point, number: number, time: at, windows: ids) { return }
             guard let n = number, let (id, c) = self.pressIndex.control(number: n, at: point), ids.contains(id) else { return }
             self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: id, key: c.key, role: c.role, label: c.label)))
         }
     }
 
     /// The hit-test path of observePress; false when it placed nothing.
-    private func pressByHitTest(at point: CGPoint, time at: Int64, windows ids: Set<String>) -> Bool {
+    private func pressByHitTest(at point: CGPoint, number: Int?, time at: Int64, windows ids: Set<String>) -> Bool {
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(ax, Float(point.x), Float(point.y), &hit) == .success, var el = hit else { return false }
         AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
@@ -604,6 +608,8 @@ public final class AppWorker: @unchecked Sendable {
         }
         guard let r = role, Roles.pressable.contains(r),
               let w = AX.element(el, kAXWindowAttribute).map(AXRef.init), let (id, key) = pressIndex.lookup(window: w, element: AXRef(el)), ids.contains(id),
+              // The window the event went to, when it names one: a hit in another window of the app is not this click.
+              number == nil || AX.windowNumber(of: w.el) == number,
               let label = liveLabel(el) else { return false }
         ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(pid), windowId: id, key: key, role: r,
                                               label: label.trimmingCharacters(in: .whitespacesAndNewlines))))
@@ -684,7 +690,10 @@ public final class AppWorker: @unchecked Sendable {
                 if attribute == "insert" {
                     if let fail = insert(value, into: el, expect: expect, check: stillAllowed) { return fail }
                     err = .success
-                } else if attribute == "focusValue" {
+                } else if attribute == "focusValue" || isWebKitField(el) {
+                    // A WebKit window that is not key applies a bare value write to whichever field has focus, not
+                    // the one written to (B20 final table: Email's value landed in Name, focused by the step before),
+                    // so a WebKit field is always focused first, whatever the executor asked.
                     if let fail = focusThenValue(value, into: el, expect: expect, check: stillAllowed) { return fail }
                     err = .success
                 } else {
@@ -770,6 +779,23 @@ public final class AppWorker: @unchecked Sendable {
         let w = AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, value as CFString)
         guard w == .success else { return (.axError, "insert: replace failed with \(w.rawValue)") }
         return nil
+    }
+
+    /// Whether the element is a field of a web page WebKit renders: inside an AXWebArea, in an app that is not
+    /// Chromium or Electron. A failed read counts as not, so the write falls back to the executor's own chain.
+    private func isWebKitField(_ el: AXUIElement) -> Bool {
+        if chromiumFamily { return false }
+        var e: AXUIElement? = AX.element(el, kAXParentAttribute)
+        for _ in 0..<40 {
+            guard let cur = e else { return false }
+            AXUIElementSetMessagingTimeout(cur, AX.elementTimeout)
+            switch AX.string(cur, kAXRoleAttribute) {
+            case "AXWebArea": return true
+            case kAXWindowRole, nil: return false
+            default: e = AX.element(cur, kAXParentAttribute)
+            }
+        }
+        return false
     }
 
     /// Focus, then the value: a WebKit window that is not key drops a bare AXValue write and takes it once the

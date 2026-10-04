@@ -76,6 +76,14 @@ for t in [pidTap, sessionTap].compactMap({ $0 }) {
 }
 RunLoop.main.run(until: Date().addingTimeInterval(0.3))
 
+/// Posted input resets HIDIdleTime as a person's does, so the GUI gate is told when this program posts: "busy
+/// DEADLINE" in CARET_SYNTHETIC_FILE while posting, then the end time (helper/scripts/synthetic-input.ts).
+func markPosting(_ busy: Bool) {
+    guard let f = ProcessInfo.processInfo.environment["CARET_SYNTHETIC_FILE"], !f.isEmpty else { return }
+    let ms = Int64(Date().timeIntervalSince1970 * 1000)
+    try? (busy ? "busy \(ms + 5000)" : "\(ms)").write(toFile: f, atomically: true, encoding: .utf8)
+}
+
 typealias SetWindowLocation = @convention(c) (CGEvent, CGPoint) -> Void
 let setLocal = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGEventSetWindowLocation").map { unsafeBitCast($0, to: SetWindowLocation.self) }
 func click(_ type: CGEventType) -> Bool {
@@ -89,9 +97,11 @@ func click(_ type: CGEventType) -> Bool {
     e.postToPid(pid)
     return true
 }
+markPosting(true)
 let posted = click(.leftMouseDown)
 RunLoop.main.run(until: Date().addingTimeInterval(0.08))
 let posted2 = click(.leftMouseUp)
+markPosting(false)
 RunLoop.main.run(until: Date().addingTimeInterval(1.0))
 if let m = monitor { NSEvent.removeMonitor(m) }
 var hit: AXUIElement?

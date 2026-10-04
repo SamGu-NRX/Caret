@@ -446,7 +446,7 @@ export class Helper {
         // The shadow logger judges an open episode in this window before the window leaves the model,
         // since the judgment reads the window's typed values.
         if (this.mode === "shadow") this.shadowLogger.onWindowClosing(m.windowId);
-        this.patterns.onWindowClosed(m.windowId);
+        this.patterns.onWindowClosed(m.windowId, m.at);
         this.pending.onWindowClosed(m.windowId);
         this.openApp.onWindowClosed(m.windowId);
         this.audit?.onWindowClosed(m.windowId, m.at);

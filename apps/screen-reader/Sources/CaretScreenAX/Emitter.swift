@@ -25,6 +25,9 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     public private(set) var dropped = 0 // guarded by flightLock or the queue
     public private(set) var sent = 0
     public var onConnect: (@Sendable () -> Void)?
+    /// After snapshots were dropped and the queue drained: the same helper still holds its state, so only the
+    /// screen is sent again (B20 review: the press watch must survive this, and must not survive a new helper).
+    public var onResync: (@Sendable () -> Void)?
     public var onCommand: (@Sendable (ReaderCommand) -> Void)?
     /// Set before start(). Only the helper's connection writes it, so only the helper can grant.
     public var grants: GrantTable?
@@ -86,7 +89,7 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         flightLock.unlock()
         if resync {
             log("write queue drained after drops; resyncing")
-            onConnect?()
+            onResync?()
         }
     }
 

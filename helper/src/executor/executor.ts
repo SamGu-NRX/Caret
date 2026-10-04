@@ -628,6 +628,8 @@ export class Executor {
       // A WebKit window that is not key can leave the field out of the walk right after a write (B15: the
       // field read as gone); one more read tells a field that is back from one that really went.
       if (this.window(w.window.windowId).nodes.get(node.key) === undefined) seen = [...seen, ...(await this.walk(this.window(w.window.windowId)))];
+      // A write that landed is judged and goes in the ledger below before any pause is honoured, so undo has it.
+      if (!this.dropped(w.window.windowId, node.key, before, seen)) break;
       // A pause, stop or take-over that came in meanwhile is the user's word on the run, not a hand-off.
       this.checkSession(task);
       this.checkInterrupt(task);
@@ -990,12 +992,19 @@ export class Executor {
       r = await this.deps.reader.run(restore);
       // The same fallback as the run's own writes, for an app that drops value writes, and with the same
       // conditions: the user has not stopped the undo, and no other field changed meanwhile.
+      // As for the run's own writes, a field the walk lost right after a restore is read once more before it is judged.
+      const refind = async (): Promise<void> => {
+        const now = this.deps.model.windows.get(e.windowId);
+        if (r.outcome === "ok" && now !== undefined && !now.nodes.has(e.key)) await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
+      };
+      await refind();
       for (const fallback of FALLBACKS) {
         if (r.outcome !== "ok" || !this.dropped(e.windowId, e.key, e.after, seen)) break;
         if (task.undoStopped) return "you stopped the undo";
         const other = seen.find((c) => c.editable && c.key !== e.key && (c.kind === "value" || c.kind === "removed"));
         if (other !== undefined) return `${other.key} changed while the field was restored, so the restore was not tried again`;
         r = await this.deps.reader.run({ ...restore, attribute: fallback.name });
+        await refind();
       }
     } finally {
       off();

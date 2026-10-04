@@ -134,6 +134,26 @@ describe("executor", () => {
     expect(progress("t1").some((p) => p.phase === "handoff")).toBe(false);
   });
 
+  it("keeps a fallback write that landed in the ledger when the user takes over while it was on its way (B20 review)", async () => {
+    app.dropWrites = true;
+    app.beforeVerb = (_, v) => {
+      if (v.kind === "write" && v.attribute === "focusValue") helper.executor.pause("t1", true);
+    };
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "d@example.com")]), {});
+    expect(r.outcome).toBe("paused");
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+    expect(helper.executor.ledger("t1")).toMatchObject([{ kind: "write", key: K("textfield:name~0"), before: "", after: "Dana" }]);
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
+    expect(app.node(K("textfield:name~0"))?.value ?? "").toBe("");
+  });
+
+  it("reads the window once more when the field is missing right after an undo's restore", async () => {
+    expect(await helper.executor.run("t1", plan([write(K("textfield:email~0"), "d@example.com")]), {})).toMatchObject({ outcome: "done" });
+    app.vanishAfter = "value";
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1, notRestored: [] });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+  });
+
   it("still stops on a mismatch when a fallback lands something other than the value", async () => {
     app.dropWrites = true;
     app.normalize = (v) => v.toUpperCase();

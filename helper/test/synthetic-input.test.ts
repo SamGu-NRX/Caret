@@ -1,22 +1,37 @@
-import { describe, expect, it } from "vitest";
-import { posting, userInput } from "../scripts/synthetic-input.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { userInput } from "../scripts/synthetic-input.ts";
 
-describe("telling the evaluation's own posted input from someone using the Mac", () => {
-  it("counts low idle as the user's only when the last event came after the script's last post", async () => {
-    // Before any post, low idle is the user's.
-    expect(userInput(1)).toBe(true);
-    let during: boolean | null = null;
-    await posting(async () => {
-      during = userInput(0);
-    });
-    // While posting, every event may be the script's own.
-    expect(during).toBe(false);
-    const now = Date.now();
-    // The last event was the post itself, or within the margin after it.
-    expect(userInput(0, now)).toBe(false);
-    expect(userInput(0, now + 500)).toBe(false);
-    // An event a second after the post ended is someone else's.
-    expect(userInput(0, now + 1000)).toBe(true);
-    expect(userInput(0.2, now + 1500)).toBe(true);
+describe("telling an evaluation's own posted input from someone using the Mac", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const markFile = (content: string | null): string => {
+    const d = mkdtempSync(join(tmpdir(), "caret-synthetic-"));
+    dirs.push(d);
+    const f = join(d, "mark");
+    if (content !== null) writeFileSync(f, content);
+    return f;
+  };
+
+  it("counts low idle as the user's unless the last event came within the margin after the last post", () => {
+    const now = 1_000_000;
+    expect(userInput(1, now, markFile(null))).toBe(true);
+    const posted = markFile(String(now));
+    expect(userInput(0, now, posted)).toBe(false);
+    expect(userInput(0, now + 500, posted)).toBe(false);
+    expect(userInput(0, now + 1000, posted)).toBe(true);
+    expect(userInput(0.2, now + 1500, posted)).toBe(true);
+  });
+
+  it("excuses input only while a post is under way, and not past its deadline", () => {
+    const now = 1_000_000;
+    const busy = markFile(`busy ${now + 2000}`);
+    expect(userInput(0, now, busy)).toBe(false);
+    expect(userInput(0, now + 2001, busy)).toBe(true);
+    expect(userInput(0, now, markFile("busy"))).toBe(true);
   });
 });
