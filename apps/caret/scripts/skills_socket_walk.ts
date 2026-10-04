@@ -392,7 +392,9 @@ async function capture(args: string[]): Promise<void> {
     execFileSync("screencapture", args);
     return;
   }
-  const n = ++shotSeq;
+  // Named by this process too: the light and dark walks share one server directory, and a done-<n> left
+  // by the light walk answered the dark walk's first request before its picture existed (A16 VM run 2).
+  const n = `${process.pid}-${++shotSeq}`;
   writeFileSync(join(server, `req-${n}.tmp`), args.join("\t"));
   execFileSync("mv", [join(server, `req-${n}.tmp`), join(server, `req-${n}`)]);
   await until(`capture ${n}`, () => (existsSync(join(server, `done-${n}`)) ? true : null), 10_000, 50);
@@ -847,8 +849,11 @@ async function takeOverWithEsc(): Promise<void> {
   result.tookOver = { taskId: started.taskId, line };
   checks.tookOverLineShown = line !== null;
   await shot("took-over");
-  await sleep(400);
-  checks.takeOverPutTheSkillBackOnTab = skill()?.status === "learning";
+  // The executor stops at its next step boundary, after the held step, and only then does the run's
+  // result put the skill back on Tab (skills.ts reset); 400 ms after Esc was too early (A16 VM run 2).
+  const paused = await until("the helper's paused progress", () => since("taskProgress", at).find((p) => p.taskId === started.taskId && p.phase === "paused"), 10_000).catch(() => null);
+  result.tookOverPaused = paused?.at ?? null;
+  checks.takeOverPutTheSkillBackOnTab = (await until("the skill back on Tab", () => (skill()?.status === "learning" ? true : null), 3000).catch(() => false)) === true;
   await closeForm(id);
 }
 
