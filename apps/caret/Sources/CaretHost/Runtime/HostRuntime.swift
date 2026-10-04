@@ -117,6 +117,13 @@ public final class HostRuntime {
     private let onboarding: OnboardingController
     private let memory: MemoryController
     private var engineTask: Task<Void, Never>?
+    private let servicesBox = ServicesBox()
+
+    /// The helper and reader the app shell started, and the bridge service (H4), for the debug socket's `services`.
+    public var services: CaretServices? {
+        get { servicesBox.services }
+        set { servicesBox.services = newValue }
+    }
 
     public init(configuration: Configuration = Configuration()) {
         self.configuration = configuration
@@ -358,6 +365,7 @@ public final class HostRuntime {
         let helper = self.helper
         let writeMethods = executor.writeMethods
         let testHooks = configuration.testHooks
+        let servicesBox = self.servicesBox
         let hooks = MainHooks(
             inject: { data in
                 MainActor.assumeIsolated {
@@ -398,6 +406,7 @@ public final class HostRuntime {
             settings: { words in MainActor.assumeIsolated { Self.settingsCommand(words) } },
             onboarding: { words in MainActor.assumeIsolated { onboarding.command(words) } },
             memory: { words in MainActor.assumeIsolated { memory.command(words) } },
+            services: { words in MainActor.assumeIsolated { Self.servicesCommand(words, services: servicesBox.services, testHooks: testHooks) } },
             testHooks: testHooks
         )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
@@ -529,6 +538,8 @@ public final class HostRuntime {
         let onboarding: @Sendable ([String]) -> String
         /// `memory ...` (`MemoryController.command`).
         let memory: @Sendable ([String]) -> String
+        /// `services` and `services restart` (`servicesCommand`).
+        let services: @Sendable ([String]) -> String
         /// The host was started with `--test-hooks`.
         let testHooks: Bool
     }
@@ -631,6 +642,20 @@ public final class HostRuntime {
         }
     }
 
+    /// The services, over the debug socket. Main thread.
+    ///
+    ///   services            the helper's and the reader's state, restarts and the bridge (`CaretServices.report`)
+    ///   services restart    the menu's Restart after Caret stopped (test hooks)
+    static func servicesCommand(_ words: [String], services: CaretServices?, testHooks: Bool) -> String {
+        guard let services else { return #"{"error":"no services: the app shell did not start any"}"# }
+        guard words.count > 1 else { return services.report() }
+        guard words[1] == "restart" else { return #"{"error":"usage: services [restart]"}"# }
+        guard testHooks else { return #"{"error":"services restart is a test hook: start the host with --test-hooks"}"# }
+        guard services.stoppedReason != nil else { return #"{"error":"the services are not stopped"}"# }
+        services.restart()
+        return services.report()
+    }
+
     nonisolated static func nowMs() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
 
     nonisolated static func jsonString(_ text: String) -> String {
@@ -698,6 +723,9 @@ public final class HostRuntime {
             // `ask type <text>` keeps the text's spaces.
             let parts = command.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true).map(String.init)
             let reply = DispatchQueue.main.sync { hooks.ask(parts.count == 3 && parts[1] == "type" ? parts : words) }
+            return Data((reply + "\n").utf8)
+        case "services":
+            let reply = DispatchQueue.main.sync { hooks.services(words) }
             return Data((reply + "\n").utf8)
         case "placement-bounds":
             let reply = DispatchQueue.main.sync { hooks.placementBounds(words) }
@@ -806,4 +834,9 @@ enum TestKeys {
 @MainActor
 private final class AskToast {
     var id: UInt64?
+}
+
+/// Holds the app shell's services for the debug socket hook, which is built before the shell sets them. Main thread.
+final class ServicesBox: @unchecked Sendable {
+    var services: CaretServices?
 }
