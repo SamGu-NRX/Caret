@@ -122,13 +122,13 @@ try {
     spend: { routerMs: number[]; routerTokens: number[]; producerTokens: number[]; calls: { router1: number; router2: number; producer: number } };
     rows: { id: string; category: string; expected: { outcome: string; route: string | null }; got: { outcome: string; route: string | null }; answered: string | null; confidence: number | null; by: string }[];
   };
-  const heldOut = corpus.rows.filter((r) => Number(r.id.slice(1)) % 2 === 0 && r.category === "form-with-source");
+  const forms = corpus.rows.filter((r) => r.category === "form-with-source");
+  const heldOut = forms.filter((r) => Number(r.id.slice(1)) % 2 === 0);
   const rate = (rows: typeof heldOut, floor: number): { act: number; n: number } => {
     const acts = rows.filter((r) => (r.by === "router1" ? r.answered === "act" && (r.confidence ?? 0) >= floor : r.got.outcome === "act")).length;
     return { act: acts, n: rows.length };
   };
-  const useful = heldOut.filter((r) => r.expected.route === "fillAll");
-  const notUseful = heldOut.filter((r) => r.expected.route !== "fillAll");
+  const split = (rows: typeof heldOut) => ({ useful: rows.filter((r) => r.expected.route === "fillAll"), notUseful: rows.filter((r) => r.expected.route !== "fillAll") });
   const mean = (xs: number[]): number => (xs.length === 0 ? 0 : xs.reduce((x, y) => x + y, 0) / xs.length);
   const median = (xs: number[]): number => [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)] ?? 0;
   const routerTokens = mean(corpus.spend.routerTokens);
@@ -207,7 +207,8 @@ try {
 
   const perH = (x: number): string => (x / hours).toFixed(2);
   const usd = (calls: number, tokens: number): number => calls * tokens * JEV_USD_PER_INPUT_TOKEN;
-  const fillsAfter = (floor: number): { useful: number; noise: number; offers: number; routerCalls: number; fillCalls: { low: number; high: number } } => {
+  const fillsAfter = (floor: number, rows: typeof heldOut): { useful: number; noise: number; offers: number; routerCalls: number; fillCalls: { low: number; high: number } } => {
+    const { useful, notUseful } = split(rows);
     const ru = rate(useful, floor);
     const rn = rate(notUseful, floor);
     const u = findable * (ru.n === 0 ? 0 : ru.act / ru.n);
@@ -215,8 +216,12 @@ try {
     const routerCalls = focuses * coalesce;
     return { useful: u, noise, offers: Math.min(BUDGET * hours, u + noise), routerCalls, fillCalls: { low: (u + noise) * CALLS_PER_FILL.low, high: (u + noise) * CALLS_PER_FILL.high } };
   };
-  const after75 = fillsAfter(0.75);
-  const after50 = fillsAfter(0.5);
+  const cols = [
+    { name: "After, 0.75, held-out rates", a: fillsAfter(0.75, heldOut) },
+    { name: "After, 0.75, all form rates", a: fillsAfter(0.75, forms) },
+    { name: "After, 0.5, held-out rates", a: fillsAfter(0.5, heldOut) },
+    { name: "After, 0.5, all form rates", a: fillsAfter(0.5, forms) },
+  ];
   const before = {
     fillCalls: { low: focuses * CALLS_PER_FILL.low, high: focuses * CALLS_PER_FILL.high },
     offers: { low: Math.min(BUDGET * hours, findable), high: Math.min(BUDGET * hours, focuses) },
@@ -237,21 +242,26 @@ try {
     ...rows.map(([k, v]) => `- ${k}: ${v}`),
     `- pmset log starts ${logStart === null ? "unknown" : new Date(logStart).toISOString()}.`,
     `- Coordinator over the ${activeEpisodes.length} entries' real focus times (Jev answering in ${latency.toFixed(0)} ms): ${coord.stats.contexts} contexts, ${coord.stats.router1Calls} Router 1 calls (${(100 * coalesce).toFixed(0)}%), ${coord.stats.replaced} replaced while waiting, ${coord.stats.staleDrops} stale replies dropped.`,
-    `- Held-out corpus form moments: act at the 0.75 floor ${rate(useful, 0.75).act}/${useful.length} with values on screen, ${rate(notUseful, 0.75).act}/${notUseful.length} without; at 0.5, ${rate(useful, 0.5).act}/${useful.length} and ${rate(notUseful, 0.5).act}/${notUseful.length}.`,
+    ...[["Held-out", heldOut] as const, ["All (dev half tuned on)", forms] as const].map(([name, rows]) => {
+      const { useful, notUseful } = split(rows);
+      return `- ${name} corpus form moments: act at the 0.75 floor ${rate(useful, 0.75).act}/${useful.length} with values on screen, ${rate(notUseful, 0.75).act}/${notUseful.length} without; at 0.5, ${rate(useful, 0.5).act}/${useful.length} and ${rate(notUseful, 0.5).act}/${notUseful.length}.`;
+    }),
+    "- Router 1 calls assume every human-active field focus lists fill (an upper bound: fill is listed only where a field visibly fits a value), coalesced at the rate the coordinator showed on the entries' real focus times.",
+    "- Before, fill Jev calls assume every editable focus is empty with candidates (an upper bound); the shadow helper ran with Jev off, so the real rate is not in the store.",
     `- Mean input tokens: router ${routerTokens.toFixed(0)}, fill ask ${fillTokens.toFixed(0)}.`,
     "",
-    "| Per human-active hour | Before (producers alone) | After, floor 0.75 (as built) | After, floor 0.5 |",
-    "| --- | --- | --- | --- |",
-    `| Fill offers | ${perH(before.offers.low)} to ${perH(before.offers.high)} (gate cap ${BUDGET}) | ${perH(after75.offers)} | ${perH(after50.offers)} |`,
-    `| Offers at focuses whose entry was not on screen | ${perH(Math.max(0, before.offers.low - findable))} to ${perH(Math.max(0, before.offers.high - Math.min(findable, before.offers.high)))} | ${perH(after75.noise)} | ${perH(after50.noise)} |`,
-    `| Useful offers kept (findable entries) | ${perH(before.usefulKept.worst)} to ${perH(before.usefulKept.best)} of ${perH(findable)} | ${perH(after75.useful)} | ${perH(after50.useful)} |`,
-    `| Router 1 calls | 0 | ${perH(after75.routerCalls)} | ${perH(after50.routerCalls)} |`,
-    `| Fill Jev calls | ${perH(before.fillCalls.low)} to ${perH(before.fillCalls.high)} | ${perH(after75.fillCalls.low)} to ${perH(after75.fillCalls.high)} | ${perH(after50.fillCalls.low)} to ${perH(after50.fillCalls.high)} |`,
-    `| Jev cost | $${(usd(before.fillCalls.low, fillTokens) / hours).toFixed(5)} to $${(usd(before.fillCalls.high, fillTokens) / hours).toFixed(5)} | $${((usd(after75.routerCalls, routerTokens) + usd(after75.fillCalls.high, fillTokens)) / hours).toFixed(5)} at most | $${((usd(after50.routerCalls, routerTokens) + usd(after50.fillCalls.high, fillTokens)) / hours).toFixed(5)} at most |`,
+    `| Per human-active hour | Before (producers alone) | ${cols.map((c) => c.name).join(" | ")} |`,
+    `| --- | --- | ${cols.map(() => "---").join(" | ")} |`,
+    `| Fill offers | ${perH(before.offers.low)} (gate cap ${BUDGET}) | ${cols.map((c) => perH(c.a.offers)).join(" | ")} |`,
+    `| Offers at focuses whose entry was not on screen | ${perH(before.offers.low - before.usefulKept.best)} to ${perH(before.offers.high - before.usefulKept.worst)} | ${cols.map((c) => perH(c.a.noise)).join(" | ")} |`,
+    `| Useful offers kept (findable entries) | ${perH(before.usefulKept.worst)} to ${perH(before.usefulKept.best)} of ${perH(findable)} | ${cols.map((c) => perH(c.a.useful)).join(" | ")} |`,
+    `| Router 1 calls, at most | 0 | ${cols.map((c) => perH(c.a.routerCalls)).join(" | ")} |`,
+    `| Fill Jev calls | up to ${perH(before.fillCalls.low)} to ${perH(before.fillCalls.high)} | ${cols.map((c) => `${perH(c.a.fillCalls.low)} to ${perH(c.a.fillCalls.high)}`).join(" | ")} |`,
+    `| Jev cost, at most | $${(usd(before.fillCalls.high, fillTokens) / hours).toFixed(4)} | ${cols.map((c) => `$${((usd(c.a.routerCalls, routerTokens) + usd(c.a.fillCalls.high, fillTokens)) / hours).toFixed(4)}`).join(" | ")} |`,
     "",
   ];
   writeFileSync(a.out as string, md.join("\n"));
-  if (a.json !== undefined) writeFileSync(a.json, `${JSON.stringify({ hours, focuses, focusByDay, entries: activeEpisodes.length, findable, transfers: activeTransfers.length, groups: groups.length, coordinator: coord.stats, before, after75, after50, routerTokens, fillTokens, latency }, null, 2)}\n`);
+  if (a.json !== undefined) writeFileSync(a.json, `${JSON.stringify({ hours, focuses, focusByDay, entries: activeEpisodes.length, findable, transfers: activeTransfers.length, groups: groups.length, coordinator: coord.stats, before, after: cols, routerTokens, fillTokens, latency }, null, 2)}\n`);
   process.stdout.write(md.join("\n"));
 } finally {
   rmSync(tmp, { recursive: true, force: true });

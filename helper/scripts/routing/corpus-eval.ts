@@ -43,6 +43,11 @@ const { values: a } = parseArgs({
     dump: { type: "boolean", default: false },
     /** Seconds between Ask moments: Groq's gpt-oss-120b allows 8,000 tokens a minute and an intent takes about 2,000. */
     "ask-gap-s": { type: "string", default: "30" },
+    /**
+     * The Ask intent maker: "config" is production's (writer/config.ts ASK_MAKER, Groq), "jev" is B25's Jev maker with no
+     * Groq call at all (the code-mode writer is off too), for when Groq's daily quota is spent or shared.
+     */
+    "ask-maker": { type: "string", default: "config" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
@@ -104,7 +109,9 @@ const jevClient = makeJevClient(() => loadJevKey());
 const spend = { usd: 0, calls: { router1: 0, router2: 0, producer: 0 }, routerMs: [] as number[], routerTokens: [] as number[], producerTokens: [] as number[] };
 const askJev: AskJev = async (req: JevRequest) => {
   if (spend.usd >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
-  const which = "outcome" in req.questions ? "router1" : "route" in req.questions ? "router2" : "producer";
+  // The routers send without retry (judge.ts); B25's Jev intent maker also names a question "route", so the flag tells them apart.
+  const router = req.retry429 === false;
+  const which = router && "outcome" in req.questions ? "router1" : router && "route" in req.questions ? "router2" : "producer";
   const r = await jevClient(req);
   if (a.dump && which !== "producer") appendFileSync(join(OUT, "router-requests.ndjson"), `${JSON.stringify({ moment: current, which, state: req.state, questions: req.questions, answers: r.answers })}\n`);
   spend.usd += r.costUsd;
@@ -238,8 +245,8 @@ for (const m of moments) {
     now: () => clock.at,
     routing: { setTimer: clock.setTimer, hostWrites: () => hostWrites, onDecision: (d) => decisions.push(d) },
     readerLink: { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: clock.at, outcome: "ok", detail: null }) },
-    ask: ASK_MAKER === "jev" ? { maker: "jev" } : { maker: "writer", writer: makeWriterPort(INTENT_ROUTE) },
-    writer: makeWriterPort(WRITER_ROUTE),
+    ask: ASK_MAKER === "jev" || a["ask-maker"] === "jev" ? { maker: "jev" } : { maker: "writer", writer: makeWriterPort(INTENT_ROUTE) },
+    writer: a["ask-maker"] === "jev" ? null : makeWriterPort(WRITER_ROUTE),
     warn: () => undefined,
   });
   const settle = async (): Promise<void> => {
@@ -321,7 +328,7 @@ for (const m of moments) {
       by = "ask";
       const err = (reply as { error?: { code: string } | null }).error ?? null;
       const detail = (reply as { error?: { detail?: string } | null }).error?.detail ?? "";
-      note = kind === null ? `no intent; planner error ${err?.code ?? "?"}: ${detail.slice(0, 120)}` : err === null ? null : `error ${err.code}`;
+      note = kind === null ? `no intent; planner error ${err?.code ?? "?"}: ${detail.replace(/org_[A-Za-z0-9]+/g, "org_X").slice(0, 400)}` : err === null ? null : `error ${err.code}`;
     } else {
       d = decisions.at(-1);
       got = { outcome: d?.outcome ?? "none", route: routeOf(d) };
@@ -395,7 +402,7 @@ const curve = FLOORS.map((f) => {
   return `| ${f} | ${right}/${rows.length} | ${stat.join(" | ")} | ${wrongAct} |`;
 });
 const md = [
-  `# Routing corpus, host writes ${hostWrites ? "on" : "off"}`,
+  `# Routing corpus, host writes ${hostWrites ? "on" : "off"}, Ask maker ${a["ask-maker"] === "jev" ? "jev (no Groq)" : ASK_MAKER}`,
   "",
   `${rows.length} moments of ${corpus.moments.length}; exact (outcome, and route for act) ${exact}/${rows.length}. Jev spend $${spend.usd.toFixed(4)}: Router 1 ${spend.calls.router1} calls, Router 2 ${spend.calls.router2}, producers ${spend.calls.producer}.`,
   `Acted when it should not have: ${actWrong.length}${actWrong.length === 0 ? "" : ` (${actWrong.map((r) => `${r.id} expected ${r.expected.outcome}`).join(", ")})`}. Route right where both said act: ${routeRight}/${bothAct.length}.`,
@@ -422,6 +429,7 @@ const md = [
   ...rows.map((r) => `| ${r.id} | ${r.category} | ${r.expected.outcome}${r.expected.route === null ? "" : `/${r.expected.route}`} | ${r.got.outcome}${r.got.route === null ? "" : `/${r.got.route}`} | ${r.by} | ${r.local ?? r.refused ?? ""} | ${r.answered ?? ""} | ${r.confidence?.toFixed(2) ?? ""} | ${r.routerCalls} | ${r.offered.join(", ")} | ${r.note ?? ""} |`),
   "",
 ];
-writeFileSync(join(OUT, `corpus-${hostWrites ? "on" : "off"}.md`), md.join("\n"));
-writeFileSync(join(OUT, `corpus-${hostWrites ? "on" : "off"}.json`), `${JSON.stringify({ hostWrites, spend, per, rows }, null, 2)}\n`);
+const stem = `corpus-${hostWrites ? "on" : "off"}${a["ask-maker"] === "jev" ? "-askjev" : ""}`;
+writeFileSync(join(OUT, `${stem}.md`), md.join("\n"));
+writeFileSync(join(OUT, `${stem}.json`), `${JSON.stringify({ hostWrites, spend, per, rows }, null, 2)}\n`);
 process.stdout.write(`${md.slice(0, 4).join("\n")}\n`);

@@ -1243,7 +1243,6 @@ export class Helper {
     if (reply.error === null && m.op !== "list") {
       this.executor.recheck();
       this.routing?.memoryChanged();
-      this.routing?.observe();
     }
     // A name or email the user just told Caret reaches the form they are on now, without a new focus (B21).
     if (reply.error === null && m.op === "add") {
@@ -1251,6 +1250,8 @@ export class Helper {
       for (const e of reply.entries) this.aboutAddedAt.set(e.id, at);
       this.refillFocused();
     }
+    // Routed, the moment is read again once the entries' add times are known, so an add opens one decision, not two.
+    if (reply.error === null && m.op !== "list") this.routing?.observe();
     return reply;
   }
 
