@@ -145,6 +145,9 @@ helper = new Helper({
   writer: args["no-jev"] || args.shadow ? null : writerFromEnv(warn),
   // Ask as a scoped fill (B25), its intent from the configured maker.
   ask: args["no-jev"] || args.shadow ? null : askFromEnv(warn),
+  // D2-02: one router above the producers whenever Jev is on. No host consumes a write decision yet (no routeDecision
+  // message on the wire), so write is not a legal outcome: a document with nothing else due costs no model call.
+  routing: args["no-jev"] || args.shadow ? null : {},
   warn,
 });
 server = new HelperServer(args.socket, () => helper, warn, secret);

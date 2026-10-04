@@ -18,7 +18,7 @@ import { Store } from "../src/store.ts";
 import { MemoryStore } from "../src/patterns/memory.ts";
 import { FakeCalendar } from "../src/executor/means.ts";
 import { HelperMessage, PROTOCOL_VERSION, type AppRef, type FillProposal, type Node, type OfferAction, type OfferPopup, type ReaderMessage, type TypedValue } from "../src/protocol.ts";
-import { field, focus, jevPickingText, MAIL_APP, snap, text } from "./builders.ts";
+import { field, focus, jevPickingText, MAIL_APP, snap, text, value } from "./builders.ts";
 
 type Answer = { choice: string; confidence: number };
 const result = (answers: Record<string, Answer>): JevResult => ({ model: "jev-test", answers, inputTokens: 120, latencyMs: 5, costUsd: 120 * 0.042e-6 });
@@ -463,7 +463,8 @@ describe("the helper with routing on", () => {
 
   /** A mail with Dana's address, then the claim form with focus in its empty Email field. */
   const formWithSource = async (h: Helper): Promise<void> => {
-    void h.handleReader(snap([text("m/statictext:sig~0", `Dana Whitfield\n${VALUE}`)], { at: clock.at - 5000, windowId: SRC, app: MAIL_APP, title: "Signature" }));
+    // With the email the reader types in it: the router lists fill when a field visibly fits a value on screen.
+    void h.handleReader(snap([text("m/statictext:sig~0", `Dana Whitfield\n${VALUE}`)], { at: clock.at - 5000, windowId: SRC, app: MAIL_APP, title: "Signature", values: [value("email", VALUE, "m/statictext:sig~0")] }));
     void h.handleReader(snap([field(EMAIL, "", { label: "Email", frame: [100, 40, 200, 24] })], { at: clock.at, windowId: FORM, title: "Claim form", focused: true, focusedKey: EMAIL }));
     await h.handleReader(focus(FORM, EMAIL, clock.at));
     await settle(h);
@@ -530,6 +531,30 @@ describe("the helper with routing on", () => {
     expect(h.routing?.writing).toEqual({ windowId: NOTES_DOC, key: DOC });
     await typeDoc(h, "Notes for the review. We should move it. ");
     expect(jev.routerCalls()).toHaveLength(2);
+  });
+
+  it("lists no fill for a lone document body with nothing on screen that fits it", async () => {
+    jev.router1 = () => ({ choice: "act", confidence: 0.9 });
+    const h = make(true);
+    void h.handleReader(snap([text("m/statictext:note~0", "Groceries and the plan for Saturday")], { at: clock.at - 5000, windowId: SRC, app: MAIL_APP, title: "Note" }));
+    void h.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: clock.at, from: null, to: NOTES });
+    await typeDoc(h, "");
+    expect(jev.requests).toHaveLength(0);
+    expect(h.routing?.decisions.at(-1)?.local).toBe("noCapability");
+  });
+
+  it("lists no event for a sentence its window's privacy budget will not carry", async () => {
+    // A short conversation gives Jev less than half its text: the attend asks could not quote the sentence, so code
+    // does not list a card it could never make.
+    jev.router1 = () => ({ choice: "act", confidence: 0.9 });
+    const chat: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
+    const h = make(true);
+    void h.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: clock.at, from: null, to: chat });
+    const reply = "m/textarea:reply~0";
+    void h.handleReader(snap([{ key: reply, parent: null, role: "AXTextArea", label: "Message", editable: true, value: "Lunch with Priya tomorrow at noon. " }], { at: clock.at, windowId: "7373-1", app: chat, title: "Priya", focused: true, focusedKey: reply, values: [{ kind: "date", text: "tomorrow at noon", nodeKey: reply }] }));
+    await settle(h);
+    expect(jev.requests).toHaveLength(0);
+    expect(h.routing?.decisions.at(-1)?.local).toBe("noCapability");
   });
 
   it("routes a finished sentence with a person and a time to the event card, which quotes the exact sentence", async () => {

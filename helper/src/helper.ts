@@ -4,7 +4,7 @@
 // Everything the helper sends consumers leaves through `publish`, which checks every offer for the
 // host against the protocol before it goes and records it for the host's offerAccept.
 import { ScreenModel } from "./model.ts";
-import { MEMORY_SNIPPETS, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
+import { MEMORY_SNIPPETS, SnippetLedger, forgetWindow, forgetWindows, readWindow } from "./privacy.ts";
 import { RollingText } from "./rolling-text.ts";
 import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
@@ -90,6 +90,10 @@ import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type RouteCandidate } from "./routing/routes.ts";
 import type { RoutingContext } from "./routing/context.ts";
 import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
+import { fieldKinds, valueKinds, words } from "./fill/kinds.ts";
+import { labelledLines } from "./fill/candidates.ts";
+import { fieldAsksFor } from "./fill/about.ts";
+import type { ValueKind } from "./protocol.ts";
 import { sentences, type EventCandidate } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
@@ -1679,7 +1683,8 @@ export class Helper {
       if (fill !== null) out.push(fill);
       if (ctx.sentences > 0 && this.gate.holds("event", now).length === 0) {
         const last = sentences(node.value ?? "", false).at(-1);
-        if (last !== undefined && !this.events.isJudged(w.window.windowId, last)) {
+        // The event card asks Jev about the sentence through its window's budget; one that will not fit makes no card.
+        if (last !== undefined && !this.events.isJudged(w.window.windowId, last) && new SnippetLedger(this.model.windows.values()).cost(w, [last]) !== null) {
           const c = this.events.candidate(w, f.key, last, "typed");
           if (c !== null) {
             const key = f.key;
@@ -1702,7 +1707,7 @@ export class Helper {
           this.events.forgetHeard(l);
           continue;
         }
-        const c = this.events.candidate(l.w, l.key, l.sentence, "conversation");
+        const c = new SnippetLedger(this.model.windows.values()).cost(l.w, [l.sentence]) === null ? null : this.events.candidate(l.w, l.key, l.sentence, "conversation");
         if (c === null) {
           this.events.forgetHeard(l);
           continue;
@@ -1783,9 +1788,19 @@ export class Helper {
     const fillable = fields.filter((n) => neverTypedNode(w, n) === null).length;
     if (fillable === 0) return null;
     const otherText = [...this.model.windows.values()].some((o) => o.window.windowId !== w.window.windowId && [...o.nodes.values()].some((n) => nodeText(n).trim() !== ""));
-    const told = formAsksFor(w, key, this.aboutValues());
+    const about = this.aboutValues();
+    const told = formAsksFor(w, key, about);
     if (!otherText && !told) return null;
-    const says = `Fill the ${fillable === 1 ? "empty field" : `${fillable} empty fields`} of this form with values from ${otherText ? "other open windows" : ""}${otherText && told ? " and " : ""}${told ? "what the user told Caret" : ""}`;
+    const e = fillEvidence(this.model, w, fields, about);
+    // Code relevance: no field visibly fits a value on screen or in memory, and no other field of a form lets fill lean on
+    // the window the user just left (fill.ts's anchor). A lone document body with nothing that fits is not a form to fill.
+    const left = this.model.windowBefore(w.window.windowId);
+    if (e.fields === 0 && (fillable < 2 || left === null)) return null;
+    const where = [...(e.apps.length === 0 ? [] : [`on screen in ${andList(e.apps)}`]), ...(e.told > 0 ? ["in what the user told Caret"] : [])];
+    const says =
+      e.fields === 0
+        ? `Fill this form's ${fillable} empty field${fillable === 1 ? "" : "s"}, though no open window shows a value that clearly fits ${fillable === 1 ? "it" : "them"}`
+        : `Fill this form: values that fit ${e.fields} of its ${fillable} empty field${fillable === 1 ? "" : "s"} are ${andList(where)}`;
     return {
       id: "fillAll",
       kind: "fillAll",
@@ -2007,6 +2022,40 @@ export class Helper {
 const READ_REPEAT_MS = 5000;
 /** Offer keys kept to count each shown offer once; past this the set starts over. Assumed. */
 const SHOWN_KEYS = 500;
+
+/**
+ * How many of a form's fields an open window or the user's About entries visibly fit, by code: another window shows a
+ * typed value of a kind the field's label asks for (an email, a phone, a date), or a "Label: value" line whose label
+ * shares a word with the field's, or an About entry fits the field's name. Evidence for the router's description of
+ * the fill route, not the fill: fill's own generator and Jev's two asks decide every value.
+ */
+function fillEvidence(model: ScreenModel, w: WindowState, fields: readonly Node[], about: readonly AboutValue[]): { fields: number; apps: string[]; told: number } {
+  const kinds = new Map<ValueKind, Set<string>>();
+  const lines: { words: Set<string>; app: string }[] = [];
+  for (const o of model.windows.values()) {
+    if (o.window.windowId === w.window.windowId) continue;
+    for (const v of o.values) for (const k of valueKinds(v)) (kinds.get(k) ?? kinds.set(k, new Set()).get(k))?.add(o.app.name);
+    for (const l of labelledLines(o)) lines.push({ words: new Set(words(l.label)), app: o.app.name });
+  }
+  const apps = new Set<string>();
+  let fit = 0;
+  let told = 0;
+  for (const n of fields) {
+    if (neverTypedNode(w, n) !== null) continue;
+    const d = describeField(w, n);
+    const lw = [d.label, d.nearest, d.placeholder];
+    const own = new Set(lw.flatMap(words));
+    const byKind = [...fieldKinds(lw)].flatMap((k) => [...(kinds.get(k) ?? [])]);
+    const byLine = lines.filter((l) => [...own].some((t) => l.words.has(t))).map((l) => l.app);
+    const name = d.label ?? d.nearest ?? d.placeholder;
+    const byAbout = about.some((a) => fieldAsksFor(a, name));
+    if (byKind.length + byLine.length === 0 && !byAbout) continue;
+    fit++;
+    if (byAbout) told++;
+    for (const x of [...byKind, ...byLine]) apps.add(x);
+  }
+  return { fields: fit, apps: [...apps], told };
+}
 
 /**
  * Whether an event's start is the one fact Caret must ask (the router's ask outcome): its possible times start at

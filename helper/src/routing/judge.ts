@@ -35,12 +35,15 @@ export function readChoice<T extends string>(r: JevResult, question: string, opt
   return { ok: true, choice: a.choice as T, confidence: a.confidence };
 }
 
+/** Router 1's options, each a description of the user's moment rather than of Caret's action. */
 const OUTCOME_SAYS: Record<Outcome, string> = {
-  abstain: "Stay quiet. Nothing here needs Caret now, or anything it offered would interrupt or guess.",
-  write: "Help the user write. They are composing prose here for a person to read (a document, a message, a long free-text answer), and nothing else is due.",
-  ask: "Ask the user one question first:",
-  act: "Offer to do a task now:",
+  abstain: "Nothing for Caret here: the user is reading, browsing, searching, typing a command, code or an address, or is in a field Caret has nothing to offer for.",
+  write: "The user is writing sentences for a person to read in this field (a document, a mail or message body, a long free-text answer), and Caret can suggest how the text goes on.",
+  ask: "Caret can help once the user answers one question:",
+  act: "The user would want this done for them now:",
 };
+/** Other windows Router 1 names, most recently used first. Enough to say where values could come from; not measured. */
+const OTHER_WINDOWS = 5;
 
 /** The screen text one request carries, taken through one ledger; null pieces did not fit their window's budget. */
 interface Taken {
@@ -63,6 +66,8 @@ function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly 
   };
   if (ledger.take(w, "descriptor", [w.window.title])) state.window = w.window.title;
   state.conversation = isConversation(w);
+  const others = [...model.windows.values()].filter((o) => o.window.windowId !== w.window.windowId).sort((x, y) => y.lastFocusedAt - x.lastFocusedAt || y.updatedAt - x.updatedAt);
+  state.otherWindows = others.slice(0, OTHER_WINDOWS).map((o) => (ledger.take(o, "descriptor", [o.window.title]) ? `${o.app.name}: ${o.window.title}` : o.app.name));
   const node = ctx.field === null ? undefined : w.nodes.get(ctx.field.key);
   if (ctx.field === null || node === undefined) state.field = "none: the cursor is not in a text field";
   else {
@@ -110,7 +115,7 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
   const criteria: Record<string, string> = {};
   for (const o of legal) {
     if (o === "act") criteria.act = `${OUTCOME_SAYS.act} ${acts.map((c) => t.says.get(c.id)).join("; or ")}.`;
-    else if (o === "ask") criteria.ask = `${OUTCOME_SAYS.ask} ${reg.question?.question?.says ?? ""} (to then: ${t.says.get(reg.question?.id ?? "") ?? ""}).`;
+    else if (o === "ask") criteria.ask = `${OUTCOME_SAYS.ask} ${reg.question?.question?.says ?? ""}; then: ${t.says.get(reg.question?.id ?? "") ?? ""}.`;
     else criteria[o] = OUTCOME_SAYS[o];
   }
   const request: JevRequest = {
@@ -118,7 +123,7 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
     questions: {
       outcome: {
         type: "choice",
-        instructions: "Which one outcome is right for the user at this moment? Prefer staying quiet unless an offer clearly helps with what they are doing now.",
+        instructions: "Which one describes the user's moment? When a task fits what they are doing, it comes before writing help.",
         criteria,
       },
     },

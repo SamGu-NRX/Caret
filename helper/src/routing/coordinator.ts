@@ -27,8 +27,14 @@ export const DENIED_ROLES: ReadonlySet<string> = new Set(["AXSearchField"]);
 export const DENIED_WINDOW_KINDS: ReadonlySet<string> = new Set(["systemdialog"]);
 /** Questions remembered as asked, so a dismissed one is not asked again in the same moment. Bound, not measured. */
 const ASKED_KEEP = 500;
-/** Decisions kept in memory for evaluations; counts go to the store. */
+/** Decisions and latencies kept in memory for evaluations, newest last; counts go to the store. A bound, not measured. */
 const DECISIONS_KEEP = 2000;
+
+/** Appends to a bounded record, dropping the oldest. */
+function keep<T>(xs: T[], x: T): void {
+  if (xs.length >= DECISIONS_KEEP) xs.shift();
+  xs.push(x);
+}
 
 export type LocalReason = "paused" | "secure" | "deniedRole" | "incomplete" | "composing" | "noCapability" | "privacy";
 
@@ -49,8 +55,10 @@ export interface Decision {
   calls: number;
   /** From the breakpoint to this decision. */
   latencyMs: number;
-  /** Confidence of the deciding answer; null for local and single-route decisions. */
+  /** Confidence of the deciding router answer, refused or not; null when no router answered. */
   confidence: number | null;
+  /** The last router answer's choice as Jev gave it, refused or not, for evaluations of the floor; null when none. */
+  answered: string | null;
   textRevision: string;
 }
 
@@ -72,9 +80,9 @@ export interface RoutingStats {
   byOutcome: Record<string, number>;
   byRoute: Record<string, number>;
   refused: Record<string, number>;
-  /** Router call latencies, ms. */
+  /** Router call latencies, ms, the latest DECISIONS_KEEP. */
   callMs: number[];
-  /** Breakpoint to decision, ms, for decisions a router made. */
+  /** Breakpoint to decision, ms, for decisions a router made, the latest DECISIONS_KEEP. */
   entryMs: number[];
 }
 
@@ -263,7 +271,7 @@ export class RoutingCoordinator {
       this.waiting = false;
       this.cancelTimer?.();
       this.cancelTimer = null;
-      this.finish(c, { outcome: "abstain", by: "local", local, refused: null, route: null, confidence: null });
+      this.finish(c, { outcome: "abstain", by: "local", local, refused: null, route: null, confidence: null, answered: null });
       return;
     }
     this.waiting = true;
@@ -319,7 +327,7 @@ export class RoutingCoordinator {
       built = router1Request(this.deps.model, c.ctx, c.legal, c.reg);
     } catch (e) {
       if (!(e instanceof PrivacyRefusal)) throw e;
-      return this.finish(c, { outcome: "abstain", by: "local", local: "privacy", refused: null, route: null, confidence: null });
+      return this.finish(c, { outcome: "abstain", by: "local", local: "privacy", refused: null, route: null, confidence: null, answered: null });
     }
     this.lastRouter1At = this.deps.now();
     c.calls++;
@@ -327,23 +335,24 @@ export class RoutingCoordinator {
     this.deps.count?.("route.router1_call");
     const t0 = this.deps.now();
     const r1 = await sendRouter(this.deps.askJev, built, "outcome");
-    this.stats.callMs.push(this.deps.now() - t0);
+    keep(this.stats.callMs, this.deps.now() - t0);
     if (this.stale(c)) return;
-    if (!r1.read.ok) return this.finish(c, { outcome: "abstain", by: "router1", local: null, refused: { router: 1, why: r1.read.why }, route: null, confidence: r1.read.confidence });
+    if (!r1.read.ok) return this.finish(c, { outcome: "abstain", by: "router1", local: null, refused: { router: 1, why: r1.read.why }, route: null, confidence: r1.read.confidence, answered: r1.read.choice });
     const outcome = r1.read.choice;
     const confidence = r1.read.confidence;
+    const answered = outcome;
     switch (outcome) {
       case "abstain":
-        return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence });
+        return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
       case "write": {
         const f = c.ctx.field;
         if (f !== null) this.writeSession = { gen: c.gen, windowId: c.ctx.windowId, key: f.key, at: this.deps.now() };
-        return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence });
+        return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
       }
       case "ask": {
         const q = c.reg.question as RouteCandidate;
         this.remember(q.id);
-        this.finish(c, { outcome, by: "router1", local: null, refused: null, route: q.id, confidence }, q);
+        this.finish(c, { outcome, by: "router1", local: null, refused: null, route: q.id, confidence, answered }, q);
         return this.run(q);
       }
       case "act":
@@ -355,7 +364,7 @@ export class RoutingCoordinator {
     const real = realRoutes(c.reg);
     if (real.length === 0) {
       const h = c.reg.routes[0] as Route;
-      return this.finish(c, { outcome: "act", by: "single", local: null, refused: null, route: `handoff: ${h.reason ?? ""}`, confidence: r1Confidence });
+      return this.finish(c, { outcome: "act", by: "single", local: null, refused: null, route: `handoff: ${h.reason ?? ""}`, confidence: r1Confidence, answered: "act" });
     }
     if (real.length === 1) {
       this.stats.router2Skipped++;
@@ -367,24 +376,24 @@ export class RoutingCoordinator {
       built = router2Request(this.deps.model, c.ctx, c.reg);
     } catch (e) {
       if (!(e instanceof PrivacyRefusal)) throw e;
-      return this.finish(c, { outcome: "abstain", by: "local", local: "privacy", refused: null, route: null, confidence: null });
+      return this.finish(c, { outcome: "abstain", by: "local", local: "privacy", refused: null, route: null, confidence: null, answered: null });
     }
     c.calls++;
     this.stats.router2Calls++;
     this.deps.count?.("route.router2_call");
     const t0 = this.deps.now();
     const r2 = await sendRouter(this.deps.askJev, built, "route");
-    this.stats.callMs.push(this.deps.now() - t0);
+    keep(this.stats.callMs, this.deps.now() - t0);
     if (this.stale(c)) return;
-    if (!r2.read.ok) return this.finish(c, { outcome: "abstain", by: "router2", local: null, refused: { router: 2, why: r2.read.why }, route: null, confidence: r2.read.confidence });
+    if (!r2.read.ok) return this.finish(c, { outcome: "abstain", by: "router2", local: null, refused: { router: 2, why: r2.read.why }, route: null, confidence: r2.read.confidence, answered: r2.read.choice });
     const route = c.reg.routes.find((r) => r.option === r2.read.choice) as Route;
     return this.choose(c, route, "router2", r2.read.confidence);
   }
 
   private choose(c: Current, route: Route, by: "router2" | "single", confidence: number): void {
-    if (route.candidate === null) return this.finish(c, { outcome: "act", by, local: null, refused: null, route: `handoff: ${route.reason ?? ""}`, confidence });
+    if (route.candidate === null) return this.finish(c, { outcome: "act", by, local: null, refused: null, route: `handoff: ${route.reason ?? ""}`, confidence, answered: route.option });
     const cand = route.candidate;
-    this.finish(c, { outcome: "act", by, local: null, refused: null, route: cand.workflow === undefined ? cand.kind : `workflow:${cand.workflow}`, confidence }, cand);
+    this.finish(c, { outcome: "act", by, local: null, refused: null, route: cand.workflow === undefined ? cand.kind : `workflow:${cand.workflow}`, confidence, answered: by === "single" ? "act" : route.option }, cand);
     this.run(cand);
   }
 
@@ -401,12 +410,11 @@ export class RoutingCoordinator {
     this.asked.add(questionId);
   }
 
-  private finish(c: Current, d: Pick<Decision, "outcome" | "by" | "local" | "refused" | "route" | "confidence">, chosen: RouteCandidate | null = null): void {
+  private finish(c: Current, d: Pick<Decision, "outcome" | "by" | "local" | "refused" | "route" | "confidence" | "answered">, chosen: RouteCandidate | null = null): void {
     c.decided = true;
     const now = this.deps.now();
     const decision: Decision = { gen: c.gen, at: now, breakpoint: c.breakpoint, legal: c.legal, ...d, calls: c.calls, latencyMs: now - c.at, textRevision: c.ctx.textRevision };
-    if (this.decisions.length >= DECISIONS_KEEP) this.decisions.shift();
-    this.decisions.push(decision);
+    keep(this.decisions, decision);
     const s = this.stats;
     bump(s.byOutcome, d.outcome);
     this.deps.count?.(`route.outcome_${d.outcome}`);
@@ -414,7 +422,7 @@ export class RoutingCoordinator {
       s.avoided++;
       bump(s.byLocal, d.local ?? "?");
       this.deps.count?.(`route.local_${d.local ?? "?"}`);
-    } else s.entryMs.push(decision.latencyMs);
+    } else keep(s.entryMs, decision.latencyMs);
     if (d.refused !== null) {
       bump(s.refused, `router${d.refused.router}_${d.refused.why}`);
       this.deps.count?.(`route.refused${d.refused.router}_${d.refused.why}`);
