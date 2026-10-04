@@ -820,6 +820,47 @@ describe("skills in the helper", () => {
     expect(watches.at(-1)).toEqual([]);
   });
 
+  it("learns the clicked Send when the closing window reaches the model with its controls gone (B20 press-learn run 2)", () => {
+    buttons = ["Send", "Send later"];
+    for (let i = 0; i < 3; i++) {
+      const c = open();
+      for (let j = 0; j < 3; j++) desk.fill(c, 0, j, calendar(day).lines[j]!);
+      press(c, "Send");
+      // A last walk of the closing window finds none of its controls.
+      desk.showGrid({ ...c, rows: 0, buttons: [] });
+      desk.close(c.windowId);
+    }
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "click" });
+  });
+
+  it("learns the clicked Send when that emptied walk reaches the model before the click does", () => {
+    buttons = ["Send", "Send later"];
+    for (let i = 0; i < 3; i++) {
+      const c = open();
+      for (let j = 0; j < 3; j++) desk.fill(c, 0, j, calendar(day).lines[j]!);
+      desk.showGrid({ ...c, rows: 0, buttons: [] });
+      press(c, "Send");
+      desk.close(c.windowId);
+    }
+    expect(helper.memory.routine(routines()[0]!.id)?.finish).toMatchObject({ label: "Send", by: "click" });
+  });
+
+  it("scores Caret's verified run as a hit when its window loses its fields before it closes, as a Chrome page does (B20)", async () => {
+    for (let i = 0; i < 3; i++) expect(byHand()).toEqual([]);
+    await helper.patterns.skills.namesSettled();
+    const id = routines()[0]!.id;
+    const before = helper.memory.routine(id)!;
+    const r = await caretRun();
+    expect(r.result?.outcome).toBe("done");
+    // Closed at once: the run's edits have not settled, and a last walk finds the page's fields gone.
+    desk.showGrid({ ...r.window, rows: 0 });
+    desk.close(r.window.windowId);
+    const after = helper.memory.routine(id)!;
+    expect(after.misses).toBe(before.misses);
+    expect(after.hits).toBe(before.hits + 1);
+    expect(after.count).toBe(before.count + 1);
+  });
+
   it("keeps a Send clicked before the copied values settled, as a fast user's is (B20 review)", () => {
     buttons = ["Send", "Send later"];
     // The first occurrence, so no prediction made a bundle when the window opened.

@@ -95,12 +95,18 @@ export interface PatternTransfer {
  * its source or destination is no longer in the model, or it took a fragment of a longer text,
  * which a later round could not be predicted from.
  */
-export function describeTransfer(model: ScreenModel, t: Transfer, alternatives: readonly Observation[] = []): PatternTransfer | null {
+export function describeTransfer(
+  model: ScreenModel,
+  t: Transfer,
+  alternatives: readonly Observation[] = [],
+  /** Where the destination element was last seen, for a window that has since lost it (a page torn down before its window closed). */
+  seenSlot?: (windowId: string, key: string) => { template: string; pos: number } | undefined,
+): PatternTransfer | null {
   const sw = model.windows.get(t.src.windowId);
   const dw = model.windows.get(t.dst.windowId);
   if (sw === undefined || dw === undefined) return null;
   const sSlot = windowIndex(sw).slots.get(t.src.nodeKey);
-  const dSlot = windowIndex(dw).slots.get(t.dst.key);
+  const dSlot = windowIndex(dw).slots.get(t.dst.key) ?? seenSlot?.(t.dst.windowId, t.dst.key);
   if (sSlot === undefined || dSlot === undefined) return null;
   const part: Part = t.src.kind ?? "whole";
   const whole = t.src.text === t.value || normalizeValue(t.src.text, t.src.kind) === normalizeValue(t.value, t.src.kind);

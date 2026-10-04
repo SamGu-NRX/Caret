@@ -68,6 +68,11 @@ export interface ObservedPress {
   label: string;
 }
 
+/** A press as kept: where the pressed control sat in its window when the press arrived, while the window was whole. */
+interface KeptPress extends ObservedPress {
+  slot: { templateHash: string; pos: number } | null;
+}
+
 /** Presses kept per window; only the last one is ever read. */
 const PRESSES_PER_WINDOW = 4;
 /** Windows whose presses are kept at once; the oldest goes first. Bounded; no measurement behind either number. */
@@ -94,7 +99,14 @@ export class RoutineRecognizer {
    * The user's presses by window, kept whether or not an occurrence is known to be under way there yet: its
    * transfers are judged only once the edits settle, which can be after the user has already clicked Send.
    */
-  private readonly presses = new Map<string, ObservedPress[]>();
+  private readonly presses = new Map<string, KeptPress[]>();
+  /**
+   * Where each element of a window with an occurrence under way was last seen: a window closing (Chrome tearing
+   * down its page, a Send that closes it) can reach the model with its fields and controls gone before its close
+   * does, and the edits judged then, and a click that arrives then, are placed from here (B20 Chrome run 2: a
+   * verified run scored as a miss because its fields were gone when its edits were judged).
+   */
+  private readonly lastSeen = new Map<string, Map<string, { template: string; pos: number }>>();
   private readonly templateHashes = new Map<string, string>();
   /** Values each routine (by signature) was seen copying in this session, for the naming check. Never persisted. */
   private readonly seenValues = new Map<string, Set<string>>();
@@ -169,14 +181,52 @@ export class RoutineRecognizer {
   }
 
   /** The user pressed something in a window under the press watch; read when an occurrence there ends. */
+  /**
+   * The user pressed something in a window under the press watch; read when an occurrence there ends. The
+   * pressed control is placed now: a window that closes on the press can reach the model with its controls
+   * already gone (B20 press-learn run 2: the clicked Send was missing from the closing window).
+   */
   onPress(windowId: string, press: ObservedPress): void {
     let ps = this.presses.get(windowId);
     if (ps === undefined) {
       if (this.presses.size >= PRESS_WINDOWS) this.presses.delete(this.presses.keys().next().value as string);
       this.presses.set(windowId, (ps = []));
     }
-    ps.push(press);
+    const w = this.model.windows.get(windowId);
+    const key = w === undefined ? null : this.pressedKey(w, press);
+    const slot = (w === undefined || key === null ? undefined : windowIndex(w).slots.get(key)) ?? (press.key === null ? undefined : this.seenSlot(windowId, press.key));
+    ps.push({ ...press, key: key ?? press.key, slot: slot === undefined ? null : { templateHash: this.templateHash(slot.template), pos: slot.pos } });
     if (ps.length > PRESSES_PER_WINDOW) ps.shift();
+  }
+
+  /** The pressed control's key in the window as the model has it: the reader's key when the window holds it, else the one control of its role with its label. */
+  private pressedKey(w: WindowState, p: ObservedPress): string | null {
+    if (p.key !== null && w.nodes.has(p.key)) return p.key;
+    const label = p.label.trim();
+    const same = [...w.nodes.values()].filter((n) => n.role === p.role && (n.label ?? "").trim() === label);
+    return same.length === 1 ? (same[0]?.key ?? null) : null;
+  }
+
+  /**
+   * A window changed: remember where its elements sit, for one with an occurrence under way or that the user is
+   * editing in (`editing`). Merged, never cleared until the occurrence ends, so a state with elements gone keeps
+   * where they were.
+   */
+  observe(windowId: string, editing = false): void {
+    if (!editing && !this.bundles.has(windowId)) return;
+    const w = this.model.windows.get(windowId);
+    if (w === undefined) return;
+    let seen = this.lastSeen.get(windowId);
+    if (seen === undefined) {
+      if (this.lastSeen.size >= PRESS_WINDOWS) this.lastSeen.delete(this.lastSeen.keys().next().value as string);
+      this.lastSeen.set(windowId, (seen = new Map()));
+    }
+    for (const [k, slot] of windowIndex(w).slots) seen.set(k, slot);
+  }
+
+  /** Where an element of the window was last seen, for one the window as the model has it no longer holds. */
+  seenSlot(windowId: string, key: string): { template: string; pos: number } | undefined {
+    return this.lastSeen.get(windowId)?.get(key);
   }
 
   /** Whether an occurrence is under way in this window: predicted when it opened, or with a transfer into it. */
@@ -198,6 +248,7 @@ export class RoutineRecognizer {
       return this.close(b, at);
     } finally {
       this.presses.delete(windowId);
+      this.lastSeen.delete(windowId);
     }
   }
 
@@ -221,6 +272,7 @@ export class RoutineRecognizer {
     const out = [...this.bundles.values()].map((b) => this.close(b));
     this.bundles.clear();
     this.presses.clear();
+    this.lastSeen.clear();
     return out;
   }
 
@@ -232,13 +284,14 @@ export class RoutineRecognizer {
 
   /** Scores and counts in one transaction: a bundle closes on the event path. `closedAt`: when its window closed, null when it went idle. */
   private close(b: Bundle, closedAt: number | null = null): BundleClose {
-    const presses = this.presses.get(b.dstWindowId) ?? [];
+    const presses: readonly KeptPress[] = this.presses.get(b.dstWindowId) ?? [];
     // The next occurrence in a window that stays open starts with none of this one's presses.
     this.presses.delete(b.dstWindowId);
+    this.lastSeen.delete(b.dstWindowId);
     return this.memory.batch(() => this.closeNow(b, presses, closedAt));
   }
 
-  private closeNow(b: Bundle, presses: readonly ObservedPress[], closedAt: number | null): BundleClose {
+  private closeNow(b: Bundle, presses: readonly KeptPress[], closedAt: number | null): BundleClose {
     // The last transfer of each shape counts: a value copied and then replaced from another row is the replacement.
     const last = new Map<string, PatternTransfer>();
     for (const t of b.transfers) {
@@ -272,7 +325,7 @@ export class RoutineRecognizer {
     // Read from the destination whether it closed or went idle; a press once learned is never forgotten, so a
     // routine that has ended in a risky press stays one that never runs on its own. The user's own last press
     // decides when the reader saw one; the window's buttons are the guess only when it saw none.
-    const pressed = dst === undefined ? undefined : this.finishPressed(dst, presses, closedAt);
+    const pressed = this.finishPressed(presses, closedAt);
     const finish = dst === undefined ? undefined : pressed !== undefined ? (pressed ?? undefined) : (this.finishOf(dst) ?? undefined);
     const recorded = sig === null ? null : this.memory.recordRoutine(sig, steps, b.lastAt, finish);
     return { dstWindowId: b.dstWindowId, sig, recorded, scored };
@@ -323,25 +376,16 @@ export class RoutineRecognizer {
    * destructive or money is the finish, found by template and position like a step's field. Any other press
    * that closed the window (within PRESS_ENDS_MS) means the occurrence ended without one, so null, and no
    * button is guessed. Undefined when the reader saw no press here, when a safe press did not end it, or when
-   * the pressed element is no longer in the window as the model has it: then the window's buttons are the
-   * guess. A press with no key is placed by its label when exactly one control of its role has it.
+   * the press could not be placed in its window when it arrived (onPress): then the window's buttons are the
+   * guess.
    */
-  private finishPressed(w: WindowState, presses: readonly ObservedPress[], closedAt: number | null): RoutineFinish | null | undefined {
+  private finishPressed(presses: readonly KeptPress[], closedAt: number | null): RoutineFinish | null | undefined {
     const p = presses.at(-1);
-    if (p === undefined) return undefined;
+    if (p === undefined || p.slot === null) return undefined;
     const label = p.label.trim();
-    let key = p.key;
-    if (key === null) {
-      const same = [...w.nodes.values()].filter((n) => n.role === p.role && (n.label ?? "").trim() === label);
-      key = same.length === 1 ? (same[0]?.key ?? null) : null;
-    }
-    const node = key === null ? undefined : w.nodes.get(key);
-    if (key === null || node === undefined) return undefined;
     const why = label === "" ? "safe" : classifyLabel(label);
     if (why === "safe") return closedAt !== null && closedAt >= p.at && closedAt - p.at <= PRESS_ENDS_MS ? null : undefined;
-    const slot = windowIndex(w).slots.get(key);
-    if (slot === undefined) return undefined;
-    return { label, why, templateHash: this.templateHash(slot.template), pos: slot.pos, by: "click" };
+    return { label, why, templateHash: p.slot.templateHash, pos: p.slot.pos, by: "click" };
   }
 
   private step(t: PatternTransfer): RoutineStep {

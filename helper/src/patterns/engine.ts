@@ -232,7 +232,7 @@ export class PatternEngine {
     for (const t of ts) {
       this.clock = Math.max(this.clock, t.at);
       const p = this.timings.time("shape", () =>
-        describeTransfer(this.deps.model, t, this.deps.text.findAll(t.value, t.kind, { excludeWindowId: t.dst.windowId, seenBy: t.at })),
+        describeTransfer(this.deps.model, t, this.deps.text.findAll(t.value, t.kind, { excludeWindowId: t.dst.windowId, seenBy: t.at }), (w, k) => this.routines.seenSlot(w, k)),
       );
       if (p === null) {
         const events = this.timings.time("loops", () => this.loops.onOpaque(t.at, t.dst.windowId, t.dst.key, t.value, t.kind));
@@ -285,6 +285,7 @@ export class PatternEngine {
         if (w !== undefined) w.pending = c.after === w.written ? null : { value: c.after ?? "", at: c.at };
       }
     }
+    for (const id of new Set(changes.map((c) => c.windowId))) this.routines.observe(id, this.editing.has(id));
     const touched = new Set(changes.filter((c) => c.kind === "value" || c.kind === "removed").map((c) => c.windowId));
     if (touched.size > 0) this.recheckOpen(touched);
     if (changes.some((c) => c.kind === "value" && c.editable && this.editing.has(c.windowId))) this.syncPressWatch();
