@@ -12,7 +12,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, type Candidate } from "./candidates.ts";
-import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isNameLike, kindTerm, misfit, NAME_TERM, overlap } from "./kinds.ts";
+import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
@@ -486,6 +486,8 @@ const PART_SAYS: Record<FieldPart, string> = {
   zip: "ZIP code",
 };
 const ADDRESS_PARTS: ReadonlySet<FieldPart> = new Set(["street", "unit", "city", "state", "zip"]);
+/** Label words that say only a field's kind, so they cannot tie one of a person's phones or emails to the field. */
+const KIND_ONLY_WORDS: ReadonlySet<string> = new Set(["phone", "telephone", "tel", "mobile", "cell", "number", "email", "mail", "address", "contact"]);
 /** Kinds whose values are someone's: whose they are is asked before one fills a field that wants someone's (B24 owner veto). */
 const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "address"]);
 /** Labels of a message header's sender. */
@@ -949,6 +951,20 @@ export async function proposeFill(
     // though the owner question split on it (an RSVP's Email, final scoreboard; a rule tuned on the B24 corpus).
     return wants === "user" && is !== "user" && c.labelled === true && c.context !== null && SENDER.test(c.context.trim());
   };
+  /** Whether the named person has several values of the pick's kind and nothing on the pick's line names the field. */
+  const personHasSeveral = (f: Field, p: Pick): boolean => {
+    const c = windowOf(p);
+    if (c === null) return false;
+    const kinds = [...candidateKinds(model, c)].filter((k) => PERSONAL_KINDS.has(k));
+    if (kinds.length === 0) return false;
+    const theirs = ownerCands.filter((x) => ownerAgreed(x) === "person" && [...candidateKinds(model, x)].some((k) => kinds.includes(k)));
+    if (theirs.length < 2) return false;
+    const node = model.windows.get(c.source.windowId)?.nodes.get(c.source.nodeKey);
+    const line = node === undefined ? "" : (nodeText(node).split(/\r?\n/).find((l) => l.includes(c.text)) ?? "");
+    const said = new Set(fieldTerms([line, c.context]));
+    const named = [...fieldTerms(f.labelWords)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t));
+    return !named.some((t) => said.has(t));
+  };
   /** Whether a pick is tied to a field by more than Jev's choice (the untied rule above). */
   const tiedPick = (f: Field, p: Pick): boolean => {
     if (p.from === "instruction" || p.from === "memory") return true;
@@ -1017,6 +1033,11 @@ export async function proposeFill(
     // takes one, or a part code derived for it. Untied, live Jev put a note's whole sentence in "Reason for moving"
     // (evidence/screen/b25/asks-dev-1-gpt-oss-120b, a rule tuned on the B24 corpus).
     const untied = scope !== undefined && picked !== undefined && f.control === "text" && f.kinds.size === 0 && !tiedPick(f, picked);
+    // A named person with more than one value of the field's kind on screen (a cell and an office phone): the screen
+    // must say which is for this field, on the pick's own line. Live, "use Ines for the emergency contact" put her
+    // signature's office phone in Emergency contact phone, where her mail says "my cell is …" beside "emergency
+    // contact" (evidence/screen/b25/asks-dev-3-gpt-oss-20b, ask-10; a rule tuned on the B24 corpus).
+    const whichOfTheirs = namedPerson !== null && picked !== undefined && f.personal && personHasSeveral(f, picked);
     const withheld: FillWithheld | null =
       a1.choice === NONE && a2.choice === NONE
         ? null
@@ -1028,7 +1049,7 @@ export async function proposeFill(
               ? "lowConfidence"
               : read !== null && "why" in read
                 ? read.why
-                : untied
+                : untied || whichOfTheirs
                   ? "ambiguous"
                   : picked !== undefined && otherPerson(f, picked)
                   ? "otherPerson"

@@ -34,7 +34,7 @@ const IntentJson = z
   .object({
     route: z.enum(ROUTES),
     why: z.enum(REASONS),
-    scope: z.enum(["all", "section", "list"]),
+    scope: z.enum(["all", "section", "list", "none"]),
     section: z.string(),
     fields: z.array(z.string()),
     sources: z.array(z.string()),
@@ -50,7 +50,7 @@ export function intentInput(snap: IntentSnapshot): IntentInput {
     form: snap.title === null ? snap.window.app.name : `${snap.window.app.name} window '${snap.title.slice(0, 150)}'`,
     fields: snap.fields.map((f) => ({ ref: f.ref, name: f.name, section: f.section, control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled })),
     sections: snap.sections,
-    windows: snap.windows.map((w) => ({ ref: w.ref, app: w.app, title: w.title.slice(0, 300) })),
+    windows: snap.windows.map((w) => ({ ref: w.ref, app: w.app, title: w.title.slice(0, 300), from: w.from })),
     memory: snap.memory,
     persons: snap.persons,
   };
@@ -139,14 +139,14 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
         instruction: snap.instruction,
         form,
         form_fields: snap.fields.map((f) => f.name).join("; "),
-        open_windows: snap.windows.map((w) => `${w.app}: ${w.title}`).join("; "),
+        open_windows: snap.windows.map((w) => `${w.app}: ${w.title}${w.from === null ? "" : ` (from ${w.from})`}`).join("; "),
         task: "Caret reads the user's instruction about the form on screen: what to do, which fields, from where, and for whom. Answer from the instruction; Caret finds the values itself.",
       };
       // Stage one: Choice questions.
       const scopeCriteria: Record<string, string> = { all: "Every empty field of the form.", list: "Only particular fields that the instruction names or describes." };
       for (const s of snap.sections) scopeCriteria[s.ref] = `The fields under '${s.name}'.`;
       const sourceCriteria: Record<string, string> = { any: "The instruction does not say where the values come from.", ...(snap.memory.length > 0 ? { memory: "What the user told Caret about themselves (their own name and email)." } : {}), instruction: "Only values the instruction itself spells out." };
-      for (const w of snap.windows) sourceCriteria[w.ref] = `The ${w.app} window '${w.title}'.`;
+      for (const w of snap.windows) sourceCriteria[w.ref] = `The ${w.app} window '${w.title}'${w.from === null ? "" : `, from ${w.from}`}.`;
       sourceCriteria.missing = "A window, file or app that is not among the open windows listed.";
       const whoseCriteria: Record<string, string> = { user: "The user's own details, or each field's own: the instruction names no one else whose details go in." };
       for (const p of snap.persons) whoseCriteria[p.ref] = `The details of ${p.span}, whom the instruction names.`;

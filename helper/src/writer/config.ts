@@ -83,3 +83,40 @@ export const WRITER_ROUTE: ChatRoute = GROQ_QWEN_3_8_27B;
 
 /** Longest qwen3.8 plan in runs 2 and 3 was 400 output tokens; 1,000 also stays under its per-minute limit. */
 export const WRITER_MAX_OUTPUT_TOKENS = 1000;
+
+/*
+ * How an Ask's instruction becomes an intent (B25, planner/ask.ts): "writer" (INTENT_ROUTE's strict JSON) or "jev"
+ * (staged Choice and Noul, planner/intent-makers.ts). Measured with scripts/realfill-asks.ts on B24's twenty asks,
+ * which these makers, their prompt and the scoped fill's rules were tuned on (evidence/screen/b25/asks-dev-*):
+ * right / partial / refused / wrong of 20, the values proposed right, and the maker's tokens per intent (mean, max).
+ * Prompt 1 is the first prompt; prompt 2 asks less and keeps names out of literals; prompt 3 adds each mail's sender.
+ *
+ * | run (prompt)          | maker              | right | partial | refused | wrong | values right | tokens/intent |
+ * | dev-1 (1)             | gpt-oss-120b       | 1     | 2       | 16      | 1*    | -            | 1705, 2180    |
+ * | dev-1 (1)             | Jev Choice + Noul  | 1     | 3       | 15      | 1*    | -            | 3058 in, 4499 |
+ * | dev-2 (2)             | gpt-oss-120b       | 3     | 5       | 12      | 0     | 25           | 1861, 2347    |
+ * | dev-2 (2)             | gpt-oss-20b        | 1     | 7       | 12      | 0     | 25           | 1847, 2332    |
+ * | dev-2 (2)             | Jev Choice + Noul  | 2     | 2       | 16      | 0     | 11           | 3058 in, 4499 |
+ * | dev-3 (3)             | gpt-oss-120b       | 1     | 8       | 11      | 0     | 25           | 1945, 2399    |
+ * | dev-3 (3)             | gpt-oss-20b        | 1     | 7       | 11      | 1*    | 24           | 1923, 2410    |
+ * | dev-3 (3)             | Jev Choice + Noul  | 2     | 2       | 16      | 0     | 11           | 3101 in, 4541 |
+ * (* a wrong fill the scoped fill made from a right intent, closed by a fill rule afterwards: fill.ts untied,
+ * the source-any owner rule, whichOfTheirs.)
+ *
+ * Pick: the writer on gpt-oss-120b. Right asks tie with Jev at a mean of 2 (3 and 1 against 2 and 2), and the
+ * writer proposes more than twice the right values: Jev's two stages rarely both clear their floors, so 14 to 16
+ * of its 20 ended as "which fields?". The Noul floor stays at plan section 4's 0.95: on dev-1 it confirmed 7 of 14
+ * wanted fields and 0 of 107 others; 0.5 confirmed 12 of 14, and 2 others.
+ *
+ * qwen3.8-27b, the plan writer (WRITER_ROUTE), was not measured on intents: on 2026-10-04 it had used 198,935 of
+ * Groq's 200,000 tokens a day before the third ask. Its two intents cost 1,286 and 1,815 tokens, so 50 asks a day
+ * would fit its quota if Ask had it alone; the plan route and code mode share it. gpt-oss-120b has its own
+ * 200,000 a day and 8,000 a minute (console.groq.com/docs/rate-limits, 2026-10-04): at about 1,950 tokens an
+ * intent, 50 asks take about 98,000 a day, and four a minute is its ceiling. Strict mode failed twice on
+ * gpt-oss-120b in 40 intents with HTTP 400 "does not match the expected schema" (both a refusal before scope
+ * allowed "none"); such an Ask fails as unavailable and is not retried on another model.
+ */
+export const ASK_MAKER: "writer" | "jev" = "writer";
+/** The writer route for intents; a change is explicit configuration and a fresh scoreboard run, never a fallback. */
+export const INTENT_ROUTE: ChatRoute = GROQ_GPT_OSS_120B;
+

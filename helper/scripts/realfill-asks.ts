@@ -120,6 +120,8 @@ interface Row {
   error: string | null;
   intent: AskIntent | null;
   maker: MakerUse | null;
+  /** The scoped fill's answer for each field it asked about, by corpus label, for reading the misses. */
+  fill: { field: string; value: string | null; withheld: string | null }[];
 }
 
 const rows: Row[] = [];
@@ -167,7 +169,8 @@ for (const [i, ask] of asks.entries()) {
   const wanted = Object.entries(expected).filter(([, v]) => v !== "none" && v !== "handoff" && v !== "unchecked").map(([l]) => l);
   const missing = wanted.filter((l) => !proposed.some((p) => p.field === l));
   const verdict: Verdict = proposed.length === 0 ? "refused" : ask.expected === "refuse" || proposed.some((p) => !ok(p)) ? "wrong" : missing.length === 0 ? "right" : "partial";
-  rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, intent, maker: use });
+  const fill = (draft?.fill?.fields ?? []).map((f) => ({ field: labelOf.get(f.key) ?? f.descriptor, value: f.value ?? f.handoff?.value ?? null, withheld: f.withheld }));
+  rows.push({ ask, route: draft?.route ?? intent?.route ?? "none", verdict, proposed, missing, error, intent, maker: use, fill });
   process.stderr.write(`${ask.id} (${ask.form}): ${verdict} via ${draft?.route ?? "none"}${error === null ? "" : `; ${error.slice(0, 160)}`}\n`);
 }
 

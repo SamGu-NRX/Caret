@@ -13,6 +13,7 @@ import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { formControls, inWebArea, type Control } from "../fill/controls.ts";
+import { labelledLines } from "../fill/candidates.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
 import { NEVER_TYPED_SAYS, neverTypedValue, type NeverTyped } from "../fill/never-typed.ts";
 import { SnippetLedger } from "../privacy.ts";
@@ -29,7 +30,8 @@ export type Reason = (typeof REASONS)[number];
 export interface AskIntent {
   route: AskRoute;
   why: Reason;
-  scope: "all" | "section" | "list";
+  /** "none" only for a route that fills nothing (refuse, ask, plan). */
+  scope: "all" | "section" | "list" | "none";
   /** A section ref ("s1") when scope is section; "none" otherwise. */
   section: string;
   /** Field refs ("f3") when scope is list. */
@@ -59,8 +61,8 @@ export interface IntentSnapshot {
   title: string | null;
   fields: IntentField[];
   sections: { ref: string; name: string }[];
-  /** Other open windows a value could come from, most recent first, by title. */
-  windows: { ref: string; windowId: string; app: string; title: string }[];
+  /** Other open windows a value could come from, most recent first, by title, and a mail's sender when it shows one. */
+  windows: { ref: string; windowId: string; app: string; title: string; from: string | null }[];
   /** Labels of what the user told Caret (About entries, people), never their values. */
   memory: string[];
   /** People the instruction names, as exact spans of it ("Gary", "my sister"). */
@@ -147,7 +149,12 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
   const others = [...model.windows.values()].filter((o) => o !== w && o.window.title.trim() !== "").sort((a, b) => b.lastFocusedAt - a.lastFocusedAt || b.updatedAt - a.updatedAt);
   for (const o of others) {
     if (windows.length >= MAX_INTENT_WINDOWS) break;
-    if (ledger.take(o, "candidate", [o.window.title])) windows.push({ ref: `w${windows.length + 1}`, windowId: o.window.windowId, app: o.app.name, title: o.window.title });
+    if (!ledger.take(o, "candidate", [o.window.title])) continue;
+    // A mail's sender names it as people do ("Ines's email", "the slot Chris offered"); its subject often does not.
+    const fromLine = labelledLines(o).find((l) => /^from$/i.test(l.label));
+    const sender = fromLine === undefined ? null : (/^\s*"?([^"<>]+?)"?\s*(?:<[^>]*>)?\s*$/u.exec(fromLine.value)?.[1]?.trim() ?? null);
+    const from = sender !== null && sender.length <= 60 && ledger.take(o, "candidate", [sender]) ? sender : null;
+    windows.push({ ref: `w${windows.length + 1}`, windowId: o.window.windowId, app: o.app.name, title: o.window.title, from });
   }
   const labels = [...new Set(memory.map((m) => m.label))];
   const memoryLabels = labels.length > 0 && ledger.memory(labels) ? labels : [];
@@ -223,7 +230,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
       const f = byRef.get(r) ?? bad(`names field '${r}', which the snapshot does not list`);
       if (!scoped.includes(f)) scoped.push(f);
     }
-  } else bad(`has scope '${String(intent.scope)}'`);
+  } else bad(`fills with scope '${String(intent.scope)}'`);
   // Document order, whatever order the maker listed them in.
   scoped.sort((a, b) => snap.fields.indexOf(a) - snap.fields.indexOf(b));
   const leftToYou = scoped.filter((f) => f.neverTyped !== null);

@@ -14,7 +14,7 @@ import { HelperServer } from "./server.ts";
 import { Store } from "./store.ts";
 import { loadJevKey, makeJevClient } from "./fill/jev.ts";
 import { makeWriterPort, type WriterPort } from "./writer/port.ts";
-import { WRITER_ROUTE } from "./writer/config.ts";
+import { ASK_MAKER, INTENT_ROUTE, WRITER_ROUTE } from "./writer/config.ts";
 import { readKey } from "./writer/env.ts";
 
 /** The configured plan writer, or null with a warning when its key is missing (the key is read again at each call, never printed). */
@@ -26,6 +26,21 @@ function writerFromEnv(say: (line: string) => void): WriterPort | null {
     return null;
   }
   return makeWriterPort(WRITER_ROUTE);
+}
+
+/**
+ * How Ask makes its intent (writer/config.ts ASK_MAKER). With the writer and no key for its route, Ask runs the
+ * planner as before B25 and says so; it never moves to another model or to Jev.
+ */
+function askFromEnv(say: (line: string) => void): { maker: "jev" } | { maker: "writer"; writer: WriterPort } | null {
+  if (ASK_MAKER === "jev") return { maker: "jev" };
+  try {
+    readKey(INTENT_ROUTE.keyName);
+  } catch (e) {
+    say(`Ask intent writer off, so Ask runs the planner as before B25: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+  return { maker: "writer", writer: makeWriterPort(INTENT_ROUTE) };
 }
 
 const { values: args } = parseArgs({
@@ -76,6 +91,8 @@ const helper = new Helper({
   calendar: "reader",
   // The code-mode plan writer (B24), when a Groq key is configured; without one, Ask works as before.
   writer: args["no-jev"] || args.shadow ? null : writerFromEnv(warn),
+  // Ask as a scoped fill (B25), its intent from the configured maker.
+  ask: args["no-jev"] || args.shadow ? null : askFromEnv(warn),
   warn,
 });
 server = new HelperServer(args.socket, () => helper, warn);

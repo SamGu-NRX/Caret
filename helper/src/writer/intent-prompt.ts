@@ -12,7 +12,7 @@ export const IntentInputSchema = z
     form: z.string().min(1).max(200),
     fields: z.array(z.object({ ref: Ref, name: z.string().min(1).max(200), section: z.string().nullable(), control: z.string(), filled: z.boolean() }).strict()).max(40),
     sections: z.array(z.object({ ref: Ref, name: z.string() }).strict()).max(40),
-    windows: z.array(z.object({ ref: Ref, app: z.string(), title: z.string().max(300) }).strict()).max(8),
+    windows: z.array(z.object({ ref: Ref, app: z.string(), title: z.string().max(300), from: z.string().nullable() }).strict()).max(8),
     memory: z.array(z.string()).max(20),
     persons: z.array(z.object({ ref: Ref, span: z.string() }).strict()).max(20),
   })
@@ -27,10 +27,10 @@ route:
 - refuse: something Caret must not or cannot do here: pay or enter a card number; a password, a one-time code, or a Social Security or other government ID number; a field this form does not have; copying from a window, file or app that is not listed.
 - ask: only when the instruction names or describes no field and does not ask to fill the form.
 why: for refuse or ask, the reason; otherwise none.
-scope: all when the instruction asks to fill the form or whatever Caret can ("fill this out", "fill in what you can", "RSVP for me"); list when it names or describes particular fields; section only for a listed section.
+scope: all when the instruction asks to fill the form or whatever Caret can ("fill this out", "fill in what you can", "RSVP for me"); list when it names or describes particular fields; section only for a listed section; none for refuse, ask or plan. A route of fill always has a scope of all, section or list, and when you can list the fields, the route is fill.
 section: the section ref for scope section; otherwise none.
-fields: for list, every field the instruction asks for, including the parts of what it names ("my name" is First name and Last name; "the landlord part" is every landlord field; "my birthday" is the date of birth, or its Day, Month and Year). Empty otherwise.
-sources: the listed windows the instruction says to copy from ("my note" is the note window, "Morgan's email" is that mail); memory when it asks for what the user told Caret about themselves and memory is listed; any when it names no source. A source that is not named is any, never a reason to ask.
+fields: for list, every field the instruction asks for, including the parts of what it names ("my name" is First name and Last name; "the landlord part" is every landlord field; "my birthday" is the date of birth, or its Day, Month and Year; a slot or an appointment is its date and time). Empty otherwise.
+sources: the listed windows the instruction says to copy from ("my note" is the note window; "Morgan's email" or "the slot Chris offered" is the window from that sender); memory when it asks for what the user told Caret about themselves and memory is listed; any when it names no source. A source that is not named is any, never a reason to ask.
 whose: a person's ref when the instruction asks for that person's details in the fields ("use Gary's info", "use Ines for the emergency contact", "put Bea down as my guest"); user otherwise, including when a person only names where to copy from ("from Morgan's email", "the slot Chris offered"); unnamed when it means someone else's details but names no one ("put his number in").
 literals: values the instruction spells out to be written as they are, each copied exactly with its field's ref: a time, a date, a number, an option, or quoted text ("8:15" for a delivery time field). A person's name that says whose details to use is whose, not a literal. Empty when it spells out none.`;
 
@@ -57,7 +57,7 @@ export function intentResponseFormat(input: IntentInput): Record<string, unknown
         properties: {
           route: oneOf(ROUTES),
           why: oneOf(REASONS),
-          scope: oneOf(["all", "section", "list"]),
+          scope: oneOf(["all", "section", "list", "none"]),
           section: oneOf(["none", ...input.sections.map((s) => s.ref)]),
           fields: { type: "array", items: oneOf(fieldRefs) },
           // Memory is a source only when the user told Caret something.

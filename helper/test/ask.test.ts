@@ -199,6 +199,26 @@ describe("the scoped fill", () => {
   });
 });
 
+describe("a named person's several values", () => {
+  const mail = ["Hi love,", "Put me down as your emergency contact, my cell is (617) 555-0129.", "Ines", "Senior Architect", "(617) 555-0166 (office)"].join("\n");
+  const ec = `${P}/textfield:emergency contact phone~0`;
+  const deskWith = (): ScreenModel => {
+    const m = new ScreenModel();
+    m.apply(snap([field("mail/body", mail, { role: "AXTextArea" })], { at: 900, windowId: "mail", title: "Clinic form", app: { pid: 7001, bundleId: "com.apple.mail", name: "Mail" }, focused: true, values: [value("phone", "(617) 555-0129", "mail/body"), value("phone", "(617) 555-0166", "mail/body")] }));
+    m.apply(snap([node(`${P}/webarea:~0`, "AXWebArea", { label: "Clinic" }), field(ec, "", { parent: `${P}/webarea:~0`, label: "Emergency contact phone", frame: [100, 100, 200, 20] })], { at: 1000, windowId: "form", title: "Clinic", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: ec }));
+    return m;
+  };
+  const ines = (d: string): string => (d.includes("(617)") ? "person" : "unclear");
+  const scope = scopeOf({ fields: [ec], person: "Ines", instruction: "use Ines for the emergency contact" });
+
+  it("takes the one her own line ties to the field, and not the other", async () => {
+    const office = await proposeFill(deskWith(), jevBy((q) => (q.includes("'Emergency contact phone'") ? "(617) 555-0166" : null), ines).ask, "form", ec, 2000, { scope });
+    expect(office.fields[0]).toMatchObject({ value: null, withheld: "ambiguous" });
+    const cell = await proposeFill(deskWith(), jevBy((q) => (q.includes("'Emergency contact phone'") ? "(617) 555-0129" : null), ines).ask, "form", ec, 2000, { scope });
+    expect(cell.fields[0]).toMatchObject({ value: "(617) 555-0129", withheld: null });
+  });
+});
+
 const maker = (x: Partial<AskIntent> | ((s: IntentSnapshot) => Partial<AskIntent>)): IntentMaker => ({
   name: "writer",
   async make(s) {
