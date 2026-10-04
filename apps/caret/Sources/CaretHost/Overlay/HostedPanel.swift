@@ -81,11 +81,20 @@ enum Screen {
     }
 }
 
-/// One SwiftUI surface in an `OverlayPanel` over the system popover material.
+/// The one panel every at-caret surface uses (DIRECTION.md section 7, "Panels"): a borderless,
+/// non-activating, click-through `OverlayPanel` holding one SwiftUI view over glass.
 ///
-/// The panel keeps one corner pinned (`Anchor`), the corner nearest what it describes, so content
-/// that grows or shrinks (a toast replacing an offer, a reveal adding rows) never moves away from
-/// it, and the entrance scales from that corner.
+/// - Material: on macOS 26 the system glass (`NSGlassEffectView`, tinted warm neutral); below it
+///   `NSVisualEffectView` (`.popover` light, `.hudWindow` dark) with the glass color laid over it
+///   by the view (`drawsGlassTint`).
+/// - Shadow: drawn here, outside the shape only, so it never darkens the glass; the window's own
+///   shadow is off. The window is `Tokens.Shape.shadowMargin` larger than the content on every side
+///   to hold it. Every frame this class takes or reports is the content's, not the window's.
+///   An interactive panel (the desk) has no margin and keeps the system's window shadow: a window
+///   that takes clicks takes them across its whole frame, transparent margin included.
+/// - Anchor: one corner stays pinned (the corner nearest what the panel describes), so content
+///   that grows or shrinks (a result replacing an offer, the question growing the slip) never moves
+///   away from it, and the entrance scales from that corner.
 @MainActor
 final class HostedPanel {
     enum Corner { case topLeft, topRight, bottomLeft, bottomRight }
@@ -97,69 +106,132 @@ final class HostedPanel {
     }
 
     let panel = OverlayPanel.make()
-    private let material = NSVisualEffectView()
+    private let container = NSView()
+    private let shadow = PanelShadowView()
+    private let material: NSView?
     private let host: NSHostingView<AnyView> = FirstMouseHostingView(rootView: AnyView(EmptyView()))
+    /// The glass's corner radius: 9 for a slip, 12 for a pop-up, 6 for the compact slip. One panel
+    /// shows each of these in turn, so it follows its content.
+    var radius: CGFloat { didSet { if radius != oldValue { applyRadius() } } }
+    private let margin: CGFloat
+    /// The view lays the glass color over the material (macOS before 26).
+    private let tints: Bool
+    /// Pop-ups enter a little larger than slips (scale 0.96, 180 ms).
+    var popup: Bool
     private(set) var anchor = Anchor(corner: .topLeft, point: .zero)
+    private(set) var size: NSSize = .zero
     /// What the panel says, for the debug socket.
     var text = ""
     private(set) var isExiting = false
+    /// The view last set, unwrapped, so a new anchor corner can re-pin it.
+    private var shown: AnyView?
 
-    /// `material: false` for decoration drawn straight over the app (the underline and count),
-    /// which has no surface, blur or shadow of its own. `interactive: true` for a panel with
-    /// buttons (the activity list): it takes clicks, still without ever becoming key.
-    init(radius: CGFloat, material hasMaterial: Bool = true, interactive: Bool = false) {
+    /// `material: false` for decoration drawn straight over the app (the underline, the figure and
+    /// ticks after an alternative, Caret's own ghost text), which has no glass, shadow or margin.
+    /// `interactive: true` for a panel with buttons: it takes clicks, still never becoming key.
+    init(radius: CGFloat, material hasMaterial: Bool = true, interactive: Bool = false, popup: Bool = false) {
+        self.radius = radius
+        self.popup = popup
+        let drawsShadow = hasMaterial && !interactive
+        margin = drawsShadow ? Tokens.Shape.shadowMargin : 0
         panel.ignoresMouseEvents = !interactive
-        host.autoresizingMask = [.width, .height]
-        // The panel sizes the host from its fitting size; no constraints of its own.
         host.sizingOptions = []
+        container.wantsLayer = true
+        panel.contentView = container
+        panel.hasShadow = hasMaterial && interactive
         if hasMaterial {
-            material.material = .popover
-            material.blendingMode = .behindWindow
-            material.state = .active
-            material.wantsLayer = true
-            material.layer?.cornerRadius = radius
-            material.layer?.cornerCurve = .continuous
-            material.layer?.masksToBounds = true
-            material.autoresizingMask = [.width, .height]
-            material.addSubview(host)
-            panel.contentView = material
-            panel.hasShadow = true
+            if #available(macOS 26.0, *) {
+                let glass = NSGlassEffectView()
+                glass.style = .regular
+                glass.tintColor = Tokens.glassTint
+                material = glass
+                tints = false
+            } else {
+                material = FallbackMaterial()
+                tints = true
+            }
+            if drawsShadow { container.addSubview(shadow) }
+            container.addSubview(material!)
         } else {
-            host.wantsLayer = true
-            panel.contentView = host
-            bare = true
+            material = nil
+            tints = false
         }
+        host.wantsLayer = true
+        container.addSubview(host)
+        applyRadius()
     }
 
-    /// True for a panel with no material: `host` sits directly in the content view.
-    private var bare = false
+    private func applyRadius() {
+        if #available(macOS 26.0, *), let glass = material as? NSGlassEffectView { glass.cornerRadius = radius }
+        material?.layer?.cornerRadius = radius
+        shadow.radius = radius
+    }
 
     var isVisible: Bool { panel.isVisible && !isExiting }
 
-    /// Replaces the content and resizes about the anchor. No animation: content changes come from
-    /// keys (an arrow, a reveal) or from results, which should land at once.
-    func setContent<V: View>(_ view: V) {
-        // Measured on a fresh hosting view: the panel's own host has no sizing constraints (so
-        // AppKit never resizes the panel behind our back), and so reports no fitting size.
-        let size = measure(view)
-        host.rootView = AnyView(view)
-        setFrame(size: size)
+    /// The view as this panel shows it: pinned to the anchored corner, so a size change animated
+    /// inside the view grows away from the corner, and tinted where the material is not.
+    private func hosted<V: View>(_ view: V) -> AnyView {
+        AnyView(view
+            .environment(\.drawsGlassTint, tints)
+            .environment(\.reducesMotion, Motion.reduceMotion)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment))
     }
 
-    var size: NSSize { panel.frame.size }
+    private var alignment: Alignment {
+        switch anchor.corner {
+        case .topLeft: return .topLeading
+        case .topRight: return .topTrailing
+        case .bottomLeft: return .bottomLeading
+        case .bottomRight: return .bottomTrailing
+        }
+    }
 
-    /// The content's size without placing it, for choosing among placements.
+    /// Replaces the content and resizes about the anchor. Content changes come from keys (an
+    /// arrow, a reveal) or from results, which land at once; the one exception is the slip growing
+    /// for the skill question, whose glass grows over 200 ms with the view (`Motion.Duration.grow`).
+    func setContent<V: View>(_ view: V) {
+        let next = measure(view)
+        let grows = isVisible && size != .zero && next.height > size.height && !Motion.reduceMotion
+        let from = size
+        shown = AnyView(view)
+        host.rootView = hosted(view)
+        setFrame(size: next)
+        if grows, let material { growMaterial(material, from: from, to: next) }
+    }
+
+    /// The content's size without placing it, for choosing among placements. Measured on a fresh
+    /// hosting view: the panel's own host has no sizing constraints (so AppKit never resizes the
+    /// panel behind our back), and so reports no fitting size.
     func measure<V: View>(_ view: V) -> NSSize {
-        let probe = NSHostingView(rootView: view)
-        return probe.fittingSize
+        NSHostingView(rootView: view.environment(\.drawsGlassTint, tints)).fittingSize
     }
 
     func pin(_ anchor: Anchor) {
+        let turned = anchor.corner != self.anchor.corner
         self.anchor = anchor
-        setFrame(size: panel.frame.size)
+        if turned, let shown { host.rootView = hosted(shown) }
+        setFrame(size: size)
     }
 
-    private func setFrame(size: NSSize) {
+    /// Slides the panel to a new anchor over `duration` with `ease-out`: the fill slip moving to
+    /// the next field. Only the origin changes, so the content does not lag a resize. At once
+    /// under Reduce Motion.
+    func move(to anchor: Anchor, duration: Double) {
+        let turned = anchor.corner != self.anchor.corner
+        self.anchor = anchor
+        if turned, let shown { host.rootView = hosted(shown) }
+        let target = contentFrame(size: size).insetBy(dx: -margin, dy: -margin)
+        guard !Motion.reduceMotion, duration > 0, panel.isVisible else { return setFrame(size: size) }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = Motion.caCurve(Motion.easeOut)
+            panel.animator().setFrame(target, display: true)
+        }
+    }
+
+    /// The content's frame in Cocoa coordinates for `size` at the anchor.
+    func contentFrame(size: NSSize) -> NSRect {
         var origin = anchor.point
         switch anchor.corner {
         case .topLeft: origin.y -= size.height
@@ -167,44 +239,75 @@ final class HostedPanel {
         case .bottomLeft: break
         case .bottomRight: origin.x -= size.width
         }
-        panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        material.frame = NSRect(origin: .zero, size: size)
-        host.frame = NSRect(origin: .zero, size: size)
+        return NSRect(origin: origin, size: size)
     }
 
-    /// Opacity 0 to 1, scale 0.96 to 1 and a 2 pt settle toward the anchor, 160 ms `--ease-out`,
-    /// scaled about the anchored corner. Reduce Motion keeps a 120 ms fade and drops the movement.
+    private func setFrame(size: NSSize) {
+        self.size = size
+        let content = contentFrame(size: size)
+        panel.setFrame(content.insetBy(dx: -margin, dy: -margin), display: true)
+        let inner = NSRect(x: margin, y: margin, width: size.width, height: size.height)
+        container.frame = NSRect(origin: .zero, size: panel.frame.size)
+        material?.frame = inner
+        shadow.frame = container.bounds
+        shadow.shape = inner
+        host.frame = inner
+    }
+
+    /// The glass grows from the old height to the new about the pinned edge, with the view's own
+    /// 200 ms `ease-out`. The window took its new size at once (`DIRECTION.md`: never animate an
+    /// `NSWindow`'s frame), so only the material moves.
+    private func growMaterial(_ material: NSView, from: NSSize, to: NSSize) {
+        let end = NSRect(x: margin, y: margin, width: to.width, height: to.height)
+        var start = end
+        start.size.height = from.height
+        if anchor.corner == .topLeft || anchor.corner == .topRight { start.origin.y = end.maxY - from.height }
+        material.frame = start
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Motion.Duration.grow
+            context.timingFunction = Motion.caCurve(Motion.easeOut)
+            context.allowsImplicitAnimation = true
+            material.animator().frame = end
+        }
+    }
+
+    /// Opacity 0 to 1, scale 0.97 (pop-ups 0.96) to 1 and a 2 pt settle toward the anchor, 160 ms
+    /// (pop-ups 180 ms) `ease-out`, about the anchored corner. Reduce Motion keeps a 0.12 s fade
+    /// and drops the movement (`Motion.Entrance`).
     func enter() {
         isExiting = false
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        let reduce = Motion.reduceMotion
+        let entrance = Motion.Entrance.panel(popup: popup, reduce: Motion.reduceMotion)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = reduce ? 0.12 : 0.16
+            context.duration = entrance.duration
             context.timingFunction = Motion.caCurve(Motion.easeOut)
             panel.animator().alphaValue = 1
         }
-        guard !reduce, let layer = (bare ? host : material).layer else { return }
-        let w = panel.frame.width, h = panel.frame.height
-        // Layer space is bottom-left; the pivot is the anchored corner.
-        let px: CGFloat = (anchor.corner == .topRight || anchor.corner == .bottomRight) ? w : 0
-        let py: CGFloat = (anchor.corner == .topLeft || anchor.corner == .topRight) ? h : 0
-        // Settle 2 pt toward the anchor: from above when pinned at the top, from below otherwise.
-        let settle: CGFloat = py == h ? 2 : -2
+        guard let scale = entrance.scale, let layer = container.layer else { return }
+        // Layer space is bottom-left; the pivot is the content's anchored corner.
+        let right = anchor.corner == .topRight || anchor.corner == .bottomRight
+        let top = anchor.corner == .topLeft || anchor.corner == .topRight
+        let px = margin + (right ? size.width : 0)
+        let py = margin + (top ? size.height : 0)
+        // Settle toward the anchor: from above when pinned at the top, from below otherwise.
+        let settle = top ? entrance.settle : -entrance.settle
         let start = CATransform3DConcat(
             CATransform3DMakeTranslation(-px, -py, 0),
-            CATransform3DConcat(CATransform3DMakeScale(0.96, 0.96, 1), CATransform3DMakeTranslation(px, py + settle, 0))
+            CATransform3DConcat(CATransform3DMakeScale(scale, scale, 1), CATransform3DMakeTranslation(px, py + settle, 0))
         )
         let animation = CABasicAnimation(keyPath: "transform")
         animation.fromValue = NSValue(caTransform3D: start)
         animation.toValue = NSValue(caTransform3D: CATransform3DIdentity)
-        animation.duration = 0.16
+        animation.duration = entrance.duration
         animation.timingFunction = Motion.caCurve(Motion.easeOut)
         layer.add(animation, forKey: "enter")
     }
 
-    /// Opacity to 0, linear: 100 ms on Esc or timeout, 80 ms on typing, 0 for at once.
+    /// Opacity to 0, linear: 100 ms on Esc or timeout, 80 ms on typing, 220 ms for a result that
+    /// timed out, 0 for at once.
     func exit(duration: TimeInterval) {
+        let duration = Motion.exit(duration, reduce: Motion.reduceMotion)
         guard duration > 0, panel.isVisible else {
             isExiting = false
             panel.orderOut(nil)
@@ -224,9 +327,10 @@ final class HostedPanel {
         }
     }
 
+    /// The content's frame, global top-left (the window's margin excluded).
     func debugInfo() -> DebugState.Panel? {
         guard panel.isVisible else { return nil }
-        let f = panel.frame
+        let f = contentFrame(size: size)
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         return DebugState.Panel(
             windowNumber: panel.windowNumber,
@@ -234,6 +338,84 @@ final class HostedPanel {
             isKey: panel.isKeyWindow,
             text: isExiting ? "(exiting) " + text : text
         )
+    }
+}
+
+/// The panel's shadow, drawn only outside its shape (a CSS box-shadow, not a drop shadow under
+/// translucent glass): two layers, `Tokens.Shadow`'s near and far, masked to everything but the
+/// shape. Colors follow the appearance.
+final class PanelShadowView: NSView {
+    var radius: CGFloat = 9 { didSet { needsLayout = true } }
+    var shape: NSRect = .zero { didSet { needsLayout = true } }
+    private let near = CALayer()
+    private let far = CALayer()
+    private let mask = CAShapeLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.addSublayer(far)
+        layer?.addSublayer(near)
+        mask.fillRule = .evenOdd
+        layer?.mask = mask
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var isFlipped: Bool { false }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let path = CGPath(roundedRect: shape, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        let specs = Tokens.Shadow.panel(dark: dark)
+        // Layer space is bottom-left, so the downward offset is negated. CSS blur is twice a
+        // layer's shadow radius.
+        for (layer, spec) in [(near, specs.near), (far, specs.far)] {
+            layer.frame = bounds
+            layer.shadowPath = path
+            layer.shadowColor = Tokens.srgb(spec.color).cgColor
+            layer.shadowOpacity = Float(spec.opacity)
+            layer.shadowRadius = spec.blur / 2
+            layer.shadowOffset = CGSize(width: 0, height: -spec.y)
+        }
+        let outside = CGMutablePath()
+        outside.addRect(bounds)
+        outside.addPath(path)
+        mask.path = outside
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsLayout = true
+    }
+}
+
+/// Glass before macOS 26: `.popover` in light, `.hudWindow` in dark, behind the window, always
+/// active, clipped to the panel's radius.
+final class FallbackMaterial: NSVisualEffectView {
+    init() {
+        super.init(frame: .zero)
+        blendingMode = .behindWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        choose()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        choose()
+    }
+
+    private func choose() {
+        material = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .hudWindow : .popover
     }
 }
 

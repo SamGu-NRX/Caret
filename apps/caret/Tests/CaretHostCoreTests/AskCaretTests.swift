@@ -254,7 +254,7 @@ final class AskCaretTests: XCTestCase {
         ask.receive(progress(card.offerKey, .done, step: nil, steps: 1))
         guard case .ended(let ended, let line) = ask.phase else { return XCTFail("not ended") }
         XCTAssertEqual(ended.steps.map(\.state), [.done])
-        XCTAssertEqual(line.text, "Done, in Caret Fixture")
+        XCTAssertEqual(line.text, "Added to Caret Fixture")
     }
 
     /// S1 audit #17: Esc says "Stopping…" until the helper's own ending says where it stopped.
@@ -422,7 +422,7 @@ final class AskCaretTests: XCTestCase {
         XCTAssertNil(ask.undoOffer, "nothing to undo while it runs")
         ask.receive(progress(card.offerKey, .done, step: nil, steps: 1))
         guard case .ended(_, let done) = ask.phase else { return XCTFail("not ended") }
-        XCTAssertEqual(done.text, "Done, in Caret Fixture")
+        XCTAssertEqual(done.text, "Added to Caret Fixture")
         XCTAssertEqual(done.content.hints, [Hint(key: "⌘Z", label: "Undo")])
         XCTAssertEqual(offers, [AskCaret.UndoOffer(taskId: card.offerKey, pid: Int32(p.window!.pid))])
         XCTAssertTrue(ask.ownsUndo(card.offerKey))

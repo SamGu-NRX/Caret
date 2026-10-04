@@ -69,6 +69,8 @@ public struct FillDraw: Equatable, Sendable {
     public var readID: UInt64
     /// What becomes of a toast still up (`FillLineRule`), decided here so the overlay only draws.
     public var line: FillLineRule.Outcome
+    /// The source window's app, for its glyph in the slip; nil for a value from memory.
+    public var sourceApp: String? = nil
 }
 
 /// The line after Tab or ⌘Z, in place of the offer's line.
@@ -417,7 +419,7 @@ public final class FillMachine {
         emit(.remember(offerID: offerID, bundleID: field.identity.bundleID))
         let caption = origin.sourceCaption
         let line = FillLineRule.resolve(toastSource: toast?.source, offerSource: caption)
-        emit(.drawOffer(FillDraw(offerID: offerID, value: value, field: frame, caption: caption, pid: field.identity.pid, readID: field.readID, line: line)))
+        emit(.drawOffer(FillDraw(offerID: offerID, value: value, field: frame, caption: caption, pid: field.identity.pid, readID: field.readID, line: line, sourceApp: origin.sourceApp)))
         if line == .replaceToast {
             // The toast gave way to an offer from another source, and its undo went with it. The
             // overlay ends the toast as it draws the new line.

@@ -82,6 +82,12 @@ public struct FillOrigin: Equatable, Sendable {
         return "from \(app), \(title)"
     }
 
+    /// The source window's app, whose glyph the fill slip shows; nil for what the user told Caret.
+    public var sourceApp: String? {
+        guard case .window(let w) = source else { return nil }
+        return w.appName.trimmingCharacters(in: .whitespaces)
+    }
+
     /// The source as the done toast names it, without the window: "from Mail", or "from what you
     /// told Caret" (`SURFACES.md` section 6: the offer line already named the window).
     public var toastSource: String {

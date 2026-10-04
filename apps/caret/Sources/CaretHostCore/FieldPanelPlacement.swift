@@ -19,8 +19,9 @@ public enum FieldPanelPlacement {
     public static let gap: CGFloat = 6
     /// Panels stay this far inside the screen.
     public static let margin: CGFloat = 8
-    /// The panel's left edge sits this far left of the caret (`SURFACES.md` section 3).
-    public static let caretInset: CGFloat = 12
+    /// The panel's left edge sits this far left of the caret, so the slip's figure (8 pt in, 14
+    /// wide) stands under it (v3 DIRECTION.md section 5.3: `x - 15`; it was 12 for the 11 pt figure).
+    public static let caretInset: CGFloat = 15
 
     public enum Spot: String, Codable, Sendable {
         case below, above, belowNarrow, aboveNarrow, right, left

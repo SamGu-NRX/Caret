@@ -83,14 +83,14 @@ public struct FirstLookRun: Equatable, Sendable {
     }
 
     /// The line under the card, or nil when there is none (paused).
-    public func line(character: FigureCharacter) -> WorkLine? {
+    public func line() -> WorkLine? {
         switch phase {
         case .working:
-            return WorkLines.working(app: app, fillRows: fillRows, character: character, seconds: seconds, figureLeft: figureLeft)
+            return WorkLines.working(app: app, fillRows: fillRows, seconds: seconds, figureLeft: figureLeft, done: nextStep, steps: steps > 0 ? steps : nil)
         case .done(let written):
             let filled = written ?? verified
             if fillRows != nil, filled > 0 { return WorkLines.filled(filled, from: source) }
-            return WorkLines.done(app: app, character: character, undo: undoable)
+            return WorkLines.done(app: app, undo: undoable)
         case .stopped(let reason): return WorkLines.stopped(app: app, reason: reason, next: nextStep, steps: steps, fillFilled: fillRows.map { _ in verified })
         case .handoff: return WorkLines.handoff(app: app)
         case .paused: return nil

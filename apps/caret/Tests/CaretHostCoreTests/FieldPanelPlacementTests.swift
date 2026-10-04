@@ -62,7 +62,7 @@ final class FieldPanelPlacementTests: XCTestCase {
         let choice = FieldPanelPlacement.choose(field: promo, caret: caret(in: promo), size: card, narrow: nil, bounds: screen, obstacles: probe(others))
         XCTAssertEqual(choice.spot, .below)
         XCTAssertEqual(choice.frame.minY, promo.maxY + 6, "6 pt under the field, not the caret")
-        XCTAssertEqual(choice.frame.minX, promo.minX + 4 - 12, "12 pt left of the caret")
+        XCTAssertEqual(choice.frame.minX, promo.minX + 4 - FieldPanelPlacement.caretInset, "15 pt left of the caret: the figure stands under it")
         assertCoversNothing(choice, others)
     }
 
@@ -187,7 +187,7 @@ final class FieldPanelPlacementTests: XCTestCase {
         let caret = CGRect(x: 520, y: 300, width: 1, height: 16)
         let choice = try XCTUnwrap(FieldPanelPlacement.caretLineSpot(field: editorView, caret: caret, size: compactLine, visible: editorVisible))
         XCTAssertEqual(choice.spot, .below)
-        XCTAssertEqual(choice.frame, CGRect(x: 508, y: 322, width: 330, height: 20))
+        XCTAssertEqual(choice.frame, CGRect(x: 520 - FieldPanelPlacement.caretInset, y: 322, width: 330, height: 20))
         XCTAssertEqual(choice.overlap, 0)
         XCTAssertEqual(choice.probed, 0, "no hit-test: nothing but the document's own text is there")
         XCTAssertFalse(choice.frame.intersects(CGRect(x: editorView.minX, y: caret.minY, width: editorView.width, height: caret.height)), "never over the caret's line")

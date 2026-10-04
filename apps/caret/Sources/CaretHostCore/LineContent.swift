@@ -19,6 +19,9 @@ public enum FigureState: String, CaseIterable, Codable, Sendable {
     case needsYou
     /// Goes graphite; posture drops.
     case error
+    /// Calm, eyes at you: a stop you made, a take-over, an undo. Not a result to celebrate and
+    /// not an error.
+    case still
     /// Not drawn.
     case absent
 }
@@ -62,17 +65,19 @@ public struct Hint: Equatable, Sendable {
 /// and trailing key hints.
 public struct LineContent: Equatable, Sendable {
     public var figure: FigureState
+    /// The app the line is about, drawn as its glyph. Its name is never printed in a slip; the
+    /// working caption says it ("Adding to Calendar").
     public var app: String?
     public var lead: String?
     public var text: String
     /// Secondary for a source line ("from Mail, Invoice 2041"); Ink semibold for an end state.
     public var emphasis: Emphasis
     public var hints: [Hint]
-    /// The working line names the app in its caption, so it shows only the app's glyph, standing
-    /// where the figure stood before it left.
-    public var appGlyphOnly: Bool
     /// A question under the line about the run it reports on (B19 keep or promote), or its answer.
     public var question: Question?
+    /// The step bar along the slip's bottom edge while work runs, 0 to 1; nil hides it. Work with
+    /// no step count shows 8 percent and leaves the seconds to carry it.
+    public var progress: Double?
 
     public enum Emphasis: Equatable, Sendable {
         case endState, plain, secondary
@@ -94,7 +99,7 @@ public struct LineContent: Equatable, Sendable {
 
     public init(
         figure: FigureState, app: String? = nil, lead: String? = nil, text: String, emphasis: Emphasis = .endState,
-        hints: [Hint] = [], appGlyphOnly: Bool = false, question: Question? = nil
+        hints: [Hint] = [], question: Question? = nil, progress: Double? = nil
     ) {
         self.figure = figure
         self.app = app
@@ -102,30 +107,22 @@ public struct LineContent: Equatable, Sendable {
         self.text = text
         self.emphasis = emphasis
         self.hints = hints
-        self.appGlyphOnly = appGlyphOnly
         self.question = question
+        self.progress = progress
     }
 }
 
-/// The captions per character (`IDENTITY.md`, "Captions while working and when done"). No
-/// exclamation marks, no "I think", no probabilities, no em dashes.
+/// What a slip says, in one plain voice whichever figure is chosen (v3 DIRECTION.md section 2:
+/// the face carries warmth, the words carry facts). No exclamation marks, no "I think", no
+/// probabilities, no em dashes.
 public enum Captions {
-    public static func working(_ character: FigureCharacter, app: String) -> String {
-        switch character {
-        case .seed: return "Adding to \(app)"
-        case .pebble: return "On it, \(app)"
-        case .wren: return "Off to \(app)"
-        }
-    }
+    public static func working(app: String) -> String { "Adding to \(app)" }
 
-    /// The lead word (set in Carrot) and the rest.
-    public static func done(_ character: FigureCharacter, app: String) -> (lead: String, rest: String) {
-        switch character {
-        case .seed: return ("Added", "to \(app)")
-        case .pebble: return ("Done,", "in \(app)")
-        case .wren: return ("Back,", "added to \(app)")
-        }
-    }
+    /// The lead word (set in Carrot text) and the rest.
+    public static func done(app: String) -> (lead: String, rest: String) { ("Added", "to \(app)") }
+
+    /// An action the app refused: what happened and what next, no colon label.
+    public static func refusedBy(app: String) -> String { "\(app) didn't take it. Open \(app) to add it." }
 
     /// What stopped a run, as the clause after "Stopped …:", one per helper reason (protocol.ts
     /// StopReason). It names who or what stopped it, in the user's terms, without blame. A stop the
@@ -170,6 +167,7 @@ public enum Captions {
         // The helper refuses an accept for an offer that closed, ran already, or asked for an
         // action it does not have; in every case nothing ran.
         if reason == .refused { return "Caret couldn't run that offer, so nothing changed" }
+        if reason == .mismatch, fillFilled == nil, place(next: next, of: steps) == nil { return refusedBy(app: app) }
         let cause = stopCause(reason, app: app)
         switch fillFilled {
         case .some(0): return "Stopped before filling anything: \(cause)"
@@ -249,21 +247,31 @@ public struct WorkLine: Equatable, Sendable {
 /// draws the same ones: the action lines and pop-ups at the caret (`SurfaceMachine`) and the first
 /// look in onboarding (`OnboardingFlow`).
 public enum WorkLines {
-    /// While the run works. The figure looks away and leaves (`figureLeft`); once it has run
-    /// `StatusLine.stoppableAfter`, the seconds and "Esc Stop" join it.
-    public static func working(app: String, fillRows: Int?, character: FigureCharacter, seconds: Int, figureLeft: Bool) -> WorkLine {
+    /// While the run works. The figure looks away and leaves (`figureLeft`), its seat kept; once
+    /// it has run `StatusLine.stoppableAfter`, the seconds and "Esc Stop" join it. The step bar
+    /// shows `done` of `steps`.
+    public static func working(app: String, fillRows: Int?, seconds: Int, figureLeft: Bool, done: Int? = nil, steps: Int? = nil) -> WorkLine {
         let stoppable = Double(seconds) >= StatusLine.stoppableAfter
-        var caption = fillRows.map { Captions.filling($0) } ?? Captions.working(character, app: app)
+        var caption = fillRows.map { Captions.filling($0) } ?? Captions.working(app: app)
         if stoppable { caption += ", \(seconds) s" }
         return WorkLine(LineContent(
             figure: figureLeft ? .absent : .working, app: app, text: caption, emphasis: .plain,
-            hints: stoppable ? [Hint(key: "Esc", label: "Stop")] : [], appGlyphOnly: true
+            hints: stoppable ? [Hint(key: "Esc", label: "Stop")] : [],
+            progress: stepProgress(done: done, of: steps ?? fillRows)
         ), text: caption)
     }
 
+    /// The bar's fill: the share of steps done, never under the 8 percent that says work has
+    /// begun; 8 percent when no step count is known.
+    public static func stepProgress(done: Int?, of steps: Int?) -> Double {
+        let floor = 0.08
+        guard let steps, steps > 0 else { return floor }
+        return min(1, max(floor, Double(max(0, done ?? 0)) / Double(steps)))
+    }
+
     /// Done. `undo`: the run wrote something its task can restore, so ⌘Z takes it while it shows.
-    public static func done(app: String, character: FigureCharacter, undo: Bool = false) -> WorkLine {
-        let done = Captions.done(character, app: app)
+    public static func done(app: String, undo: Bool = false) -> WorkLine {
+        let done = Captions.done(app: app)
         return WorkLine(
             LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain, hints: undo ? [Hint(key: "⌘Z", label: "Undo")] : []),
             text: "\(done.lead) \(done.rest)"
@@ -283,7 +291,7 @@ public enum WorkLines {
     /// the user asked for is not an error, so its figure is calm.
     public static func stopped(app: String, reason: TaskProgress.StopReason, next: Int?, steps: Int, fillFilled: Int?) -> WorkLine {
         let caption = Captions.stopped(reason, app: app, next: next, steps: steps, fillFilled: fillFilled)
-        return WorkLine(LineContent(figure: reason == .you ? .done : .error, text: caption, emphasis: .plain), text: caption)
+        return WorkLine(LineContent(figure: reason == .you ? .still : .error, text: caption, emphasis: .plain), text: caption)
     }
 
     /// The next step reads as send, submit, delete or pay; the press is left to the user.
@@ -311,7 +319,7 @@ public enum WorkLines {
     /// "On its own" leads, so a long name can be cut but the fact nobody asked for this cannot.
     public static func onItsOwn(_ name: String, app: String) -> WorkLine {
         WorkLine(LineContent(
-            figure: .working, app: app, lead: "On its own:", text: name, emphasis: .plain, hints: [Hint(key: "Esc", label: "Take over")], appGlyphOnly: true
+            figure: .working, app: app, lead: "On its own:", text: name, emphasis: .plain, hints: [Hint(key: "Esc", label: "Take over")]
         ), text: "On its own: \(name)")
     }
 
@@ -326,7 +334,7 @@ public enum WorkLines {
     /// Esc took over a skill's run: "You took over before step 2 of 3".
     public static func tookOver(next: Int?, of steps: Int) -> WorkLine {
         let caption = Captions.place(next: next, of: steps).map { "You took over \($0)" } ?? "You took over"
-        return WorkLine(LineContent(figure: .done, text: caption, emphasis: .plain), text: caption)
+        return WorkLine(LineContent(figure: .still, text: caption, emphasis: .plain), text: caption)
     }
 
     /// The keep or promote question under a run's result line, in the helper's words: its sentence,
@@ -361,7 +369,7 @@ public enum WorkLines {
     /// Esc stopped it: the line names the step it stopped before.
     public static func stoppedByYou(next: Int?, of steps: Int) -> WorkLine {
         let caption = Captions.stoppedByYou(next: next, of: steps)
-        return WorkLine(LineContent(figure: .done, text: caption, emphasis: .plain), text: caption)
+        return WorkLine(LineContent(figure: .still, text: caption, emphasis: .plain), text: caption)
     }
 
     public static let undoing = WorkLine(LineContent(figure: .working, text: "Undoing", emphasis: .plain), text: "Undoing")
@@ -372,7 +380,8 @@ public enum WorkLines {
 
     public static let helperStopped = WorkLine(LineContent(figure: .error, text: Captions.helperStopped, emphasis: .plain), text: Captions.helperStopped)
 
-    public static let stopping = WorkLine(LineContent(figure: .working, text: Captions.stopping, emphasis: .plain), text: Captions.stopping)
+    /// The figure is still away while the helper confirms the stop: its seat stays empty.
+    public static let stopping = WorkLine(LineContent(figure: .absent, text: Captions.stopping, emphasis: .plain), text: Captions.stopping)
 
     public static let stopUnreached = WorkLine(LineContent(figure: .error, text: Captions.stopUnreached, emphasis: .plain), text: Captions.stopUnreached)
 
@@ -383,6 +392,6 @@ public enum WorkLines {
             return WorkLine(LineContent(figure: .error, text: caption, emphasis: .plain), text: caption)
         }
         let caption = count.map { "Cleared \(Captions.fields($0.restored))" } ?? "Undone"
-        return WorkLine(LineContent(figure: .done, text: caption, emphasis: .plain), text: caption)
+        return WorkLine(LineContent(figure: .still, text: caption, emphasis: .plain), text: caption)
     }
 }

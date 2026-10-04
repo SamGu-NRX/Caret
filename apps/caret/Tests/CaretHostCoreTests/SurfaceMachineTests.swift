@@ -34,7 +34,7 @@ private let actionWorking: [Step] = [
     .offer(Fx.action()),
     .press(Fx.tab()),
     .sent(["accept offer-5 finish"]),
-    .did(["panel enter \(actionLine)", "clear caret", "line On it, Sheet Fixture", "working on"]),
+    .did(["panel enter \(actionLine)", "clear caret", "line Adding to Sheet Fixture", "working on"]),
 ]
 
 /// Each transition of `SurfaceMachine`, as steps against a fake screen and clock (brief A6).
@@ -299,7 +299,7 @@ final class SurfaceMachineTests: XCTestCase {
             ]),
             Transition("taken once its run starts: the working line stays", actionWorking + [
                 .withdraw("offer-5", .taken),
-                .expect(.workingOn("offer-5")), .expect(.line("On it, Sheet Fixture")), .did([]),
+                .expect(.workingOn("offer-5")), .expect(.line("Adding to Sheet Fixture")), .did([]),
             ]),
         ])
     }
@@ -308,15 +308,15 @@ final class SurfaceMachineTests: XCTestCase {
         play([
             Transition("done: the result for 5 s", actionWorking + [
                 .progress("offer-5", .done),
-                .did(["working off", "line Done, in Sheet Fixture"]),
-                .expect(.lastLine(LineContent(figure: .done, lead: "Done,", text: "in Sheet Fixture", emphasis: .plain))),
+                .did(["working off", "line Added to Sheet Fixture"]),
+                .expect(.lastLine(LineContent(figure: .done, lead: "Added", text: "to Sheet Fixture", emphasis: .plain))),
                 .expect(.escOwned(true)),
-                .wait(4.9), .expect(.line("Done, in Sheet Fixture")),
+                .wait(4.9), .expect(.line("Added to Sheet Fixture")),
                 .wait(0.1), .expect(.line(nil)), .expect(.escOwned(false)), .did(["hide 0.2"]),
             ]),
             Transition("stopped: the reason in words for 6 s", actionWorking + [
                 .taskLine(Fx.progress("offer-5", .stopped, detail: "mismatch", reason: .mismatch)),
-                .expect(.line("Stopped: Sheet Fixture didn't take the change")),
+                .expect(.line("Sheet Fixture didn't take it. Open Sheet Fixture to add it.")),
                 .wait(6), .expect(.line(nil)),
             ]),
             Transition("handoff: your turn, for 6 s", actionWorking + [
@@ -342,24 +342,25 @@ final class SurfaceMachineTests: XCTestCase {
             ]),
             Transition("a fill done with nothing verified: no toast, nothing to undo", working + [
                 .progress("fill-2", .done),
-                .expect(.toast(nil)), .expect(.undoOwned(false)), .expect(.line("Done, in Caret Fixture")),
+                .expect(.toast(nil)), .expect(.undoOwned(false)), .expect(.line("Added to Caret Fixture")),
             ]),
             Transition("a fill stopped after one field", working + [
                 .progress("fill-2", .verified), .taskLine(Fx.progress("fill-2", .stopped, reason: .changed)),
                 .expect(.line("Filled 1 field, then stopped: Caret Fixture changed while Caret worked")),
             ]),
             Transition("Esc closes the result", actionWorking + [
-                .progress("offer-5", .done), .did(["working off", "line Done, in Sheet Fixture"]),
+                .progress("offer-5", .done), .did(["working off", "line Added to Sheet Fixture"]),
                 .press(Fx.esc()),
                 .expect(.line(nil)), .did(["hide 0.08"]),
             ]),
             Transition("the working line counts seconds and offers Stop from 3 s", working + [
                 .wait(0.2),
-                .expect(.lastLine(LineContent(figure: .absent, app: "Caret Fixture", text: filling, emphasis: .plain, appGlyphOnly: true))),
+                // A fill of two rows, none written yet: the bar holds at 8 percent.
+                .expect(.lastLine(LineContent(figure: .absent, app: "Caret Fixture", text: filling, emphasis: .plain, progress: 0.08))),
                 .wait(2.8),
                 .expect(.lastLine(LineContent(
                     figure: .absent, app: "Caret Fixture", text: "\(filling), 3 s", emphasis: .plain,
-                    hints: [Hint(key: "Esc", label: "Stop")], appGlyphOnly: true
+                    hints: [Hint(key: "Esc", label: "Stop")], progress: 0.08
                 ))),
             ]),
         ])
@@ -462,7 +463,7 @@ final class SurfaceMachineTests: XCTestCase {
                 .did(["alternatives enter Cara Diaz quoted"]),
             ]),
             Transition("alternatives take down a result line left on the panel", actionWorking + [
-                .progress("offer-5", .done), .did(["working off", "line Done, in Sheet Fixture"]),
+                .progress("offer-5", .done), .did(["working off", "line Added to Sheet Fixture"]),
                 .offer(Fx.alternatives()),
                 .expect(.line(nil)), .expect(.escOwned(false)), .did(["hide 0.0", "alternatives enter Cara Diaz quoted"]),
             ]),

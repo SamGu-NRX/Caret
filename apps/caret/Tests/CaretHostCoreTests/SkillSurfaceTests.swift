@@ -31,7 +31,7 @@ final class SkillSurfaceTests: XCTestCase {
         rig.machine.receive(Fx.action())
         rig.press(Fx.tab())
         rig.machine.taskProgress(Fx.progress("offer-5", .done, written: 1, steps: 3))
-        XCTAssertEqual(rig.machine.toastInfo?.caption, "Done, in Sheet Fixture")
+        XCTAssertEqual(rig.machine.toastInfo?.caption, "Added to Sheet Fixture")
         return rig
     }
 
@@ -46,7 +46,7 @@ final class SkillSurfaceTests: XCTestCase {
         let keep = try Self.offer("keep")
         rig.machine.skillOffer(keep)
         guard case .line(let drawn)? = rig.panels.last else { return XCTFail("no line drawn") }
-        XCTAssertEqual(drawn.text, "in Sheet Fixture", "the run's line stays on top")
+        XCTAssertEqual(drawn.text, "to Sheet Fixture", "the run's line stays on top")
         XCTAssertEqual(drawn.hints, [Hint(key: "⌘Z", label: "Undo")])
         XCTAssertEqual(drawn.question, LineContent.Question(
             text: "Keep this as Subject and To into Mail Fixture?", detail: "Caret will offer it when you start it again.",
@@ -224,7 +224,7 @@ final class SkillSurfaceTests: XCTestCase {
         let rig = doneRun()
         rig.takeLog()
         rig.machine.skillOffer(try Self.offer("keep"))
-        XCTAssertEqual(rig.takeLog(), ["panel redraw Done, in Sheet Fixture"])
+        XCTAssertEqual(rig.takeLog(), ["panel redraw Added to Sheet Fixture"])
     }
 
     func testARunWithNoTabDoesNotTakeThePanelFromOtherWork() {

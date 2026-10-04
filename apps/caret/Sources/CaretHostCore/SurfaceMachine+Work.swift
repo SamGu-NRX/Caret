@@ -47,8 +47,9 @@ extension SurfaceMachine {
         let line = work.unprompted
             ? WorkLines.onItsOwn(work.name ?? "A skill", app: work.app)
             : WorkLines.working(
-                app: work.app, fillRows: work.fill?.rows, character: world.character,
-                seconds: Int(clock.now.timeIntervalSince(work.startedAt)), figureLeft: work.figureLeft
+                app: work.app, fillRows: work.fill?.rows,
+                seconds: Int(clock.now.timeIntervalSince(work.startedAt)), figureLeft: work.figureLeft,
+                done: work.nextStep, steps: work.steps
             )
         // A key dismissed the line, or its app went behind: the work goes on unseen.
         guard arbiter.snapshot().statusLine?.id == work.statusID, !lineSuppressed else { return }
@@ -136,10 +137,10 @@ extension SurfaceMachine {
             // line as it takes a fill's. Only the helper's own count says it wrote; presses alone
             // have nothing to undo.
             if work.fill == nil, work.source == .helper, (work.written ?? 0) > 0 {
-                return showUndoToast(work, WorkLines.done(app: work.app, character: world.character, undo: true), kind: "surface.toast.action")
+                return showUndoToast(work, WorkLines.done(app: work.app, undo: true), kind: "surface.toast.action")
             }
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
-            showResult(WorkLines.done(app: work.app, character: world.character), lifetime: 5)
+            showResult(WorkLines.done(app: work.app), lifetime: 5)
         case .stopped(let reason, let step, let steps, _):
             let line = WorkLines.stopped(
                 app: work.app, reason: reason, next: step ?? work.nextStep, steps: steps > 0 ? steps : (work.steps ?? 0),
@@ -305,7 +306,7 @@ extension SurfaceMachine {
                 fillFilled: stopped.fill.map { _ in stopped.verified }
             )
         case .done:
-            line = WorkLines.done(app: stopped.app, character: world.character)
+            line = WorkLines.done(app: stopped.app)
         case .paused where stopped.unprompted:
             // Take over pauses the run at its next step boundary; the helper names that step.
             line = WorkLines.tookOver(next: progress.step ?? stopped.nextStep, of: steps)

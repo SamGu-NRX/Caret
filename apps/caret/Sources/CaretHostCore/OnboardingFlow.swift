@@ -587,7 +587,7 @@ public final class OnboardingFlow {
                 + (keys.undo ? ["cmd-z"] : []) + (keys.stop ? ["esc"] : [])
             if let run = state.firstLookRun {
                 info.firstLookRun = run.phase.name
-                info.firstLookLine = run.line(character: .pebble)?.text
+                info.firstLookLine = run.line()?.text
             }
         case .nothing: info.firstLook = "nothing"
         case .failed(let reason): info.firstLook = "failed"; info.firstLookError = reason

@@ -125,7 +125,7 @@ struct AskCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                FigureView(character: character, state: figure, facing: .right, height: PopupView.figureHeight, animated: animated)
+                FigureView(character: character, state: figure, facing: .right, size: PopupView.figureSize, animated: animated)
                     .frame(width: PopupView.figureSlot)
                     .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
                 Text(card.title)

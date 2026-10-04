@@ -87,21 +87,20 @@ final class SnapshotTests: XCTestCase {
         }
     }
 
-    func testFigureGalleryRendersForEveryCharacterAndState() throws {
-        for dark in [false, true] {
-            let data = try XCTUnwrap(Gallery.png(FigureGalleryView(), dark: dark))
-            XCTAssertGreaterThan(data.count, 1000)
-            try outDir.map { try write(data, to: $0.appendingPathComponent("figure-states-\(dark ? "dark" : "light").png")) }
-        }
-        // The other characters' pop-ups and lines, for review only.
+    /// v3: the figure at every state and size, the slip at each edge, and alternatives too long
+    /// for their line.
+    func testV3RendersMatchTheirReferences() throws {
+        try Self.check(Gallery.figures())
+        try Self.check(Gallery.slipEdges())
+        try Self.check(Gallery.alternativesEdges())
+    }
+
+    /// H5's four images, for the decision: not references, since the decision may change them.
+    func testVoiceComparisonRenders() throws {
         guard let outDir else { return }
-        for character in [FigureCharacter.seed, .wren] {
-            for item in Gallery.specs(character).prefix(1) + Gallery.lines(character).prefix(3) {
-                for dark in [false, true] {
-                    let data = try XCTUnwrap(Gallery.png(item.view, dark: dark))
-                    try write(data, to: outDir.appendingPathComponent("\(character.rawValue)/\(item.name)-\(dark ? "dark" : "light").png"))
-                }
-            }
+        for (name, dark, view) in Gallery.voice() {
+            let data = try XCTUnwrap(Gallery.png(view, dark: dark, padding: 0))
+            try write(data, to: outDir.appendingPathComponent("\(name).png"))
         }
     }
 

@@ -55,7 +55,7 @@ final class SurfaceRegressionTests: XCTestCase {
                 .screen { $0.front() }, .offer(Fx.action()), .press(Fx.tab()),
                 .progress("offer-5", .done), .expect(.escOwned(true)),
                 .screen { $0.behind() }, .activated,
-                .expect(.escOwned(false)), .expect(.line("Done, in Sheet Fixture")), .expect(.panelUp(false)),
+                .expect(.escOwned(false)), .expect(.line("Added to Sheet Fixture")), .expect(.panelUp(false)),
             ]),
             Transition("R3 Esc taken just before the line went down", [
                 .screen { $0.front() }, .offer(Fx.fillPopup()), .press(Fx.tab()),
@@ -152,9 +152,9 @@ final class SurfaceRegressionTests: XCTestCase {
             .offer(Fx.action()), .press(Fx.tab()),
             .deliver,
             .sent(["accept fill-2 fillAll", "accept offer-5 finish", "undo fill-2"]),
-            .expect(.toast(nil)), .expect(.line("On it, Sheet Fixture")),
+            .expect(.toast(nil)), .expect(.line("Adding to Sheet Fixture")),
             .progress("fill-2", .undone, detail: "restored 2; not restored 0; presses not undoable 0", restored: 2, notRestored: 0),
-            .expect(.toast(nil)), .expect(.line("On it, Sheet Fixture")), .expect(.workingOn("offer-5")),
+            .expect(.toast(nil)), .expect(.line("Adding to Sheet Fixture")), .expect(.workingOn("offer-5")),
         ]))
     }
 

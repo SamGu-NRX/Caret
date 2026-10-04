@@ -135,7 +135,6 @@ public final class AskCaret {
     private var steps = 0
 
     private let clock: SurfaceClock
-    private let character: () -> FigureCharacter
     /// Writes one message to the helper; false when it is not connected.
     public var send: (Send) -> Bool = { _ in false }
     /// A stop could not be delivered or was never confirmed: close the helper connection, which
@@ -146,9 +145,8 @@ public final class AskCaret {
     /// Called after every change, for the view and the debug socket.
     public var onChange: () -> Void = {}
 
-    public init(clock: SurfaceClock, character: @escaping () -> FigureCharacter = { .pebble }) {
+    public init(clock: SurfaceClock) {
         self.clock = clock
-        self.character = character
     }
 
     var nowMs: Int64 { Int64((clock.now.timeIntervalSince1970 * 1000).rounded()) }
@@ -326,7 +324,7 @@ public final class AskCaret {
             case .done:
                 for i in card.steps.indices where !card.steps[i].yours { card.steps[i].state = .done }
                 if let written = progress.written { wrote = written }
-                corrected = WorkLines.done(app: card.app, character: character())
+                corrected = WorkLines.done(app: card.app)
             case .paused:
                 corrected = WorkLines.stoppedByYou(next: progress.step ?? nextStep, of: progress.steps > 0 ? progress.steps : steps)
             case .handoff:
@@ -363,7 +361,7 @@ public final class AskCaret {
             for i in card.steps.indices where !card.steps[i].yours { card.steps[i].state = .done }
             // `written` counts each field once; an older helper sends none, and the verified steps stand in.
             if let written = progress.written { wrote = written }
-            settle(.ended(card, WorkLines.done(app: card.app, character: character())))
+            settle(.ended(card, WorkLines.done(app: card.app)))
         case .stopped:
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .failed }
             let reason = progress.stopReason ?? .error

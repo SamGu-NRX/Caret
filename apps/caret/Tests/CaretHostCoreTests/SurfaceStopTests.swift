@@ -28,7 +28,7 @@ final class SurfaceStopTests: XCTestCase {
             .taskLine(Fx.progress("offer-5", .stopped, detail: "the helper's own words, never shown", reason: reason, step: 1, steps: 3)),
             .expect(.workingOn(nil)),
             .expect(.line(says)),
-            .expect(.lastLine(LineContent(figure: you ? .done : .error, text: says, emphasis: .plain))),
+            .expect(.lastLine(LineContent(figure: you ? .still : .error, text: says, emphasis: .plain))),
             .expect(.toast(nil)), .expect(.undoOwned(false)),
             .wait(you ? 2.9 : 5.9), .expect(.line(says)),
             .wait(0.1), .expect(.line(nil)),
@@ -110,7 +110,7 @@ final class SurfaceStopTests: XCTestCase {
             .press(Fx.esc()),
             .sent(["accept offer-5 finish", "stop offer-5"]),
             .expect(.workingOn(nil)), .expect(.line("Stopping\u{2026}")),
-            .expect(.lastLine(LineContent(figure: .working, text: "Stopping\u{2026}", emphasis: .plain))),
+            .expect(.lastLine(LineContent(figure: .absent, text: "Stopping\u{2026}", emphasis: .plain))),  // the figure is still away: its seat stays empty
             .taskLine(Fx.progress("offer-5", .stopped, reason: .you, step: 1, steps: 3)),
             .expect(.line("You stopped it before step 2 of 3")), .expect(.counted("surface.stop.confirmed")),
             .wait(3), .expect(.line(nil)), .expect(.escOwned(false)),
@@ -130,7 +130,7 @@ final class SurfaceStopTests: XCTestCase {
         play(Transition("Esc, then the run turns out to have finished", midRun + [
             .wait(3), .press(Fx.esc()),
             .taskLine(Fx.progress("offer-5", .done, written: 1, steps: 3)),
-            .expect(.line("Done, in Sheet Fixture")), .expect(.toast(nil)),
+            .expect(.line("Added to Sheet Fixture")), .expect(.toast(nil)),
         ]))
         play(Transition("Esc, then the helper reports the step had already failed", midRun + [
             .wait(3), .press(Fx.esc()),
@@ -294,8 +294,8 @@ final class SurfaceStopTests: XCTestCase {
     func testAnActionThatWroteEndsOnAToastWhoseCommandZUndoesIt() {
         play(Transition("done with one field written", midRun + [
             .taskLine(Fx.progress("offer-5", .done, written: 1, steps: 3)),
-            .expect(.toast("Done, in Sheet Fixture")), .expect(.undoOwned(true)),
-            .expect(.lastLine(LineContent(figure: .done, lead: "Done,", text: "in Sheet Fixture", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")]))),
+            .expect(.toast("Added to Sheet Fixture")), .expect(.undoOwned(true)),
+            .expect(.lastLine(LineContent(figure: .done, lead: "Added", text: "to Sheet Fixture", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")]))),
             .expect(.counted("surface.toast.action")),
             .press(Fx.cmdZ()),
             .sent(["accept offer-5 finish", "undo offer-5"]),
@@ -308,7 +308,7 @@ final class SurfaceStopTests: XCTestCase {
     func testAnActionThatWroteNothingHasNothingToUndo() {
         play(Transition("done with nothing written: presses only", midRun + [
             .taskLine(Fx.progress("offer-5", .done, written: 0, steps: 3)),
-            .expect(.toast(nil)), .expect(.undoOwned(false)), .expect(.line("Done, in Sheet Fixture")),
+            .expect(.toast(nil)), .expect(.undoOwned(false)), .expect(.line("Added to Sheet Fixture")),
         ]))
     }
 }

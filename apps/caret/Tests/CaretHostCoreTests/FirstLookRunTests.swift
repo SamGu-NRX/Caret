@@ -27,7 +27,7 @@ final class FirstLookRunTests: XCTestCase {
         Fx.progress(task, phase, written: written, restored: restored, notRestored: notRestored, reason: reason, step: step, steps: steps)
     }
 
-    private func line(_ rig: Rig) -> String? { rig.flow.state.firstLookRun?.line(character: .pebble)?.text }
+    private func line(_ rig: Rig) -> String? { rig.flow.state.firstLookRun?.line()?.text }
 
     func testAFoundOfferShowsTheKeysThatTakeItHere() throws {
         let rig = shown(try found())
@@ -48,9 +48,9 @@ final class FirstLookRunTests: XCTestCase {
         XCTAssertEqual(rig.flow.state.firstLookKeys, .none, "taken once: a second Tab is the window's")
         rig.send(.key(.tab))
         XCTAssertEqual(rig.take(), [])
-        XCTAssertEqual(rig.flow.state.firstLookRun?.line(character: .pebble)?.content.figure, .working)
+        XCTAssertEqual(rig.flow.state.firstLookRun?.line()?.content.figure, .working)
         rig.clock.advance(by: 0.2)
-        XCTAssertEqual(rig.flow.state.firstLookRun?.line(character: .pebble)?.content.figure, .absent, "the figure looks away and leaves")
+        XCTAssertEqual(rig.flow.state.firstLookRun?.line()?.content.figure, .absent, "the figure looks away and leaves")
         rig.clock.advance(by: 3)
         XCTAssertEqual(line(rig), "Filling 4 fields, 3 s")
         XCTAssertEqual(rig.flow.state.firstLookKeys, FirstLookKeys(stop: true))
@@ -61,9 +61,9 @@ final class FirstLookRunTests: XCTestCase {
         rig.send(.key(.tab))
         rig.clock.advance(by: 4.2)
         let run = try XCTUnwrap(rig.flow.state.firstLookRun)
-        XCTAssertEqual(run.line(character: .seed), WorkLines.working(app: "Safari", fillRows: 4, character: .seed, seconds: 4, figureLeft: true))
+        XCTAssertEqual(run.line(), WorkLines.working(app: "Safari", fillRows: 4, seconds: 4, figureLeft: true))
         rig.send(.taskProgress(progress(.verified)), .taskProgress(progress(.done, written: 4)))
-        XCTAssertEqual(rig.flow.state.firstLookRun?.line(character: .pebble), WorkLines.filled(4, from: "Mail"))
+        XCTAssertEqual(rig.flow.state.firstLookRun?.line(), WorkLines.filled(4, from: "Mail"))
         XCTAssertEqual(line(rig), "Filled 4 fields from Mail")
         XCTAssertEqual(rig.clock.live, 0, "no timer left once it is done")
     }
@@ -144,7 +144,7 @@ final class FirstLookRunTests: XCTestCase {
             return line(rig)
         }
         XCTAssertEqual(try ended(.done, verified: 2), "Filled 2 fields from Mail", "no written count: the verified steps stand in")
-        XCTAssertEqual(try ended(.done, verified: 0), "Done, in Safari", "nothing written: nothing to undo")
+        XCTAssertEqual(try ended(.done, verified: 0), "Added to Safari", "nothing written: nothing to undo")
         XCTAssertEqual(try ended(.done, verified: 1, apps: nil), "Filled 1 field")
         XCTAssertEqual(try ended(.stopped, verified: 1), "Filled 1 field, then stopped: Safari changed while Caret worked")
         XCTAssertEqual(try ended(.handoff), "Your turn in Safari")
@@ -185,7 +185,7 @@ final class FirstLookRunTests: XCTestCase {
         rig.take()
         rig.send(.key(.tab), .taskProgress(progress(.done, written: 1)))
         XCTAssertEqual(rig.flow.state.firstLookKeys, FirstLookKeys(undo: true))
-        XCTAssertEqual(rig.flow.state.firstLookRun?.line(character: .pebble)?.content.hints, [Hint(key: "⌘Z", label: "Undo")])
+        XCTAssertEqual(rig.flow.state.firstLookRun?.line()?.content.hints, [Hint(key: "⌘Z", label: "Undo")])
         rig.take()
         rig.send(.key(.undo))
         XCTAssertEqual(rig.take(), [.undo(TaskControl(taskId: "first-look-1.0", action: .undo))])

@@ -19,7 +19,8 @@ enum Gallery {
 
     /// Renders `view` at 2x in one appearance. The tokens are dynamic `NSColor`s, so the drawing
     /// appearance is set as well as SwiftUI's color scheme.
-    static func png<V: View>(_ view: V, dark: Bool, padding: CGFloat = 24) -> Data? {
+    /// `canvasHex` replaces the canvas, for a render over a host's own document.
+    static func png<V: View>(_ view: V, dark: Bool, padding: CGFloat = 24, canvasHex: UInt32? = nil) -> Data? {
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
         var data: Data?
         appearance.performAsCurrentDrawingAppearance {
@@ -28,7 +29,7 @@ enum Gallery {
                 .environment(\.rendersOffscreen, true)
                 .environment(\.colorScheme, dark ? .dark : .light)
                 .padding(padding)
-                .background(canvas(dark: dark))
+                .background(canvasHex.map { Color(nsColor: Tokens.srgb($0)) } ?? canvas(dark: dark))
             let renderer = ImageRenderer(content: content)
             renderer.scale = 2
             guard let cg = renderer.cgImage else { return }
@@ -119,29 +120,41 @@ enum Gallery {
         ]
     }
 
+    /// Every state of the slip (DIRECTION.md section 5.3) and the fill slip (5.5), as the machine
+    /// builds them.
     static func lines(_ character: FigureCharacter = .pebble) -> [Item] {
-        let done = Captions.done(character, app: "Calendar")
-        func line(_ name: String, _ content: LineContent, compact: Bool = false) -> Item {
-            Item(name: name, view: AnyView(LineView(content: content, character: character, compact: compact, animated: false)))
+        func line(_ name: String, _ content: LineContent, compact: Bool = false, gaze: CGVector? = nil) -> Item {
+            Item(name: name, view: AnyView(LineView(content: content, character: character, compact: compact, animated: false, figureGaze: gaze)))
         }
+        let fillSource = FillOverlay.offerContent(caption: "from Mail, Invoice 2041", sourceApp: "Mail")
+        let fillMemory = FillOverlay.offerContent(caption: FillOrigin.memoryCaption, sourceApp: nil)
         return [
-            line("line-action", LineContent(figure: .offering, app: "Calendar", text: "Coffee with Dana, Thu 3:00 to 3:30", hints: [Hint(key: "Tab")])),
-            line("line-working", LineContent(figure: .absent, app: "Calendar", text: Captions.working(character, app: "Calendar") + ", 4 s", emphasis: .plain, hints: [Hint(key: "Esc", label: "Stop")], appGlyphOnly: true)),
-            line("line-done", LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])),
+            line("line-action", LineContent(figure: .offering, app: "Calendar", text: "Coffee with Dana, Thursday 3:00 to 3:30", hints: [Hint(key: "Tab")])),
+            // Working: the figure gone, its seat kept; the bar at step 1 of 3; then at 4 s the
+            // seconds and Esc Stop; work with no step count holds the bar at 8 percent.
+            line("line-working", WorkLines.working(app: "Calendar", fillRows: nil, seconds: 1, figureLeft: true, done: 1, steps: 3).content),
+            line("line-working-stoppable", WorkLines.working(app: "Calendar", fillRows: nil, seconds: 4, figureLeft: true, done: 2, steps: 3).content),
+            line("line-working-unstepped", WorkLines.working(app: "Calendar", fillRows: nil, seconds: 6, figureLeft: true).content),
+            // A17: Esc sent, the helper has not confirmed the stop.
+            line("line-stopping", WorkLines.stopping.content),
+            line("line-done", WorkLines.done(app: "Calendar", undo: true).content),
+            line("line-undone", WorkLines.undone(nil).content),
             line("line-error", WorkLines.stopped(app: "Calendar", reason: .mismatch, next: 0, steps: 1, fillFilled: nil).content),
             // The stopped line names the helper's reason: Esc mid-run, a window that closed, and a
             // fill cut short by a change.
             line("line-stopped-you", WorkLines.stoppedByYou(next: 1, of: 3).content),
             line("line-stopped-window-gone", WorkLines.stopped(app: "TextEdit", reason: .windowGone, next: 0, steps: 1, fillFilled: nil).content),
             line("line-stopped-fill-changed", WorkLines.stopped(app: "Safari", reason: .changed, next: 2, steps: 3, fillFilled: 2).content),
-            line("line-fill-source", LineContent(figure: .offering, text: "from Mail, Invoice 2041", emphasis: .secondary, hints: [Hint(key: "Tab")])),
-            line("line-fill-source-compact", LineContent(figure: .offering, text: "from Mail, Invoice 2041", emphasis: .secondary, hints: [Hint(key: "Tab")]), compact: true),
-            line("line-fill-toast", LineContent(figure: .done, lead: "Filled", text: "1 field from Mail", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])),
-            // A value from what the user told Caret (A14): the same line, naming no window.
-            line("line-fill-memory", LineContent(figure: .offering, text: FillOrigin.memoryCaption, emphasis: .secondary, hints: [Hint(key: "Tab")])),
+            line("line-fill-source", fillSource, gaze: FillOverlay.lookAtField),
+            line("line-fill-source-compact", fillSource, compact: true, gaze: FillOverlay.lookAtField),
+            line("line-fill-toast", WorkLines.filled(1, from: "Mail").content),
+            // A value from what the user told Caret (A14): the same slip, naming no window.
+            line("line-fill-memory", fillMemory, gaze: FillOverlay.lookAtField),
             line("line-fill-memory-toast", LineContent(figure: .done, lead: "Filled", text: "1 field \(FillOrigin.memoryCaption)", emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")])),
             Item(name: "alternatives-collapsed-quoted", view: AnyView(AlternativesScene(character: character, collapsed: true))),
             Item(name: "alternatives-open", view: AnyView(AlternativesScene(character: character))),
+            // H2's fallback, after the second ↓: the list under the line.
+            Item(name: "alternatives-list", view: AnyView(AlternativesScene(character: character, current: 2, list: true))),
         ]
     }
 }
@@ -221,77 +234,113 @@ extension Gallery {
     }
 }
 
-/// Alternatives open, drawn over a sample sentence the way they sit at a caret: ghost text with
-/// the uneven underline, the figure and count after it, and the list below.
+/// Alternatives at a caret, drawn over a sample sentence with the host's own geometry
+/// (`AlternativesLayout`): the ghost text, the underline under it while collapsed and quoted, and
+/// once ↓ moved, the figure and ticks after it. With `list`, H2's fallback list below.
 struct AlternativesScene: View {
     var character: FigureCharacter
     var current = 1
     /// Collapsed: the faint value alone, underlined because it is quoted from a source.
     var collapsed = false
+    var list = false
+    /// The field's width; a narrow one shows that the tag is dropped rather than wrapped.
+    var fieldWidth: CGFloat = 640
+    var candidates = Gallery.alternatives
+
+    static let font = NSFont.systemFont(ofSize: 13)
+    static let lead = "The meeting moved to Thursday, so I'll send the notes "
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .lastTextBaseline, spacing: 0) {
-                Text("The meeting moved to Thursday, so I'll send the notes ")
-                    .foregroundStyle(Color(token: Tokens.ink))
-                Rectangle().fill(Color(token: Tokens.ink)).frame(width: 1, height: 15).offset(y: 3)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(Gallery.alternatives[collapsed ? 0 : current])
-                        .foregroundStyle(Color(token: Tokens.ink).opacity(0.45))
-                    if collapsed { UnevenUnderline(width: 262, animated: false) }
+        let font = Self.font
+        let leadWidth = ceil((Self.lead as NSString).size(withAttributes: [.font: font]).width)
+        let shown = candidates[collapsed ? 0 : current]
+        let width = ceil((shown as NSString).size(withAttributes: [.font: font]).width)
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let field = CGRect(x: 0, y: 0, width: fieldWidth, height: 24)
+        let caret = CGRect(x: 4 + leadWidth, y: (field.height - lineHeight) / 2, width: 1, height: lineHeight)
+        let figure = Tokens.FigureSize.inText(caretHeight: caret.height)
+        let tag = AlternativesTag(current: current, count: candidates.count, character: character, figureSize: figure, animated: false)
+        let layout = AlternativesLayout(
+            caret: caret, field: field, textWidth: width, fontSize: font.pointSize,
+            tagWidth: NSHostingView(rootView: tag).fittingSize.width, open: !collapsed
+        )
+        return VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(Color(nsColor: .textBackgroundColor))
+                    .overlay(Rectangle().strokeBorder(Color(token: Tokens.rule), lineWidth: 1))
+                    .frame(width: field.width, height: field.height)
+                (Text(Self.lead).foregroundColor(Color(nsColor: .textColor))
+                    + Text(shown).foregroundColor(Color(nsColor: .textColor).opacity(0.45)))
+                    .font(Font(font))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .offset(x: 4, y: caret.minY)
+                Rectangle().fill(Color(nsColor: .textColor)).frame(width: 1, height: caret.height).offset(x: caret.minX, y: caret.minY)
+                // The decor, as the host draws it from the caret's top right.
+                HStack(alignment: .bottom, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Spacer(minLength: 0)
+                        if collapsed { UnevenUnderline(width: layout.underlineWidth, animated: false) }
+                    }
+                    .frame(width: layout.textSpan, height: layout.decorHeight, alignment: .leading)
+                    if layout.showsTag { tag.padding(.leading, layout.tagGap).padding(.bottom, layout.tagBottom) }
                 }
-                .alignmentGuide(.lastTextBaseline) { $0[.lastTextBaseline] - (collapsed ? 5 : 0) }
-                if !collapsed {
-                    AlternativesTag(current: current, count: Gallery.alternatives.count, character: character, figureHeight: 9, animated: false)
-                        .padding(.leading, 4)
-                }
+                .fixedSize()
+                .offset(x: caret.maxX, y: caret.minY)
             }
-            .font(.system(size: 13))
-            if !collapsed {
-                AlternativesListView(candidates: Gallery.alternatives, current: current)
-                    .padding(.leading, 300)
+            .frame(width: field.width, height: field.height, alignment: .topLeading)
+            .clipped()
+            if list {
+                AlternativesListView(candidates: candidates, current: current, font: font)
+                    .padding(.leading, caret.maxX - FieldPanelPlacement.caretInset)
             }
         }
         .fixedSize()
     }
 }
 
-/// Every state of every character, at text size (11 pt) and at four times that for review.
+/// Every state of the figure at its four sizes (14 in a slip, 16 in a pop-up, 22 perched, 64
+/// once in onboarding), and the other two characters at slip size. The grid sizes its window to
+/// its rows: the prototype's window was shorter than its content (LEAD-REVIEW defect 1).
 struct FigureGalleryView: View {
+    static let sizes: [CGFloat] = [Tokens.FigureSize.line, Tokens.FigureSize.popup, Tokens.FigureSize.perch, Tokens.FigureSize.onboarding]
+
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+        Grid(alignment: .leading, horizontalSpacing: 22, verticalSpacing: 12) {
             GridRow {
                 Text("")
-                ForEach(FigureCharacter.allCases, id: \.self) { c in
-                    Text(c.displayName).font(Tokens.Font.title).foregroundStyle(Color(token: Tokens.ink))
-                        .gridCellColumns(1)
-                }
+                ForEach(Self.sizes, id: \.self) { Text("\(Int($0)) pt").font(Tokens.Font.chromeSmall).foregroundStyle(Color(token: Tokens.ink2)) }
+                Text("Seed, wren").font(Tokens.Font.chromeSmall).foregroundStyle(Color(token: Tokens.ink2))
             }
             ForEach(FigureState.allCases, id: \.self) { state in
                 GridRow {
-                    Text(Self.label(state)).font(Tokens.Font.body).foregroundStyle(Color(token: Tokens.secondary))
-                    ForEach(FigureCharacter.allCases, id: \.self) { c in
-                        HStack(alignment: .bottom, spacing: 14) {
-                            FigureView(character: c, state: state, facing: .right, height: 11, animated: false)
-                            FigureView(character: c, state: state, facing: .right, height: 44, animated: false)
-                        }
-                        .frame(width: 96, height: 50, alignment: .bottomLeading)
+                    Text(Self.label(state)).font(Tokens.Font.chrome).foregroundStyle(Color(token: Tokens.ink))
+                    ForEach(Self.sizes, id: \.self) { size in
+                        FigureView(character: .pebble, state: state, facing: .right, size: size, animated: false)
+                            .frame(width: 72, height: 64)
                     }
+                    HStack(spacing: 10) {
+                        FigureView(character: .seed, state: state, size: 14, animated: false)
+                        FigureView(character: .wren, state: state, size: 14, animated: false)
+                    }
+                    .frame(height: 64)
                 }
             }
         }
-        .padding(16)
-        .panelChrome(radius: 10)
+        .padding(18)
+        .fixedSize()
+        .panelChrome(radius: Tokens.Shape.popupRadius)
     }
 
     static func label(_ state: FigureState) -> String {
         switch state {
         case .noticed: return "Noticed"
         case .offering: return "Offering"
-        case .working: return "Working, before it leaves"
+        case .working: return "Working, about to leave"
         case .done: return "Done"
         case .needsYou: return "Needs you"
         case .error: return "Error"
+        case .still: return "Still"
         case .absent: return "Absent (not drawn)"
         }
     }

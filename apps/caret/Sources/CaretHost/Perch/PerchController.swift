@@ -41,7 +41,7 @@ final class PerchController {
     private let list = HostedPanel(radius: 12, interactive: true)
     private let locator = WindowLocator()
     /// The ask field at the top of the list (brief A13): its decisions, and what the view draws.
-    let ask = AskCaret(clock: RunLoopClock(), character: { MainActor.assumeIsolated { FigureSettings.shared.character } })
+    let ask = AskCaret(clock: RunLoopClock())
     private let askModel = AskModel()
     /// The ask phase last drawn into the list, so a change of phase resizes it and typing does not.
     private var drawnAsk: AskCaret.Phase = .idle
@@ -567,7 +567,7 @@ final class PerchController {
             isKey: panel.isKeyWindow || list.panel.isKeyWindow,
             askEditing: list.panel.isKeyWindow && list.panel.firstResponder is NSTextView,
             windowNumber: panel.windowNumber, listWindowNumber: list.panel.windowNumber, listOpen: listOpen, listOnScreen: list.panel.isVisible,
-            listFrame: list.panel.isVisible ? box(Screen.ax(list.panel.frame)) : nil,
+            listFrame: list.panel.isVisible ? box(Screen.ax(list.contentFrame(size: list.size))) : nil,
             rows: center.page(pages: donePages).rows, more: center.page(pages: donePages).more, donePages: donePages,
             incomplete: center.feed.incomplete, feedSeq: center.feed.seq, listed: center.feed.listed,
             pausable: Dictionary(uniqueKeysWithValues: pause.running.map { (String($0.key), $0.value.sorted()) }),

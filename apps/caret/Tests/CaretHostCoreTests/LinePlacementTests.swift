@@ -12,7 +12,7 @@ final class LinePlacementTests: XCTestCase {
         let choice = LinePlacement.choose(field: field(0), width: 300, compactWidth: 240, obstacles: [], bounds: screen)
         XCTAssertEqual(choice.side, .above)
         XCTAssertFalse(choice.compact)
-        XCTAssertEqual(choice.frame, CGRect(x: 729, y: 134 - 6 - 28, width: 300, height: 28))
+        XCTAssertEqual(choice.frame, CGRect(x: 729, y: 134 - 6 - LinePlacement.height, width: 300, height: LinePlacement.height))
     }
 
     func testATightFormShrinksTheLineSoItCoversNeitherNeighbor() {

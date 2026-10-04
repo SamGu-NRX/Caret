@@ -26,7 +26,7 @@ extension Gallery {
         func line(_ name: String, _ content: LineContent) -> Item {
             Item(name: name, view: AnyView(LineView(content: content, character: character, animated: false)))
         }
-        let done = Captions.done(character, app: "Tracker")
+        let done = Captions.done(app: "Tracker")
         func toast(_ question: LineContent.Question) -> LineContent {
             LineContent(figure: .done, lead: done.lead, text: done.rest, emphasis: .plain, hints: [Hint(key: "⌘Z", label: "Undo")], question: question)
         }

@@ -137,7 +137,7 @@ final class SurfaceProtocolTests: XCTestCase {
             run("an older helper sends no count: the verified steps stand in", apps: ["Mail Fixture"], verified: 1, written: nil,
                 [.expect(.toast("Filled 1 field from Mail Fixture"))]),
             run("nothing written: no toast, nothing to undo", apps: ["Mail Fixture"], verified: 0, written: 0,
-                [.expect(.toast(nil)), .expect(.undoOwned(false)), .expect(.line("Done, in Caret Fixture"))]),
+                [.expect(.toast(nil)), .expect(.undoOwned(false)), .expect(.line("Added to Caret Fixture"))]),
         ])
     }
 

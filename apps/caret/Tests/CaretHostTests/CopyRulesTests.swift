@@ -13,6 +13,7 @@ final class CopyRulesTests: XCTestCase {
         "CaretHost/Design/PopupView.swift",
         "CaretHost/Design/PanelParts.swift",
         "CaretHostCore/LineContent.swift",
+        "CaretHostCore/SlipSpeech.swift",
         "CaretHostCore/CaretSettings.swift",
         "CaretHostCore/ActivityFeed.swift",
         "CaretHostCore/AskCaret.swift",

@@ -4,13 +4,16 @@ import CompletionUI
 import QuartzCore
 import SwiftUI
 
-/// What a fill looks like on screen (`SURFACES.md` sections 3, 5 and 6; tokens from `IDENTITY.md`).
+/// What a fill looks like on screen (v3 DIRECTION.md section 5.5).
 ///
 /// - The value sits in the empty field itself, in the field's font at Ghost opacity.
-/// - The source is named once, in an offer line by the field's right edge, with the figure and a
-///   Tab keycap. `LinePlacement` picks above, below or a compact line, whichever covers nothing.
-/// - After Tab the same line, in place, becomes the result toast with ⌘Z Undo.
-/// - One line at a time: while a toast lives, the next field's line waits or replaces it
+/// - The source is named once, in a slip right-aligned 6 pt above the field: the figure looking
+///   down at the field, the source app's glyph, "from Mail, Invoice 2041" and `Tab Fill`.
+///   `LinePlacement` picks above, below or a compact slip, whichever covers nothing. ⌘1 All is not
+///   shown: the host cannot yet write fields other than the focused one (`FillOrigin.fillAll`).
+/// - After Tab the field flashes the Carrot wash for 400 ms and the same slip, in place, becomes
+///   the result with ⌘Z Undo. The next field's slip is the same panel, moved there over 140 ms.
+/// - One slip at a time: while a result lives, the next field's slip waits or replaces it
 ///   (`FillLineRule`).
 ///
 /// Every panel is borderless, non-activating and click-through, and never becomes key, so the
@@ -35,13 +38,17 @@ final class FillOverlay {
 
     private struct Deferred {
         let caption: String
+        let sourceApp: String?
         let field: CGRect
         let pid: pid_t
     }
 
     private let ghost = OverlayPanel.make()
     private let ghostLabel = NSTextField(labelWithString: "")
+    private let wash = HostedPanel(radius: 0, material: false)
     private var line: LineState?
+    /// What was last announced for the slip, so a redraw with the same words says nothing.
+    private var announced: String?
     private var deferred: Deferred?
     private var character: FigureCharacter { FigureSettings.shared.character }
 
@@ -84,21 +91,27 @@ final class FillOverlay {
     /// Draws the value in the field and names its source. `outcome` is `FillMachine`'s decision
     /// about a toast still up (`FillLineRule`): wait behind it, replace it, or nothing in the way.
     func showOffer(
-        value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, pid: pid_t,
+        value: String, fieldFrame: CGRect, style: OverlayTextStyle, caption: String, sourceApp: String? = nil, pid: pid_t,
         outcome: FillLineRule.Outcome, hasPlaceholder: Bool = false
     ) {
         drawGhost(value: value, fieldFrame: fieldFrame, style: style, masksPlaceholder: hasPlaceholder)
         switch outcome {
         case .deferLine:
-            deferred = Deferred(caption: caption, field: fieldFrame, pid: pid)
-        case .replaceToast:
-            endToast(exit: 0.10)
-            showLine(caption: caption, field: fieldFrame, pid: pid)
-        case .showLine:
-            showLine(caption: caption, field: fieldFrame, pid: pid)
+            deferred = Deferred(caption: caption, sourceApp: sourceApp, field: fieldFrame, pid: pid)
+        case .replaceToast, .showLine:
+            // A result still up gives its panel to the next field's slip, which moves there.
+            showLine(caption: caption, sourceApp: sourceApp, field: fieldFrame, pid: pid)
         }
         onChange?()
     }
+
+    /// The source slip's content.
+    static func offerContent(caption: String, sourceApp: String?) -> LineContent {
+        LineContent(figure: .offering, app: sourceApp, text: caption, emphasis: .secondary, hints: [Hint(key: "Tab", label: "Fill")])
+    }
+
+    /// The figure in the fill slip looks down at the field it would fill.
+    static let lookAtField = CGVector(dx: 0, dy: 1)
 
     /// `masksPlaceholder`: the field shows placeholder text where the value goes, and the two
     /// overlapped into an unreadable smear (A3 run, Phone: "+1 (512) 555-0142" over
@@ -111,7 +124,7 @@ final class FillOverlay {
         // The field's theme, not Caret's: an app can run light while the system runs dark. Read
         // it from the field's own text color when the probe found one.
         let isDark = style.textColor.map(Self.isLight) ?? (ghost.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
-        let ink = (style.textColor ?? .labelColor).withAlphaComponent(isDark ? 0.50 : 0.45)
+        let ink = (style.textColor ?? .labelColor).withAlphaComponent(Tokens.ghostOpacity(dark: isDark))
         var mask = NSColor.textBackgroundColor
         NSAppearance(named: isDark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
             mask = NSColor.textBackgroundColor.usingColorSpace(.sRGB) ?? mask
@@ -141,40 +154,82 @@ final class FillOverlay {
         return 0.2126 * c.redComponent + 0.7152 * c.greenComponent + 0.0722 * c.blueComponent > 0.5
     }
 
-    private func showLine(caption: String, field: CGRect, pid: pid_t) {
+    private func showLine(caption: String, sourceApp: String?, field: CGRect, pid: pid_t) {
         deferred = nil
-        let content = LineContent(figure: .offering, text: caption, emphasis: .secondary, hints: [Hint(key: "Tab")])
+        let content = Self.offerContent(caption: caption, sourceApp: sourceApp)
         if var current = line, current.role == .offer, current.field == field, current.source == caption {
-            current.panel.text = caption + " Tab"
+            current.panel.text = caption + " Tab Fill"
             line = current
             return
         }
-        line.map { $0.panel.exit(duration: 0) }
-        let panel = HostedPanel(radius: 8)
-        let choice = place(panel, content: content, field: field, pid: pid)
-        panel.text = caption + " Tab"
+        if var current = line {
+            // The slip moves to this field rather than leave and re-enter.
+            let choice = place(current.panel, content: content, field: field, pid: pid, moving: true)
+            current.panel.text = caption + " Tab Fill"
+            current.role = .offer
+            current.choice = choice
+            current.field = field
+            current.source = caption
+            line = current
+            announce(content)
+            return
+        }
+        let panel = HostedPanel(radius: Tokens.Shape.slipRadius)
+        let choice = place(panel, content: content, field: field, pid: pid, moving: false)
+        panel.text = caption + " Tab Fill"
         line = LineState(panel: panel, role: .offer, choice: choice, field: field, source: caption)
         panel.enter()
+        announce(content)
+    }
+
+    private func view(_ content: LineContent, compact: Bool) -> LineView {
+        LineView(content: content, character: character, compact: compact, figureGaze: content.figure == .offering ? Self.lookAtField : nil)
     }
 
     /// Measures both sizes, asks the app what each candidate spot would cover, and pins the panel
-    /// at the chosen spot's corner nearest the field.
+    /// at the chosen spot's corner nearest the field; `moving` slides a panel already on screen
+    /// there over 140 ms (at once under Reduce Motion).
     @discardableResult
-    private func place(_ panel: HostedPanel, content: LineContent, field: CGRect, pid: pid_t) -> LinePlacement.Choice {
-        let standard = panel.measure(LineView(content: content, character: character))
-        let compact = panel.measure(LineView(content: content, character: character, compact: true))
+    private func place(_ panel: HostedPanel, content: LineContent, field: CGRect, pid: pid_t, moving: Bool) -> LinePlacement.Choice {
+        let standard = panel.measure(view(content, compact: false))
+        let compact = panel.measure(view(content, compact: true))
         let bounds = Screen.axVisibleFrame(around: field)
         let spots = LinePlacement.candidates(field: field, width: standard.width, compactWidth: compact.width, bounds: bounds).map(\.0)
         let obstacles = ObstacleProbe.obstacles(pid: pid, under: spots)
         let choice = LinePlacement.choose(field: field, width: standard.width, compactWidth: compact.width, obstacles: obstacles, bounds: bounds)
         let frame = Screen.cocoa(choice.frame)
         // Above the field: pin the bottom right; below it: the top right.
-        panel.pin(HostedPanel.Anchor(
+        let anchor = HostedPanel.Anchor(
             corner: choice.side == .above ? .bottomRight : .topRight,
             point: NSPoint(x: frame.maxX, y: choice.side == .above ? frame.minY : frame.maxY)
-        ))
-        panel.setContent(LineView(content: content, character: character, compact: choice.compact))
+        )
+        panel.radius = choice.compact ? Tokens.Shape.compactRadius : Tokens.Shape.slipRadius
+        panel.setContent(view(content, compact: choice.compact))
+        if moving, panel.isVisible {
+            panel.move(to: anchor, duration: Motion.Duration.move)
+        } else {
+            panel.pin(anchor)
+        }
         return choice
+    }
+
+    private func announce(_ content: LineContent) {
+        guard let words = SlipAnnouncer.next(SlipSpeech.line(content), last: announced) else { return }
+        announced = words
+        SlipAnnouncer.post(words)
+    }
+
+    /// The field just filled flashes the Carrot wash and fades to its own background over 400 ms,
+    /// so the change is seen where it happened. Dropped under Reduce Motion.
+    private func flashWash(_ field: CGRect) {
+        guard !Motion.reduceMotion else { return }
+        wash.pin(HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: field.minX, y: Screen.cocoa(field).maxY)))
+        wash.setContent(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color(token: Tokens.carrotWash))
+            .frame(width: field.width, height: field.height))
+        wash.text = "wash"
+        wash.panel.alphaValue = 1
+        wash.panel.orderFrontRegardless()
+        wash.exit(duration: Motion.Duration.wash)
     }
 
     /// Tab was taken: the real text is on its way, so the ghost goes; the line stays for the result.
@@ -188,8 +243,9 @@ final class FillOverlay {
         ghost.orderOut(nil)
         deferred = nil
         if let current = line, current.role == .offer {
-            current.panel.exit(duration: byTyping ? 0.08 : 0.10)
+            current.panel.exit(duration: byTyping ? Motion.Duration.typed : Motion.Duration.fade)
             line = nil
+            announced = nil
         }
         onChange?()
     }
@@ -204,31 +260,33 @@ final class FillOverlay {
     ) {
         ghost.orderOut(nil)
         let content = LineContent(
-            figure: kind == .error ? .error : .done, lead: lead, text: text, emphasis: .plain,
+            figure: kind == .error ? .error : kind == .undone ? .still : .done, lead: lead, text: text, emphasis: .plain,
             hints: keycap.map { [$0] } ?? []
         )
+        if kind == .done, let field { flashWash(field) }
         if var current = line, current.role == .offer || field == nil || current.field == field {
-            current.panel.setContent(LineView(content: content, character: character, compact: current.choice.compact))
+            current.panel.setContent(view(content, compact: current.choice.compact))
             current.panel.text = [lead, text, keycap.map { "\($0.key) \($0.label ?? "")" }].compactMap { $0 }.joined(separator: " ")
             current.role = .toast
             current.source = source
             line = current
         } else if let field {
             line.map { $0.panel.exit(duration: 0) }
-            let panel = HostedPanel(radius: 8)
-            let choice = place(panel, content: content, field: field, pid: pid)
+            let panel = HostedPanel(radius: Tokens.Shape.slipRadius)
+            let choice = place(panel, content: content, field: field, pid: pid, moving: false)
             panel.text = [lead, text].compactMap { $0 }.joined(separator: " ")
             line = LineState(panel: panel, role: .toast, choice: choice, field: field, source: source)
             panel.enter()
         }
+        announce(content)
         onChange?()
     }
 
-    /// Typing: 80 ms. Timeout: 200 ms. A waiting offer line takes the stage after it.
+    /// Typing: 80 ms. Timeout: 220 ms. A waiting slip takes the stage after it.
     func hideToast(byTyping: Bool) {
-        endToast(exit: byTyping ? 0.08 : 0.20)
+        endToast(exit: byTyping ? Motion.Duration.typed : Motion.Duration.toastExit)
         if let waiting = deferred, ghost.isVisible {
-            showLine(caption: waiting.caption, field: waiting.field, pid: waiting.pid)
+            showLine(caption: waiting.caption, sourceApp: waiting.sourceApp, field: waiting.field, pid: waiting.pid)
         }
         onChange?()
     }
@@ -237,6 +295,7 @@ final class FillOverlay {
         guard let current = line, current.role == .toast else { return }
         current.panel.exit(duration: duration)
         line = nil
+        announced = nil
     }
 
     func hideAll() {

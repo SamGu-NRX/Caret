@@ -13,7 +13,8 @@ import Foundation
 ///
 /// Frames are global, top-left origin (Accessibility's coordinates).
 public enum LinePlacement {
-    public static let height: CGFloat = 28
+    /// The slip's height (`Tokens.Shape.slipHeight` in the host).
+    public static let height: CGFloat = 30
     public static let compactHeight: CGFloat = 20
     public static let gap: CGFloat = 6
     public static let compactGap: CGFloat = 3

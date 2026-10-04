@@ -53,22 +53,38 @@ struct FigurePose: Equatable {
     var eyeSquash: CGFloat = 1
     var lids = false
     var headRotation: Double = 0
-    var opacity: Double = 1
+    /// The light is out: the skin is Graphite and the glow is off.
     var graphite = false
     /// The seed lies on its side.
     var fallen = false
 }
 
+/// The figure is light, not paint (v3 DIRECTION.md section 4): a radial gradient from a warm core
+/// to a darker rim, a sheen, catchlights, and a glow that touches what it sits on. Error is the
+/// light going out: Graphite, no glow.
+struct FigureSkin {
+    var graphite: Bool
+
+    func fill(in size: CGSize) -> AnyShapeStyle {
+        if graphite { return AnyShapeStyle(Color(token: Tokens.graphite)) }
+        return AnyShapeStyle(RadialGradient(
+            colors: [Color(token: Tokens.skinCore), Color(token: Tokens.skinMid), Color(token: Tokens.skinRim)],
+            center: UnitPoint(x: 0.38, y: 0.30), startRadius: 0, endRadius: max(size.width, size.height) * 0.78
+        ))
+    }
+
+    /// The flat color the body reads as, for parts drawn over it (the lids).
+    var flat: Color { Color(token: graphite ? Tokens.graphite : Tokens.skinMid) }
+}
+
 protocol FigureDrawing {
-    /// The viewBox, from `IDENTITY.md`.
+    /// The viewBox. The figure's size is its width; height follows the viewBox.
     var viewBox: CGSize { get }
-    /// Height to width, so a given height yields the character's own width.
     func pose(for state: FigureState, facing: FigureFacing) -> FigurePose
     /// The perch's pose: the state's pose turned along `gaze` (length at most 1, x right, y down;
-    /// zero looks out at the user). Each character turns differently: the pebble moves its eyes,
-    /// the seed leans, the wren tilts its head.
+    /// zero looks out at the user).
     func pose(for state: FigureState, gaze: CGVector) -> FigurePose
-    func body(_ pose: FigurePose, fill: Color) -> AnyView
+    func body(_ pose: FigurePose, skin: FigureSkin) -> AnyView
     /// One silhouette for the menu bar, eyes cut out.
     func glyph() -> Path
 }
@@ -86,86 +102,97 @@ struct ViewBoxShape: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        let path = source
         let sx = rect.width / viewBox.width, sy = rect.height / viewBox.height
-        return path.applying(CGAffineTransform(scaleX: sx, y: sy).translatedBy(x: rect.minX / sx, y: rect.minY / sy))
+        return source.applying(CGAffineTransform(scaleX: sx, y: sy).translatedBy(x: rect.minX / sx, y: rect.minY / sy))
     }
 }
 
 // MARK: - Pebble
 
-/// A soft bun with two eyes. Life is the glance: where it looks is what it noticed.
+/// A glass drop with a lit core and two eyes. Life is the glance: where it looks is what it
+/// noticed. Geometry from DIRECTION.md section 4, viewBox 12 by 11.
 struct Pebble: FigureDrawing {
-    let viewBox = CGSize(width: 12, height: 10)
+    let viewBox = CGSize(width: 12, height: 11)
 
     static func outline(_ p: inout Path) {
-        p.move(to: CGPoint(x: 6, y: 0.7))
-        p.addCurve(to: CGPoint(x: 11.6, y: 5.6), control1: CGPoint(x: 9.5, y: 0.7), control2: CGPoint(x: 11.6, y: 2.7))
-        p.addCurve(to: CGPoint(x: 6, y: 9.6), control1: CGPoint(x: 11.6, y: 8.3), control2: CGPoint(x: 9.3, y: 9.6))
-        p.addCurve(to: CGPoint(x: 0.4, y: 5.6), control1: CGPoint(x: 2.7, y: 9.6), control2: CGPoint(x: 0.4, y: 8.3))
-        p.addCurve(to: CGPoint(x: 6, y: 0.7), control1: CGPoint(x: 0.4, y: 2.7), control2: CGPoint(x: 2.5, y: 0.7))
+        // M6 .6 C9.6 .6 11.7 2.8 11.7 5.9 11.7 8.8 9.3 10.4 6 10.4 2.7 10.4 .3 8.8 .3 5.9 .3 2.8 2.4 .6 6 .6 Z
+        p.move(to: CGPoint(x: 6, y: 0.6))
+        p.addCurve(to: CGPoint(x: 11.7, y: 5.9), control1: CGPoint(x: 9.6, y: 0.6), control2: CGPoint(x: 11.7, y: 2.8))
+        p.addCurve(to: CGPoint(x: 6, y: 10.4), control1: CGPoint(x: 11.7, y: 8.8), control2: CGPoint(x: 9.3, y: 10.4))
+        p.addCurve(to: CGPoint(x: 0.3, y: 5.9), control1: CGPoint(x: 2.7, y: 10.4), control2: CGPoint(x: 0.3, y: 8.8))
+        p.addCurve(to: CGPoint(x: 6, y: 0.6), control1: CGPoint(x: 0.3, y: 2.8), control2: CGPoint(x: 2.4, y: 0.6))
         p.closeSubpath()
     }
 
-    static func eyes(_ p: inout Path) {
-        for x in [4.1, 7.9] { p.addEllipse(in: CGRect(x: x - 0.95, y: 4.9 - 0.95, width: 1.9, height: 1.9)) }
+    static func sheen(_ p: inout Path) {
+        p.addEllipse(in: CGRect(x: 4.3 - 2.1, y: 2.7 - 1.05, width: 4.2, height: 2.1))
     }
 
+    static func eyes(_ p: inout Path) {
+        for x in [3.9, 8.1] { p.addEllipse(in: CGRect(x: x - 1.05, y: 5 - 1.05, width: 2.1, height: 2.1)) }
+    }
+
+    static func catchlights(_ p: inout Path) {
+        for x in [3.55, 7.75] { p.addEllipse(in: CGRect(x: x - 0.3, y: 4.65 - 0.3, width: 0.6, height: 0.6)) }
+    }
+
+    /// Over the top half of each eye. Drawn in the body's own color, so lowered lids read as
+    /// tired eyes; in Ink they read as sunglasses (the prototype's error figure).
     static func lids(_ p: inout Path) {
-        for x in [2.9, 6.7] { p.addRoundedRect(in: CGRect(x: x, y: 3.6, width: 2.4, height: 1.2), cornerSize: CGSize(width: 0.3, height: 0.3)) }
+        for x in [2.65, 6.85] {
+            p.addRoundedRect(in: CGRect(x: x, y: 3.8, width: 2.5, height: 1.25), cornerSize: CGSize(width: 0.6, height: 0.6))
+        }
     }
 
     func pose(for state: FigureState, facing: FigureFacing) -> FigurePose {
         var pose = FigurePose()
         let toward: CGFloat = facing == .right ? 1.1 : -1.1
         switch state {
-        case .noticed, .offering: pose.eyeOffset = CGSize(width: toward, height: 0)
+        case .noticed, .offering, .done: pose.eyeOffset = CGSize(width: toward, height: 0)
         case .working: pose.eyeOffset = CGSize(width: 0.9, height: -0.9)
-        case .done, .absent: break
-        case .needsYou:
-            pose.eyeOffset = CGSize(width: 0, height: -0.5)
-            pose.eyeScale = 1.3
+        case .needsYou: pose.eyeScale = 1.25
         case .error:
             pose.graphite = true
-            pose.bodyScale = CGSize(width: 1.05, height: 0.86)
-            pose.eyeOffset = CGSize(width: 0, height: 0.5)
+            pose.bodyScale = CGSize(width: 1.04, height: 0.9)
+            pose.eyeOffset = CGSize(width: 0, height: 0.6)
             pose.lids = true
+        case .still, .absent: break
         }
         return pose
     }
 
-    /// The eyes travel 1.1 across and 0.8 up or down, the most the body's outline allows at 32 pt
-    /// before an eye touches the edge. Done keeps its squint centered; Error keeps looking down.
+    /// The eyes travel 1.1 across and 0.8 up or down, the most the outline allows before an eye
+    /// touches the edge. Done keeps its eyes ahead; Error keeps looking down.
     func pose(for state: FigureState, gaze: CGVector) -> FigurePose {
         var pose = pose(for: state, facing: .right)
         switch state {
-        case .noticed, .offering, .working, .needsYou:
-            let rest: CGFloat = state == .needsYou ? -0.5 : 0
-            pose.eyeOffset = gaze == .zero
-                ? CGSize(width: 0, height: rest)
-                : CGSize(width: gaze.dx * 1.1, height: gaze.dy * 0.8)
+        case .noticed, .offering, .working, .needsYou, .still:
+            pose.eyeOffset = gaze == .zero ? .zero : CGSize(width: gaze.dx * 1.1, height: gaze.dy * 0.8)
         case .done, .error, .absent:
             break
         }
         return pose
     }
 
-    func body(_ pose: FigurePose, fill: Color) -> AnyView {
+    func body(_ pose: FigurePose, skin: FigureSkin) -> AnyView {
         let box = viewBox
-        let unit = UnitPoint(x: 0.5, y: 1)
         return AnyView(GeometryReader { geo in
             let k = geo.size.width / box.width
             ZStack {
-                ViewBoxShape(viewBox: box, build: Self.outline).fill(fill)
+                ViewBoxShape(viewBox: box, build: Self.outline).fill(skin.fill(in: geo.size))
+                ViewBoxShape(viewBox: box, build: Self.sheen).fill(Color.white.opacity(pose.graphite ? 0.08 : 0.26))
                 ZStack {
-                    ViewBoxShape(viewBox: box, build: Self.eyes).fill(Color(token: Tokens.eye))
-                        .scaleEffect(x: 1, y: pose.eyeSquash, anchor: UnitPoint(x: 0.5, y: 0.49))
-                    ViewBoxShape(viewBox: box, build: Self.lids).fill(fill.opacity(pose.lids ? 1 : 0))
+                    ZStack {
+                        ViewBoxShape(viewBox: box, build: Self.eyes).fill(Color(token: Tokens.eye))
+                        ViewBoxShape(viewBox: box, build: Self.catchlights).fill(Color.white.opacity(0.85))
+                    }
+                    .scaleEffect(x: 1, y: pose.eyeSquash, anchor: UnitPoint(x: 0.5, y: 5 / box.height))
+                    ViewBoxShape(viewBox: box, build: Self.lids).fill(skin.flat.opacity(pose.lids ? 1 : 0))
                 }
-                .scaleEffect(pose.eyeScale, anchor: UnitPoint(x: 0.5, y: 0.49))
+                .scaleEffect(pose.eyeScale, anchor: UnitPoint(x: 0.5, y: 5 / box.height))
                 .offset(x: pose.eyeOffset.width * k, y: pose.eyeOffset.height * k)
             }
-            .scaleEffect(x: pose.bodyScale.width, y: pose.bodyScale.height, anchor: unit)
+            .scaleEffect(x: pose.bodyScale.width, y: pose.bodyScale.height, anchor: .bottom)
             .offset(y: pose.bodyOffsetY * k)
         })
     }
@@ -180,7 +207,8 @@ struct Pebble: FigureDrawing {
 
 // MARK: - Seed
 
-/// The proofreader's mark with weight. Life is posture only.
+/// The proofreader's mark with weight. Life is posture only. Kept as a choice in settings, lit
+/// like the pebble.
 struct Seed: FigureDrawing {
     let viewBox = CGSize(width: 10, height: 12)
 
@@ -200,10 +228,9 @@ struct Seed: FigureDrawing {
         var pose = FigurePose()
         let lean: Double = facing == .right ? 10 : -10
         switch state {
-        case .noticed, .done, .absent: break
+        case .noticed, .done, .still, .absent: break
         case .offering: pose.rotation = lean
-        case .working: pose.bodyOffsetY = -2
-        case .needsYou: pose.bodyOffsetY = -2
+        case .working, .needsYou: pose.bodyOffsetY = -2
         case .error:
             pose.graphite = true
             pose.fallen = true
@@ -211,23 +238,21 @@ struct Seed: FigureDrawing {
         return pose
     }
 
-    /// No eyes: it leans up to 10 degrees toward what it is working in.
     func pose(for state: FigureState, gaze: CGVector) -> FigurePose {
         var pose = pose(for: state, facing: .right)
         switch state {
-        case .noticed, .offering, .working, .needsYou: pose.rotation = Double(gaze.dx) * 10
+        case .noticed, .offering, .working, .needsYou, .still: pose.rotation = Double(gaze.dx) * 10
         case .done, .error, .absent: break
         }
         return pose
     }
 
-    func body(_ pose: FigurePose, fill: Color) -> AnyView {
+    func body(_ pose: FigurePose, skin: FigureSkin) -> AnyView {
         let box = viewBox
         return AnyView(GeometryReader { geo in
             let k = geo.size.width / box.width
-            ViewBoxShape(viewBox: box, build: Self.outline).fill(fill)
+            ViewBoxShape(viewBox: box, build: Self.outline).fill(skin.fill(in: geo.size))
                 .scaleEffect(x: pose.bodyScale.width, y: pose.bodyScale.height, anchor: .bottom)
-                // Fallen: on its side about the base center, lifted so it lies on the baseline.
                 .rotationEffect(.degrees(pose.fallen ? -90 : pose.rotation), anchor: .bottom)
                 .offset(y: (pose.fallen ? -5 : pose.bodyOffsetY) * k)
         })
@@ -242,7 +267,8 @@ struct Seed: FigureDrawing {
 
 // MARK: - Wren
 
-/// A small bird on your line. Life is gesture: head tilt, hop, flight.
+/// A small bird on your line. Life is gesture: head tilt, hop. Kept as a choice in settings, lit
+/// like the pebble.
 struct Wren: FigureDrawing {
     let viewBox = CGSize(width: 14, height: 12)
     /// The neck, 18% and 92% of the head group's box (head circle and beak).
@@ -278,7 +304,7 @@ struct Wren: FigureDrawing {
         switch state {
         case .noticed, .offering: pose.headRotation = -14
         case .working: pose.headRotation = -34
-        case .done, .absent: break
+        case .done, .still, .absent: break
         case .needsYou: pose.headRotation = -28
         case .error:
             pose.graphite = true
@@ -288,21 +314,19 @@ struct Wren: FigureDrawing {
         return pose
     }
 
-    /// Faces the side the window is on (the view mirrors it) and tilts its head up to 20 degrees
-    /// toward the window's height, on top of the state's own tilt.
     func pose(for state: FigureState, gaze: CGVector) -> FigurePose {
         var pose = pose(for: state, facing: .right)
         switch state {
-        case .noticed, .offering, .working, .needsYou: pose.headRotation += Double(gaze.dy) * 20
+        case .noticed, .offering, .working, .needsYou, .still: pose.headRotation += Double(gaze.dy) * 20
         case .done, .error, .absent: break
         }
         return pose
     }
 
-    func body(_ pose: FigurePose, fill: Color) -> AnyView {
+    func body(_ pose: FigurePose, skin: FigureSkin) -> AnyView {
         let box = viewBox
         return AnyView(GeometryReader { geo in
-            let k = geo.size.width / box.width
+            let fill = skin.fill(in: geo.size)
             ZStack {
                 // Separate shapes: in one path the tail and body wind opposite ways and the overlap
                 // fills as a hole.
@@ -315,13 +339,11 @@ struct Wren: FigureDrawing {
                 .rotationEffect(.degrees(pose.headRotation), anchor: Self.neck)
             }
             .scaleEffect(x: pose.bodyScale.width, y: pose.bodyScale.height, anchor: .bottom)
-            .offset(y: pose.bodyOffsetY * k)
+            .offset(y: pose.bodyOffsetY * geo.size.width / box.width)
         })
     }
 
     func glyph() -> Path {
-        // The menu bar glyph fills even-odd so the eye is cut out; the parts are unioned first so
-        // their overlaps stay filled.
         var tail = Path(), body = Path(), head = Path(), eye = Path()
         Self.tail(&tail)
         Self.body(&body)
@@ -333,105 +355,167 @@ struct Wren: FigureDrawing {
     }
 }
 
+// MARK: - Motion plan
+
+/// Which of the figure's motions run, decided apart from the drawing so a test can hold the
+/// Reduce Motion rule: every repeating motion and every gesture stops, and postures jump.
+struct FigureMotion: Equatable {
+    /// Offering at text size: 1.035 by 1.025 over 4 s.
+    var breathes = false
+    /// Offering and needs you: every 5 s, 150 ms.
+    var blinks = false
+    /// Done's squash and squint, needs you's two bobs.
+    var gesture = false
+    /// Done: the glow to 2.4 times its radius and back.
+    var glowPulse = false
+    /// Seconds for a change of posture; nil jumps.
+    var posture: Double?
+
+    static func plan(state: FigureState, animated: Bool, reduce: Bool, perched: Bool) -> FigureMotion {
+        guard animated, !reduce, state != .absent else { return FigureMotion() }
+        var plan = FigureMotion(posture: Motion.Duration.glance)
+        // The perch can be on screen for the length of a build; a breath is a display link that
+        // never stops, so the perch carries its report with its glance and one-shot blinks.
+        plan.breathes = state == .offering && !perched
+        plan.blinks = (state == .offering && !perched) || state == .needsYou
+        plan.gesture = state == .done || state == .needsYou
+        plan.glowPulse = state == .done
+        return plan
+    }
+}
+
 // MARK: - The view
 
-/// The figure at text size. Height sets the scale; width follows the character's viewBox.
+/// The figure. `size` is its width (DIRECTION.md: 14 in a line, 16 in a pop-up header, 22
+/// perched, 64 once in onboarding); its height follows the drawing's viewBox.
 ///
-/// Motion (`IDENTITY.md`): posture changes take 160 ms `--ease-in-out` (the seed's fall 240 ms
-/// `--ease-fall`); Done plays its one gesture; Needs you signals twice; Offering breathes over 4 s
-/// and the pebble blinks every 5 s. Reduce Motion drops the breath, blink and gestures and jumps
-/// postures, so the caption alone carries the result. Entering and leaving belong to the panel
-/// that holds the figure.
+/// Motion: glances take 140 ms `ease-in-out`; Done squashes (260 ms), squints (420 ms) and pulses
+/// its glow (600 ms) once; Needs you bobs twice; Offering breathes over 4 s and blinks every 5 s.
+/// Error turns the light to Graphite over 240 ms. Reduce Motion stops all of it and postures
+/// jump (`FigureMotion`). Entering and leaving belong to the slip that holds the figure.
 struct FigureView: View {
     var character: FigureCharacter
     var state: FigureState
     var facing: FigureFacing = .right
-    var height: CGFloat = 10
+    var size: CGFloat = Tokens.FigureSize.line
     /// False for off-screen renders: draw the state's end pose and nothing else.
     var animated = true
-    /// The perch's glance, which replaces `facing`. Nil at text size.
+    /// The perch's glance, which replaces `facing`. Nil in slips and text.
     var gaze: CGVector?
-    /// The perch blinks once each time this changes. With the repeating blink and breath, the
-    /// host used 10.9% of a core while the perch reported one running task, even with the panel
-    /// never ordered on screen; with one-shot blinks and no breath, 1.3% against 0.4% with nothing
-    /// to report (A4 socket runs 1 and 4, `--perch hidden`). Not yet measured with the perch drawn.
+    /// The perch blinks once each time this changes (A4: repeating motion on the perch cost 10.9%
+    /// of a core; one-shot blinks 1.3%).
     var blinkTick: Int?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.reducesMotion) private var reducesMotion
+
+    init(character: FigureCharacter, state: FigureState, facing: FigureFacing = .right, size: CGFloat = Tokens.FigureSize.line,
+         animated: Bool = true, gaze: CGVector? = nil, blinkTick: Int? = nil) {
+        self.character = character
+        self.state = state
+        self.facing = facing
+        self.size = size
+        self.animated = animated
+        self.gaze = gaze
+        self.blinkTick = blinkTick
+    }
+
+    /// By height, for views that size the figure to a line of text (the writing views) and the
+    /// surfaces part 2 of v3 restyles (the desk, the perch, onboarding, What Caret knows).
+    init(character: FigureCharacter, state: FigureState, facing: FigureFacing = .right, height: CGFloat, animated: Bool = true,
+         gaze: CGVector? = nil, blinkTick: Int? = nil) {
+        let box = character.drawing.viewBox
+        self.init(character: character, state: state, facing: facing, size: height * box.width / box.height, animated: animated, gaze: gaze, blinkTick: blinkTick)
+    }
 
     var body: some View {
         let drawing = character.drawing
-        let width = height * drawing.viewBox.width / drawing.viewBox.height
-        let end = gaze.map { drawing.pose(for: state, gaze: $0) } ?? drawing.pose(for: state, facing: facing)
+        let height = size * drawing.viewBox.height / drawing.viewBox.width
+        let pose = gaze.map { drawing.pose(for: state, gaze: $0) } ?? drawing.pose(for: state, facing: facing)
         let faces = gaze.map { $0.dx < 0 ? FigureFacing.left : .right } ?? facing
-        let moving = animated && !reduceMotion
-        let fill = Color(token: end.graphite ? Tokens.graphite : Tokens.carrot)
+        let plan = FigureMotion.plan(state: state, animated: animated, reduce: reduceMotion || reducesMotion, perched: gaze != nil)
+        let glow = pose.graphite ? 0 : max(2, size / 4.5)
         Group {
             if state == .absent {
                 Color.clear
-            } else if moving {
-                KeyframeAnimator(initialValue: Gesture.rest, trigger: state) { g in
-                    FigureBlink(drawing: drawing, pose: end, fill: fill, squash: g.eyeSquash, repeating: blinks && gaze == nil, tick: gaze == nil ? nil : blinkTick)
-                    .scaleEffect(x: g.scaleX, y: g.scaleY, anchor: .bottom)
-                    .offset(y: g.lift * height / drawing.viewBox.height)
-                    .opacity(g.opacity)
-                } keyframes: { _ in
-                    Gesture.track(for: state, character: character)
-                }
-                .keyframeAnimator(initialValue: Gesture.rest, repeating: breathes) { content, g in
-                    content.scaleEffect(x: g.scaleX, y: g.scaleY, anchor: .bottom)
-                } keyframes: { _ in
-                    Gesture.breath(character: character, active: breathes)
-                }
-                .animation(postureAnimation, value: state)
-                .animation(Motion.curve(Motion.easeInOut, 0.24), value: gaze)
+            } else if plan.posture == nil {
+                drawing.body(pose, skin: FigureSkin(graphite: pose.graphite))
+                    .shadow(color: Color(token: Tokens.glow).opacity(glow > 0 ? 1 : 0), radius: glow / 2)
             } else {
-                drawing.body(end, fill: fill)
+                LiveFigure(drawing: drawing, pose: pose, state: state, plan: plan, glow: glow, blinkTick: gaze == nil ? nil : blinkTick, lift: height / drawing.viewBox.height)
             }
         }
-        .frame(width: width, height: height)
+        .frame(width: size, height: height)
         .scaleEffect(x: faces == .left && character == .wren ? -1 : 1, y: 1)
         .accessibilityHidden(true)
     }
+}
 
-    /// Offering breathes at text size. The perch does not: a breath is a display link that never
-    /// stops, and the perch can be on screen for the length of a build. Its glance and its blink
-    /// carry the report instead.
-    private var breathes: Bool { state == .offering && gaze == nil }
+/// The animated figure: the body with its gesture, breath and blink, and the light crossfading
+/// to Graphite on error.
+private struct LiveFigure: View {
+    let drawing: FigureDrawing
+    let pose: FigurePose
+    let state: FigureState
+    let plan: FigureMotion
+    let glow: CGFloat
+    let blinkTick: Int?
+    /// Points per viewBox unit, for lifts.
+    let lift: CGFloat
+    /// A figure that enters already Done (returning into its seat) is a new view: the gesture
+    /// plays on its appearance as well as on a change of state.
+    @State private var shown = false
 
-    /// The pebble blinks once every 5 s while offering, 150 ms, and on the perch whenever its eyes
-    /// are open on something.
-    private var blinks: Bool {
-        guard character == .pebble else { return false }
-        return state == .offering || (gaze != nil && [.noticed, .working, .needsYou].contains(state))
+    private struct Trigger: Equatable {
+        var state: FigureState
+        var shown: Bool
     }
 
-    private var postureAnimation: Animation {
-        if state == .error && character == .seed { return Motion.curve(Motion.easeFall, 0.24) }
-        return Motion.curve(Motion.easeInOut, 0.16)
+    var body: some View {
+        KeyframeAnimator(initialValue: Gesture.rest, trigger: Trigger(state: state, shown: shown)) { g in
+            ZStack {
+                skinned(graphite: false, squash: g.eyeSquash).opacity(pose.graphite ? 0 : 1)
+                skinned(graphite: true, squash: g.eyeSquash).opacity(pose.graphite ? 1 : 0)
+            }
+            .animation(.linear(duration: 0.24), value: pose.graphite)
+            .scaleEffect(x: g.scaleX, y: g.scaleY, anchor: .bottom)
+            .offset(y: g.lift * lift)
+            .shadow(color: Color(token: Tokens.glow).opacity(glow > 0 ? 1 : 0), radius: glow * g.glow / 2)
+        } keyframes: { _ in
+            Gesture.track(for: state, plan: plan)
+        }
+        .keyframeAnimator(initialValue: Gesture.rest, repeating: plan.breathes) { content, g in
+            content.scaleEffect(x: g.scaleX, y: g.scaleY, anchor: .bottom)
+        } keyframes: { _ in
+            Gesture.breath(active: plan.breathes)
+        }
+        .animation(plan.posture.map { Motion.curve(Motion.easeInOut, $0) }, value: pose)
+        .onAppear { shown = true }
+    }
+
+    private func skinned(graphite: Bool, squash: CGFloat) -> some View {
+        FigureBlink(drawing: drawing, pose: pose.squinting(squash), skin: FigureSkin(graphite: graphite), repeating: plan.blinks && blinkTick == nil, tick: blinkTick)
     }
 }
 
-/// The body with the eyes' blink: a 5 s repeating cycle at text size, or one blink per `tick` on
-/// the perch.
+/// The body with the eyes' blink: a 5 s repeating cycle, or one blink per `tick` on the perch.
 struct FigureBlink: View {
     let drawing: FigureDrawing
     let pose: FigurePose
-    let fill: Color
-    let squash: CGFloat
+    let skin: FigureSkin
     let repeating: Bool
     let tick: Int?
 
     var body: some View {
         if let tick {
             KeyframeAnimator(initialValue: CGFloat(1), trigger: tick) { blink in
-                drawing.body(pose.squinting(squash * blink), fill: fill)
+                drawing.body(pose.squinting(pose.eyeSquash * blink), skin: skin)
             } keyframes: { _ in
                 Gesture.blinkOnce()
             }
         } else {
             KeyframeAnimator(initialValue: CGFloat(1), repeating: repeating) { blink in
-                drawing.body(pose.squinting(squash * blink), fill: fill)
+                drawing.body(pose.squinting(pose.eyeSquash * blink), skin: skin)
             } keyframes: { _ in
                 Gesture.blink(active: repeating)
             }
@@ -439,87 +523,69 @@ struct FigureBlink: View {
     }
 }
 
-/// One-shot gestures and the breath, as keyframe tracks over a scale, a lift and an opacity.
+/// One-shot gestures and the breath, as keyframe tracks over a scale, a lift, the eyes' squash and
+/// the glow's radius.
 struct Gesture {
     var scaleX: CGFloat = 1
     var scaleY: CGFloat = 1
+    /// In viewBox units, negative up.
     var lift: CGFloat = 0
-    var opacity: Double = 1
-    /// The pebble's eyes: 0.18 is the happy squint.
     var eyeSquash: CGFloat = 1
+    /// The glow's radius, as a multiple of its resting radius.
+    var glow: CGFloat = 1
 
     static let rest = Gesture()
 
-    /// One blink, 350 ms: closed (0.1) at 125 ms, open again at 350 ms.
+    /// One blink, 150 ms: closed (0.1) at 60 ms, open again at 150 ms.
     static func blinkOnce() -> some Keyframes<CGFloat> {
         KeyframeTrack(\CGFloat.self) {
-            LinearKeyframe(0.1, duration: 0.125)
-            LinearKeyframe(1, duration: 0.225)
+            LinearKeyframe(0.1, duration: 0.06)
+            LinearKeyframe(1, duration: 0.09)
         }
     }
 
-    /// 5 s cycle: open until 93%, closed (0.1) at 95.5%, open again at 100%.
+    /// 5 s cycle: open, closed (0.1) for an instant at 4.91 s, open again at 5 s.
     static func blink(active: Bool) -> some Keyframes<CGFloat> {
         KeyframeTrack(\CGFloat.self) {
             if active {
-                LinearKeyframe(1, duration: 4.65)
-                LinearKeyframe(0.1, duration: 0.125)
-                LinearKeyframe(1, duration: 0.225)
+                LinearKeyframe(1, duration: Motion.Duration.blinkEvery - 0.15)
+                LinearKeyframe(0.1, duration: 0.06)
+                LinearKeyframe(1, duration: 0.09)
             } else {
                 LinearKeyframe(1, duration: 0.01)
             }
         }
     }
 
-    /// Done: bow (seed, 220 ms), squash (pebble, 260 ms), hop (wren, 280 ms). Needs you: two
-    /// 600 ms dims (seed), two 1.5 pt bobs (pebble), two 300 ms chirps (wren).
-    static func track(for state: FigureState, character: FigureCharacter) -> some Keyframes<Gesture> {
+    /// Done: squash 1.12 by 0.86 at 0, 0.97 by 1.04 at 60%, rest at 260 ms; the eyes squint to
+    /// 0.45 between 30% and 70% of 420 ms; the glow to 2.4 times at 35% of 600 ms. Needs you: two
+    /// 1.5 unit bobs, 600 ms each.
+    static func track(for state: FigureState, plan: FigureMotion) -> some Keyframes<Gesture> {
         KeyframeTrack(\Gesture.self) {
-            switch (state, character) {
-            case (.done, .seed):
-                CubicKeyframe(Gesture(scaleX: 1.08, scaleY: 0.84), duration: 0.11)
-                CubicKeyframe(.rest, duration: 0.11)
-            case (.done, .pebble):
-                // The squash (260 ms) and the happy squint (eyes closed from 25% to 75% of 420 ms).
-                CubicKeyframe(Gesture(scaleX: 1.12, scaleY: 0.86, eyeSquash: 0.18), duration: 0.104)
-                CubicKeyframe(Gesture(eyeSquash: 0.18), duration: 0.21)
-                CubicKeyframe(.rest, duration: 0.106)
-            case (.done, .wren):
-                CubicKeyframe(Gesture(lift: -3), duration: 0.112)
-                CubicKeyframe(.rest, duration: 0.168)
-            case (.needsYou, .seed):
-                CubicKeyframe(Gesture(opacity: 0.55), duration: 0.3)
-                CubicKeyframe(.rest, duration: 0.3)
-                CubicKeyframe(Gesture(opacity: 0.55), duration: 0.3)
-                CubicKeyframe(.rest, duration: 0.3)
-            case (.needsYou, .pebble):
+            if plan.gesture, state == .done {
+                CubicKeyframe(Gesture(scaleX: 1.12, scaleY: 0.86, eyeSquash: 1, glow: 1.3), duration: 0.001)
+                CubicKeyframe(Gesture(scaleX: 1.04, scaleY: 0.96, eyeSquash: 0.45, glow: 1.9), duration: 0.125)
+                CubicKeyframe(Gesture(scaleX: 0.97, scaleY: 1.04, eyeSquash: 0.45, glow: 2.4), duration: 0.085)
+                CubicKeyframe(Gesture(eyeSquash: 0.45, glow: 2.2), duration: 0.084)
+                CubicKeyframe(Gesture(eyeSquash: 1, glow: 1.6), duration: 0.125)
+                CubicKeyframe(.rest, duration: 0.18)
+            } else if plan.gesture, state == .needsYou {
                 CubicKeyframe(Gesture(lift: -1.5), duration: 0.3)
                 CubicKeyframe(.rest, duration: 0.3)
                 CubicKeyframe(Gesture(lift: -1.5), duration: 0.3)
                 CubicKeyframe(.rest, duration: 0.3)
-            case (.needsYou, .wren):
-                CubicKeyframe(Gesture(lift: -1.2), duration: 0.15)
-                CubicKeyframe(.rest, duration: 0.15)
-                CubicKeyframe(Gesture(lift: -1.2), duration: 0.15)
-                CubicKeyframe(.rest, duration: 0.15)
-            default:
+            } else {
                 CubicKeyframe(.rest, duration: 0.01)
             }
         }
     }
 
-    /// Offering breathes over 4 s: 3% (seed), 4% by 3% (pebble), 2% by 3% (wren).
-    static func breath(character: FigureCharacter, active: Bool) -> some Keyframes<Gesture> {
-        let peak: Gesture
-        switch character {
-        case .seed: peak = Gesture(scaleX: 1.03, scaleY: 1.03)
-        case .pebble: peak = Gesture(scaleX: 1.04, scaleY: 1.03)
-        case .wren: peak = Gesture(scaleX: 1.02, scaleY: 1.03)
-        }
-        return KeyframeTrack(\Gesture.self) {
+    /// Offering breathes: 1.035 by 1.025 at the midpoint of 4 s.
+    static func breath(active: Bool) -> some Keyframes<Gesture> {
+        KeyframeTrack(\Gesture.self) {
             if active {
-                CubicKeyframe(peak, duration: 2)
-                CubicKeyframe(.rest, duration: 2)
+                CubicKeyframe(Gesture(scaleX: 1.035, scaleY: 1.025), duration: Motion.Duration.breath / 2)
+                CubicKeyframe(.rest, duration: Motion.Duration.breath / 2)
             } else {
                 CubicKeyframe(.rest, duration: 0.01)
             }
@@ -528,14 +594,14 @@ struct Gesture {
 }
 
 extension Gesture: Animatable {
-    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<AnimatablePair<CGFloat, Double>, CGFloat>> {
-        get { AnimatablePair(AnimatablePair(scaleX, scaleY), AnimatablePair(AnimatablePair(lift, opacity), eyeSquash)) }
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, AnimatablePair<CGFloat, CGFloat>>> {
+        get { AnimatablePair(AnimatablePair(scaleX, scaleY), AnimatablePair(lift, AnimatablePair(eyeSquash, glow))) }
         set {
             scaleX = newValue.first.first
             scaleY = newValue.first.second
-            lift = newValue.second.first.first
-            opacity = newValue.second.first.second
-            eyeSquash = newValue.second.second
+            lift = newValue.second.first
+            eyeSquash = newValue.second.second.first
+            glow = newValue.second.second.second
         }
     }
 }
@@ -551,16 +617,16 @@ extension FigurePose {
 // MARK: - Menu bar glyph
 
 public enum FigureGlyph {
-    /// A 16 pt template image of the character, 12 pt tall, eyes cut out. While working it is
-    /// drawn in Carrot instead (`IDENTITY.md`, the one time the glyph changes).
+    /// A 16 pt template image of the character, 13 pt wide, eyes cut out. While working it is
+    /// drawn in Carrot instead, the one time the glyph changes.
     @MainActor
     public static func image(_ character: FigureCharacter, working: Bool) -> NSImage {
         let drawing = character.drawing
-        let height: CGFloat = 12
-        let width = height * drawing.viewBox.width / drawing.viewBox.height
+        let width: CGFloat = 13
+        let height = width * drawing.viewBox.height / drawing.viewBox.width
         let image = NSImage(size: NSSize(width: 16, height: 16), flipped: true) { rect in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            let k = height / drawing.viewBox.height
+            let k = width / drawing.viewBox.width
             context.translateBy(x: (rect.width - width) / 2, y: (rect.height - height) / 2)
             context.scaleBy(x: k, y: k)
             context.addPath(drawing.glyph().cgPath)

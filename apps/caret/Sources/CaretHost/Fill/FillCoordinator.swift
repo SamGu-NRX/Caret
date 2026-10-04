@@ -93,7 +93,7 @@ final class FillCoordinator {
             overlay.showOffer(
                 value: draw.value, fieldFrame: draw.field,
                 style: element.map(FieldStyleProbe.style(of:)) ?? OverlayTextStyle(),
-                caption: draw.caption, pid: draw.pid, outcome: draw.line,
+                caption: draw.caption, sourceApp: draw.sourceApp, pid: draw.pid, outcome: draw.line,
                 hasPlaceholder: !(element.flatMap { AXRead.string(kAXPlaceholderValueAttribute, on: $0) } ?? "").isEmpty
             )
         case .hideOffer(let byTyping): overlay.hideOffer(byTyping: byTyping)

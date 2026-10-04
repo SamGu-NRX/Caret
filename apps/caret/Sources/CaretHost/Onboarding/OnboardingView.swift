@@ -799,7 +799,7 @@ struct FoundOffer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let line = run?.line(character: character)
+        let line = run?.line()
         VStack(alignment: .leading, spacing: 10) {
             // Esc is Back in this window, so the card shows only the keys that take it. Once taken,
             // the figure leaves the card for the line: one figure, where the work is.

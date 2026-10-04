@@ -48,8 +48,13 @@ final class SurfaceCoordinator {
     private let ownGhost = HostedPanel(radius: 0, material: false)
     /// Where the open list went for the shown offer, chosen once so the arrows never move it.
     private var listSpot: FieldPanelPlacement.Choice?
-    private let list = HostedPanel(radius: 8)
-    private var panel = HostedPanel(radius: 10)
+    private let list = HostedPanel(radius: Tokens.Shape.popupRadius, popup: true)
+    /// H2's list, on with `CARET_ALTERNATIVES_LIST=list` so the lead can compare it with cycling in
+    /// place. It shows only once the user is clearly browsing: after the second ↓ of an offer.
+    static let alternativesList = ProcessInfo.processInfo.environment["CARET_ALTERNATIVES_LIST"] == "list"
+    /// The offer whose candidates the user has moved through twice, which earns H2's list.
+    private var browsed: (offerID: UInt64, moves: Int, last: Int)?
+    private var panel = HostedPanel(radius: Tokens.Shape.slipRadius)
     /// Where the panel was placed around its field, and with what it was measured, so a redraw
     /// that grows it can check it still covers nothing.
     private struct Placed {
@@ -206,7 +211,9 @@ final class SurfaceCoordinator {
         case .showPanel(let content, let text, let placement):
             show(Self.view(content, character: character), narrows: Self.narrows(content), text: text, placement: placement, content: content)
             announce(content)
-        case .hidePanel(let exit): panel.exit(duration: exit)
+        case .hidePanel(let exit):
+            panel.exit(duration: exit)
+            announced = nil
         case .workingChanged(let working): onWorkingChanged?(working)
         case .dropHelperSession: client?.dropSession()
         case .toastSlotTaken: onToastChanged?()
@@ -246,31 +253,31 @@ final class SurfaceCoordinator {
         let caret = draw.caret
         let font = drawn?.font ?? NSFont.systemFont(ofSize: 13)
         let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-        let figureHeight = min(max((caret.height * 0.6).rounded(), 9), 14)
-        let tag = AlternativesTag(current: ui.candidate, count: candidates.count, character: character, figureHeight: figureHeight)
+        let layout = AlternativesLayout(
+            caret: caret, field: draw.field, textWidth: width, fontSize: font.pointSize,
+            tagWidth: NSHostingView(rootView: AlternativesTag(current: ui.candidate, count: candidates.count, character: character,
+                                                               figureSize: Tokens.FigureSize.inText(caretHeight: caret.height), animated: false)).fittingSize.width,
+            open: ui.open
+        )
+        let tag = AlternativesTag(current: ui.candidate, count: candidates.count, character: character, figureSize: layout.figureSize)
         // Collapsed, one mark at most: the faint value, underlined only when it is quoted from a
-        // source. The figure and the count come with the down arrow, and only where they fit
-        // inside the field after the text.
-        let tagWidth = NSHostingView(rootView: tag).fittingSize.width + font.pointSize * 0.3
-        let showTag = ui.open && caret.maxX + width + tagWidth <= draw.field.maxX - 2
-        guard draw.quoted || showTag else {
+        // source. The figure and the ticks come with the down arrow, and only where they fit on
+        // the caret's line after the text: they never wrap to a line of their own.
+        guard draw.quoted || layout.showsTag else {
             decor.exit(duration: 0)
             drawList(draw)
             return
         }
-        // The underline sits at the decor's bottom, up to 4 pt under the caret, but never below
-        // the field: KeyType estimates a single-line field's caret flush with its bottom edge.
-        let decorHeight = max(caret.height, min(caret.height + 4, draw.field.maxY - caret.minY))
         let decorView = HStack(alignment: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 Spacer(minLength: 0)
-                if draw.quoted { UnevenUnderline(width: width, animated: draw.entering) }
+                if draw.quoted { UnevenUnderline(width: layout.underlineWidth, animated: draw.entering) }
             }
-            .frame(width: width, height: decorHeight)
-            if showTag {
+            .frame(width: layout.textSpan, height: layout.decorHeight, alignment: .leading)
+            if layout.showsTag {
                 tag
-                    .padding(.leading, font.pointSize * 0.3)
-                    .padding(.bottom, caret.height * 0.22 + 4)
+                    .padding(.leading, layout.tagGap)
+                    .padding(.bottom, layout.tagBottom)
             }
         }
         .fixedSize()
@@ -289,9 +296,9 @@ final class SurfaceCoordinator {
     /// the arrows never move it. A10's filled-field run showed the old below-or-above choice over
     /// the first field putting the list on the window's title bar.
     private func drawList(_ draw: AlternativesDraw) {
-        guard draw.ui.open else { return list.exit(duration: 0) }
+        guard draw.ui.open, Self.alternativesList, countBrowse(draw) >= 2 else { return list.exit(duration: 0) }
         let candidates = draw.candidates
-        let view = AlternativesListView(candidates: candidates, current: draw.ui.candidate)
+        let view = AlternativesListView(candidates: candidates, current: draw.ui.candidate, font: drawn?.font ?? .systemFont(ofSize: 13))
         if !list.isVisible || listSpot == nil {
             let probe = ObstacleProbe.Session(pid: draw.pid, until: DispatchTime.now().uptimeNanoseconds + Self.probeBudget)
             let choice = FieldPanelPlacement.choose(
@@ -308,6 +315,16 @@ final class SurfaceCoordinator {
         if !list.panel.isVisible || list.isExiting { list.panel.alphaValue = 1; list.panel.orderFrontRegardless() }
     }
 
+    /// How many times ↓ or ↑ moved this offer's candidate.
+    private func countBrowse(_ draw: AlternativesDraw) -> Int {
+        guard let seen = browsed, seen.offerID == draw.offerID else {
+            browsed = (draw.offerID, draw.ui.candidate == 0 ? 0 : 1, draw.ui.candidate)
+            return browsed!.moves
+        }
+        if draw.ui.candidate != seen.last { browsed = (seen.offerID, seen.moves + 1, draw.ui.candidate) }
+        return browsed!.moves
+    }
+
     private func typedThrough(offerID: UInt64, typed: String, remainder: String, caret: CGRect) {
         decor.exit(duration: 0)
         list.exit(duration: 0)
@@ -320,32 +337,21 @@ final class SurfaceCoordinator {
         }
     }
 
-    /// The panel is another app's window and never takes focus, so VoiceOver hears what needs the
-    /// user once: a skill's run with no Tab starting, and a question under a result or its answer.
+    /// The panel is another app's window and never takes focus, so VoiceOver hears each slip and
+    /// pop-up as it enters and again on each change of state (`SlipSpeech`); the working line's
+    /// seconds are not a change.
     private var announced: String?
     private func announce(_ content: PanelContent) {
-        guard let words = Self.spoken(content), words != announced else { return }
+        guard let words = SlipAnnouncer.next(Self.spoken(content), last: announced) else { return }
         announced = words
-        AccessibilityNotification.Announcement(words).post()
+        SlipAnnouncer.post(words)
     }
 
-    /// What VoiceOver hears for a line, or nil when the line is not announced. Each part is a
-    /// sentence of its own, ended once: A16's live log heard "Keep this as …?. Caret will offer it
-    /// when you start it again.." when the parts were joined with ". ".
-    static func spoken(_ content: PanelContent) -> String? {
-        guard case .line(let line) = content else { return nil }
-        let parts: [String]
-        if let q = line.question {
-            let keys = q.hints.map { h in h.label.map { "\(h.key): \($0)" } ?? h.key }
-            parts = [q.text] + (q.detail.map { [$0] } ?? []) + keys
-        } else if line.lead == "On its own:" {
-            parts = ["\(line.lead ?? "") \(line.text)", "Esc takes over"]
-        } else {
-            return nil
+    static func spoken(_ content: PanelContent) -> String {
+        switch content {
+        case .line(let line), .compactLine(let line): return SlipSpeech.line(line)
+        case .popup(let spec, let highlight): return SlipSpeech.popup(spec, highlight: highlight)
         }
-        return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            .map { [".", "?", "!"].contains($0.last.map(String.init) ?? "") ? $0 : $0 + "." }
-            .joined(separator: " ")
     }
 
     private func clearCaret() {
@@ -393,6 +399,11 @@ final class SurfaceCoordinator {
     private func show(_ view: (CGFloat?) -> AnyView, narrows: Bool, text: String, placement: PanelPlacementRequest, content: PanelContent? = nil) {
         let fit = fitted
         fitted = nil
+        switch content {
+        case .popup?: panel.radius = Tokens.Shape.popupRadius; panel.popup = true
+        case .compactLine?: panel.radius = Tokens.Shape.compactRadius; panel.popup = false
+        case .line?, nil: panel.radius = Tokens.Shape.slipRadius; panel.popup = false
+        }
         switch placement {
         case .inPlace:
             panel.setContent(view(placed?.choice.spot.isNarrow == true ? PopupView.minWidth : nil))
@@ -511,7 +522,7 @@ final class SurfaceCoordinator {
     private func drawOwnGhost(_ text: String, caret: CGRect, font: NSFont, color: NSColor?) {
         let view = Text(text)
             .font(Font(font))
-            .foregroundStyle(Color(nsColor: color ?? .labelColor).opacity(0.45))
+            .foregroundStyle(Color(nsColor: color ?? .labelColor).opacity(Tokens.ghostOpacity(dark: color.map(FillOverlay.isLight) ?? false)))
             .fixedSize()
             .frame(height: caret.height)
         ownGhost.pin(HostedPanel.Anchor(corner: .topLeft, point: NSPoint(x: caret.maxX, y: Screen.cocoa(caret).maxY)))
