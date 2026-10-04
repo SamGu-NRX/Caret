@@ -170,11 +170,15 @@ export function buildDesk(corpus: Corpus, snaps: readonly Snapshot[], form: Corp
   };
 }
 
-/** Required markers, a trailing colon and "(optional)" are not part of what a label says. */
+/**
+ * Required markers, a trailing colon and "(optional)" are not part of what a label says. The job form marks required
+ * fields with a heavy asterisk (U+2731), which B24's scorer kept, so its Full name, Email, Phone and visa question
+ * were never matched to the corpus ("not found" on the fill scoreboard, an unexpected write on the Ask one; B25).
+ */
 export const normLabel = (s: string): string =>
   s
     .replace(/\((?:required|optional)\)/gi, "")
-    .replace(/[*:]/g, "")
+    .replace(/[*:\u2731\u2217]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();

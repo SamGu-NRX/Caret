@@ -23,7 +23,7 @@ import { jevIntentMaker, writerIntentMaker, type IntentMaker, type MakerUse } fr
 import type { AskIntent } from "../src/planner/intent.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
-import { CANDIDATES, WRITER_ROUTE } from "../src/writer/config.ts";
+import { CANDIDATES, INTENT_ROUTE, WRITER_ROUTE } from "../src/writer/config.ts";
 import { ChatHttpError } from "../src/writer/chat.ts";
 import { Snapshot } from "../src/protocol.ts";
 import { rng } from "../test/large-scene.ts";
@@ -74,13 +74,14 @@ const askJev: AskJev = async (req) => {
   }
   return r;
 };
-const route = a["writer-model"] === undefined ? WRITER_ROUTE : CANDIDATES.find((r) => r.model === a["writer-model"]);
+// Intents go to INTENT_ROUTE, or the --writer-model named; the plan route's programs to WRITER_ROUTE, as in the helper.
+const route = a["writer-model"] === undefined ? INTENT_ROUTE : CANDIDATES.find((r) => r.model === a["writer-model"]);
 if (route === undefined) throw new Error(`--writer-model ${a["writer-model"]} is not one of ${CANDIDATES.map((r) => r.model).join(", ")}`);
-const port = makeWriterPort(route);
-let lastWrite = 0;
 let retries = 0;
-/** The writer, spaced to the provider's per-minute limit, with one wait-and-retry on 429 (counted; WriterPort itself never retries). */
-const writer: WriterPort = {
+/** A writer, spaced to the provider's per-minute limit, with one wait-and-retry on 429 (counted; WriterPort itself never retries). */
+const spaced = (port: WriterPort): WriterPort => {
+  let lastWrite = 0;
+  return {
   route: port.route,
   async write(req) {
     if (jevSpent + writerSpent >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
@@ -102,7 +103,10 @@ const writer: WriterPort = {
       }
     }
   },
+  };
 };
+const writer = spaced(makeWriterPort(route));
+const planWriter = spaced(makeWriterPort(WRITER_ROUTE));
 
 type Verdict = "right" | "partial" | "wrong" | "refused";
 interface Proposed {
@@ -139,7 +143,7 @@ for (const [i, ask] of asks.entries()) {
   let intent: AskIntent | null = null;
   let use: MakerUse | null = null;
   try {
-    draft = await planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: a["no-writer"] === true ? null : writer, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n) });
+    draft = await planAsk(ask.instruction, desk.model, memory, desk.about, { askJev, maker, writer: a["no-writer"] === true ? null : planWriter, offerKey, windowId: desk.form.window.windowId, now: T0, rand: (n) => Math.floor(r() * n) });
     intent = draft.intent;
     use = draft.maker;
   } catch (e) {
@@ -182,7 +186,7 @@ const mean = (xs: readonly number[]) => (xs.length === 0 ? 0 : Math.round(xs.red
 const md = [
   `# Ask scoreboard (B25): ${a["asks-file"]}, maker ${a.maker}`,
   "",
-  `Maker ${a.maker}${a.maker === "writer" ? ` (${route.model} on ${route.provider}${route === WRITER_ROUTE ? "" : `, not the configured ${WRITER_ROUTE.model}`})` : ""}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
+  `Maker ${a.maker}${a.maker === "writer" ? ` (${route.model} on ${route.provider}${route === INTENT_ROUTE ? ", the configured intent route" : `, not the configured ${INTENT_ROUTE.model}`})` : ""}; plan route's writer ${a["no-writer"] === true ? "off" : WRITER_ROUTE.model}. Writer $${writerSpent.toFixed(4)}, ${retries} 429 retries; Jev $${jevSpent.toFixed(4)}.`,
   `Maker tokens per intent (input + output, ${a.maker === "jev" ? "Jev input only" : "the writer's"}): mean ${mean(tokens)}, max ${Math.max(0, ...tokens)}.`,
   "",
   `All ${rows.length}: right ${n("right")}, partial ${n("partial")}, refused ${n("refused")} (of them asked a question ${asked.length}), **wrong ${n("wrong")}**.`,

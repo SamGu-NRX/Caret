@@ -186,8 +186,12 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       const scope = agreed("scope");
       const source = agreed("source");
       if (source === "missing") return { intent: { ...base, route: "refuse", why: "notOnScreen" }, use };
+      // An unsettled source or person is a question, never a wider reading: "any" would read windows the instruction
+      // may have ruled out, and "user" would give a named person's fields the user's own details (B25 review).
+      if (source === null) return { intent: { ...base, why: "whichSource" }, use };
       const whose = agreed("whose");
       if (whose === "unnamed") return { intent: { ...base, route: "refuse", why: "otherPersonUnnamed" }, use };
+      if (whose === null && snap.persons.length > 0) return { intent: { ...base, why: "whichPerson" }, use };
       const ties = snap.literals.flatMap((span, i) => {
         const f = agreed(`lit${i + 1}`);
         const field = f === null || f === "none" ? undefined : snap.fields.find((x) => x.ref === f);
@@ -220,8 +224,7 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
           scope: scope === "all" ? "all" : scope === "list" ? "list" : "section",
           section,
           fields: scope === "list" ? fields : [],
-          // A source the asks do not agree on reads every source, as fill on focus does; fill's own rules still hold.
-          sources: source === null || source === "any" ? ["any"] : [source],
+          sources: [source],
           whose: whose ?? "user",
           literals,
         },

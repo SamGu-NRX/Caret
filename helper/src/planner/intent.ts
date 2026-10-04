@@ -15,9 +15,9 @@ import { describeField } from "../fill/descriptor.ts";
 import { formControls, inWebArea, type Control } from "../fill/controls.ts";
 import { labelledLines } from "../fill/candidates.ts";
 import { FILLABLE_ROLES, neverTypedNode, type FillScope } from "../fill/fill.ts";
-import { NEVER_TYPED_SAYS, neverTypedValue, type NeverTyped } from "../fill/never-typed.ts";
+import { SENSITIVE_SAYS, type SensitiveKind } from "../memory/sensitive.ts";
 import { SnippetLedger } from "../privacy.ts";
-import { occursBounded, type MemoryValue } from "./trace.ts";
+import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { PlannerError } from "./validate.ts";
 
@@ -51,7 +51,7 @@ export interface IntentField {
   control: Control;
   /** A text field that already holds a value; only a list names it. */
   filled: boolean;
-  neverTyped: NeverTyped | null;
+  neverTyped: SensitiveKind | null;
 }
 
 export interface IntentSnapshot {
@@ -174,7 +174,7 @@ export function intentSnapshot(instruction: string, model: ScreenModel, w: Windo
 
 /** The sentence each reason says, to the user, when an Ask refuses or asks. */
 export const WHY_SAYS: Record<Exclude<Reason, "none">, string> = {
-  neverTyped: "Caret never types a Social Security number, a card number, a password or a one-time code; that is yours to type",
+  neverTyped: "Caret never types passwords, card or account numbers, government ID numbers, one-time codes or API keys; that is yours to type",
   noSuchField: "this form has no field for what you asked",
   notOnScreen: "what you asked to copy from is not open on screen",
   pressOrSend: "Caret never submits, sends or presses a button for you; that is yours to do",
@@ -257,7 +257,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
     if (!fields.includes(f)) bad(`ties '${l.text}' to ${f.name}, which is not among its fields`);
     const text = l.text.trim();
     if (text === "" || text.length > 200 || !occursBounded(snap.instruction, text)) bad(`ties '${text.slice(0, 60)}' to ${f.name}, and that is not a span of the instruction`);
-    if (neverTypedValue(text) !== null) stop("neverTyped");
+    if (secretIn(text, snap.instruction) !== null) stop("neverTyped");
     if (literals.has(f.key) && literals.get(f.key) !== text) bad(`ties two values to ${f.name}`);
     literals.set(f.key, text);
   }
@@ -279,5 +279,5 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
 /** How the user is told what an Ask left to them. */
 export function leftToYouSays(fields: readonly IntentField[]): string | null {
   if (fields.length === 0) return null;
-  return fields.map((f) => `${f.name} (${NEVER_TYPED_SAYS[f.neverTyped as NeverTyped]})`).join(", ");
+  return fields.map((f) => `${f.name} (Caret never types ${SENSITIVE_SAYS[f.neverTyped as SensitiveKind]})`).join(", ");
 }

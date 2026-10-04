@@ -164,6 +164,30 @@ class LineTable {
     return n;
   }
 
+  /**
+   * The runs of `t`, each PARTIAL_MIN or more characters long, that some line of the window also shows, as maximal
+   * stretches of `t`: what a text quoting part of a line reveals of it ("Copy this: " and a sentence's first hundred
+   * characters). Lines never join, so a run cannot cross from one line into the next.
+   */
+  sharedRuns(t: string): string[] {
+    if (t.length < PARTIAL_MIN) return [];
+    this.joined ??= `\u0000${[...this.counts.keys()].filter((l) => l.length >= CONTAINED_MIN).join("\u0000")}\u0000`;
+    const cover = new Uint8Array(t.length);
+    for (let p = 0; p + PARTIAL_MIN <= t.length; p++) if (this.joined.includes(t.slice(p, p + PARTIAL_MIN))) cover.fill(1, p, p + PARTIAL_MIN);
+    const runs: string[] = [];
+    for (let i = 0; i < t.length; ) {
+      if (cover[i] === 0) {
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < t.length && cover[j] === 1) j++;
+      runs.push(t.slice(i, j));
+      i = j;
+    }
+    return runs;
+  }
+
   /** Every distinct line of the window that `t` holds, by where it starts in `t`; each line once. */
   linesIn(t: string, out: Set<string>): void {
     for (let i = 0; i + CONTAINED_MIN <= t.length; i++) {
@@ -241,6 +265,11 @@ class LineTable {
   }
 }
 
+/**
+ * Shortest stretch of a plan's or memory's text that counts as quoting part of a window's line (sharedRuns).
+ * Assumed: long enough that common words do not match by chance, short enough to catch a quoted phrase.
+ */
+const PARTIAL_MIN = 16;
 /** Texts each window's table remembers asking about. Assumed. */
 const INSIDE_CACHE = 4096;
 /** Windows whose tables are kept after their state was last asked about; the oldest goes first. Assumed: more windows than a screen usually has open. */
@@ -404,6 +433,8 @@ export class SnippetLedger {
    * 25 to 29 ms per pricing of 40 texts over eight windows of 5,000 lines).
    */
   private readonly reveals = new Map<string, { lines: [string, string[]][]; shownBy: string[] }>();
+  /** For plan and memory text: the runs of it each window's lines show (LineTable.sharedRuns), worked out once per ledger. */
+  private readonly partials = new Map<string, [string, string[]][]>();
   readonly snippets: Snippet[] = [];
 
   /** `windows`: every window whose lines a request's text could reveal, normally all of the screen model's. */
@@ -423,6 +454,30 @@ export class SnippetLedger {
     if (this.known.has(w.window.windowId)) return;
     this.known.set(w.window.windowId, w);
     this.reveals.clear();
+    this.partials.clear();
+  }
+
+  /**
+   * The runs of a plan's or memory's text that windows' lines show, with the windows: a text that quotes part of a
+   * line, not the whole line, reveals that part of it (B25 review: an instruction quoting most of a note's sentence
+   * was charged nothing). A run inside a whole line the text holds is that line's, charged once already.
+   */
+  private partialRuns(t: string): [string, string[]][] {
+    let r = this.partials.get(t);
+    if (r !== undefined) return r;
+    const whole = this.revealed(t).lines;
+    const out = new Map<string, string[]>();
+    for (const [wid, w] of this.known) {
+      for (const run of windowText(w).sharedRuns(t)) {
+        if (whole.some(([l, ids]) => ids.includes(wid) && l.includes(run))) continue;
+        const ids = out.get(run);
+        if (ids === undefined) out.set(run, [wid]);
+        else ids.push(wid);
+      }
+    }
+    r = [...out];
+    this.partials.set(t, r);
+    return r;
   }
 
   private revealed(t: string): { lines: [string, string[]][]; shownBy: string[] } {
@@ -477,6 +532,8 @@ export class SnippetLedger {
       // And every other window that shows the text inside a line: a value taken from a card that a chat
       // message also quotes reveals that much of the chat.
       for (const wid of r.shownBy) if (wid !== from?.window.windowId) charge(wid, t);
+      // Plan and memory text that quotes part of a line reveals that part.
+      if (from === null) for (const [run, ids] of this.partialRuns(t)) for (const wid of ids) charge(wid, run);
     }
     for (const [wid, a] of adds) {
       const e = this.entries.get(wid) as Entry;

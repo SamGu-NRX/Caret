@@ -8,14 +8,14 @@
 // Nothing here acts.
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { FillField, FillProposal } from "../protocol.ts";
-import type { AskJev } from "../fill/jev.ts";
+import type { AskJev, JevRequest } from "../fill/jev.ts";
 import type { AboutValue } from "../fill/about.ts";
 import { FillError, memoryRefOf, proposeFill } from "../fill/fill.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import type { WriterPort } from "../writer/port.ts";
-import { planTask, taskWindow, type PlanDraft, type PlannerMemory } from "./planner.ts";
+import { asksToFillForm, namesShortLabel, PLAN_CUTOFF, planTask, relevance, taskWindow, type PlanDraft, type PlannerMemory } from "./planner.ts";
 import { planWithCode, type WriterUse } from "./codeplan.ts";
-import { checkIntent, intentSnapshot, leftToYouSays, type AskIntent, type IntentField } from "./intent.ts";
+import { checkIntent, intentSnapshot, leftToYouSays, WHY_SAYS, type AskIntent, type IntentField, type IntentSnapshot } from "./intent.ts";
 import type { IntentMaker, MakerUse } from "./intent-makers.ts";
 import { handoffWhy, PlannerError, validatePlan, type PlanContext } from "./validate.ts";
 
@@ -93,6 +93,17 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     return refused(e);
   }
   const extra = { intent, maker: use, fill: null };
+  // A writer's intent names fields by ref, which code checks against the snapshot, not against what the instruction
+  // asks: a field the instruction does not name by its words, and "every field" when it does not ask for the form,
+  // stand only when Jev, asked twice, agrees the instruction asks for them (B25 review; the rule the code-mode writer
+  // has had since B24, codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
+  if (checked.route === "fill" && o.maker.name === "writer") {
+    try {
+      checked = await confirmScope(instruction, checked, intent, snap, askJev);
+    } catch (e) {
+      return refused(e);
+    }
+  }
 
   if (checked.route === "plan") {
     try {
@@ -181,6 +192,51 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     maker: use,
     fill: p,
   };
+}
+
+const CONFIRM = { yes: "Yes: the instruction asks for this.", no: "No: the instruction does not ask for this." } as const;
+const CONFIRM_FIELD = [
+  (instr: string, name: string): string => `The user asked: "${instr}". Does that ask to fill in or change the field '${name}'?`,
+  (instr: string, name: string): string => `Field: '${name}'. Instruction: "${instr}". Is this field one the instruction asks to fill or change?`,
+] as const;
+const CONFIRM_ALL = [
+  (instr: string): string => `The user asked: "${instr}". Does that ask Caret to fill in every field of the form it can?`,
+  (instr: string): string => `Instruction: "${instr}". Is it a request to fill in the whole form?`,
+] as const;
+
+/**
+ * The writer's fill scope with every field the instruction does not name by its words confirmed by Jev, both asks
+ * answering yes at PLAN_CUTOFF; an "all" or section scope the instruction does not state is confirmed the same way.
+ * Throws PlannerError when nothing in scope is left, or the whole form is not confirmed.
+ */
+async function confirmScope(instruction: string, checked: Extract<ReturnType<typeof checkIntent>, { route: "fill" }>, intent: AskIntent, snap: IntentSnapshot, askJev: AskJev): Promise<Extract<ReturnType<typeof checkIntent>, { route: "fill" }>> {
+  const named = (f: IntentField): boolean => relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.name);
+  const whole = intent.scope === "all" ? !asksToFillForm(instruction) : intent.scope === "section" ? relevance(instruction, snap.sections.find((x) => x.ref === intent.section)?.name ?? "") === 0 : false;
+  const unnamed = intent.scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
+  if (!whole && unnamed.length === 0) return checked;
+  const declared = snap.ledger.declared();
+  const req = (wording: 0 | 1): JevRequest => {
+    const questions: JevRequest["questions"] = {};
+    if (whole) questions.all = { type: "choice", instructions: CONFIRM_ALL[wording](instruction), criteria: { ...CONFIRM } };
+    unnamed.forEach((f, i) => {
+      questions[`f${i + 1}`] = { type: "choice", instructions: CONFIRM_FIELD[wording](instruction, f.name), criteria: { ...CONFIRM } };
+    });
+    const sent = JSON.stringify([instruction, questions]);
+    return { state: { instruction, task: "Caret checks which fields of the form the user's instruction asks it to fill." }, questions, snippets: declared.snippets.filter((x) => sent.includes(x.text)), charged: declared.charged };
+  };
+  const [a, b] = await Promise.all([askJev(req(0)), askJev(req(1))]);
+  const yes = (id: string): boolean => {
+    const x = a.answers[id];
+    const y = b.answers[id];
+    return x?.choice === "yes" && y?.choice === "yes" && Math.min(x.confidence, y.confidence) >= PLAN_CUTOFF;
+  };
+  if (whole && !yes("all")) throw new PlannerError("unsure", WHY_SAYS.whichFields);
+  const kept = checked.fields.filter((f) => !unnamed.includes(f) || yes(`f${unnamed.indexOf(f) + 1}`));
+  if (kept.length === 0) throw new PlannerError("unsure", WHY_SAYS.whichFields);
+  const keys = new Set(kept.map((f) => f.key));
+  const literals = new Map([...checked.scope.literals].filter(([k]) => keys.has(k)));
+  const trigger = keys.has(checked.trigger) ? checked.trigger : (kept[0] as IntentField).key;
+  return { ...checked, fields: kept, trigger, scope: { ...checked.scope, fields: kept.map((f) => f.key), literals } };
 }
 
 /** The question for a value the user spelled out that reads more than one way. */

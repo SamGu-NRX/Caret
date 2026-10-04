@@ -8,7 +8,7 @@ import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { checkIntent, intentSnapshot, personSpans, type AskIntent, type IntentSnapshot } from "../src/planner/intent.ts";
 import { AskRefused, planAsk } from "../src/planner/ask.ts";
 import type { IntentMaker } from "../src/planner/intent-makers.ts";
-import { intentInput } from "../src/planner/intent-makers.ts";
+import { intentInput, jevIntentMaker, writerIntentMaker } from "../src/planner/intent-makers.ts";
 import { intentResponseFormat, IntentInputSchema } from "../src/writer/intent-prompt.ts";
 import { PlannerError } from "../src/planner/validate.ts";
 import type { Node } from "../src/protocol.ts";
@@ -76,7 +76,7 @@ describe("intentSnapshot", () => {
     const s = snapOf("fill this out");
     expect(s.fields.map((f) => f.name)).toEqual(["Full name", "Email", "Landlord name", "Landlord phone", "Social Security number", "Notes", "Delivery time", "Size"]);
     expect(s.fields.find((f) => f.name === "Notes")?.filled).toBe(true);
-    expect(s.fields.find((f) => f.name === "Social Security number")?.neverTyped).toBe("ssn");
+    expect(s.fields.find((f) => f.name === "Social Security number")?.neverTyped).toBe("governmentId");
     expect(s.windows.map((w) => w.title)).toEqual(["Rental notes.txt", "Draft.txt"]);
     expect(s.memory).toEqual(["Name"]);
   });
@@ -143,7 +143,7 @@ describe("checkIntent", () => {
 });
 
 /** A stand-in Jev: value questions answered by the text a pick names, owner questions by `owner`, every whose question "user"; both asks alike. */
-function jevBy(pick: (q: string) => string | null, owner: (d: string) => string = () => "unclear"): { ask: AskJev; seen: JevRequest[] } {
+function jevBy(pick: (q: string) => string | null, owner: (d: string) => string = () => "unclear", confirm: (q: string) => "yes" | "no" = () => "yes"): { ask: AskJev; seen: JevRequest[] } {
   const seen: JevRequest[] = [];
   const ask: AskJev = async (req) => {
     seen.push(req);
@@ -152,6 +152,7 @@ function jevBy(pick: (q: string) => string | null, owner: (d: string) => string 
         const ins = String(q.instructions);
         if (id.endsWith("_whose")) return [id, { choice: "user", confidence: 0.9 }];
         if (id.endsWith("_owner")) return [id, { choice: owner(ins), confidence: 0.9 }];
+        if ("yes" in q.criteria) return [id, { choice: confirm(ins), confidence: 0.9 }];
         const want = pick(ins);
         const hit = want === null ? undefined : Object.entries(q.criteria).find(([, d]) => d?.startsWith(`"${want}"`));
         return [id, { choice: hit?.[0] ?? "none", confidence: 0.9 }];
@@ -173,6 +174,16 @@ describe("the scoped fill", () => {
     expect(sent).toContain("the landlord's phone from my note");
     // The draft window was not a source: its phone is never offered.
     expect(sent).not.toContain("(415) 555-0162");
+  });
+
+  it("never moves a value's description to the window just left when the Ask's sources leave it out", async () => {
+    // The note is the window just left and also shows the email; the Ask names only the draft, which shows it too.
+    const m = desk();
+    m.apply(snap([field("te/draft", "Draft for Thursday\nEmail: elena.vance@example.com", { role: "AXTextArea" })], { at: 100, windowId: "draft", title: "Draft.txt", app: { pid: 7000, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: false, values: [value("email", "elena.vance@example.com", "te/draft")] }));
+    const j = jevBy((q) => (q.includes("'Email'") ? "elena.vance@example.com" : null), () => "user");
+    const p = await proposeFill(m, j.ask, "form", KEY("email"), 2000, { scope: scopeOf({ fields: [KEY("email")], windows: new Set(["draft"]), instruction: "my email from the draft" }) });
+    expect(p.fields[0]?.source?.windowId ?? null).not.toBe("note");
+    expect(JSON.stringify(j.seen.map((r) => [r.state, r.questions]))).not.toContain("Rental notes.txt");
   });
 
   it("offers a spelled-out value only to its field, and leaves a time with no am or pm to a question", async () => {
@@ -204,7 +215,7 @@ describe("a named person's several values", () => {
   const ec = `${P}/textfield:emergency contact phone~0`;
   const deskWith = (): ScreenModel => {
     const m = new ScreenModel();
-    m.apply(snap([field("mail/body", mail, { role: "AXTextArea" })], { at: 900, windowId: "mail", title: "Clinic form", app: { pid: 7001, bundleId: "com.apple.mail", name: "Mail" }, focused: true, values: [value("phone", "(617) 555-0129", "mail/body"), value("phone", "(617) 555-0166", "mail/body")] }));
+    m.apply(snap([field("mail/body", mail, { role: "AXTextArea" })], { at: 900, windowId: "mail", title: "Clinic form", app: { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" }, focused: true, values: [value("phone", "(617) 555-0129", "mail/body"), value("phone", "(617) 555-0166", "mail/body")] }));
     m.apply(snap([node(`${P}/webarea:~0`, "AXWebArea", { label: "Clinic" }), field(ec, "", { parent: `${P}/webarea:~0`, label: "Emergency contact phone", frame: [100, 100, 200, 20] })], { at: 1000, windowId: "form", title: "Clinic", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true, focusedKey: ec }));
     return m;
   };
@@ -216,6 +227,52 @@ describe("a named person's several values", () => {
     expect(office.fields[0]).toMatchObject({ value: null, withheld: "ambiguous" });
     const cell = await proposeFill(deskWith(), jevBy((q) => (q.includes("'Emergency contact phone'") ? "(617) 555-0129" : null), ines).ask, "form", ec, 2000, { scope });
     expect(cell.fields[0]).toMatchObject({ value: "(617) 555-0129", withheld: null });
+  });
+});
+
+describe("the intent makers", () => {
+  const fakeWriter = (out: () => unknown) => ({
+    route: { provider: "groq", baseUrl: "", keyName: "", model: "fake", maxTokensParam: "max_tokens", extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "" } } as const,
+    write: async () => {
+      const json = out();
+      return { model: "fake", provider: "groq", output: { program: null, reply: JSON.stringify(json), json }, inputTokens: 10, outputTokens: 5, reasoningTokens: 0, latencyMs: 1, costUsd: 0 };
+    },
+  });
+  it("takes the writer's JSON as the intent, and fails loudly on anything else", async () => {
+    const s = snapOf("my email please");
+    const good = { route: "fill", why: "none", scope: "list", section: "none", fields: ["f2"], sources: ["any"], whose: "user", literals: [] };
+    expect((await writerIntentMaker(fakeWriter(() => good), () => "k").make(s)).intent).toEqual(good);
+    const bad = await writerIntentMaker(fakeWriter(() => ({ route: "fill" })), () => "k").make(s).catch((e: unknown) => e);
+    expect((bad as PlannerError).code).toBe("schema");
+    const down = await writerIntentMaker({ ...fakeWriter(() => good), write: async () => { throw new Error("groq HTTP 429"); } }, () => "k").make(s).catch((e: unknown) => e);
+    expect((down as PlannerError).code).toBe("unavailable");
+  });
+
+  /** Jev answering each stage-one question by id, the same in both asks unless `second` says otherwise; nouls by id. */
+  const jevAnswers = (first: Record<string, string>, nouls: Record<string, number> = {}, second: Record<string, string> = {}): AskJev => {
+    let n = 0;
+    return async (req) => {
+      const which = n++ % 2 === 1 ? { ...first, ...second } : first;
+      const answers = Object.fromEntries(Object.keys(req.questions).map((id) => [id, { choice: which[id] ?? Object.keys(req.questions[id]?.criteria ?? {})[0] ?? "none", confidence: 0.9 }]));
+      return { model: "jev-test", answers, ...(req.nouls === undefined ? {} : { nouls: Object.fromEntries(Object.keys(req.nouls).map((id) => [id, nouls[id] ?? 0])) }), inputTokens: 100, latencyMs: 1, costUsd: 0 };
+    };
+  };
+  const make = (ask: AskJev, instruction: string) => jevIntentMaker(ask, { rand: () => 0 }).make(snapOf(instruction));
+
+  it("Jev: a list is the fields both Noul asks confirm at the floor, from the agreed source", async () => {
+    const s = snapOf("use Gary for the landlord part from my note");
+    const ref = (name: string) => refOf(s, name);
+    const r = await make(jevAnswers({ route: "fill", scope: "list", source: "w1", whose: "p1" }, { [`n_${ref("Landlord name")}`]: 0.97, [`n_${ref("Landlord phone")}`]: 0.96, [`n_${ref("Email")}`]: 0.6 }), "use Gary for the landlord part from my note");
+    expect(r.intent).toMatchObject({ route: "fill", scope: "list", fields: [ref("Landlord name"), ref("Landlord phone")], sources: ["w1"], whose: "p1" });
+    expect(r.use.calls).toBe(4);
+  });
+
+  it("Jev: asks rather than widen when the route, the source or the person is unsettled, and refuses what both asks refuse", async () => {
+    expect((await make(jevAnswers({ route: "fill" }, {}, { route: "plan" }), "fill this out")).intent).toMatchObject({ route: "ask" });
+    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "w1" }, {}, { source: "w2" }), "fill this out from my note")).intent).toMatchObject({ route: "ask", why: "whichSource" });
+    expect((await make(jevAnswers({ route: "fill", scope: "all", source: "any", whose: "p1" }, {}, { whose: "user" }), "use Gary for this")).intent).toMatchObject({ route: "ask", why: "whichPerson" });
+    expect((await make(jevAnswers({ route: "refuse", why: "payment" }), "pay for it")).intent).toMatchObject({ route: "refuse", why: "payment" });
+    expect((await make(jevAnswers({ route: "fill", scope: "list", source: "any" }), "my email please")).intent).toMatchObject({ route: "ask", why: "whichFields" });
   });
 });
 
@@ -256,6 +313,23 @@ describe("planAsk", () => {
     expect(e).toBeInstanceOf(AskRefused);
     expect((e as AskRefused).code).toBe("unsure");
     expect((e as AskRefused).message).toContain("morning or the evening");
+  });
+
+  it("confirms a writer's fields the instruction does not name, and a whole-form scope it does not ask for", async () => {
+    const pick = (q: string): string | null => (q.includes("'Email'") ? "elena.vance@example.com" : q.includes("'Full name'") ? "Elena Vance" : null);
+    // The reviewer's case: the instruction rules Full name out; a writer's scope of every field is not taken on its word.
+    const all = await planAsk("Fill only Email; do not change Full name", desk(), memory, about, { askJev: jevBy(pick, () => "user", () => "no").ask, maker: maker({ scope: "all" }), writer: null, offerKey: "c1", windowId: "form", now: 2000 }).catch((x: unknown) => x);
+    expect((all as AskRefused).code).toBe("unsure");
+    // A listed field the instruction does not name, which Jev does not confirm, is dropped; the named one stays.
+    const list = await planAsk("my email please", desk(), memory, about, {
+      askJev: jevBy(pick, () => "user", (q) => (q.includes("'Full name'") ? "no" : "yes")).ask,
+      maker: maker((s) => ({ fields: [refOf(s, "Email"), refOf(s, "Full name")] })),
+      writer: null,
+      offerKey: "c2",
+      windowId: "form",
+      now: 2000,
+    });
+    expect(list.checked.writes.map((w) => w.node.key)).toEqual([KEY("email")]);
   });
 
   it("hands over controls alone as one hand-off step, and refuses what the intent refuses", async () => {

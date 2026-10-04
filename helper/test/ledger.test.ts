@@ -146,3 +146,31 @@ describe("a mixed note's budget (B25 lead decision 3)", () => {
     expect(ledger.take(w, "candidate", ["side door"])).toBe(false);
   });
 });
+
+describe("plan text that quotes part of a line (B25 review)", () => {
+  const LONG = "Deliver around 7:30 pm, and please use the side door and ring twice because the front bell is broken since May";
+  const note = (): { m: ScreenModel; w: WindowState } => {
+    const m = new ScreenModel();
+    m.apply(snap(["Pizza order", "Name: Jordan Reyes", LONG].map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Order note.txt", app: NOTES }));
+    return { m, w: m.windows.get("note-1") as WindowState };
+  };
+
+  it("charges the window for the part it quotes, and refuses more than the prose share", () => {
+    const { m } = note();
+    const most = new SnippetLedger(m.windows.values());
+    expect(most.plan([`Copy this: ${LONG.slice(0, 100)}`])).toBe(false);
+    const some = new SnippetLedger(m.windows.values());
+    const quote = LONG.slice(0, 30);
+    expect(some.plan([`Put "${quote}" in Notes`])).toBe(true);
+    expect(some.chars("note-1")).toBe(quote.length);
+    // The quoted part is declared under the window it came from.
+    expect(some.declared().snippets).toContainEqual({ windowId: "note-1", kind: "candidate", text: quote });
+  });
+
+  it("does not charge for a few words any page might hold", () => {
+    const { m } = note();
+    const l = new SnippetLedger(m.windows.values());
+    expect(l.plan(["ring at the side door please"])).toBe(true);
+    expect(l.chars("note-1")).toBe(0);
+  });
+});

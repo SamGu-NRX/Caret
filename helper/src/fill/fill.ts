@@ -20,7 +20,7 @@ import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { consentLike, describeControl, formControls, inWebArea, optionInText, type Control, type FormControl } from "./controls.ts";
 import { fieldPart, joinName, namePart, partFits, splitAddress, splitName, type FieldPart } from "./derive.ts";
 import { clockTime, readDate } from "./when.ts";
-import { neverTypedField, type NeverTyped } from "./never-typed.ts";
+import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
 
 export const NONE = "none";
@@ -60,13 +60,14 @@ export const WHOSE_CUTOFF = 0.5;
 export class FillError extends Error {}
 
 /**
- * The kind of a field Caret never types (never-typed.ts), read from its label, nearest label and placeholder
- * as describeField finds them; null for any other field. Fill and the planner both leave such a field to the
- * user, as they leave a secure field.
+ * The kind of a field Caret never types (B25 lead decision 2), read from its label, nearest label and placeholder
+ * as describeField finds them, by the classifier memory uses for what it never keeps (memory/sensitive.ts, M1), so
+ * the two never disagree; null for any other field. Fill and the planner both leave such a field to the user, as
+ * they leave a secure field.
  */
-export function neverTypedNode(w: WindowState, n: Node): NeverTyped | null {
+export function neverTypedNode(w: WindowState, n: Node): SensitiveKind | null {
   const d = describeField(w, n);
-  return neverTypedField([d.label ?? d.nearest, d.placeholder]);
+  return labelKind(d.label ?? d.nearest) ?? labelKind(d.placeholder);
 }
 
 /** The empty fillable fields of the trigger's window, nearest the trigger first. The trigger is always included. */
@@ -608,7 +609,9 @@ export async function proposeFill(
   // F1, F3). An untyped plain line is not enough, since a cut can hold the line the field wanted (B13 F4). A
   // pick from any other window meets every cut rule.
   const justLeft = model.windowBefore(windowId);
-  const anchorWindow = opts.anchor !== false && opts.cutRule !== false && justLeft !== null && !cut.includes(justLeft) ? (model.windows.get(justLeft) ?? null) : null;
+  // A window the generator did not read (excluded, or outside an Ask's named sources) is no anchor: it would move a
+  // value's description there and send its title and label (B25 review).
+  const anchorWindow = opts.anchor !== false && opts.cutRule !== false && justLeft !== null && !cut.includes(justLeft) && unread?.has(justLeft) !== true ? (model.windows.get(justLeft) ?? null) : null;
   const anchorLines = anchorWindow === null ? [] : labelledLines(anchorWindow);
   const anchored = (f: Field): boolean => anchorWindow !== null && !isCut(f.kinds) && candidates.some((c) => c.source.windowId === anchorWindow.window.windowId);
   const fromAnchor = (f: Field, p: Pick): boolean => {

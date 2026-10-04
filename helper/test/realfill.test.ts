@@ -368,6 +368,14 @@ describe("B24 review fixes", () => {
     expect(misfit("Brightline Dental Labs, lab technician, $5,200/mo gross", ["Current employer"])).not.toBeNull();
     expect(misfit("Brightline Dental Labs, lab technician", ["Current employer"])).not.toBeNull();
     for (const v of ["Acme, Inc.", "Ridgeline Outdoor, LLC", "Brightline Dental Labs", "Studio 54"]) expect(misfit(v, ["Current employer"])).toBeNull();
+    // A label that spells out a date format takes that format only (B25).
+    for (const [v, label] of [["08/2022", "Moved in (MM/YYYY)"], ["8/2022", "Moved in (MM/YYYY)"], ["05/2027", "Graduation Date (MM/YYYY)"], ["2027-01-04", "Start (YYYY-MM-DD)"], ["04.01.2027", "Start (DD.MM.YYYY)"]] as const) expect(misfit(v, [label])).toBeNull();
+    for (const [v, label] of [["Aug 2022", "Moved in (MM/YYYY)"], ["moved in Aug 2022, rent $1,450/mo", "Moved in (MM/YYYY)"], ["2022", "Moved in (MM/YYYY)"], ["01/04/2027", "Start (YYYY-MM-DD)"]] as const) expect(misfit(v, [label])).not.toBeNull();
+    // A field that shows its currency takes the bare number.
+    expect(misfit("$1,450", ["Monthly rent ($)"])).not.toBeNull();
+    expect(misfit("€90", ["Deposit (EUR)"])).not.toBeNull();
+    for (const v of ["1,450", "5200"]) expect(misfit(v, ["Monthly rent ($)"])).toBeNull();
+    expect(misfit("$1,450", ["Monthly rent"])).toBeNull();
     for (const v of ["at", "9999-99-99", "13/13/2026"]) expect(misfit(v, ["Date"])).not.toBeNull();
     for (const v of ["11/12/2026", "05/2027", "12", "March 3, 1991", "October 8, 2026 at 3:00 PM"]) expect(misfit(v, ["Date"])).toBeNull();
     expect(misfit("23pm", ["Time"])).not.toBeNull();
