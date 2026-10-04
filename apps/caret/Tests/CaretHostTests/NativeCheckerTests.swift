@@ -157,4 +157,31 @@ final class NativeCheckerTests: XCTestCase {
         XCTAssertEqual(found.first?.span, UTF16Span(start: 7, end: 10))
         XCTAssertEqual(found.first?.reason, "Use “were” with “we”.")
     }
+
+    // MARK: - Lead decisions 1 and 2, on the real checker
+
+    /// T1's two false corrections on a clean sentence. Valid in en-GB and en-AU, so any English in
+    /// the user's languages accepts them.
+    func testRegionalSpellingsAreNotErrors() async throws {
+        try XCTSkipUnless(!NativeChecker.englishVariants(preferred: Locale.preferredLanguages, available: NSSpellChecker.shared.availableLanguages).isEmpty,
+                          "no English in this Mac's languages")
+        let found = await check("The colour palette was finalised in the London office.")
+        XCTAssertEqual(found.filter { $0.kind == .spelling }.map(\.original), [])
+        let typo = await check("The colour palette was finalisd in the London office.")
+        XCTAssertEqual(typo.filter { $0.kind == .spelling }.map(\.original), ["finalisd"], "a real misspelling still shows")
+    }
+
+    /// macOS 26.6 autocorrects "adress" here to "dress", its second guess, and guesses "address"
+    /// first: the two disagree, so the mark needs a choice and Tab takes neither.
+    func testADisagreeingAutocorrectionNeedsAChoice() async throws {
+        let found = await check("Can you adress the feedback from Marisol before Friday?")
+        let mark = try XCTUnwrap(found.first { $0.original == "adress" })
+        XCTAssertEqual(mark.replacement, "address")
+        if mark.needsChoice {
+            XCTAssertTrue(mark.otherReplacements.first.map { $0 != "address" } ?? false)
+        } else {
+            // Another macOS may agree with itself; the first guess is still the fix.
+            XCTAssertFalse(mark.otherReplacements.contains("address"))
+        }
+    }
 }

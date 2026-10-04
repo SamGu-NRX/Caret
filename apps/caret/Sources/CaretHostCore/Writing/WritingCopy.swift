@@ -43,6 +43,13 @@ public enum WritingCopy {
     /// The line's key hints: "Tab fix", "↓ more".
     public static let fixHint = "fix"
     public static let moreHint = "more"
+    /// The hint on a line whose two answers disagree: Tab fixes nothing until one is picked.
+    public static let chooseHint = "choose"
+
+    /// "address or dress".
+    public static func either(_ choices: [String]) -> String {
+        choices.map(visible).joined(separator: " or ")
+    }
     public static let original = "Original"
     public static let fixAll = "Fix all in this paragraph"
 
@@ -86,6 +93,11 @@ public enum WritingCopy {
         case 2: return "two spaces"
         default: return "\(text.count) spaces"
         }
+    }
+
+    /// A line whose answers disagree, spoken: what is wrong and both choices, with no Tab.
+    public static func spokenChoice(reason: String, original: String, choices: [String]) -> String {
+        "\(reason). Replace \(spoken(original)) with \(choices.map(spoken).joined(separator: " or ")). Down Arrow shows the choices."
     }
 
     public static func spokenAlternative(_ label: String, number: Int?, selected: Bool) -> String {
