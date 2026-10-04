@@ -14,8 +14,8 @@ final class MemorySkillTests: XCTestCase {
         #"{"kind":"\#(kind)","id":"\#(id)","status":"\#(status)","says":"\#(says)","evidence":{"count":11,"lastSeen":1790000400000,"app":"Mail Fixture"},"fields":\#(fields)}"#
     }
 
-    private func skillFields(name: String = "Order to Tracker", onItsOwn: Bool, cleanRuns: Int = 10, handsOff: String = "null") -> String {
-        #"{"routineId":"routine-1","name":"\#(name)","trigger":"a Tracker window opens with Order and Carrier empty","runs":11,"cleanRuns":\#(cleanRuns),"needed":10,"onItsOwn":\#(onItsOwn),"handsOff":\#(handsOff)}"#
+    private func skillFields(name: String = "Order to Tracker", onItsOwn: Bool, cleanRuns: Int = 10, handsOff: String = "null", wrote: String = "[]") -> String {
+        #"{"routineId":"routine-1","name":"\#(name)","trigger":"a Tracker window opens with Order and Carrier empty","runs":11,"cleanRuns":\#(cleanRuns),"needed":10,"onItsOwn":\#(onItsOwn),"handsOff":\#(handsOff),"wrote":\#(wrote)}"#
     }
 
     private func reply(_ entries: [String]) throws -> HelperMemory.Reply {

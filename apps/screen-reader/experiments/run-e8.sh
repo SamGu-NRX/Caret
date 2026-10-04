@@ -32,7 +32,8 @@ FIX2=$!
 rm -rf "$PROFILE"
 open -n -g -a "Google Chrome" --args --user-data-dir="$PROFILE" --no-first-run --no-default-browser-check --disable-sync --disable-extensions "$PAGE"
 sleep 5
-CHROME=$(pgrep -f "Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$PROFILE" | head -1)
+# With set -e and pipefail, a pgrep that matches nothing would end the run before the active and drift conditions (CodeRabbit on PR #4).
+CHROME=$(pgrep -f "Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=$PROFILE" | head -1 || true)
 "$BIN/caret-screen" --e8 --pids "$FIX2,$CHROME" --title-match "Caret" --runs "$RUNS" --interval 0.25 --out "$OUT/active.json" | tee "$OUT/active.txt"
 stop "$FIX2"
 

@@ -184,10 +184,17 @@ public struct Hello: Codable, Equatable, Sendable {
     public var mode: ReaderMode
     public var pid: Int
     public var version: String
-    public init(role: ClientRole, mode: ReaderMode, pid: Int, version: String) {
+    /// B23: true only in the host app's hello. Only the host's session counts as "host connected".
+    public var host: Bool
+    /// B23: the reader's launch id, random per process, the same on every reconnect of that process.
+    public var session: String?
+    /// B23: the reader's challenge for this connection, base64 of 32 random bytes; the helper answers helperAuth.
+    public var challenge: String?
+    public init(role: ClientRole, mode: ReaderMode, pid: Int, version: String, host: Bool = false, session: String? = nil, challenge: String? = nil) {
         self.role = role; self.mode = mode; self.pid = pid; self.version = version
+        self.host = host; self.session = session; self.challenge = challenge
     }
-    enum CodingKeys: String, CodingKey { case role, mode, pid, version }
+    enum CodingKeys: String, CodingKey { case role, mode, pid, version, host, session, challenge }
     public init(from decoder: Decoder) throws {
         try checkEnvelope(decoder, Self.type)
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -195,12 +202,49 @@ public struct Hello: Codable, Equatable, Sendable {
         mode = try c.decode(ReaderMode.self, forKey: .mode)
         pid = try c.decode(Int.self, forKey: .pid)
         version = try c.decode(String.self, forKey: .version)
+        // protocol.ts: host is the literal true or absent, and only a consumer says it.
+        switch try c.decodeOptional(Bool.self, forKey: .host) {
+        case nil: host = false
+        case true?: host = true
+        case false?: throw ProtocolError("host is true or absent, never false")
+        }
+        session = try c.decodeOptional(String.self, forKey: .session)
+        challenge = try c.decodeOptional(String.self, forKey: .challenge)
+        if host && role != .consumer { throw ProtocolError("only a consumer says host") }
+        if (session != nil || challenge != nil) && role != .reader { throw ProtocolError("only the reader sends session and challenge") }
+        if let s = session, s.utf16.count < 8 { throw ProtocolError("a session id is at least 8 characters") }
+        if let ch = challenge, ch.utf16.count < 16 { throw ProtocolError("a challenge is at least 16 characters") }
     }
     public func encode(to encoder: Encoder) throws {
         try writeEnvelope(encoder, Self.type)
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(role, forKey: .role); try c.encode(mode, forKey: .mode)
         try c.encode(pid, forKey: .pid); try c.encode(version, forKey: .version)
+        if host { try c.encode(true, forKey: .host) }
+        try c.encodeIfPresent(session, forKey: .session); try c.encodeIfPresent(challenge, forKey: .challenge)
+    }
+}
+
+/// B23: the helper's answer to the reader's hello challenge, first on the connection: base64 of
+/// HMAC-SHA256(launch secret, "caret-helper-proof\n" + challenge + "\n" + pid), `pid` being the helper's own
+/// process, which the reader checks against its socket's peer. HelperProof checks the rest.
+public struct HelperAuth: Codable, Equatable, Sendable {
+    public static let type = "helperAuth"
+    public var proof: String
+    public var pid: Int
+    public init(proof: String, pid: Int) { self.proof = proof; self.pid = pid }
+    enum CodingKeys: String, CodingKey { case proof, pid }
+    public init(from decoder: Decoder) throws {
+        try checkEnvelope(decoder, Self.type)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        proof = try c.decode(String.self, forKey: .proof); pid = try c.decode(Int.self, forKey: .pid)
+        if proof.isEmpty { throw ProtocolError("a proof is not empty") }
+        if pid <= 0 { throw ProtocolError("a proof names the helper's pid") }
+    }
+    public func encode(to encoder: Encoder) throws {
+        try writeEnvelope(encoder, Self.type)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(proof, forKey: .proof); try c.encode(pid, forKey: .pid)
     }
 }
 
@@ -535,7 +579,9 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     /// (focus, select all, replace the selection); `expect` is
     /// the value the field must hold right before the write.
     /// `taskId` names the task whose act grant covers the write; nil acts only in --act-pids processes.
-    case write(pid: Int, windowId: String, key: String, role: String, attribute: String, expect: String, value: String, taskId: String?)
+    /// `element` (B23, S1 audit #6): `.mark` records the element written under the helper's name; `.sameAs` requires
+    /// the element at `key` to be the one recorded under it.
+    case write(pid: Int, windowId: String, key: String, role: String, attribute: String, expect: String, value: String, taskId: String?, element: ElementIdentity? = nil)
     /// `label` is the label the element must still carry.
     case press(pid: Int, windowId: String, key: String, role: String, label: String, taskId: String?)
     case watchInput(pids: [Int])
@@ -555,7 +601,7 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     case calendarRemove(id: String, taskId: String)
     case calendarDispose(calendar: String, taskId: String)
 
-    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows, taskId, calendar, title, start, end, id }
+    enum CodingKeys: String, CodingKey { case kind, pid, windowId, key, role, attribute, expect, value, label, pids, windows, taskId, calendar, title, start, end, id, mark, sameAs }
 
     /// True for the verbs that go to the calendar adapter rather than an app's window.
     public var isCalendar: Bool {
@@ -568,7 +614,7 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
     /// The task an acting verb names, checked against the reader's act grants.
     public var taskId: String? {
         switch self {
-        case let .write(_, _, _, _, _, _, _, t), let .press(_, _, _, _, _, t), let .raise(_, _, t): t
+        case let .write(_, _, _, _, _, _, _, t, _), let .press(_, _, _, _, _, t), let .raise(_, _, t): t
         case let .calendarAdd(_, _, _, _, t), let .calendarRemove(_, t), let .calendarDispose(_, t): t
         case .walk, .watchInput, .watchWindows, .watchPresses, .calendarFind, .calendarGet: nil
         }
@@ -596,10 +642,13 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
         case "write":
             let attribute = try c.decode(String.self, forKey: .attribute)
             guard ["value", "focused", "focusValue", "insert"].contains(attribute) else { throw ProtocolError("unknown write attribute \(attribute)") }
+            let mark = try c.decodeOptional(String.self, forKey: .mark), sameAs = try c.decodeOptional(String.self, forKey: .sameAs)
+            if mark == "" || sameAs == "" { throw ProtocolError("a mark is not empty; omit it instead") }
+            if mark != nil && sameAs != nil { throw ProtocolError("a write records a mark or checks one, not both") }
             self = .write(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId),
                           key: try c.decode(String.self, forKey: .key), role: try c.decode(String.self, forKey: .role),
                           attribute: attribute, expect: try c.decode(String.self, forKey: .expect), value: try c.decode(String.self, forKey: .value),
-                          taskId: try Self.grantTask(c))
+                          taskId: try Self.grantTask(c), element: mark.map(ElementIdentity.mark) ?? sameAs.map(ElementIdentity.sameAs))
         case "press":
             self = .press(pid: try c.decode(Int.self, forKey: .pid), windowId: try c.decode(String.self, forKey: .windowId),
                           key: try c.decode(String.self, forKey: .key), role: try c.decode(String.self, forKey: .role),
@@ -639,10 +688,15 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
         switch self {
         case let .walk(pid, windowId):
             try c.encode("walk", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
-        case let .write(pid, windowId, key, role, attribute, expect, value, taskId):
+        case let .write(pid, windowId, key, role, attribute, expect, value, taskId, element):
             try c.encode("write", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
             try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(attribute, forKey: .attribute)
             try c.encode(expect, forKey: .expect); try c.encode(value, forKey: .value); try c.encodeIfPresent(taskId, forKey: .taskId)
+            switch element {
+            case .mark(let m)?: try c.encode(m, forKey: .mark)
+            case .sameAs(let m)?: try c.encode(m, forKey: .sameAs)
+            case nil: break
+            }
         case let .press(pid, windowId, key, role, label, taskId):
             try c.encode("press", forKey: .kind); try c.encode(pid, forKey: .pid); try c.encode(windowId, forKey: .windowId)
             try c.encode(key, forKey: .key); try c.encode(role, forKey: .role); try c.encode(label, forKey: .label)
@@ -671,6 +725,13 @@ public enum ReaderVerb: Codable, Equatable, Sendable {
             try c.encode("calendarDispose", forKey: .kind); try c.encode(calendar, forKey: .calendar); try c.encode(taskId, forKey: .taskId)
         }
     }
+}
+
+/// What a write says about the element it writes (B23, S1 audit #6): record it under the helper's mark, or require it
+/// to be the one recorded under that mark.
+public enum ElementIdentity: Equatable, Sendable {
+    case mark(String)
+    case sameAs(String)
 }
 
 public struct WatchedWindow: Codable, Equatable, Hashable, Sendable {
@@ -753,7 +814,9 @@ public struct ActRevoke: Codable, Equatable, Sendable {
     }
 }
 
-public enum VerbOutcome: String, Codable, Sendable { case ok, notAllowed, noWindow, noElement, changed, secure, axError, blocked }
+/// `notSameElement` (B23): a write's sameAs did not hold. `focusMoved` (B23): focus left a web field the reader had
+/// just focused, so it wrote nothing.
+public enum VerbOutcome: String, Codable, Sendable { case ok, notAllowed, noWindow, noElement, changed, secure, axError, blocked, notSameElement, focusMoved }
 
 /// Why the calendar adapter refused: no Calendar access (the reader never asks for it), or no local source.
 public enum CalendarBlock: String, Codable, Sendable { case tcc, noLocalSource }
@@ -982,6 +1045,7 @@ public enum Message: Codable, Equatable, Sendable {
     case offerWithdrawn(OfferWithdrawn), settings(GateSettings), actGrant(ActGrant), actRevoke(ActRevoke)
     case planRequest(PlanRequest), planProposal(PlanProposal), calendarGrant(CalendarGrant)
     case skillOffer(SkillOffer), skillAnswer(SkillAnswer), memoryReply(MemoryReply), userPress(UserPress)
+    case helperAuth(HelperAuth)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -1020,6 +1084,7 @@ public enum Message: Codable, Equatable, Sendable {
         case SkillAnswer.type: self = .skillAnswer(try SkillAnswer(from: decoder))
         case MemoryReply.type: self = .memoryReply(try MemoryReply(from: decoder))
         case UserPress.type: self = .userPress(try UserPress(from: decoder))
+        case HelperAuth.type: self = .helperAuth(try HelperAuth(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -1060,6 +1125,7 @@ public enum Message: Codable, Equatable, Sendable {
         case .skillAnswer(let m): try m.encode(to: encoder)
         case .memoryReply(let m): try m.encode(to: encoder)
         case .userPress(let m): try m.encode(to: encoder)
+        case .helperAuth(let m): try m.encode(to: encoder)
         }
     }
 }

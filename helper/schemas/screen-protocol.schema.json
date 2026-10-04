@@ -38,6 +38,18 @@
             },
             "version": {
               "type": "string"
+            },
+            "host": {
+              "type": "boolean",
+              "const": true
+            },
+            "session": {
+              "type": "string",
+              "minLength": 8
+            },
+            "challenge": {
+              "type": "string",
+              "minLength": 16
             }
           },
           "required": [
@@ -567,7 +579,9 @@
                 "changed",
                 "secure",
                 "axError",
-                "blocked"
+                "blocked",
+                "notSameElement",
+                "focusMoved"
               ]
             },
             "detail": {
@@ -786,6 +800,18 @@
             },
             "version": {
               "type": "string"
+            },
+            "host": {
+              "type": "boolean",
+              "const": true
+            },
+            "session": {
+              "type": "string",
+              "minLength": 8
+            },
+            "challenge": {
+              "type": "string",
+              "minLength": 16
             }
           },
           "required": [
@@ -2352,6 +2378,9 @@
                               "typed",
                               "edit"
                             ]
+                          },
+                          "wrote": {
+                            "not": {}
                           }
                         },
                         "required": [
@@ -2433,6 +2462,9 @@
                             "type": "string",
                             "minLength": 1,
                             "maxLength": 200
+                          },
+                          "wrote": {
+                            "not": {}
                           }
                         },
                         "required": [
@@ -2506,6 +2538,9 @@
                           {
                             "type": "object",
                             "properties": {
+                              "wrote": {
+                                "not": {}
+                              },
                               "rule": {
                                 "type": "string",
                                 "const": "format"
@@ -2528,6 +2563,9 @@
                           {
                             "type": "object",
                             "properties": {
+                              "wrote": {
+                                "not": {}
+                              },
                               "rule": {
                                 "type": "string",
                                 "const": "useInstead"
@@ -2549,6 +2587,9 @@
                           {
                             "type": "object",
                             "properties": {
+                              "wrote": {
+                                "not": {}
+                              },
                               "rule": {
                                 "type": "string",
                                 "const": "dontOffer"
@@ -2680,6 +2721,9 @@
                               "misses"
                             ],
                             "additionalProperties": false
+                          },
+                          "wrote": {
+                            "not": {}
                           }
                         },
                         "required": [
@@ -2777,6 +2821,9 @@
                           },
                           "fixed": {
                             "type": "boolean"
+                          },
+                          "wrote": {
+                            "not": {}
                           }
                         },
                         "required": [
@@ -2949,6 +2996,16 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "wrote": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "writeHere",
+                                "writeElsewhere"
+                              ]
+                            }
                           }
                         },
                         "required": [
@@ -2959,7 +3016,8 @@
                           "cleanRuns",
                           "needed",
                           "onItsOwn",
-                          "handsOff"
+                          "handsOff",
+                          "wrote"
                         ],
                         "additionalProperties": false
                       }
@@ -7044,6 +7102,14 @@
                     "taskId": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "mark": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "sameAs": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "required": [
@@ -7477,6 +7543,35 @@
             "taskId",
             "at",
             "expires"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "helperAuth"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "proof": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pid": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "proof",
+            "pid"
           ],
           "additionalProperties": false
         }

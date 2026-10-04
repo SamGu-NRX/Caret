@@ -786,8 +786,12 @@ export class PendingWatcher {
   /** Tells the reader which windows to re-read: every watch that is not paused. */
   private syncReader(): void {
     const windows = [...this.watches.values()].filter((w) => !w.paused).map((w) => ({ pid: w.pid, windowId: w.windowId }));
-    void this.deps.reader({ kind: "watchWindows", windows }).then((r) => {
-      if (r.outcome !== "ok" || r.detail !== null) this.deps.warn?.(`pending: watchWindows answered ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
-    });
+    // A reader link that rejects (its connection gone) must not become an unhandled rejection that ends the helper (CodeRabbit on PR #5).
+    void this.deps.reader({ kind: "watchWindows", windows }).then(
+      (r) => {
+        if (r.outcome !== "ok" || r.detail !== null) this.deps.warn?.(`pending: watchWindows answered ${r.outcome}${r.detail === null ? "" : ` (${r.detail})`}`);
+      },
+      (e: unknown) => this.deps.warn?.(`pending: watchWindows failed: ${e instanceof Error ? e.message : String(e)}`),
+    );
   }
 }

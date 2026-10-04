@@ -765,19 +765,20 @@ private extension Dictionary where Key == String, Value == JSON {
         return s
     }
 
+    // Int(exactly:) rather than Int(_:), which traps on a whole number past Int's range such as 1e300 (CodeRabbit on PR #4).
     func int(_ key: String, at path: String) throws -> Int {
-        guard case .number(let n) = try required(key, at: path), n == n.rounded() else {
+        guard case .number(let n) = try required(key, at: path), let i = Int(exactly: n) else {
             throw PopupSpecError.wrongType(path: "\(path).\(key)", expected: "integer")
         }
-        return Int(n)
+        return i
     }
 
     func optionalInt(_ key: String, at path: String) throws -> Int? {
         guard let v = self[key], v != .null else { return nil }
-        guard case .number(let n) = v, n == n.rounded(), n >= 0 else {
+        guard case .number(let n) = v, let i = Int(exactly: n), i >= 0 else {
             throw PopupSpecError.wrongType(path: "\(path).\(key)", expected: "non-negative integer")
         }
-        return Int(n)
+        return i
     }
 
     func optionalBool(_ key: String, at path: String) throws -> Bool? {

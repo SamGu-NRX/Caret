@@ -10,7 +10,12 @@ private final class FakeBackend: CalendarBackend, @unchecked Sendable {
     var calls: [String] = []
     var calendars: [String: (title: String, source: String)] = ["icloud-cal": ("Caret Test", "icloud")]
     var events: [String: BackendEvent] = [:]
+    /// Makes every read throw, as EventKit's store does once access goes between the adapter's check and the read.
+    var readFails = false
+    /// Called inside each read, as a revoke landing while the adapter looks something up.
+    var duringRead: (() -> Void)?
     private var n = 0
+    struct ReadError: Error, CustomStringConvertible { var description: String { "no full Calendar access" } }
 
     init() {
         events["synced-ev"] = BackendEvent(id: "synced-ev", calendarID: "icloud-cal", title: "Coffee with Dana", start: t("2026-10-08T15:00:00-05:00"), end: t("2026-10-08T15:30:00-05:00"))
@@ -28,8 +33,10 @@ private final class FakeBackend: CalendarBackend, @unchecked Sendable {
         calendars.removeValue(forKey: id)
         events = events.filter { $0.value.calendarID != id }
     }
-    func events(calendarID: String, from: Date, to: Date) -> [BackendEvent] {
+    func events(calendarID: String, from: Date, to: Date) throws -> [BackendEvent] {
         calls.append("events \(calendarID)")
+        duringRead?()
+        if readFails { throw ReadError() }
         return events.values.filter { $0.calendarID == calendarID && $0.start < to && $0.end > from }
     }
     func saveEvent(calendarID: String, title: String, start: Date, end: Date) throws -> String {
@@ -37,7 +44,12 @@ private final class FakeBackend: CalendarBackend, @unchecked Sendable {
         events["ev-\(n)"] = BackendEvent(id: "ev-\(n)", calendarID: calendarID, title: title, start: start, end: end)
         return "ev-\(n)"
     }
-    func event(id: String) -> BackendEvent? { calls.append("event \(id)"); return events[id] }
+    func event(id: String) throws -> BackendEvent? {
+        calls.append("event \(id)")
+        duringRead?()
+        if readFails { throw ReadError() }
+        return events[id]
+    }
     func removeEvent(id: String) throws { calls.append("remove \(id)"); events.removeValue(forKey: id) }
 }
 
@@ -117,6 +129,62 @@ private let start = "2026-10-08T15:00:00-05:00", end = "2026-10-08T15:30:00-05:0
         #expect(a.ownedCalendars.isEmpty)
         #expect(b.calendars.keys.sorted() == ["icloud-cal"])
         #expect(b.events.keys.sorted() == ["synced-ev"])
+    }
+
+    // S1 audit #8: before B23 the grant was checked once, before the lookups, so a stop during them did not stop the save.
+    @Test func asksAgainRightBeforeEachChangeSoAStopDuringALookupWritesNothing() {
+        let b = FakeBackend()
+        let a = CalendarAdapter(backend: b, zone: chicago)
+        var revoked = false
+        let allowed = { revoked ? "the calendar grant for task t1 was revoked" : nil }
+        guard case let .ok(first?) = a.perform(.calendarAdd(calendar: "Caret Test", title: "Lunch", start: start, end: end, taskId: "t1"), allowed: allowed) else { Issue.record("add failed"); return }
+        // The stop lands while the adapter looks for a duplicate: no save follows.
+        b.duringRead = { revoked = true }
+        #expect(a.perform(.calendarAdd(calendar: "Caret Test", title: "Coffee with Dana", start: start, end: end, taskId: "t1"), allowed: allowed) == .refused(.notAllowed, "the calendar grant for task t1 was revoked"))
+        // And while it looks up the event to remove: no removal follows.
+        revoked = false
+        #expect(a.perform(.calendarRemove(id: first.id, taskId: "t1"), allowed: allowed) == .refused(.notAllowed, "the calendar grant for task t1 was revoked"))
+        #expect(b.events[first.id] != nil)
+        b.duringRead = nil
+        // Creating a calendar is a change too, and so is deleting one.
+        revoked = true
+        #expect(a.perform(.calendarAdd(calendar: "Caret Other", title: "x", start: start, end: end, taskId: "t1"), allowed: allowed) == .refused(.notAllowed, "the calendar grant for task t1 was revoked"))
+        #expect(a.perform(.calendarDispose(calendar: "Caret Test", taskId: "t1"), allowed: allowed) == .refused(.notAllowed, "the calendar grant for task t1 was revoked"))
+        #expect(b.calls.filter { $0.hasPrefix("save") || $0.hasPrefix("create") || $0.hasPrefix("remove") || $0.hasPrefix("delete") } == ["create Caret Test on local-1", "save cal-1"])
+    }
+
+    // S1 audit #16: before B23 a read that failed answered "not there", which undo's last check counted as removed.
+    @Test func aReadThatFailsIsAnErrorNeverAbsent() {
+        let b = FakeBackend()
+        let a = CalendarAdapter(backend: b, zone: chicago)
+        guard case let .ok(added?) = a.perform(.calendarAdd(calendar: "Caret Test", title: "Lunch", start: start, end: end, taskId: "t1")) else { Issue.record("add failed"); return }
+        b.readFails = true
+        #expect(a.perform(.calendarGet(id: added.id)) == .refused(.axError, "cannot read the calendar: no full Calendar access"))
+        #expect(a.perform(.calendarFind(calendar: "Caret Test", title: "Lunch", start: start, end: end)) == .refused(.axError, "cannot read the calendar: no full Calendar access"))
+        #expect(a.perform(.calendarRemove(id: added.id, taskId: "t1")) == .refused(.axError, "cannot read the calendar: no full Calendar access"))
+        // The failed reads forgot nothing: once the store reads again, the event is still the adapter's own.
+        b.readFails = false
+        #expect(a.perform(.calendarGet(id: added.id)) == .ok(added))
+        // After a removal, the check that it is gone reads the store too: a failed read is an error there as well (B23 review).
+        #expect(a.perform(.calendarRemove(id: added.id, taskId: "t1")) == .ok(nil))
+        b.readFails = true
+        #expect(a.perform(.calendarGet(id: added.id)) == .refused(.axError, "cannot read the calendar: no full Calendar access"))
+        b.readFails = false
+        #expect(a.perform(.calendarGet(id: added.id)) == .ok(nil))
+        #expect(b.calls.filter { $0 == "event \(added.id)" }.count >= 3)
+    }
+
+    // CodeRabbit on PR #4: before B23 remove and dispose ignored their task.
+    @Test func onlyTheTaskThatAddedAnEventRemovesItAndACalendarHoldingAnotherTasksEventStays() {
+        let b = FakeBackend()
+        let a = CalendarAdapter(backend: b, zone: chicago)
+        guard case let .ok(added?) = a.perform(.calendarAdd(calendar: "Caret Test", title: "Lunch", start: start, end: end, taskId: "t1")) else { Issue.record("add failed"); return }
+        #expect(a.perform(.calendarRemove(id: added.id, taskId: "t2")) == .refused(.notAllowed, "another task added this event; only that task removes it"))
+        #expect(a.perform(.calendarDispose(calendar: "Caret Test", taskId: "t2")) == .refused(.notAllowed, "the calendar holds events other tasks added (t1); it is not deleted"))
+        #expect(b.events[added.id] != nil && a.ownedCalendars == ["Caret Test"])
+        #expect(a.perform(.calendarRemove(id: added.id, taskId: "t1")) == .ok(nil))
+        #expect(a.perform(.calendarDispose(calendar: "Caret Test", taskId: "t2")) == .ok(nil))
+        #expect(a.ownedCalendars.isEmpty)
     }
 
     @Test func refusesTimesItCannotRead() {

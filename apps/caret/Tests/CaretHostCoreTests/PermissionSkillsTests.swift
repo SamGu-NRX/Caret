@@ -8,14 +8,15 @@ import XCTest
 final class PermissionSkillsTests: XCTestCase {
     /// Where a skill's runs wrote, as the helper may report it (`wrote`), or nil when it does not say.
     private enum Wrote: CaseIterable {
-        case here, elsewhere, both, unknown
+        /// `none`: no clean run wrote yet. Since B23 the helper always says (`wrote` is required).
+        case here, elsewhere, both, none
 
         var json: String {
             switch self {
             case .here: return #","wrote":["writeHere"]"#
             case .elsewhere: return #","wrote":["writeElsewhere"]"#
             case .both: return #","wrote":["writeHere","writeElsewhere"]"#
-            case .unknown: return ""
+            case .none: return #","wrote":[]"#
             }
         }
     }
@@ -69,11 +70,10 @@ final class PermissionSkillsTests: XCTestCase {
     }()
 
     /// Which skills each write row lists: a skill under every rule it wrote under, whether the setting
-    /// lets it run there or holds it back; a skill whose writes are unknown only where it may run now.
+    /// lets it run there or holds it back; a skill that wrote nothing yet under none.
     private static func expectedListed(_ wrote: Wrote, under action: HelperMemory.ActionType, runs: Bool) -> Bool {
         switch (wrote, action) {
         case (.here, .writeHere), (.elsewhere, .writeElsewhere), (.both, _): return true
-        case (.unknown, _): return runs
         default: return false
         }
     }
@@ -111,9 +111,9 @@ final class PermissionSkillsTests: XCTestCase {
     /// first", which that rule never lets it do. Now a skill whose writes are unknown is not listed
     /// there, and one that wrote there is shown as held back.
     func testTheA15ContradictionIsGone() throws {
-        let unknown = try state([permission(.writeHere, .ask), permission(.writeElsewhere, .ask), skill("s", wrote: .unknown)])
-        XCTAssertNil(MemoryPage.exceptions(unknown, under: .writeElsewhere))
-        XCTAssertEqual(MemoryPage.exceptions(unknown, under: .writeHere)?.title, "Skills that skip Ask first here")
+        let none = try state([permission(.writeHere, .ask), permission(.writeElsewhere, .ask), skill("s", wrote: .none)])
+        XCTAssertNil(MemoryPage.exceptions(none, under: .writeElsewhere))
+        XCTAssertNil(MemoryPage.exceptions(none, under: .writeHere), "a skill that wrote nothing yet is listed nowhere")
         let wroteElsewhere = try state([permission(.writeHere, .ask), permission(.writeElsewhere, .ask), skill("s", wrote: .elsewhere)])
         XCTAssertNil(MemoryPage.exceptions(wroteElsewhere, under: .writeHere), "it never wrote where you are")
         let held = try XCTUnwrap(MemoryPage.exceptions(wroteElsewhere, under: .writeElsewhere))
@@ -171,11 +171,34 @@ final class PermissionSkillsTests: XCTestCase {
                       "skills.ts mayRunUnasked changed; update PermissionPolicy.skillRunsUnasked and this test: \(body)")
     }
 
+    /// B23 sends `wrote` for real: the helper's own line for a skill on its own that wrote elsewhere
+    /// (helper/fixtures/golden/memory.ndjson, kept here as host-memory-8), under Ask first for
+    /// "Undoable changes in other apps", is listed as held back, and at Act if approved as running.
+    func testTheHelpersRealWroteLineShowsHeldBackAndRunning() throws {
+        let line = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-8", "memoryReply"))
+        XCTAssertEqual(line.unreadable, [])
+        XCTAssertEqual(line.entries.first?.skill?.wrote, [.writeElsewhere], "CaretScreenCore's SkillFields reads it too")
+        func page(_ rule: HelperMemory.Rule) throws -> MemoryBook.State {
+            var s = try state([permission(.writeHere, .ask), permission(.writeElsewhere, rule)])
+            s.entries += line.entries
+            return s
+        }
+        let held = try XCTUnwrap(MemoryPage.exceptions(try page(.ask), under: .writeElsewhere))
+        XCTAssertFalse(held.runs)
+        XCTAssertEqual(held.title, "Skills this setting holds back")
+        XCTAssertEqual(held.skills.map(\.name), ["Order details into Tracker"])
+        XCTAssertNil(MemoryPage.exceptions(try page(.ask), under: .writeHere), "it never wrote where you are")
+        XCTAssertEqual(MemoryPage.exceptions(try page(.actIfApproved), under: .writeElsewhere)?.runs, true)
+    }
+
     /// The contract line (Fixtures/memory.ndjson): a skill's `wrote`, and what the host refuses.
     func testWroteIsReadFromTheContractAndAnythingElseIsRefused() throws {
         let contract = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-8", "memoryReply"))
         XCTAssertEqual(contract.entries.first?.wrote, [.writeElsewhere])
-        XCTAssertNil(try state([skill("s", wrote: .unknown)]).entries.first?.wrote, "today's helper does not say")
+        XCTAssertEqual(try state([skill("s", wrote: .none)]).entries.first?.wrote, [])
+        let silent = #"{"kind":"skill","id":"s","status":"active","says":"x","evidence":{"count":11,"lastSeen":1790000400000,"app":"Tracker"},"fields":{"routineId":"r-s","name":"Skill s","trigger":"a Tracker window opens with Order empty","runs":11,"cleanRuns":10,"needed":10,"onItsOwn":true,"handsOff":null}}"#
+        let older = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[\#(silent)]}"#.utf8))
+        XCTAssertEqual(older.unreadable.count, 1, "since B23 a skill always says what it wrote; one that does not is counted, not guessed at")
         let bad = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[\#(skill("s", wrote: .here).replacingOccurrences(of: "writeHere", with: "outbound"))]}"#.utf8))
         XCTAssertEqual(bad.entries, [])
         XCTAssertEqual(bad.unreadable.count, 1, "a skill's runs write only here or elsewhere")

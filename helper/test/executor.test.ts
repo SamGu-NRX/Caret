@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
-import { FakeCalendar } from "../src/executor/means.ts";
+import { CalendarBlocked, CalendarRefused, FakeCalendar } from "../src/executor/means.ts";
+import { RecoveryJournal } from "../src/executor/journal.ts";
 import { classifyLabel, classifyPress } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
 import type { AskJev } from "../src/fill/jev.ts";
@@ -433,7 +434,102 @@ describe("executor", () => {
   it("refuses to undo or resume across a reader restart, since window ids start over", async () => {
     await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
     void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "t" });
-    await expect(helper.executor.undo("t1")).rejects.toThrow(/earlier reader session/);
+    await expect(helper.executor.undo("t1")).rejects.toThrow(/reader that has since restarted/);
+  });
+
+  it("restores only the element it wrote: a sibling that took over the field's key, role and value is refused by name (S1 audit #6)", async () => {
+    await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana"), write(K("textfield:email~0"), "dana@example.com")]), {});
+    // The app replaces the Name field with an identical sibling: same key, role, label, and the value Caret wrote.
+    app.marks.replace(WIN, K("textfield:name~0"));
+    const u = await helper.executor.undo("t1");
+    expect(u.restored).toBe(1);
+    expect(u.notRestored).toEqual([{ step: 0, reason: expect.stringMatching(/^the field Caret wrote is no longer the element at that place, so Caret left it alone \(another element now has this key\)$/) }]);
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+    // Each forward write named a mark of its own; each restore named its write's mark back.
+    const writes = app.verbs.filter((v) => v.kind === "write" && v.attribute === "value");
+    const marks = writes.slice(0, 2).map((v) => (v.kind === "write" ? v.mark : undefined));
+    expect(marks.every((m) => typeof m === "string") && new Set(marks).size === 2).toBe(true);
+    expect(writes.slice(2).map((v) => (v.kind === "write" ? v.sameAs : undefined))).toEqual([marks[1], marks[0]]);
+  });
+
+  it("keeps undo across a reconnect of the same reader, and refuses it under a reader launched since (B23)", async () => {
+    const hello = (session: string) => void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "t", session });
+    hello("reader-launch-1");
+    app.show();
+    await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    hello("reader-launch-1");
+    app.show();
+    expect(await helper.executor.undo("t1")).toEqual({ restored: 1, notRestored: [], notUndoable: 0 });
+    await helper.executor.run("t2", plan([write(K("textfield:name~0"), "Dana")], "p2"), {});
+    hello("reader-launch-2");
+    app.show();
+    await expect(helper.executor.undo("t2")).rejects.toThrow(/ran under a reader that has since restarted/);
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+  });
+
+  it("hands the field off, plainly, when focus moves away from it as the reader focuses it, and writes nothing (S1 audit #14)", async () => {
+    app.focusMovesOn = new Set(["value"]);
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "handoff", step: 0, detail: "focus moved away from the Name field when Caret focused it, so Caret did not write it; it is yours to fill" });
+    expect(progress("t1").at(-1)).toMatchObject({ phase: "handoff" });
+    expect(app.node(K("textfield:name~0"))?.value).toBeUndefined();
+    expect(helper.executor.ledger("t1")).toEqual([]);
+    // No fallback write was tried after it.
+    expect(app.verbs.filter((v) => v.kind === "write")).toHaveLength(1);
+  });
+
+  // B23 review: recovery renamed the task, and the reader's calendar, which lets only the adding task remove an event, refused.
+  it("undoes a recovered run's calendar event under the task id the calendar knows it by", async () => {
+    const addedBy = new Map<string, string>();
+    const add = calendar.add.bind(calendar);
+    const remove = calendar.remove.bind(calendar);
+    calendar.add = async (cal, title, start, end, taskId) => {
+      const ev = await add(cal, title, start, end, taskId);
+      addedBy.set(ev.id, taskId ?? "");
+      return ev;
+    };
+    calendar.remove = async (id, taskId) => {
+      if (addedBy.get(id) !== taskId) throw new CalendarRefused("notAllowed", "another task added this event; only that task removes it");
+      await remove(id, taskId);
+    };
+    const p = plan([{ says: "Lunch is on Caret Test", end: { kind: "calendarEvent", calendar: "Caret Test", title: "Lunch", start: "2026-10-08T12:00:00-05:00", end: "2026-10-08T12:30:00-05:00" } }], "lunch");
+    expect(await helper.executor.run("event-1", p, {}, undefined, { grant: true })).toMatchObject({ outcome: "done" });
+    // The helper dies with the run's row saved; a new helper on the same data takes it back.
+    const journal = new RecoveryJournal(join(dir, "data"));
+    journal.save({ taskId: "event-1", startedAt: 1, savedAt: Date.now(), plan: p, unprompted: false, granted: true, readerId: null, next: 1, ledger: [...helper.executor.ledger("event-1")], pending: null, skillId: null, window: null });
+    journal.close();
+    const again = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, calendar });
+    expect(again.tasks.get("event-1")).toMatchObject({ state: "failed", detail: "Stopped when Caret restarted, after its last step", undoable: true });
+    expect(await again.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "event-1", action: "undo" })).toMatchObject({ restored: 1, notRestored: [] });
+    expect(calendar.events.size).toBe(0);
+    again.journal.close();
+  });
+
+  // B23 second review: a recovered row an undo could not finish stayed for every start, even once its reader was gone,
+  // and a calendar undo refused for want of Calendar access settled its entry for good.
+  it("keeps a recovered calendar run's row while Calendar access is missing, and drops it once a reader launched since connects", async () => {
+    const p = plan([{ says: "Lunch is on Caret Test", end: { kind: "calendarEvent", calendar: "Caret Test", title: "Lunch", start: "2026-10-08T12:00:00-05:00", end: "2026-10-08T12:30:00-05:00" } }], "lunch");
+    const hello = (h: Helper, session: string) => void h.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "t", session });
+    hello(helper, "reader-launch-1");
+    app.show();
+    expect(await helper.executor.run("event-1", p, {}, undefined, { grant: true })).toMatchObject({ outcome: "done" });
+    const journal = new RecoveryJournal(join(dir, "data"));
+    journal.save({ taskId: "event-1", startedAt: 1, savedAt: Date.now(), plan: p, unprompted: false, granted: true, readerId: "reader-launch-1", next: 1, ledger: [...helper.executor.ledger("event-1")], pending: null, skillId: null, window: null });
+    journal.close();
+    const again = new Helper({ store, askJev: null, shadow: false, allowBackgroundFocus: false, publish: (m) => published.push(m), readerLink: app, calendar });
+    hello(again, "reader-launch-1");
+    const get = calendar.get.bind(calendar);
+    calendar.get = async () => {
+      throw new CalendarBlocked("tcc", "blocked: tcc");
+    };
+    expect(await again.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "event-1", action: "undo" })).toMatchObject({ restored: 0, notRestored: [{ step: 0 }] });
+    calendar.get = get;
+    expect(again.journal.rawRows()).toHaveLength(1);
+    // A reader launched since can never undo it: the row goes.
+    hello(again, "reader-launch-2");
+    expect(again.journal.rawRows()).toEqual([]);
+    again.journal.close();
   });
 
   describe("an ambiguous target", () => {

@@ -55,10 +55,16 @@ interface SetNumbers {
   slowReturns: number;
   neverCleared: number;
   closedFirst: number;
+  stillOpen: number;
   returnsWhileMarked: number;
 }
 
-function setNumbers(m: MarkerSummary): SetNumbers {
+/**
+ * The watch counts the report shows. Registered watches fall in exactly one of: cleared, never cleared and ended
+ * (open when the audit ended, or replaced), never cleared with the window closed first, and still open when the
+ * summary was taken, so those four add up to `watches` (CodeRabbit on PR #5).
+ */
+export function setNumbers(m: MarkerSummary): SetNumbers {
   const ep = m.episodes;
   return {
     leavesWithMarkers: Object.values(m.byApp).reduce((n, a) => n + a.withMarkers, 0),
@@ -67,7 +73,8 @@ function setNumbers(m: MarkerSummary): SetNumbers {
     returnedAfterClear: ep.filter((e) => e.end === "returned").length,
     slowReturns: ep.filter((e) => e.end === "returned" && (e.returnedAfterMs ?? 0) - (e.clearedAfterMs ?? 0) > SLOW_RETURN_MS).length,
     neverCleared: ep.filter((e) => e.clearedAfterMs === null && e.end !== "closed").length,
-    closedFirst: ep.filter((e) => e.end === "closed").length,
+    closedFirst: ep.filter((e) => e.clearedAfterMs === null && e.end === "closed").length,
+    stillOpen: m.watches.registered - ep.length,
     returnsWhileMarked: ep.reduce((n, e) => n + e.returnsWhileRunning, 0),
   };
 }
@@ -140,8 +147,9 @@ export function renderMarkerAudit(s: AuditSummary, cpu: readonly ProcessCpu[] = 
     row("Leaves with markers per hour", (n) => (n.leavesWithMarkers / h).toFixed(1)),
     row("Watches registered", (n) => n.watches),
     row("Watches whose markers cleared", (n) => n.cleared),
-    row("Watches never cleared (open at the end or replaced)", (n) => n.neverCleared),
-    row("Window closed first", (n) => n.closedFirst),
+    row("Watches never cleared, open when the audit ended or replaced by a new watch", (n) => n.neverCleared),
+    row("Watches never cleared, the window closed first", (n) => n.closedFirst),
+    row("Watches still open when this summary was taken", (n) => n.stillOpen),
     row("User came back after the clear", (n) => n.returnedAfterClear),
     row(`Of those, more than ${SLOW_RETURN_MS / 1000} s after the clear`, (n) => n.slowReturns),
     row("Returns while the markers still showed", (n) => n.returnsWhileMarked),

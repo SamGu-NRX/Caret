@@ -49,7 +49,9 @@ extension Gallery {
     /// changes in other apps.
     static func skillEntries(wrote: Set<HelperMemory.ActionType>? = nil, elsewhere: HelperMemory.Rule = .ask) -> [HelperMemory.Entry] {
         func skill(_ id: String, _ name: String, onItsOwn: Bool, clean: Int, runs: Int, handsOff: String = "null", status: HelperMemory.Status) -> HelperMemory.Entry {
-            let json = #"{"routineId":"r-\#(id)","name":"\#(name)","trigger":"\#(skillTrigger)","runs":\#(runs),"cleanRuns":\#(clean),"needed":10,"onItsOwn":\#(onItsOwn),"handsOff":\#(handsOff)}"#
+            // `wrote` is required since B23; the gallery's skills on Tab wrote nothing that counts yet.
+            let rules = "[" + ((onItsOwn ? wrote : nil).map { $0.map { "\"\($0.rawValue)\"" }.sorted() } ?? []).joined(separator: ",") + "]"
+            let json = #"{"routineId":"r-\#(id)","name":"\#(name)","trigger":"\#(skillTrigger)","runs":\#(runs),"cleanRuns":\#(clean),"needed":10,"onItsOwn":\#(onItsOwn),"handsOff":\#(handsOff),"wrote":\#(rules)}"#
             let fields = try! JSONDecoder().decode(SkillFields.self, from: Data(json.utf8))
             return .init(id: id, status: status, says: name, evidence: .init(count: runs, lastSeen: 1_790_000_100_000, app: "Tracker"), fields: .skill(fields),
                          wrote: onItsOwn ? wrote : nil)

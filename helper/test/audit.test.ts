@@ -8,9 +8,23 @@ import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
 import { PROTOCOL_VERSION, type AppRef, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
-import { markerRule, pendingMarkers } from "../src/tasks/pending.ts";
-import { renderFillReadiness, renderMarkerAudit } from "../src/audit-report.ts";
+import { MARKER_RULE_IDS, markerRule, pendingMarkers, type MarkerRule } from "../src/tasks/pending.ts";
+import type { WatchEpisode } from "../src/audit.ts";
+import { renderFillReadiness, renderMarkerAudit, setNumbers } from "../src/audit-report.ts";
 import { field, focus, MAIL_APP, node, snap, text, value } from "./builders.ts";
+
+// CodeRabbit on PR #5: a watch that cleared and then closed counted in two rows, and the row named "never cleared
+// (open at the end or replaced)" left out replaced watches that had cleared, so the rows did not add up to the watches.
+describe("the marker report's watch rows", () => {
+  it("puts every registered watch in exactly one of cleared, never cleared and ended, closed first, or still open", () => {
+    const ep = (end: WatchEpisode["end"], clearedAfterMs: number | null): WatchEpisode => ({ bundleId: "b", rule: "progressBar", end, clearedAfterMs, returnedAfterMs: end === "returned" ? 9000 : null, returnsWhileRunning: 0 });
+    const episodes = [ep("returned", 1000), ep("closed", 1000), ep("closed", null), ep("replaced", 2000), ep("replaced", null), ep("auditEnded", null)];
+    const distinctLines = Object.fromEntries(MARKER_RULE_IDS.map((r) => [r, 0])) as Record<MarkerRule, number>;
+    const n = setNumbers({ rules: MARKER_RULE_IDS, byApp: {}, distinctLines, watches: { registered: 8, overLimit: 0, maxConcurrent: 2 }, episodes });
+    expect(n).toMatchObject({ watches: 8, cleared: 3, neverCleared: 2, closedFirst: 1, stillOpen: 2 });
+    expect(n.cleared + n.neverCleared + n.closedFirst + n.stillOpen).toBe(n.watches);
+  });
+});
 
 describe("marker rule ids", () => {
   it.each([

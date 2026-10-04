@@ -296,7 +296,7 @@ public final class AskCaret {
             case .paused:
                 corrected = WorkLines.stoppedByYou(next: progress.step ?? nextStep, of: progress.steps > 0 ? progress.steps : steps)
             case .handoff:
-                corrected = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: card.writes)
+                corrected = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: wrote, field: HandedField.parse(progress.detail))
             default:
                 return
             }
@@ -336,7 +336,7 @@ public final class AskCaret {
             settle(.ended(card, WorkLines.stopped(app: card.app, reason: reason, next: progress.step ?? nextStep, steps: steps, fillFilled: nil)))
         case .handoff:
             for i in card.steps.indices where !card.steps[i].yours { card.steps[i].state = .done }
-            let line = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: card.writes)
+            let line = progress.blocked.map(WorkLines.blocked) ?? AskCopy.handoff(press: card.press, app: card.app, filled: wrote, field: HandedField.parse(progress.detail))
             settle(.ended(card, line))
         case .paused:
             for i in card.steps.indices where card.steps[i].state == .running { card.steps[i].state = .pending }
@@ -549,8 +549,10 @@ public enum AskCopy {
     }
 
     /// The plan reached the press it leaves to the user.
-    public static func handoff(press label: String?, app: String, filled: Int) -> WorkLine {
-        let turn = label.map { "Your turn: press \($0) in \(app)" } ?? Captions.handoff(app: app)
+    public static func handoff(press label: String?, app: String, filled: Int, field: HandedField? = nil) -> WorkLine {
+        // A field handed over instead of written (B20, B23) comes before any press: it is the step
+        // the run stopped at.
+        let turn = field.map { Captions.handedField($0, app: app) } ?? label.map { "Your turn: press \($0) in \(app)" } ?? Captions.handoff(app: app)
         let caption = filled > 0 ? "Filled \(Captions.fields(filled)). \(turn)" : turn
         return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
     }

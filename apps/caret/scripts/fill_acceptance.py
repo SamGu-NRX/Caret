@@ -76,6 +76,18 @@ def log(*parts):
     print(time.strftime("%H:%M:%S"), *parts, flush=True)
 
 
+# B23: caret-screen accepts only a helper that proves it holds this run's launch secret; both get it
+# on their standard input (--auth-fd 0), never on a command line.
+LAUNCH_SECRET = os.urandom(32)
+
+
+def start_with_secret(name, args, out_dir, env=None, cwd=None):
+    proc = start(name, args, out_dir, env=env, cwd=cwd, stdin=subprocess.PIPE)
+    proc.stdin.write(LAUNCH_SECRET)
+    proc.stdin.close()
+    return proc
+
+
 def start(name, args, out_dir, env=None, cwd=None, stdin=None):
     out = open(os.path.join(out_dir, f"{name}.log"), "w")
     proc = subprocess.Popen(args, stdout=out, stderr=subprocess.STDOUT, env=env, cwd=cwd, stdin=stdin)
@@ -249,8 +261,8 @@ def rig(out_dir, ghost=False, act=False):
         os.remove(record)
 
     helper_env = dict(os.environ, CARET_ENV_FILE=ENV_FILE)
-    start("helper", ["node", "src/main.ts", "--socket", HELPER_SOCK, "--data-dir", data_dir, "--allow-background-focus"],
-          out_dir, env=helper_env, cwd=HELPER_DIR)
+    start_with_secret("helper", ["node", "src/main.ts", "--auth-fd", "0", "--socket", HELPER_SOCK, "--data-dir", data_dir, "--allow-background-focus"],
+                      out_dir, env=helper_env, cwd=HELPER_DIR)
     if not wait_for(lambda: os.path.exists(HELPER_SOCK), 10, 0.1):
         raise SystemExit("helper did not open its socket")
     record_proposals(os.path.join(out_dir, "proposals.ndjson"))
@@ -286,7 +298,7 @@ def rig(out_dir, ghost=False, act=False):
                     field["viewFrame"], field["frame"] = field["frame"], match[0]
 
     pid_list = ",".join(map(str, pids))
-    start("reader", [os.path.join(SCREEN_BIN, "caret-screen"), "--socket", HELPER_SOCK, "--only-pids", pid_list,
+    start_with_secret("reader", [os.path.join(SCREEN_BIN, "caret-screen"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", pid_list,
                      "--event-pids", pid_list, "--record", record] + (["--act-pids", pid_list] if act else []), out_dir)
     host_args = [CARET, "--socket", HOST_SOCK, "--helper-socket", HELPER_SOCK, "--allow-pids", pid_list]
     if not ghost:

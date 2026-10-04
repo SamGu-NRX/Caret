@@ -120,8 +120,12 @@ def rig(out_dir, appearance, calendar):
         raise SystemExit(why)
     sa.RUN_START = time.time()
     before = sa.front_pid()
-    sa.start("helper", ["node", os.path.join(HERE, "acceptance_helper.ts"), "--socket", HELPER_SOCK, "--state", STATE,
-                        "--calendar", "reader" if calendar == "reader" else "fake"], out_dir)
+    # B23: the reader accepts only a helper holding this run's launch secret; both get it on stdin.
+    secret = os.urandom(32)
+    helper = sa.start("helper", ["node", os.path.join(HERE, "acceptance_helper.ts"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--state", STATE,
+                                 "--calendar", "reader" if calendar == "reader" else "fake"], out_dir, stdin=subprocess.PIPE)
+    helper.stdin.write(secret)
+    helper.stdin.close()
     if not sa.wait_for(lambda: os.path.exists(HELPER_SOCK), 20, 0.1):
         raise SystemExit("helper did not open its socket")
     fx = sa.start("fixture", fixture_app.args("--windows", "executor", "--duration", "900", "--appearance", appearance), out_dir, stdin=subprocess.PIPE)
@@ -131,10 +135,12 @@ def rig(out_dir, appearance, calendar):
     if not ok:
         raise SystemExit(f"deferred: foreground (activate legacy, front={now})")
     sa.check("fixture activated and frontmost (NSWorkspace and lsappinfo)", True, before=before, after=now)
-    reader_args = [os.path.join(SCREEN_BIN, "caret-screen"), "--socket", HELPER_SOCK, "--only-pids", str(fx.pid), "--event-pids", str(fx.pid)]
+    reader_args = [os.path.join(SCREEN_BIN, "caret-screen"), "--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", str(fx.pid), "--event-pids", str(fx.pid)]
     if calendar == "reader":
         reader_args.append("--calendar-test")
-    sa.start("reader", reader_args, out_dir)
+    reader = sa.start("reader", reader_args, out_dir, stdin=subprocess.PIPE)
+    reader.stdin.write(secret)
+    reader.stdin.close()
     # The run's own settings: every role off but the calendar, so no other offer competes.
     settings = os.path.join(out_dir, "settings.json")
     with open(settings, "w") as f:

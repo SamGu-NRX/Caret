@@ -45,6 +45,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
+import { newLaunchSecret, sendSecret } from "../../../helper/src/launch.ts";
+// B23: caret-screen accepts only a helper that proves it holds this launch's secret, which both get
+// here: the reader on its standard input (--auth-fd 0), the in-process server as an argument.
+const launchSecret = newLaunchSecret();
 import { Store } from "../../../helper/src/store.ts";
 import type { Plan, Step, WindowSel } from "../../../helper/src/executor/schema.ts";
 import { HelperMessage, PROTOCOL_VERSION, type OfferAccept, type OfferAction, type OfferStop, type RunPlan, type TaskControl, type TaskProgress, type VerbResult } from "../../../helper/src/protocol.ts";
@@ -299,7 +303,7 @@ const origStop = helper.handleOfferStop.bind(helper);
 helper.handleOfferStop = (m) => (fromHost.push({ at: Date.now(), m }), origStop(m));
 const origTask = helper.handleTask.bind(helper);
 helper.handleTask = (m) => (fromHost.push({ at: Date.now(), m }), origTask(m));
-server = new HelperServer(HELPER_SOCK, () => helper, (l) => errors.push(l));
+server = new HelperServer(HELPER_SOCK, () => helper, (l) => errors.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -621,7 +625,8 @@ const result: Record<string, unknown> = { target: TARGET, startedAt: new Date().
 try {
   target = TARGET === "textedit" ? await texteditTarget() : await chromeTarget();
   const t = target;
-  const reader = spawn(join(BIN, "caret-screen"), ["--socket", HELPER_SOCK, "--only-pids", String(t.pid), "--event-pids", String(t.pid)]);
+  const reader = spawn(join(BIN, "caret-screen"), ["--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", String(t.pid), "--event-pids", String(t.pid)]);
+  sendSecret(reader, launchSecret);
   started("reader (no --act-pids)", reader);
   reader.stderr.setEncoding("utf8");
   reader.stderr.on("data", (d: string) => (readerLog += d));

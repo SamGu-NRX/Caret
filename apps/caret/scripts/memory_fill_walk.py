@@ -93,18 +93,29 @@ def phone_frame(pids, pid, gold_path):
     return live[0] if live else field["frame"]
 
 
+# CARET_A14_TAB=hook (A17): each Tab goes through the host's debug socket (`key tab <pid>`, the tap's
+# own routing, no event posted anywhere) instead of a HID key. Since 2026-10-04 HID input may be
+# posted only in the rig VM, which cannot hold the Jev key this walk needs, so on Sam's desktop the
+# walk runs this way; the event tap's own delivery is checked by the VM runs.
+TAB_HOOK = os.environ.get("CARET_A14_TAB") == "hook"
+
+
 def tab(pids, pid):
-    """One real Tab into the frontmost fixture. Returns the claim's insertion, or None."""
+    """One Tab into the frontmost fixture: a real key, or the host's hook (TAB_HOOK). Returns the
+    claim's insertion, or None."""
     why = may_press()
     if why:
         raise SystemExit(why)
     before = fa.host().get("lastClaim") or {}
-    env = dict(os.environ, CARET_TEST_PIDS=",".join(map(str, pids)))
-    # The run's own key resets HID idle; only the second the send takes is excused, not more.
-    fa.expect_synthetic(1)
-    sent = subprocess.run([fa.AX, "key-if-front", str(pid), "tab"], capture_output=True, text=True, env=env)
-    if sent.returncode != 0:
-        raise SystemExit("deferred: foreground (" + (sent.stdout + sent.stderr).strip()[:200] + ")")
+    if TAB_HOOK:
+        fa.host(f"key tab {pid}")
+    else:
+        env = dict(os.environ, CARET_TEST_PIDS=",".join(map(str, pids)))
+        # The run's own key resets HID idle; only the second the send takes is excused, not more.
+        fa.expect_synthetic(1)
+        sent = subprocess.run([fa.AX, "key-if-front", str(pid), "tab"], capture_output=True, text=True, env=env)
+        if sent.returncode != 0:
+            raise SystemExit("deferred: foreground (" + (sent.stdout + sent.stderr).strip()[:200] + ")")
     claim = fa.wait_for(lambda: (lambda c: c if c and c.get("claimID") != before.get("claimID") else None)(fa.host().get("lastClaim")), 2)
     if not claim:
         return None
@@ -121,8 +132,8 @@ def walk(out_dir):
         if os.path.exists(path):
             raise SystemExit(f"{path} exists; another run may be live")
 
-    fa.start("helper", ["node", "src/main.ts", "--socket", fa.HELPER_SOCK, "--data-dir", os.path.join(out_dir, "helper-data"),
-                        "--allow-background-focus"], out_dir, env=dict(os.environ, CARET_ENV_FILE=fa.ENV_FILE), cwd=fa.HELPER_DIR)
+    fa.start_with_secret("helper", ["node", "src/main.ts", "--auth-fd", "0", "--socket", fa.HELPER_SOCK, "--data-dir", os.path.join(out_dir, "helper-data"),
+                                    "--allow-background-focus"], out_dir, env=dict(os.environ, CARET_ENV_FILE=fa.ENV_FILE), cwd=fa.HELPER_DIR)
     if not fa.wait_for(lambda: os.path.exists(fa.HELPER_SOCK), 10, 0.1):
         raise SystemExit("helper did not open its socket")
     fa.record_proposals(os.path.join(out_dir, "proposals.ndjson"))
@@ -132,8 +143,8 @@ def walk(out_dir):
     frames = {fx_a.pid: ax_frames(pids, fx_a.pid, gold_a), fx_b.pid: ax_frames(pids, fx_b.pid, gold_b)}
     pid_list = ",".join(map(str, pids))
     reader_at = time.time()
-    fa.start("reader", [os.path.join(fa.SCREEN_BIN, "caret-screen"), "--socket", fa.HELPER_SOCK, "--only-pids", pid_list,
-                        "--event-pids", pid_list], out_dir)
+    fa.start_with_secret("reader", [os.path.join(fa.SCREEN_BIN, "caret-screen"), "--auth-fd", "0", "--socket", fa.HELPER_SOCK, "--only-pids", pid_list,
+                                    "--event-pids", pid_list], out_dir)
     fa.start("host", [fa.CARET, "--socket", fa.HOST_SOCK, "--helper-socket", fa.HELPER_SOCK, "--allow-pids", pid_list,
                       "--settings", os.path.join(out_dir, "settings.json"), "--onboarding", "hidden", "--test-hooks",
                       "--status-item", "off", "--perch", "hidden", "--no-ghost"], out_dir,
@@ -256,15 +267,18 @@ def walk(out_dir):
     why = may_press()
     if why:
         raise SystemExit(why)
-    env = dict(os.environ, CARET_TEST_PIDS=pid_list)
-    # The run's own key resets HID idle; only the second the send takes is excused, not more.
-    fa.expect_synthetic(1)
-    sent = subprocess.run([fa.AX, "key-if-front", str(fx_b.pid), "tab"], capture_output=True, text=True, env=env)
+    if TAB_HOOK:
+        key_ok = fa.host(f"key tab {fx_b.pid}").get("consumed") is False
+    else:
+        env = dict(os.environ, CARET_TEST_PIDS=pid_list)
+        # The run's own key resets HID idle; only the second the send takes is excused, not more.
+        fa.expect_synthetic(1)
+        key_ok = subprocess.run([fa.AX, "key-if-front", str(fx_b.pid), "tab"], capture_output=True, text=True, env=env).returncode == 0
     time.sleep(0.5)
-    check("B: a real Tab passes to the form and writes nothing",
-          sent.returncode == 0 and fa.host()["tap"]["consumed"] == tap_before
+    check("B: a Tab passes to the form and writes nothing",
+          key_ok and fa.host()["tap"]["consumed"] == tap_before
           and all(fa.ax(pids, "value", fx_b.pid, fa.frame_arg(f))["value"] == "" for f in frames[fx_b.pid].values()),
-          keySent=sent.returncode == 0)
+          keySent=key_ok, tabHook=TAB_HOOK)
     # What the helper proposed for B: no value from anywhere, so nothing withheld could have shown either.
     b_fields = []
     with open(os.path.join(out_dir, "proposals.ndjson")) as f:

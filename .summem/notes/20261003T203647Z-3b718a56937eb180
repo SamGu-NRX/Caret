@@ -1,1 +1,0 @@
-A typed About value fills only when both asks also answer the field's whose-details question as the user's at WHOSE_CUTOFF 0.5 (fill.ts); a memory cutoff alone needed 0.6 on B18's dev set and filled 4-7 of 20, the whose question 12 of 20, held-out live 16 of 20 with 0 wrong.

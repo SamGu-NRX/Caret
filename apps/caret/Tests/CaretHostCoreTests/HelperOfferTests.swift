@@ -251,11 +251,32 @@ final class OfferLifecycleTests: XCTestCase {
         return try JSONDecoder().decode(TaskProgress.self, from: Data(json.utf8))
     }
 
+    /// The two hand-offs that name a field (helper/src/executor/executor.ts), and what the line says;
+    /// any other detail names none, so a changed sentence never puts a wrong name on screen.
+    func testAHandedFieldIsReadOnlyFromTheHelpersTwoSentences() {
+        XCTAssertEqual(HandedField.parse("focus moved away from the Name field when Caret focused it, so Caret did not write it; it is yours to fill"),
+                       HandedField(label: "Name", why: .focusMoved))
+        XCTAssertEqual(HandedField.parse("focus moved away from this field when Caret focused it, so Caret did not write it; it is yours to fill"),
+                       HandedField(label: nil, why: .focusMoved))
+        XCTAssertEqual(HandedField.parse("Safari did not take the text for the Email field while its window was in the background, so Caret left it to you"),
+                       HandedField(label: "Email", why: .appDropped))
+        XCTAssertEqual(HandedField.parse("Electron Fixture did not take the text for the Ship to address field, so Caret left it to you"),
+                       HandedField(label: "Ship to address", why: .appDropped))
+        for other in [nil, "", "'Send' reads as outbound; Caret leaves that press to you", "focus moved away from Name when Caret focused it, so Caret did not write it",
+                      "Mail did not take the text for Name, so Caret left it to you", "focus moved away from the  field when Caret focused it, so Caret did not write it"] {
+            XCTAssertNil(HandedField.parse(other), other ?? "nil")
+        }
+        XCTAssertEqual(Captions.handedField(HandedField(label: "Name", why: .focusMoved), app: "Safari"), "Your turn: fill Name in Safari. Focus moved away when Caret tried it.")
+        XCTAssertEqual(Captions.handedField(HandedField(label: nil, why: .appDropped), app: "Electron Fixture"), "Your turn: fill it in Electron Fixture. Electron Fixture didn't take Caret's text.")
+    }
+
     func testTheLastPhasesEndTheLineAndTheOthersDoNot() throws {
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.done), workKey: "fill-2"), .done)
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.stopped, detail: "why"), workKey: "fill-2"), .stopped(reason: .mismatch, step: nil, steps: 2, detail: "why"))
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.handoff), workKey: "fill-2"), .handoff(blocked: nil))
         XCTAssertEqual(OfferLifecycle.ending(of: try progress(.paused), workKey: "fill-2"), .paused)
+        let moved = "focus moved away from the Name field when Caret focused it, so Caret did not write it; it is yours to fill"
+        XCTAssertEqual(OfferLifecycle.ending(of: try progress(.handoff, detail: moved), workKey: "fill-2"), .handoff(blocked: nil, field: HandedField(label: "Name", why: .focusMoved)))
         for phase: TaskProgress.Phase in [.started, .skipped, .acting, .verified, .undone] {
             XCTAssertNil(OfferLifecycle.ending(of: try progress(phase), workKey: "fill-2"), phase.rawValue)
         }

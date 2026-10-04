@@ -2,10 +2,15 @@
 // streams ReaderMessages and receives the executor's readerCommands; consumers send fill requests,
 // plans, task controls and the host's offerAccept and offerStop, and receive every HelperMessage.
 // Invalid lines are answered with an error message and counted, never silently dropped.
-import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+//
+// B23 (CodeRabbit on PR #4): the reader authenticates the helper before it sends a snapshot or acts on a line.
+// Its hello carries a challenge; the helper answers helperAuth, an HMAC of it under the launch secret both got
+// on an inherited descriptor (src/launch.ts). The socket's directory is the user's own, mode 0700.
+import { createHmac } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type ActRevoke, type HelperMessage, type HelperToReader } from "./protocol.ts";
+import { ConsumerMessage, Hello, PROTOCOL_VERSION, ReaderMessage, type ActRevoke, type HelperAuth, type HelperMessage, type HelperToReader } from "./protocol.ts";
 import type { Helper } from "./helper.ts";
 import { planError } from "./planner/proposal.ts";
 
@@ -29,11 +34,14 @@ export class HelperServer {
   private readonly helper: () => Helper;
   private readonly path: string;
   private readonly warn: (line: string) => void;
+  /** The launch secret the reader's challenge is answered with; null answers none, so an authenticating reader refuses this helper. */
+  private readonly secret: Buffer | null;
 
-  constructor(path: string, helper: () => Helper, warn: (line: string) => void) {
+  constructor(path: string, helper: () => Helper, warn: (line: string) => void, secret: Buffer | null = null) {
     this.path = path;
     this.helper = helper;
     this.warn = warn;
+    this.secret = secret;
   }
 
   /** Commands, act grants and revokes go to the reader only; no consumer ever receives one. */
@@ -60,7 +68,12 @@ export class HelperServer {
   }
 
   async listen(): Promise<void> {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+    const dir = dirname(this.path);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // The directory must be the user's own and closed to others: the reader refuses a socket in any other (B23).
+    const st = lstatSync(dir);
+    if (!st.isDirectory() || (process.getuid !== undefined && st.uid !== process.getuid())) throw new Error(`the socket directory ${dir} is not a directory this user owns; refusing to listen there`);
+    if ((st.mode & 0o077) !== 0) chmodSync(dir, 0o700);
     if (existsSync(this.path)) {
       if (await isAlive(this.path)) throw new Error(`another helper is already listening on ${this.path}`);
       unlinkSync(this.path);
@@ -119,8 +132,19 @@ export class HelperServer {
           if (role === "consumer") {
             this.consumers.add(s);
             session = `consumer-${++this.sessions}`;
-            this.helper().hostConnected(session);
+            // Only the host's hello says so; any other consumer binds its own work but never counts as the host (B23).
+            if (hello.data.host === true) this.helper().hostConnected(session);
+            else this.helper().consumerConnected(session);
           } else {
+            // The proof goes first, before any command or grant this connection could carry.
+            if (hello.data.challenge !== undefined) {
+              if (this.secret === null) {
+                this.reject(s, "the reader asked the helper to prove itself, and this helper was started without a launch secret (--auth-fd)");
+                s.destroy();
+                return;
+              }
+              s.write(JSON.stringify({ type: "helperAuth", v: PROTOCOL_VERSION, proof: helperProof(this.secret, hello.data.challenge, process.pid), pid: process.pid } satisfies HelperAuth) + "\n");
+            }
             this.revokeOnOldReader(this.reader);
             this.reader = s;
             void this.helper().handleReader(hello.data);
@@ -214,6 +238,14 @@ export class HelperServer {
     this.warn(message);
     s.write(JSON.stringify({ type: "error", v: PROTOCOL_VERSION, at: Date.now(), message }) + "\n");
   }
+}
+
+/**
+ * The helper's answer to a reader's challenge: base64 HMAC-SHA256 under the launch secret, bound to the helper's pid,
+ * which the reader checks against its socket's peer (Emitter.swift), so a relayed proof does not pass.
+ */
+export function helperProof(secret: Buffer, challenge: string, pid: number): string {
+  return createHmac("sha256", secret).update(`caret-helper-proof\n${challenge}\n${pid}`).digest("base64");
 }
 
 function isAlive(path: string): Promise<boolean> {

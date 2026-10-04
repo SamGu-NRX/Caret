@@ -63,6 +63,10 @@ final class HelperProtocolGoldenTests: XCTestCase {
             // window and the unseenWindow refusal, a press made with Return, and the promote offer a
             // skill row's "Let it run on its own…" asked for (taskId host-memory-7).
             "skip:readerCommand", "skip:userPress", "skip:planRequest", "planProposal", "skip:userPress", "skillOffer",
+            // B23: the reader's hello with its challenge, the helper's proof, the host's hello saying it
+            // is the host, and a write that marks its element, refused as focusMoved, then an undo
+            // write that requires the same element, refused as notSameElement.
+            "skip:hello", "skip:helperAuth", "skip:hello", "skip:readerCommand", "skip:verbResult", "skip:readerCommand", "skip:verbResult",
         ]
         XCTAssertEqual(kinds, expected)
     }
@@ -71,7 +75,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
     /// withdrawal with its replacement and the withdrawal settings cause.
     func testTheB8LinesDecodeExactly() throws {
         let lines = try goldenLines()
-        XCTAssertEqual(lines.count, 59)
+        XCTAssertEqual(lines.count, 66)
         XCTAssertEqual(try HelperInbound.decode(lines[26]), .offerWithdrawn(OfferWithdrawn(at: 1_790_000_122_500, id: "offer-4", reason: .expired)))
         guard case .taskControl(let pause) = try JSONDecoder().decode(Message.self, from: lines[27]) else { return XCTFail("line 28") }
         XCTAssertEqual(pause, TaskControl(taskId: "task-1", action: .pause, reason: .input))
@@ -119,6 +123,13 @@ final class HelperProtocolGoldenTests: XCTestCase {
     }
 
     private func object(_ data: Data) throws -> NSDictionary { try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary) }
+
+    /// B23: the host's hello says it is the host (golden line 62), so the helper counts its session as
+    /// the host's. Only pid and version differ from process to process.
+    func testTheHostsHelloIsTheGoldenHostHello() throws {
+        let golden = try object(goldenLines()[61])
+        XCTAssertEqual(try object(NDJSON.line(HostHello.make(pid: golden["pid"] as! Int))), golden)
+    }
 
     /// B10's settings message, from the host's own settings: golden lines 32 and 33.
     func testTheHostsSettingsEncodeToTheGoldenLines() throws {

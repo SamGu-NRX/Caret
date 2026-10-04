@@ -4,12 +4,14 @@ Listens on `~/.caret-run/sockets/screen.sock` for `caret-screen` and for consume
 
 ```sh
 pnpm install
-CARET_ENV_FILE=/path/to/.env node src/main.ts [--shadow] [--no-jev] [--data-dir DIR]
+CARET_ENV_FILE=/path/to/.env node src/launch.ts --reader PATH/caret-screen [-- --shadow --no-jev --data-dir DIR]
 pnpm test        # tsc, then vitest
 pnpm schema      # regenerate schemas/screen-protocol.schema.json after editing src/protocol.ts
 ```
 
 Node 24 or later; the store uses the built-in `node:sqlite`.
+
+`src/launch.ts` starts the helper and `caret-screen` with one launch secret, handed to each on its standard input (`--auth-fd 0`). The reader sends nothing and acts on nothing until the helper answers its challenge with that secret (`helperAuth`; the reader's README has the threat model). `node src/main.ts` alone runs a helper that no current reader will talk to.
 
 ## Protocol
 
@@ -24,6 +26,7 @@ A `fillProposal` holds one entry per empty field of the form: the field's key an
 - Plain screen text lives only in memory, in a rolling ten-minute window (`src/rolling-text.ts`).
 - The store under `~/Library/Application Support/CaretV2/` holds daily counts, transfers and shadow episodes. Values and element keys appear only as HMAC-SHA256 hashes under a local salt (`salt`, mode 0600), with kinds, lengths, bundle identifiers and timings. Tests read the database files byte by byte to check that no plain value is there.
 - In shadow mode the helper never calls Jev and publishes nothing.
+- The recovery journal (`recovery.sqlite`, B23) holds each run that is under way or paused: its plan, the writes it made with the values they replaced, what it was about to do, and the skill it counts for, sealed with AES-256-GCM under the memory key. A row is saved before every write, press and calendar add and dropped when the run ends. At start, a row left behind is a run a crash cut off: its skill goes back on Tab, the activity list shows it as "Stopped when Caret restarted, at step N of M", and its undo restores what it wrote, only into the elements the reader recorded. Rows older than a day are dropped.
 
 ## Transfers
 
@@ -90,7 +93,7 @@ A transfer's shape is the source and destination element keys with their ordinal
 - **Loops** (`loops.ts`). Two rounds in a row of the same 1 to 3 transfers, one row further down the destination and 1 to 3 items further down the source, with each column keeping one value class (email, url, number, text). After round two the next round is read from the screen and published as a `patternOffer` of kind `loopNext`. When the user takes it, or types the same values, every remaining round becomes one `loopFinish` offer. A value shown in several windows counts for whichever window explains every round; a copy that cannot be described still breaks "in a row".
 - **Routines** (`routines.ts`). The transfers into one window until it closes or goes quiet for two minutes form a bundle; two or more shapes make a routine, signed by their sorted keyed hashes. When a window opens holding a known routine's destination fields, empty, Caret predicts silently from the live windows and scores the prediction when the bundle closes.
 - **Gate** (`gate.ts`). Rules first: shadow mode, the user's settings (Caret paused, the role or level off), a paused entry, permission hand-off, "Don't offer this here", ignored twice today in this app, the level's hourly budget, proof (one matching round for `loopNext`, a confirmed round for `loopFinish`, the level's sightings, 3 at Balanced and 2 at Eager, of silent hits at 80% or better for a routine) and grounding. Every decision goes to the decision log with `(hits + 1) / (hits + misses + 2)` as its show probability; nothing calibrates or reads that number yet.
-- **Memory** (`memory.ts`, `memory.sqlite` beside the store). Five typed kinds: about you, people, preferences, routines, permissions. Each entry's sentence is rendered by code. About-you, people and preference fields are sealed with AES-256-GCM under `memory.key` (0600); routines hold only keyed hashes, app names and positions. A forgotten routine is not relearned for 30 days.
+- **Memory** (`memory.ts`, `memory.sqlite` beside the store). Six typed kinds: about you, people, preferences, routines, permissions and skills (routines the user kept, B19). Each entry's sentence is rendered by code. About-you, people and preference fields are sealed with AES-256-GCM under `memory.key` (0600); routines hold only keyed hashes, app names and positions. A forgotten routine is not relearned for 30 days.
 - **Preferences** (`preferences.ts`). For a minute after Caret fills a field, a settled edit to it becomes memory: the same phone number reformatted is a format rule, a name extended is a People entry, anything else is an About-you value used instead for that field shape and source value. Every offer applies these before it shows a value, so editing the entry changes the next fill.
 
 A consumer sends `offerControl {offerId, action: take | dismiss | dontOfferHere}`; take runs the offer's plan through the executor. `memoryRequest {requestId, op: list | edit | pause | resume | forget | add | offerOnItsOwn}` is answered with a `memoryReply` to that consumer only.

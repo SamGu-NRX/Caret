@@ -12,13 +12,14 @@
 // they are stored in the clear.
 //
 // The same database holds the gate's decision log and the user's reactions to offers.
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import * as z from "zod";
 import { fieldKinds } from "../fill/kinds.ts";
 import { LEVELS } from "../offers/settings.ts";
+import { loadKey, open, seal } from "../sealed.ts";
 import {
   AboutFields,
   PeopleFields,
@@ -129,8 +130,6 @@ export interface RoutineRecord {
 const SkillJson = SkillFields.extend({
   /** The "on its own" offer: never made or expired unanswered (null), out now, or declined, which is never asked again. */
   promote: z.enum(["offered", "declined"]).nullable(),
-  /** The permissions the skill's clean runs in a row wrote under (writeHere, writeElsewhere): what promoting it would let it do unasked. */
-  wrote: z.array(z.enum(["writeHere", "writeElsewhere"])),
   /**
    * The user put it back on Tab (B22 lead decision): Caret never makes the promote offer for it on its own
    * again; only the user's request from the skill's row (memoryRequest offerOnItsOwn) does. Absent on rows
@@ -331,7 +330,9 @@ export class MemoryStore {
         break;
       }
       case "routine": {
-        const e = parseEdit(z.strictObject({ name: z.string().min(1).max(80).nullable() }), raw);
+        // The same check as a skill's name (CodeRabbit on PR #5): a routine's name becomes the skill's when it is kept.
+        const e = parseEdit(z.strictObject({ name: z.string().trim().min(1).max(80).nullable() }), raw);
+        if (e.name !== null && ONE_LINE_BREAKS.test(e.name)) throw new MemoryError("invalid edit: a routine's name must be one line of text");
         next = { ...(fields as RoutineJson), name: e.name, nameBy: e.name === null ? null : "you" };
         break;
       }
@@ -781,7 +782,8 @@ export class MemoryStore {
         return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}`, uses: this.uses(f.action) };
       }
       case "skill": {
-        const { promote: _p, wrote: _w, putBack: _b, ...f } = SkillJson.parse(this.fields(r));
+        // `wrote` goes to the host too, for its permissions page (A16); the promote state and putBack stay here.
+        const { promote: _p, putBack: _b, ...f } = SkillJson.parse(this.fields(r));
         const status: MemoryStatus = paused ? "paused" : f.onItsOwn ? "active" : "learning";
         const how = paused
           ? "paused"
@@ -903,34 +905,6 @@ function toSkill(r: Row): SkillRecord {
 export const dontOfferMatch = (offerKind: OfferKind, bundleId: string): string => `dontOffer:${offerKind}:${bundleId}`;
 
 const times = (n: number): string => (n === 1 ? "once" : `${n} times`);
-
-function seal(key: Buffer, text: string): Buffer {
-  const iv = randomBytes(12);
-  const c = createCipheriv("aes-256-gcm", key, iv);
-  const body = Buffer.concat([c.update(text, "utf8"), c.final()]);
-  return Buffer.concat([iv, c.getAuthTag(), body]);
-}
-
-function open(key: Buffer, b: Buffer): string {
-  const d = createDecipheriv("aes-256-gcm", key, b.subarray(0, 12));
-  d.setAuthTag(b.subarray(12, 28));
-  return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString("utf8");
-}
-
-function loadKey(path: string): Buffer {
-  if (!existsSync(path)) {
-    try {
-      // Exclusive create: two helpers starting at once must not each write a different key.
-      writeFileSync(path, randomBytes(32), { mode: 0o600, flag: "wx" });
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-    }
-  }
-  chmodSync(path, 0o600);
-  const b = readFileSync(path);
-  if (b.length !== 32) throw new Error(`memory key ${path} is ${b.length} bytes, expected 32; refusing to use it`);
-  return b;
-}
 
 export function localDay(at: number): string {
   const d = new Date(at);

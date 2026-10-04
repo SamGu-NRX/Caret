@@ -187,6 +187,17 @@ public enum Captions {
     /// The run reached a send, submit, delete or pay step and left the press to the user.
     public static func handoff(app: String) -> String { "Your turn in \(app)" }
 
+    /// A field handed over instead of written (B20, B23): "Your turn: fill Name in Mail. Focus moved
+    /// away when Caret tried it." Without a label, "it".
+    public static func handedField(_ field: HandedField, app: String) -> String {
+        let why: String
+        switch field.why {
+        case .appDropped: why = "\(app) didn't take Caret's text."
+        case .focusMoved: why = "Focus moved away when Caret tried it."
+        }
+        return "Your turn: fill \(field.label ?? "it") in \(app). \(why)"
+    }
+
     /// A calendar step the user must enable first (B16 `blocked`). Names what is missing; Caret
     /// never asks for Calendar access itself, so the line says where the user can give it.
     public static func blocked(_ reason: CalendarBlock) -> String {
@@ -278,6 +289,11 @@ public enum WorkLines {
     /// The next step reads as send, submit, delete or pay; the press is left to the user.
     public static func handoff(app: String) -> WorkLine {
         let caption = Captions.handoff(app: app)
+        return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
+    }
+
+    public static func handedField(_ field: HandedField, app: String) -> WorkLine {
+        let caption = Captions.handedField(field, app: app)
         return WorkLine(LineContent(figure: .needsYou, text: caption, emphasis: .plain), text: caption)
     }
 

@@ -196,7 +196,8 @@ public enum OfferLifecycle {
         /// The next step reads as send, submit, delete or pay; the press is left to the user. Or a
         /// calendar step needs what only the user can give (`blocked`, B16): Calendar access, or an
         /// On My Mac calendar account.
-        case handoff(blocked: CalendarBlock? = nil)
+        /// `field`: a field it handed over instead of writing (B20, B23), when the detail names one.
+        case handoff(blocked: CalendarBlock? = nil, field: HandedField? = nil)
         /// Real input in the target window paused the run. The activity list carries it from here.
         case paused
         /// No helper to run it: `offerAccept` could not be written, or the connection dropped
@@ -213,7 +214,7 @@ public enum OfferLifecycle {
         // The decoder refuses a stopped progress without a reason; `.error` only guards a helper
         // that skipped the decoder's check.
         case .stopped: return .stopped(reason: progress.stopReason ?? .error, step: progress.step, steps: progress.steps, detail: progress.detail)
-        case .handoff: return .handoff(blocked: progress.blocked)
+        case .handoff: return .handoff(blocked: progress.blocked, field: HandedField.parse(progress.detail))
         case .paused: return .paused
         case .started, .skipped, .acting, .verified, .undone: return nil
         }
@@ -262,5 +263,54 @@ extension PopupSpec {
             if case .source(let source) = block.content { return source.value.text }
         }
         return nil
+    }
+}
+
+/// A field the helper handed to the user instead of writing it, read from the hand-off's detail.
+/// Only the two sentences the helper writes for this (helper/src/executor/executor.ts) are read: B20's
+/// "<App> did not take the text for the <Label> field[ while its window was in the background], so
+/// Caret left it to you", and B23's "focus moved away from the <Label> field when Caret focused it,
+/// so Caret did not write it; it is yours to fill". Any other detail gives nil, and the line says
+/// only whose turn it is, so a changed sentence can lose the field's name but never put a wrong one
+/// on screen.
+public struct HandedField: Equatable, Sendable {
+    public enum Why: Equatable, Sendable {
+        /// The app took none of Caret's writes.
+        case appDropped
+        /// A page moved focus off the field when Caret focused it (WebKit, S1 audit #14).
+        case focusMoved
+    }
+
+    /// The field's label, or nil for "this field".
+    public var label: String?
+    public var why: Why
+
+    public init(label: String?, why: Why) {
+        self.label = label
+        self.why = why
+    }
+
+    public static func parse(_ detail: String?) -> HandedField? {
+        guard let detail else { return nil }
+        let moved = "focus moved away from ", movedEnd = " when Caret focused it, so Caret did not write it"
+        if detail.hasPrefix(moved), let end = detail.range(of: movedEnd) {
+            return label(String(detail[detail.index(detail.startIndex, offsetBy: moved.count)..<end.lowerBound])).map { HandedField(label: $0, why: .focusMoved) }
+        }
+        let took = " did not take the text for ", tookEnd = ", so Caret left it to you"
+        if let start = detail.range(of: took), detail.hasSuffix(tookEnd) {
+            var field = String(detail[start.upperBound..<detail.index(detail.endIndex, offsetBy: -tookEnd.count)])
+            let background = " while its window was in the background"
+            if field.hasSuffix(background) { field.removeLast(background.count) }
+            return label(field).map { HandedField(label: $0, why: .appDropped) }
+        }
+        return nil
+    }
+
+    /// "the Name field" gives "Name", "this field" gives nil (the outer nil: not a field at all).
+    private static func label(_ field: String) -> String?? {
+        if field == "this field" { return .some(nil) }
+        guard field.hasPrefix("the "), field.hasSuffix(" field") else { return nil }
+        let name = String(field.dropFirst(4).dropLast(6)).trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : .some(name)
     }
 }

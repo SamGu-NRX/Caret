@@ -45,6 +45,9 @@ import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppSwitch, type HelperMessage, typ
 import { Cdp } from "./cdp.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
 import { userInput } from "./synthetic-input.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const run = promisify(execFile);
 const { values: a } = parseArgs({
@@ -273,7 +276,7 @@ helper.handleReader = (m) => {
   if (m.type === "appSwitch") switches.push(m);
   return origHandle(m);
 };
-server = new HelperServer(SOCKET, () => helper, (l) => errors.push(l));
+server = new HelperServer(SOCKET, () => helper, (l) => errors.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -730,10 +733,11 @@ const target = TARGET === "textedit" ? await texteditTarget() : TARGET === "webk
 await sleep(1000);
 checkAbort();
 checkAbort();
-const reader = spawn(join(BIN, "caret-screen"), ["--socket", SOCKET, "--only-pids", `${target.pid},${bystanderPid}`, "--event-pids", `${target.pid},${bystanderPid}`]);
+const reader = spawn(join(BIN, "caret-screen"), ["--auth-fd", "0", "--socket", SOCKET, "--only-pids", `${target.pid},${bystanderPid}`, "--event-pids", `${target.pid},${bystanderPid}`]);
 started("reader", reader);
 let readerLog = "";
 reader.stderr.setEncoding("utf8");
+sendSecret(reader, launchSecret);
 reader.stderr.on("data", (d: string) => (readerLog += d));
 const windowOf = (pid: number, prefix: string) => [...helper.model.windows.values()].find((w) => w.app.pid === pid && w.window.title.startsWith(prefix));
 const titlePrefix = target.win.titleStartsWith ?? target.win.title ?? "";

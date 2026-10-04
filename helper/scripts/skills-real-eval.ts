@@ -34,6 +34,9 @@ import { PROMOTE_AFTER } from "../src/patterns/skills.ts";
 import { Cdp } from "./cdp.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
 import { userInput } from "./synthetic-input.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const { values: a } = parseArgs({ options: { target: { type: "string", default: "chromium" }, bin: { type: "string" }, out: { type: "string" }, electron: { type: "string" } } });
 const TARGET = a.target;
@@ -168,7 +171,7 @@ helper = new Helper({
   },
   warn: (l) => log.push(l),
 });
-server = new HelperServer(join(sockDir, "s.sock"), () => helper, (l) => log.push(l));
+server = new HelperServer(join(sockDir, "s.sock"), () => helper, (l) => log.push(l), launchSecret);
 // This script answers offers itself, in process, so it is the host session a run with no Tab is bound to (B22, S1 audit #5).
 helper.hostConnected("eval");
 await server.listen();
@@ -453,9 +456,10 @@ let readerErr = "";
 let ok = false;
 try {
   await until("the fixture", () => fixturePid > 0);
-  reader = spawn(join(a.bin, "caret-screen"), ["--socket", join(sockDir, "s.sock"), "--only-pids", `${fixturePid},${targetPid}`, "--event-pids", `${fixturePid},${targetPid}`]);
+  reader = spawn(join(a.bin, "caret-screen"), ["--auth-fd", "0", "--socket", join(sockDir, "s.sock"), "--only-pids", `${fixturePid},${targetPid}`, "--event-pids", `${fixturePid},${targetPid}`]);
   own.push(reader);
   reader.stderr.setEncoding("utf8");
+  sendSecret(reader, launchSecret);
   reader.stderr.on("data", (d: string) => (readerErr += d));
   await until("the order queue", () => windowTitled(QUEUE), 20_000);
   const rule = helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "rule", op: "edit", id: "permission-writeElsewhere", fields: { rule: "actIfApproved" } });

@@ -142,9 +142,9 @@ extension SurfaceMachine {
             )
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: reason == .you ? .result : .error, offerKey: work.offerKey))
             showResult(line, lifetime: reason == .you ? 3 : 6)
-        case .handoff(let blocked):
+        case .handoff(let blocked, let field):
             resultStatusID = arbiter.showStatus(StatusLine(pid: work.pid, kind: .result, offerKey: work.offerKey))
-            showResult(blocked.map(WorkLines.blocked) ?? WorkLines.handoff(app: work.app), lifetime: 6)
+            showResult(blocked.map(WorkLines.blocked) ?? field.map { WorkLines.handedField($0, app: work.app) } ?? WorkLines.handoff(app: work.app), lifetime: 6)
         case .paused:
             // The input pause stopped the run; the perch and the activity list carry it from here.
             takeLineDown(exit: 0.08)
@@ -309,7 +309,8 @@ extension SurfaceMachine {
             line = WorkLines.stoppedByYou(next: progress.step ?? stopped.nextStep, of: steps)
         case .handoff:
             // It reached the press it leaves to the user before the stop reached it.
-            line = progress.blocked.map(WorkLines.blocked) ?? WorkLines.handoff(app: stopped.app)
+            line = progress.blocked.map(WorkLines.blocked) ?? HandedField.parse(progress.detail).map { WorkLines.handedField($0, app: stopped.app) }
+                ?? WorkLines.handoff(app: stopped.app)
         default:
             // Not an ending: the line keeps waiting.
             return

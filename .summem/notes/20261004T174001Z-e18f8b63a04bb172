@@ -1,0 +1,1 @@
+A17: paste-then-reconcile takes Caret's own changeCount from clearContents()'s return (writing items does not move it, GeneralPasteboardTests); a count read later can adopt a user's copy and overwrite it on restore.

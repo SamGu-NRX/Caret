@@ -1,0 +1,1 @@
+B23: forward value writes carry a mark and undo sends sameAs; the reader answers notSameElement unless the element at the key is the one it wrote (per app worker, gone on reader restart). Test fakes use test/fake-marks.ts; marks.replace(windowId, key) plays a replaced field.

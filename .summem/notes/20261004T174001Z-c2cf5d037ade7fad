@@ -1,0 +1,1 @@
+A17 VM: in TextEdit an AXSelectedText or AXValue write into an empty document leaves Edit > Undo disabled, while a pid-posted Cmd-V shows Undo Paste; after real typing, an AXSelectedText insert comes off with the next Cmd-Z and the typing history survives.

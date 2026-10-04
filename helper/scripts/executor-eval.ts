@@ -21,6 +21,9 @@ import type { Plan, Step } from "../src/executor/schema.ts";
 import type { TaskResult, UndoResult } from "../src/executor/executor.ts";
 import type { HelperMessage, TaskProgress } from "../src/protocol.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const { values: a } = parseArgs({
   options: {
@@ -76,7 +79,7 @@ const helper = new Helper({
     ...(a["target-cutoff"] === undefined ? {} : { targetCutoff: Number(a["target-cutoff"]) }),
   },
 });
-server = new HelperServer(a.socket, () => helper, (l) => errors.push(l));
+server = new HelperServer(a.socket, () => helper, (l) => errors.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -122,11 +125,12 @@ const until = async (what: string, ok: () => boolean, ms = 20_000): Promise<void
 await until("the fixture", () => fixturePid > 0);
 await new Promise((r) => setTimeout(r, 1000));
 // --act-pids acts in the fixture without a grant; the reader allows it only under this variable, for caret-fixture processes (B22).
-reader = spawn(join(a.bin, "caret-screen"), [
+reader = spawn(join(a.bin, "caret-screen"), ["--auth-fd", "0", 
   "--socket", a.socket, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid), "--act-pids", String(fixturePid),
 ], { env: { ...process.env, CARET_SCREEN_FIXTURE_ACTS: "fixture-only" } });
 let readerLog = "";
 reader.stderr.setEncoding("utf8");
+sendSecret(reader, launchSecret);
 reader.stderr.on("data", (d: string) => (readerLog += d));
 const readerProc = reader;
 await until("the executor window in the screen model", () => [...helper.model.windows.values()].some((w) => w.window.title.startsWith(TITLE)));

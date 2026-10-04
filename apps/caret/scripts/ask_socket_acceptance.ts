@@ -25,6 +25,10 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
+import { newLaunchSecret, sendSecret } from "../../../helper/src/launch.ts";
+// B23: caret-screen accepts only a helper that proves it holds this launch's secret, which both get
+// here: the reader on its standard input (--auth-fd 0), the in-process server as an argument.
+const launchSecret = newLaunchSecret();
 import { Store } from "../../../helper/src/store.ts";
 import { MemoryStore } from "../../../helper/src/patterns/memory.ts";
 import type { AskJev, JevRequest } from "../../../helper/src/fill/jev.ts";
@@ -146,7 +150,7 @@ const helper = new Helper({
     },
   },
 });
-server = new HelperServer(HELPER_SOCK, () => helper, (l) => errors.push(l));
+server = new HelperServer(HELPER_SOCK, () => helper, (l) => errors.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -186,7 +190,8 @@ const until = async <T>(what: string, get: () => T | null | undefined | false | 
 };
 await until("the fixture", () => fixturePid > 0);
 await sleep(800);
-const reader = spawn(join(a.bin as string, "caret-screen"), ["--socket", HELPER_SOCK, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
+const reader = spawn(join(a.bin as string, "caret-screen"), ["--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
+sendSecret(reader, launchSecret);
 procs.push(reader);
 let readerLog = "";
 reader.stderr.setEncoding("utf8");
@@ -267,7 +272,8 @@ for (let round = 1; round <= ROUNDS; round++) {
         checks.escConsumed = esc.consumed === true;
         release.get(key)?.();
       }
-      const ended = await until("the run's end on the host", async () => { const s = await ask(); return s.phase === "ended" ? s : null; });
+      // S1 audit #17: after Esc the card says "Stopping…" until the helper's own ending arrives.
+      const ended = await until("the run's end on the host", async () => { const s = await ask(); return s.phase === "ended" && s.line !== "Stopping\u2026" ? s : null; });
       detail.ended = ended;
       checks.line = c.line.endsWith(" ") ? (ended.line ?? "").startsWith(c.line) : ended.line === c.line;
       const revoked = await until("actRevoke for the task", () => toReader.slice(grants0).some((g) => g.taskId === key && g.type === "actRevoke" && g.sent), 10_000).catch(() => false);

@@ -236,7 +236,7 @@ final class HelperClient: @unchecked Sendable {
             close(fd)
             return nil
         }
-        let hello = Hello(role: .consumer, mode: .live, pid: Int(getpid()), version: "caret-host 0.2.0")
+        let hello = HostHello.make(pid: Int(getpid()))
         guard let line = try? NDJSON.line(hello), Self.writeAll(fd, line) else {
             close(fd)
             return nil

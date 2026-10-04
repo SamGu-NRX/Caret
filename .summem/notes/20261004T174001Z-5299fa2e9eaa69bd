@@ -1,0 +1,1 @@
+A17: the rig VM can bring a Setup Assistant page to the front mid-job; jobs run RIG_BIN/rig-dismiss-setup.py in a watcher loop, or every later step loses TextEdit's foreground.

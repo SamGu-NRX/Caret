@@ -47,6 +47,7 @@ import {
 import type { Change, WindowState } from "./model.ts";
 import { Executor, type Authorization, type ExecutorDeps, type Revocation, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
+import { RecoveryJournal, type JournalRecord } from "./executor/journal.ts";
 import { MemoryStore } from "./patterns/memory.ts";
 import { PatternEngine } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
@@ -92,6 +93,8 @@ export interface HelperOptions {
   calendar?: CalendarPort | "reader" | null;
   /** Memory entries, the decision log and reactions. Defaults to a store beside `store`'s database. */
   memory?: MemoryStore;
+  /** Where runs are saved before each act, for recovery after a crash (B23). Defaults to one beside `store`'s database. */
+  journal?: RecoveryJournal;
   urls?: UrlOpener | null;
   /**
    * Runs the read-only audit beside the helper (src/audit.ts). Only with shadow mode and Jev off,
@@ -192,6 +195,8 @@ export class Helper {
   private readerSession = 0;
   readonly executor: Executor;
   readonly memory: MemoryStore;
+  /** Runs saved before each act; what a crash left in it is recovered at start (recoverInterrupted). */
+  readonly journal: RecoveryJournal;
   readonly patterns: PatternEngine;
   /** Every piece of Caret's work and its state, published as activity messages. */
   readonly tasks: TaskRegistry;
@@ -238,11 +243,15 @@ export class Helper {
   /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
   private readerConnected: boolean;
   /**
-   * Host sessions connected now (S1 audit #5): each consumer connection, as the server names it, and any
-   * in-process session a test or evaluation registers. A consumer's hello does not say whether it is the
-   * host, so every consumer counts as one.
+   * Host sessions connected now (S1 audit #5, B23): consumers whose hello says `host: true`, and any in-process
+   * session a test or evaluation registers as the host. Only these count as "host connected", and a run with no
+   * Tab binds to them alone.
    */
   private readonly hosts = new Set<string>();
+  /** Every consumer session connected now, hosts included: the work each accepts is bound to it and revoked when it closes. */
+  private readonly sessions = new Set<string>();
+  /** Skill runs that ended and whose recovery rows go once the skill has counted them (journal drop above). */
+  private readonly dropWhenCounted = new Set<string>();
   /**
    * The host sessions each task is bound to, by task id: the session that accepted, took, ran, resumed or
    * undid it, or for a run a skill started with no Tab, every session connected when it started. If any of
@@ -296,6 +305,17 @@ export class Helper {
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
       memoryHolds: (id, value) => this.memory.text(id) === value,
       authorize: (a) => this.authorize(a),
+      ...(opts.warn === undefined ? {} : { warn: opts.warn }),
+      // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
+      journal: {
+        save: (r) => this.journal.save({ ...r, skillId: this.patterns.skills.skillOf(r.taskId) }),
+        // A skill's run keeps its row until the skill has counted it (Skills.afterRun), which is after the run ends: a
+        // crash in between would leave a failed run's skill on its own with nothing saying so (B23 review).
+        drop: (id) => {
+          if (this.patterns.skills.awaitingCount(id)) this.dropWhenCounted.add(id);
+          else this.journal.drop(id);
+        },
+      },
       onChanges: (l) => {
         this.changeListeners.add(l);
         return () => this.changeListeners.delete(l);
@@ -303,6 +323,7 @@ export class Helper {
       ...opts.executorHooks,
     });
     this.memory = opts.memory ?? new MemoryStore(opts.store.dir);
+    this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.patterns = new PatternEngine({
       model: this.model,
@@ -323,9 +344,13 @@ export class Helper {
         if (opts?.unprompted === true) this.taskHosts.set(taskId, new Set(this.hosts));
         return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true });
       },
-      hostConnected: () => this.hosts.size > 0,
+      hostConnected: () => this.hostPresent,
       // A run of a skill that just went back on Tab, still going with no Tab, is revoked now (B22 review).
       onSkillReset: () => this.executor.recheck(),
+      onRunCounted: (id) => {
+        if (this.dropWhenCounted.delete(id)) this.journal.drop(id);
+      },
+      taken: (id) => this.idTaken(id),
       askJev: this.ask,
       shadow: () => this.mode === "shadow",
       gate: this.gate,
@@ -362,6 +387,7 @@ export class Helper {
       gate: this.gate,
       people: () => this.memory.list("people").flatMap((e) => (e.kind === "people" && e.status !== "paused" ? [{ id: e.id, label: e.fields.alias, text: e.fields.name }] : [])),
       calendar: opts.eventCalendar ?? "Caret",
+      taken: (id) => this.idTaken(id),
       live: () => this.mode === "live",
       now: this.now,
       count: (name) => opts.store.count(name, 1),
@@ -389,6 +415,33 @@ export class Helper {
       now: this.now,
     });
     this.audit = opts.audit === true ? new Audit({ model: this.model, reader: (v) => this.readerVerb(v), ...(opts.auditProbeEveryMs === undefined ? {} : { probeEveryMs: opts.auditProbeEveryMs }) }) : null;
+    this.recoverInterrupted();
+  }
+
+  /**
+   * What a crash left in the journal (B23, S1 audit #11): runs that were under way or paused when the helper
+   * stopped. Each skill such a run counted for goes back on Tab, as a run that did not end clean does. Each run is
+   * listed as stopped, "at step N of M" naming the first step it had not verified, and the executor takes it back
+   * so its undo restores what it wrote, through the elements the reader recorded. Nothing runs again.
+   */
+  private recoverInterrupted(): void {
+    const now = this.now();
+    const { records, unreadable, skills, unknownSkill } = this.journal.load(now);
+    for (const id of unreadable) this.opts.warn?.(`recovery: the saved run ${id} cannot be read; its undo is lost and it is left in the journal`);
+    // Every skill a row names, expired and unreadable rows' too, goes back on Tab first (B23 review). A row that cannot be
+    // read and predates the clear skill column could be any skill's, so then every skill that runs on its own goes back.
+    const back = new Set(skills);
+    if (unknownSkill) for (const e of this.memory.list("skill")) if (e.kind === "skill" && e.fields.onItsOwn) back.add(e.id);
+    for (const skillId of back) this.patterns.skills.interrupted(skillId, now);
+    // Only now, with every marker acted on, are expired rows deleted.
+    this.journal.pruneExpired(now);
+    // A recovered run keeps its id, which the reader's calendar knows its events by. Offer and event ids count from 1
+    // in every helper process, so the generators skip ids in use (idTaken): the crash test caught a new offer taking it.
+    for (const r of records) {
+      this.executor.recover(r);
+      this.tasks.create(recoveredRecord(r));
+      this.opts.store.count("recovery.interrupted_run", 1);
+    }
   }
 
   /**
@@ -400,7 +453,7 @@ export class Helper {
    */
   private authorize(a: Authorization): Revocation | null {
     const bound = this.taskHosts.get(a.taskId);
-    if (bound !== undefined && [...bound].some((h) => !this.hosts.has(h))) return { why: "the host that started it disconnected", by: "host" };
+    if (bound !== undefined && [...bound].some((h) => !this.sessions.has(h))) return { why: "the host that started it disconnected", by: "host" };
     if (a.unprompted && (bound === undefined || bound.size === 0)) return { why: "no host was connected to show it", by: "host" };
     if (this.gate.settings.paused) return { why: "you paused Caret", by: "you" };
     const deps = this.taskDeps.get(a.taskId);
@@ -433,7 +486,7 @@ export class Helper {
         this.model.reset();
         forgetWindows();
         this.text.clear();
-        this.executor.readerRestarted();
+        this.executor.readerRestarted(m.session);
         this.patterns.readerRestarted();
         this.pending.readerRestarted();
         this.openApp.readerRestarted();
@@ -577,6 +630,16 @@ export class Helper {
     this.executor.recheck();
   }
 
+  /** Whether a task id is in use by a run or an activity record: new offer ids skip these (B23). */
+  private idTaken(id: string): boolean {
+    return this.executor.has(id) || this.tasks.get(id) !== undefined;
+  }
+
+  /** Whether a host session is connected (a consumer whose hello says `host: true`, or an in-process host). */
+  get hostPresent(): boolean {
+    return this.hosts.size > 0;
+  }
+
   /** Whether a reader is connected, as the first look sees it. */
   get hasReader(): boolean {
     return this.readerConnected;
@@ -592,7 +655,17 @@ export class Helper {
    * the host, such as an evaluation that answers offers itself. Runs with no Tab start only while one is.
    */
   hostConnected(session: string): void {
+    this.sessions.add(session);
     this.hosts.add(session);
+  }
+
+  /**
+   * A consumer that is not the host connected (its hello has no `host: true`), such as an evaluation script or the
+   * page engine. The work it accepts is bound to it, but it never counts as the host, so it keeps no run with no
+   * Tab alive (B23).
+   */
+  consumerConnected(session: string): void {
+    this.sessions.add(session);
   }
 
   /**
@@ -600,7 +673,8 @@ export class Helper {
    * already queued in the reader is refused; a run stops at its next step boundary, a paused one at once.
    */
   hostDisconnected(session: string): void {
-    if (!this.hosts.delete(session)) return;
+    this.hosts.delete(session);
+    if (!this.sessions.delete(session)) return;
     // The binding stays, naming a session that is gone, so authorize also refuses a task whose run has not begun.
     for (const [taskId, bound] of [...this.taskHosts]) {
       if (bound.has(session)) this.executor.revoke(taskId, { why: "the host that started it disconnected", by: "host" });
@@ -665,7 +739,8 @@ export class Helper {
     if (this.mode !== "live") return fail("unavailable", "the helper is in shadow mode");
     if (this.gate.settings.paused) return fail("unavailable", "Caret is paused");
     if (!this.readerConnected) return fail("unavailable", "no reader is connected");
-    const offerKey = `plan-${++this.planSeq}-${m.requestId}`;
+    let offerKey = `plan-${++this.planSeq}-${m.requestId}`;
+    while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${m.requestId}`;
     const session = this.readerSession;
     let draft: PlanDraft;
     try {
@@ -1414,6 +1489,32 @@ function refersToMemory(v: unknown, id: string): boolean {
   const o = v as Record<string, unknown>;
   if (o.memory === id && Object.keys(o).length === 1) return true;
   return Object.values(o).some((x) => refersToMemory(x, id));
+}
+
+/** The activity row of a run a crash interrupted: stopped by Caret at the first step it had not verified. */
+function recoveredRecord(r: JournalRecord): Parameters<TaskRegistry["create"]>[0] {
+  const steps = r.plan.steps.length;
+  const at = r.next < steps ? r.next : null;
+  const where = at === null ? "after its last step" : `at step ${at + 1} of ${steps}`;
+  const writes = r.ledger.some((e) => e.kind !== "press") || (r.pending !== null && r.pending.kind !== "press");
+  return {
+    id: r.taskId,
+    kind: "plan",
+    state: "failed",
+    cause: "caret",
+    says: r.plan.title,
+    app: r.window?.app ?? null,
+    windowId: r.window?.windowId ?? null,
+    windowTitle: r.window?.title ?? null,
+    frame: r.window?.frame ?? null,
+    step: at,
+    steps,
+    stepSays: at === null ? null : (r.plan.steps[at]?.says ?? null),
+    remaining: r.plan.steps.slice(r.next).map((s) => s.says),
+    detail: `Stopped when Caret restarted, ${where}`,
+    undoable: writes,
+    pending: null,
+  };
 }
 
 /** A pop-up as a use quotes it: its header's title, or "a pop-up". */

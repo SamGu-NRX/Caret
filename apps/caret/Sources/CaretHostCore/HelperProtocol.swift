@@ -81,7 +81,9 @@ public enum HelperInbound: Equatable, Sendable {
              // The helper's act and calendar grants go to the reader only (B15, B16); a consumer never acts on one.
              ActGrant.type, ActRevoke.type, CalendarGrant.type, PlanRequest.type,
              // The reader's report of a press the user made (B20, B21): the helper's to learn from.
-             UserPress.type:
+             UserPress.type,
+             // The helper's proof to the reader that it holds the launch secret (B23).
+             HelperAuth.type:
             // Validated, so a malformed line is still counted as undecodable.
             _ = try JSONDecoder().decode(Message.self, from: line)
             return .notForConsumer(type: envelope.type)
@@ -159,5 +161,14 @@ public struct LineFramer: Sendable {
             }
         }
         return out
+    }
+}
+
+/// The host's hello to the helper. `host: true` (B23): only the host app's session counts as "host
+/// connected", which a skill needs before it runs on its own, and the helper binds the work the host
+/// accepts to this session.
+public enum HostHello {
+    public static func make(pid: Int) -> Hello {
+        Hello(role: .consumer, mode: .live, pid: pid, version: "caret-host 0.2.0", host: true)
     }
 }

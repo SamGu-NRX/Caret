@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
@@ -215,6 +216,10 @@ describe("skills in the helper", () => {
   let takeOverAtAct: string | null;
   /** While set, the namer's answer waits for it, as a slow network would. */
   let namingHeld: Promise<void> | null;
+  /** Set to leave any run hanging, for good, right before its act at this step: a helper that died there. */
+  let hangAtStep: number | null;
+  /** What the helper said through `warn`. */
+  let warnings: string[];
 
   const namer: AskJev = async (req) => {
     asked.push(req);
@@ -313,6 +318,8 @@ describe("skills in the helper", () => {
     frontmost = "other";
     takeOverAtAct = null;
     namingHeld = null;
+    hangAtStep = null;
+    warnings = [];
     desk = new Desk();
     desk.enforceGrants = true;
     helper = makeHelper();
@@ -329,8 +336,10 @@ describe("skills in the helper", () => {
       publish: (m) => sent.push(HelperMessage.parse(m)),
       readerLink: desk,
       settings: { roles: ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: false },
+      warn: (l) => warnings.push(l),
       executorHooks: {
-        beforeAct: async (taskId) => {
+        beforeAct: async (taskId, step) => {
+          if (hangAtStep !== null && step === hangAtStep) await new Promise<void>(() => undefined);
           if (takeOverAtAct === taskId) await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId, action: "takeOver" });
         },
       },
@@ -377,6 +386,19 @@ describe("skills in the helper", () => {
     expect(skills()[0]!.fields).toMatchObject({ runs: 1, cleanRuns: 1 });
     // Naming is never asked again.
     expect(asked).toHaveLength(1);
+  });
+
+  it("sends each skill's wrote, in the host's shape (memory.ndjson's last line), and empties it when the skill goes back on Tab", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    await keep();
+    const r = await caretRun();
+    finish(r);
+    const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/memory.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { entries?: { fields: Record<string, unknown> }[] });
+    const hostFields = golden.at(-1)?.entries?.[0]?.fields ?? {};
+    const [skill] = skills();
+    expect(skill!.fields.wrote).toEqual(["writeElsewhere"]);
+    expect(Object.keys(skill!.fields).sort()).toEqual(Object.keys(hostFields).sort());
+    expect(ask("edit", { id: skill!.id, fields: { onItsOwn: false } }).entries[0]).toMatchObject({ fields: { wrote: [] } });
   });
 
   it("keeps the first name: a keep offer made while Jev's answer is on its way shows code's name, and the late answer changes nothing", async () => {
@@ -510,8 +532,206 @@ describe("skills in the helper", () => {
     void helper.handleReader({ type: "hello", v: PROTOCOL_VERSION, role: "reader", mode: "live", pid: 2, version: "restarted" });
     const errors = sent.length;
     expect(await undoOf(own.progress[0]!.taskId)).toBeNull();
-    expect(since("error", errors)[0]?.message).toMatch(/earlier reader session/);
+    expect(since("error", errors)[0]?.message).toMatch(/reader that has since restarted/);
     expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+  });
+
+  // S1 audit #11: before B23 a crash lost the run's undo, and the skill stayed promoted.
+  it("recovers a run with no Tab that a crash cut off between its writes: back on Tab, listed as stopped, and undo restores what it wrote", async () => {
+    const skillId = await promoted();
+    hangAtStep = 1;
+    const at = sent.length;
+    const c = open();
+    for (let i = 0; i < 500 && !since("taskProgress", at).some((p) => p.phase === "verified" && p.step === 0); i++) await new Promise((r) => setImmediate(r));
+    expect(values(c)).toEqual([calendar(day).lines[0], "", ""]);
+    expect(skills()[0]!.fields.onItsOwn).toBe(true);
+    // The helper dies here. A new one starts on the same data; the reader, still running, sends the screen again.
+    hangAtStep = null;
+    helper = makeHelper();
+    desk.attach(helper);
+    desk.showList(calendar(day));
+    desk.showGrid(c);
+    expect(skills()[0]).toMatchObject({ id: skillId, status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+    const row = helper.handleActivity({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" }).tasks.find((t) => t.detail?.startsWith("Stopped when Caret restarted") === true);
+    expect(row).toMatchObject({ state: "failed", cause: "caret", detail: "Stopped when Caret restarted, at step 2 of 3", step: 1, steps: 3, undoable: true, windowId: c.windowId });
+    expect(await undoOf(row!.id)).toMatchObject({ restored: 1, notRestored: [], notUndoable: 0 });
+    expect(values(c)).toEqual(["", "", ""]);
+    expect(helper.journal.load(Date.now()).records).toEqual([]);
+    // Nothing of it runs again, and the next trigger asks for Tab.
+    finish({ offer: null, result: null, progress: [], skillOffers: [], window: c });
+    const next = await caretRun();
+    finish(next);
+    expect(next.offer).not.toBeNull();
+  });
+
+  /** A promoted skill's run left hanging before its act at `step`, then a new helper on the same data: the restart. */
+  const crashAt = async (step: number): Promise<{ c: GridWindow; skillId: string }> => {
+    const skillId = await promoted();
+    hangAtStep = step;
+    const at = sent.length;
+    const c = open();
+    for (let i = 0; i < 500 && !since("taskProgress", at).some((p) => p.phase === "verified" && p.step === step - 1); i++) await new Promise((r) => setImmediate(r));
+    hangAtStep = null;
+    return { c, skillId };
+  };
+  const restart = (c: GridWindow): void => {
+    helper = makeHelper();
+    desk.attach(helper);
+    desk.showList(calendar(day));
+    desk.showGrid(c);
+  };
+  const journalDb = (): DatabaseSync => new DatabaseSync(join(dir, "recovery.sqlite"));
+  const interrupted = () => helper.handleActivity({ type: "activityRequest", v: PROTOCOL_VERSION, requestId: "r", op: "list" }).tasks.filter((t) => t.detail?.startsWith("Stopped when Caret restarted") === true);
+
+  // B23 review: rows past the day's keep, or that no longer open, were dropped or skipped before their skill was demoted.
+  it("puts the skill back on Tab from a row that expired or no longer opens, and offers no undo for it", async () => {
+    const { c, skillId } = await crashAt(1);
+    const db = journalDb();
+    db.prepare("UPDATE journal SET saved_at = ?").run(Date.now() - 25 * 60 * 60 * 1000);
+    db.close();
+    restart(c);
+    expect(skills()[0]).toMatchObject({ id: skillId, fields: { onItsOwn: false } });
+    expect(interrupted()).toEqual([]);
+    expect(helper.journal.rawRows()).toEqual([]);
+  });
+
+  it("puts the skill back on Tab from a row whose sealed part cannot be opened, and leaves the row for inspection", async () => {
+    const { c, skillId } = await crashAt(1);
+    const db = journalDb();
+    db.prepare("UPDATE journal SET sealed = ?").run(Buffer.from("not sealed by this key"));
+    db.close();
+    restart(c);
+    expect(skills()[0]).toMatchObject({ id: skillId, fields: { onItsOwn: false } });
+    expect(interrupted()).toEqual([]);
+    expect(helper.journal.rawRows()).toHaveLength(1);
+  });
+
+  // B23 review: the row went when the run ended, before afterRun put a failed run's skill back on Tab.
+  it("keeps a skill run's row until the skill has counted the run", async () => {
+    await promoted();
+    const skills_ = helper.patterns.skills;
+    const counted = skills_.afterRun.bind(skills_);
+    const rowsWhenCounted: number[] = [];
+    skills_.afterRun = (...args) => {
+      rowsWhenCounted.push(helper.journal.rawRows().length);
+      counted(...args);
+    };
+    desk.rewriteNext = (v) => v.toUpperCase();
+    const bad = await caretRun();
+    finish(bad);
+    expect(bad.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "mismatch", unprompted: true });
+    expect(rowsWhenCounted).toEqual([1]);
+    expect(helper.journal.rawRows()).toEqual([]);
+    expect(skills()[0]!.fields.onItsOwn).toBe(false);
+  });
+
+  // B23 second review: a row written before the clear skill column has a null there.
+  it("puts the skill back on Tab from a row older than the skill column, read from its sealed record, or every skill when it cannot be read", async () => {
+    const { c, skillId } = await crashAt(1);
+    let db = journalDb();
+    db.prepare("UPDATE journal SET skill_id = NULL").run();
+    db.close();
+    restart(c);
+    expect(skills()[0]).toMatchObject({ id: skillId, fields: { onItsOwn: false } });
+    expect(interrupted()).toHaveLength(1);
+    // Promoted again, interrupted again, and this time the old row cannot be opened either.
+    const own = await (async () => {
+      for (let i = 1; i <= PROMOTE_AFTER; i++) {
+        const r = await caretRun();
+        finish(r);
+        const promote = r.skillOffers.find((o) => o.kind === "promote");
+        if (promote !== undefined) answer(promote, "accept");
+      }
+      return skills()[0]!;
+    })();
+    expect(own.fields.onItsOwn).toBe(true);
+    db = journalDb();
+    db.prepare("UPDATE journal SET skill_id = NULL, sealed = ?").run(Buffer.from("not sealed by this key"));
+    db.close();
+    restart(c);
+    expect(skills()[0]).toMatchObject({ fields: { onItsOwn: false } });
+  });
+
+  it("reads expired rows' skills before it deletes them, and deletes them only when asked", async () => {
+    const { skillId } = await crashAt(1);
+    const db = journalDb();
+    db.prepare("UPDATE journal SET saved_at = ?").run(Date.now() - 25 * 60 * 60 * 1000);
+    db.close();
+    const loaded = helper.journal.load(Date.now());
+    expect(loaded).toMatchObject({ records: [], skills: [skillId], unknownSkill: false });
+    expect(helper.journal.rawRows()).toHaveLength(1);
+    helper.journal.pruneExpired(Date.now());
+    expect(helper.journal.rawRows()).toEqual([]);
+  });
+
+  // B23 second review: afterRun acknowledged the count in a finally, so a count the store refused still dropped the row.
+  it("keeps a skill run's row when the store refuses to count the run", async () => {
+    await promoted();
+    const update = helper.memory.updateSkill.bind(helper.memory);
+    helper.memory.updateSkill = () => {
+      throw new Error("the memory store refused the write");
+    };
+    desk.rewriteNext = (v) => v.toUpperCase();
+    const bad = await caretRun();
+    helper.memory.updateSkill = update;
+    finish(bad);
+    expect(bad.progress.at(-1)).toMatchObject({ phase: "stopped", unprompted: true });
+    expect(helper.journal.rawRows()).toHaveLength(1);
+  });
+
+  it("drops a paused run's row once the user stops it", async () => {
+    await keep();
+    const at = sent.length;
+    const c = open();
+    await helper.patterns.unpromptedSettled();
+    const offer = since("patternOffer", at).find((o) => o.kind === "routine")!;
+    let paused = false;
+    desk.afterWrite = () => {
+      if (paused) return;
+      paused = true;
+      void helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: offer.id, action: "pause" });
+    };
+    expect(await helper.handleOffer({ type: "offerControl", v: PROTOCOL_VERSION, offerId: offer.id, action: "take" })).toMatchObject({ outcome: "paused" });
+    desk.afterWrite = null;
+    expect(helper.journal.rawRows()).toHaveLength(1);
+    helper.executor.stop(offer.id);
+    expect(helper.journal.rawRows()).toEqual([]);
+    finish({ offer, result: null, progress: [], skillOffers: [], window: c });
+  });
+
+  // B23 review: an undo stopped partway dropped the row, so a second crash lost the rest.
+  it("keeps what an interrupted undo of a recovered run did not try, for the next start", async () => {
+    const { c } = await crashAt(2);
+    restart(c);
+    const [row] = interrupted();
+    expect(row?.detail).toBe("Stopped when Caret restarted, at step 3 of 3");
+    // The user stops the undo as its first restore (the newest write, field 2) lands.
+    desk.afterWrite = () => helper.executor.stop(row!.id);
+    const u = await undoOf(row!.id);
+    desk.afterWrite = null;
+    expect(u).toMatchObject({ restored: 1, notRestored: [{ step: 0, reason: "you stopped the undo" }] });
+    expect(values(c)).toEqual([calendar(day).lines[0], "", ""]);
+    expect(helper.journal.load(Date.now()).records[0]?.ledger.map((e) => e.step)).toEqual([0]);
+    // Another start lists it again, and its undo restores the rest.
+    restart(c);
+    const [again] = interrupted();
+    expect(await undoOf(again!.id)).toMatchObject({ restored: 1, notRestored: [] });
+    expect(values(c)).toEqual(["", "", ""]);
+    expect(helper.journal.rawRows()).toEqual([]);
+  });
+
+  it("keeps a run's saved row sealed: no value it wrote is in the journal's file in the clear", async () => {
+    await promoted();
+    hangAtStep = 2;
+    const at = sent.length;
+    const c = open();
+    for (let i = 0; i < 500 && !since("taskProgress", at).some((p) => p.phase === "verified" && p.step === 1); i++) await new Promise((r) => setImmediate(r));
+    const rows = helper.journal.rawRows();
+    expect(rows).toHaveLength(1);
+    const bytes = Buffer.from(rows[0]!.sealed).toString("latin1");
+    for (const v of calendar(day).lines) expect(bytes.includes(v), v).toBe(false);
+    expect(helper.journal.load(Date.now()).records[0]).toMatchObject({ next: 2, pending: null, skillId: skills()[0]!.id, ledger: [expect.objectContaining({ step: 0 }), expect.objectContaining({ step: 1 })] });
+    void c;
   });
 
   /**
@@ -589,6 +809,23 @@ describe("skills in the helper", () => {
     expect(landed).toBe(1);
     expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "error", unprompted: true });
     expect(own.progress.at(-1)?.detail).toMatch(/the host that started it disconnected/);
+  });
+
+  // B23 (Sol #6 on B22): before the hello's host flag every consumer counted as a host and a run bound to all of them.
+  it("binds a run with no Tab to the host alone: another consumer closing leaves it running, and that consumer never counts as a host", async () => {
+    helper.consumerConnected("eval-script");
+    await promoted();
+    const { own, revokedAtOnce } = await changeMidRun(() => helper.hostDisconnected("eval-script"));
+    expect(own.offer).toBeNull();
+    expect(revokedAtOnce).toBe(false);
+    expect(own.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+    // With only a non-host consumer connected, the skill is offered with Tab.
+    helper.consumerConnected("eval-script-2");
+    helper.hostDisconnected(HOST);
+    expect(helper.hostPresent).toBe(false);
+    const tab = await caretRun();
+    finish(tab);
+    expect(tab.offer).not.toBeNull();
   });
 
   it("starts no run on its own while no host is connected: the skill is offered with Tab, and runs on its own again once a host is back", async () => {
@@ -926,16 +1163,46 @@ describe("skills in the helper", () => {
     desk.close(c.windowId);
   });
 
-  it("resets a skill whose run ends in an error rather than a result", async () => {
+  // CodeRabbit on PR #5: before, the reader refusing to drop the input watch after the last step turned the finished,
+  // verified run into a rejection, which the engine counted as a failure.
+  it("keeps a finished run's result when the reader will not drop its input watch afterwards, and says so", async () => {
     setRule("writeElsewhere", "actIfApproved");
     await promote();
     desk.refuseLastWatch = true;
-    const at = sent.length;
     const r = await caretRun();
     desk.refuseLastWatch = false;
     finish(r);
-    expect(since("error", at).some((e) => e.message.includes("cannot watch for input"))).toBe(true);
-    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, cleanRuns: 0 } });
+    expect(r.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+    expect(warnings.some((w) => w.includes("cannot watch for input"))).toBe(true);
+    expect(skills()[0]).toMatchObject({ status: "active", fields: { onItsOwn: true } });
+  });
+
+  // CodeRabbit on PR #5: accepting checked nothing again, so a press learned while the offer was out gave the skill onItsOwn with a hand-off.
+  it("refuses a promote offer accepted after the skill learned a press it leaves to the user", async () => {
+    setRule("writeElsewhere", "actIfApproved");
+    const skillId = await keep();
+    let promote: SkillOffer | undefined;
+    for (let i = 1; i <= PROMOTE_AFTER && promote === undefined; i++) {
+      const r = await caretRun();
+      finish(r);
+      promote = r.skillOffers.find((o) => o.kind === "promote");
+    }
+    expect(promote).toBeDefined();
+    // While the offer is out, the routine learns the press its windows end with, as recordRoutine does.
+    helper.memory.updateSkill(skillId, { handsOff: { label: "Send", why: "outbound" }, onItsOwn: false }, desk.at);
+    const errors = sent.length;
+    answer(promote!, "accept");
+    expect(since("error", errors)[0]?.message).toMatch(/ends in a press Caret leaves to you/);
+    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false, handsOff: { label: "Send" } } });
+  });
+
+  // CodeRabbit on PR #5: a routine's name, which becomes its skill's, skipped the skill name's checks.
+  it("holds a routine's name to the skill name's checks: one line, trimmed", () => {
+    for (let i = 0; i < 2; i++) byHand();
+    const id = routines()[0]!.id;
+    expect(ask("edit", { id, fields: { name: "Order details\ninto Tracker" } }).error).toMatch(/one line/);
+    expect(ask("edit", { id, fields: { name: "   " } }).error).toMatch(/invalid edit/);
+    expect(ask("edit", { id, fields: { name: "  Order details into Tracker  " } }).entries[0]).toMatchObject({ fields: { name: "Order details into Tracker" } });
   });
 
   it("does not count a run the user took over while its last write was answering", async () => {

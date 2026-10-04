@@ -70,15 +70,33 @@ export type TypedValue = z.infer<typeof TypedValue>;
 export const WalkReason = z.enum(["initial", "focus", "event", "leave", "background", "request", "watch"]);
 export type WalkReason = z.infer<typeof WalkReason>;
 
-export const Hello = z.object({
-  type: z.literal("hello"),
-  v: z.literal(PROTOCOL_VERSION),
-  role: z.enum(["reader", "consumer"]),
-  /** "shadow" makes the helper log opportunities and never call Jev or publish proposals. */
-  mode: z.enum(["live", "shadow"]),
-  pid: z.number().int(),
-  version: z.string(),
-});
+export const Hello = z
+  .object({
+    type: z.literal("hello"),
+    v: z.literal(PROTOCOL_VERSION),
+    role: z.enum(["reader", "consumer"]),
+    /** "shadow" makes the helper log opportunities and never call Jev or publish proposals. */
+    mode: z.enum(["live", "shadow"]),
+    pid: z.number().int(),
+    version: z.string(),
+    /**
+     * A consumer that is the host app: only its session counts as "host connected", and only it keeps a run
+     * with no Tab alive (B23). Other consumers (evaluation scripts, the page engine) leave it out.
+     */
+    host: z.literal(true).optional(),
+    /**
+     * The reader's launch id, random per process: the same reader reconnecting sends the same one, so the
+     * helper knows its window ids and the elements it recorded (write `mark`) still hold (B23).
+     */
+    session: z.string().min(8).optional(),
+    /**
+     * The reader's challenge, base64 of 32 random bytes per connection. The helper answers helperAuth before
+     * anything else; until the proof checks out the reader sends nothing more and acts on nothing (B23).
+     */
+    challenge: z.string().min(16).optional(),
+  })
+  .refine((h) => h.host === undefined || h.role === "consumer", { message: "only a consumer says host", path: ["host"] })
+  .refine((h) => (h.session === undefined && h.challenge === undefined) || h.role === "reader", { message: "only the reader sends session and challenge", path: ["session"] });
 export type Hello = z.infer<typeof Hello>;
 
 export const Snapshot = z.object({
@@ -209,7 +227,17 @@ export const ReaderCommand = z.object({
       expect: z.string(),
       value: z.string(),
       taskId: GrantTask,
-    }),
+      /**
+       * B23 (S1 audit #6): the reader keeps the native element it writes under this name, the helper's, for as
+       * long as the reader runs and the element's process lives. Undo names it again in `sameAs`.
+       */
+      mark: z.string().min(1).optional(),
+      /**
+       * The element at `key` must be the one the reader keeps under this mark: not a sibling that took over the
+       * key, and not one a restarted reader found. Otherwise the answer is notSameElement and nothing is written.
+       */
+      sameAs: z.string().min(1).optional(),
+    }).refine((v) => v.mark === undefined || v.sameAs === undefined, { message: "a write records a mark or checks one, not both", path: ["sameAs"] }),
     z.object({
       kind: z.literal("press"),
       pid: z.number().int(),
@@ -293,6 +321,22 @@ export const ActRevoke = z.object({
 });
 export type ActRevoke = z.infer<typeof ActRevoke>;
 
+/**
+ * B23: the helper's answer to the reader's hello challenge, sent before anything else on the connection:
+ * base64 of HMAC-SHA256(launch secret, "caret-helper-proof\n" + challenge + "\n" + pid), where `pid` is the
+ * helper's own process. The launcher hands both processes the secret on an inherited descriptor. The reader
+ * checks that `pid` is its socket's peer (LOCAL_PEERPID), so a proof another process relays from the real
+ * helper names a pid that is not the reader's peer. A reader that gets no valid proof sends the helper nothing
+ * more and acts on none of its lines.
+ */
+export const HelperAuth = z.object({
+  type: z.literal("helperAuth"),
+  v: z.literal(PROTOCOL_VERSION),
+  proof: z.string().min(1),
+  pid: z.number().int().positive(),
+});
+export type HelperAuth = z.infer<typeof HelperAuth>;
+
 export const VerbOutcome = z.enum([
   "ok",
   /** No live act grant covers this task, process and window, and the process is not in `--act-pids`; `detail` says which. */
@@ -306,6 +350,16 @@ export const VerbOutcome = z.enum([
   "axError",
   /** A calendar verb the reader may not carry out here; `blocked` says why. */
   "blocked",
+  /**
+   * B23 (S1 audit #6): a write's `sameAs` did not hold. The reader keeps no element under that mark (it
+   * restarted, or the element's process went), or another element now has the key. Nothing was written.
+   */
+  "notSameElement",
+  /**
+   * B23 (S1 audit #14): after the reader focused a web field for a focus-first write, focus was not on that
+   * field in that window (a page handler moved it). Nothing was written; the executor hands the field off.
+   */
+  "focusMoved",
 ]);
 export type VerbOutcome = z.infer<typeof VerbOutcome>;
 
@@ -965,6 +1019,10 @@ export type PressRisk = z.infer<typeof PressRisk>;
  * the naming check (patterns/naming.ts: at most six words, names the destination app or a field, holds
  * no value seen in the routine) or the user typed it.
  */
+/** The two write rules a skill's runs can write under (B19): in the window the user is in, or in another. */
+export const WriteRule = z.enum(["writeHere", "writeElsewhere"]);
+export type WriteRule = z.infer<typeof WriteRule>;
+
 export const SkillFields = z.object({
   routineId: z.string().min(1),
   name: z.string().min(1).max(80),
@@ -980,6 +1038,12 @@ export const SkillFields = z.object({
   onItsOwn: z.boolean(),
   /** A press the skill always leaves to the user, such as Send. A skill with one is never run on its own. */
   handsOff: z.object({ label: z.string().min(1), why: PressRisk }).nullable(),
+  /**
+   * The write rules its clean runs in a row wrote under, each once: what running it on its own would do unasked. The
+   * host's permissions page lists the skill under each (A16; the host's memory.ndjson host-memory-7). Empty after any
+   * reset.
+   */
+  wrote: z.array(WriteRule).refine((w) => new Set(w).size === w.length, "wrote names a rule twice"),
 });
 
 /** How a use of a permission ended: done; handed off to the user; stopped partway; or tried and failed. */
@@ -1004,13 +1068,15 @@ const entryBase = {
   says: z.string(),
   evidence: z.object({ count: z.number().int().nonnegative(), lastSeen: ms, app: z.string().nullable() }),
 };
+/** Only a skill says what it wrote: the key is refused in any other kind's fields, not dropped. */
+const notWrote = { wrote: z.never().optional() };
 export const MemoryEntry = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("about"), ...entryBase, fields: AboutFields }),
-  z.object({ kind: z.literal("people"), ...entryBase, fields: PeopleFields }),
-  z.object({ kind: z.literal("preference"), ...entryBase, fields: PreferenceFields }),
-  z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields }),
+  z.object({ kind: z.literal("about"), ...entryBase, fields: AboutFields.extend(notWrote) }),
+  z.object({ kind: z.literal("people"), ...entryBase, fields: PeopleFields.extend(notWrote) }),
+  z.object({ kind: z.literal("preference"), ...entryBase, fields: PreferenceFields.and(z.object(notWrote)) }),
+  z.object({ kind: z.literal("routine"), ...entryBase, fields: RoutineFields.extend(notWrote) }),
   /** `uses`: the permission's last MAX_PERMISSION_USES uses, newest first; this helper always sends it, empty when none. */
-  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields, uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
+  z.object({ kind: z.literal("permission"), ...entryBase, fields: PermissionFields.extend(notWrote), uses: z.array(PermissionUse).max(MAX_PERMISSION_USES).optional() }),
   /**
    * Status: `learning` while it runs on Tab, `active` once it runs on its own, `paused` when the user paused
    * it. A skill that hands a press to the user never runs on its own. CaretScreenCore's MemoryEntry refuses
@@ -1294,7 +1360,7 @@ export const HelperMessage = z.discriminatedUnion("type", [
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
 /** What the helper sends the reader. A consumer can send none of these: ConsumerMessage refuses them. */
-export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand, ActGrant, ActRevoke, CalendarGrant]);
+export const HelperToReader = z.discriminatedUnion("type", [ReaderCommand, ActGrant, ActRevoke, CalendarGrant, HelperAuth]);
 export type HelperToReader = z.infer<typeof HelperToReader>;
 export type HelperMessage = z.infer<typeof HelperMessage>;
 

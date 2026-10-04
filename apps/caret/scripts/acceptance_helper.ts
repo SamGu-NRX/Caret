@@ -9,7 +9,7 @@
 // sentence the run types, and answers the planner from the one instruction the run asks
 // (planner-eval.ts's rule: each field and press by its expected value). Anything else it is asked
 // gets "no" or "none", so no other offer competes with the ones under test.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -21,7 +21,10 @@ import { FakeCalendar } from "../../../helper/src/executor/means.ts";
 import type { AskJev, JevRequest } from "../../../helper/src/fill/jev.ts";
 import type { HelperMessage, TaskProgress } from "../../../helper/src/protocol.ts";
 
-const { values: a } = parseArgs({ options: { socket: { type: "string" }, state: { type: "string" }, calendar: { type: "string", default: "fake" } } });
+const { values: a } = parseArgs({ options: { socket: { type: "string" }, state: { type: "string" }, calendar: { type: "string", default: "fake" }, "auth-fd": { type: "string" } } });
+// B23: the launch secret caret-screen also gets, read to its end from the descriptor the caller names
+// (0: standard input), so the reader accepts this helper.
+const launchSecret = a["auth-fd"] === undefined ? null : readFileSync(Number(a["auth-fd"]));
 if (a.socket === undefined || a.state === undefined) throw new Error("--socket and --state are required");
 if (a.calendar !== "fake" && a.calendar !== "reader") throw new Error("--calendar is fake or reader");
 
@@ -85,7 +88,7 @@ const helper = new Helper({
   // local source and deletes it after, only with --calendar-test.
   eventCalendar: "Caret Test",
 });
-server = new HelperServer(a.socket, () => helper, (l) => errors.push(l));
+server = new HelperServer(a.socket, () => helper, (l) => errors.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 const write = (): void => {

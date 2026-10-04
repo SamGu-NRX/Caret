@@ -38,6 +38,10 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
 import { HelperServer } from "../../../helper/src/server.ts";
+import { newLaunchSecret, sendSecret } from "../../../helper/src/launch.ts";
+// B23: caret-screen accepts only a helper that proves it holds this launch's secret, which both get
+// here: the reader on its standard input (--auth-fd 0), the in-process server as an argument.
+const launchSecret = newLaunchSecret();
 import { Store } from "../../../helper/src/store.ts";
 import type { AskJev } from "../../../helper/src/fill/jev.ts";
 import { type HelperMessage, type PatternOffer, type SkillOffer, type TaskProgress } from "../../../helper/src/protocol.ts";
@@ -192,7 +196,7 @@ helper.handleMemory = (m) => {
   memoryReplies.push({ op: `${m.op}${m.id === undefined ? "" : ` ${m.id}`}${m.fields === undefined ? "" : ` ${JSON.stringify(m.fields)}`}`, error: r.error });
   return r;
 };
-server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(l));
+server = new HelperServer(HELPER_SOCK, () => helper, (l) => log.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -661,7 +665,8 @@ let ok = false;
 try {
   await until("the fixture", () => fixturePid > 0);
   await sleep(800);
-  reader = spawn(join(a.bin, "caret-screen"), ["--socket", HELPER_SOCK, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
+  reader = spawn(join(a.bin, "caret-screen"), ["--auth-fd", "0", "--socket", HELPER_SOCK, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid)]);
+  sendSecret(reader, launchSecret);
   host = spawn(resolve(a.caret), [
     "--helper-socket", HELPER_SOCK, "--socket", HOST_SOCK, "--no-ghost", "--perch", "hidden",
     ...(DRAWN === null ? ["--surfaces", "headless"] : ["--appearance", DRAWN]),

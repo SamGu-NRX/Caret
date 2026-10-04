@@ -19,9 +19,17 @@ public protocol Emitter: AnyObject, Sendable {
 /// socket order, so a grant is in place before any command that follows it is handed on, and a revoke takes
 /// effect however much output is waiting. A helper that stops reading fails closed: past `stallBytes` waiting,
 /// or no progress for `stallAfter` seconds, every grant ends and the connection is dropped and made again.
+///
+/// The helper proves itself first (B23, CodeRabbit on PR #4). Before connecting, the socket's directory must be a
+/// directory this user owns that no one else may enter, and the socket this user's; after connecting, the peer's
+/// effective uid must be this user's. Each connection's hello carries a fresh challenge, and the helper's first line
+/// must be helperAuth with the HMAC of it under the launch secret both processes got from the launcher (HelperProof).
+/// Until that checks out the reader sends nothing but its hello, keeps every other message in the backlog, and applies
+/// no grant, revoke or command; a wrong or missing proof, or none within `authTimeout`, drops the connection.
 public final class SocketEmitter: Emitter, @unchecked Sendable {
     private let path: String
     private let hello: Hello
+    private let secret: Data
     /// The connection, the outbound buffer and the backlog. Nothing on it blocks.
     private let queue = DispatchQueue(label: "caret.screen.socket")
     /// The helper's lines: read, decoded and applied here, never behind outbound writes.
@@ -34,13 +42,18 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     private let statsLock = NSLock()
     private var droppedCount = 0
     private var sentCount = 0
+    /// Messages dropped from the backlog since the last connection was authenticated: the helper never got them, so
+    /// the first connection must resync too (CodeRabbit on PR #4).
+    private var backlogDropped = false
     public var dropped: Int { stat { droppedCount } }
     public var sent: Int { stat { sentCount } }
     private func stat<T>(_ f: () -> T) -> T {
         statsLock.lock(); defer { statsLock.unlock() }
         return f()
     }
-    public var onConnect: (@Sendable () -> Void)?
+    /// After the helper proved itself on a new connection. The argument is true when messages were dropped from the
+    /// backlog while no proven helper was connected, so the screen must be sent again even on the first connection.
+    public var onConnect: (@Sendable (_ lostMessages: Bool) -> Void)?
     /// After snapshots were dropped and the buffer drained: the same helper still holds its state, so only the
     /// screen is sent again (B20 review: the press watch must survive this, and must not survive a new helper).
     public var onResync: (@Sendable () -> Void)?
@@ -57,6 +70,8 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     /// Seconds with bytes waiting and none taken past which the helper counts as stalled. Assumed, not measured:
     /// the helper's own command timeouts are 5 s, so by 10 s nothing it asked for is still awaited.
     public var stallAfter: TimeInterval = 10
+    /// Seconds a new connection has to prove itself before it is dropped. Assumed: a helper answers in milliseconds.
+    public var authTimeout: TimeInterval = 5
     private var resyncAfterDrain = false
     public var log: @Sendable (String) -> Void = { FileHandle.standardError.write(Data(("[caret-screen] " + $0 + "\n").utf8)) }
     /// Every line goes to `log` on this queue, never on the socket or control queue: a stderr nobody drains must
@@ -67,15 +82,19 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         logQueue.async { log(line) }
     }
 
-    public init(path: String, hello: Hello) {
+    /// `secret` is the launch secret, HelperProof.bytes long, from the descriptor the launcher handed over.
+    public init(path: String, hello: Hello, secret: Data) {
         self.path = path
         self.hello = hello
+        self.secret = secret
     }
 
     public func start() { queue.async { self.connect() } }
 
     /// Whether a connection to the helper is up, for tests.
     public var isConnected: Bool { queue.sync { conn != nil } }
+    /// Whether a connection is up and its helper has proven itself, for tests.
+    public var isAuthenticated: Bool { queue.sync { conn?.ready == true } }
 
     /// One connection: its descriptor, the outbound buffer as chunks with an offset into the first, and the two
     /// sources. The buffer and the write source are the main queue's; the read source and inbox are the control
@@ -97,16 +116,36 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         /// uptime clock, so a wall clock set back cannot postpone the stall cutoff.
         var lastProgress = ProcessInfo.processInfo.systemUptime
         let sourcesDone = DispatchGroup()
+        /// This connection's challenge, in its hello.
+        let challenge: String
+        /// The process at the other end of the socket, as the kernel reports it (LOCAL_PEERPID). The helper's proof
+        /// must name it, so a proof relayed from another connection does not pass.
+        let peerPid: pid_t
+        /// The control queue's: the helper's proof checked out, so its lines are applied. Read and set under `closeLock`.
+        private var proven = false
+        /// The main queue's: the proof checked out and the backlog was handed over, so messages go straight out.
+        var ready = false
+        var authTimer: DispatchSourceTimer?
         /// Set once the connection is being dropped. A line the control queue applies is applied under the same
         /// lock, so a grant cannot land after the drop has cleared the table.
         private let closeLock = NSLock()
         private var closed = false
-        init(fd: Int32) { self.fd = fd }
+        init(fd: Int32, challenge: String, peerPid: pid_t) {
+            self.fd = fd
+            self.challenge = challenge
+            self.peerPid = peerPid
+        }
 
         /// Runs `f` unless the connection was closed; nothing closes it meanwhile.
         func ifOpen(_ f: () -> Void) {
             closeLock.lock(); defer { closeLock.unlock() }
             if !closed { f() }
+        }
+
+        /// Runs `f` with whether the helper has proven itself, unless the connection was closed.
+        func withProof(_ f: (_ proven: inout Bool) -> Void) {
+            closeLock.lock(); defer { closeLock.unlock() }
+            if !closed { f(&proven) }
         }
 
         /// Marks it closed, then runs `f` (which clears the grants) under the same lock.
@@ -129,13 +168,15 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     }
 
     private func enqueue(_ d: Data, snapshot: Bool) {
-        guard let c = conn else {
+        // No connection, or one whose helper has not proven itself: the message waits in the backlog.
+        guard let c = conn, c.ready else {
             backlog.append(d)
             if backlog.count > backlogLimit {
                 backlog.removeFirst(backlog.count - backlogLimit)
                 stat { droppedCount += 1 }
+                backlogDropped = true
             }
-            scheduleRetry()
+            if conn == nil { scheduleRetry() }
             return
         }
         // Over the bound, snapshots are dropped and a full resync follows once the buffer drains. Small event
@@ -215,6 +256,11 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
     }
 
     private func connect() {
+        if let no = SocketPathCheck.refusal(path: path) {
+            note("not connecting: \(no)")
+            scheduleRetry()
+            return
+        }
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
         guard s >= 0 else { note("socket(): \(String(cString: strerror(errno)))"); scheduleRetry(); return }
         var on: Int32 = 1
@@ -239,19 +285,58 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
             scheduleRetry()
             return
         }
-        let c = Connection(fd: s)
+        // The listener must run as this user; another user's process at the path gets nothing, not even a hello.
+        var euid: uid_t = 0, egid: gid_t = 0
+        guard getpeereid(s, &euid, &egid) == 0, euid == geteuid() else {
+            note("not connecting: the process listening at \(path) does not run as this user")
+            close(s)
+            scheduleRetry()
+            return
+        }
+        var peer: pid_t = 0
+        var peerLen = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(s, SOL_LOCAL, LOCAL_PEERPID, &peer, &peerLen) == 0, peer > 0 else {
+            note("not connecting: cannot read which process listens at \(path)")
+            close(s)
+            scheduleRetry()
+            return
+        }
+        var h = hello
+        h.challenge = HelperProof.challenge()
+        let c = Connection(fd: s, challenge: h.challenge ?? "", peerPid: peer)
         conn = c
-        note("connected to \(path)")
+        note("connected to \(path); waiting for the helper to prove itself")
         startSources(c)
-        guard let h = try? NDJSON.line(Message.hello(hello)) else {
+        guard let line = try? NDJSON.line(Message.hello(h)) else {
             disconnect(c, "hello failed")
             return
         }
-        append(h, to: c)
+        // Only the hello goes now; the backlog waits for the proof.
+        append(line, to: c)
+        flush(c)
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + authTimeout)
+        t.setEventHandler { [weak self] in
+            guard let self, self.conn === c, !c.ready else { return }
+            self.failClosed(c, "the helper did not prove itself within \(self.authTimeout) s")
+        }
+        t.resume()
+        c.authTimer = t
+    }
+
+    /// On the main queue, once the control queue checked the helper's proof: the backlog goes out and the reader resyncs.
+    private func proven(_ c: Connection) {
+        guard conn === c, !c.ready else { return }
+        c.ready = true
+        c.authTimer?.cancel()
+        c.authTimer = nil
+        note("the helper proved itself")
         for d in backlog { append(d, to: c) }
         backlog.removeAll()
+        let lost = backlogDropped
+        backlogDropped = false
         flush(c)
-        if conn === c { onConnect?() }
+        if conn === c { onConnect?(lost) }
     }
 
     private func startSources(_ c: Connection) {
@@ -303,6 +388,23 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
             guard !line.isEmpty else { continue }
             do {
                 let m = try JSONDecoder().decode(Message.self, from: Data(line))
+                // Until the helper proves itself its lines are not applied: the first must be a proof that checks out.
+                var trusted = false
+                var refused: String?
+                c.withProof { (proven: inout Bool) in
+                    if proven { trusted = true; return }
+                    guard case .helperAuth(let a) = m else { refused = "the helper's first line was not its proof"; return }
+                    // The proof names the helper's own process, which must be this socket's peer: a relay's peer is itself.
+                    guard a.pid == Int(c.peerPid) else { refused = "the proof names process \(a.pid), but the socket's peer is \(c.peerPid)"; return }
+                    guard HelperProof.verify(a.proof, secret: secret, challenge: c.challenge, pid: a.pid) else { refused = "the helper's proof did not check out"; return }
+                    proven = true
+                    queue.async { self.proven(c) }
+                }
+                if let why = refused {
+                    lost(c, why)
+                    return
+                }
+                guard trusted else { continue }
                 // A connection being dropped hands on nothing more: no command, and no grant after its grants were cleared.
                 c.ifOpen {
                     switch m {
@@ -322,6 +424,13 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
             } catch {
                 // The helper also sends error lines for bad input; anything else undecodable is logged and skipped.
                 if !(String(decoding: line, as: UTF8.self).contains(#""type":"error""#)) { note("cannot decode a helper line: \(error)") }
+                // Before the proof, a line that is not one means the peer is not a helper this reader trusts.
+                var proven = true
+                c.withProof { (p: inout Bool) in proven = p }
+                if !proven {
+                    lost(c, "the helper's first line was not its proof")
+                    return
+                }
             }
         }
         if c.inbox.count > maxInboundLine {
@@ -357,7 +466,12 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         c.writeSource?.cancel()
         c.readSource?.cancel()
         c.stallTimer?.cancel()
-        if c.bytes > 0 { stat { droppedCount += c.chunks.count - c.first } }
+        c.authTimer?.cancel()
+        if c.bytes > 0 {
+            stat { droppedCount += c.chunks.count - c.first }
+            // Lines a proven helper never read: the next connection resyncs.
+            if c.ready { backlogDropped = true }
+        }
         c.chunks.removeAll()
         c.first = 0
         c.bytes = 0
@@ -383,4 +497,23 @@ public final class TeeEmitter: Emitter, @unchecked Sendable {
     private let targets: [Emitter]
     public init(_ targets: [Emitter]) { self.targets = targets }
     public func send(_ m: Message) { for t in targets { t.send(m) } }
+}
+
+/// Where the reader may connect (B23, CodeRabbit on PR #4): the socket's directory must be a real directory (not a
+/// link) owned by this user with no access for group or others, and the socket itself must be this user's. A same-user
+/// process can still replace the socket, which is what the helper's proof is for; this keeps other users out.
+public enum SocketPathCheck {
+    /// Nil when the reader may connect to `path`; otherwise why not.
+    public static func refusal(path: String) -> String? {
+        let dir = (path as NSString).deletingLastPathComponent
+        var st = stat()
+        guard lstat(dir, &st) == 0 else { return "cannot read the socket directory \(dir)" }
+        guard (st.st_mode & S_IFMT) == S_IFDIR else { return "the socket directory \(dir) is not a directory" }
+        guard st.st_uid == geteuid() else { return "the socket directory \(dir) belongs to another user" }
+        guard st.st_mode & 0o077 == 0 else { return "the socket directory \(dir) is open to other users (mode \(String(st.st_mode & 0o777, radix: 8)))" }
+        guard lstat(path, &st) == 0 else { return "no socket at \(path)" }
+        guard (st.st_mode & S_IFMT) == S_IFSOCK else { return "\(path) is not a socket" }
+        guard st.st_uid == geteuid() else { return "the socket \(path) belongs to another user" }
+        return nil
+    }
 }

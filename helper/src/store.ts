@@ -92,6 +92,8 @@ export class Store {
   constructor(dir: string) {
     this.dir = dir;
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // mkdirSync's mode applies only to a directory it creates; one that was already there is closed now (CodeRabbit on PR #5).
+    chmodSync(dir, 0o700);
     this.salt = loadSalt(join(dir, "salt"));
     const dbPath = join(dir, "screen.sqlite");
     this.db = new DatabaseSync(dbPath);

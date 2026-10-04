@@ -25,6 +25,26 @@ describe("the host's memory contract, line by line", () => {
     for (const l of lines.filter((x) => x.type === "memoryRequest")) expect(MemoryRequest.parse(l)).toEqual(l);
   });
 
+  // The lead's request for the host's permissions page: each skill says which write rules its runs wrote under.
+  it("carries a skill's wrote in the host's shape, and refuses it in any other kind of entry", () => {
+    const host = lines.at(-1) as { entries: { kind: string; fields: Record<string, unknown> }[] };
+    expect(host.entries[0]?.fields.wrote).toEqual(["writeElsewhere"]);
+    expect(MemoryReply.parse(host)).toEqual(host);
+    const list = line("host-memory-1", "memoryReply") as { entries: { kind: string; fields: Record<string, unknown> }[] };
+    const kinds = new Set<string>();
+    for (const e of list.entries) {
+      kinds.add(e.kind);
+      const withWrote = { ...list, entries: [{ ...e, fields: { ...e.fields, wrote: [] } }] };
+      expect(MemoryReply.safeParse(withWrote).success, e.kind).toBe(false);
+    }
+    expect([...kinds].sort()).toEqual(["about", "people", "permission", "preference", "routine"]);
+    // A skill must say it, once per rule.
+    const skill = host.entries[0] as { fields: Record<string, unknown> };
+    const { wrote: _w, ...noWrote } = skill.fields;
+    expect(MemoryReply.safeParse({ ...host, entries: [{ ...skill, fields: noWrote }] }).success).toBe(false);
+    expect(MemoryReply.safeParse({ ...host, entries: [{ ...skill, fields: { ...skill.fields, wrote: ["writeHere", "writeHere"] } }] }).success).toBe(false);
+  });
+
   it("parses every reply losslessly, the list's permission uses and ops included", () => {
     for (const id of ["host-memory-1", "host-memory-2", "host-memory-3", "host-memory-4", "host-memory-5", "host-memory-6"]) {
       const l = line(id, "memoryReply");

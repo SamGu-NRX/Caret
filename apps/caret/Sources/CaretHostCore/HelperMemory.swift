@@ -20,9 +20,9 @@ import Foundation
 //   - `op: "edit"` on a skill with `fields: {onItsOwn: false}`: "Put back on Tab" (A15). B19's helper
 //     accepts only `name` on a skill and refuses this edit; the host shows that refusal on the row.
 //   - `wrote` in a skill's fields: the write permissions its clean runs in a row wrote under
-//     (`writeHere`, `writeElsewhere`), which B19's helper keeps in its store (memory.ts SkillJson) and
-//     strips from the reply. The permissions page lists a skill under the rules it wrote under; an
-//     entry without the key decodes with `wrote == nil` (A16).
+//     (`writeHere`, `writeElsewhere`). The helper sends it since B23 (ab1fd00), and CaretScreenCore's
+//     SkillFields requires it. The permissions page lists a skill under the rules it wrote under
+//     (A16).
 //
 // Skills (B19) decode through CaretScreenCore's `SkillFields`, which checks them. An entry of a kind this
 // host does not know is kept, as `noticed`, and shown by the helper's own sentence: a newer helper's

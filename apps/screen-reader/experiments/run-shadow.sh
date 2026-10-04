@@ -8,6 +8,7 @@ set -euo pipefail
 OUT=$1
 DUR=${2:-600}
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/launch-secret.sh"
 BIN="$HERE/../.build/debug"
 # The bundled fixture (scripts/bundle-fixture.sh): macOS will not activate the bare executable.
 FIXTURE="$BIN/CaretFixture.app/Contents/MacOS/caret-fixture"
@@ -20,14 +21,14 @@ rm -rf "$DATA"
 stop() { for p in "$@"; do [[ "$p" =~ ^[0-9]+$ ]] && (( p > 1 )) && { kill "$p" 2>/dev/null || true; }; done; return 0; }
 trap 'stop "${READER:-}" "${HELPERPID:-}" "${FIX:-}"' EXIT
 
-(cd "$HELPER" && exec node src/main.ts --shadow --data-dir "$DATA" --status-every 60 > "$OUT/helper.log" 2>&1) &
+(cd "$HELPER" && exec node src/main.ts --auth-fd 0 --shadow --data-dir "$DATA" --status-every 60 > "$OUT/helper.log" 2>&1) < <(secret_bytes) &
 HELPERPID=$!
 sleep 1.5
-HPID=$(pgrep -f "node src/main.ts --shadow --data-dir $DATA" | head -1)
+HPID=$(pgrep -f "node src/main.ts --auth-fd 0 --shadow --data-dir $DATA" | head -1)
 "$FIXTURE" --foreground --windows reference,distractors,claim,schedule --activity "$OUT/activity.ndjson" --duration $(( DUR + 20 )) > "$OUT/fixture.log" 2>&1 &
 FIX=$!
 sleep 1
-"$BIN/caret-screen" --shadow --event-pids "$FIX" > "$OUT/reader.log" 2>&1 &
+"$BIN/caret-screen" --auth-fd 0 --shadow --event-pids "$FIX" < <(secret_bytes) > "$OUT/reader.log" 2>&1 &
 READER=$!
 
 : > "$OUT/resources.tsv"

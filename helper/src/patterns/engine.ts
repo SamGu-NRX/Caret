@@ -79,6 +79,13 @@ export interface EngineDeps {
   hostConnected: () => boolean;
   /** A skill went back on Tab after a failure, an undo, a take over or an edit of what it wrote: runs of it still going may no longer act (B22). */
   onSkillReset?: () => void;
+  /** A skill has counted the run with this task id (Skills.afterRun); its recovery row may go (B23 review). */
+  onRunCounted?: (taskId: string) => void;
+  /**
+   * Whether a task id is in use already: a run a crash interrupted keeps its id, which counts from 1 in every helper
+   * process, so a new offer must not take it (B23).
+   */
+  taken?: (id: string) => boolean;
 }
 
 type Cell = LoopCell | RoutineCell;
@@ -231,7 +238,15 @@ export class PatternEngine {
       askJev: deps.askJev ?? null,
       valuesOf: (sig) => this.routines.valuesOf(sig),
       ...(deps.onSkillReset === undefined ? {} : { onReset: deps.onSkillReset }),
+      ...(deps.onRunCounted === undefined ? {} : { onCounted: deps.onRunCounted }),
     });
+  }
+
+  /** The next offer id no task holds. */
+  private nextId(): string {
+    let id = `offer-${++this.seq}`;
+    while (this.deps.taken?.(id) === true) id = `offer-${++this.seq}`;
+    return id;
   }
 
   /** Unprompted runs started and not yet finished, for tests and evaluations to await. */
@@ -394,7 +409,7 @@ export class PatternEngine {
     const model = this.deps.model;
     const w = model.windows.get(o.msg.windowId);
     if (w === undefined) return this.withdraw(o, "stale");
-    const id = `offer-${++this.seq}`;
+    const id = this.nextId();
     const cells = keep.map((i) => o.cells[i] as OfferState["cells"][number]);
     const msgCells = keep.map((i) => {
       const c = o.msg.cells[i] as OfferCell;
@@ -911,7 +926,7 @@ export class PatternEngine {
     if (w === undefined) throw new Error(`offer for window ${windowId}, which is not in the model`);
     const memory = this.deps.memory;
     const bundleId = w.app.bundleId;
-    const id = `offer-${++this.seq}`;
+    const id = this.nextId();
     const written = cells.map((c) => {
       const node = w.nodes.get(c.dstKey);
       const dstShapeHash = this.deps.hash(`dst\u0000${bundleId}\u0000${w.window.kind}\u0000${templateOf(c.dstKey, node?.role ?? c.dstRole)}`);

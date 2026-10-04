@@ -62,8 +62,10 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
         try s.removeCalendar(c, commit: true)
     }
 
-    public func events(calendarID: String, from: Date, to: Date) -> [BackendEvent] {
-        guard let s = try? store(), let c = s.calendar(withIdentifier: calendarID) else { return [] }
+    /// Throws when access is gone (S1 audit #16: before B23 this answered no events); a calendar that is gone has none.
+    public func events(calendarID: String, from: Date, to: Date) throws -> [BackendEvent] {
+        let s = try store()
+        guard let c = s.calendar(withIdentifier: calendarID) else { return [] }
         return s.events(matching: s.predicateForEvents(withStart: from, end: to, calendars: [c])).compactMap(Self.backendEvent)
     }
 
@@ -80,8 +82,10 @@ public final class EventKitBackend: CalendarBackend, @unchecked Sendable {
         return id
     }
 
-    public func event(id: String) -> BackendEvent? {
-        guard let s = try? store(), let e = s.event(withIdentifier: id) else { return nil }
+    /// Throws when access is gone (S1 audit #16: before B23 this answered "no such event", which undo took as removed).
+    public func event(id: String) throws -> BackendEvent? {
+        let s = try store()
+        guard let e = s.event(withIdentifier: id) else { return nil }
         return Self.backendEvent(e)
     }
 

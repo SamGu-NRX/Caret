@@ -18,6 +18,9 @@ import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type HelperMessage, type PatternOffer, type TaskProgress } from "../src/protocol.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { newLaunchSecret, sendSecret } from "../src/launch.ts";
+/** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
+const launchSecret = newLaunchSecret();
 
 const { values: a } = parseArgs({
   options: {
@@ -68,7 +71,7 @@ const helper = new Helper({
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
   warn: (l) => log.push(l),
 });
-server = new HelperServer(a.socket, () => helper, (l) => log.push(l));
+server = new HelperServer(a.socket, () => helper, (l) => log.push(l), launchSecret);
 await server.listen();
 const tick = setInterval(() => helper.tick(), 250);
 
@@ -133,11 +136,12 @@ try {
   await until("the fixture", () => fixturePid > 0);
   await sleep(800);
   // --act-pids acts in the fixture without a grant; the reader allows it only under this variable, for caret-fixture processes (B22).
-  reader = spawn(join(a.bin, "caret-screen"), [
+  reader = spawn(join(a.bin, "caret-screen"), ["--auth-fd", "0", 
     "--socket", a.socket, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid), "--act-pids", String(fixturePid),
   ], { env: { ...process.env, CARET_SCREEN_FIXTURE_ACTS: "fixture-only" } });
   let readerErr = "";
   reader.stderr.setEncoding("utf8");
+  sendSecret(reader, launchSecret);
   reader.stderr.on("data", (d: string) => (readerErr += d));
   const win = (title: string) => [...helper.model.windows.values()].find((w) => w.window.title === title);
   const seating = await until("the seating window", () => win(SEATING));

@@ -36,8 +36,13 @@ When the task needs project, architecture, or stack context, read the relevant p
 
 # Caret contributor instructions
 
-- Start with README.md and docs/input-pipeline.md for the selected stack, two-stage Jev routing, keyboard contract and ownership. Read docs/integrations.md for workflow effects, and `memory-bank/` for current implementation status.
-- Keep exactly the five selected upstreams: KeyType, GhostType, Computer Use Jev, Skyvern and Screenpipe. Skyvern owns browser control; Computer Use Jev owns native actions; Screenpipe is the sole history engine.
+- Start with README.md. v2 is the reader in `apps/screen-reader/`, the helper in `helper/` and the host app on the `v2/host` branch. `helper/src/protocol.ts` is the wire contract; both sides test it against `helper/fixtures/golden/`. docs/input-pipeline.md, docs/integrations.md and `memory-bank/` describe the v1 hackathon starter still in the tree.
+- The rule of exactly five pinned upstreams is retired. v2 is made of:
+  - a Swift Accessibility reader (`apps/screen-reader/`) that reads every window and acts only under a live grant from the helper, rechecking its target right before each call;
+  - a TypeScript helper (`helper/`) with the screen model, the planner, fill and the executor, which checks each step's end state and keeps undo;
+  - a Swift host app that owns input and acceptance: the key tap, Tab, the overlay and insertion;
+  - browser control as its own layer, still being decided; an extension with a native-messaging bridge is being built on `v2/browser`;
+  - no Screenpipe. v2 does not use it; only the v1 Python path (`caret/screenpipe.py`) pins Screenpipe 0.4.50.
 - Merge KeyType/GhostType components into one Caret app with one input/acceptance owner. GhostType mode means Teddy's action hoverable, not a second running autocomplete app.
 - One shared Jev judge chooses ABSTAIN/INLINE/ACTION at most once per two seconds of changed active context, then selects a workflow/task only for ACTION. A fast Groq-hosted model generates inline text. Discard stale results; never execute from ambient classification alone.
 - Tab accepts only the current visible offer that owns it; Command–1/2/3 choose visible actions. Otherwise preserve the host app's shortcuts. Revalidate the original target before applying any edit.
@@ -47,5 +52,5 @@ When the task needs project, architecture, or stack context, read the relevant p
 - Fixture content is synthetic and cannot be sent. Drop failed-source options; never invent facts in a draft.
 - Keep external credentials and personal data out of Git. Source integrations need explicit configuration.
 - Treat packages/ as pinned upstream code. Preserve authorship and licenses; do not bulk rename upstream files.
-- Run make check on Mac, or make test plus python3 scripts/check_sources.py for core-only Linux work.
+- For v2, run `pnpm test` in `helper/` and `swift test` in `apps/screen-reader/`. For the v1 starter, run make check on Mac, or make test plus python3 scripts/check_sources.py for core-only Linux work.
 - Preserve other contributors' changes. Use branches and PRs after the initial repository setup.

@@ -192,6 +192,19 @@ final class AskCaretTests: XCTestCase {
         XCTAssertFalse(sent.contains { if case .stop = $0 { return true } else { return false } }, "Caret never presses Send or stops on its own")
     }
 
+    /// B23: a page moved focus off a field when Caret focused it, so the run handed that field over;
+    /// the card names it rather than a press.
+    func testAFieldHandedOverIsNamedOnTheCard() throws {
+        let card = try proposed()
+        ask.tab()
+        ask.receive(progress(card.offerKey, .verified, step: 0))
+        let detail = "focus moved away from the Reference field when Caret focused it, so Caret did not write it; it is yours to fill"
+        let handoff = try JSONDecoder().decode(TaskProgress.self, from: Data(#"{"type":"taskProgress","v":1,"at":1,"taskId":"\#(card.offerKey)","planId":"p","phase":"handoff","step":1,"steps":2,"says":null,"detail":"\#(detail)"}"#.utf8))
+        ask.receive(handoff)
+        guard case .ended(_, let line) = ask.phase else { return XCTFail("not ended") }
+        XCTAssertEqual(line.text, "Filled 1 field. Your turn: fill Reference in Caret Fixture. Focus moved away when Caret tried it.")
+    }
+
     func testAPlanWithNoHandOffEndsDone() throws {
         var p = try goldenProposal(answering: "x")
         p.handoff = nil

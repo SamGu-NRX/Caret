@@ -1,10 +1,10 @@
 // A synthetic desk for pattern tests: a source list window and a destination grid window, sent to a
 // Helper as reader snapshots, with a clock the test advances. All names and addresses are invented.
-import type { Helper } from "../src/helper.ts";
 import type { ReaderLink } from "../src/executor/means.ts";
-import { isCalendarVerb, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
+import { isCalendarVerb, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type AppRef, type CalendarGrant, type Node, type ReaderMessage, type ReaderVerb, type VerbResult } from "../src/protocol.ts";
 import { FIXTURE_APP, MAIL_APP, snap } from "./builders.ts";
 import { FakeGrants } from "./fake-grants.ts";
+import { FakeMarks } from "./fake-marks.ts";
 
 export const PEOPLE = [
   "Dana Whitfield",
@@ -63,14 +63,26 @@ export const cellKey = (g: GridWindow, row: number, col: number): string =>
   `${g.app.bundleId}/standard/textfield:${keyLabel(g.columns[col] ?? "")}~${row}`;
 export const buttonKey = (g: GridWindow, label: string): string => `${g.app.bundleId}/standard/button:${keyLabel(label)}~0`;
 
+/**
+ * What the desk sends its windows to: a Helper in process, or a stand-in that forwards them over the socket to a
+ * helper in another process (scripts/crash-recovery-eval.ts). The desk uses only these three.
+ */
+export interface DeskSink {
+  handleReader(m: ReaderMessage): unknown;
+  readonly model: { readonly windows: { has(windowId: string): boolean } };
+  tick(at: number): void;
+}
+
 export class Desk implements ReaderLink {
   at = 1_000_000;
-  helper: Helper | null = null;
+  helper: DeskSink | null = null;
   readonly grids = new Map<string, GridWindow>();
   /** Verbs the executor sent, for tests that count writes. */
   readonly verbs: ReaderVerb[] = [];
   /** Every grant and revoke the executor sent. */
   readonly grants = new FakeGrants();
+  /** The elements writes were recorded under, as the reader keeps them (B23). */
+  readonly marks = new FakeMarks();
   /** Refuses write and press without a live act grant, as caret-screen without --act-pids does. */
   enforceGrants = false;
   /** Rewrites the next written value once, as an app that reformats input does, so the write's check fails. */
@@ -83,12 +95,12 @@ export class Desk implements ReaderLink {
   refuseLastWatch = false;
 
   /** Must be called once the helper exists; the helper takes the desk as its reader link first. */
-  attach(helper: Helper): this {
+  attach(helper: DeskSink): this {
     this.helper = helper;
     return this;
   }
 
-  private get h(): Helper {
+  private get h(): DeskSink {
     if (this.helper === null) throw new Error("desk not attached to a helper");
     return this.helper;
   }
@@ -124,6 +136,8 @@ export class Desk implements ReaderLink {
     if (verb.kind === "raise") return answer("notAllowed", "the desk does not raise windows");
     const cells = new Set(Array.from({ length: g.rows }, (_, r) => g.columns.map((_, c) => cellKey(g, r, c))).flat());
     if (!cells.has(verb.key)) return answer("noElement", verb.key);
+    const notSame = this.marks.check(verb);
+    if (notSame !== null) return answer("notSameElement", notSame);
     if (verb.attribute !== "value") return answer("ok");
     const now = g.values.get(verb.key) ?? "";
     if (now !== verb.expect) return answer("changed", `value is '${now}'`);

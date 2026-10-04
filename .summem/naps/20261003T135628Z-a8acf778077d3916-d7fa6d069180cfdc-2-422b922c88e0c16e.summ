@@ -1,1 +1,0 @@
-B15-B16: Chrome ignores AXSelectedTextRange writes on web inputs, so insert is refused there; caret-fixture cannot take the front from T3; rerun bundle-fixture.sh after any swift build that changes the fixture, or evals run the old one.
