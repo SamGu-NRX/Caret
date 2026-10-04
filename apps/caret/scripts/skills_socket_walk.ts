@@ -253,7 +253,15 @@ const replies: { ok: (o: Record<string, unknown>) => void; fail: (e: Error) => v
 const failReplies = (why: string): void => {
   for (const r of replies.splice(0)) r.fail(new Error(`fixture: ${why}`));
 };
-fixture.on("exit", (code, sig) => failReplies(`exited (${code ?? sig})`));
+/** How the fixture ended, and the end of what it wrote to stderr, for a walk it leaves early. */
+let fixtureEnd: { at: number; code: number | null; signal: string | null } | null = null;
+let fixtureErr = "";
+fixture.stderr.setEncoding("utf8");
+fixture.stderr.on("data", (d: string) => (fixtureErr = (fixtureErr + d).slice(-4000)));
+fixture.on("exit", (code, sig) => {
+  fixtureEnd = { at: Date.now(), code, signal: sig };
+  failReplies(`exited (${code ?? sig})`);
+});
 fixture.on("error", (e) => failReplies(e.message));
 fixture.stdout.on("close", () => failReplies("stdout closed"));
 let buf = "";
@@ -863,6 +871,8 @@ result.frontSamples = fronts.length;
 result.fixtureOrHostWasFront = DRAWN === null ? foreign.length > 0 : null;
 result.otherAppTookTheFront = DRAWN === null ? null : foreign.length > 0;
 result.drawn = DRAWN;
+result.fixtureEnd = fixtureEnd;
+result.fixtureErr = fixtureErr.split("\n").slice(-15);
 // The host's own reading of Reduce Motion while it drew (null for a host that does not report it).
 result.hostReduceMotion = DRAWN === null ? null : hostReduceMotion;
 result.focusKeys = focusKeys;
