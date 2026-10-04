@@ -131,6 +131,12 @@ const SkillJson = SkillFields.extend({
   promote: z.enum(["offered", "declined"]).nullable(),
   /** The permissions the skill's clean runs in a row wrote under (writeHere, writeElsewhere): what promoting it would let it do unasked. */
   wrote: z.array(z.enum(["writeHere", "writeElsewhere"])),
+  /**
+   * The user put it back on Tab (B22 lead decision): Caret never makes the promote offer for it on its own
+   * again; only the user's request from the skill's row (memoryRequest offerOnItsOwn) does. Absent on rows
+   * written before B22.
+   */
+  putBack: z.boolean().optional(),
 });
 export type SkillRecord = z.infer<typeof SkillJson> & { id: string; paused: boolean };
 
@@ -340,8 +346,9 @@ export class MemoryStore {
         if (e.name !== undefined && ONE_LINE_BREAKS.test(e.name)) throw new MemoryError("invalid edit: a skill's name must be one line of text");
         const s = SkillJson.parse(fields);
         // Back on Tab as after a failed run (skills.ts reset): the clean count starts again, and a declined promote
-        // offer stays declined; otherwise Caret may offer again after another PROMOTE_AFTER clean runs.
-        const back = e.onItsOwn === false ? { onItsOwn: false, cleanRuns: 0, wrote: [], promote: s.promote === "declined" ? ("declined" as const) : null } : {};
+        // offer stays declined. Unlike after a failed run, Caret never offers it again on its own (B22 lead
+        // decision): the user asks for the offer from the skill's row (memoryRequest offerOnItsOwn).
+        const back = e.onItsOwn === false ? { onItsOwn: false, cleanRuns: 0, wrote: [], promote: s.promote === "declined" ? ("declined" as const) : null, putBack: true } : {};
         next = { ...s, ...(e.name === undefined ? {} : { name: e.name }), ...back };
         break;
       }
@@ -774,7 +781,7 @@ export class MemoryStore {
         return { kind: "permission", id: r.id, status: "active", evidence, fields: f, says: `${PERMISSIONS[f.action].says}: ${RULE_SAYS[f.rule]}`, uses: this.uses(f.action) };
       }
       case "skill": {
-        const { promote: _p, wrote: _w, ...f } = SkillJson.parse(this.fields(r));
+        const { promote: _p, wrote: _w, putBack: _b, ...f } = SkillJson.parse(this.fields(r));
         const status: MemoryStatus = paused ? "paused" : f.onItsOwn ? "active" : "learning";
         const how = paused
           ? "paused"

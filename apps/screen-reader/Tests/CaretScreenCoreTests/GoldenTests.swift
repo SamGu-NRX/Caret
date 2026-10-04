@@ -65,7 +65,8 @@ private func goldenLines() throws -> [Data] {
                           "readerCommand", "verbResult", "verbResult", "taskProgress", "calendarGrant",
                           "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
                           "readerCommand", "userPress",
-                          "planRequest", "planProposal", "userPress"])
+                          "planRequest", "planProposal", "userPress",
+                          "skillOffer"])
     }
 
     @Test func readsThePressWatch() throws {

@@ -435,7 +435,7 @@ export type OfferControl = z.infer<typeof OfferControl>;
 export const MemoryKind = z.enum(["about", "people", "preference", "routine", "permission", "skill"]);
 export type MemoryKind = z.infer<typeof MemoryKind>;
 
-export const MemoryOp = z.enum(["list", "edit", "pause", "resume", "forget", "add"]);
+export const MemoryOp = z.enum(["list", "edit", "pause", "resume", "forget", "add", "offerOnItsOwn"]);
 export type MemoryOp = z.infer<typeof MemoryOp>;
 
 /**
@@ -446,6 +446,13 @@ export type MemoryOp = z.infer<typeof MemoryOp>;
  * same label replaces that entry's value. The host's contract for it is
  * apps/caret/Tests/CaretHostCoreTests/Fixtures/memory.ndjson on v2/host, copied byte for byte into
  * fixtures/golden/memory.ndjson.
+ *
+ * `offerOnItsOwn` (B22) is the skill row's "Let it run on its own…": `id` names a skill on Tab, and the
+ * helper answers with the skill unchanged and publishes the normal promote skillOffer, whose `taskId` is
+ * this request's `requestId`. Running on its own still comes only from accepting that offer, never from an
+ * edit. A skill the user put back on Tab is never offered it again unless they ask this way. Refused, with
+ * the reason in `error`, for a skill that is paused, already on its own, ends in a press Caret leaves to
+ * the user, or has an offer out, and while Caret is paused or routines are off.
  */
 export const MemoryRequest = z.object({
   type: z.literal("memoryRequest"),
@@ -1023,7 +1030,9 @@ export type MemoryEntry = z.infer<typeof MemoryEntry>;
 /**
  * A one-time question about a routine at the end of a run that succeeded (B19), shown with that run, whose
  * task id is `taskId`. `keep`: "Keep this as <name>?", which makes the routine a skill; `skillId` is null.
- * `promote`: after enough clean runs in a row, "Do this one on your own from now on?" for skill `skillId`.
+ * `promote`: after enough clean runs in a row, "Do this one on your own from now on?" for skill `skillId`;
+ * or the same offer the user asked for from the skill's row (memoryRequest offerOnItsOwn, B22), whose
+ * `taskId` is that request's `requestId`.
  * The host answers with skillAnswer naming `id`; the helper ends the offer with offerWithdrawn, `expired`
  * when nobody answers within its lifetime (offers/lifetimes.ts). Every string is rendered by code.
  */

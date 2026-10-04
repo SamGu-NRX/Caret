@@ -294,10 +294,44 @@ export class Skills {
   }
 
   private maybePromote(s: SkillRecord, plan: Plan, taskId: string): void {
-    if (s.onItsOwn || s.promote !== null || s.cleanRuns < s.needed || this.offeringHeld()) return;
-    if (s.handsOff !== null || handedPress(plan) !== null || this.deps.memory.routine(s.routineId)?.finish != null) return;
-    if (!s.wrote.every((a) => mayRunUnasked(a, this.deps.memory.permission(a)))) return;
+    // A skill the user put back on Tab is offered this only when they ask for it (requestPromote).
+    if (s.onItsOwn || s.putBack === true || s.promote !== null || s.cleanRuns < s.needed || this.promoteOut(s.id) || this.offeringHeld()) return;
+    if (handedPress(plan) !== null || this.promoteRefusal(s) !== null) return;
     this.deps.memory.updateSkill(s.id, { promote: "offered" }, this.clock);
+    this.offerPromote(s, taskId);
+  }
+
+  /**
+   * The user asked from the skill's row to let it run on its own (memoryRequest offerOnItsOwn, B22): the
+   * normal promote offer, whatever its clean count, put back on Tab or declined before, since the user is
+   * asking now. Its `taskId` is the request's id. Returns why it was refused, or null when the offer went
+   * out. The skill's stored promote state is left alone, so an offer that nobody answers changes nothing.
+   */
+  requestPromote(skillId: string, requestId: string): string | null {
+    const s = this.deps.memory.skill(skillId);
+    if (s === null) return `no skill ${skillId}`;
+    if (s.paused) return `${s.name} is paused; resume it first`;
+    if (s.onItsOwn) return `${s.name} already runs on its own`;
+    if (this.promoteOut(s.id)) return `the offer to let ${s.name} run on its own is already out`;
+    if (this.offeringHeld()) return "Caret is paused or your settings turn routines off";
+    const why = this.promoteRefusal(s);
+    if (why !== null) return why;
+    this.offerPromote(s, requestId);
+    return null;
+  }
+
+  /** Why this skill can never run on its own as it stands, or null: a press it leaves to the user, or a permission it wrote under that caps it at asking. */
+  private promoteRefusal(s: SkillRecord): string | null {
+    if (s.handsOff !== null || this.deps.memory.routine(s.routineId)?.finish != null) return `${s.name} ends in a press Caret leaves to you, so it never runs on its own`;
+    if (!s.wrote.every((a) => mayRunUnasked(a, this.deps.memory.permission(a)))) return `${s.name} writes elsewhere, and Reversible write elsewhere is not set to act if pre-approved`;
+    return null;
+  }
+
+  private promoteOut(skillId: string): boolean {
+    return [...this.offers.values()].some((o) => o.msg.kind === "promote" && o.msg.skillId === skillId);
+  }
+
+  private offerPromote(s: SkillRecord, taskId: string): void {
     this.offer({
       kind: "promote",
       taskId,

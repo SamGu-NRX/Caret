@@ -221,7 +221,7 @@ describe("skills in the helper", () => {
     const choice = Object.keys(req.questions.name?.criteria ?? {}).find((k) => k !== "none") ?? "none";
     return { model: "jev-test", answers: { name: { choice, confidence: 0.9 } }, inputTokens: 300, latencyMs: 1, costUsd: 0 };
   };
-  const ask = (op: "list" | "edit" | "pause" | "resume" | "forget", rest: { id?: string; kind?: "routine" | "skill" | "permission"; fields?: Record<string, unknown> } = {}): MemoryReply =>
+  const ask = (op: "list" | "edit" | "pause" | "resume" | "forget" | "offerOnItsOwn", rest: { id?: string; kind?: "routine" | "skill" | "permission"; fields?: Record<string, unknown> } = {}): MemoryReply =>
     helper.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "r", op, ...rest });
   const skills = (): Extract<MemoryEntry, { kind: "skill" }>[] => ask("list", { kind: "skill" }).entries.filter((e): e is Extract<MemoryEntry, { kind: "skill" }> => e.kind === "skill");
   const routines = (): Extract<MemoryEntry, { kind: "routine" }>[] => ask("list", { kind: "routine" }).entries.filter((e): e is Extract<MemoryEntry, { kind: "routine" }> => e.kind === "routine");
@@ -519,7 +519,8 @@ describe("skills in the helper", () => {
       desk.afterWrite = null;
       const before = desk.grants.log.length;
       change();
-      revokedAtOnce = desk.grants.log.slice(before).some((g) => g.type === "actRevoke" && g.taskId === v.taskId);
+      const taskId = v.kind === "write" ? v.taskId : undefined;
+      revokedAtOnce = desk.grants.log.slice(before).some((g) => g.type === "actRevoke" && g.taskId === taskId);
     };
     const own = await caretRun();
     desk.afterWrite = null;
@@ -668,6 +669,66 @@ describe("skills in the helper", () => {
     expect(ask("edit", { id: skillId, fields: { onItsOwn: true } }).error).toMatch(/only after you accept Caret's offer/);
     expect(ask("edit", { id: skillId, fields: {} }).error).toMatch(/changes its name or puts it back on Tab/);
     expect(skills()[0]!.fields.onItsOwn).toBe(false);
+  });
+
+  it("never offers a skill put back on Tab to run on its own again unasked, and makes the normal offer when the user asks from its row (B22)", async () => {
+    const skillId = await promoted();
+    expect(ask("edit", { id: skillId, fields: { onItsOwn: false } }).error).toBeNull();
+    const cleanRunsOnTab = async (n: number): Promise<void> => {
+      for (let i = 1; i <= n; i++) {
+        const r = await caretRun();
+        finish(r);
+        expect(r.offer, `run ${i}`).not.toBeNull();
+        expect(r.skillOffers, `run ${i}`).toEqual([]);
+      }
+    };
+    // Past the ten clean runs that brought the offer before: no offer.
+    await cleanRunsOnTab(PROMOTE_AFTER + 1);
+    expect(skills()[0]!.fields).toMatchObject({ onItsOwn: false, cleanRuns: PROMOTE_AFTER + 1 });
+
+    // The host's request (fixtures/golden/memory.ndjson host-memory-7) for this skill: the skill back unchanged, and the
+    // offer published as fixtures/golden/protocol.ndjson's skill-offer-3, under the request's id.
+    const read = (name: string) => readFileSync(fileURLToPath(new URL(`../fixtures/golden/${name}`, import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const line = read("memory.ndjson").find((l) => l.requestId === "host-memory-7" && l.type === "memoryRequest")!;
+    const want = read("memory.ndjson").find((l) => l.requestId === "host-memory-7" && l.type === "memoryReply") as unknown as MemoryReply;
+    const wantOffer = read("protocol.ndjson").find((l) => l.id === "skill-offer-3") as unknown as SkillOffer;
+    const request = (): MemoryReply => helper.handleMemory(ConsumerMessage.parse({ ...line, id: skillId }) as Parameters<typeof helper.handleMemory>[0]);
+    let at = sent.length;
+    let reply = request();
+    expect(reply.error).toBeNull();
+    expect(reply.entries[0]).toMatchObject({ kind: "skill", id: skillId, status: want.entries[0]!.status, fields: { onItsOwn: false } });
+    const { id: _i, at: _a, skillId: _s, routineId: _r, name: _n, ...shape } = wantOffer;
+    expect(since("skillOffer", at)).toEqual([expect.objectContaining({ ...shape, skillId, taskId: "host-memory-7" })]);
+    // Asked again while it is out: refused, and no second offer.
+    expect(request().error).toMatch(/already out/);
+    // Nobody answers: it expires, and Caret still never makes it on its own.
+    desk.advance(3 * 60 * 1000);
+    expect(sent.some((m) => m.type === "offerWithdrawn" && m.id === since("skillOffer", at)[0]!.id && m.reason === "expired")).toBe(true);
+    await cleanRunsOnTab(2);
+
+    // Asked again and accepted: the next run starts with no Tab.
+    at = sent.length;
+    reply = request();
+    expect(reply.error).toBeNull();
+    answer(since("skillOffer", at)[0]!, "accept");
+    expect(skills()[0]).toMatchObject({ status: "active", fields: { onItsOwn: true } });
+    const own = await caretRun();
+    finish(own);
+    expect(own.offer).toBeNull();
+    expect(own.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+    expect(request().error).toMatch(/already runs on its own/);
+  });
+
+  it("refuses the request to run on its own for a paused skill, an entry that is not a skill, and while Caret is paused", async () => {
+    const skillId = await keep();
+    expect(ask("pause", { id: skillId }).error).toBeNull();
+    expect(ask("offerOnItsOwn", { id: skillId }).error).toMatch(/is paused; resume it first/);
+    expect(ask("resume", { id: skillId }).error).toBeNull();
+    expect(ask("offerOnItsOwn", { id: "permission-writeHere" }).error).toMatch(/is for a skill, not a permission entry/);
+    expect(ask("offerOnItsOwn").error).toMatch(/needs the entry's id/);
+    helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: desk.at, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "eager", paused: true });
+    expect(ask("offerOnItsOwn", { id: skillId }).error).toMatch(/Caret is paused/);
+    expect(since("skillOffer", 0).filter((o) => o.kind === "promote")).toEqual([]);
   });
 
   it("withdraws a promote offer still out when the skill is put back on Tab (B21)", async () => {

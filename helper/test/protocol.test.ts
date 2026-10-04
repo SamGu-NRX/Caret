@@ -31,6 +31,7 @@ describe("golden protocol fixture", () => {
       "skillOffer", "skillAnswer", "memoryReply", "skillOffer", "skillAnswer", "taskProgress", "taskProgress",
       "readerCommand", "userPress",
       "planRequest", "planProposal", "userPress",
+      "skillOffer",
     ]);
   });
 

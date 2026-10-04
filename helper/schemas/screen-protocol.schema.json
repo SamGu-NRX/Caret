@@ -950,7 +950,8 @@
                 "pause",
                 "resume",
                 "forget",
-                "add"
+                "add",
+                "offerOnItsOwn"
               ]
             },
             "id": {
@@ -2985,7 +2986,8 @@
                   "pause",
                   "resume",
                   "forget",
-                  "add"
+                  "add",
+                  "offerOnItsOwn"
                 ]
               }
             }

@@ -725,6 +725,14 @@ export class PatternEngine {
           if (before.kind === "skill") this.withdrawDependents(before.fields.routineId);
           return reply([]);
         }
+        case "offerOnItsOwn": {
+          const e = memory.get(m.id);
+          if (e.kind !== "skill") throw new MemoryError(`offerOnItsOwn is for a skill, not ${e.kind === "about" ? "an About" : `a ${e.kind}`} entry`);
+          if (this.deps.shadow()) throw new MemoryError("the helper is in shadow mode and makes no offers");
+          const refused = this.skills.requestPromote(e.id, m.requestId);
+          if (refused !== null) throw new MemoryError(refused);
+          return reply([e]);
+        }
       }
     } catch (e) {
       if (e instanceof MemoryError) return reply([], e.message);
