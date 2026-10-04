@@ -31,7 +31,7 @@ interface CaretPlanAPI {
   press(target: TargetRef, expectedEffect: EffectRef): StepRef;
   /** Step: wait (at most 10000 ms) for an effect a press in this plan expects. */
   waitFor(effect: EffectRef, timeoutMs: number): StepRef;
-  /** Asks a judge to pick among one question's options; null means no confident pick. At most 4 calls. */
+  /** Asks a judge to pick one of a question's options; pass all of them. null means no confident pick. At most 4 calls. */
   choose(options: readonly OptionRef[]): Promise<OptionRef | null>;
   /** Step: ask the user one listed question. At most 1. */
   ask(question: QuestionRef): StepRef;

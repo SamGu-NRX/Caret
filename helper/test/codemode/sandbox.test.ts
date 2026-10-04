@@ -311,3 +311,78 @@ describe("imports and network", () => {
     });
   });
 });
+
+// Regressions for the boundary review of 2026-10-04 (theo-astra-reviewer, findings 1-7).
+describe("review regressions", () => {
+  test("a huge error message or thrown string is not copied out of the guest", async () => {
+    const big = await raw(`throw new Error("out of memory " + "x".repeat(1000000));`);
+    expect(refusal(big).detail.length).toBeLessThanOrEqual(500);
+    expect(refusal(big).detail).toContain("not copied");
+    const str = await raw(`throw "y".repeat(1000000);`);
+    expect(refusal(str).detail.length).toBeLessThanOrEqual(500);
+  });
+
+  test("replacing Promise.resolve or JSON.parse does not break or reach readWindow", async () => {
+    const o = await raw(`Promise.resolve = () => { throw "z".repeat(1000000); }; JSON.parse = () => ({}); ${plain()}`);
+    if (!o.ok) throw new Error(`${o.kind}: ${o.detail}`);
+  });
+
+  test("an immediate choose reply does not leave the watchdog paused", async () => {
+    const o = await raw(
+      `const w = await caret.readWindow(); const opts = w.questions[0].options.map((o) => o.ref);
+       await Promise.all([caret.choose(opts), caret.choose(opts), caret.choose(opts)]);
+       let o = {}; for (let i = 0; i < 5e4; i++) o = { o }; JSON.stringify(o); ${plain()}`,
+    );
+    expect(refusal(o).kind).toBe("cpu");
+    expect(o.stats.wallMs).toBeLessThan(2500);
+  });
+
+  test("a native call that finishes past the compute budget is refused, not accepted", async () => {
+    const o = await raw(`JSON.stringify(Array(300000).fill("abc")); ${plain()}`, { limits: { guestCpuMs: 1, watchdogMs: 10_000 } });
+    expect(refusal(o).kind).toBe("cpu");
+  });
+
+  test("returning while a choose is unanswered is refused, and the callback is aborted", async () => {
+    let signal: AbortSignal | undefined;
+    const o = await raw(`const w = await caret.readWindow(); caret.choose(w.questions[0].options.map((o) => o.ref)); ${plain()}`, {}, (req) => {
+      signal = req.signal;
+      return new Promise(() => {});
+    });
+    expect(refusal(o).detail).toContain("still unanswered");
+    expect(signal?.aborted).toBe(true);
+  });
+
+  test("choose must offer the whole question, in the host's order", async () => {
+    let offered: string[] = [];
+    expect(refusal(await raw(`const w = await caret.readWindow(); await caret.choose(["o:wed"]); ${plain()}`)).detail).toContain("choose takes all 2 options");
+    const o = await raw(`const w = await caret.readWindow(); await caret.choose(["o:wed", "o:tue"]); ${plain()}`, {}, async ({ options }) => {
+      offered = options.map((x) => x.ref);
+      return null;
+    });
+    expect(o.ok).toBe(true);
+    expect(offered).toEqual(["o:tue", "o:wed"]);
+  });
+
+  test("a chooser that throws synchronously is a callback error, not an uncaught exception", async () => {
+    const o = await raw(`const w = await caret.readWindow(); await caret.choose(w.questions[0].options.map((o) => o.ref)); ${plain()}`, {}, () => {
+      throw new Error("sync boom");
+    });
+    expect(refusal(o)).toMatchObject({ kind: "callbackError", detail: expect.stringContaining("sync boom") });
+  });
+
+  test("plan() is not reentrant through getters, and no step can follow it", async () => {
+    const reentrant = await raw(`const w = await caret.readWindow(); const s = caret.press("t:next", "e:next-page");
+      const draft = { basedOn: w.snapshot, get steps() { caret.plan({ basedOn: w.snapshot, steps: [s] }); return [s]; } };
+      return caret.plan(draft);`);
+    expect(refusal(reentrant).detail).toContain("plan was called again");
+    const after = await raw(`const w = await caret.readWindow(); const s = caret.press("t:next", "e:next-page");
+      const p = caret.plan({ basedOn: w.snapshot, steps: [s] }); try { caret.press("t:next", "e:next-page"); } catch {} return p;`);
+    expect(refusal(after).detail).toContain("after plan()");
+  });
+
+  test("a getter on main cannot run outside the compute budget", async () => {
+    const o = await runProgramJs(`Object.defineProperty(globalThis, "main", { get() { for (;;) {} } });`, "raw", SNAPS, pickFirst);
+    expect(refusal(o).kind).toBe("cpu");
+    expect(o.stats.wallMs).toBeLessThan(1500);
+  });
+});

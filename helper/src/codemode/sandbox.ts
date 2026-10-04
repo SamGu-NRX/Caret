@@ -95,6 +95,9 @@ function runWorker(input: WorkerInput, choose: ChooserPort, signal: AbortSignal 
     resourceLimits: { maxOldGenerationSizeMb: limits.workerHeapMb, maxYoungGenerationSizeMb: 8, stackSizeMb: limits.workerStackMb },
   });
   const callbacks = new Set<AbortController>();
+  const timers = new Set<NodeJS.Timeout>();
+  /** Replies posted to the worker; its "waiting" message says how many it had consumed. */
+  let sent = 0;
 
   return new Promise<SandboxOutcome>((resolve) => {
     let settled = false;
@@ -103,6 +106,8 @@ function runWorker(input: WorkerInput, choose: ChooserPort, signal: AbortSignal 
       settled = true;
       clearTimeout(wall);
       clearTimeout(watchdog);
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
       signal?.removeEventListener("abort", onAbort);
       for (const c of callbacks) c.abort(new Error(`run ended: ${outcome.ok ? "done" : outcome.kind}`));
       callbacks.clear();
@@ -139,7 +144,8 @@ function runWorker(input: WorkerInput, choose: ChooserPort, signal: AbortSignal 
       if (!parsed.success) return end(refuse("fault", `malformed worker message: ${parsed.error.message.slice(0, 200)}`));
       const m = parsed.data;
       if (m.type === "done") return end(m.outcome);
-      if (m.type === "waiting") return pause();
+      // A reply already in flight means the worker will run again: pause only when it has seen them all.
+      if (m.type === "waiting") return m.consumed === sent ? pause() : undefined;
       const remaining = limits.wallMs - elapsed();
       const budget = Math.max(0, Math.min(limits.callbackMs, remaining));
       const controller = new AbortController();
@@ -148,14 +154,18 @@ function runWorker(input: WorkerInput, choose: ChooserPort, signal: AbortSignal 
         controller.abort(new Error("choose timed out"));
         end(refuse("deadline", `choose did not return within ${Math.round(budget)} ms`));
       }, budget);
+      timers.add(timer);
       const reply = (r: ChooseReply) => {
         clearTimeout(timer);
+        timers.delete(timer);
         callbacks.delete(controller);
         if (settled) return;
+        sent++;
         resume();
         worker.postMessage(r);
       };
-      choose({ window: m.window, question: m.question, options: m.options, signal: controller.signal }).then(
+      // Called inside a promise so a chooser that throws synchronously takes the same error path.
+      new Promise<unknown>((res) => res(choose({ window: m.window, question: m.question, options: m.options, signal: controller.signal }))).then(
         (chosen: unknown) =>
           reply(
             chosen === null || typeof chosen === "string"

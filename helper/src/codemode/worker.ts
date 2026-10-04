@@ -21,8 +21,10 @@ const port = parentPort;
 const input = workerData as WorkerInput;
 const limits = input.limits;
 
-// Replies from the parent, consumed in order by the pump loop.
+// Replies from the parent, consumed in order by the pump loop. `consumed` lets the parent tell a
+// "waiting" message from a worker that has not yet seen a reply already in flight.
 const replies: ChooseReply[] = [];
+let consumed = 0;
 let wake: (() => void) | null = null;
 port.on("message", (m: ChooseReply) => {
   replies.push(m);
@@ -42,7 +44,11 @@ function interrupt(): boolean {
   return cpuExceeded;
 }
 
-/** Runs guest code and charges the time to the compute budget. Host callbacks are not inside slices. */
+/**
+ * Runs anything that can execute guest code (a call, a job, a property read that may hit a getter) and
+ * charges it to the compute budget. The interrupt hook only fires between bytecodes, so a native builtin
+ * can finish past the budget; the total is checked again when the slice ends.
+ */
 function slice<T>(fn: () => T): T {
   sliceStart = performance.now();
   try {
@@ -50,21 +56,26 @@ function slice<T>(fn: () => T): T {
   } finally {
     stats.guestCpuMs += performance.now() - sliceStart;
     sliceStart = null;
+    if (stats.guestCpuMs > limits.guestCpuMs) cpuExceeded = true;
   }
 }
+
+/** Longest detail a refusal carries out of the worker. */
+const DETAIL_CHARS = 500;
+const cap = (s: string) => (s.length <= DETAIL_CHARS ? s : `${s.slice(0, DETAIL_CHARS - 1)}…`);
 
 /** Classifies an error that came out of the guest or out of a QuickJS call. Our own flags win. */
 function classify(name: string, message: string): [RefusalKind, string] {
   if (hostFault !== null) return ["fault", hostFault];
   if (violation !== null) return ["violation", violation];
   if (cpuExceeded) return ["cpu", `guest compute passed ${limits.guestCpuMs} ms`];
-  if (/out of memory/i.test(message)) return ["memory", `${name}: ${message}`];
+  if (/out of memory/i.test(message)) return ["memory", cap(`${name}: ${message}`)];
   // When the heap is too full to build the out-of-memory error itself, QuickJS raises an exception with
   // no value, which reads as a thrown null. A heap at its limit has grown the WASM memory past its
   // initial size, so the two together are reported as memory.
   if (name === "null" && qjs.getWasmMemory().buffer.byteLength > INITIAL_BYTES) return ["memory", "exception with no value after the heap grew; QuickJS ran out of memory building the error"];
-  if (/stack overflow|maximum call stack/i.test(message)) return ["stack", `${name}: ${message}`];
-  return ["guestError", `${name}: ${message}`.slice(0, 500)];
+  if (/stack overflow|maximum call stack/i.test(message)) return ["stack", cap(`${name}: ${message}`)];
+  return ["guestError", cap(`${name}: ${message}`)];
 }
 
 // ---- Registry: what this run has issued to the guest -------------------------------------------------
@@ -81,6 +92,8 @@ const steps = new Map<string, PlanStep>();
 const choices: ChoiceRecord[] = [];
 let asks = 0;
 let plan: { ref: string; basedOn: string; steps: PlanStep[] } | null = null;
+/** Set while plan() reads its argument, whose getters can call back into the API. */
+let planning = false;
 
 function issue(s: PlanningSnapshot): void {
   issuedSnapshots.set(s.snapshot, s);
@@ -103,6 +116,7 @@ function guestView(s: PlanningSnapshot): string {
 }
 
 function addStep(step: StepBody): string {
+  if (plan !== null || planning) throw new Violation("no steps can be added after plan()");
   if (steps.size >= limits.steps) throw new Violation(`a plan has at most ${limits.steps} steps`);
   const ref = `step:${steps.size + 1}`;
   steps.set(ref, { ...step, ref } as PlanStep);
@@ -157,27 +171,28 @@ function refArrayArg(h: QuickJSHandle | undefined, what: string, max: number): s
   return out;
 }
 
-// Helpers written by the host and captured before the program runs, so a program that replaces
-// JSON.parse or Promise only changes its own view. Clocks, randomness and eval are removed.
-const prelude = slice(() =>
+// Helpers written by the host and bound before the program runs, so a program that replaces JSON.parse,
+// Object.freeze or Promise.resolve only changes its own view. Clocks, randomness and eval are removed.
+// This is host code, so it is not charged to the program's compute budget.
+const prelude = (() =>
   vm.evalCode(
     `(() => {
-      const parse = JSON.parse, freeze = Object.freeze, keys = Object.keys, P = Promise;
+      const parse = JSON.parse, freeze = Object.freeze, keys = Object.keys, resolve = Promise.resolve.bind(Promise);
       const deep = (v) => { if (v !== null && typeof v === "object") { for (const k of keys(v)) deep(v[k]); freeze(v); } return v; };
       for (const name of ["Date", "eval", "Atomics", "SharedArrayBuffer", "WeakRef", "FinalizationRegistry"]) delete globalThis[name];
       delete Math.random;
-      return freeze({ view: (s) => P.resolve(deep(parse(s))) });
+      return freeze({ view: (s) => resolve(deep(parse(s))) });
     })()`,
     "prelude.js",
-  ),
-);
+  ))();
 const helpers = vm.unwrapResult(prelude);
 const viewFn = vm.getProp(helpers, "view");
 
 const pending = new Map<number, { deferred: QuickJSDeferredPromise; question: string; offered: string[] }>();
 let nextCallId = 0;
 
-type Impl = (...args: QuickJSHandle[]) => QuickJSHandle;
+/** An API body returns a handle, or a guest call's result whose error passes through to the guest. */
+type Impl = (...args: QuickJSHandle[]) => QuickJSHandle | { error: QuickJSHandle };
 
 /** Wraps an API function: a Violation is recorded and thrown into the guest, and the guest is interrupted. */
 function api(name: string, impl: Impl): QuickJSHandle {
@@ -210,7 +225,8 @@ const fns: [string, QuickJSHandle][] = [
       const json = vm.newString(guestView(s));
       const r = vm.callFunction(viewFn, vm.undefined, json);
       json.dispose();
-      return vm.unwrapResult(r);
+      // An error here (out of memory, an interrupt) goes back to the guest as thrown, unread by the host.
+      return r.error !== undefined ? { error: r.error } : r.value;
     }),
   ],
   [
@@ -261,22 +277,25 @@ const fns: [string, QuickJSHandle][] = [
     "choose",
     api("choose", (o) => {
       if (++stats.chooseCalls > limits.chooseCalls) throw new Violation(`at most ${limits.chooseCalls} choose calls`);
-      const offered = refArrayArg(o, "options", limits.optionsPerChoice);
-      if (offered.length === 0) throw new Violation("options is empty");
-      if (new Set(offered).size !== offered.length) throw new Violation("options repeat a ref");
-      // Every option must come from one host-owned question group; Jev gets that group's question.
+      const given = refArrayArg(o, "options", limits.optionsPerChoice);
+      if (given.length === 0) throw new Violation("options is empty");
+      if (new Set(given).size !== given.length) throw new Violation("options repeat a ref");
+      // The options name one host-owned question group, and must be all of it: Jev gets that group's
+      // question and every option in the host's order, so a program cannot narrow or reorder the choice.
       let group: { snapshot: PlanningSnapshot; question: PlanningSnapshot["questions"][number] } | undefined;
-      for (const q of questions.values()) if (q.question.options.some((x) => x.ref === offered[0])) group = q;
-      if (group === undefined) throw new Violation(`unknown option ${offered[0]}`);
-      const labels = new Map(group.question.options.map((x) => [x.ref, x.label]));
-      for (const ref of offered) if (!labels.has(ref)) throw new Violation(`option ${ref} is not in question ${group.question.ref}`);
+      for (const q of questions.values()) if (q.question.options.some((x) => x.ref === given[0])) group = q;
+      if (group === undefined) throw new Violation(`unknown option ${given[0]}`);
+      const all = group.question.options;
+      for (const ref of given) if (!all.some((x) => x.ref === ref)) throw new Violation(`option ${ref} is not in question ${group.question.ref}`);
+      if (given.length !== all.length) throw new Violation(`choose takes all ${all.length} options of question ${group.question.ref}, not ${given.length}`);
+      const offered = all.map((x) => x.ref);
       const callId = nextCallId++;
       const request: ChooseRequest = {
         type: "choose",
         callId,
         window: group.snapshot.window,
         question: { ref: group.question.ref, text: group.question.text },
-        options: offered.map((ref) => ({ ref, label: labels.get(ref)! })),
+        options: all.map((x) => ({ ref: x.ref, label: x.label })),
       };
       const deferred = vm.newPromise();
       pending.set(callId, { deferred, question: group.question.ref, offered });
@@ -288,17 +307,27 @@ const fns: [string, QuickJSHandle][] = [
     "plan",
     api("plan", (d) => {
       if (plan !== null) throw new Violation("plan was already called");
+      if (planning) throw new Violation("plan was called again while reading its argument");
       if (d === undefined || vm.typeof(d) !== "object") throw new Violation("plan takes { basedOn, steps }");
-      const b = vm.getProp(d, "basedOn");
-      const s = vm.getProp(d, "steps");
       let basedOn: string;
       let order: string[];
+      // Reading the argument can run guest getters, which could call the API; `planning` refuses that.
+      planning = true;
       try {
-        basedOn = refArg(b, "basedOn");
-        order = refArrayArg(s, "steps", limits.steps);
+        const b = vm.getProp(d, "basedOn");
+        try {
+          basedOn = refArg(b, "basedOn");
+        } finally {
+          b.dispose();
+        }
+        const s = vm.getProp(d, "steps");
+        try {
+          order = refArrayArg(s, "steps", limits.steps);
+        } finally {
+          s.dispose();
+        }
       } finally {
-        b.dispose();
-        s.dispose();
+        planning = false;
       }
       const snap = issuedSnapshots.get(basedOn);
       if (snap === undefined) throw new Violation(`basedOn ${basedOn} is not a snapshot this program read`);
@@ -335,15 +364,39 @@ freezeObj.dispose();
 
 // ---- Run ------------------------------------------------------------------------------------------------
 
+/** Longest guest string copied out to describe an error; QuickJS's own messages are far shorter. */
+const ERROR_TEXT_CHARS = 300;
+
+/** A guest string, or a note of its length when it is too long to copy. */
+function shortString(h: QuickJSHandle): string {
+  const n = stringLength(h);
+  return n <= ERROR_TEXT_CHARS ? vm.getString(h) : `(${n} characters, not copied)`;
+}
+
+/**
+ * Name and message of a thrown value, read property by property with every string length checked first,
+ * never serialized whole. Inside a slice, because a property read can run a guest getter.
+ */
 function errorOf(h: QuickJSHandle): [string, string] {
-  try {
-    const d = vm.dump(h) as { name?: unknown; message?: unknown } | string;
-    if (typeof d === "object" && d !== null) return [String(d.name ?? "Error"), String(d.message ?? "")];
-    if (d === null || d === undefined) return [String(d), "the exception carried no value"];
-    return ["Error", String(d)];
-  } catch (e) {
-    return ["Error", `(error could not be read: ${(e as Error).message})`];
-  }
+  return slice(() => {
+    try {
+      const t = vm.typeof(h);
+      if (t === "undefined" || vm.sameValue(h, vm.null)) return [t === "undefined" ? "undefined" : "null", "the exception carried no value"];
+      if (t === "string") return ["Error", shortString(h)];
+      if (t !== "object" && t !== "function") return ["Error", `a thrown ${t}`];
+      const read = (key: string): string => {
+        const p = vm.getProp(h, key);
+        try {
+          return vm.typeof(p) === "string" ? shortString(p) : "";
+        } finally {
+          p.dispose();
+        }
+      };
+      return [read("name") || "Error", read("message")];
+    } catch {
+      return ["Error", "(the error could not be read)"];
+    }
+  });
 }
 
 function disposeAll(...hs: (QuickJSHandle | undefined)[]): void {
@@ -377,12 +430,19 @@ try {
   outcome = { ok: false, kind: kind === "guestError" ? "fault" : kind, detail, stats: { wallMs: 0, ...stats } };
 }
 // The parent terminates this thread when it receives "done".
-port.postMessage({ type: "done", outcome });
+port.postMessage({ type: "done", outcome: outcome.ok ? outcome : { ...outcome, detail: cap(outcome.detail) } });
 
 async function run(): Promise<SandboxOutcome> {
   const done = (o: { ok: true; plan: NonNullable<typeof plan> } | { ok: false; kind: RefusalKind; detail: string }): SandboxOutcome => {
     const s = { wallMs: 0, ...stats };
-    if (!o.ok) return { ok: false, kind: o.kind, detail: o.detail, stats: s };
+    if (!o.ok) return { ok: false, kind: o.kind, detail: cap(o.detail), stats: s };
+    // Last check before success: every flag a slice or API call can latch, and the plan still covers
+    // every registered step.
+    if (hostFault !== null || violation !== null || cpuExceeded) {
+      const [kind, detail] = classify("Error", "");
+      return { ok: false, kind, detail: cap(detail), stats: s };
+    }
+    if (o.plan.steps.length !== steps.size) return { ok: false, kind: "violation", detail: "steps were registered after plan()", stats: s };
     return { ok: true, plan: { basedOn: o.plan.basedOn, window: issuedSnapshots.get(o.plan.basedOn)!.window, steps: o.plan.steps, choices, programDigest: input.programDigest }, stats: s };
   };
   const fail = (name: string, message: string) => {
@@ -397,7 +457,8 @@ async function run(): Promise<SandboxOutcome> {
     return fail(n, m);
   }
   evaluated.value.dispose();
-  mainFn = vm.getProp(vm.global, "main");
+  mainFn = slice(() => vm.getProp(vm.global, "main"));
+  if (hostFault !== null || violation !== null || cpuExceeded) return fail("Error", "");
   if (vm.typeof(mainFn) !== "function") return done({ ok: false, kind: "violation", detail: "the program does not define main" });
   const called = slice(() => vm.callFunction(mainFn!, vm.undefined, caret));
   if (called.error !== undefined) {
@@ -424,6 +485,7 @@ async function run(): Promise<SandboxOutcome> {
         // The only acceptable result is the ref plan() returned; compare without copying anything large.
         const matches = plan !== null && vm.typeof(v) === "string" && stringLength(v) === plan.ref.length && vm.getString(v) === plan.ref;
         if (!matches) return done({ ok: false, kind: "violation", detail: "main must return the result of caret.plan(...)" });
+        if (pending.size > 0) return done({ ok: false, kind: "violation", detail: "main returned while a choose call was still unanswered" });
         return done({ ok: true, plan: plan! });
       } finally {
         v.dispose();
@@ -438,10 +500,11 @@ async function run(): Promise<SandboxOutcome> {
 
     // Wait for the parent to answer a choose call. The parent enforces the wall clock and terminates
     // this thread if no answer comes.
-    if (replies.length === 0) port.postMessage({ type: "waiting" });
+    if (replies.length === 0) port.postMessage({ type: "waiting", consumed });
     while (replies.length === 0) await new Promise<void>((r) => (wake = r));
     wake = null;
     const reply = replies.shift()!;
+    consumed++;
     const call = pending.get(reply.callId);
     if (call === undefined) return done({ ok: false, kind: "fault", detail: `reply for unknown call ${reply.callId}` });
     pending.delete(reply.callId);

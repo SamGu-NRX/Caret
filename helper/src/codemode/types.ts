@@ -146,7 +146,7 @@ export const DoneMessage = z
         .object({
           ok: z.literal(false),
           kind: z.enum(["source", "input", "busy", "violation", "cpu", "memory", "stack", "deadline", "cancelled", "deadlock", "guestError", "callbackError", "fault"]),
-          detail: z.string(),
+          detail: z.string().max(2000),
           stats: StatsSchema,
         })
         .strict(),
@@ -155,7 +155,7 @@ export const DoneMessage = z
   .strict();
 
 /** The worker is about to wait for a callback reply; the watchdog pauses until the parent answers. */
-export const WaitingMessage = z.object({ type: z.literal("waiting") }).strict();
+export const WaitingMessage = z.object({ type: z.literal("waiting"), consumed: z.number().int().nonnegative() }).strict();
 
 export const WorkerMessage = z.discriminatedUnion("type", [ChooseRequestMessage, WaitingMessage, DoneMessage]);
 
