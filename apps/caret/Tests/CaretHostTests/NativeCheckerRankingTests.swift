@@ -6,34 +6,81 @@ import XCTest
 /// functions: which guess is the fix, and which Englishes count as spelled right.
 final class NativeCheckerRankingTests: XCTestCase {
     func testTheFirstGuessIsTheFix() throws {
-        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "recieve", autocorrection: "receive", guesses: ["receive", "relieve"]))
+        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "recieve", autocorrection: "receive", lists: [["receive", "relieve"]]))
         XCTAssertEqual(ranked.fix, "receive")
         XCTAssertEqual(ranked.others, ["relieve"])
         XCTAssertFalse(ranked.needsChoice)
     }
 
-    /// T1's corpus case: in "Can you adress the feedback", macOS 26.6 guesses "address" first and
-    /// autocorrects to "dress", its second guess.
-    func testAnAutocorrectionInTheTopThreeThatDisagreesNeedsAChoice() throws {
-        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: "dress", guesses: ["address", "dress", "dares", "a-dress"]))
+    /// T1's corpus case: in "Can you adress the feedback", macOS 26.6 guessed "address" first and
+    /// autocorrected to "dress", its second guess.
+    func testAnAutocorrectionInATopThreeThatDisagreesNeedsAChoice() throws {
+        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: "dress", lists: [["address", "dress", "dares", "a-dress"]]))
         XCTAssertEqual(ranked.fix, "address")
         XCTAssertEqual(ranked.others, ["dress", "dares"])
         XCTAssertTrue(ranked.needsChoice)
-        let third = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: "dares", guesses: ["address", "dress", "dares"]))
-        XCTAssertEqual(third.others, ["dares", "dress"], "the autocorrection leads the alternatives")
+        let third = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: "dares", lists: [["address", "dress", "dares"]]))
+        XCTAssertEqual(third.others, ["dares", "dress"], "the answer that disagrees leads the alternatives")
         XCTAssertTrue(third.needsChoice)
     }
 
-    func testAnAutocorrectionOutsideTheTopThreeIsIgnored() throws {
-        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: "a dress", guesses: ["address", "dares", "dress", "a dress"]))
+    func testAnAutocorrectionOutsideEveryTopThreeIsIgnored() throws {
+        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: "a dress", lists: [["address", "dares", "dress", "a dress"]]))
         XCTAssertEqual(ranked.fix, "address")
         XCTAssertEqual(ranked.others, ["dares", "dress"])
         XCTAssertFalse(ranked.needsChoice)
     }
 
     func testAnAutocorrectionWithNoGuessOffersNothing() {
-        XCTAssertNil(NativeChecker.rankGuesses(word: "zzq", autocorrection: "zap", guesses: []))
-        XCTAssertNil(NativeChecker.rankGuesses(word: "zzq", autocorrection: nil, guesses: ["zzq"]))
+        XCTAssertNil(NativeChecker.rankGuesses(word: "zzq", autocorrection: "zap", lists: [[]]))
+        XCTAssertNil(NativeChecker.rankGuesses(word: "zzq", autocorrection: nil, lists: [["zzq"], []]))
+    }
+
+    /// The lead's rerun at 3887f61: macOS ranked "a-dress" first for "adress". A fix that splits the
+    /// word never stands alone while a one-word guess is in reach, so Tab cannot apply it unseen.
+    func testAFixThatSplitsTheWordNeedsAChoiceWithTheWholeWord() throws {
+        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: "dress", lists: [["a-dress", "address", "dress"]]))
+        XCTAssertEqual(ranked.fix, "a-dress")
+        XCTAssertTrue(ranked.needsChoice)
+        XCTAssertEqual(ranked.others, ["address", "dress"])
+        let noAuto = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: nil, lists: [["a dress", "dares", "address"]]))
+        XCTAssertTrue(noAuto.needsChoice)
+        XCTAssertEqual(noAuto.others, ["dares", "address"], "every one-word guess in reach, in merged order")
+    }
+
+    /// Lists from more than one dictionary: the checking language's first, ties to it.
+    func testTheMergeIsDeterministicWithThePrimaryListFirst() throws {
+        let lists = [["address", "dress"], ["dares", "address"], ["address"]]
+        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: nil, lists: lists, primaryAccepts: { _ in true }))
+        XCTAssertEqual(ranked.fix, "address", "position 0 in the primary list beats position 0 in a later one")
+        XCTAssertTrue(ranked.needsChoice, "en-GB's first guess is a different word the checking language accepts")
+        XCTAssertEqual(ranked.others, ["dares", "dress"])
+        for _ in 0..<20 {
+            let again = NativeChecker.rankGuesses(word: "adress", autocorrection: nil, lists: lists, primaryAccepts: { _ in true })
+            XCTAssertEqual(again?.fix, ranked.fix)
+            XCTAssertEqual(again?.others, ranked.others)
+        }
+    }
+
+    /// When the primary list is the one that slipped, another dictionary's first guess is still
+    /// offered: the real correction in any accepted dictionary's top three reaches the choice.
+    func testAnotherDictionarysFirstGuessReachesTheChoice() throws {
+        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(word: "adress", autocorrection: nil, lists: [["a-dress"], ["address"], ["address"]]))
+        XCTAssertEqual(ranked.fix, "a-dress")
+        XCTAssertTrue(ranked.needsChoice)
+        XCTAssertEqual(ranked.others, ["address"])
+    }
+
+    /// en-GB's "organisation" for "organizaton" is the same word in another spelling: no choice
+    /// for a writer the checking language (en-US) serves.
+    func testARegionalSpellingOfTheSameWordIsNoDisagreement() throws {
+        let ranked = try XCTUnwrap(NativeChecker.rankGuesses(
+            word: "organizaton", autocorrection: nil, lists: [["organization"], ["organisation"], ["organization"]],
+            primaryAccepts: { $0 != "organisation" }
+        ))
+        XCTAssertEqual(ranked.fix, "organization")
+        XCTAssertFalse(ranked.needsChoice)
+        XCTAssertEqual(ranked.others, ["organisation"])
     }
 
     // MARK: - Languages

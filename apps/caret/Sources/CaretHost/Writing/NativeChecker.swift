@@ -40,8 +40,34 @@ public final class NativeChecker {
     /// control the order of replies.
     typealias Request = @MainActor (String, NSRange, String, Int, @escaping ([NSTextCheckingResult]) -> Void) -> Void
 
+    /// What the checker is asked about one flagged word, per language. A port, so tests answer
+    /// with fixed lists: the system checker's ranking moves between runs (T1's "adress" came back
+    /// with "address" first in T2's runs and "a-dress" first in the lead's rerun, same commit), and
+    /// no gating test may rest on it.
+    struct Answers {
+        var guesses: @MainActor (_ range: NSRange, _ text: String, _ language: String, _ tag: Int) -> [String]
+        var autocorrection: @MainActor (_ range: NSRange, _ text: String, _ language: String, _ tag: Int) -> String?
+        var accepts: @MainActor (_ word: String, _ language: String, _ tag: Int) -> Bool
+
+        static func system(_ checker: NSSpellChecker) -> Answers {
+            Answers(
+                guesses: { range, text, language, tag in
+                    checker.guesses(forWordRange: range, in: text, language: language, inSpellDocumentWithTag: tag) ?? []
+                },
+                autocorrection: { range, text, language, tag in
+                    checker.correction(forWordRange: range, in: text, language: language, inSpellDocumentWithTag: tag)
+                },
+                accepts: { word, language, tag in
+                    checker.checkSpelling(of: word, startingAt: 0, language: language, wrap: false, inSpellDocumentWithTag: tag, wordCount: nil)
+                        .location == NSNotFound
+                }
+            )
+        }
+    }
+
     private let checker: NSSpellChecker
     private let request: Request
+    private let answers: Answers
     private var tags: [FieldKey: Int] = [:]
     /// The latest check of each field, by a token never reused, so an answer from before a field
     /// was closed and reopened cannot pass for the newer check's.
@@ -52,8 +78,12 @@ public final class NativeChecker {
         self.init(checker: checker, request: nil)
     }
 
-    init(checker: NSSpellChecker, request: Request?) {
+    init(checker: NSSpellChecker, request: Request?, answers: Answers? = nil, variants: [String]? = nil) {
         self.checker = checker
+        self.answers = answers ?? .system(checker)
+        self.regionalVariants = variants ?? NativeChecker.englishVariants(
+            preferred: Locale.preferredLanguages, available: NSSpellChecker.shared.availableLanguages
+        )
         self.request = request ?? { text, range, language, tag, done in
             let options: [NSSpellChecker.OptionKey: Any] = [.orthography: NSOrthography.defaultOrthography(forLanguage: language)]
             let types = NSTextCheckingResult.CheckingType.spelling.rawValue | NSTextCheckingResult.CheckingType.grammar.rawValue
@@ -104,21 +134,19 @@ public final class NativeChecker {
         }
         // A newer check, or a close, since this one started.
         guard latest[field] == token, tags[field] == tag else { return .stale }
-        let checker = self.checker
+        let answers = self.answers
         let variants = regionalVariants
+        // The checking language first, then the other accepted Englishes in their fixed order.
+        // Asked in this order every time: the system checker carries state between calls.
+        let dictionaries = [language] + variants.filter { $0 != language }
         let corrections = Self.corrections(
             from: results, text: text, sentence: sentence,
             guesses: { range in
-                let correction = checker.correction(forWordRange: range, in: text, language: language, inSpellDocumentWithTag: tag)
-                let guesses = checker.guesses(forWordRange: range, in: text, language: language, inSpellDocumentWithTag: tag) ?? []
-                return (correction, guesses)
+                let lists = dictionaries.map { answers.guesses(range, text, $0, tag) }
+                return (answers.autocorrection(range, text, language, tag), lists)
             },
-            spelledRightElsewhere: { word in
-                variants.contains { variant in
-                    checker.checkSpelling(of: word, startingAt: 0, language: variant, wrap: false, inSpellDocumentWithTag: tag, wordCount: nil)
-                        .location == NSNotFound
-                }
-            }
+            spelledRightElsewhere: { word in variants.contains { answers.accepts(word, $0, tag) } },
+            primaryAccepts: { word in answers.accepts(word, language, tag) }
         )
         return .corrections(corrections)
     }
@@ -129,9 +157,7 @@ public final class NativeChecker {
     /// 2026-10-04). A word one of them accepts is never a spelling error, so "colour" and
     /// "finalised" stand on a Mac set to en-US. Read once per checker; a language change in System
     /// Settings applies from the next field.
-    let regionalVariants: [String] = NativeChecker.englishVariants(
-        preferred: Locale.preferredLanguages, available: NSSpellChecker.shared.availableLanguages
-    )
+    let regionalVariants: [String]
 
     /// Always accepted once the user writes English at all.
     nonisolated static let baseEnglishRegions = ["US", "GB", "CA"]
@@ -175,7 +201,8 @@ public final class NativeChecker {
 
     /// The checker's results as corrections inside `sentence`.
     ///
-    /// - Spelling: the checker's first guess, with up to two more (`rankGuesses`). A word another
+    /// - Spelling: the merged first guess of the accepted dictionaries, with up to two more
+    ///   (`rankGuesses`). A word another
     ///   English the user writes in accepts (`spelledRightElsewhere`) is not an error. A flagged
     ///   word with no guess has no fix to offer and is dropped, as is a word that looks like a name,
     ///   an acronym or an identifier (`WritingCheck.looksLikeName`), one quoted on its own, or one
@@ -185,8 +212,9 @@ public final class NativeChecker {
     ///   description when it gives one.
     nonisolated static func corrections(
         from results: [NSTextCheckingResult], text: String, sentence: UTF16Span,
-        guesses: (NSRange) -> (correction: String?, guesses: [String]),
-        spelledRightElsewhere: (String) -> Bool = { _ in false }
+        guesses: (NSRange) -> (correction: String?, lists: [[String]]),
+        spelledRightElsewhere: (String) -> Bool = { _ in false },
+        primaryAccepts: (String) -> Bool = { _ in true }
     ) -> [WritingCorrection] {
         let ns = text as NSString
         let protected = WritingText.protectedSpans(in: text)
@@ -200,8 +228,8 @@ public final class NativeChecker {
                 guard !WritingCheck.looksLikeName(word, atSentenceStart: startsSentence(span, sentence: sentence, in: ns)),
                       !isQuotedMention(span, in: ns), !spelledRightElsewhere(word)
                 else { continue }
-                let (correction, all) = guesses(result.range)
-                guard let ranked = rankGuesses(word: word, autocorrection: correction, guesses: all) else { continue }
+                let (correction, lists) = guesses(result.range)
+                guard let ranked = rankGuesses(word: word, autocorrection: correction, lists: lists, primaryAccepts: primaryAccepts) else { continue }
                 out.append(WritingCorrection(
                     span: span, original: word, replacement: ranked.fix, otherReplacements: ranked.others,
                     kind: .spelling, reason: WritingCopy.notInDictionary, source: .spellChecker, needsChoice: ranked.needsChoice
@@ -236,22 +264,50 @@ public final class NativeChecker {
         return out.sorted { $0.span.start < $1.span.start }
     }
 
-    /// The fix for a misspelled word and the guesses after it (lead decision 2 of 2026-10-04).
+    /// The fix for a misspelled word and the guesses after it (lead decision 2 of 2026-10-04), from
+    /// each accepted dictionary's guesses, the checking language's list first.
     ///
-    /// The first guess is the fix. The autocorrection only counts when it is one of the top three
-    /// guesses: equal to the first, it changes nothing; lower down, the two answers disagree, so the
-    /// word needs a choice and both lead the alternatives. Outside the top three it is ignored.
-    /// T1's corpus run had "Can you adress the feedback" corrected to "dress", the autocorrection,
-    /// while the first guess was "address". Nil when there is no guess.
-    nonisolated static func rankGuesses(word: String, autocorrection: String?, guesses: [String]) -> (fix: String, others: [String], needsChoice: Bool)? {
-        var unique: [String] = []
-        for g in guesses where g != word && !unique.contains(g) { unique.append(g) }
-        guard let first = unique.first else { return nil }
-        guard let auto = autocorrection, auto != first, unique.prefix(3).contains(auto) else {
-            return (first, Array(unique.dropFirst().prefix(2)), false)
+    /// Merged deterministically: a guess ranks by its best position in any list, ties going to the
+    /// earlier list, then to the order within it. The top of that order is the fix. It stands alone
+    /// only when no other answer in reach disagrees; otherwise the mark needs a choice, and the
+    /// answers that disagree lead the alternatives (at most two, in merged order):
+    /// - the autocorrection, when it is in some list's top three and differs from the fix (T1's
+    ///   "adress": guesses "address" first, autocorrects to "dress");
+    /// - another dictionary's first guess, when it differs from the fix and the checking language
+    ///   accepts it too, so it is a different word and not that word's regional spelling
+    ///   ("organisation" under en-GB for "organization" is the same word, and no choice);
+    /// - every one-word guess in some top three, when the fix splits the word in two ("a-dress",
+    ///   "a dress"): the lead's rerun of T2 had macOS rank "a-dress" first for "adress".
+    /// An autocorrection outside every top three is ignored. Nil when there is no guess.
+    nonisolated static func rankGuesses(
+        word: String, autocorrection: String?, lists: [[String]], primaryAccepts: (String) -> Bool = { _ in true }
+    ) -> (fix: String, others: [String], needsChoice: Bool)? {
+        let cleaned: [[String]] = lists.map { list in
+            var unique: [String] = []
+            for g in list where g != word && !g.isEmpty && !unique.contains(g) { unique.append(g) }
+            return unique
         }
-        let rest = unique.dropFirst().filter { $0 != auto }
-        return (first, Array(([auto] + rest).prefix(2)), true)
+        var best: [String: (position: Int, list: Int)] = [:]
+        for (i, list) in cleaned.enumerated() {
+            for (p, g) in list.enumerated() where best[g].map({ (p, i) < ($0.position, $0.list) }) ?? true {
+                best[g] = (p, i)
+            }
+        }
+        let merged = best.keys.sorted { a, b in
+            let x = best[a]!, y = best[b]!
+            return (x.position, x.list) < (y.position, y.list)
+        }
+        guard let fix = merged.first else { return nil }
+        let topThree = Set(cleaned.flatMap { $0.prefix(3) })
+
+        var disagree: Set<String> = []
+        if let auto = autocorrection, auto != fix, topThree.contains(auto) { disagree.insert(auto) }
+        for first in cleaned.dropFirst().compactMap(\.first) where first != fix && primaryAccepts(first) { disagree.insert(first) }
+        let splits = { (s: String) in s.contains(where: { $0 == " " || $0 == "-" }) }
+        if splits(fix), !splits(word) { disagree.formUnion(topThree.filter { !splits($0) }) }
+        let rest = merged.dropFirst()
+        let others = Array((rest.filter(disagree.contains) + rest.filter { !disagree.contains($0) }).prefix(2))
+        return (fix, others, !disagree.isEmpty)
     }
 
     /// Whether a grammar fix's verb can agree with the text before it. "am" takes only "I", so a fix

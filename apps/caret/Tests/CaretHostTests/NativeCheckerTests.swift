@@ -3,13 +3,16 @@ import CaretHostCore
 import XCTest
 @testable import CaretHost
 
-/// The system checker through `NativeChecker`, on fixed English sentences. These run against the
-/// real `NSSpellChecker`; they skip only on a Mac without an English dictionary.
+/// The system checker's live answers through `NativeChecker`, on fixed English sentences. They do
+/// not gate: the checker's ranking moves between runs (the lead's rerun at 3887f61 had "a-dress"
+/// first for "adress" where T2's runs had "address"). `CARET_LIVE_SPELLING=1` runs them; the corpus
+/// eval (`WritingCorpusTests`) reports the same behavior in numbers. `NativeCheckerTests` gates.
 @MainActor
-final class NativeCheckerTests: XCTestCase {
+final class NativeCheckerLiveTests: XCTestCase {
     let field = NativeChecker.FieldKey(pid: 4242, windowID: "4242-1", elementID: "body")
 
     override func setUp() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["CARET_LIVE_SPELLING"] == "1", "live checker answers: CARET_LIVE_SPELLING=1")
         try XCTSkipUnless(NativeChecker.supports("en"), "no English spell checking on this Mac")
     }
 
@@ -94,6 +97,148 @@ final class NativeCheckerTests: XCTestCase {
         XCTAssertEqual(found.map(\.original), ["recieve"])
     }
 
+
+
+    func testTheLanguageIsPassedPerCheck() async throws {
+        try XCTSkipUnless(NativeChecker.supports("fr"), "no French spell checking on this Mac")
+        // French passes under French. Under English it passes too on this Mac: with the system's
+        // automatic language setting on, the checker identifies the language itself and treats
+        // the orthography as a starting point (measured 2026-10-04, macOS 26.6.2).
+        let asFrench = await check("Nous sommes heureux de vous voir aujourd'hui.", language: "fr")
+        XCTAssertEqual(asFrench.filter { $0.kind == .spelling }, [])
+        let typo = await check("Je suis vraimment content.", language: "fr")
+        XCTAssertEqual(typo.filter { $0.kind == .spelling }.map(\.original), ["vraimment"])
+        XCTAssertEqual(typo.first?.replacement, "vraiment")
+    }
+
+
+    // MARK: - Lead decisions 1 and 2, on the real checker
+
+    /// T1's two false corrections on a clean sentence. Valid in en-GB and en-AU, so any English in
+    /// the user's languages accepts them.
+    func testRegionalSpellingsAreNotErrors() async throws {
+        try XCTSkipUnless(!NativeChecker.englishVariants(preferred: Locale.preferredLanguages, available: NSSpellChecker.shared.availableLanguages).isEmpty,
+                          "no English in this Mac's languages")
+        let found = await check("The colour palette was finalised in the London office.")
+        XCTAssertEqual(found.filter { $0.kind == .spelling }.map(\.original), [])
+        let typo = await check("The colour palette was finalisd in the London office.")
+        XCTAssertEqual(typo.filter { $0.kind == .spelling }.map(\.original), ["finalisd"], "a real misspelling still shows")
+    }
+
+    /// macOS 26.6 autocorrects "adress" here to "dress", and ranks "address" or, in the lead's
+    /// rerun, "a-dress" first.
+    func testADisagreeingAutocorrectionNeedsAChoice() async throws {
+        let found = await check("Can you adress the feedback from Marisol before Friday?")
+        let mark = try XCTUnwrap(found.first { $0.original == "adress" })
+        // Whatever the checker ranks first today, "address" is offered, and Tab never applies a
+        // fix the answers disagree on.
+        XCTAssertTrue(([mark.replacement] + mark.otherReplacements).contains("address"), "\(mark)")
+        XCTAssertTrue(mark.needsChoice || mark.replacement == "address", "\(mark)")
+    }
+}
+
+/// `NativeChecker` with the system checker replaced by fixed answers: the order of replies, the
+/// document tags, the mapping of results, and lead decisions 1 and 2 end to end. Nothing here asks
+/// the live checker for a guess, so its ranking cannot fail the suite.
+@MainActor
+final class NativeCheckerTests: XCTestCase {
+    let field = NativeChecker.FieldKey(pid: 4242, windowID: "4242-1", elementID: "body")
+
+    /// Fixed answers by language: guesses, the autocorrection (any language), and the words each
+    /// dictionary accepts. Records the order dictionaries are asked in.
+    final class FakeAnswers {
+        var guesses: [String: [String]] = [:]
+        var autocorrection: String?
+        var accepted: [String: Set<String>] = [:]
+        var asked: [String] = []
+
+        var answers: NativeChecker.Answers {
+            NativeChecker.Answers(
+                guesses: { [unowned self] _, _, language, _ in
+                    self.asked.append(language)
+                    return self.guesses[language] ?? []
+                },
+                autocorrection: { [unowned self] _, _, _, _ in self.autocorrection },
+                accepts: { [unowned self] word, language, _ in self.accepted[language]?.contains(word) ?? false }
+            )
+        }
+    }
+
+    /// A checker whose request flags exactly `word` in `text` as a spelling error.
+    func checker(flagging word: String, in text: String, _ fake: FakeAnswers, variants: [String] = ["en", "en_GB", "en_CA"]) -> NativeChecker {
+        let range = (text as NSString).range(of: word)
+        return NativeChecker(checker: .shared, request: { _, _, _, _, done in
+            done([NSTextCheckingResult.spellCheckingResult(range: range)])
+        }, answers: fake.answers, variants: variants)
+    }
+
+    func corrections(_ checker: NativeChecker, _ text: String) async -> [WritingCorrection] {
+        let sentence = UTF16Span(start: 0, end: UTF16Text.length(text))
+        guard case .corrections(let found) = await checker.check(text, sentence: sentence, language: "en", field: field) else {
+            XCTFail("stale with no newer check")
+            return []
+        }
+        return found
+    }
+
+    let adress = "Can you adress the feedback from Marisol before Friday?"
+
+    func testDecisionTwoOffersBothWhenTheAutocorrectionDisagrees() async throws {
+        let fake = FakeAnswers()
+        fake.guesses = ["en": ["address", "dress", "dares"], "en_GB": ["address", "dares"], "en_CA": ["address"]]
+        fake.autocorrection = "dress"
+        let found = await corrections(checker(flagging: "adress", in: adress, fake), adress)
+        let mark = try XCTUnwrap(found.first)
+        XCTAssertEqual(mark.replacement, "address")
+        XCTAssertTrue(mark.needsChoice)
+        XCTAssertEqual(mark.otherReplacements.first, "dress")
+        XCTAssertEqual(fake.asked, ["en", "en_GB", "en_CA"], "the checking language first, then the others in order")
+    }
+
+    /// The lead's rerun: the live checker ranked "a-dress" first. The real correction in any
+    /// accepted dictionary's top three reaches the choice, and Tab applies nothing.
+    func testDecisionTwoOffersTheRealCorrectionWhenThePrimaryListSlips() async throws {
+        let fake = FakeAnswers()
+        fake.guesses = ["en": ["a-dress", "address", "dress"], "en_GB": ["address", "dress"], "en_CA": ["address"]]
+        fake.autocorrection = "dress"
+        fake.accepted = ["en": ["address", "dress", "a-dress"]]
+        let found = await corrections(checker(flagging: "adress", in: adress, fake), adress)
+        let mark = try XCTUnwrap(found.first)
+        XCTAssertTrue(mark.needsChoice)
+        XCTAssertTrue(([mark.replacement] + mark.otherReplacements).contains("address"), "\(mark)")
+    }
+
+    func testAnAgreeingCheckerFixesWithTab() async throws {
+        let fake = FakeAnswers()
+        fake.guesses = ["en": ["receive", "relieve"], "en_GB": ["receive"], "en_CA": ["receive"]]
+        fake.autocorrection = "receive"
+        let text = "I will recieve the package tomorrow."
+        let found = await corrections(checker(flagging: "recieve", in: text, fake), text)
+        let mark = try XCTUnwrap(found.first)
+        XCTAssertEqual(mark.replacement, "receive")
+        XCTAssertFalse(mark.needsChoice)
+    }
+
+    /// Lead decision 1, on T1's two false corrections: a word another accepted English takes is no
+    /// error.
+    func testDecisionOneAcceptsARegionalSpelling() async {
+        let fake = FakeAnswers()
+        fake.guesses = ["en": ["color"]]
+        fake.accepted = ["en_GB": ["colour", "finalised"]]
+        let text = "The colour palette was finalised in the London office."
+        let found = await corrections(checker(flagging: "colour", in: text, fake), text)
+        XCTAssertEqual(found, [])
+    }
+
+    func testDecisionOneNeedsAnEnglishTheUserWrites() async {
+        let fake = FakeAnswers()
+        fake.guesses = ["en": ["color"]]
+        fake.accepted = ["en_AU": ["colour"]]
+        let text = "The colour palette was finalised in the London office."
+        let found = await corrections(checker(flagging: "colour", in: text, fake, variants: ["en", "en_GB", "en_CA"]), text)
+        XCTAssertEqual(found.map(\.original), ["colour"], "en-AU is not asked unless the user lists it")
+    }
+
     /// Replies arrive in the order the test chooses: a check started before its field closed and
     /// reopened answers last, and must come back stale.
     func testAnAnswerFromBeforeAFieldReopenedIsStale() async {
@@ -130,18 +275,6 @@ final class NativeCheckerTests: XCTestCase {
         checker.closeAll()
     }
 
-    func testTheLanguageIsPassedPerCheck() async throws {
-        try XCTSkipUnless(NativeChecker.supports("fr"), "no French spell checking on this Mac")
-        // French passes under French. Under English it passes too on this Mac: with the system's
-        // automatic language setting on, the checker identifies the language itself and treats
-        // the orthography as a starting point (measured 2026-10-04, macOS 26.6.2).
-        let asFrench = await check("Nous sommes heureux de vous voir aujourd'hui.", language: "fr")
-        XCTAssertEqual(asFrench.filter { $0.kind == .spelling }, [])
-        let typo = await check("Je suis vraimment content.", language: "fr")
-        XCTAssertEqual(typo.filter { $0.kind == .spelling }.map(\.original), ["vraimment"])
-        XCTAssertEqual(typo.first?.replacement, "vraiment")
-    }
-
     /// The mapping alone, on hand-made results: grammar ranges are relative to their sentence
     /// (`NSSpellServer.h`), and a detail without corrections offers nothing.
     func testGrammarDetailRangesAreRelativeToTheirSentence() {
@@ -156,32 +289,5 @@ final class NativeCheckerTests: XCTestCase {
         XCTAssertEqual(found.first?.original, "was")
         XCTAssertEqual(found.first?.span, UTF16Span(start: 7, end: 10))
         XCTAssertEqual(found.first?.reason, "Use “were” with “we”.")
-    }
-
-    // MARK: - Lead decisions 1 and 2, on the real checker
-
-    /// T1's two false corrections on a clean sentence. Valid in en-GB and en-AU, so any English in
-    /// the user's languages accepts them.
-    func testRegionalSpellingsAreNotErrors() async throws {
-        try XCTSkipUnless(!NativeChecker.englishVariants(preferred: Locale.preferredLanguages, available: NSSpellChecker.shared.availableLanguages).isEmpty,
-                          "no English in this Mac's languages")
-        let found = await check("The colour palette was finalised in the London office.")
-        XCTAssertEqual(found.filter { $0.kind == .spelling }.map(\.original), [])
-        let typo = await check("The colour palette was finalisd in the London office.")
-        XCTAssertEqual(typo.filter { $0.kind == .spelling }.map(\.original), ["finalisd"], "a real misspelling still shows")
-    }
-
-    /// macOS 26.6 autocorrects "adress" here to "dress", its second guess, and guesses "address"
-    /// first: the two disagree, so the mark needs a choice and Tab takes neither.
-    func testADisagreeingAutocorrectionNeedsAChoice() async throws {
-        let found = await check("Can you adress the feedback from Marisol before Friday?")
-        let mark = try XCTUnwrap(found.first { $0.original == "adress" })
-        XCTAssertEqual(mark.replacement, "address")
-        if mark.needsChoice {
-            XCTAssertTrue(mark.otherReplacements.first.map { $0 != "address" } ?? false)
-        } else {
-            // Another macOS may agree with itself; the first guess is still the fix.
-            XCTAssertFalse(mark.otherReplacements.contains("address"))
-        }
     }
 }

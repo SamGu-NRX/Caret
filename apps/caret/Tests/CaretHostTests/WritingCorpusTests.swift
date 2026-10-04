@@ -109,13 +109,9 @@ final class WritingCorpusTests: XCTestCase {
         print(out)
         // Measured 0 on the first, blind run (2026-10-04); the static rules must stay there.
         XCTAssertEqual(staticOnly.cleanFalseCorrections, 0, "a static rule corrected a clean sentence")
-        // With the system checker: T1 measured 3 in 2 clean cases (eval-2), "colour" and
-        // "finalised" among them. Lead decisions 1 and 2 (regional spellings, first guess over
-        // autocorrect) are what T2 rests this on; precision and recall stay reported, not asserted,
-        // since they move with macOS's dictionary.
-        if native != nil {
-            XCTAssertEqual(combined.cleanFalseCorrections, 0, "the system checker corrected a clean sentence")
-        }
+        // With the system checker everything is reported, not asserted: its answers move between
+        // runs and with macOS's dictionary (the lead's rerun at 3887f61), and this eval does not
+        // gate. T1 measured 3 false corrections in 2 clean cases; T2's eval-3 measured 0.
         if let dir = ProcessInfo.processInfo.environment["CARET_WRITING_EVAL_OUT"] {
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             try out.write(toFile: (dir as NSString).appendingPathComponent("corpus-eval.txt"), atomically: true, encoding: .utf8)
