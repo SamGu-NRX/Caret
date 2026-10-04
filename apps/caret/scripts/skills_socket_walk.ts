@@ -31,8 +31,9 @@
 // recorded, to check its re-placement when the question makes it taller.
 import { execFileSync, spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Helper } from "../../../helper/src/helper.ts";
@@ -117,7 +118,15 @@ function guiLockHeldByUs(): boolean {
 }
 // 300 s on Sam's Mac (long-run GUI rules). The rig's VM has no user and its idle count starts at boot,
 // so its job lowers this (CARET_DRAWN_IDLE_MIN=30, as the A10 VM job does for its own bar).
-const IDLE_MIN = Number(process.env.CARET_DRAWN_IDLE_MIN ?? "300");
+// A bar under 300 s is taken only inside the rig's guest (its job sets RIG_JOB and runs as user lume).
+const IDLE_MIN = ((): number => {
+  const raw = process.env.CARET_DRAWN_IDLE_MIN;
+  if (raw === undefined) return 300;
+  const n = Number(raw);
+  if (raw.trim() === "" || !Number.isFinite(n) || n <= 0) throw new Error(`CARET_DRAWN_IDLE_MIN is a positive number of seconds, not '${raw}'`);
+  if (n < 300 && !(process.env.RIG_JOB !== undefined && userInfo().username === "lume")) throw new Error("an idle bar under 300 s is only for the rig's VM");
+  return n;
+})();
 if (DRAWN !== null) {
   const why = !guiLockHeldByUs() ? "refused: run under lockf -k ~/.long-run/locks/gui.lock" : quietNow() ? "deferred: quiet window" : hidIdle() < IDLE_MIN ? `deferred: user active (idle ${Math.round(hidIdle())} s)` : null;
   if (why !== null) {
@@ -394,18 +403,25 @@ const dump = async (): Promise<Record<string, string>> => ((await fx("form dump 
  * tab-separated, to req-<n>, and the server runs screencapture with them and writes done-<n>.
  */
 let shotSeq = 0;
+const RUN_ID = randomUUID().slice(0, 8);
 async function capture(args: string[]): Promise<void> {
   const server = process.env.CARET_SHOT_SERVER;
   if (server === undefined) {
     execFileSync("screencapture", args);
     return;
   }
-  // Named by this process too: the light and dark walks share one server directory, and a done-<n> left
-  // by the light walk answered the dark walk's first request before its picture existed (A16 VM run 2).
-  const n = `${process.pid}-${++shotSeq}`;
+  // Tab-separated, one line: an argument holding either cannot be sent whole.
+  if (args.some((x) => /[\t\n]/.test(x))) throw new Error(`capture argument with a tab or newline: ${JSON.stringify(args)}`);
+  const image = args.at(-1)!;
+  rmSync(image, { force: true });
+  // Named by a random id for this walk: the light and dark walks share one server directory, and a
+  // done-<n> left by the light walk answered the dark walk's first request before its picture existed
+  // (A16 VM run 2). The server writes done-<n> only when screencapture succeeded, fail-<n> otherwise.
+  const n = `${RUN_ID}-${++shotSeq}`;
   writeFileSync(join(server, `req-${n}.tmp`), args.join("\t"));
   execFileSync("mv", [join(server, `req-${n}.tmp`), join(server, `req-${n}`)]);
-  await until(`capture ${n}`, () => (existsSync(join(server, `done-${n}`)) ? true : null), 10_000, 50);
+  const answer = await until(`capture ${n}`, () => (existsSync(join(server, `done-${n}`)) ? "done" : existsSync(join(server, `fail-${n}`)) ? "fail" : null), 10_000, 50);
+  if (answer === "fail" || !existsSync(image)) throw new Error(`capture ${n} failed: ${existsSync(join(server, `fail-${n}`)) ? readFileSync(join(server, `fail-${n}`), "utf8").trim() : "no image"}`);
 }
 
 const ax = (...args: string[]): Record<string, unknown> =>
@@ -861,6 +877,7 @@ async function takeOverWithEsc(): Promise<void> {
   // result put the skill back on Tab (skills.ts reset); 400 ms after Esc was too early (A16 VM run 2).
   const paused = await until("the helper's paused progress", () => since("taskProgress", at).find((p) => p.taskId === started.taskId && p.phase === "paused"), 10_000).catch(() => null);
   result.tookOverPaused = paused?.at ?? null;
+  checks.takeOverPausedTheRun = paused !== null;
   checks.takeOverPutTheSkillBackOnTab = (await until("the skill back on Tab", () => (skill()?.status === "learning" ? true : null), 3000).catch(() => false)) === true;
   await closeForm(id);
 }
