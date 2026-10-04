@@ -192,8 +192,8 @@ interface Task {
   session: number;
   /** True while undo is restoring this task's writes. */
   undoing: boolean;
-  /** The user stopped or took over an undo under way: the restores not yet made are left as they are. */
-  undoStopped: boolean;
+  /** Why an undo under way was stopped (the user stopped or took it over, Caret was paused, the host left), or null: the restores not yet made are left as they are. */
+  undoStopped: string | null;
   /**
    * Slot values the plan copied from windows, by the window's id (Plan.sources), each with its window as
    * the task found it: a target question charges that window for the value even after it has closed.
@@ -321,7 +321,7 @@ export class Executor {
       resolved: new Map(),
       session: this.session,
       undoing: false,
-      undoStopped: false,
+      undoStopped: null,
       sourced: Object.entries(parsed.data.sources ?? {}).flatMap(([slot, windowId]) => {
         const text = slots[slot];
         return text === undefined ? [] : [{ text, windowId, window: this.deps.model.windows.get(windowId) }];
@@ -342,13 +342,41 @@ export class Executor {
 
   /** Continues a paused task from the step it paused at, accepting whatever the user changed meanwhile. */
   async resume(taskId: string): Promise<TaskResult> {
-    const task = this.tasks.get(taskId);
-    if (task === undefined) throw new PlanError(`no task ${taskId}`);
-    if (task.finished !== "paused") throw new PlanError(`task ${taskId} is ${task.finished ?? "running"}, not paused`);
+    const no = this.resumeRefusal(taskId);
+    if (no !== null) throw new PlanError(no);
+    const task = this.need(taskId);
     task.interrupt = null;
     task.finished = null;
     task.expected.clear();
     return this.loop(task);
+  }
+
+  /** Why the task cannot be resumed now, or null. */
+  resumeRefusal(taskId: string): string | null {
+    const task = this.tasks.get(taskId);
+    if (task === undefined) return `no task ${taskId}`;
+    if (task.finished !== "paused") return `task ${taskId} is ${task.finished ?? "running"}, not paused`;
+    return null;
+  }
+
+  /**
+   * Why the task cannot be undone now, or null: it is unknown, running or already being undone, its window ids
+   * belong to an earlier reader, or Caret may not act at all now (paused, or the host that asked is gone). An
+   * undo is the user's own request about the task, so the permissions it ran under are not asked again.
+   */
+  undoRefusal(taskId: string): string | null {
+    const task = this.tasks.get(taskId);
+    if (task === undefined) return `no task ${taskId}`;
+    if (task.finished === null) return `task ${taskId} is still running`;
+    if (task.undoing) return `task ${taskId} is already being undone`;
+    if (task.session !== this.session) return `task ${taskId} ran under an earlier reader session; its window ids no longer apply, so nothing is restored`;
+    const r = this.undoBlocked(task);
+    return r === null ? null : `nothing was restored: ${r.why}`;
+  }
+
+  /** What stops an undo, before it starts and before each restore: Caret's general checks only (`authorize` with no action). */
+  private undoBlocked(task: Task): Revocation | null {
+    return this.deps.authorize?.({ taskId: task.id, unprompted: false, action: null }) ?? null;
   }
 
   /**
@@ -418,7 +446,7 @@ export class Executor {
   revoke(taskId: string, r: Revocation): void {
     const task = this.tasks.get(taskId);
     if (task === undefined) return;
-    if (task.undoing) return this.stopUndo(task);
+    if (task.undoing) return this.stopUndo(task, r.why);
     if (task.finished === "paused") {
       task.finished = "stopped";
       releaseSources(task);
@@ -439,7 +467,12 @@ export class Executor {
    */
   recheck(): void {
     for (const task of this.tasks.values()) {
-      if (task.undoing || (task.finished !== null && task.finished !== "paused")) continue;
+      if (task.undoing) {
+        const r = this.undoBlocked(task);
+        if (r !== null) this.stopUndo(task, r.why);
+        continue;
+      }
+      if (task.finished !== null && task.finished !== "paused") continue;
       const r = this.dependencyBroken(task);
       if (r !== null) this.revoke(task.id, r);
     }
@@ -493,9 +526,9 @@ export class Executor {
     return detail;
   }
 
-  /** Ends an undo under way: its grant now, so a restore already sent is refused, and the rest are not tried. */
-  private stopUndo(task: Task): void {
-    task.undoStopped = true;
+  /** Ends an undo under way: its grant now, so a restore already sent is refused, and the rest are not tried, each for `why`. */
+  private stopUndo(task: Task, why = "you stopped the undo"): void {
+    if (task.undoStopped === null) task.undoStopped = why;
     this.revokeGrant(task);
   }
 
@@ -532,11 +565,9 @@ export class Executor {
    * wrote. Calendar events are removed only if unchanged. Presses cannot be undone and are counted.
    */
   async undo(taskId: string): Promise<UndoResult> {
-    const task = this.tasks.get(taskId);
-    if (task === undefined) throw new PlanError(`no task ${taskId}`);
-    if (task.finished === null) throw new PlanError(`task ${taskId} is still running`);
-    if (task.undoing) throw new PlanError(`task ${taskId} is already being undone`);
-    if (task.session !== this.session) throw new PlanError(`task ${taskId} ran under an earlier reader session; its window ids no longer apply, so nothing is restored`);
+    const no = this.undoRefusal(taskId);
+    if (no !== null) throw new PlanError(no);
+    const task = this.need(taskId);
     // A paused run whose writes are being restored cannot continue from where it was, so it stops
     // being resumable before the first restore is awaited.
     if (task.finished === "paused") {
@@ -545,7 +576,7 @@ export class Executor {
     }
     releaseSources(task);
     task.undoing = true;
-    task.undoStopped = false;
+    task.undoStopped = null;
     // The run is over; a stop or pause still pending from it (a write that ended in axError) is not this undo's.
     task.interrupt = null;
     const out: UndoResult = { restored: 0, notRestored: [], notUndoable: 0 };
@@ -562,11 +593,14 @@ export class Executor {
           remaining.push(e);
           continue;
         }
+        // Caret paused, or the host gone, since the last restore: the rest are left as they are.
+        const blocked = task.undoStopped === null ? this.undoBlocked(task) : null;
+        if (blocked !== null) this.stopUndo(task, blocked.why);
         const reason =
           task.session !== this.session
             ? "the reader restarted during undo"
-            : task.undoStopped
-              ? "you stopped the undo"
+            : task.undoStopped !== null
+              ? task.undoStopped
               : e.kind === "write"
                 ? await this.undoWrite(task, e)
                 : await this.undoCalendar(task, e);
@@ -1114,7 +1148,7 @@ export class Executor {
     // The reader acts only on an element it saw in a walk the executor asked for, so undo reads first.
     const walked = await this.deps.reader.run({ kind: "walk", pid: e.pid, windowId: e.windowId });
     if (walked.outcome !== "ok") return `cannot re-read the window: ${walked.outcome}`;
-    if (task.undoStopped) return "you stopped the undo";
+    if (task.undoStopped !== null) return task.undoStopped;
     const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
@@ -1133,7 +1167,7 @@ export class Executor {
       await refind();
       for (const fallback of FALLBACKS) {
         if (r.outcome !== "ok" || !this.dropped(e.windowId, e.key, e.after, seen)) break;
-        if (task.undoStopped) return "you stopped the undo";
+        if (task.undoStopped !== null) return task.undoStopped;
         const other = seen.find((c) => c.editable && c.key !== e.key && (c.kind === "value" || c.kind === "removed"));
         if (other !== undefined) return `${other.key} changed while the field was restored, so the restore was not tried again`;
         r = await this.deps.reader.run({ ...restore, attribute: fallback.name });
@@ -1173,9 +1207,10 @@ export class Executor {
 
   /** The focused window of the frontmost app, where the user is; null when the model cannot say. */
   private userWindow(): string | null {
+    // The frontmost app's last focused window: a request walk of a background app moves focusedWindowId (B21, B22 review).
+    // With the frontmost app unknown, no window counts as the user's: a write there falls under the stricter permission.
     const m = this.deps.model;
-    const w = m.focusedWindowId === null ? undefined : m.windows.get(m.focusedWindowId);
-    return w !== undefined && w.app.pid === m.frontmostPid ? w.window.windowId : null;
+    return m.frontmostPid === null ? null : (m.userWindow()?.window.windowId ?? null);
   }
 
   /**

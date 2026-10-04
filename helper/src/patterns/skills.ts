@@ -82,6 +82,8 @@ export interface SkillsDeps {
   /** Values the routine with this signature was seen copying (RoutineRecognizer.valuesOf). */
   valuesOf: (sig: string) => string[];
   rand?: (n: number) => number;
+  /** Called after a skill is put back on Tab by reset (a failed run, an undo, a take over, an edit of what it wrote). */
+  onReset?: () => void;
 }
 
 interface OpenOffer {
@@ -291,6 +293,8 @@ export class Skills {
   private reset(s: SkillRecord, at: number): void {
     for (const o of [...this.offers.values()]) if (o.msg.kind === "promote" && o.msg.skillId === s.id) this.close(o, "stale");
     this.deps.memory.updateSkill(s.id, { cleanRuns: 0, onItsOwn: false, wrote: [], promote: s.promote === "declined" ? "declined" : null }, at);
+    // Another run of it still going ran on its own and may no longer act (B22 review).
+    this.deps.onReset?.();
   }
 
   private maybePromote(s: SkillRecord, plan: Plan, taskId: string): void {

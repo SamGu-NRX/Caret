@@ -591,11 +591,48 @@ describe("skills in the helper", () => {
     }
     expect(skills()[0]!.fields.onItsOwn).toBe(true);
     // The user switches to another app as the first write answers: nothing tells the helper but the switch itself.
-    const { own, landed } = await changeMidRun(() => void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: desk.at, from: MAIL_APP, to: FIXTURE_APP }));
+    // The switch revokes at once (B22 review), so a write already queued in the reader is refused there too.
+    const { own, landed, revokedAtOnce } = await changeMidRun(() => void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: desk.at, from: MAIL_APP, to: FIXTURE_APP }));
     expect(own.offer).toBeNull();
+    expect(revokedAtOnce).toBe(true);
     expect(landed).toBe(1);
     expect(own.progress.at(-1)).toMatchObject({ phase: "stopped", stopReason: "you", unprompted: true });
     expect(own.progress.at(-1)?.detail).toMatch(/Reversible write elsewhere/);
+  });
+
+  it("keeps a write where the user is when a background app's request walk moves the model's focused window (B22 review)", async () => {
+    frontmost = "mail";
+    await keep();
+    for (let i = 1; i <= PROMOTE_AFTER; i++) {
+      const r = await caretRun();
+      finish(r);
+      if (i === PROMOTE_AFTER) answer(r.skillOffers.find((o) => o.kind === "promote")!, "accept");
+    }
+    // A request walk of a window in another app marks that window focused in its own app; the user is still in
+    // Mail, so the run's writes stay "write where you are", which Reversible write elsewhere at ask first would stop.
+    let focusedThen: string | null = null;
+    const walked = await changeMidRun(() => {
+      void helper.handleReader(snap([], { at: desk.at, windowId: "5150-99", title: "Elsewhere", focused: true, reason: "request" }));
+      focusedThen = helper.model.focusedWindowId;
+    });
+    expect(focusedThen).toBe("5150-99");
+    expect(walked.own.offer).toBeNull();
+    expect(walked.revokedAtOnce).toBe(false);
+    expect(walked.own.progress.at(-1)).toMatchObject({ phase: "done", unprompted: true });
+  });
+
+  it("revokes a run with no Tab still going when the user asks to undo it, as the skill goes back on Tab (B22 review)", async () => {
+    await promoted();
+    let id = "";
+    const { own, revokedAtOnce, landed } = await changeMidRun(() => {
+      id = sent.filter((m): m is TaskProgress => m.type === "taskProgress").at(-1)!.taskId;
+      void helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: id, action: "undo" });
+    });
+    expect(own.offer).toBeNull();
+    expect(revokedAtOnce).toBe(true);
+    expect(landed).toBe(1);
+    expect(own.progress.at(-1)).toMatchObject({ taskId: id, phase: "stopped", stopReason: "you", unprompted: true });
+    expect(skills()[0]).toMatchObject({ status: "learning", fields: { onItsOwn: false } });
   });
 
   it("resets on a take over, and never offers again after a declined promote offer", async () => {

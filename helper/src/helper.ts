@@ -317,6 +317,8 @@ export class Helper {
         return this.executor.run(taskId, plan, slots, expect, { grant: true, unprompted: opts?.unprompted === true });
       },
       hostConnected: () => this.hosts.size > 0,
+      // A run of a skill that just went back on Tab, still going with no Tab, is revoked now (B22 review).
+      onSkillReset: () => this.executor.recheck(),
       askJev: this.ask,
       shadow: () => this.mode === "shadow",
       gate: this.gate,
@@ -464,6 +466,8 @@ export class Helper {
         // The user left a window: the reader's leave walk of it, or focus arriving in another window.
         if (m.reason === "leave") this.left(m.window.windowId, m.at);
         if (prevFocused !== null && moved) this.left(prevFocused, m.at);
+        // Where the user is decides a write's permission: a run with no Tab whose next write is no longer where they are is revoked now (B22 review).
+        if (moved) this.executor.recheck();
         return null;
       }
       case "focus": {
@@ -473,6 +477,7 @@ export class Helper {
         }
         this.preFocus = null;
         if (m.frontmost) this.model.frontmostPid = m.app.pid;
+        if (m.frontmost) this.executor.recheck();
         this.audit?.onFocus(m);
         store.count(m.editable ? "reader.focus_editable" : "reader.focus_other", 1, m.at);
         if (this.mode === "live") {
@@ -488,6 +493,7 @@ export class Helper {
         if (this.mode === "shadow") this.shadowLogger.onAppSwitch(m);
         // The app being left may send no leave walk when its window did not change; its focused window was left all the same.
         if (m.from !== null) for (const w of this.model.windows.values()) if (w.app.pid === m.from.pid && w.focused) this.left(w.window.windowId, m.at);
+        this.executor.recheck();
         store.count("reader.app_switch", 1, m.at);
         return null;
       case "windowClosed": {
@@ -585,9 +591,18 @@ export class Helper {
     }
   }
 
-  /** Binds a task to the session that just accepted, took, ran, resumed or undid it; in process (no session), nothing. */
-  private bind(taskId: string, session: string | undefined): void {
-    if (session !== undefined) this.taskHosts.set(taskId, new Set([session]));
+  /**
+   * Binds a task that does not exist yet to the session about to start it (accept, take, runPlan). One that
+   * exists keeps its binding: a second take or accept from another session is refused, and must not take the
+   * task away from the host that started it (B22 review). In process (no session), nothing.
+   */
+  private bindNew(taskId: string, session: string | undefined): void {
+    if (session !== undefined && !this.executor.has(taskId)) this.taskHosts.set(taskId, new Set([session]));
+  }
+
+  /** Binds an existing task to the session that resumes or undoes it, once the executor would accept the request. */
+  private rebind(taskId: string, session: string | undefined, refusal: string | null): void {
+    if (session !== undefined && refusal === null) this.taskHosts.set(taskId, new Set([session]));
   }
 
   /** The host's first look: the best offer across the windows open now, answered to the asker only. */
@@ -720,7 +735,7 @@ export class Helper {
    * host session it came from (HelperServer), which a taken offer's run is bound to; absent in process.
    */
   handleOffer(m: OfferControl, session?: string): Promise<TaskResult | null> {
-    if (m.action === "take") this.bind(m.offerId, session);
+    if (m.action === "take") this.bindNew(m.offerId, session);
     return this.patterns.control(m);
   }
 
@@ -740,7 +755,7 @@ export class Helper {
     if (why !== null) return this.refuseAccept(m.offerId, why);
     if (r.accept === null) return this.refuseAccept(m.offerId, "the offer has nothing to run");
     r.accepted = true;
-    this.bind(m.offerId, session);
+    this.bindNew(m.offerId, session);
     let out: AcceptResult;
     try {
       out = await r.accept(m);
@@ -956,7 +971,7 @@ export class Helper {
       if (m.type === "runPlan") {
         // A task id names one piece of work in the activity feed; a run may not take over another's record.
         if (this.tasks.get(m.taskId) !== undefined) throw new Error(`task id ${m.taskId} is already in use`);
-        this.bind(m.taskId, session);
+        this.bindNew(m.taskId, session);
         // No act grant: a consumer's plan is not an offer the user accepted, so the reader acts for it
         // only in --act-pids processes, which only tests start.
         return await this.executor.run(m.taskId, m.plan, m.slots);
@@ -968,14 +983,15 @@ export class Helper {
       }
       switch (m.action) {
         case "resume":
-          this.bind(m.taskId, session);
+          this.rebind(m.taskId, session, this.executor.resumeRefusal(m.taskId));
           return await this.executor.resume(m.taskId);
         case "undo":
           // Asking to undo a skill's run resets its clean runs and puts it back on Tab (B19), before the restore
           // is awaited: a restore that is refused or fails (a reader restart since the run, S1 audit #15) must
           // not leave the skill running on its own.
+          // A run of the same skill still going depends on it running on its own: Skills.reset sweeps (onSkillReset).
           this.patterns.skills.reversed(m.taskId, this.now());
-          this.bind(m.taskId, session);
+          this.rebind(m.taskId, session, this.executor.undoRefusal(m.taskId));
           return await this.executor.undo(m.taskId);
         case "pause":
         case "takeOver":

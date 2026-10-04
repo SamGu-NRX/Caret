@@ -162,6 +162,30 @@ describe("taking control back (B22)", () => {
     expect(reader.value(FORM, EMAIL)).toBe("old@example.com");
   });
 
+  it("a refused resume or accept from another consumer does not take the task from the host that accepted it (B22 review)", async () => {
+    const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/protocol.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    const action = { ...golden.find((l) => l.type === "action" && l.offerKey === "offer-5"), offerKey: "accept-2" } as unknown as OfferAction;
+    helper.offers.record(action, () => helper.executor.run("accept-2", two(), {}, undefined, { grant: true }));
+    const other = await LineClient.connect(join(dir, "screen.sock"));
+    other.send({ type: "hello", v: PROTOCOL_VERSION, role: "consumer", mode: "live", pid: 2, version: "other-consumer" });
+    reader.setValue(FORM, NAME, "");
+    reader.setValue(FORM, EMAIL, "old@example.com");
+    await until(() => helper.model.windows.get(FORM)?.nodes.get(EMAIL)?.value === "old@example.com" && helper.model.windows.get(FORM)?.nodes.get(NAME)?.value === undefined);
+    whileQueued = async () => {
+      other.send({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "accept-2", action: "resume" });
+      other.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "accept-2", actionId: "finish", overrides: {}, at: 2 });
+      await other.waitFor((m) => m.type === "error" && String(m.message).includes("not paused"));
+      await other.waitFor((m) => m.type === "error" && String(m.message).includes("already accepted"));
+      host.close();
+    };
+    host.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: "accept-2", actionId: "finish", overrides: {}, at: 1 });
+    await until(() => helper.executor.has("accept-2") && !helper.executor.live("accept-2"), 3000);
+    other.close();
+    expect(helper.tasks.get("accept-2")?.detail).toMatch(/the host that started it disconnected/);
+    expect(actsAfter("accept-2", revokedAt("accept-2"))).toEqual([]);
+    expect(reader.value(FORM, EMAIL)).toBe("old@example.com");
+  });
+
   for (const [name, takeBack, outcome] of sources) {
     it(`no act reaches the app after the revoke: ${name}`, async () => {
       const r = await race("t1", takeBack);

@@ -711,6 +711,28 @@ describe("executor", () => {
       }
     });
 
+    it("an undo is refused while Caret is paused, and a pause during one leaves the restores not yet made (B22 review)", async () => {
+      const settings = (paused: boolean) => helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: 1, roles: ["fill", "repeat", "watch", "calendar", "words"], level: "balanced", paused });
+      await helper.executor.run("t1", two(), {}, undefined, { grant: true });
+      settings(true);
+      const before = published.length;
+      expect(await helper.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: "t1", action: "undo" })).toBeNull();
+      expect(published.slice(before).find((m) => m.type === "error")).toMatchObject({ message: "task t1: nothing was restored: you paused Caret" });
+      expect(app.node(K("textfield:email~0"))?.value).toBe("d@example.com");
+      settings(false);
+      // Newest first: Email is restored, then Caret is paused before Name's restore.
+      app.afterVerb = (a, v) => {
+        if (v.kind !== "write") return;
+        a.afterVerb = null;
+        settings(true);
+      };
+      const u = await helper.executor.undo("t1");
+      expect(u).toMatchObject({ restored: 1, notRestored: [{ step: 0, reason: "you paused Caret" }] });
+      expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+      expect(app.node(K("textfield:name~0"))?.value).toBe("Dana");
+      expect(kinds().slice(-2)).toEqual(["actGrant", "actRevoke"]);
+    });
+
     it("undo of a granted run is granted the run's window for the restore, then revoked", async () => {
       await helper.executor.run("t1", two(), {}, undefined, { grant: true });
       expect(await helper.executor.undo("t1")).toMatchObject({ restored: 2 });

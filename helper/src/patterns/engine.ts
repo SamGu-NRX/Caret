@@ -77,6 +77,8 @@ export interface EngineDeps {
    * #5). While none is, a skill that would run on its own is offered with Tab instead.
    */
   hostConnected: () => boolean;
+  /** A skill went back on Tab after a failure, an undo, a take over or an edit of what it wrote: runs of it still going may no longer act (B22). */
+  onSkillReset?: () => void;
 }
 
 type Cell = LoopCell | RoutineCell;
@@ -217,6 +219,7 @@ export class PatternEngine {
       shadow: deps.shadow,
       askJev: deps.askJev ?? null,
       valuesOf: (sig) => this.routines.valuesOf(sig),
+      ...(deps.onSkillReset === undefined ? {} : { onReset: deps.onSkillReset }),
     });
   }
 
@@ -598,9 +601,10 @@ export class PatternEngine {
 
   /** The permission a run into this window writes under, as the executor will judge it at the run's start. */
   private writeAction(windowId: string): WriteAction {
+    // The frontmost app's last focused window, as the executor judges it: a background request walk moves focusedWindowId,
+    // and with the frontmost app unknown no window is the user's (B22 review).
     const m = this.deps.model;
-    const w = m.windows.get(windowId);
-    return m.focusedWindowId === windowId && w !== undefined && m.frontmostPid === w.app.pid ? "writeHere" : "writeElsewhere";
+    return m.frontmostPid !== null && m.userWindow()?.window.windowId === windowId ? "writeHere" : "writeElsewhere";
   }
 
   /**
@@ -713,6 +717,7 @@ export class PatternEngine {
           // A typed entry is found by its label, so a renamed one answers to its new label.
           if (e.kind === "about" && e.fields.source === "typed") memory.rekey(e.id, typedMatch(e.fields.label));
           if (e.kind === "skill" && m.fields.onItsOwn === false) this.skills.backOnTab(e.id);
+          // The helper sweeps live tasks after every memory request (Helper.handleMemory).
           this.withdrawDependents(m.id);
           return reply([e]);
         }
