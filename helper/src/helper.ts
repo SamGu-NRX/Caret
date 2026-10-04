@@ -377,7 +377,8 @@ export class Helper {
       patterns: this.patterns,
       events: this.events,
       // A first look's offer runs only from the host's offerAccept.
-      run: (taskId, plan, slots, expect) => this.runFrom(this.firstLooks.get(taskId)?.family ?? null, taskId, plan, slots, expect),
+      // The family is recorded when the offer is withdrawn as taken, just before this (withdrawFirstLook).
+      run: (taskId, plan, slots, expect) => this.executor.run(taskId, plan, slots, expect, { grant: true }),
       record: (msg, family, accept, underlying) => {
         this.offers.record(msg, accept);
         this.firstLooks.set(msg.offerKey, { at: this.now(), family, underlying });
@@ -730,7 +731,11 @@ export class Helper {
 
   /** Ends an offer a first look recorded: its key leaves the registry and consumers get offerWithdrawn. */
   private withdrawFirstLook(offerKey: string, reason: Exclude<OfferWithdrawn["reason"], "reoffered">): void {
-    if (!this.firstLooks.delete(offerKey)) return;
+    const f = this.firstLooks.get(offerKey);
+    if (f === undefined) return;
+    this.firstLooks.delete(offerKey);
+    // Taken: the run that follows depends on this offer's family (B22 review).
+    if (reason === "taken") this.taskDeps.set(offerKey, { family: f.family, routineId: null });
     this.publish({ type: "offerWithdrawn", v: PROTOCOL_VERSION, at: this.now(), id: offerKey, reason });
   }
 

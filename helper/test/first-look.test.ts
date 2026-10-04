@@ -155,6 +155,30 @@ describe("the first look over the socket", () => {
     expect(await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === "first-look-1.0")).toMatchObject({ reason: "taken" });
   });
 
+  // B22 review: an accepted run depends on its offer's settings family; the first look withdraws its offer before the run starts.
+  it("stops a fill accepted from a first look when the user turns fill off while it runs", async () => {
+    await seed("offers-fill.ndjson");
+    const { reply } = await look();
+    expect(reply.found?.family).toBe("fill");
+    const key = reply.found?.offerKey ?? "";
+    const r = reader as SocketReader;
+    let turnedOff = false;
+    r.onCommand = (v) => {
+      if (turnedOff || v.kind !== "write") return;
+      turnedOff = true;
+      helper.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: 3, roles: ["repeat", "watch", "calendar", "words"], level: "balanced", paused: false });
+    };
+    r.enforceGrants = true;
+    r.serial = true;
+    r.delayMs.write = 50;
+    host.send({ type: "offerAccept", v: PROTOCOL_VERSION, offerId: key, actionId: "fillAll", overrides: {}, at: 2 });
+    const end = await host.waitFor((m) => m.type === "taskProgress" && m.taskId === key && (m.phase === "stopped" || m.phase === "done"), 5000);
+    expect(end).toMatchObject({ phase: "stopped", stopReason: "you" });
+    expect(String(end.detail)).toMatch(/your settings no longer let Caret do this kind of work/);
+    // The write already on its way when fill went off was refused, and none came after it.
+    expect([F("textfield:name~0"), F("textfield:email~0"), F("textfield:phone~0")].map((k) => r.value(FORM, k))).toEqual(["", "", ""]);
+  });
+
   it("reports a watched job that finished, with Open, when only pending is asked for", async () => {
     ask = async (req) =>
       req.questions.finished !== undefined
