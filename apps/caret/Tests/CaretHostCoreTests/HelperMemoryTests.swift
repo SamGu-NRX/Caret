@@ -17,7 +17,8 @@ final class HelperMemoryTests: XCTestCase {
     }
 
     /// The fixture's line of this type for this request id. The file is the helper's golden copy
-    /// (helper/fixtures/golden/memory.ndjson) plus the host's later lines, so lines are found by id.
+    /// (helper/fixtures/golden/memory.ndjson) byte for byte, as H1 left it (v2/hygiene 4153294).
+    /// Lines are found by id, so a line added in the middle moves nothing.
     static func line(_ requestId: String, _ type: String) throws -> Data {
         let found = try lines().first { data in
             let o = try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -30,10 +31,11 @@ final class HelperMemoryTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary)
     }
 
-    /// Every reply line reads in full: the helper's (host-memory-6 and -7, B21 and B22) and the host's
-    /// own `wrote` line (host-memory-8, A16).
+    /// Every reply line reads in full: host-memory-6 and -7 (B21 and B22) and the `wrote` line
+    /// (host-memory-9: A16's, which the helper's golden copy renamed from a second host-memory-7 in
+    /// H1). There is no host-memory-8.
     func testEveryReplyLineReadsWithNothingUnreadable() throws {
-        for id in (1...8).map({ "host-memory-\($0)" }) {
+        for id in [1, 2, 3, 4, 5, 6, 7, 9].map({ "host-memory-\($0)" }) {
             let reply = try HelperMemory.Reply.decode(Self.line(id, "memoryReply"))
             XCTAssertEqual(reply.unreadable, [], id)
         }
@@ -41,7 +43,7 @@ final class HelperMemoryTests: XCTestCase {
         XCTAssertEqual(putBack.entries.first?.skill?.onItsOwn, false)
         let offered = try HelperMemory.Reply.decode(Self.line("host-memory-7", "memoryReply"))
         XCTAssertEqual(offered.entries.first?.skill?.onItsOwn, false, "the skill comes back unchanged; only the offer's yes changes it")
-        XCTAssertEqual(try HelperMemory.Reply.decode(Self.line("host-memory-8", "memoryReply")).entries.first?.wrote, [.writeElsewhere])
+        XCTAssertEqual(try HelperMemory.Reply.decode(Self.line("host-memory-9", "memoryReply")).entries.first?.wrote, [.writeElsewhere])
     }
 
     func testTheListReplyReadsEveryKind() throws {
@@ -73,6 +75,7 @@ final class HelperMemoryTests: XCTestCase {
             (2, .init(requestId: "host-memory-2", op: .edit, id: "about-1a2b3c4d", fields: ["value": .text("Marcus Lowe, Operations")])),
             (4, .init(requestId: "host-memory-3", op: .add, kind: .about, fields: ["label": .text("Name"), "value": .text("Dana Whitfield"), "source": .text("typed")])),
             (6, .init(requestId: "host-memory-4", op: .edit, id: "permission-writeHere", fields: ["rule": .text("act")])),
+            (8, .init(requestId: "host-memory-5", op: .edit, id: "permission-sensitive", fields: ["rule": .text("act")])),
         ]
         for (index, request) in requests {
             XCTAssertEqual(try json(request.line()), try json(lines[index]), "line \(index)")
@@ -138,7 +141,7 @@ final class HelperMemoryTests: XCTestCase {
     }
 
     func testTheInboundDecoderRoutesMemoryReplies() throws {
-        let line = try Self.lines()[8]
+        let line = try Self.line("host-memory-5", "memoryReply")
         guard case .memoryReply(let reply) = try HelperInbound.decode(line) else { return XCTFail("not routed") }
         XCTAssertEqual(reply.error, "sensitive can be handoff, not act")
         XCTAssertEqual(try HelperInbound.decode(Self.lines()[0]).typeName, "memoryRequest", "our own request echoed is not for us")

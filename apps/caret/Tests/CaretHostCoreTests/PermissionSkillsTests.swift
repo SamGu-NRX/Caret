@@ -172,10 +172,10 @@ final class PermissionSkillsTests: XCTestCase {
     }
 
     /// B23 sends `wrote` for real: the helper's own line for a skill on its own that wrote elsewhere
-    /// (helper/fixtures/golden/memory.ndjson, kept here as host-memory-8), under Ask first for
+    /// (helper/fixtures/golden/memory.ndjson, host-memory-9 there and here), under Ask first for
     /// "Undoable changes in other apps", is listed as held back, and at Act if approved as running.
     func testTheHelpersRealWroteLineShowsHeldBackAndRunning() throws {
-        let line = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-8", "memoryReply"))
+        let line = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-9", "memoryReply"))
         XCTAssertEqual(line.unreadable, [])
         XCTAssertEqual(line.entries.first?.skill?.wrote, [.writeElsewhere], "CaretScreenCore's SkillFields reads it too")
         func page(_ rule: HelperMemory.Rule) throws -> MemoryBook.State {
@@ -193,7 +193,7 @@ final class PermissionSkillsTests: XCTestCase {
 
     /// The contract line (Fixtures/memory.ndjson): a skill's `wrote`, and what the host refuses.
     func testWroteIsReadFromTheContractAndAnythingElseIsRefused() throws {
-        let contract = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-8", "memoryReply"))
+        let contract = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-9", "memoryReply"))
         XCTAssertEqual(contract.entries.first?.wrote, [.writeElsewhere])
         XCTAssertEqual(try state([skill("s", wrote: .none)]).entries.first?.wrote, [])
         let silent = #"{"kind":"skill","id":"s","status":"active","says":"x","evidence":{"count":11,"lastSeen":1790000400000,"app":"Tracker"},"fields":{"routineId":"r-s","name":"Skill s","trigger":"a Tracker window opens with Order empty","runs":11,"cleanRuns":10,"needed":10,"onItsOwn":true,"handsOff":null}}"#
