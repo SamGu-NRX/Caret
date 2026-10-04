@@ -205,7 +205,14 @@ const DATE_PART: ReadonlyMap<string, RegExp> = new Map([
 ]);
 const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
 /** A company's name: up to eight words with no brackets, @ or sentence punctuation ("Ridgeline Outdoor Co", "Acme, Inc.", "3M"). */
-const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^()[\]{}@<>;:!?]+$/u;
+const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^()[\]{}@<>;:!?$€£¥]+$/u;
+/**
+ * What may follow a comma in a company's name: a legal suffix ("Acme, Inc.", "Ridgeline Outdoor, LLC"). Anything
+ * else after a comma is a list: B25's larger note budget offered "Brightline Dental Labs, lab technician, $5,200/mo
+ * gross", and live Jev put it in Current employer (evidence/screen/b25/fill-dev-1; a rule tuned on the B24 corpus).
+ */
+const ORG_SUFFIX = /^(?:inc|llc|ltd|limited|co|corp|corporation|company|gmbh|plc|llp|lp|pllc|pc|sa|s\.a|ag|bv|nv|pty(?: ltd)?|srl|oy|ab|as|kk)\.?$/iu;
+const orgName = (v: string): boolean => ORG_NAME.test(v) && v.split(",").slice(1).every((p) => ORG_SUFFIX.test(p.trim()));
 /** Kinds of value that have their own shape: none of them is a city, a street line or a name. */
 const SHAPED: ReadonlySet<TextKind> = new Set(["email", "url", "phone", "amount", "address", "street"]);
 
@@ -355,7 +362,7 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
   // "Junior Analyst at Ridgeline Outdoor Co (since 2024)" from a note's line (evidence/screen/b24/dev-4).
   // Only a field for the organization's name: "Company email" or "Employer phone" takes an email or a phone,
   // checked below (review). Digits are allowed: "3M", "Studio 54".
-  if (ORGANIZATION.test(s) && [...fits].every((f) => f === "name") && !ORG_NAME.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is more than a name, and the field takes a company or organization name`;
+  if (ORGANIZATION.test(s) && [...fits].every((f) => f === "name") && !orgName(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is more than a name, and the field takes a company or organization name`;
   // A bare clock time goes only in a field that takes a time: the B24 Ask scoreboard's planner wrote "8:15" into
   // Delivery instructions for "actually make the delivery 8:15 instead", whose time field is a control Caret
   // does not write (asks-dev-1).

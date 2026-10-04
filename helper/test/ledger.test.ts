@@ -98,3 +98,51 @@ describe("the ledger charges every window a text reveals", () => {
     expect(ledger.charges()).toEqual({ "card-1": 10 });
   });
 });
+
+describe("a mixed note's budget (B25 lead decision 3)", () => {
+  const LONG = "Deliver around 7:30 pm, and please use the side door and ring twice because the front bell is broken";
+  const note = (lines: readonly string[]): { m: ScreenModel; w: WindowState } => {
+    const m = new ScreenModel();
+    m.apply(snap(lines.map((l, i) => text(`n${i}`, l)), { at: 1, windowId: "note-1", title: "Order note.txt", app: NOTES }));
+    return { m, w: m.windows.get("note-1") as WindowState };
+  };
+  const SHORT = ["Pizza order", "Name: Jordan Reyes", "Phone: (512) 555-0147"];
+
+  it("is the short lines' characters plus just under half the prose's, at most WINDOW_CHARS", () => {
+    const { w } = note([...SHORT, LONG]);
+    const short = ["Order note.txt", ...SHORT].join("").length;
+    expect(LONG.length).toBeGreaterThan(80);
+    expect(windowBudget(w)).toBe(short + Math.floor((LONG.length - 1) / 2));
+    // Thirty short lines and no prose: no card (over 24 lines), not large, so every line may go.
+    const many = note(Array.from({ length: 30 }, (_, i) => `Item ${i}: a value`)).w;
+    expect(windowBudget(many)).toBe(["Order note.txt", ...Array.from({ length: 30 }, (_, i) => `Item ${i}: a value`)].join("").length);
+    // Past WINDOW_CHARS of short lines it is capped.
+    const big = note(Array.from({ length: 40 }, (_, i) => `Line number ${i} of a long list of values here`)).w;
+    expect(windowBudget(big)).toBe(WINDOW_CHARS);
+  });
+
+  it("takes every labelled line, and never half the prose, however much budget is left", () => {
+    const { m, w } = note([...SHORT, LONG]);
+    const ledger = new SnippetLedger(m.windows.values());
+    expect(ledger.take(w, "candidate", SHORT)).toBe(true);
+    // Under half the sentence fits; the rest of it does not, though the total budget has room.
+    const half = Math.floor((LONG.length - 1) / 2);
+    expect(ledger.take(w, "candidate", [LONG.slice(0, half)])).toBe(true);
+    expect(ledger.take(w, "candidate", [LONG.slice(half, half + 5)])).toBe(false);
+    expect(ledger.chars(w.window.windowId)).toBeLessThan(windowBudget(w));
+    // A whole sentence is refused on its own as well.
+    const fresh = new SnippetLedger(m.windows.values());
+    expect(fresh.take(w, "candidate", [LONG])).toBe(false);
+  });
+
+  it("counts a value inside the sentence as prose, and a value on its own line as not", () => {
+    const { m, w } = note([...SHORT, LONG]);
+    const ledger = new SnippetLedger(m.windows.values());
+    // "Jordan Reyes" sits in a short line; "7:30 pm" only in the sentence.
+    expect(ledger.take(w, "candidate", ["Jordan Reyes"])).toBe(true);
+    const half = Math.floor((LONG.length - 1) / 2);
+    expect(ledger.take(w, "candidate", [LONG.slice(10, 10 + half - 7)])).toBe(true);
+    expect(ledger.take(w, "candidate", ["7:30 pm"])).toBe(true);
+    expect(ledger.take(w, "candidate", ["side door"])).toBe(false);
+  });
+});

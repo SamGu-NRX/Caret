@@ -24,8 +24,9 @@ export const SNIPPET_CHARS = 120;
  * A window whose every line is at most CARD_LINE_CHARS long (the fill generator's longest candidate) and
  * that has at most CARD_LINES lines is a card of values: a contact card, an order confirmation, a meeting
  * block. Its lines are themselves the values a fill might copy, so a request may carry all of it, up to
- * WINDOW_CHARS. Any other window keeps more than half of its text back. 24 is assumed: just above the
- * calibration fixture's largest source window, 21 lines.
+ * WINDOW_CHARS. 24 is assumed: just above the calibration fixture's largest source window, 21 lines. A line
+ * longer than CARD_LINE_CHARS is prose: more than half of a window's prose always stays on the Mac
+ * (windowBudget).
  */
 export const CARD_LINES = 24;
 export const CARD_LINE_CHARS = 80;
@@ -85,14 +86,18 @@ class LineTable {
   private readonly counts = new Map<string, number>();
   /** Characters of the distinct lines. */
   chars = 0;
-  /** Distinct lines longer than CARD_LINE_CHARS. */
+  /** Distinct lines longer than CARD_LINE_CHARS, and their characters: the window's prose. */
   private long = 0;
+  longChars = 0;
   /** Distinct lines of CONTAINED_MIN or more characters by their first CONTAINED_MIN: their lengths, each with how many lines have it. */
   private readonly starts = new Map<string, Map<number, number>>();
   /** Texts asked about, and whether a line of the window holds them; kept right as lines come and go. */
   private readonly inside = new Map<string, boolean>();
   /** The lines of CONTAINED_MIN or more characters joined by NUL, which no screen text holds; null until a search needs it again. */
   private joined: string | null = null;
+  /** The same, of the lines that are not prose and of the prose lines, for proseIn; null until a search needs them again. */
+  private joinedShort: string | null = null;
+  private joinedLong: string | null = null;
 
   constructor(w: WindowState) {
     this.owner = w;
@@ -138,6 +143,27 @@ class LineTable {
     return r;
   }
 
+  /**
+   * How many characters of the window's prose `t` reveals: each line of `t` (whitespace collapsed, a cut's
+   * ellipsis dropped) that a prose line holds and no shorter line does. A value a note labels on its own line
+   * ("Phone: (512) 555-0147") reveals none, a phone inside a sentence its own length, and a text no line holds
+   * (a fact cut to length, a value spanning two short lines) none. Asked only of windows whose budget holds
+   * prose apart (windowBudget), which are under 2 * WINDOW_CHARS, so the searches are short.
+   */
+  proseIn(t: string): number {
+    this.joinedShort ??= `\u0000${[...this.counts.keys()].filter((l) => l.length <= CARD_LINE_CHARS).join("\u0000")}\u0000`;
+    this.joinedLong ??= `\u0000${[...this.counts.keys()].filter((l) => l.length > CARD_LINE_CHARS).join("\u0000")}\u0000`;
+    if (this.long === 0) return 0;
+    let n = 0;
+    for (const raw of t.split("\n")) {
+      const piece = flat(raw).replace(/^…|…$/gu, "");
+      if (piece.length < CONTAINED_MIN) continue;
+      if (piece.length <= CARD_LINE_CHARS && this.joinedShort.includes(piece)) continue;
+      if (this.joinedLong.includes(piece)) n += piece.length;
+    }
+    return n;
+  }
+
   /** Every distinct line of the window that `t` holds, by where it starts in `t`; each line once. */
   linesIn(t: string, out: Set<string>): void {
     for (let i = 0; i + CONTAINED_MIN <= t.length; i++) {
@@ -181,7 +207,9 @@ class LineTable {
     this.counts.set(t, (c ?? 0) + 1);
     if (c !== undefined) return;
     this.chars += t.length;
-    if (t.length > CARD_LINE_CHARS) this.long++;
+    if (t.length > CARD_LINE_CHARS) (this.long++, (this.longChars += t.length));
+    this.joinedShort = null;
+    this.joinedLong = null;
     if (t.length < CONTAINED_MIN) return;
     const p = t.slice(0, CONTAINED_MIN);
     let lens = this.starts.get(p);
@@ -198,7 +226,9 @@ class LineTable {
     if (c > 1) return void this.counts.set(t, c - 1);
     this.counts.delete(t);
     this.chars -= t.length;
-    if (t.length > CARD_LINE_CHARS) this.long--;
+    if (t.length > CARD_LINE_CHARS) (this.long--, (this.longChars -= t.length));
+    this.joinedShort = null;
+    this.joinedLong = null;
     if (t.length < CONTAINED_MIN) return;
     const lens = this.starts.get(t.slice(0, CONTAINED_MIN)) as Map<number, number>;
     const k = lens.get(t.length) as number;
@@ -254,6 +284,8 @@ export function forgetWindows(): void {
 
 interface WindowShare {
   budget: number;
+  /** Characters of the window's prose (lines over CARD_LINE_CHARS) a request may cover, apart from `budget`; null when only `budget` holds it. */
+  prose: number | null;
 }
 
 let budgets = new WeakMap<WindowState, WindowShare>();
@@ -271,10 +303,27 @@ export function setConversationCap(on: boolean): void {
 /**
  * The characters a request may take from this window. A conversation gives just under half its text, and
  * at most CONVERSATION_CHARS. Any other window gives WINDOW_CHARS when it is a card of values or has more
- * than twice that much text, else just under half its text. Overlapping texts each count in
- * full, so outside a card the budget holds a request under half the window with room to spare. A window's
- * text is its title and every line of its nodes' labels, values and placeholders, each counted once
- * (LineTable); the budget is cached per window state, which the model replaces on every snapshot.
+ * than twice that much text. Any other window, a mixed note or a short page, gives the characters of its
+ * lines of at most CARD_LINE_CHARS, plus just under half the characters of its longer lines (its prose), at
+ * most WINDOW_CHARS; and of its prose a request covers just under half at most (WindowShare.prose), however
+ * the rest of the budget is spent. Overlapping texts each count in full. A window's text is its title and every
+ * line of its nodes' labels, values and placeholders, each counted once (LineTable); the budget is cached per
+ * window state, which the model replaces on every snapshot.
+ *
+ * Why the mixed-note rule (B25 lead decision 3): before it, such a window gave just under half its whole text,
+ * so a short note with one sentence over 80 characters gave less than half its labelled value lines. On B24's
+ * real-form corpus that was the largest cause of misses, 22 text fields withheld as sourceCut (evidence/screen/
+ * b24/after). Measured on that corpus, which this rule was not tuned on but whose numbers prompted it
+ * (evidence/screen/b25/budgets.md, fill-dev-2):
+ * - The three mixed notes went from 282, 224 and 245 characters to 515, 400 and 431. The four mail sources are
+ *   conversations, so their budgets did not change.
+ * - Text sourceCut misses fell from 22 to 17 (rental application 12 to 7); fill went from 38 to 40 right of 131,
+ *   with 0 wrong, a change within the run-to-run variation of about two fields.
+ * - All three notes are still cut at their last line. A value and the line that holds it are each charged in
+ *   full, so a note's short lines cost more than their characters (as a card's do), and a cut source loses
+ *   fill's anchor (fill.ts). With 1.25 times the short lines' characters, the rental and enrollment notes are no
+ *   longer cut; the checkout note stays cut at any multiple, because its other person's address and phone sit
+ *   in its one sentence and the prose share keeps them back. That multiple is a finding, not this rule.
  */
 export function windowBudget(w: WindowState): number {
   return windowShare(w).budget;
@@ -293,17 +342,21 @@ function windowShare(w: WindowState): WindowShare {
   // while covering no more of it.
   const half = Math.max(0, Math.floor((text.chars - 1) / 2));
   const large = text.chars >= 2 * WINDOW_CHARS;
-  const budget = heldAsConversation(w) ? Math.min(CONVERSATION_CHARS, half) : large || text.card ? WINDOW_CHARS : Math.min(WINDOW_CHARS, half);
-  const share = { budget };
+  const prose = Math.max(0, Math.floor((text.longChars - 1) / 2));
+  const share: WindowShare = heldAsConversation(w)
+    ? { budget: Math.min(CONVERSATION_CHARS, half), prose: null }
+    : large || text.card
+      ? { budget: WINDOW_CHARS, prose: null }
+      : { budget: Math.min(WINDOW_CHARS, text.chars - text.longChars + prose), prose };
   budgets.set(w, share);
   return share;
 }
 
 /**
- * Whether a request may take only part of this window's text, under half, though it is no conversation: a
- * short note or page that is not a card of values (a line over CARD_LINE_CHARS, or more than CARD_LINES lines)
- * and not large. Fill spends such a window's budget on the lines nearest the form's fields first, as it does a
- * conversation's (candidates.ts byRelevance, B24).
+ * Whether a request may take only part of this window's text though it is no conversation: a short note or
+ * page that is not a card of values (a line over CARD_LINE_CHARS, or more than CARD_LINES lines) and not large,
+ * held to under half its prose and to WINDOW_CHARS (windowBudget). Fill spends such a window's budget on the
+ * lines nearest the form's fields first, as it does a conversation's (candidates.ts byRelevance, B24).
  */
 export function heldToHalf(w: WindowState): boolean {
   if (heldAsConversation(w)) return false;
@@ -318,13 +371,15 @@ export function heldAsConversation(w: WindowState): boolean {
 
 interface Priced {
   fresh: string[];
-  adds: Map<string, { cost: number; covered: Set<string> }>;
+  adds: Map<string, { cost: number; prose: number; covered: Set<string> }>;
 }
 
 interface Entry {
   texts: Set<string>;
   covered: Set<string>;
   chars: number;
+  /** Of `chars`, the characters of prose (WindowShare.prose). */
+  prose: number;
   share: WindowShare;
 }
 
@@ -359,7 +414,7 @@ export class SnippetLedger {
   private entry(w: WindowState): Entry {
     const id = w.window.windowId;
     let e = this.entries.get(id);
-    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), chars: 0, share: windowShare(w) }));
+    if (e === undefined) this.entries.set(id, (e = { texts: new Set(), covered: new Set(), chars: 0, prose: 0, share: windowShare(w) }));
     return e;
   }
 
@@ -401,16 +456,18 @@ export class SnippetLedger {
   private price(from: WindowState | null, texts: readonly (string | null | undefined)[]): Priced | null {
     const own = from === null ? null : (this.know(from), this.entry(from));
     const fresh = [...new Set(texts.filter((t): t is string => t !== null && t !== undefined && t !== "" && own?.texts.has(t) !== true))];
-    const adds = new Map<string, { cost: number; covered: Set<string> }>();
+    const adds = new Map<string, { cost: number; prose: number; covered: Set<string> }>();
     const charge = (wid: string, line: string): void => {
       const w = this.known.get(wid);
       if (w === undefined) return;
       const e = this.entry(w);
       let a = adds.get(wid);
-      if (a === undefined) adds.set(wid, (a = { cost: 0, covered: new Set() }));
+      if (a === undefined) adds.set(wid, (a = { cost: 0, prose: 0, covered: new Set() }));
       if (e.covered.has(line) || a.covered.has(line)) return;
       a.covered.add(line);
       a.cost += line.length;
+      // What of the window's prose the text reveals counts against its prose share as well.
+      if (e.share.prose !== null) a.prose += windowText(w).proseIn(line);
     };
     for (const t of fresh) {
       if (from !== null) charge(from.window.windowId, t);
@@ -424,6 +481,7 @@ export class SnippetLedger {
     for (const [wid, a] of adds) {
       const e = this.entries.get(wid) as Entry;
       if (e.chars + a.cost > e.share.budget) return null;
+      if (e.share.prose !== null && e.prose + a.prose > e.share.prose) return null;
     }
     return { fresh, adds };
   }
@@ -437,6 +495,7 @@ export class SnippetLedger {
       const e = this.entries.get(wid) as Entry;
       for (const l of a.covered) e.covered.add(l);
       e.chars += a.cost;
+      e.prose += a.prose;
       // Text no window gave (a plan's or an instruction's, or what the user told Caret) declares each line it
       // reveals under the window that shows it, so the request names every window whose text it carries:
       // an instruction that quotes a line of private notes names the notes (B17 privacy test, planner desk).

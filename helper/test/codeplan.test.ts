@@ -175,7 +175,10 @@ describe("planWithCode, fix-check (B24)", () => {
     const form = m.windows.get("form");
     if (form === undefined) throw new Error("no form");
     const long = `Private form ${"X".repeat(210)}`;
-    m.apply(snap([...form.nodes.values()], { at: 1100, windowId: "form", title: long, app: FORM_APP, focused: true }));
+    // A title over 80 characters is prose, of which a request covers under half (privacy.ts, B25): the page's
+    // terms paragraphs make room for the 200 characters the writer sees.
+    const terms = [0, 1].map((i) => text(`terms-${i}`, `Terms ${i}: ${"These terms describe how the page handles what you enter, in plain words for everyone. ".repeat(2)}`));
+    m.apply(snap([...form.nodes.values(), ...terms], { at: 1100, windowId: "form", title: long, app: FORM_APP, focused: true }));
     const seen: WriterRequest[] = [];
     const r = await planWithCode("do the reference section from my notes", m, memory, { writer: writer(fillByText([["Reference name", "Simone Achebe"]]), seen), askJev: jev().ask, offerKey: "plan-2", windowId: "form", now: 2000 });
     const sent = (seen.at(-1)?.input as { snapshots: { title: string }[] }).snapshots[0]?.title;
