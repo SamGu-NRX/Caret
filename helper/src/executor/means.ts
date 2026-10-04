@@ -13,6 +13,48 @@ export interface ReaderLink {
   grant?(m: ActGrant | ActRevoke | CalendarGrant): void;
 }
 
+/** Finds the page engine that owns a window (helper/src/engines/registry.ts EngineRegistry). */
+export interface EngineDirectory {
+  /** The link for a `page:` window's engine, or null when that engine session is gone or the id is not a page window. */
+  engineFor(windowId: string): ReaderLink | null;
+  /** Every live engine's link, for a revoke that must reach wherever the task holds a grant. */
+  engines(): Iterable<ReaderLink>;
+}
+
+/**
+ * The executor's one ReaderLink when pages are in play (browser layer W1): a verb or grant for a `page:` window
+ * goes to that window's engine, everything else to the reader, and a revoke goes to both, since a task's grant
+ * may live in either. A page window whose engine is gone answers noWindow, as a closed native window does.
+ */
+export class RoutedReaderLink implements ReaderLink {
+  private readonly reader: ReaderLink;
+  private readonly directory: EngineDirectory;
+  constructor(reader: ReaderLink, directory: EngineDirectory) {
+    this.reader = reader;
+    this.directory = directory;
+  }
+
+  run(verb: ReaderVerb): Promise<VerbResult> {
+    if (!("windowId" in verb) || !verb.windowId.startsWith("page:")) return this.reader.run(verb);
+    const engine = this.directory.engineFor(verb.windowId);
+    if (engine === null) return Promise.resolve({ type: "verbResult", v: PROTOCOL_VERSION, id: randomUUID(), at: Date.now(), outcome: "noWindow", detail: `the engine of ${verb.windowId} is gone` });
+    return engine.run(verb);
+  }
+
+  grant(m: ActGrant | ActRevoke | CalendarGrant): void {
+    if (m.type === "actRevoke") {
+      this.reader.grant?.(m);
+      for (const e of this.directory.engines()) e.grant?.(m);
+      return;
+    }
+    if (m.type === "actGrant" && m.windowId.startsWith("page:")) {
+      this.directory.engineFor(m.windowId)?.grant?.(m);
+      return;
+    }
+    this.reader.grant?.(m);
+  }
+}
+
 /**
  * Sends readerCommands through `send` and matches verbResults by id. A verb with no answer within
  * `timeoutMs` resolves as an axError, so a hung app or a dropped reader stops the run instead of
