@@ -498,8 +498,8 @@ struct RuleRowView: View {
 }
 
 /// The skills that run on their own, as exceptions to the write rows above: each by name and
-/// trigger, with one button that puts it back on Tab. Set in from the rows' text and tinted with the
-/// Carrot wash, so it reads as part of those rules and not a rule of its own. Nothing moves: a skill
+/// trigger, with one button that puts it back on Tab. Set in from the rows' text, on the hover row's
+/// tone with a Carrot edge, so it reads as part of those rules and not a rule of its own. Nothing moves: a skill
 /// that goes back on Tab leaves the list with the same 120 ms fade as a forgotten memory row.
 struct ExceptionsView: View {
     var exceptions: [MemoryPage.Exception]
@@ -551,7 +551,14 @@ struct ExceptionsView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color(token: Tokens.carrotWash), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(alignment: .leading) {
+            // The hover row's neutral tone, with the Carrot edge the list uses for what needs the
+            // user's eye: noted, not alarming.
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(token: Tokens.border)).opacity(0.6)
+                Rectangle().fill(Color(token: Tokens.carrot)).frame(width: 2).padding(.vertical, 8)
+            }
+        }
         .padding(.leading, 14)
         .padding(.trailing, 14)
         .padding(.bottom, 12)

@@ -32,6 +32,12 @@ final class SnapshotTests: XCTestCase {
         try Self.check(Gallery.lines())
     }
 
+    /// B19's skills (A15): the questions under a toast, a run with no Tab, and skills in memory.
+    func testSkillRendersMatchTheirReferences() throws {
+        try Self.check(Gallery.skillLines())
+        try Self.check(Gallery.skillMemory())
+    }
+
     func testGallerySpecsMatchTheGoldenFixture() throws {
         // The renders and the decoder test the same pop-ups: the gallery's specs round-trip
         // through JSON to the golden file's content.

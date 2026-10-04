@@ -124,7 +124,8 @@ final class MemorySkillTests: XCTestCase {
         request.requestId = "host-memory-6"
         XCTAssertEqual(try JSONSerialization.jsonObject(with: request.line()) as? NSDictionary, try JSONSerialization.jsonObject(with: contract) as? NSDictionary)
         b.receive(HelperMemory.Reply(requestId: id, error: "invalid edit: unrecognized key onItsOwn", entries: []))
-        XCTAssertEqual(b.state.problems["skill-5e6f7a8b"], "Caret couldn't put this back on Tab yet (invalid edit: unrecognized key onItsOwn). Pause it to stop it running, or Forget it.")
+        XCTAssertEqual(b.state.problems["skill-5e6f7a8b"], "This version of Caret can't put a skill back on Tab yet. Pause it to stop it running, or Forget it.")
+        XCTAssertEqual(b.debugInfo().problems["skill-5e6f7a8b"], "This version of Caret can't put a skill back on Tab yet. Pause it to stop it running, or Forget it. [helper: invalid edit: unrecognized key onItsOwn]")
         XCTAssertEqual(MemoryPage.exceptions(b.state).first?.problem, b.state.problems["skill-5e6f7a8b"], "the permissions page shows the same refusal")
         XCTAssertNil(b.state.busy["skill-5e6f7a8b"])
     }

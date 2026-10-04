@@ -63,6 +63,8 @@ public final class MemoryBook {
         public var busy: [String: Op] = [:]
         /// The last refusal per entry, shown on its row until the next change to it.
         public var problems: [String: String] = [:]
+        /// The helper's own words for a refusal the row rewords, for the debug state.
+        public var refusals: [String: String] = [:]
         /// Why the list could not be read.
         public var listProblem: String?
         public var editor: Editor?
@@ -191,7 +193,10 @@ public final class MemoryBook {
             if let i = state.typed.firstIndex(where: { $0.id == p.typedId }) { state.typed[i].phase = .refused(error) }
         case .backOnTab:
             guard let id = p.entryId else { return }
-            state.problems[id] = MemoryCheck.backOnTabRefused(error)
+            // The helper's words name a schema key, not something the user can act on; they stay in
+            // the debug state.
+            state.problems[id] = MemoryCheck.backOnTabRefused
+            state.refusals[id] = error
         case .edit, .rule, .pause, .resume, .forget:
             guard let id = p.entryId else { return }
             state.problems[id] = error
@@ -514,7 +519,8 @@ public final class MemoryBook {
             },
             unreadable: state.unreadable,
             busy: state.busy.mapValues(\.rawValue),
-            problems: state.problems,
+            // A reworded refusal carries the helper's words while its row shows it.
+            problems: state.problems.reduce(into: [:]) { out, p in out[p.key] = state.refusals[p.key].map { "\(p.value) [helper: \($0)]" } ?? p.value },
             listProblem: state.listProblem,
             editing: state.editor?.entryId,
             draft: state.editor.map { Dictionary($0.fields.map { ($0.key, $0.text) }, uniquingKeysWith: { a, _ in a }) },
@@ -606,9 +612,7 @@ public enum MemoryCheck {
 
     /// The helper would not put a skill back on Tab. B19's helper refuses every skill edit but its
     /// name, so this is today's answer: the user is told what still works, never left guessing.
-    public static func backOnTabRefused(_ error: String) -> String {
-        "Caret couldn't put this back on Tab yet (\(error)). Pause it to stop it running, or Forget it."
-    }
+    public static let backOnTabRefused = "This version of Caret can't put a skill back on Tab yet. Pause it to stop it running, or Forget it."
 
     public static func ruleRefused(_ action: HelperMemory.ActionType, _ rule: HelperMemory.Rule) -> String {
         "\(MemoryPage.actionTitle(action)) can't be set to \(MemoryPage.ruleTitle(rule))."
