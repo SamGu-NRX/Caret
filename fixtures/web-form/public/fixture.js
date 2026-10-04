@@ -59,6 +59,12 @@
     s.textContent = s.textContent === "collapsed" ? "expanded" : "collapsed";
   });
 
+  // The page's own rendering of a chosen file, as an upload widget shows one.
+  document.getElementById("resume").addEventListener("change", (e) => {
+    const f = e.target.files?.[0];
+    document.getElementById("resume-name").textContent = f ? `${f.name} (${f.size} bytes)` : "";
+  });
+
   const dz = document.getElementById("dropzone");
   dz.addEventListener("dragover", (e) => e.preventDefault());
   dz.addEventListener("drop", (e) => {
@@ -96,6 +102,9 @@
         const el = document.querySelector(c.selector);
         return { ok: true, value: el.type === "checkbox" || el.type === "radio" ? String(el.checked) : (el.value ?? el.textContent) };
       }
+      case "attr": return { ok: true, value: document.querySelector(c.selector)?.getAttribute(c.name) ?? "(none)" };
+      case "text": return { ok: true, value: document.querySelector(c.selector)?.textContent ?? "(none)" };
+      case "focus": document.querySelector(c.selector).focus(); return { ok: true, value: String(document.hasFocus()) };
       case "pushState": history.pushState({}, "", c.path); return { ok: true };
       case "navigate": setTimeout(() => location.assign(c.url), 50); return { ok: true };
       default: return { ok: false, error: `unknown command ${c.cmd}` };

@@ -1,6 +1,6 @@
-// The page engine's batch 1 acceptance (browser layer memo, section 7), as one command:
+// The page engine's acceptance (browser layer memo, section 7: batch 1, and batch 2 from W2), as one command:
 //
-//   node fixtures/web-form/accept.ts [--skip-build] [--nm-probe] [--idle SECONDS] [--memory-tabs N] [--dump-walk] [--evidence DIR]
+//   node fixtures/web-form/accept.ts [--skip-build] [--electron DIR] [--no-reader] [--nm-probe] [--idle SECONDS] [--memory-tabs N] [--dump-walk] [--evidence DIR]
 //
 // It builds the extension and the bridge, installs the pinned Chrome for Testing with @puppeteer/browsers, writes
 // the bridge's Native Messaging manifest into Chrome for Testing's own directory (never Chrome's or Helium's),
@@ -17,11 +17,20 @@
 // --memory-tabs N   instead of the checks, measures renderer physical footprint with N fixture tabs open: no
 //              extension, the extension without its content script, and the extension as built, two rounds each.
 // --dump-walk  prints the first walk's frames and missing frames, then stops; for debugging frame composition.
+// --electron DIR   an Electron installed by helper/scripts/electron-setup.sh: the reader check then also starts a
+//              windowless Electron fixture and expects exactly one AXManualAccessibility attempt, on it.
+// --no-reader  skips the reader check, which builds and runs caret-screen (it needs the Accessibility grant).
+//
+// Batch 2 (W2) adds: react-select and an ARIA combobox picked and verified, a filter that matches two options
+// stopping with both names, a file attached through the input and through the dropzone from a file this run owns
+// (over 1 MB, so the bridge chunks it), a fill proposal made from a page snapshot with canned Jev, "Not on this
+// site", the host's presence signal, and the reader's AXManualAccessibility log. /submitted still reads 0.
 // A caller that already holds the heavy lock sets CARET_HEAVY_LOCK_HELD=1, so the bridge build does not wait on it.
 //
 // Browser control is the page's own script taking commands from the fixture server (fixture.js); no debugger or CDP
 // connection is made, so nothing here keeps the worker alive but the port under test.
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,9 +42,12 @@ import { Store } from "../../helper/src/store.ts";
 import { pageHost, type PageHost } from "../../helper/src/engines/host.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import { pageWindowId } from "../../helper/src/engines/windows.ts";
+import { wirePageEngines } from "../../helper/src/engines/wire.ts";
+import { ConfirmedFiles } from "../../helper/src/engines/attach.ts";
+import type { PageEngineLink } from "../../helper/src/engines/page-link.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
 import type { AskJev } from "../../helper/src/fill/jev.ts";
-import type { PageControl, PageFrame, PageResult, PageSnapshot, PageVerb } from "../../helper/src/protocol.ts";
+import type { HelperMessage, PageControl, PageFrame, PageResult, PageSnapshot, PageVerb } from "../../helper/src/protocol.ts";
 import { FixtureSite } from "./server.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -43,6 +55,8 @@ const ROOT = join(HERE, "..", "..");
 const EXT = join(ROOT, "extension");
 const BRIDGE_PKG = join(ROOT, "bridge");
 const BRIDGE = join(BRIDGE_PKG, ".build", "release", "caret-bridge");
+const READER_PKG = join(ROOT, "apps", "screen-reader");
+const READER = join(READER_PKG, ".build", "debug", "caret-screen");
 /** Chrome for Testing stable on 2026-10-04 (resolveBuildId "stable"); pinned so every run tests the same browser. */
 const CFT_BUILD = "154.0.8037.92";
 const CACHE = join(HERE, ".browsers");
@@ -60,7 +74,9 @@ const { values: args } = parseArgs({
     idle: { type: "string", default: "0" },
     "memory-tabs": { type: "string", default: "0" },
     "dump-walk": { type: "boolean", default: false },
-    evidence: { type: "string", default: join(homedir(), ".caret-run", "evidence", "browser", "w1") },
+    electron: { type: "string" },
+    "no-reader": { type: "boolean", default: false },
+    evidence: { type: "string", default: join(homedir(), ".caret-run", "evidence", "browser", "w2") },
   },
 });
 
@@ -90,20 +106,23 @@ function preflight(): void {
 
 function build(): void {
   if (args["skip-build"]) {
-    if (!existsSync(BRIDGE) || !existsSync(join(EXT, "dist", "manifest.json"))) throw new Error("--skip-build, but the bridge or extension/dist is missing");
+    if (!existsSync(BRIDGE) || !existsSync(join(EXT, "dist", "manifest.json")) || (!args["no-reader"] && !existsSync(READER))) throw new Error("--skip-build, but the bridge, the reader or extension/dist is missing");
     return;
   }
   say("building the extension");
   execFileSync(process.execPath, [join(EXT, "build.mjs")], { stdio: "inherit" });
-  const swift = ["swift", "build", "-c", "release", "--package-path", BRIDGE_PKG, "--product", "caret-bridge"];
-  // A caller that already holds the heavy lock says so; taking it again from a child would wait on the parent forever.
-  if (process.env.CARET_HEAVY_LOCK_HELD === "1") {
-    say("building the bridge (release); the caller holds the heavy lock");
-    execFileSync(swift[0] as string, swift.slice(1), { stdio: "inherit" });
-  } else {
-    say("building the bridge (release), under the shared heavy lock");
-    execFileSync("/usr/bin/lockf", ["-k", join(homedir(), ".long-run", "locks", "heavy.lock"), ...swift], { stdio: "inherit" });
-  }
+  const swift = (what: string, cmd: string[]): void => {
+    // A caller that already holds the heavy lock says so; taking it again from a child would wait on the parent forever.
+    if (process.env.CARET_HEAVY_LOCK_HELD === "1") {
+      say(`building ${what}; the caller holds the heavy lock`);
+      execFileSync(cmd[0] as string, cmd.slice(1), { stdio: "inherit" });
+    } else {
+      say(`building ${what}, under the shared heavy lock`);
+      execFileSync("/usr/bin/lockf", ["-k", join(homedir(), ".long-run", "locks", "heavy.lock"), ...cmd], { stdio: "inherit" });
+    }
+  };
+  swift("the bridge (release)", ["swift", "build", "-c", "release", "--package-path", BRIDGE_PKG, "--product", "caret-bridge"]);
+  if (!args["no-reader"]) swift("the reader (debug)", ["swift", "build", "--package-path", READER_PKG, "--product", "caret-screen"]);
 }
 
 async function chrome(): Promise<string> {
@@ -449,6 +468,231 @@ async function decoyCheck(e: Engine, site: FixtureSite): Promise<void> {
   });
 }
 
+// ---- batch 2 (W2) ----
+
+/** The slow verbs (a combobox pick, an attach) wait for the page; they get the page link's longer timeout. */
+async function runSlow(e: Engine, verb: PageVerb): Promise<PageResult> {
+  return (await e.session.command(verb, 10_000)).result;
+}
+
+/** A fresh /form, walked once its React part is in. */
+async function freshForm(e: Engine, site: FixtureSite): Promise<PageSnapshot> {
+  const since = Date.now();
+  await site.command({ cmd: "navigate", url: `${site.mainOrigin}/form` });
+  await site.waitForLoad((h) => h.endsWith("/form"), since);
+  let s = await walk(e);
+  for (let i = 0; i < 40 && !s.frames.some((f) => f.controls.some((c) => c.name === "Country of residence")); i++) {
+    await sleep(250);
+    s = await walk(e);
+  }
+  return s;
+}
+
+async function attr(site: FixtureSite, selector: string, name: string): Promise<string | undefined> {
+  return (await site.command({ cmd: "attr", selector, name })).value;
+}
+async function text(site: FixtureSite, selector: string): Promise<string | undefined> {
+  return (await site.command({ cmd: "text", selector })).value;
+}
+
+/** The node the model holds for a page control, by its name. */
+function nodeKey(e: Engine, name: string): string {
+  const w = e.helper.model.windows.get(pageWindowId(e.session.info.engine, e.tabId));
+  const hits = [...(w?.nodes.values() ?? [])].filter((n) => n.label === name);
+  if (hits.length !== 1 || hits[0] === undefined) throw new Error(`${hits.length} nodes named '${name}' in the page window`);
+  return hits[0].key;
+}
+
+async function batch2(e: Engine, site: FixtureSite, tmp: string, published: HelperMessage[]): Promise<void> {
+  let s = await freshForm(e, site);
+  grant(e, "t-b2");
+
+  await check("react-select 'Country of residence' is set to United States, verified by chip, hidden input and aria-expanded=false", async () => {
+    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Country of residence", "t-b2"), expect: "", value: "United States" });
+    expect(r.outcome === "ok", `${outcome(r)} ${JSON.stringify(r.choice)}`);
+    expect(r.choice?.flavor === "reactSelect" && r.choice.hiddenInput === "set" && r.choice.expanded === false, `choice ${JSON.stringify(r.choice)}`);
+    expect(r.readings?.afterBlur === "United States", `readings ${JSON.stringify(r.readings)}`);
+    // The same three, read by the page itself, and React's own state.
+    const hidden = await read(site, 'input[name="rs_country"]');
+    const expanded = await attr(site, "#rs-country", "aria-expanded");
+    const chip = await text(site, '#react-form [class*="singleValue"]');
+    expect(hidden === "us" && expanded === "false" && chip === "United States", `page: hidden ${hidden}, aria-expanded ${expanded}, chip ${chip}`);
+    await stateHas(site, "country", "us");
+    s = await walk(e);
+    expect(control(s, "Country of residence").c.value === "United States", `the walk shows ${JSON.stringify(control(s, "Country of residence").c.value)}`);
+    return `chip '${chip}', hidden input '${hidden}', aria-expanded ${expanded}, React country=${JSON.stringify(site.state?.country)}; choice ${JSON.stringify(r.choice)}`;
+  });
+
+  await check("a filter two options match stops, names both, and leaves the control as it was", async () => {
+    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Country of residence", "t-b2"), expect: "United States", value: "United" });
+    const m = r.choice?.matches ?? [];
+    expect(r.outcome === "failed" && m.includes("United States") && m.includes("United States Minor Outlying Islands") && m.length === 2, `${outcome(r)} ${JSON.stringify(r.choice)}`);
+    expect((r.detail ?? "").includes("'United States'") && (r.detail ?? "").includes("'United States Minor Outlying Islands'"), `detail ${r.detail}`);
+    expect(r.readings?.afterBlur === "United States", `readings ${JSON.stringify(r.readings)}`);
+    const hidden = await read(site, 'input[name="rs_country"]');
+    const expanded = await attr(site, "#rs-country", "aria-expanded");
+    const filter = await read(site, "#rs-country");
+    expect(hidden === "us" && expanded === "false" && filter === "", `page after the stop: hidden ${hidden}, aria-expanded ${expanded}, filter '${filter}'`);
+    await stateHas(site, "country", "us");
+    return `${outcome(r)}; page unchanged (hidden ${hidden}, aria-expanded ${expanded}, filter empty)`;
+  });
+
+  await check("an ARIA combobox whose listbox is a portal is set by its option and verified", async () => {
+    const r = await runSlow(e, { kind: "pageChooseOption", ...target(s, "Department", "t-b2"), expect: "", value: "Research" });
+    expect(r.outcome === "ok" && r.choice?.flavor === "aria" && r.choice.expanded === false, `${outcome(r)} ${JSON.stringify(r.choice)}`);
+    const v = await read(site, "#dept");
+    expect(v === "Research", `#dept holds ${v}`);
+    return `${outcome(r)}; #dept ${v}; choice ${JSON.stringify(r.choice)}`;
+  });
+
+  // A file this run owns: synthetic bytes, over 1 MB so the helper's line reaches the extension in pageChunk parts.
+  const fileName = "Robin-Example-Resume.pdf";
+  const filePath = join(tmp, fileName);
+  writeFileSync(filePath, Buffer.concat([Buffer.from("%PDF-1.4\n% synthetic, made by accept.ts\n"), randomBytes(1_500_000)]));
+  const fileSize = readFileSync(filePath).length;
+  const windowId = pageWindowId(e.session.info.engine, e.tabId);
+  const link = e.host.registry.engineFor(windowId) as PageEngineLink;
+  const files = new ConfirmedFiles();
+
+  await check("a file goes into the file input through DataTransfer: files[0] name and size, and the page shows its name", async () => {
+    await link.run({ kind: "walk", pid: e.session.info.browser.pid, windowId });
+    grant(e, "t-file");
+    const c = files.confirm("t-file", filePath);
+    expect("ok" in c, JSON.stringify(c));
+    const a = await link.attachFile(windowId, nodeKey(e, "Resume"), "t-file", files);
+    const at = a.page?.attached;
+    expect(a.page?.outcome === "ok" && at?.via === "input" && at.file?.name === fileName && at.file.size === fileSize && at.shown, `${a.page === null ? a.verb.detail : outcome(a.page)} ${JSON.stringify(at)}`);
+    const shown = await text(site, "#resume-name");
+    expect(shown === `${fileName} (${fileSize} bytes)`, `the page shows '${shown}'`);
+    return `files[0] ${at?.file?.name} ${at?.file?.size} bytes; page shows '${shown}'; the line carried ${Math.ceil((fileSize * 4) / 3)} base64 characters, over the 1 MiB frame cap`;
+  });
+
+  await check("the same file dropped on the dropzone: the page shows its name", async () => {
+    grant(e, "t-drop");
+    files.confirm("t-drop", filePath);
+    const a = await link.attachFile(windowId, nodeKey(e, "Drop your resume here"), "t-drop", files);
+    const at = a.page?.attached;
+    expect(a.page?.outcome === "ok" && at?.via === "drop" && at.shown, `${a.page === null ? a.verb.detail : outcome(a.page)} ${JSON.stringify(at)}`);
+    const dropped = await text(site, "#dropped");
+    expect(dropped === fileName, `#dropped shows '${dropped}'`);
+    return `dropzone shows '${dropped}'`;
+  });
+
+  await check("an attach with no confirmed file is refused before the engine is asked", async () => {
+    grant(e, "t-unconfirmed");
+    const before = await text(site, "#dropped");
+    const a = await link.attachFile(windowId, nodeKey(e, "Drop your resume here"), "t-unconfirmed", files);
+    expect(a.page === null && a.verb.outcome === "notAllowed", `${a.verb.outcome} ${a.verb.detail}`);
+    expect((await text(site, "#dropped")) === before, "the dropzone changed");
+    return `${a.verb.outcome}: ${a.verb.detail}`;
+  });
+
+  await check("a page snapshot makes a fill proposal: focus in the page, the helper walks it and Jev (canned) fills Email from what you told Caret", async () => {
+    e.helper.handleMemory({ type: "memoryRequest", v: 1, requestId: "w2-about", op: "add", kind: "about", fields: { label: "Email", value: "robin@example.test", source: "typed" } });
+    // The reader would say the browser is frontmost; there is no reader here, so the run says it.
+    e.helper.handleReader({ type: "appSwitch", v: 1, at: Date.now(), from: null, to: e.session.info.browser });
+    const mark = published.length;
+    const focused = await site.command({ cmd: "focus", selector: "#email" });
+    let fill: HelperMessage | undefined;
+    for (let i = 0; i < 40 && fill === undefined; i++) {
+      await sleep(250);
+      fill = published.slice(mark).find((m) => (m.type === "fillProposal" || m.type === "popup") && JSON.stringify(m).includes(windowId));
+    }
+    expect(fill !== undefined, `no fill offer for ${windowId} (page hasFocus ${focused.value}); published since: ${published.slice(mark).map((m) => m.type).join(", ") || "nothing"}`);
+    expect(JSON.stringify(fill).includes("robin@example.test"), `the offer holds no robin@example.test: ${JSON.stringify(fill).slice(0, 400)}`);
+    return `${fill?.type} for ${windowId} with robin@example.test (page hasFocus ${focused.value})`;
+  });
+
+  await check("the host hears the page engine state: connected for this browser, missing for a Chromium browser with none", async () => {
+    const connected = published.find((m) => m.type === "pageEngine" && m.state === "connected" && m.browser.pid === e.session.info.browser.pid);
+    expect(connected !== undefined, `no connected state for pid ${e.session.info.browser.pid}`);
+    // A reader's view of another, engine-less Chrome being typed in (synthetic messages; no such process).
+    const other = { pid: 999_999, bundleId: "com.google.Chrome", name: "Google Chrome" };
+    const mark = published.length;
+    e.helper.handleReader({ type: "appSwitch", v: 1, at: Date.now(), from: e.session.info.browser, to: other });
+    e.helper.handleReader({ type: "focus", v: 1, at: Date.now(), app: other, windowId: "999999-1", key: null, role: "AXTextField", editable: true, empty: true, frontmost: true });
+    const said = published.slice(mark).filter((m) => m.type === "pageEngine");
+    e.helper.handleReader({ type: "appSwitch", v: 1, at: Date.now(), from: other, to: e.session.info.browser });
+    expect(said.length === 1 && said[0]?.type === "pageEngine" && said[0].state === "missing" && said[0].browser.pid === 999_999, `said ${JSON.stringify(said)}`);
+    return `connected for ${e.session.info.browser.bundleId}; missing for ${other.bundleId} (pid ${other.pid})`;
+  });
+
+  await check("Not on this site: nothing is walked or written there, focus there is not reported, and a frame of an off site is left out", async () => {
+    s = await walk(e);
+    const t = target(s, "First name", "t-off");
+    grant(e, "t-off");
+    e.host.registry.setSitesOff([site.mainOrigin]);
+    const w = await e.session.command({ kind: "pageWalk", tabId: e.tabId });
+    const r = await run(e, { kind: "pageWrite", ...t, expect: "", value: "Off site" });
+    const last = e.session.tabs.get(e.tabId);
+    await site.command({ cmd: "focus", selector: "#first_name" });
+    await sleep(1000);
+    const walkedSince = e.session.tabs.get(e.tabId) !== last;
+    expect(w.result.outcome === "siteOff" && r.outcome === "siteOff" && !walkedSince, `walk ${outcome(w.result)}; write ${outcome(r)}; walked after focus: ${walkedSince}`);
+    expect((await read(site, "#first_name")) === "", "the field changed");
+    e.host.registry.setSitesOff([site.embedOrigin]);
+    const part = await walk(e);
+    const embed = part.frames.some((f) => f.origin === site.embedOrigin);
+    expect(!embed && part.missing.some((m) => m.reason.includes("off on this site")), `embed frame kept: ${embed}; missing ${JSON.stringify(part.missing)}`);
+    e.host.registry.setSitesOff([]);
+    const back = await walk(e);
+    expect(back.frames.some((f) => f.origin === site.embedOrigin), "the embed frame did not come back");
+    return `walk ${w.result.outcome}, write ${r.outcome}, no walk after focus; embed frame left out while its origin was off, back after`;
+  });
+}
+
+/**
+ * The reader's AXManualAccessibility log (W2): caret-screen reads only this run's processes (--only-pids), headless
+ * Chrome for Testing and, with --electron, a windowless Electron app; its log must show no attempt on the Chromium
+ * browser and exactly one on Electron.
+ */
+async function readerCheck(chromePid: number, tmp: string): Promise<void> {
+  await check(`the reader asks no Chromium browser for AXManualAccessibility${args.electron === undefined ? "" : ", and asks the Electron fixture once"}`, async () => {
+    const pids = [chromePid];
+    let electronPid: number | null = null;
+    if (args.electron !== undefined) {
+      const exe = join(args.electron, "node_modules", "electron", "dist", "Electron.app", "Contents", "MacOS", "Electron");
+      expect(existsSync(exe), `no Electron at ${exe}`);
+      const appDir = mkdtempSync(join(tmp, "electron-app-"));
+      writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "caret-w2-electron", main: "main.cjs" }));
+      // Windowless and out of the Dock: it never takes the front.
+      writeFileSync(join(appDir, "main.cjs"), 'const { app } = require("electron");\napp.setActivationPolicy?.("accessory");\napp.whenReady().then(() => process.stdout.write(`caret-electron pid ${process.pid}\\n`));\nsetTimeout(() => app.quit(), 60000);\n');
+      const { ELECTRON_RUN_AS_NODE: _asNode, ...env } = process.env;
+      const proc = spawn(exe, [appDir, `--user-data-dir=${join(tmp, "electron-profile")}`], { env, stdio: ["ignore", "pipe", "pipe"] });
+      undo.push({ what: `Electron pid ${proc.pid}`, fn: () => void proc.kill("SIGKILL") });
+      electronPid = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("the Electron fixture did not start within 15 s")), 15_000);
+        proc.stdout?.setEncoding("utf8").on("data", (d: string) => {
+          const m = /caret-electron pid (\d+)/.exec(d);
+          if (m !== null) (clearTimeout(timer), resolve(Number(m[1])));
+        });
+      });
+      expect(electronPid === proc.pid, `Electron said pid ${electronPid}, spawned ${proc.pid}`);
+      pids.push(electronPid);
+    }
+    const deny = join(tmp, "deny-apps.txt");
+    writeFileSync(deny, "");
+    const log = join(tmp, "reader.log");
+    const out = createWriteStream(log);
+    const reader = spawn(READER, ["--shadow", "--socket", join(tmp, "s", "screen.sock"), "--deny-list", deny, "--only-pids", pids.join(","), "--background-interval", "5"], { stdio: ["ignore", "pipe", "pipe"] });
+    reader.stdout?.pipe(out);
+    reader.stderr?.pipe(out);
+    undo.push({ what: `caret-screen pid ${reader.pid}`, fn: () => void reader.kill("SIGKILL") });
+    await sleep(6000);
+    reader.kill("SIGTERM");
+    for (let i = 0; i < 30 && reader.exitCode === null && reader.signalCode === null; i++) await sleep(100);
+    const lines = readFileSync(log, "utf8").split("\n").filter((l) => l.includes("AXManualAccessibility") || l.includes("not trusted"));
+    expect(!lines.some((l) => l.includes("not trusted")), `the reader lacks the Accessibility grant: ${lines.join(" | ")}`);
+    const attempts = lines.filter((l) => /AXManualAccessibility on /.test(l));
+    const skipped = lines.filter((l) => l.includes("AXManualAccessibility not attempted on Google Chrome for Testing"));
+    expect(skipped.length === 1, `the reader did not see Chrome for Testing as a Chromium browser: ${lines.join(" | ") || "no lines"}`);
+    expect(!attempts.some((l) => /Chrome|Chromium|Helium/.test(l)), `an attempt on a Chromium browser: ${attempts.join(" | ")}`);
+    if (electronPid !== null) expect(attempts.length === 1 && (attempts[0] ?? "").includes("(electron)"), `Electron attempts: ${attempts.join(" | ") || "none"}`);
+    else expect(attempts.length === 0, `attempts: ${attempts.join(" | ")}`);
+    return lines.map((l) => l.replace(/^\[caret-screen\] /, "")).join(" | ");
+  });
+}
+
 async function idleCheck(e: Engine, seconds: number): Promise<void> {
   await check(`an open Native Messaging port keeps the MV3 worker alive through ${seconds} s idle`, async () => {
     const hello = e.session.hello;
@@ -545,7 +789,7 @@ async function main(): Promise<number> {
   const extensionId = readFileSync(join(EXT, "EXTENSION_ID"), "utf8").trim();
   const front0 = frontmost();
 
-  const tmp = mkdtempSync(join(tmpdir(), "caret-w1-"));
+  const tmp = mkdtempSync(join(tmpdir(), "caret-w2-"));
   undo.push({ what: `temporary directory ${tmp}`, fn: () => rmSync(tmp, { recursive: true, force: true }) });
   const log = join(tmp, "chrome.log");
 
@@ -565,9 +809,18 @@ async function main(): Promise<number> {
   mkdirSync(sockDir, { mode: 0o700 });
   const sockPath = join(sockDir, "page.sock");
   let jevCalls = 0;
+  // Canned Jev: picks the About email batch 2 adds wherever a question offers it, says such a field is the user's,
+  // and answers none to everything else.
   const askJev: AskJev = async (req) => {
     jevCalls++;
-    return { model: "canned", answers: Object.fromEntries(Object.keys(req.questions).map((k) => [k, { choice: "none", confidence: 0 }])), inputTokens: 0, latencyMs: 0, costUsd: 0 };
+    const answers = Object.fromEntries(
+      Object.entries(req.questions).map(([k, q]) => {
+        if (k.endsWith("_whose")) return [k, { choice: "user", confidence: 0.95 }];
+        const pick = Object.entries(q.criteria).find(([, t]) => t?.includes('"robin@example.test"'))?.[0];
+        return [k, pick === undefined ? { choice: "none", confidence: 0.9 } : { choice: pick, confidence: 0.95 }];
+      }),
+    );
+    return { model: "canned", answers, inputTokens: 0, latencyMs: 0, costUsd: 0 };
   };
   const warnings: string[] = [];
   const warn = (l: string): void => void warnings.push(l);
@@ -576,7 +829,9 @@ async function main(): Promise<number> {
   // Assigned right below; the host needs a way to reach it before it exists.
   let helper: Helper;
   const host = pageHost({ path: sockPath, reader: noReader, apply: (m) => void helper.handleReader(m), warn });
-  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: () => {}, warn });
+  const published: HelperMessage[] = [];
+  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => void published.push(m), warn });
+  wirePageEngines({ host, helper, publish: (m) => void published.push(m), warn });
   await host.server.listen();
   undo.push({
     what: "helper",
@@ -654,11 +909,18 @@ async function main(): Promise<number> {
   for (let i = 0; i < 40 && !(await walk(e)).frames.some((f) => f.controls.some((c) => c.name === "Country of residence")); i++) await sleep(250);
 
   await checks(e, site);
+  await batch2(e, site, tmp, published);
   await decoyCheck(e, site);
+  if (!args["no-reader"]) await readerCheck(session.info.browser.pid, tmp);
+  await check("/submitted still reads 0 after every batch 2 check", async () => {
+    const count = ((await (await fetch(`${site.mainOrigin}/submitted`)).json()) as { count: number }).count;
+    expect(count === 0, `/submitted reads ${count}`);
+    return `/submitted ${count}`;
+  });
   const idle = Number(args.idle);
   if (idle > 0) await idleCheck(e, idle);
   if (frontmost() !== front0 && /Chrome for Testing/.test(frontmost())) results.push({ name: "Chrome for Testing never took the front", pass: false, ms: 0, detail: frontmost() });
-  return report(front0, { nmProbe, warnings, jevCalls, engineHello: session.hello });
+  return report(front0, { nmProbe, warnings, jevCalls, engineHello: session.hello, pageEngine: published.filter((m) => m.type === "pageEngine") });
 }
 
 function tail(file: string): string {
