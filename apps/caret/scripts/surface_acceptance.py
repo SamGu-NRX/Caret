@@ -450,6 +450,20 @@ def alternatives(out_dir, appearance):
           key=k, before=bool(open_state.get("list")), after={kk: sf.get(kk) for kk in ("ghost", "decor", "list", "panel")}, offer=s.get("offer"))
 
     # --- Pop-ups -------------------------------------------------------------------------------
+    # A card with no clear spot by its field is drawn as its compact line (A13 part 3), as on the rig
+    # VM's 960x600-point screen (R3, 2026-10-04): ⌘2 or ⌘3 there pass through and dismiss it, so the
+    # user's deliberate ↓ opens the full card first. A card opened that way may cover fields, which
+    # the user asked for; its "covers no other field" check is then recorded, not required.
+    def open_if_compact(name):
+        ui = (host().get("surface") or {}).get("ui") or {}
+        if not ui.get("compact"):
+            return False
+        k = key("down", pid)
+        sf = host().get("surface") or {}
+        check(f"{name}: down opens the full card from its compact line", k.get("consumed") and not (sf.get("ui") or {}).get("compact"),
+              key=k, ui=sf.get("ui"))
+        return True
+
     field = by_label["Phone"]
     prefill(pid, field)
     time.sleep(0.3)
@@ -460,11 +474,15 @@ def alternatives(out_dir, appearance):
     check("event card appears", reply.get("ok") and (s.get("surface") or {}).get("panel"), reply=reply)
     check_clear("event card", gold, field)
     step("card", shot=shot(out_dir, pid, host_pid, "card-1-shown"), placement=(host().get("surface") or {}).get("panelPlacement"))
+    opened = open_if_compact("event card")
     k = key("cmd-2", pid)
     s = host()
     check("command-2 reveals the times", k.get("consumed") and ((s.get("surface") or {}).get("ui") or {}).get("revealed") == "changeTime",
           ui=(s.get("surface") or {}).get("ui"))
-    check_clear("event card with the times revealed", gold, field)
+    if opened:
+        step("card-opened-on-request", placement=(host().get("surface") or {}).get("panelPlacement"))
+    else:
+        check_clear("event card with the times revealed", gold, field)
     step("card-time", shot=shot(out_dir, pid, host_pid, "card-2-change-time"), placement=(host().get("surface") or {}).get("panelPlacement"))
     key("down", pid)
     k = key("tab", pid)
@@ -492,6 +510,7 @@ def alternatives(out_dir, appearance):
     time.sleep(0.3)
     check_clear("picker", gold, field)
     step("picker", shot=shot(out_dir, pid, host_pid, "picker-1-shown"), placement=(host().get("surface") or {}).get("panelPlacement"))
+    open_if_compact("picker")
     key("cmd-3", pid)
     step("picker-3", shot=shot(out_dir, pid, host_pid, "picker-2-cmd3"))
     k = key("tab", pid)
