@@ -428,7 +428,8 @@ describe("zero silent lost edits", () => {
     const fields = new Map(parseDocument("about-me", text).records.map((r) => [(r.record.fields as { label: string }).label.slice(6), (r.record.fields as { value: string }).value]));
     const lostCaret = [...last].filter(([k, v]) => fields.get(k as string) !== v);
     expect({ userEdits: userLines.length, lostUser: lostUser.length, lostCaret: lostCaret.length, refused }).toEqual({ userEdits: 66, lostUser: 0, lostCaret: 0, refused: 0 });
-  });
+    // 200 saves with two fsyncs each: 2.8 s on an idle disk, about 10 s under another heavy job (2026-10-04).
+  }, 30_000);
 });
 
 describe("the M1 protocol lines", () => {

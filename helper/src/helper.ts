@@ -917,8 +917,14 @@ export class Helper {
   /** The user took an offer: the noticed facts it was built from are confirmed (lead decision 3). */
   private confirmMemory(ids: readonly string[]): void {
     if (ids.length === 0) return;
-    const confirmed = this.memory.confirm(ids);
-    if (confirmed.length > 0) this.opts.store.count("memory.confirmed", confirmed.length);
+    // An accept resolves when its run ends, which can be after the helper shut its store: a failed confirmation is
+    // said, never thrown into a promise nobody awaits.
+    try {
+      const confirmed = this.memory.confirm(ids);
+      if (confirmed.length > 0) this.opts.store.count("memory.confirmed", confirmed.length);
+    } catch (e) {
+      this.opts.warn?.(`memory: confirming ${ids.join(", ")} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /**
