@@ -35,7 +35,7 @@ public final class CaretServices {
         }
 
         /// The helper's entry point under Contents (scripts/build-app.sh writes it there).
-        public static let helperEntryInResources = "Resources/helper/src/main.ts"
+        public static let helperEntryInResources = "Resources/helper/main.mjs"
     }
 
     /// What the process does after main.swift has read its arguments.
