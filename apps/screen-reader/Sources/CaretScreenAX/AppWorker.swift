@@ -50,6 +50,8 @@ final class PressIndex: @unchecked Sendable {
     }
     /// The button Return presses in a window (AXDefaultButton), as of the latest full walk (B21).
     struct DefaultButton {
+        /// The element itself, so a later partial walk finds it under whatever key it has then.
+        let element: AXRef
         /// Its key in that walk; nil when the walk did not keep it.
         let key: String?
         let role: String
@@ -84,20 +86,24 @@ final class PressIndex: @unchecked Sendable {
         byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: defaultButton)
     }
 
-    /// After a walk of part of the window: its keys, and the controls and default button of the last full walk with
-    /// the label and enabled state this walk read for any of them it covered (B21 review: a Send renamed or disabled
-    /// since the full walk must not be reported as it was).
+    /// After a walk of part of the window: its keys; the last full walk's controls, with every pressable node this
+    /// walk read put in under its key as read now; and the default button, found again by its element, with the key,
+    /// label and enabled state it has now (B21 review: a Send renamed, disabled or renumbered since the full walk
+    /// must not be reported as it was, nor a sibling that took its old key).
     func setKeys(_ w: AXRef, id: String, number: Int?, contexts: [AXRef: KeyContext], nodes: [Node]) {
         let keys = contexts.filter { Roles.pressable.contains($0.value.role) }.mapValues(\.key)
         let read = Dictionary(nodes.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         let label = { (n: Node) in (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
         lock.lock(); defer { lock.unlock() }
-        let controls = (byWindow[w]?.controls ?? []).map { c in
-            read[c.key].map { Control(key: c.key, role: $0.role, label: label($0), frame: $0.frame ?? c.frame) } ?? c
+        var controls = (byWindow[w]?.controls ?? []).filter { read[$0.key] == nil }
+        for n in nodes where Roles.pressable.contains(n.role) {
+            guard let f = n.frame ?? byWindow[w]?.controls.first(where: { $0.key == n.key })?.frame else { continue }
+            controls.append(Control(key: n.key, role: n.role, label: label(n), frame: f))
         }
         var d = byWindow[w]?.defaultButton
-        if let old = d, let k = old.key, let n = read[k] {
-            d = DefaultButton(key: k, role: n.role, label: label(n), enabled: !n.states.contains(.disabled))
+        if let old = d, let k = contexts[old.element]?.key {
+            d = read[k].map { DefaultButton(element: old.element, key: k, role: $0.role, label: label($0), enabled: !$0.states.contains(.disabled)) }
+                ?? DefaultButton(element: old.element, key: k, role: old.role, label: old.label, enabled: old.enabled)
         }
         byWindow[w] = Entry(id: id, number: number, keys: keys, controls: controls, defaultButton: d)
     }
@@ -175,6 +181,8 @@ public final class AppWorker: @unchecked Sendable {
     /// Resolves user presses at once, beside `queue` rather than behind it.
     private let pressQueue: DispatchQueue
     private let pressIndex = PressIndex()
+    /// Held from placing a key press to queueing it, and by `closed` around draining the press queue (B21).
+    private let keyAdmission = NSLock()
 
     // Confined to `queue`.
     private var windows: [AXRef: WindowInfo] = [:]
@@ -553,8 +561,11 @@ public final class AppWorker: @unchecked Sendable {
         var contexts: [AXRef: KeyContext] = [:]
         for (h, kc) in result.contexts { contexts[AXRef(walker.elements[h])] = kc }
         // A sheet the walk found among the window's children takes the window's keys, so its default button is Return's.
+        // A walk cut short may have missed a sheet; then which button Return presses is unknown, and none is kept
+        // (B21 fix-check: the window's own Send behind a sheet would be reported).
         let sheet = raw.first { $0.role == kAXSheetRole }?.handle.map { walker.elements[$0] }
-        let defaultButton = defaultButton(of: sheet ?? w.el, contexts: contexts, nodes: result.nodes)
+        let sheetUnknown = sheet == nil && (walker.truncated || walker.clipped)
+        let defaultButton = sheetUnknown ? nil : defaultButton(of: sheet ?? w.el, contexts: contexts, nodes: result.nodes)
         let walkMs = walker.elapsedMs
         info.contexts = contexts
         info.lastWalk = CFAbsoluteTimeGetCurrent()
@@ -586,12 +597,12 @@ public final class AppWorker: @unchecked Sendable {
         guard let el = AX.element(owner, kAXDefaultButtonAttribute) else { return nil }
         AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
         if let key = contexts[AXRef(el)]?.key, let n = nodes.first(where: { $0.key == key }) {
-            return PressIndex.DefaultButton(key: key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            return PressIndex.DefaultButton(element: AXRef(el), key: key, role: n.role, label: (n.label ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
                                             enabled: !n.states.contains(.disabled))
         }
         guard let label = liveLabel(el) else { return nil }
         let enabled = (AX.copy(el, kAXEnabledAttribute) as? Bool) ?? true
-        return PressIndex.DefaultButton(key: nil, role: AX.string(el, kAXRoleAttribute) ?? "AXButton",
+        return PressIndex.DefaultButton(element: AXRef(el), key: nil, role: AX.string(el, kAXRoleAttribute) ?? "AXButton",
                                         label: label.trimmingCharacters(in: .whitespacesAndNewlines), enabled: enabled)
     }
 
@@ -645,9 +656,12 @@ public final class AppWorker: @unchecked Sendable {
      * before the window's close (B20 press-learn run 1: 4 presses reported, none learned).
      */
     private func closed(_ w: AXRef, _ windowId: String) {
-        // Drained first, then the window leaves the index: a press still being resolved may need its frames.
+        // Drained first, then the window leaves the index: a press still being resolved may need its frames. A key
+        // press placed but not yet queued is let in first (observeKey holds `keyAdmission` from placing to queueing).
+        keyAdmission.lock()
         pressQueue.sync {}
         pressIndex.remove(w)
+        keyAdmission.unlock()
         ctx.emitter.send(.windowClosed(WindowClosed(at: nowMs(), windowId: windowId)))
     }
 
@@ -675,7 +689,10 @@ public final class AppWorker: @unchecked Sendable {
     /// Nothing is read from the app here, so a key that closes the window is placed all the same. Read only.
     func observeKey(_ via: UserPress.Via, time at: Int64, windows ids: Set<String>) {
         // Placed now, as the key goes down: a walk or focus change while a click ahead of it is resolved must not
-        // change which button this key pressed (B21 review). Sent on the press queue, in order with clicks.
+        // change which button this key pressed (B21 review). Sent on the press queue, in order with clicks, and
+        // queued before a close of its window can drain the queue (B21 fix-check).
+        keyAdmission.lock()
+        defer { keyAdmission.unlock() }
         guard let p = pressIndex.keyPress(via), ids.contains(p.id) else { return }
         pressQueue.async {
             self.ctx.emitter.send(.userPress(UserPress(at: at, pid: Int(self.pid), windowId: p.id, key: p.key, role: p.role, label: p.label, via: via)))
