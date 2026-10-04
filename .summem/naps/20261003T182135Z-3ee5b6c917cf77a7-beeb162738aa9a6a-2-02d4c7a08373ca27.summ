@@ -1,0 +1,1 @@
+A12: TextEdit exec'd in the background never takes the front (open -b plus Bring All to Front does); our HID keys reset idle. B17: event cards judge only the last finished sentence, so a test body ends with it and arrives as a change.
