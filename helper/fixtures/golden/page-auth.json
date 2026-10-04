@@ -1,0 +1,8 @@
+{
+  "about": "W1: the bridge handshake both sides must agree on (helper/src/engines/auth.ts, bridge CaretPageProtocol/Auth.swift). The secret is the raw 32 bytes the hex names; proofs are lowercase hex HMAC-SHA256.",
+  "secret": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+  "challenge": "1111111111111111111111111111111111111111111111111111111111111111",
+  "bridgeNonce": "2222222222222222222222222222222222222222222222222222222222222222",
+  "bridgeProof": "6595679b6193e8cb121e412036eaa0336372a25d9da8e2e7a31977e0406867f2",
+  "helperProof": "f01c6ee080c7d94ab907e102e0239ddf110d7d1db8313011510019e5ffb913b3"
+}
