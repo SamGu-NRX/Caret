@@ -268,22 +268,32 @@ try:
     host("ask submit")
     a = host("ask")
     check("an ask with no helper fails with a sentence", a.get("phase") == "failed", ask=a)
-    if perch.get("askEditing") or host("perch").get("askEditing"):
-        hid("escape")
+    pidkeys = os.path.join(os.path.dirname(A.keys), "pid-keys")
+
+    def to_panel(hid_args, pid_key, done):
+        """A key for the list panel: at the HID level first, as a keyboard sends it; if the panel
+        did not get it (the active app is TextEdit), posted to Caret's pid as A13 did. Says which."""
+        hid(*hid_args)
         time.sleep(0.4)
-        a = host("ask")
-        check("one real Esc clears the failed ask: line and text", a.get("phase") == "idle" and a.get("text") == "", ask=a)
-        host("ask type fill my name and email")
-        host("ask submit")
-        time.sleep(0.2)
-        hid("type", "P")
+        if done():
+            return "hid"
+        subprocess.run([pidkeys, str(h.pid), "Caret", pid_key], capture_output=True)
         time.sleep(0.4)
-        a = host("ask")
-        check("real typing after a failure starts a new instruction", a.get("text") == "P", ask=a)
-    else:
-        check("the ask field has the keyboard after Ask Caret", False, perch=host("perch"))
-    hid("escape")
-    hid("escape")
+        return "pid" if done() else "neither"
+
+    check("the ask field has the keyboard after Ask Caret", perch.get("askEditing") or host("perch").get("askEditing"), perch=host("perch"))
+    route = to_panel(["escape"], "escape", lambda: host("ask").get("phase") == "idle")
+    a = host("ask")
+    check("one Esc clears the failed ask: line and text", a.get("phase") == "idle" and a.get("text") == "", ask=a, route=route)
+    host("ask type fill my name and email")
+    host("ask submit")
+    time.sleep(0.3)
+    route = to_panel(["type", "P"], "text:P", lambda: host("ask").get("text") not in ("fill my name and email", None))
+    a = host("ask")
+    check("typing after a failure starts a new instruction", a.get("text") == "P", ask=a, route=route)
+    results["askKeys"] = route
+    for _ in range(2):
+        to_panel(["escape"], "escape", lambda: not host("perch").get("listOnScreen"))
     close(pid)
 finally:
     stop(h)
