@@ -1,1 +1,0 @@
-B11: conversations (conversation.ts) give under half their text and at most 600 chars per Jev request; the cap can cause wrong fills, not just blanks (cut meeting block, Meeting date got the order's Placed date in live-replay.ts).

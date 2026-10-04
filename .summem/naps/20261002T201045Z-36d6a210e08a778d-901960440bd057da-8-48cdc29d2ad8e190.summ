@@ -1,1 +1,0 @@
-Helper traps B6-B9: leak-check is quadratic per line; mv a new bash script over a running one; never mutate w.nodes; pair focused:true with frontmostPid; fake-app pauses on a click; offer expiry only in lifetimes.ts; judge perf on real probes.
