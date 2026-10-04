@@ -1,1 +1,0 @@
-B22: tasks bind to their host connection and are revoked on close, pause, stop or settings change; evals call helper.hostConnected(id). Mutation tests: --build-path /tmp. --act-pids needs CARET_SCREEN_FIXTURE_ACTS=fixture-only. Press only whole SAFE_PRESSES labels.

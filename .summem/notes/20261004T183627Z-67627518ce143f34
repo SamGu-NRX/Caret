@@ -1,1 +1,0 @@
-I1: page.sock's key is HMAC(launch secret, 'caret-page-key') in <sock>.key, and the bridge requires engineWelcome.pid == LOCAL_PEERPID; main.ts starts no page.sock without --auth-fd. Since B23, anything that spawns caret-screen must pass --auth-fd 0 and a 32-byte secret on stdin.

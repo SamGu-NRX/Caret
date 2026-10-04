@@ -1,1 +1,0 @@
-Ghost text between words: KeyType's lowConfidenceMidLine silences most mid-line candidates in Caret --probe-replay; A18's SuffixFit scores only the first token after the caret (floor -7.0 nats, dev-run-3), since tokens 2-3 were near 0 for every candidate.

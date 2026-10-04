@@ -1,0 +1,1 @@
+H4: a built Caret.app starts its own helper and reader unless --helper-socket or CARET_SCREEN_SOCKET names one; test runs of a bundle pass --home DIR (sockets, data, host.sock and settings move there) and never run with neither.

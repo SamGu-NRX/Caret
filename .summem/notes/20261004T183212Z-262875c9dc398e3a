@@ -1,1 +1,0 @@
-The rig VM (4 GB) cannot hold the 3.4 GB Gemma file: record outcomes with Caret --probe-replay on the host and replay them in the guest with --test-hooks --ghost-replay <file> (A18).

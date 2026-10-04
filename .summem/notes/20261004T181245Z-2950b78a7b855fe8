@@ -1,1 +1,0 @@
-W1: an open connectNative port kept the MV3 worker alive through 360 s idle (same instance, CfT 154). Page acceptance: node fixtures/web-form/accept.ts; under a held heavy lock set CARET_HEAVY_LOCK_HELD=1 or its bridge build deadlocks.

@@ -1,0 +1,1 @@
+H4: SIP is disabled on Sam's Mac (csrutil status), so the hardened runtime and library validation are not enforced there; node.entitlements (allow-jit only) and any entitlement question must be measured on a SIP-on Mac.
