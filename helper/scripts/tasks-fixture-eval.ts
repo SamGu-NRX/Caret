@@ -208,7 +208,8 @@ let ok = false;
 try {
   await until("the fixture", () => fixturePid > 0);
   await sleep(800);
-  reader = spawn(join(a.bin, "caret-screen"), ["--socket", a.socket, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid), "--act-pids", String(fixturePid)]);
+  // --act-pids acts in the fixture without a grant; the reader allows it only under this variable, for caret-fixture processes (B22).
+  reader = spawn(join(a.bin, "caret-screen"), ["--socket", a.socket, "--only-pids", String(fixturePid), "--event-pids", String(fixturePid), "--act-pids", String(fixturePid)], { env: { ...process.env, CARET_SCREEN_FIXTURE_ACTS: "fixture-only" } });
   reader.stderr.setEncoding("utf8");
   reader.stderr.on("data", (d: string) => log.push(`reader: ${d.trim()}`));
   await until("the executor window", () => [...helper.model.windows.values()].some((w) => w.window.title.startsWith(TITLE)));

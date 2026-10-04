@@ -23,33 +23,49 @@ import Testing
 
     @Test func returnAndEnterPressTheEnabledDefaultButton() {
         for via in [UserPress.Via.return, .enter] {
-            #expect(KeyPresses.target(via, focusedRole: nil, enabledDefaultButton: true) == .defaultButton)
-            #expect(KeyPresses.target(via, focusedRole: "AXWindow", enabledDefaultButton: true) == .defaultButton)
-            #expect(KeyPresses.target(via, focusedRole: "AXButton", enabledDefaultButton: true) == .defaultButton)
-            #expect(KeyPresses.target(via, focusedRole: "AXList", enabledDefaultButton: true) == .defaultButton)
+            #expect(KeyPresses.target(via, focusedRole: nil, singleLineField: false, enabledDefaultButton: true) == .defaultButton)
+            #expect(KeyPresses.target(via, focusedRole: "AXWindow", singleLineField: false, enabledDefaultButton: true) == .defaultButton)
+            #expect(KeyPresses.target(via, focusedRole: "AXButton", singleLineField: false, enabledDefaultButton: true) == .defaultButton)
+            #expect(KeyPresses.target(via, focusedRole: "AXList", singleLineField: false, enabledDefaultButton: true) == .defaultButton)
             // No default button, or a disabled one: Return presses nothing, even with a button focused.
-            #expect(KeyPresses.target(via, focusedRole: "AXButton", enabledDefaultButton: false) == nil)
-            #expect(KeyPresses.target(via, focusedRole: nil, enabledDefaultButton: false) == nil)
+            #expect(KeyPresses.target(via, focusedRole: "AXButton", singleLineField: false, enabledDefaultButton: false) == nil)
+            #expect(KeyPresses.target(via, focusedRole: nil, singleLineField: false, enabledDefaultButton: false) == nil)
         }
     }
 
-    @Test func aReturnTypedIntoATextFieldIsNeverAPress() {
+    // B22 lead decision: AppKit presses the default button on Return in a single-line field (B21 gui/keys-front, 5 of 5).
+    @Test func returnInASingleLineFieldPressesTheEnabledDefaultButton() {
+        for role in ["AXTextField", "AXSecureTextField"] {
+            for via in [UserPress.Via.return, .enter] {
+                #expect(KeyPresses.target(via, focusedRole: role, singleLineField: true, enabledDefaultButton: true) == .defaultButton, "\(via) in \(role)")
+                #expect(KeyPresses.target(via, focusedRole: role, singleLineField: true, enabledDefaultButton: false) == nil, "\(via) in \(role), no enabled default button")
+            }
+            // Space is text in a field.
+            #expect(KeyPresses.target(.space, focusedRole: role, singleLineField: true, enabledDefaultButton: true) == nil)
+        }
+    }
+
+    @Test func returnInATextAreaComboBoxOrWebFieldIsNeverAPress() {
+        // The reader marks a field of a web page as not single-line; a text area, combo box or search role never is.
         for role in ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXSecureTextField"] {
             for via in [UserPress.Via.return, .enter, .space] {
-                #expect(KeyPresses.target(via, focusedRole: role, enabledDefaultButton: true) == nil, "\(via) in \(role)")
+                #expect(KeyPresses.target(via, focusedRole: role, singleLineField: false, enabledDefaultButton: true) == nil, "\(via) in \(role)")
             }
+        }
+        for role in ["AXTextArea", "AXComboBox", "AXSearchField"] {
+            #expect(KeyPresses.target(.return, focusedRole: role, singleLineField: true, enabledDefaultButton: true) == nil, "\(role) marked single-line")
         }
     }
 
     @Test func spacePressesTheFocusedButtonOnly() {
         for role in ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton"] {
-            #expect(KeyPresses.target(.space, focusedRole: role, enabledDefaultButton: false) == .focused)
+            #expect(KeyPresses.target(.space, focusedRole: role, singleLineField: false, enabledDefaultButton: false) == .focused)
         }
         // A link, a list, the window itself or no focus: Space scrolls or does nothing, and the default button is not its.
         for role in ["AXLink", "AXList", "AXWindow", "AXWebArea"] {
-            #expect(KeyPresses.target(.space, focusedRole: role, enabledDefaultButton: true) == nil)
+            #expect(KeyPresses.target(.space, focusedRole: role, singleLineField: false, enabledDefaultButton: true) == nil)
         }
-        #expect(KeyPresses.target(.space, focusedRole: nil, enabledDefaultButton: true) == nil)
-        #expect(KeyPresses.target(.click, focusedRole: "AXButton", enabledDefaultButton: true) == nil)
+        #expect(KeyPresses.target(.space, focusedRole: nil, singleLineField: false, enabledDefaultButton: true) == nil)
+        #expect(KeyPresses.target(.click, focusedRole: "AXButton", singleLineField: false, enabledDefaultButton: true) == nil)
     }
 }

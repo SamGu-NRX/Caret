@@ -7,35 +7,65 @@ public protocol Emitter: AnyObject, Sendable {
     func send(_ m: Message)
 }
 
-/// NDJSON client for the helper's socket. Writes happen on one serial queue. While the helper is
-/// down, messages wait in a bounded backlog and the client reconnects every second; on reconnect it
-/// sends hello and calls `onConnect`, so the reader can resend full state. Lines the helper sends
-/// back (the executor's readerCommands) are decoded on the same queue and handed to `onCommand`.
-/// Act grants and revokes go straight into `grants` on that queue, so a grant is in place before any
-/// command that follows it on the socket is handed on, and every grant ends when the connection does.
+/// NDJSON client for the helper's socket. While the helper is down, messages wait in a bounded backlog and the
+/// client reconnects every second; on reconnect it sends hello and calls `onConnect`, so the reader can resend
+/// full state.
+///
+/// Writing never blocks (S1 audit #9). Before B22 one serial queue both wrote, with blocking writes, and read the
+/// helper's lines; a helper that stopped reading filled the socket, the queue stuck in write(), and a revoke
+/// already waiting on the socket was never applied while queued commands still acted under the old grant. Now
+/// the socket is non-blocking, lines wait in a buffer that a write source drains as the helper reads, and the
+/// helper's lines are read on a queue of their own: act grants and revokes go straight into `grants` there, in
+/// socket order, so a grant is in place before any command that follows it is handed on, and a revoke takes
+/// effect however much output is waiting. A helper that stops reading fails closed: past `stallBytes` waiting,
+/// or no progress for `stallAfter` seconds, every grant ends and the connection is dropped and made again.
 public final class SocketEmitter: Emitter, @unchecked Sendable {
     private let path: String
     private let hello: Hello
+    /// The connection, the outbound buffer and the backlog. Nothing on it blocks.
     private let queue = DispatchQueue(label: "caret.screen.socket")
-    private var fd: Int32 = -1
+    /// The helper's lines: read, decoded and applied here, never behind outbound writes.
+    private let controlQueue = DispatchQueue(label: "caret.screen.socket.control", qos: .userInitiated)
+    private var conn: Connection?
     private var backlog: [Data] = []
     private var retryScheduled = false
     /// Messages kept while disconnected. Older ones are dropped first; a resync follows reconnection anyway.
     private let backlogLimit = 500
-    public private(set) var dropped = 0 // guarded by flightLock or the queue
-    public private(set) var sent = 0
+    private let statsLock = NSLock()
+    private var droppedCount = 0
+    private var sentCount = 0
+    public var dropped: Int { stat { droppedCount } }
+    public var sent: Int { stat { sentCount } }
+    private func stat<T>(_ f: () -> T) -> T {
+        statsLock.lock(); defer { statsLock.unlock() }
+        return f()
+    }
     public var onConnect: (@Sendable () -> Void)?
-    /// After snapshots were dropped and the queue drained: the same helper still holds its state, so only the
+    /// After snapshots were dropped and the buffer drained: the same helper still holds its state, so only the
     /// screen is sent again (B20 review: the press watch must survive this, and must not survive a new helper).
     public var onResync: (@Sendable () -> Void)?
     public var onCommand: (@Sendable (ReaderCommand) -> Void)?
     /// Set before start(). Only the helper's connection writes it, so only the helper can grant.
     public var grants: GrantTable?
-    private var readSource: DispatchSourceRead?
-    private var inbox = Data()
     /// A line longer than this from the helper is a bug; the connection is dropped. Commands are small.
     private let maxInboundLine = 1 << 20
+    /// Bytes waiting for the helper past which snapshots are dropped, and a resync is sent once the buffer is
+    /// down to a quarter of it. Assumed, not measured: a large window's snapshot is a few hundred kilobytes.
+    public var snapshotDropBytes = 4 << 20
+    /// Bytes waiting past which the helper counts as stalled (fail closed). Assumed, not measured.
+    public var stallBytes = 32 << 20
+    /// Seconds with bytes waiting and none taken past which the helper counts as stalled. Assumed, not measured:
+    /// the helper's own command timeouts are 5 s, so by 10 s nothing it asked for is still awaited.
+    public var stallAfter: TimeInterval = 10
+    private var resyncAfterDrain = false
     public var log: @Sendable (String) -> Void = { FileHandle.standardError.write(Data(("[caret-screen] " + $0 + "\n").utf8)) }
+    /// Every line goes to `log` on this queue, never on the socket or control queue: a stderr nobody drains must
+    /// not hold up a revoke (B22 review).
+    private let logQueue = DispatchQueue(label: "caret.screen.socket.log", qos: .utility)
+    private func note(_ line: String) {
+        let log = self.log
+        logQueue.async { log(line) }
+    }
 
     public init(path: String, hello: Hello) {
         self.path = path
@@ -44,62 +74,135 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
 
     public func start() { queue.async { self.connect() } }
 
-    /// Messages handed to the write queue and not yet written. Writes block while the helper is not
-    /// reading, so without this bound a stalled helper would let snapshots pile up in memory.
-    private let flightLock = NSLock()
-    private var inFlight = 0
-    private var resyncAfterDrain = false
-    private let flightLimit = 300
+    /// Whether a connection to the helper is up, for tests.
+    public var isConnected: Bool { queue.sync { conn != nil } }
+
+    /// One connection: its descriptor, the outbound buffer as chunks with an offset into the first, and the two
+    /// sources. The buffer and the write source are the main queue's; the read source and inbox are the control
+    /// queue's. The descriptor is closed once both sources have been cancelled.
+    private final class Connection: @unchecked Sendable {
+        let fd: Int32
+        /// Lines waiting, from `first` on; `head` bytes of `chunks[first]` are already written. The array is
+        /// compacted now and then rather than shifted per line, so a long drain stays linear.
+        var chunks: [Data] = []
+        var first = 0
+        var head = 0
+        var bytes = 0
+        var writeSource: DispatchSourceWrite?
+        var writeArmed = false
+        var readSource: DispatchSourceRead?
+        var stallTimer: DispatchSourceTimer?
+        var inbox = Data()
+        /// When the helper last took bytes, or when the buffer last went from empty to not, on the monotonic
+        /// uptime clock, so a wall clock set back cannot postpone the stall cutoff.
+        var lastProgress = ProcessInfo.processInfo.systemUptime
+        let sourcesDone = DispatchGroup()
+        /// Set once the connection is being dropped. A line the control queue applies is applied under the same
+        /// lock, so a grant cannot land after the drop has cleared the table.
+        private let closeLock = NSLock()
+        private var closed = false
+        init(fd: Int32) { self.fd = fd }
+
+        /// Runs `f` unless the connection was closed; nothing closes it meanwhile.
+        func ifOpen(_ f: () -> Void) {
+            closeLock.lock(); defer { closeLock.unlock() }
+            if !closed { f() }
+        }
+
+        /// Marks it closed, then runs `f` (which clears the grants) under the same lock.
+        func close(then f: () -> Void) {
+            closeLock.lock(); defer { closeLock.unlock() }
+            closed = true
+            f()
+        }
+    }
 
     public func send(_ m: Message) {
         let data: Data
         do { data = try NDJSON.line(m) } catch {
-            log("encode failed: \(error)")
+            note("encode failed: \(error)")
             return
         }
-        flightLock.lock()
-        // Over the bound, snapshots are dropped and a full resync follows once the queue drains.
-        // Small event messages (focus, switches, closes) still go through.
-        if inFlight >= flightLimit, case .snapshot = m {
-            dropped += 1
-            resyncAfterDrain = true
-            flightLock.unlock()
-            return
-        }
-        inFlight += 1
-        flightLock.unlock()
-        queue.async {
-            defer { self.landed() }
-            if self.fd < 0 {
-                self.enqueue(data)
-                return
-            }
-            if !self.write(data) {
-                self.disconnect("write failed: \(String(cString: strerror(errno)))")
-                self.enqueue(data)
-            }
-        }
+        let snapshot: Bool
+        if case .snapshot = m { snapshot = true } else { snapshot = false }
+        queue.async { self.enqueue(data, snapshot: snapshot) }
     }
 
-    private func landed() {
-        flightLock.lock()
-        inFlight -= 1
-        let resync = resyncAfterDrain && inFlight < flightLimit / 4
-        if resync { resyncAfterDrain = false }
-        flightLock.unlock()
-        if resync {
-            log("write queue drained after drops; resyncing")
+    private func enqueue(_ d: Data, snapshot: Bool) {
+        guard let c = conn else {
+            backlog.append(d)
+            if backlog.count > backlogLimit {
+                backlog.removeFirst(backlog.count - backlogLimit)
+                stat { droppedCount += 1 }
+            }
+            scheduleRetry()
+            return
+        }
+        // Over the bound, snapshots are dropped and a full resync follows once the buffer drains. Small event
+        // messages (focus, switches, closes, verb results) still go in.
+        if snapshot && c.bytes >= snapshotDropBytes {
+            stat { droppedCount += 1 }
+            resyncAfterDrain = true
+            return
+        }
+        if c.bytes + d.count > stallBytes {
+            failClosed(c, "the helper is not reading: \(c.bytes) bytes are waiting")
+            return
+        }
+        append(d, to: c)
+        // While the socket is full the write source drains the buffer; writing here would only meet EAGAIN.
+        if !c.writeArmed { flush(c) }
+    }
+
+    private func append(_ d: Data, to c: Connection) {
+        if c.bytes == 0 { c.lastProgress = ProcessInfo.processInfo.systemUptime }
+        c.chunks.append(d)
+        c.bytes += d.count
+    }
+
+    /// Writes what the socket takes now; the rest waits for the write source. Never blocks.
+    private func flush(_ c: Connection) {
+        defer {
+            if c.first > 1024 && c.first * 2 > c.chunks.count {
+                c.chunks.removeFirst(c.first)
+                c.first = 0
+            }
+        }
+        while c.first < c.chunks.count {
+            let line = c.chunks[c.first]
+            let n = line.withUnsafeBytes { raw in Darwin.write(c.fd, raw.baseAddress! + c.head, raw.count - c.head) }
+            if n < 0 {
+                if errno == EINTR { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK { armWrite(c); return }
+                disconnect(c, "write failed: \(String(cString: strerror(errno)))")
+                return
+            }
+            c.lastProgress = ProcessInfo.processInfo.systemUptime
+            c.bytes -= n
+            c.head += n
+            if c.head == line.count {
+                c.first += 1
+                c.head = 0
+                stat { sentCount += 1 }
+            }
+        }
+        c.chunks.removeAll(keepingCapacity: true)
+        c.first = 0
+        if c.writeArmed {
+            c.writeSource?.suspend()
+            c.writeArmed = false
+        }
+        if resyncAfterDrain && c.bytes < snapshotDropBytes / 4 {
+            resyncAfterDrain = false
+            note("output drained after drops; resyncing")
             onResync?()
         }
     }
 
-    private func enqueue(_ d: Data) {
-        backlog.append(d)
-        if backlog.count > backlogLimit {
-            backlog.removeFirst(backlog.count - backlogLimit)
-            flightLock.lock(); dropped += 1; flightLock.unlock()
-        }
-        scheduleRetry()
+    private func armWrite(_ c: Connection) {
+        guard !c.writeArmed else { return }
+        c.writeArmed = true
+        c.writeSource?.resume()
     }
 
     private func scheduleRetry() {
@@ -107,20 +210,20 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         retryScheduled = true
         queue.asyncAfter(deadline: .now() + 1) {
             self.retryScheduled = false
-            if self.fd < 0 { self.connect() }
+            if self.conn == nil { self.connect() }
         }
     }
 
     private func connect() {
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard s >= 0 else { log("socket(): \(String(cString: strerror(errno)))"); scheduleRetry(); return }
+        guard s >= 0 else { note("socket(): \(String(cString: strerror(errno)))"); scheduleRetry(); return }
         var on: Int32 = 1
         setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
         guard bytes.count < MemoryLayout.size(ofValue: addr.sun_path) else {
-            log("socket path too long: \(path)")
+            note("socket path too long: \(path)")
             close(s)
             return
         }
@@ -131,107 +234,135 @@ public final class SocketEmitter: Emitter, @unchecked Sendable {
         let ok = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(s, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard ok == 0 else {
+        guard ok == 0, fcntl(s, F_SETFL, fcntl(s, F_GETFL) | O_NONBLOCK) == 0 else {
             close(s)
             scheduleRetry()
             return
         }
-        fd = s
-        log("connected to \(path)")
-        startReading(s)
-        guard let h = try? NDJSON.line(Message.hello(hello)), write(h) else {
-            disconnect("hello failed")
+        let c = Connection(fd: s)
+        conn = c
+        note("connected to \(path)")
+        startSources(c)
+        guard let h = try? NDJSON.line(Message.hello(hello)) else {
+            disconnect(c, "hello failed")
             return
         }
-        let pending = backlog
+        append(h, to: c)
+        for d in backlog { append(d, to: c) }
         backlog.removeAll()
-        for d in pending where !write(d) {
-            disconnect("write failed while flushing backlog")
-            return
-        }
-        onConnect?()
+        flush(c)
+        if conn === c { onConnect?() }
     }
 
-    private func write(_ d: Data) -> Bool {
-        let ok = d.withUnsafeBytes { raw -> Bool in
-            var off = 0
-            while off < raw.count {
-                let n = Darwin.write(fd, raw.baseAddress! + off, raw.count - off)
-                if n < 0 {
-                    if errno == EINTR { continue }
-                    return false
-                }
-                off += n
-            }
-            return true
+    private func startSources(_ c: Connection) {
+        let w = DispatchSource.makeWriteSource(fileDescriptor: c.fd, queue: queue)
+        w.setEventHandler { [weak self] in
+            guard let self, self.conn === c else { return }
+            self.flush(c)
         }
-        if ok { sent += 1 }
-        return ok
-    }
+        c.sourcesDone.enter()
+        w.setCancelHandler { c.sourcesDone.leave() }
+        // Created suspended; armWrite resumes it while the socket is full.
+        c.writeSource = w
 
-    private func startReading(_ s: Int32) {
-        inbox.removeAll()
-        let src = DispatchSource.makeReadSource(fileDescriptor: s, queue: queue)
-        src.setEventHandler { [weak self] in
+        let r = DispatchSource.makeReadSource(fileDescriptor: c.fd, queue: controlQueue)
+        r.setEventHandler { [weak self] in
             guard let self else { return }
-            var buf = [UInt8](repeating: 0, count: max(1, Int(src.data)))
-            let n = Darwin.read(s, &buf, buf.count)
+            var buf = [UInt8](repeating: 0, count: max(1, Int(r.data)))
+            let n = Darwin.read(c.fd, &buf, buf.count)
             if n <= 0 {
-                if n == 0 || (errno != EINTR && errno != EAGAIN) { self.disconnect("helper closed the connection") }
+                if n == 0 || (errno != EINTR && errno != EAGAIN) { self.lost(c, "helper closed the connection") }
                 return
             }
-            self.inbox.append(contentsOf: buf[0..<n])
-            self.drainInbox()
+            c.inbox.append(contentsOf: buf[0..<n])
+            self.drainInbox(c)
         }
-        // Dispatch requires the descriptor to stay open until the source is cancelled, so it is closed here.
-        src.setCancelHandler { close(s) }
-        src.resume()
-        readSource = src
+        c.sourcesDone.enter()
+        r.setCancelHandler { c.sourcesDone.leave() }
+        r.resume()
+        c.readSource = r
+
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(200))
+        t.setEventHandler { [weak self] in
+            guard let self, self.conn === c, c.bytes > 0 else { return }
+            let quiet = ProcessInfo.processInfo.systemUptime - c.lastProgress
+            if quiet > self.stallAfter { self.failClosed(c, "the helper has taken nothing for \(Int(quiet)) s with \(c.bytes) bytes waiting") }
+        }
+        t.resume()
+        c.stallTimer = t
+        // Dispatch requires the descriptor to stay open until every source on it is cancelled.
+        c.sourcesDone.notify(queue: queue) { close(c.fd) }
     }
 
-    private func drainInbox() {
-        while let nl = inbox.firstIndex(of: 0x0A) {
-            let line = inbox[inbox.startIndex..<nl]
-            inbox.removeSubrange(inbox.startIndex...nl)
+    /// On the control queue: every whole line the helper sent, in order.
+    private func drainInbox(_ c: Connection) {
+        while let nl = c.inbox.firstIndex(of: 0x0A) {
+            let line = c.inbox[c.inbox.startIndex..<nl]
+            c.inbox.removeSubrange(c.inbox.startIndex...nl)
             guard !line.isEmpty else { continue }
             do {
-                switch try JSONDecoder().decode(Message.self, from: Data(line)) {
-                case .readerCommand(let c): onCommand?(c)
-                case .actGrant(let g):
-                    grants?.issue(g, uptimeMs: uptimeMs())
-                    log("act grant: task \(g.taskId), process \(g.pid), window \(g.windowId), for \(g.expires - g.at) ms")
-                case .calendarGrant(let g):
-                    grants?.issueCalendar(g, uptimeMs: uptimeMs())
-                    log("calendar grant: task \(g.taskId), for \(g.expires - g.at) ms")
-                case .actRevoke(let r):
-                    grants?.revoke(taskId: r.taskId)
-                    log("act grant revoked: task \(r.taskId)")
-                default: break
+                let m = try JSONDecoder().decode(Message.self, from: Data(line))
+                // A connection being dropped hands on nothing more: no command, and no grant after its grants were cleared.
+                c.ifOpen {
+                    switch m {
+                    case .readerCommand(let cmd): onCommand?(cmd)
+                    case .actGrant(let g):
+                        grants?.issue(g, uptimeMs: uptimeMs())
+                        note("act grant: task \(g.taskId), process \(g.pid), window \(g.windowId), for \(g.expires - g.at) ms")
+                    case .calendarGrant(let g):
+                        grants?.issueCalendar(g, uptimeMs: uptimeMs())
+                        note("calendar grant: task \(g.taskId), for \(g.expires - g.at) ms")
+                    case .actRevoke(let r):
+                        grants?.revoke(taskId: r.taskId)
+                        note("act grant revoked: task \(r.taskId)")
+                    default: break
+                    }
                 }
             } catch {
                 // The helper also sends error lines for bad input; anything else undecodable is logged and skipped.
-                if !(String(decoding: line, as: UTF8.self).contains(#""type":"error""#)) { log("cannot decode a helper line: \(error)") }
+                if !(String(decoding: line, as: UTF8.self).contains(#""type":"error""#)) { note("cannot decode a helper line: \(error)") }
             }
         }
-        if inbox.count > maxInboundLine {
-            inbox.removeAll()
-            disconnect("helper line over \(maxInboundLine) bytes")
+        if c.inbox.count > maxInboundLine {
+            c.inbox.removeAll()
+            lost(c, "helper line over \(maxInboundLine) bytes")
         }
     }
 
-    private func disconnect(_ why: String) {
+    /// On the control queue: the connection is gone. Grants end here at once; the rest is the main queue's.
+    private func lost(_ c: Connection, _ why: String) {
+        c.close { clearGrants() }
+        queue.async { self.disconnect(c, why) }
+    }
+
+    private func failClosed(_ c: Connection, _ why: String) {
+        disconnect(c, "failing closed: \(why)")
+    }
+
+    private func clearGrants() {
         if let g = grants, g.count > 0 {
             g.clear()
-            log("act grants cleared with the connection")
+            note("act grants cleared with the connection")
         }
-        if let src = readSource {
-            src.cancel()
-            readSource = nil
-        } else if fd >= 0 {
-            close(fd)
-        }
-        fd = -1
-        log("disconnected: \(why)")
+    }
+
+    /// On the main queue. Every grant ends with the connection; what was waiting for the helper is dropped, since
+    /// the next connection begins with hello and a full resync.
+    private func disconnect(_ c: Connection, _ why: String) {
+        guard conn === c else { return }
+        c.close { clearGrants() }
+        conn = nil
+        if !c.writeArmed { c.writeSource?.resume() }
+        c.writeSource?.cancel()
+        c.readSource?.cancel()
+        c.stallTimer?.cancel()
+        if c.bytes > 0 { stat { droppedCount += c.chunks.count - c.first } }
+        c.chunks.removeAll()
+        c.first = 0
+        c.bytes = 0
+        resyncAfterDrain = false
+        note("disconnected: \(why)")
         scheduleRetry()
     }
 }

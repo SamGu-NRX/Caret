@@ -4,9 +4,11 @@
 // reader last saw of the window: the focused element's role and the default button. A key's characters are
 // never read, and every other key is dropped where it arrives.
 //
-// A Return while a text field has focus is never counted, even in a window with a default button, where
-// AppKit would press it: a multi-line field or a web page takes Return as text or a form submit, and the
-// reader cannot tell which from the role alone. Such presses go unseen; a click on the same button is seen.
+// Return or Enter in a single-line text field (AXTextField or AXSecureTextField, not in a web page) counts as a
+// press of the window's enabled default button: AppKit presses it, 5 times of 5 with the fixture frontmost and
+// Note focused (B21 gui/keys-front; B22 lead decision). In a text area, a combo box or a field of a web page
+// Return is text, a choice or the page's own submit, so it still never counts there; Space in any text field
+// is text. A click on the same button is always seen.
 import Foundation
 
 public enum KeyPresses {
@@ -46,11 +48,19 @@ public enum KeyPresses {
         }
     }
 
-    /// What the key presses, given the role of the element that had focus and whether the window has an
-    /// enabled default button, as the reader last read them. Nil when it presses nothing the reader reports:
-    /// a text field has focus, Return with no enabled default button, or Space on something that is not a button.
-    public static func target(_ via: UserPress.Via, focusedRole: String?, enabledDefaultButton: Bool) -> Target? {
-        if let r = focusedRole, textRoles.contains(r) { return nil }
+    /// Roles of a single-line field, in which Return presses the default button when the field is not in a web page.
+    public static let singleLineRoles: Set<String> = ["AXTextField", "AXSecureTextField"]
+
+    /// What the key presses, given the role of the element that had focus, whether that element is a single-line
+    /// field outside any web page (`singleLineField`, read by the reader when focus arrived), and whether the
+    /// window has an enabled default button, as the reader last read them. Nil when it presses nothing the reader
+    /// reports: Return in a text field that is not single-line, Space in any text field, Return with no enabled
+    /// default button, or Space on something that is not a button.
+    public static func target(_ via: UserPress.Via, focusedRole: String?, singleLineField: Bool, enabledDefaultButton: Bool) -> Target? {
+        if let r = focusedRole, textRoles.contains(r) {
+            let returnKey = via == .return || via == .enter
+            return returnKey && singleLineField && singleLineRoles.contains(r) && enabledDefaultButton ? .defaultButton : nil
+        }
         switch via {
         case .return, .enter: return enabledDefaultButton ? .defaultButton : nil
         case .space: return focusedRole.map { spacePressable.contains($0) } == true ? .focused : nil

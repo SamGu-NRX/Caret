@@ -63,6 +63,8 @@ final class PressIndex: @unchecked Sendable {
         let window: AXRef
         let element: AXRef
         let role: String
+        /// A single-line field outside any web page, in which Return presses the default button (B22; KeyPresses).
+        let singleLineField: Bool
     }
     private struct Entry {
         var id: String
@@ -120,7 +122,7 @@ final class PressIndex: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let f = focus, let e = byWindow[f.window] else { return nil }
         let d = e.defaultButton
-        switch KeyPresses.target(via, focusedRole: f.role, enabledDefaultButton: d?.enabled == true) {
+        switch KeyPresses.target(via, focusedRole: f.role, singleLineField: f.singleLineField, enabledDefaultButton: d?.enabled == true) {
         case .defaultButton?:
             guard let d else { return nil }
             return (e.id, d.key, d.role, d.label)
@@ -157,6 +159,19 @@ final class PressIndex: @unchecked Sendable {
         focus = nil
     }
 
+    /// The id of the window that has the app's focus, as the latest focus change named it; nil when unknown.
+    func focusedWindowId() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let f = focus else { return nil }
+        return byWindow[f.window]?.id
+    }
+
+    /// The id of the window with this window-server number, nil when the reader has not walked it.
+    func windowId(number: Int) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return byWindow.values.first { $0.number == number }?.id
+    }
+
     /// The window's id and the element's key, nil when the reader has not walked that window.
     func lookup(window w: AXRef, element el: AXRef) -> (id: String, key: String?)? {
         lock.lock(); defer { lock.unlock() }
@@ -174,6 +189,8 @@ private let observerCallback: AXObserverCallback = { _, element, notification, r
 public final class AppWorker: @unchecked Sendable {
     public let pid: pid_t
     public let app: AppRef
+    /// The process and this worker's generation, which every window id it gives out carries (S1 audit #7).
+    public let incarnation: ProcessIncarnation
     let appPart: String
     let ax: AXUIElement
     let queue: DispatchQueue
@@ -226,9 +243,10 @@ public final class AppWorker: @unchecked Sendable {
     /// Chromium and Electron render web pages themselves; any other app's web area is WebKit's (B20).
     private let chromiumFamily: Bool
 
-    public init(pid: pid_t, app: AppRef, ctx: ReaderContext) {
+    public init(pid: pid_t, app: AppRef, ctx: ReaderContext, incarnation: ProcessIncarnation) {
         self.pid = pid
         self.app = app
+        self.incarnation = incarnation
         self.chromiumFamily = NSRunningApplication(processIdentifier: pid)?.bundleURL.map(AppClassifier.isChromiumFamily) ?? false
         self.appPart = ElementKey.appPart(bundleId: app.bundleId.isEmpty ? nil : app.bundleId, name: app.name)
         self.ax = AXUIElementCreateApplication(pid)
@@ -506,7 +524,11 @@ public final class AppWorker: @unchecked Sendable {
         focusElement = fe
         w = w ?? currentFocusedWindow()
         // For a key press made in this window (B21): which element had focus, read now rather than when the key goes down.
-        if let fe, let w { pressIndex.setFocus(PressIndex.Focused(window: w, element: fe, role: AX.string(fe.el, kAXRoleAttribute) ?? "AXUnknown")) } else { pressIndex.setFocus(nil) }
+        if let fe, let w {
+            let role = AX.string(fe.el, kAXRoleAttribute) ?? "AXUnknown"
+            let singleLine = KeyPresses.singleLineRoles.contains(role) && !inWebPage(fe.el)
+            pressIndex.setFocus(PressIndex.Focused(window: w, element: fe, role: role, singleLineField: singleLine))
+        } else { pressIndex.setFocus(nil) }
         if let prev = focusedWindow, prev != w, windows[prev] != nil {
             walkWindow(prev, reason: .leave, isFocused: false)
         }
@@ -538,7 +560,7 @@ public final class AppWorker: @unchecked Sendable {
     private func info(for w: AXRef) -> WindowInfo {
         if let i = windows[w] { return i }
         let kind = ElementKey.windowKind(subrole: AX.string(w.el, kAXSubroleAttribute), identifier: AX.string(w.el, kAXIdentifierAttribute))
-        let i = WindowInfo(id: "\(pid)-\(nextWindow)", kind: kind, number: AX.windowNumber(of: w.el))
+        let i = WindowInfo(id: incarnation.windowId(nextWindow), kind: kind, number: AX.windowNumber(of: w.el))
         nextWindow += 1
         windows[w] = i
         return i
@@ -683,6 +705,12 @@ public final class AppWorker: @unchecked Sendable {
         }
     }
 
+    /// The window the user's key went to: the app's focused window as the reader last saw it. Readable from any thread.
+    func keyWindowId() -> String? { pressIndex.focusedWindowId() }
+
+    /// The window with this window-server number, as the reader last walked it. Readable from any thread.
+    func windowId(number: Int) -> String? { pressIndex.windowId(number: number) }
+
     /// The user pressed Return, Enter or Space in this app at `at` (B21; the tap read only which of the three it
     /// was). Reports the button it pressed, when the window that had focus is one of `windows`: the default
     /// button for Return and Enter, the focused button for Space, as the reader last read them (KeyPresses).
@@ -821,6 +849,16 @@ public final class AppWorker: @unchecked Sendable {
             // the helper's risk check ran on `label`, so a control renamed since then is not pressed.
             guard let live = liveLabel(el) else { return (.axError, "cannot read the control's label") }
             guard live.trimmingCharacters(in: .whitespacesAndNewlines) == label else { return (.changed, "label is '\(live.prefix(80))'") }
+            // The reader's own risk table, whatever the helper decided and whatever grant or --act-pids allows
+            // (S1 audit #10): only a press it positively allows goes through. The window's subrole tells a
+            // system prompt from the app's own window; a subrole that cannot be read refuses the press.
+            let windowSubrole: String?
+            switch AX.read(w.el, kAXSubroleAttribute) {
+            case .failed(let e): return (.axError, "cannot read the window's subrole (\(e.rawValue)), so a system prompt cannot be ruled out")
+            case .absent: windowSubrole = nil
+            case .value(let v): windowSubrole = v as? String
+            }
+            if let no = RiskTable.refusal(label: live, role: role, windowSubrole: windowSubrole, bundleId: app.bundleId) { return (.notAllowed, no) }
             if nowMs() > expires { return (.axError, "the command expired before it could act") }
             if let no = refused(windowId) { return no }
             let err = AXUIElementPerformAction(el, kAXPressAction as CFString)
@@ -895,7 +933,12 @@ public final class AppWorker: @unchecked Sendable {
     /// says no; a read that fails or a chain past 40 parents says yes, since focusing first is right for any field
     /// and a bare write can land in another one (B20 fix-check: fail safe, not open).
     private func focusBeforeValue(_ el: AXUIElement) -> Bool {
-        if chromiumFamily { return false }
+        !chromiumFamily && underWebArea(el)
+    }
+
+    /// Whether an AXWebArea is among the element's ancestors. Only reaching the window with no web area on the way
+    /// says no; a read that fails or a chain past 40 parents says yes.
+    private func underWebArea(_ el: AXUIElement) -> Bool {
         var e: AXUIElement? = AX.element(el, kAXParentAttribute)
         for _ in 0..<40 {
             guard let cur = e else { return true }
@@ -908,6 +951,12 @@ public final class AppWorker: @unchecked Sendable {
             }
         }
         return true
+    }
+
+    /// Whether the element is part of a web page: any field of a Chromium or Electron app, or one under an AXWebArea.
+    /// A read that fails or a chain past 40 parents says yes, so a Return there is not taken for a press (B22).
+    private func inWebPage(_ el: AXUIElement) -> Bool {
+        chromiumFamily || underWebArea(el)
     }
 
     /// Focus, then the value: a WebKit window that is not key drops a bare AXValue write and takes it once the
@@ -1020,6 +1069,11 @@ public final class AppWorker: @unchecked Sendable {
 
 /// Whether a verb may act. A process named by --act-pids always may (fixture tests); any other needs a
 /// live act grant for the command's task, process and window, asked at the moment of the check.
+///
+/// The boundary (B22): performNow asks this right before every Accessibility call that changes something, with
+/// nothing that can block in between. A revoke applied after that check cannot stop the call it admitted, which
+/// then runs for at most AX.elementTimeout (0.25 s) against the app; every later step and call is refused. The
+/// check is not held across the call, since a call blocked on a busy app would hold up every revoke with it.
 public struct ActGate: Sendable {
     let actPid: Bool
     let grants: GrantTable

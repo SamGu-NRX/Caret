@@ -21,5 +21,7 @@ let package = Package(
         // Swift 5 mode: Timer callbacks that invalidate themselves are not worth Swift 6's ceremony in a test fixture.
         .executableTarget(name: "caret-fixture", swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "CaretScreenCoreTests", dependencies: ["CaretScreenCore"]),
+        // The socket client against a socket the test plays the helper on (B22). No Accessibility call is made.
+        .testTarget(name: "CaretScreenAXTests", dependencies: ["CaretScreenAX", "CaretScreenCore"]),
     ]
 )

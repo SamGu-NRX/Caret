@@ -64,6 +64,26 @@ public final class GrantTable: @unchecked Sendable {
         calendar.removeValue(forKey: taskId)
     }
 
+    /// Ends every act grant for a process: it exited, or the reader dropped its worker (S1 audit #7). Its window
+    /// ids already differ from any later process's with the same pid; this ends the grants too, at once.
+    /// Returns how many ended.
+    @discardableResult
+    public func revoke(pid: Int) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        let before = entries.count
+        entries = entries.filter { $0.value.grant.pid != pid }
+        return before - entries.count
+    }
+
+    /// Ends every act grant for one window of a process: the user's own input landed there (B22 review). Returns how many ended.
+    @discardableResult
+    public func revoke(pid: Int, windowId: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        let before = entries.count
+        entries = entries.filter { $0.value.grant.pid != pid || $0.value.grant.windowId != windowId }
+        return before - entries.count
+    }
+
     /// Every grant came from one helper connection; when it closes they all end.
     public func clear() {
         lock.lock(); defer { lock.unlock() }
