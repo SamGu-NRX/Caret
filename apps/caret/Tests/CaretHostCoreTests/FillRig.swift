@@ -14,6 +14,12 @@ final class FakeFillWorld: FillWorld {
     var covered = false
     /// Every Accessibility read of a focused field, by pid.
     var fieldReads: [Int32] = []
+    /// Source windows that have closed, by title.
+    var closedSources: Set<String> = []
+
+    func sourceOpen(_ source: FillOrigin.Window) -> Bool? {
+        source.pid == nil ? nil : !closedSources.contains(source.title)
+    }
 
     func allows(pid: Int32, bundleID: String?) -> Bool { allowed?.contains(pid) ?? true }
     func bundleID(pid: Int32) -> String? { "dev.caret.fixture" }

@@ -43,6 +43,9 @@ public protocol FillWorld: AnyObject {
     func focusedField(pid: Int32) -> FillFieldRead?
     /// `Visibility.hold`: nil when a surface for `target` may be drawn at `anchors`.
     func hold(for target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) -> SurfaceGate.Hold?
+    /// Whether a fill's source window is still open: its app runs and has a window with that title.
+    /// Nil when the source names no process to look in. Cheap: one app's window titles, no walk.
+    func sourceOpen(_ source: FillOrigin.Window) -> Bool?
 }
 
 /// The ghost value in the field and its source line.
@@ -342,6 +345,12 @@ public final class FillMachine {
         if let hold = world.hold(for: field.identity, anchors: anchors, requireFocus: true) {
             return withdraw("held.\(hold.rawValue)")
         }
+        // A value whose source window has closed is not offered: Tab would only be refused
+        // (SourceCheck), and "from Mail, Invoice 2041" would name a window that is gone (A14 walk-3).
+        if sourceGone(origin) {
+            suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: value))
+            return withdraw("sourceGone")
+        }
 
         let offer = Offer(
             text: value, kind: .fill(origin), target: field.identity, fieldValue: field.value,
@@ -407,7 +416,24 @@ public final class FillMachine {
         watch = nil
     }
 
+    /// The source a value was taken from is known to be gone. Unknown is not gone: SourceCheck still
+    /// rechecks the value before the write.
+    func sourceGone(_ origin: FillOrigin) -> Bool {
+        guard case .window(let w) = origin.source else { return false }
+        return world.sourceOpen(w) == false
+    }
+
     public func recheckVisibility() {
+        // The offer on screen is withdrawn as soon as its source window closes, not at Tab. The
+        // toast after a write stays: its undo needs only the field written.
+        if let shownOfferID, let current = arbiter.snapshot().current, current.id == shownOfferID,
+           let origin = current.kind.fillOrigin, sourceGone(origin) {
+            suppressed.insert(FillSelection.suppressionKey(windowID: origin.windowID, fieldKey: origin.fieldKey, value: current.text))
+            count("fill.withdrawn.sourceGone")
+            withdraw("sourceGone")
+            if toast == nil { stopWatch() }
+            return
+        }
         guard let watch, let hold = world.hold(for: watch.target, anchors: watch.anchors, requireFocus: watch.requireFocus) else { return }
         stopWatch()
         count("fill.withdrawn.\(hold.rawValue)")

@@ -157,6 +157,15 @@ private final class FillWorldAdapter: FillWorld {
     nonisolated func hold(for target: TargetIdentity, anchors: [CGPoint], requireFocus: Bool) -> SurfaceGate.Hold? {
         MainActor.assumeIsolated { Visibility.hold(for: target, anchors: anchors, requireFocus: requireFocus) }
     }
+
+    /// The app is running and one of its windows has the source's title: SourceCheck's first test,
+    /// without the walk for the value.
+    nonisolated func sourceOpen(_ source: FillOrigin.Window) -> Bool? {
+        guard let pid = source.pid else { return nil }
+        guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return false }
+        let windows = AXRead.elements(kAXWindowsAttribute, on: AXUIElementCreateApplication(pid))
+        return windows.contains { AXRead.string(kAXTitleAttribute, on: $0) == source.title }
+    }
 }
 
 enum NSRunningApplicationBundle {
