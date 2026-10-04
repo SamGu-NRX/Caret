@@ -98,7 +98,20 @@ describe("event times", () => {
     const w = resolveEventTime(["2026-11-01 00:30 to 01:30 PT"], { ...CLOCK, timeZone: "America/Los_Angeles" });
     expect(w?.kind).toBe("ask");
     const says = w?.kind === "ask" ? w.choices.map((c) => c.says) : [];
-    expect(says).toEqual(["Nov 1 12:30 to 1:30 AM (ends UTC-07:00)", "Nov 1 12:30 to 1:30 AM (ends UTC-08:00)"]);
+    expect(says).toEqual(["Nov 1 12:30 to 1:30 AM (UTC-07:00 to UTC-07:00)", "Nov 1 12:30 to 1:30 AM (UTC-07:00 to UTC-08:00)"]);
+    // Two readings that end on the same offset still differ in the offset they start on.
+    const both = resolveEventTime(["2026-11-01 01:15 to 02:15 PT"], { ...CLOCK, timeZone: "America/Los_Angeles" });
+    const labels = both?.kind === "ask" ? both.choices.map((c) => c.says) : [];
+    expect(labels.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("names each end's own zone when a range starts and ends in different zones", () => {
+    expect(stated(["2026-10-21 09:00 PT to 13:00 ET"])?.zones).toBe("Oct 21, 9:00 AM PT (America/Los_Angeles, UTC-07:00) to 1:00 PM ET (America/New_York, UTC-04:00) / 11:00 AM to 12:00 PM America/Chicago (UTC-05:00)");
+  });
+
+  it("shows seconds when the time has them, as it will be added", () => {
+    expect(stated(["2026-10-21T15:01:37Z to 2026-10-21T15:01:58Z"])).toMatchObject({ start: "2026-10-21T10:01:37-05:00", end: "2026-10-21T10:01:58-05:00", says: "Oct 21 10:01:37 to 10:01:58 AM" });
   });
 
   it("counts nothing from now in a conversation line: relative days make no card, and an unzoned time asks", () => {
@@ -120,6 +133,9 @@ describe("event times", () => {
     expect(withZones("Coffee with Dana on Oct 20, 2026 from 15:00 to 16:00 AWST.", ["Oct 20, 2026", "15:00 to 16:00"])).toBeNull();
     expect(eventCandidate("Coffee with Dana on Oct 20, 2026 from 15:00 to 16:00 AWST.", ["Oct 20, 2026", "15:00 to 16:00"], [], CLOCK)).toBeNull();
     expect(withZones("Sync with IT and Dana at 3pm to 4pm.", ["3pm to 4pm"])).toEqual(["3pm to 4pm"]);
+    // A capitalized word away from the time is a word, not a zone.
+    expect(eventCandidate("Meet Dana at MIT tomorrow from 3pm to 4pm.", ["tomorrow", "3pm to 4pm"], [], CLOCK)?.time.kind).toBe("resolved");
+    expect(withZones("Coffee with Dana, JUST NOT before GPT demo, tomorrow 3pm to 4pm.", ["tomorrow 3pm to 4pm"])).toEqual(["tomorrow 3pm to 4pm"]);
   });
 });
 

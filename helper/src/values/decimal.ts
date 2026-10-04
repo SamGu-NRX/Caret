@@ -53,7 +53,7 @@ const BY_REGION: Record<string, NumberStyle> = {
   "pt-BR": POINT_COMMA, "id-ID": POINT_COMMA, "tr-TR": POINT_COMMA, "da-DK": POINT_COMMA,
   "fr-FR": SPACE_COMMA, "fr-CA": SPACE_COMMA, "fr-BE": SPACE_COMMA, "de-AT": SPACE_COMMA, "pt-PT": SPACE_COMMA, "ru-RU": SPACE_COMMA, "uk-UA": SPACE_COMMA, "pl-PL": SPACE_COMMA,
   "cs-CZ": SPACE_COMMA, "sv-SE": SPACE_COMMA, "nb-NO": SPACE_COMMA, "fi-FI": SPACE_COMMA,
-  "de-CH": APOSTROPHE_POINT,
+  "de-CH": APOSTROPHE_POINT, "it-CH": APOSTROPHE_POINT,
 };
 
 export function numberStyle(locale: string): NumberStyle | null {

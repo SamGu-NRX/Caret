@@ -61,11 +61,13 @@ function iso(z: Temporal.ZonedDateTime): string {
   return `${z.toPlainDateTime().toString({ smallestUnit: "second" })}${z.offset}`;
 }
 
-function clock(z: { hour: number; minute: number }): { text: string; meridiem: string } {
-  return { text: `${z.hour % 12 === 0 ? 12 : z.hour % 12}:${String(z.minute).padStart(2, "0")}`, meridiem: z.hour < 12 ? "AM" : "PM" };
+/** "3:00", or "3:00:37" when the time has seconds, so a value with seconds is shown as it will be added. */
+function clock(z: { hour: number; minute: number; second: number }): { text: string; meridiem: string } {
+  const sec = z.second === 0 ? "" : `:${String(z.second).padStart(2, "0")}`;
+  return { text: `${z.hour % 12 === 0 ? 12 : z.hour % 12}:${String(z.minute).padStart(2, "0")}${sec}`, meridiem: z.hour < 12 ? "AM" : "PM" };
 }
 
-function sayClock(z: { hour: number; minute: number }): string {
+function sayClock(z: { hour: number; minute: number; second: number }): string {
   const c = clock(z);
   return `${c.text} ${c.meridiem}`;
 }
@@ -112,13 +114,18 @@ function eventTime(i: Interval & { end: Moment }, clockNow: EventClock, assumpti
   const destDate = `${SHORT_MONTHS[start.month - 1]} ${start.day}`;
   const sameZone = i.start.zone === dest && i.end.zone === dest;
   const here = `${sayRange(start, end)} ${dest} (${offsets(start.offset, end.offset)})`;
-  const zones = sameZone ? `${srcDate}, ${here}, your time zone` : `${srcDate}, ${sayRange(src, srcEnd)} ${zoneName(i.start, i.end.offset)} / ${destDate === srcDate ? "" : `${destDate}, `}${here}`;
+  // Start and end read in different zones ("9:00 PT to 13:00 ET") are each named with their own zone.
+  const source =
+    i.start.zone === i.end.zone && i.start.label === i.end.label
+      ? `${sayRange(src, srcEnd)} ${zoneName(i.start, i.end.offset)}`
+      : `${sayClock(src)} ${zoneName(i.start, i.start.offset)} to ${src.toPlainDate().equals(srcEnd.toPlainDate()) ? "" : `${SHORT_MONTHS[srcEnd.month - 1]} ${srcEnd.day}, `}${sayClock(srcEnd)} ${zoneName(i.end, i.end.offset)}`;
+  const zones = sameZone ? `${srcDate}, ${here}, your time zone` : `${srcDate}, ${source} / ${destDate === srcDate ? "" : `${destDate}, `}${here}`;
   return { start: iso(start), end: iso(end), says: sayWhen(start, end, clockNow.now), zones, assumptions, resolverVersion };
 }
 
-/** Choices whose lines read the same (a repeated hour) are told apart by the offset they end on. */
+/** Choices whose lines read the same (a repeated hour) are told apart by the offsets they start and end on. */
 function distinct(choices: EventTime[]): EventTime[] {
-  return choices.map((c) => (choices.filter((d) => d.says === c.says).length > 1 ? { ...c, says: `${c.says} (ends UTC${c.end.slice(-6)})` } : c));
+  return choices.map((c) => (choices.filter((d) => d.says === c.says).length > 1 ? { ...c, says: `${c.says} (UTC${c.start.slice(-6)} to UTC${c.end.slice(-6)})` } : c));
 }
 
 /** The end each length gives, in the start's own zone, so a daylight-saving change in between is counted. */

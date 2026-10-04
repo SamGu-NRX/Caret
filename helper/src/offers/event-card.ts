@@ -72,6 +72,11 @@ const ZONE_ANYWHERE = new RegExp(`(?<![A-Za-z0-9])(?:${ZONE_SOURCE})`, "g");
 const ZONE_LIKE = /(?<![A-Za-z0-9])(?:[A-Z]{1,4}T|MSK|WIB|WITA)(?![A-Za-z])/g;
 const NOT_ZONES = new Set(["IT", "AT"]);
 
+/** Whether the text before `at` ends in a time ("3pm", "16:00", "noon"), allowing spaces and an open parenthesis. */
+function afterTime(sentence: string, at: number): boolean {
+  return /(?:\d|[ap]\.?m\.?|noon|midnight)$/i.test(sentence.slice(0, at).replace(/[\s(]+$/, ""));
+}
+
 /**
  * The spans with any zone the sentence names right after them ("3pm UTC", "4:00 PM (PT)"), which the
  * reader's span may leave out. Null when a zone is named anywhere else in the sentence: it might belong to
@@ -79,12 +84,12 @@ const NOT_ZONES = new Set(["IT", "AT"]);
  */
 export function withZones(sentence: string, spans: readonly string[]): string[] | null {
   const joined = spans.join(" ");
-  for (const m of sentence.matchAll(ZONE_LIKE)) if (!NOT_ZONES.has(m[0]) && zoneToken(m[0]) === null) return null;
+  // An unknown zone-shaped word right after a time ("16:00 AWST") is refused; elsewhere ("at MIT") it is a word.
+  for (const m of sentence.matchAll(ZONE_LIKE)) if (!NOT_ZONES.has(m[0]) && zoneToken(m[0]) === null && afterTime(sentence, m.index)) return null;
   const extra: string[] = [];
   for (const m of sentence.matchAll(ZONE_ANYWHERE)) {
     if (joined.includes(m[0])) continue;
-    const before = sentence.slice(0, m.index).replace(/[\s(]+$/, "");
-    if (!/(?:\d|[ap]\.?m\.?|noon|midnight)$/i.test(before)) return null;
+    if (!afterTime(sentence, m.index)) return null;
     extra.push(m[0]);
   }
   return extra.length === 0 ? [...spans] : [`${joined} ${extra.join(" ")}`];

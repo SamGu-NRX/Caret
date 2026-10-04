@@ -557,7 +557,9 @@ export function parseMoment(span: ValueRef, ctx: ResolveContext): Resolution<Mom
 
 /** Start and end wall times for a range, with an end's AM/PM carried back to a bare start. */
 function rangeTimes(a: Extract<Tok, { t: "time" }>, b: Extract<Tok, { t: "time" }>, aPart: DayPart | null, bPart: DayPart | null): { start: Choice<WallTime>; end: Choice<WallTime> } {
-  const end = timeChoices(b.time, b.text, bPart ?? aPart);
+  // The start's day-part word ("morning") helps read a bare end hour, but never contradicts an end whose
+  // half of the day is written: "morning at 11am to 1pm" ends at 1 PM.
+  const end = timeChoices(b.time, b.text, b.time.form === "bare" ? (bPart ?? aPart) : bPart);
   if (a.time.form === "bare" && b.time.form === "12h" && aPart === null && end.kind === "one") {
     const same = wall(b.time.meridiem === "pm" ? (a.time.h % 12) + 12 : a.time.h % 12, a.time.m, 0, a.time.s);
     const other = wall(b.time.meridiem === "pm" ? a.time.h % 12 : (a.time.h % 12) + 12, a.time.m, 0, a.time.s);

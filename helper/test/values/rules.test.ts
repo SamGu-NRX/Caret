@@ -189,6 +189,9 @@ describe("review findings (D2-03 review)", () => {
     expect(r.moment("2026-10-20 15:00 morning", CTX).kind).toBe("unsupported");
     expect(r.moment("tonight at 9:00 AM", CTX).kind).toBe("unsupported");
     expect(r.moment("tomorrow afternoon at 2:00 PM", CTX)).toMatchObject({ kind: "resolved", value: { local: "2026-10-06T14:00" } });
+    // A start's day part does not contradict an end whose half of the day is written.
+    expect(r.interval("tomorrow morning at 11am to 1pm", CTX)).toMatchObject({ kind: "resolved", value: { start: { local: "2026-10-06T11:00" }, end: { local: "2026-10-06T13:00" } } });
+    expect(r.interval("2026-10-21 morning at 09:00 to 2026-10-22 at 15:00", CTX)).toMatchObject({ kind: "resolved", value: { end: { local: "2026-10-22T15:00" } } });
   });
 
   it("reads numbers and dates by canonical language and region, and refuses a region it has no rules for", () => {
@@ -201,6 +204,7 @@ describe("review findings (D2-03 review)", () => {
     expect(num("1,234", "es")).toBe("unsupported");
     expect(num("1 234,5", "en-ZA")).toBe("unsupported");
     expect(num("1,234.5", "en-US-u-nu-latn")).toBe("1234.5");
+    expect(num("2'345.6", "it-CH")).toBe("2345.6");
     expect(r.date("03/04/2026", { ...CTX, sourceLocale: "en-US-u-ca-gregory" })).toMatchObject({ kind: "resolved", value: "2026-03-04" });
     expect(r.date("03/04/2026", { ...CTX, sourceLocale: "en-Latn-US" })).toMatchObject({ kind: "resolved", value: "2026-03-04" });
     expect(r.date("03/04/2026", { ...CTX, sourceLocale: "en" }).kind).toBe("ask");
