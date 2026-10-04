@@ -41,6 +41,7 @@ describe("fieldWords", () => {
     "write the summary in my notes field",
     "Fill out the Northgate application",
     "use the address I gave you",
+    "Copy Dana's email address from her signature into Email",
     "the date we mentioned",
   ])("names no source in %s", (instruction) => {
     expect(sourcePhrases(instruction)).toEqual([]);
@@ -129,7 +130,12 @@ describe("namedSources", () => {
 
   it.each([
     ["grab my title off my LinkedIn", true],
-    ["fill this from Zed's message", true],
+    ["paste the error from my terminal", true],
+    // Not apps: their content can sit inside another window, so they are never missing (B26 planner sets).
+    ["fill this from Zed's message", false],
+    ["Put the order number from the order confirmation in Reference", false],
+    ["Email box: Priya's address from the vendor review thread", false],
+    ["put the room and building from my calendar into notes", false],
     ["fill it from my note", false],
     ["use what Dana mentioned", false],
     ["fill this, without using my LinkedIn", false],

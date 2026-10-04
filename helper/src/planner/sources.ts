@@ -15,8 +15,10 @@ import { labelledLines } from "../fill/candidates.ts";
 /** Nouns that name a source, by the kind of window they mean. */
 const NOTE_NOUNS = ["note", "notes", "notepad", "memo", "jottings"];
 const MAIL_NOUNS = ["email", "e-mail", "mail", "message", "messages", "text", "texts", "thread", "reply", "chat", "dm"];
-/** Nouns that name a source by what it is called on screen: an app or a site in a window's title. */
-const NAMED_NOUNS = ["linkedin", "profile", "calendar", "terminal", "doc", "document", "file", "draft", "spreadsheet", "sheet", "resume", "cv", "letter", "invoice", "receipt", "confirmation"];
+/** Apps and sites a source can be named by; only these can be "not open" (namedSources missing). */
+const APP_NOUNS = ["linkedin", "terminal", "slack", "notion", "excel", "github", "jira", "trello", "figma"];
+/** Nouns that name a source by what it is called on screen: an app or a site in a window's title, or a document. */
+const NAMED_NOUNS = [...APP_NOUNS, "profile", "calendar", "doc", "document", "file", "draft", "spreadsheet", "sheet", "resume", "cv", "letter", "invoice", "receipt", "confirmation"];
 const NOUN = [...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS].join("|");
 const NAME = "\\p{Lu}[\\p{L}'’-]*";
 const OWNER = `(?:my|the|this|that|his|her|their|our|your|${NAME}['’]s)`;
@@ -27,7 +29,7 @@ const OWNER = `(?:my|the|this|that|his|her|their|our|your|${NAME}['’]s)`;
 const POSSESSIVE = `(?:my|his|her|their|our|your|${NAME}['’]s)`;
 const PLACING = /\b(?:fill|put|type|write|enter|add|paste|drop|save|jot|record|stick|place|insert|log|note|plug|pop|key|punch|pencil|sign|check|send)\b/iu;
 /** "from my note", "off my LinkedIn", "per Bea's email", "in her latest email"; never "in the Notes field". */
-const PREP_SOURCE = new RegExp(`\\b(?:from|off|out of|per|according to|based on|using|via|in\\s+(?=${POSSESSIVE}\\s))\\s*(?:${OWNER}\\s+)?(?:[\\p{L}-]+\\s+){0,2}?(${NOUN})\\b(?!\\s+(?:field|box|line|section|part)\\b)`, "giu");
+const PREP_SOURCE = new RegExp(`\\b(?:from|off|out of|per|according to|based on|using|via|in\\s+(?=${POSSESSIVE}\\s))\\s*(?:${OWNER}\\s+)?(?:(?!(?:into|in|to|for|as|on|at|onto|and|then)\\b)[\\p{L}-]+\\s+){0,2}?(${NOUN})\\b(?!\\s+(?:field|box|line|section|part)\\b)`, "giu");
 /** Words that rule a source out when they come shortly before its phrase: "without using Dana's email", "not from my note". */
 const NEGATION = /(?:\b(?:without|not|never|except|instead of|rather than|other than|ignore|ignoring|skip|skipping|no)\b|n['’]t)(?:\s+[\p{L}'’]+){0,3}\s*$/iu;
 /** An instruction that keeps Caret to what it says ("only use what I typed", "don't read other windows"). */
@@ -229,13 +231,11 @@ export function namedSources(instruction: string, model: ScreenModel, form: Wind
   for (const p of phrases) if (!p.negated) for (const w of resolve(p)) add(w, p.name === null ? [] : [p.name]);
   // A source the instruction names that no open window could be ("off my LinkedIn" with no LinkedIn open). Several
   // that fit, none picked, is not missing.
-  // A phrase is missing when no open window could be it: none it resolves to, no sender with its person's name or
-  // starting with it, no title with the name, and for a note or titled source nothing of its kind ("Gary's note" can
-  // be the user's note about Gary). B26's second review: "use what Dana wrote" with "Dana notes.txt" open was refused.
-  const senderHas = (name: string): boolean => others.some((w) => isConversation(w) && wordsOf(senderOf(w) ?? "").some((x, i) => x === name.toLowerCase() || (i === 0 && name.length >= 3 && x.startsWith(name.toLowerCase()))));
-  const couldBe = (p: SourcePhrase): boolean =>
-    resolve(p).length > 0 || (p.name !== null && (senderHas(p.name) || others.some((w) => !isConversation(w) && wordsOf(w.window.title).includes((p.name as string).toLowerCase())))) || ((p.name === null || (p.kind !== "mail" && p.kind !== "person")) && resolveFits(p).length > 0);
-  const missing = phrases.some((p) => !p.negated && !couldBe(p));
+  // Missing only for an app or a site no window's title or app shows ("off my LinkedIn"). A note, a mail, a document
+  // or a person's message can sit inside another window (an inbox's order confirmation, a thread in a fixture), so
+  // naming one that no window resolves to is no reason to refuse: B26's planner sets were refused "from the order
+  // confirmation" and "from my calendar" when the first version of this rule counted those.
+  const missing = phrases.some((p) => !p.negated && p.kind === "titled" && p.noun !== null && APP_NOUNS.includes(p.noun) && resolveFits(p).length === 0);
   const negatedNames = new Set(phrases.filter((p) => p.negated && p.name !== null).map((p) => p.name as string));
   for (const person of people) {
     if (/^(?:my|our)\s/iu.test(person) || negatedNames.has(person) || phrases.some((p) => p.name === person)) continue;

@@ -491,9 +491,6 @@ describe("what B26's blind held-out-2 run found", () => {
     m.apply(snap([text("h1", "From: Ines Lindqvist <ines@example.org>"), text("h2", "To: Theo"), text("b", "my cell is (617) 555-0129")], { at: 950, windowId: "mail-ines", title: "Clinic form", app: { pid: 7009, bundleId: "com.apple.mail", name: "Mail" } }));
     const s = snapOf("fill the landlord phone, everything's in her email", m);
     expect(codeOf(() => checkIntent(intent({ fields: [refOf(s, "Landlord phone")] }), s))).toBeNull();
-    // With no mail open, the same instruction names a source Caret cannot see.
-    const none = snapOf("fill the landlord phone, everything's in her email");
-    expect(codeOf(() => checkIntent(intent({ fields: [refOf(none, "Landlord phone")] }), none))).toBe("noWindow");
     const t = snapOf("emergency contact is ines, use what she sent", m);
     expect(t.persons.map((p) => p.span)).toContain("ines");
     expect(t.named.map((n) => n.windowId)).toEqual(["mail-ines"]);
