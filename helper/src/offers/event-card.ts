@@ -1,7 +1,9 @@
 // The event card (Fable plan section 2, pop-up A). A sentence that names a time and a person, finished
 // in the field the user is typing in or arriving in a conversation window, becomes an offer to add the
 // event to a calendar: "Calendar  Coffee with Dana, Thu 3:00 to 3:30 PM  Tab", and the down arrow opens
-// the card. Code finds the sentence, its time (the reader's typed values, parsed by event-time.ts), the
+// the card. A time the text leaves open (no AM or PM, no end) makes a card that asks: its picker lists the
+// possible times and Tab adds only the one the user highlighted. Code finds the sentence, its time (the
+// reader's typed values, read by the value resolver through event-time.ts), the
 // person and the title, all copied from the sentence; Jev answers one yes/no question, whether the
 // writer is arranging something they will attend, asked twice with different wording. Only two yeses
 // make an offer. Taking it runs a one-step plan whose end state is the event in the calendar, through
@@ -16,7 +18,8 @@ import type { Plan } from "../executor/schema.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import type { MemoryValue } from "../planner/trace.ts";
 import { occursBounded } from "../planner/trace.ts";
-import { resolveEventTime, ZONE, type EventTime } from "./event-time.ts";
+import { macClock, resolveEventTime, type EventClock, type EventTime, type EventWhen, type TimeSource } from "./event-time.ts";
+import { ZONE_SOURCE } from "../values/zones.ts";
 import type { AcceptHandler, AcceptResult } from "./registry.ts";
 import { offerField } from "./field.ts";
 import { expired } from "./lifetimes.ts";
@@ -45,7 +48,38 @@ export interface EventCandidate {
   sentence: string;
   title: string;
   person: string;
-  time: EventTime;
+  time: EventWhen;
+}
+
+/** The time a card adds: the one it states, or the picker row the user highlighted. A string says why there is none. */
+export function chosenTime(c: EventCandidate, row: number | undefined): EventTime | string {
+  if (c.time.kind === "resolved") return c.time.time;
+  if (row === undefined) return "the card asks which time; pick one in it first. Nothing was added";
+  return c.time.choices[row] ?? `the card has no time ${row}`;
+}
+
+/** The start the offer line and its lifetime go by: the stated one, or the latest of the choices. */
+function lastStart(c: EventCandidate): number {
+  return c.time.kind === "resolved" ? Date.parse(c.time.time.start) : Math.max(...c.time.choices.map((t) => Date.parse(t.start)));
+}
+
+const ZONE_ANYWHERE = new RegExp(`(?<![A-Za-z0-9])(?:${ZONE_SOURCE})`, "g");
+
+/**
+ * The spans with any zone the sentence names right after them ("3pm UTC", "4:00 PM (PT)"), which the
+ * reader's span may leave out. Null when a zone is named anywhere else in the sentence: it might belong to
+ * the time, so the time is not read without it.
+ */
+export function withZones(sentence: string, spans: readonly string[]): string[] | null {
+  const joined = spans.join(" ");
+  const extra: string[] = [];
+  for (const m of sentence.matchAll(ZONE_ANYWHERE)) {
+    if (joined.includes(m[0])) continue;
+    const before = sentence.slice(0, m.index).replace(/[\s(]+$/, "");
+    if (!/(?:\d|[ap]\.?m\.?|noon|midnight)$/i.test(before)) return null;
+    extra.push(m[0]);
+  }
+  return extra.length === 0 ? [...spans] : [`${joined} ${extra.join(" ")}`];
 }
 
 /** The sentences of a text, each trimmed; a final one without an end mark is left out unless `whole`. */
@@ -87,14 +121,18 @@ export function eventTitle(sentence: string, person: string): string {
   return `${word[0]?.toUpperCase()}${word.slice(1)} with ${person}`;
 }
 
-/** The event a sentence describes, from its date and time spans; null when it names no person or no time ahead. */
-export function eventCandidate(sentence: string, spans: readonly string[], people: readonly MemoryValue[], now: Date): EventCandidate | null {
+/**
+ * The event a sentence describes, from its date and time spans; null when it names no person, no time
+ * ahead, or a time with more possibilities than a card can offer. `source` decides what the time is
+ * counted from (time-source rules in event-time.ts).
+ */
+export function eventCandidate(sentence: string, spans: readonly string[], people: readonly MemoryValue[], clockNow: EventClock, source: TimeSource = "typed"): EventCandidate | null {
   if (spans.length === 0) return null;
-  // A zone named anywhere in the sentence ("3pm UTC") would move the time; the detector's span may leave it out.
-  if (ZONE.test(sentence)) return null;
+  const zoned = withZones(sentence, spans);
+  if (zoned === null) return null;
   const person = personIn(sentence, people);
   if (person === null) return null;
-  const time = resolveEventTime(spans, now);
+  const time = resolveEventTime(zoned, clockNow, source);
   if (time === null) return null;
   return { sentence, title: eventTitle(sentence, person), person, time };
 }
@@ -173,35 +211,54 @@ export function spansIn(w: WindowState, key: string, sentence: string): string[]
   return [out];
 }
 
-/** The card the down arrow opens: what, when, which calendar, and the sentence it came from. */
+/**
+ * The card the down arrow opens: what, when (with the source and destination zones and offsets), which
+ * calendar, and the sentence it came from. A card that asks lists the possible times as its picker
+ * instead of one When, and shows Caret waiting on the user.
+ */
 export function eventCardSpec(offerKey: string, c: EventCandidate, calendar: string, windowId: string, key: string): PopupSpecT {
   const from = { node: `${windowId}/${key}`, quote: c.sentence };
-  const blocks: PopupBlock[] = [
-    { type: "header", title: { text: c.title, ref: { rule: "eventTitle", derived: [from] } } },
-    {
-      type: "facts",
-      rows: [
-        { label: "When", value: { text: c.time.says, ref: { rule: "eventTime", derived: [from] } } },
-        { label: "Calendar", value: { text: calendar, ref: { rule: "eventCalendar", derived: [from] } } },
-      ],
-    },
+  const derived = (rule: string) => ({ rule, derived: [from] });
+  const header: PopupBlock = { type: "header", title: { text: c.title, ref: derived("eventTitle") } };
+  const calendarRow = { label: "Calendar", value: { text: calendar, ref: derived("eventCalendar") } };
+  const tail: PopupBlock[] = [
     { type: "source", value: { text: c.sentence, ref: from } },
     { type: "actions", items: [{ id: "add", label: "Add", key: "tab" }] },
   ];
-  return { v: 1, id: offerKey, figure: "offering", blocks };
+  if (c.time.kind === "resolved") {
+    const t = c.time.time;
+    const rows = [
+      { label: "When", value: { text: t.says, ref: derived("eventTime") } },
+      { label: "Time zones", value: { text: t.zones, ref: derived("eventTime") }, secondary: true },
+      calendarRow,
+    ];
+    return { v: 1, id: offerKey, figure: "offering", blocks: [header, { type: "facts", rows }, ...tail] };
+  }
+  const blocks: PopupBlock[] = [
+    header,
+    { type: "facts", rows: [{ label: "Which time?", value: { text: c.time.question, ref: derived("eventTimeQuestion") } }, calendarRow] },
+    { type: "choices", rows: c.time.choices.map((t) => ({ label: { text: t.says, ref: derived("eventTime") }, hint: { text: t.zones, ref: derived("eventTime") } })), selected: 0 },
+    ...tail,
+  ];
+  return { v: 1, id: offerKey, figure: "needsYou", blocks };
 }
 
-/** The plan an accepted card runs: one end state, the event in the calendar. */
-export function eventPlan(offerKey: string, c: EventCandidate, calendar: string): { plan: Plan; slots: Record<string, string> } {
+/** The plan an accepted card runs: one end state, the event at `time` in the calendar. */
+export function eventPlan(offerKey: string, c: EventCandidate, calendar: string, time: EventTime): { plan: Plan; slots: Record<string, string> } {
   return {
     plan: {
       id: offerKey,
       title: `Add ${c.title} to ${calendar}`,
       slots: { title: "the event's title, from the sentence", calendar: "the calendar Caret adds events to" },
-      steps: [{ says: `{{title}} is on {{calendar}}, ${c.time.says}`, end: { kind: "calendarEvent", calendar: "{{calendar}}", title: "{{title}}", start: c.time.start, end: c.time.end } }],
+      steps: [{ says: `{{title}} is on {{calendar}}, ${time.says}`, end: { kind: "calendarEvent", calendar: "{{calendar}}", title: "{{title}}", start: time.start, end: time.end } }],
     },
     slots: { title: c.title, calendar },
   };
+}
+
+/** The offer line's end state: the time, or that the card asks which. */
+function lineText(c: EventCandidate): string {
+  return c.time.kind === "resolved" ? `${c.title}, ${c.time.time.says}` : `${c.title}, pick a time (${c.time.choices.length} possible)`;
 }
 
 interface Entry {
@@ -225,6 +282,8 @@ export interface EventCardDeps {
   people: () => readonly MemoryValue[];
   /** The calendar events are added to. */
   calendar: string;
+  /** The Mac's clock, zone and locale for reading times; the process's own by default. */
+  clock?: (now: number) => EventClock;
   live: () => boolean;
   now: () => number;
   count?: (name: string) => void;
@@ -247,9 +306,16 @@ export class EventCards {
     this.deps = deps;
   }
 
-  /** Offers shown now, for tests. */
-  shown(): { offerKey: string; title: string; start: string; end: string }[] {
-    return [...this.entries.values()].map((e) => ({ offerKey: e.offerKey, title: e.candidate.title, start: e.candidate.time.start, end: e.candidate.time.end }));
+  /** Offers shown now, for tests: a stated time, or the choices a card asks between. */
+  shown(): { offerKey: string; title: string; when: { start: string; end: string } | { choices: { start: string; end: string }[] } }[] {
+    return [...this.entries.values()].map((e) => {
+      const t = e.candidate.time;
+      return { offerKey: e.offerKey, title: e.candidate.title, when: t.kind === "resolved" ? { start: t.time.start, end: t.time.end } : { choices: t.choices.map((x) => ({ start: x.start, end: x.end })) } };
+    });
+  }
+
+  private clockAt(now: number): EventClock {
+    return this.deps.clock?.(now) ?? macClock(new Date(now));
   }
 
   /**
@@ -292,9 +358,9 @@ export class EventCards {
     return offerField(w, key);
   }
 
-  /** The event's start has come: too late to offer or add it. */
+  /** The event's start has come (for a card that asks, every possible start): too late to offer or add it. */
   private started(c: EventCandidate): boolean {
-    return Date.parse(c.time.start) <= this.deps.now();
+    return lastStart(c) <= this.deps.now();
   }
 
   private async consider(w: WindowState, key: string, sentence: string, field: OfferField, source: SentenceSource): Promise<void> {
@@ -303,7 +369,7 @@ export class EventCards {
     if (this.judged.has(id) || !deps.live() || deps.askJev === null) return;
     const now = deps.now();
     if (deps.gate.holds("event", now).length > 0) return;
-    const c = eventCandidate(sentence, spansIn(w, key, sentence), deps.people(), new Date(now));
+    const c = eventCandidate(sentence, spansIn(w, key, sentence), deps.people(), this.clockAt(now), source);
     if (c === null) {
       this.judged.add(id);
       return;
@@ -342,19 +408,22 @@ export class EventCards {
       at: this.deps.now(),
       field,
       app: "Calendar",
-      endState: { text: `${c.title}, ${c.time.says}`, ref: { rule: "eventCard", derived: [from] } },
+      endState: { text: lineText(c), ref: { rule: "eventCard", derived: [from] } },
       actions: [{ id: "add", label: "Add", key: "tab" }],
       variants: eventCardSpec(offerKey, c, this.deps.calendar, w.window.windowId, key),
     };
     const entry: Entry = { offerKey, windowId: w.window.windowId, key, candidate: c, at: msg.at };
-    if (!this.deps.publish(msg, () => this.accept(offerKey))) return;
+    if (!this.deps.publish(msg, (m) => this.accept(offerKey, m.overrides.variants))) return;
     this.entries.set(offerKey, entry);
     this.deps.gate.spoke(this.deps.now());
     this.deps.count?.("event.offered");
   }
 
-  /** Adds the event as the task `offerKey`, once the sentence is still where it was. */
-  private async accept(offerKey: string): Promise<AcceptResult> {
+  /**
+   * Adds the event as the task `offerKey`, once the sentence is still where it was. `row` is the picker row
+   * the user highlighted; a card that asks adds nothing without one.
+   */
+  private async accept(offerKey: string, row: number | undefined): Promise<AcceptResult> {
     const e = this.entries.get(offerKey);
     if (e === undefined) return { refused: "the offer was withdrawn" };
     const node = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
@@ -366,8 +435,14 @@ export class EventCards {
       this.withdraw(offerKey, "stale");
       return { refused: "the event's time has come; nothing was added" };
     }
+    const time = chosenTime(e.candidate, row);
+    if (typeof time === "string") return { refused: time };
+    if (Date.parse(time.start) <= this.deps.now()) {
+      this.withdraw(offerKey, "stale");
+      return { refused: "that time has come; nothing was added" };
+    }
     this.withdraw(offerKey, "taken");
-    const { plan, slots } = eventPlan(offerKey, e.candidate, this.deps.calendar);
+    const { plan, slots } = eventPlan(offerKey, e.candidate, this.deps.calendar, time);
     try {
       return await this.deps.run(offerKey, plan, slots);
     } catch (err) {
@@ -395,7 +470,7 @@ export class EventCards {
   private async look(exclude: ReadonlySet<string>): Promise<{ w: WindowState; key: string; candidate: EventCandidate }[]> {
     const deps = this.deps;
     const gen = this.gen;
-    const now = new Date(deps.now());
+    const clockNow = this.clockAt(deps.now());
     const found: { w: WindowState; key: string; candidate: EventCandidate; source: SentenceSource }[] = [];
     const windows = [...deps.model.windows.values()]
       .filter((w) => !exclude.has(w.window.windowId))
@@ -406,8 +481,10 @@ export class EventCards {
         if (found.length >= MAX_EVENT_LOOKS) break;
         if (n.states?.includes("secure") || (n.editable !== true && !chat)) continue;
         for (const s of sentences(nodeText(n), true)) {
-          const c = eventCandidate(s, spansIn(w, n.key, s), deps.people(), now);
-          if (c !== null && !found.some((f) => f.candidate.sentence === s)) found.push({ w, key: n.key, candidate: c, source: n.editable === true ? "typed" : "conversation" });
+          const source: SentenceSource = n.editable === true ? "typed" : "conversation";
+          const c = eventCandidate(s, spansIn(w, n.key, s), deps.people(), clockNow, source);
+          // A first look's card is taken without a picker row, so only a card with one stated time is offered.
+          if (c !== null && c.time.kind === "resolved" && !found.some((f) => f.candidate.sentence === s)) found.push({ w, key: n.key, candidate: c, source });
         }
       }
     }
@@ -422,7 +499,8 @@ export class EventCards {
     const node = this.deps.model.windows.get(windowId)?.nodes.get(key);
     if (node === undefined || !nodeText(node).includes(c.sentence)) return { refused: "the sentence is no longer on screen; nothing was added" };
     if (this.started(c)) return { refused: "the event's time has come; nothing was added" };
-    const { plan, slots } = eventPlan(offerKey, c, this.deps.calendar);
+    if (c.time.kind !== "resolved") return { refused: "the card asks which time; nothing was added" };
+    const { plan, slots } = eventPlan(offerKey, c, this.deps.calendar, c.time.time);
     return run(offerKey, plan, slots);
   }
 

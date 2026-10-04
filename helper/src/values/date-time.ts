@@ -569,7 +569,7 @@ export function parseInterval(span: ValueRef, ctx: ResolveContext, openEnd: bool
   if (left.dates.length === 0 && right.dates.length > 0) return unsupported(`"${span.quote}" gives the end's date and not the start's`);
   // A zone written once, on either side, is the whole range's.
   const leftZones = left.zones.length > 0 ? left.zones : right.zones;
-  const rightZones = right.zones.length > 0 ? right.zones : left.zones;
+  const rightZones = right.zones;
   const startDate = sideDate(left, ctx, st.text);
   const { start: startTimes, end: endTimes } = rangeTimes(st, et, left.part, right.part);
   const ownEndDate = right.dates.length > 0;
@@ -581,24 +581,28 @@ export function parseInterval(span: ValueRef, ctx: ResolveContext, openEnd: bool
   const pairs: Interval[] = [];
   let overnight = false;
   const after = (e: Moment, s: Moment): boolean => Temporal.Instant.compare(Temporal.Instant.from(e.instant), Temporal.Instant.from(s.instant)) > 0;
+  const shared = right.zones.length === 0 || left.zones.length === 0;
   for (const s of valuesOf(starts)) {
     const sDate = Temporal.PlainDateTime.from(s.local).toPlainDate();
+    // One zone written for the whole range is read the same way at both ends: the zone the start was read
+    // in, so an ambiguous "IST" cannot pair a Kolkata start with a Dublin end.
+    const endZones: ZoneToken[] = shared ? [s.zone.includes("/") ? { kind: "region", id: s.zone, label: s.label } : { kind: "offset", offset: s.zone, label: s.label }] : rightZones;
     if (ownEndDate) {
-      const ends = place(endDate, endTimes, rightZones, ctx);
+      const ends = place(endDate, endTimes, endZones, ctx);
       if (ends.kind === "none") return unsupported(ends.reason);
       for (const e of valuesOf(ends)) if (after(e, s)) pairs.push({ start: s, end: e });
       continue;
     }
     // Each end reading on the start's date; only a reading that is not after the start moves to the next day.
     for (const t of valuesOf(endTimes)) {
-      const same = place(one(sDate), one(t), rightZones, ctx);
+      const same = place(one(sDate), one(t), endZones, ctx);
       if (same.kind === "none") return unsupported(same.reason);
       const sameEnds = valuesOf(same).filter((e) => after(e, s));
       if (sameEnds.length > 0) {
         for (const e of sameEnds) pairs.push({ start: s, end: e });
         continue;
       }
-      const next = place(one(sDate.add({ days: 1 })), one(t), rightZones, ctx);
+      const next = place(one(sDate.add({ days: 1 })), one(t), endZones, ctx);
       for (const n of valuesOf(next)) {
         if (after(n, s)) {
           pairs.push({ start: s, end: n });

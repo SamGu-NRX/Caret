@@ -43,7 +43,7 @@ const ask: AskJev = async (req) => {
 
 const rows: { id: string; sentence: string; want: string | null; codePasses: boolean; asks: string[] | null; yes: boolean | null; agrees: boolean | null }[] = [];
 for (const s of golden.sentences) {
-  const c = eventCandidate(s.sentence, s.spans.map((x) => x.text), [], now);
+  const c = eventCandidate(s.sentence, s.spans.map((x) => x.text), [], { now, timeZone: "America/Chicago", locale: "en-US" });
   if (c === null) {
     rows.push({ id: s.id, sentence: s.sentence, want: s.attend, codePasses: false, asks: null, yes: null, agrees: s.attend === null ? true : null });
     continue;

@@ -197,7 +197,10 @@ export function placeWall(wall: Temporal.PlainDateTime, stated: readonly ZoneTok
     }
     const match = t.candidates.find((c) => supplied.some((s) => (s.kind === "region" ? s.id === c.region : s.kind === "offset" && s.offset === c.offset)));
     if (match === undefined) {
-      return { kind: "ask", question: `${t.label} names several zones (${t.candidates.map((c) => c.region).join(", ")}); which one is ${when} in?`, moments: t.candidates.map((c) => atOffset(wall, c.offset, `${t.label} (${c.region})`)) };
+      // Only the regions on that offset at that wall time: Israel is on IDT, not IST, in early October.
+      const live = t.candidates.filter((c) => offsetsAt(wall, c.region).includes(c.offset));
+      const offered = live.length > 0 ? live : t.candidates;
+      return { kind: "ask", question: `${t.label} names several zones (${offered.map((c) => c.region).join(", ")}); which one is ${when} in?`, moments: offered.map((c) => atOffset(wall, c.offset, `${t.label} (${c.region})`)) };
     }
     settled.push({ kind: "offset", offset: match.offset, label: t.label, region: match.region });
   }

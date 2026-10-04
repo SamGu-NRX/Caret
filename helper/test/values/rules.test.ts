@@ -104,6 +104,19 @@ describe("zones", () => {
     expect(r.moment("Oct 20, 2026 3:00 PM", { ...CTX, sourceTimeZone: null })).toMatchObject({ kind: "ask", alternatives: [{ zone: "America/Chicago", instant: "2026-10-20T20:00:00Z" }] });
   });
 
+  it("reads one zone written for a whole range the same way at both ends", () => {
+    const x = r.interval("Oct 9, 2026 3pm to 4pm IST", CTX);
+    expect(x.kind).toBe("ask");
+    const pairs = x.kind === "ask" ? x.alternatives.map((i) => [i.start.offset, i.end?.offset]) : [];
+    expect(pairs).toEqual([["+05:30", "+05:30"], ["+01:00", "+01:00"]]);
+  });
+
+  it("offers an ambiguous abbreviation only in regions that use it on that date", () => {
+    // Israel is on IDT on Oct 9 and Ireland on GMT on Jan 15.
+    expect(instants(r.moment("Oct 9, 2026 3:00 PM IST", CTX))).toEqual(["2026-10-09T09:30:00Z", "2026-10-09T14:00:00Z"]);
+    expect(instants(r.moment("Jan 15, 2026 3:00 PM IST", CTX))).toEqual(["2026-01-15T09:30:00Z", "2026-01-15T13:00:00Z"]);
+  });
+
   it("asks when the text names two different zones", () => {
     expect(r.moment("Oct 20, 2026 3:00 PM PT ET", CTX).kind).toBe("ask");
   });

@@ -423,7 +423,8 @@ describe("the privacy line on every Jev request", () => {
     const MAIL = { pid: 6160, bundleId: "dev.caret.mail", name: "Mail Fixture" };
     const BODY = "dev.caret.mail/standard/textarea:body~0";
     // Typing is judged on its last finished sentence.
-    const body = "Hi Priya, the draft is attached. Coffee with Dana Thu 3:00?";
+    // A stated end and PM, so the card has one time (D2-03: "Thu 3:00" alone now asks AM or PM and how long, too many choices for a card).
+    const body = "Hi Priya, the draft is attached. Coffee with Dana Thu 3:00 to 3:30 PM?";
     const rec = await run(
       "event desk",
       async (s) => {
@@ -434,7 +435,7 @@ describe("the privacy line on every Jev request", () => {
             { type: "appSwitch", v: PROTOCOL_VERSION, at: 900, from: null, to: MAIL },
             // The card follows what the user types: an empty body, then the sentence.
             snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true }], { at: 950, windowId: "6160-4", app: MAIL, title: "New message", focused: true, focusedKey: BODY }),
-            snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true, value: body }], { at: 1000, windowId: "6160-4", app: MAIL, title: "New message", focused: true, focusedKey: BODY, values: [{ kind: "date", text: "Thu 3:00", nodeKey: BODY }] }),
+            snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true, value: body }], { at: 1000, windowId: "6160-4", app: MAIL, title: "New message", focused: true, focusedKey: BODY, values: [{ kind: "date", text: "Thu 3:00 to 3:30 PM", nodeKey: BODY }] }),
           ],
           "event card",
         );
