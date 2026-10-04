@@ -125,6 +125,8 @@ process.on("exit", () => {
   reader?.kill("SIGTERM");
   fixture.kill("SIGTERM");
 });
+// Node runs exit handlers on a signal only when the signal has a listener; without one, the children outlive the script.
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => process.exit(143));
 let fixturePid = 0;
 let fixtureErr = "";
 let foreground: Front | null = null;
@@ -402,7 +404,10 @@ result.fixtureOrReaderWasFront = foreground !== null;
 result.deferred = foreground === null ? null : `deferred: foreground (${JSON.stringify(foreground)})`;
 result.fixtureStderr = fixtureErr.split("\n").filter((l) => l.length > 0).slice(-5);
 result.helperLog = log.slice(-30);
-result.ok = ok && foreground === null;
+// The header's checks: no watch on an ordinary window, every run's feed showing done and needsYou, and
+// no question while the test run only ticks. `ok` alone says only that nothing threw.
+const falseWatches = (result.falseWatches as { falseWatches?: string[] } | undefined)?.falseWatches;
+result.ok = ok && foreground === null && falseWatches !== undefined && falseWatches.length === 0 && judgments.length > 0 && right === judgments.length && runs.every((r) => r.askedWhileTicking === 0);
 writeFileSync(join(OUT, "pending-fixture.json"), JSON.stringify(result, null, 2));
 // Reader and helper log lines: timings, counts and window titles of the synthetic fixture only.
 writeFileSync(join(OUT, "log.txt"), log.join("\n") + "\n");

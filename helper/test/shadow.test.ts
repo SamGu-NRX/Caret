@@ -36,6 +36,8 @@ describe("shadow logger", () => {
     helper = new Helper({ store, askJev: null, shadow: true, allowBackgroundFocus: false, publish: (m) => published.push(m) });
   });
   afterEach(() => {
+    helper.shutdown();
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });

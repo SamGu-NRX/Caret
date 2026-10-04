@@ -19,6 +19,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveNumber } from "./flags.ts";
 import { fileURLToPath } from "node:url";
 import { ScreenModel } from "../src/model.ts";
 import { aboutValues } from "../src/fill/about.ts";
@@ -41,7 +42,7 @@ if (a.forms === undefined || a.out === undefined) throw new Error("--forms and -
 if (!["oracle", "eager", "live"].includes(a.jev ?? "")) throw new Error("--jev is oracle, eager or live");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
-const MAX_USD = Number(a["max-usd"]);
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 
 type Expect = "name" | "email" | "none" | { value: string };
 interface FormField {
