@@ -325,6 +325,30 @@ describe("the routing coordinator", () => {
     expect(coord.stats.avoided).toBe(7);
   });
 
+  it("drops a reply that arrives after a reader restart or after the user left every known window (review)", async () => {
+    jev.holding = true;
+    jev.router1 = () => ({ choice: "write", confidence: 0.95 });
+    show("Draft", 0);
+    expect(jev.routerCalls()).toHaveLength(1);
+    coord.readerRestarted();
+    jev.release();
+    await coord.idle();
+    expect(coord.stats.staleDrops).toBe(1);
+    expect(coord.writing).toBeNull();
+    expect(decisions).toEqual([]);
+    // The same with no context at all: the user went to an app whose windows the model does not hold.
+    clock.advance(ROUTER1_COOLDOWN_MS);
+    show("Draft two", 1);
+    expect(jev.routerCalls()).toHaveLength(2);
+    model.frontmostPid = 9999;
+    coord.observe();
+    jev.release();
+    await coord.idle();
+    expect(coord.stats.staleDrops).toBe(2);
+    expect(coord.writing).toBeNull();
+    expect(decisions).toEqual([]);
+  });
+
   it("refuses a request the privacy budget will not carry, before any call", async () => {
     // A conversation gives less than half its text; a field whose label is most of that text cannot go out.
     const chat: AppRef = { pid: 7373, bundleId: "com.apple.MobileSMS", name: "Messages" };
@@ -603,6 +627,21 @@ describe("the helper with routing on", () => {
     expect(jev.routerCalls("outcome")).toHaveLength(1);
   });
 
+  it("lists fill once a source window arrives while the user waits in an empty field (review)", async () => {
+    jev.other = jevPickingText(() => VALUE);
+    jev.router1 = () => ({ choice: "act", confidence: 0.9 });
+    const h = make(true);
+    void h.handleReader(snap([field(EMAIL, "", { label: "Email", frame: [100, 40, 200, 24] })], { at: clock.at, windowId: FORM, title: "Claim form", focused: true, focusedKey: EMAIL }));
+    await h.handleReader(focus(FORM, EMAIL, clock.at));
+    await settle(h);
+    expect(h.routing?.decisions.at(-1)?.local).toBe("noCapability");
+    clock.advance(1000);
+    void h.handleReader(snap([text("m/statictext:sig~0", `Dana Whitfield\n${VALUE}`)], { at: clock.at, windowId: SRC, app: MAIL_APP, title: "Signature", values: [value("email", VALUE, "m/statictext:sig~0")] }));
+    await settle(h);
+    expect(jev.routerCalls("outcome")).toHaveLength(1);
+    expect(h.routing?.decisions.at(-1)).toMatchObject({ breakpoint: "candidates", outcome: "act", route: "fillAll" });
+  });
+
   it("holds a loop's offer until the router chooses it, and logs a held offer it did not choose", async () => {
     const { Desk, roster, grid, cellKey, PEOPLE } = await import("./scene.ts");
     for (const choose of [true, false]) {
@@ -632,5 +671,79 @@ describe("the helper with routing on", () => {
         expect(h.memory.decisions().some((d) => d.offerKind === "loopNext" && d.reasons.includes("routedOut"))).toBe(true);
       }
     }
+  });
+
+  /** A loop on the desk whose next row is held for the router, with Router 1's reply held too; the desk's clock drives the helper. */
+  const heldLoop = async (): Promise<{ h: Helper; desk: InstanceType<typeof import("./scene.ts").Desk>; fire: () => void; next: string }> => {
+    const { Desk, roster, grid, PEOPLE } = await import("./scene.ts");
+    const desk = new Desk();
+    const due: { at: number; fn: () => void }[] = [];
+    memory.close();
+    memory = new MemoryStore(join(dir, `data-${Math.random().toString(36).slice(2)}`));
+    const h = new Helper({ store, memory, askJev: jev.ask, shadow: false, allowBackgroundFocus: false, publish: (m) => sent.push(m), readerLink: desk, now: () => desk.at, routing: { setTimer: (fn, ms) => (due.push({ at: desk.at + ms, fn }), () => undefined) } });
+    desk.attach(h);
+    const dst = grid();
+    const src = roster();
+    desk.showList(src);
+    desk.advance(1000);
+    desk.showGrid(dst);
+    desk.fill(dst, 0, 0, src.lines[0] as string);
+    desk.fill(dst, 1, 0, src.lines[1] as string);
+    await new Promise((r) => setImmediate(r));
+    const fire = (): void => {
+      for (const t of due.splice(0)) if (t.at <= desk.at) t.fn();
+    };
+    return { h, desk, fire, next: PEOPLE[2] as string };
+  };
+  const shown = (): number => sent.filter((m) => m.type === "patternOffer").length;
+
+  it("lets a held offer go when its family is turned off while the router decides (review)", async () => {
+    jev = new RouterJev();
+    jev.holding = true;
+    jev.router1 = () => ({ choice: "act", confidence: 0.9 });
+    sent = [];
+    const { h } = await heldLoop();
+    expect(h.patterns.heldIds()).toHaveLength(1);
+    h.handleSettings({ type: "settings", v: PROTOCOL_VERSION, at: Date.now(), roles: ["fill", "watch", "calendar", "words"], level: "balanced", paused: false });
+    expect(h.patterns.heldIds()).toEqual([]);
+    jev.release();
+    await h.routing?.idle();
+    expect(shown()).toBe(0);
+    expect(h.memory.decisions().some((d) => d.offerKind === "loopNext" && d.reasons.includes("roleOff"))).toBe(true);
+  });
+
+  it("asks the speak-now gate again on release: a budget spent meanwhile holds the offer (review)", async () => {
+    jev = new RouterJev();
+    jev.holding = true;
+    jev.router1 = () => ({ choice: "act", confidence: 0.9 });
+    sent = [];
+    const { h, desk } = await heldLoop();
+    for (let i = 0; i < 4; i++) h.gate.spoke(desk.at);
+    jev.release();
+    await h.routing?.idle();
+    expect(shown()).toBe(0);
+    expect(h.memory.decisions().some((d) => d.offerKind === "loopNext" && !d.speak && d.reasons.includes("hourlyBudget"))).toBe(true);
+  });
+
+  it("does not show a held offer whose value a memory entry added meanwhile would change (review)", async () => {
+    jev = new RouterJev();
+    jev.holding = true;
+    jev.router1 = () => ({ choice: "act", confidence: 0.9 });
+    sent = [];
+    const { h, desk, fire, next } = await heldLoop();
+    // A person whose alias is the next row's value: applyMemory now writes the full name instead.
+    const r = h.handleMemory({ type: "memoryRequest", v: PROTOCOL_VERSION, requestId: "p", op: "add", kind: "people", fields: { alias: next, name: `${next} Junior` } });
+    expect(r.error).toBeNull();
+    jev.release();
+    await h.routing?.idle();
+    desk.advance(ROUTER1_COOLDOWN_MS);
+    fire();
+    await new Promise((res) => setImmediate(res));
+    if (jev.held.length > 0) jev.release();
+    await h.routing?.idle();
+    expect(shown()).toBe(0);
+    expect(h.patterns.heldIds()).toEqual([]);
+    expect(h.routing?.decisions.at(-1)).toMatchObject({ outcome: "act", route: "workflow:loop" });
+    expect(h.memory.decisions().some((d) => d.offerKind === "loopNext" && !d.speak && d.reasons.includes("ungrounded"))).toBe(true);
   });
 });

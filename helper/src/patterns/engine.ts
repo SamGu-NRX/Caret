@@ -28,7 +28,7 @@ import type { Transfer } from "../transfers.ts";
 import type { RollingText } from "../rolling-text.ts";
 import type { TaskResult } from "../executor/executor.ts";
 import type { Plan } from "../executor/schema.ts";
-import { decide, type Decision } from "./gate.ts";
+import { decide, type Decision, type HoldReason } from "./gate.ts";
 import { LoopRecognizer, type LoopCell, type LoopEvent } from "./loops.ts";
 import { MemoryError, dontOfferMatch, routineProven, typedAboutKey, type MemoryStore, type RoutineRecord } from "./memory.ts";
 import { applyMemory, captureEdit } from "./preferences.ts";
@@ -110,6 +110,17 @@ export interface HeldPatternOffer {
 }
 
 type Cell = LoopCell | RoutineCell;
+
+/**
+ * An offer held for the router (EngineDeps.routed): the offer, the evidence its gate was given so release can ask the
+ * gate again, what showing it adds (a loopNext's alternatives), and whether its hourly budget unit is already spent.
+ */
+interface Held {
+  o: OfferState;
+  evidence: { hits: number; misses: number; paused: boolean; grounded: boolean };
+  after: (() => void) | null;
+  spent: boolean;
+}
 
 /**
  * What a pattern run depends on beyond its grant (B22): its offer's settings family and, for a routine's, the
@@ -272,15 +283,15 @@ export class PatternEngine {
     return id;
   }
 
-  /** Offers held for the router, by id, with what showing them adds (a loopNext's alternatives). */
-  private readonly held = new Map<string, { o: OfferState; hits: number; after: (() => void) | null }>();
+  /** Offers held for the router, by id (Held). */
+  private readonly held = new Map<string, Held>();
 
   /** The offers held for the router in this window. */
   heldOffers(windowId: string): HeldPatternOffer[] {
-    return [...this.held.values()].flatMap(({ o, hits }) =>
+    return [...this.held.values()].flatMap(({ o, evidence }) =>
       o.msg.windowId !== windowId
         ? []
-        : [{ id: o.msg.id, kind: o.msg.kind, windowId: o.msg.windowId, says: o.msg.says, skill: this.skills.activeSkill(o.routineId) !== null, hits, values: o.cells.length, from: [...new Set(o.msg.cells.map((c) => c.source.appName))] }],
+        : [{ id: o.msg.id, kind: o.msg.kind, windowId: o.msg.windowId, says: o.msg.says, skill: this.skills.activeSkill(o.routineId) !== null, hits: evidence.hits, values: o.cells.length, from: [...new Set(o.msg.cells.map((c) => c.source.appName))] }],
     );
   }
 
@@ -290,29 +301,41 @@ export class PatternEngine {
   }
 
   /**
-   * The router chose a held offer: it is shown now, with its hourly budget unit, unless what it copies or fills
-   * changed while it waited.
+   * The router chose a held offer. It is shown now, with its hourly budget unit, only if it would still be made: what
+   * it copies and fills is unchanged (recheck), a memory rule would still write the same values, and the speak-now gate
+   * passes again with the settings, permissions and the routine as they stand now. Otherwise it goes, logged.
    */
   release(id: string): void {
     const h = this.held.get(id);
     if (h === undefined) return;
     this.held.delete(id);
-    const stale = this.recheck(h.o);
-    if (stale !== null) {
-      this.log(h.o.msg.kind, h.o.msg.patternId, h.o.msg.windowId, { speak: false, reasons: ["ungrounded"], showProbability: h.o.msg.showProbability });
+    const o = h.o;
+    const routine = o.routineId === null ? null : this.deps.memory.routine(o.routineId);
+    const evidence = { ...h.evidence, paused: h.evidence.paused || (routine !== null && (routine.paused || routine.skillPaused)) };
+    const gone = o.routineId !== null && routine === null;
+    const stale = this.recheck(o) ?? this.memoryMoved(o);
+    const d = this.speakGate(o.msg.kind, o.cells, evidence, o.msg.windowId, o.msg.bundleId, h.spent);
+    if (gone || stale !== null || !d.speak) {
+      this.log(o.msg.kind, o.msg.patternId, o.msg.windowId, { speak: false, reasons: stale !== null || gone ? ["ungrounded", ...d.reasons] : d.reasons, showProbability: o.msg.showProbability });
       return;
     }
-    this.deps.gate.spoke(this.clock);
-    this.show(h.o);
+    if (!h.spent) this.deps.gate.spoke(this.clock);
+    this.show(o);
     h.after?.();
   }
 
-  /** The router did not choose a held offer: it goes without being shown. */
-  dropHeld(id: string): void {
+  /** Why a held offer's values are no longer what memory rules make of their sources now, or null. */
+  private memoryMoved(o: OfferState): string | null {
+    for (const c of o.cells) if (applyMemory(this.deps.memory, this.deps.hash, c.value, c.kind, c.dstShapeHash).value !== c.written) return `a memory rule changes what ${c.dstKey} gets`;
+    return null;
+  }
+
+  /** A held offer goes without being shown: the router did not choose it, or what it rests on changed (`why`). */
+  dropHeld(id: string, why: HoldReason[] = ["routedOut"]): void {
     const h = this.held.get(id);
     if (h === undefined) return;
     this.held.delete(id);
-    this.log(h.o.msg.kind, h.o.msg.patternId, h.o.msg.windowId, { speak: false, reasons: ["routedOut"], showProbability: h.o.msg.showProbability });
+    this.log(h.o.msg.kind, h.o.msg.patternId, h.o.msg.windowId, { speak: false, reasons: why, showProbability: h.o.msg.showProbability });
   }
 
   /** Unprompted runs started and not yet finished, for tests and evaluations to await. */
@@ -725,10 +748,17 @@ export class PatternEngine {
           return;
         }
         // Offered with Tab only if the whole gate would let it speak now; its budget unit was taken at the trigger.
+        // Routed, that offer waits for the router like any other (its unit stays spent).
         if (live && routine !== null && this.speaksNow(o, routine)) {
           o.state = "open";
           o.closedAt = null;
-          this.show(o);
+          const routed = this.deps.routed;
+          if (routed === undefined) this.show(o);
+          else {
+            this.offers.delete(o.msg.id);
+            this.held.set(o.msg.id, { o, evidence: { hits: routine.hits, misses: routine.misses, paused: false, grounded: true }, after: null, spent: true });
+            routed.held();
+          }
         }
       })
       .catch((e: unknown) => {
@@ -917,17 +947,7 @@ export class PatternEngine {
     const bundleId = w.app.bundleId;
     // The gate's time covers reading its context from memory, deciding, and writing the decision log.
     const decision = this.timings.time("gate", (): Decision => {
-      const decided = decide(
-        { offerKind: kind, ...evidence, grounded: evidence.grounded && cells.length > 0 && cells.every((c) => model.windows.has(c.srcWindowId)) },
-        {
-          shadow: this.deps.shadow(),
-          permission: memory.permission(model.focusedWindowId === windowId ? "writeHere" : "writeElsewhere"),
-          dontOfferHere: memory.dontOffer(kind, bundleId),
-          ignoredToday: memory.ignoredOn(kind, bundleId, this.clock),
-          settings: this.deps.gate.holds(familyOf(kind), this.clock),
-          routineSightings: this.deps.gate.rules.routineSightings,
-        },
-      );
+      const decided = this.speakGate(kind, cells, evidence, windowId, bundleId, false);
       const d: Decision = outranked ? { speak: false, reasons: [...decided.reasons, "outranked"], showProbability: decided.showProbability } : decided;
       this.log(kind, patternId, windowId, d);
       return d;
@@ -941,12 +961,30 @@ export class PatternEngine {
     }
     const routed = this.deps.routed;
     if (routed !== undefined) {
-      this.held.set(o.msg.id, { o, hits: evidence.hits, after: null });
+      this.held.set(o.msg.id, { o, evidence, after: null, spent: false });
       routed.held();
       return o;
     }
     this.deps.gate.spoke(this.clock);
     return this.show(o);
+  }
+
+  /** The speak-now gate for an offer of `kind` into `windowId`, as the user's settings and memory stand now. */
+  private speakGate(kind: OfferKind, cells: readonly Cell[], evidence: Held["evidence"], windowId: string, bundleId: string, budgetSpent: boolean): Decision {
+    const model = this.deps.model;
+    const memory = this.deps.memory;
+    const settings = this.deps.gate.holds(familyOf(kind), this.clock);
+    return decide(
+      { offerKind: kind, ...evidence, grounded: evidence.grounded && cells.length > 0 && cells.every((c) => model.windows.has(c.srcWindowId)) },
+      {
+        shadow: this.deps.shadow(),
+        permission: memory.permission(model.focusedWindowId === windowId ? "writeHere" : "writeElsewhere"),
+        dontOfferHere: memory.dontOffer(kind, bundleId),
+        ignoredToday: memory.ignoredOn(kind, bundleId, this.clock),
+        settings: budgetSpent ? settings.filter((h) => h !== "hourlyBudget") : settings,
+        routineSightings: this.deps.gate.rules.routineSightings,
+      },
+    );
   }
 
   /** Routine offers a first look built and has not yet adopted, by id; replaced by each first look. */
@@ -1227,14 +1265,18 @@ export class PatternEngine {
   /** The user's settings no longer allow these families: every open offer of theirs is withdrawn as `settings`. */
   withdrawFamilies(families: readonly Family[]): void {
     for (const o of this.offers.values()) if (o.state === "open" && families.includes(familyOf(o.msg.kind))) this.withdraw(o, "settings");
+    for (const [id, h] of [...this.held]) {
+      const kind = familyOf(h.o.msg.kind);
+      if (families.includes(kind)) this.dropHeld(id, this.deps.gate.holds(kind, this.clock).filter((x) => x !== "hourlyBudget"));
+    }
     if (families.includes("routine")) this.skills.withdrawAll();
   }
 
   /** Withdraws every open offer built from this memory entry: its routine, or a value a memory rule changed. */
   private withdrawDependents(id: string): void {
-    for (const o of this.offers.values()) {
-      if (o.state === "open" && (o.routineId === id || o.cells.some((c) => c.memory.includes(id)) || o.altMemory.has(id))) this.withdraw(o, "stale");
-    }
+    const depends = (o: OfferState): boolean => o.routineId === id || o.cells.some((c) => c.memory.includes(id)) || o.altMemory.has(id);
+    for (const o of this.offers.values()) if (o.state === "open" && depends(o)) this.withdraw(o, "stale");
+    for (const [hid, h] of [...this.held]) if (depends(h.o)) this.dropHeld(hid, ["ungrounded"]);
   }
 
   /**

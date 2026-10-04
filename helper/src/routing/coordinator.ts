@@ -200,8 +200,25 @@ export class RoutingCoordinator {
   readerRestarted(): void {
     this.focus = null;
     this.host = null;
-    this.candidatesDirty = true;
+    this.invalidate("reader");
+  }
+
+  /**
+   * No context holds any more (a new reader, or no window the user is in): a reply still on its way is stale when it
+   * arrives, a waiting context is dropped, and the write session ends. The next observation opens a new context.
+   */
+  private invalidate(why: "reader" | "none"): void {
+    this.gen++;
+    this.cur = null;
     this.prev = null;
+    this.candidatesDirty = true;
+    this.waiting = false;
+    this.cancelTimer?.();
+    this.cancelTimer = null;
+    if (this.writeSession !== null) {
+      this.deps.count?.(`route.write_closed_${why}`);
+      this.writeSession = null;
+    }
   }
 
   /** The write session open now, for the host's decision message and tests. */
@@ -227,7 +244,10 @@ export class RoutingCoordinator {
     if (!this.deps.live()) return;
     const inputs = { model: this.deps.model, focus: this.focus, host: this.host, readerSession: this.deps.readerSession(), memoryRevision: this.memoryRevision, settingsRevision: this.settingsRevision };
     const base = contextNow({ ...inputs, candidates: this.lastCandidates.map((c) => c.id) });
-    if (base === null) return;
+    if (base === null) {
+      if (this.prev !== null || this.cur !== null) this.invalidate("none");
+      return;
+    }
     let ctx = base;
     let bp = breakpoint(this.prev, base);
     if (bp !== null || this.candidatesDirty) {

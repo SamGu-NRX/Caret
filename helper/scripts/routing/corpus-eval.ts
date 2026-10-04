@@ -48,6 +48,8 @@ const { values: a } = parseArgs({
      * Groq call at all (the code-mode writer is off too), for when Groq's daily quota is spent or shared.
      */
     "ask-maker": { type: "string", default: "config" },
+    /** The helper runs on the wall clock, so a decision's latency includes its router calls (route entry). */
+    "real-clock": { type: "boolean", default: false },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
@@ -242,8 +244,8 @@ for (const m of moments) {
     publish: (msg) => {
       if (msg.type === "popup" || msg.type === "action" || msg.type === "fillProposal" || msg.type === "patternOffer" || msg.type === "alternatives") published.push(msg.type === "action" ? `action:${msg.app}` : msg.type);
     },
-    now: () => clock.at,
-    routing: { setTimer: clock.setTimer, hostWrites: () => hostWrites, onDecision: (d) => decisions.push(d) },
+    now: a["real-clock"] ? Date.now : () => clock.at,
+    routing: { ...(a["real-clock"] ? {} : { setTimer: clock.setTimer }), hostWrites: () => hostWrites, onDecision: (d) => decisions.push(d) },
     readerLink: { run: async () => ({ type: "verbResult", v: PROTOCOL_VERSION, id: "x", at: clock.at, outcome: "ok", detail: null }) },
     ask: ASK_MAKER === "jev" || a["ask-maker"] === "jev" ? { maker: "jev" } : { maker: "writer", writer: makeWriterPort(INTENT_ROUTE) },
     writer: a["ask-maker"] === "jev" ? null : makeWriterPort(WRITER_ROUTE),
@@ -406,7 +408,7 @@ const md = [
   "",
   `${rows.length} moments of ${corpus.moments.length}; exact (outcome, and route for act) ${exact}/${rows.length}. Jev spend $${spend.usd.toFixed(4)}: Router 1 ${spend.calls.router1} calls, Router 2 ${spend.calls.router2}, producers ${spend.calls.producer}.`,
   `Acted when it should not have: ${actWrong.length}${actWrong.length === 0 ? "" : ` (${actWrong.map((r) => `${r.id} expected ${r.expected.outcome}`).join(", ")})`}. Route right where both said act: ${routeRight}/${bothAct.length}.`,
-  `Router call latency ms p50 ${q(spend.routerMs, 0.5)?.toFixed(0)}, p95 ${q(spend.routerMs, 0.95)?.toFixed(0)}; route entry (breakpoint to decision, router-decided ambient moments) p50 ${q(rows.flatMap((r) => (r.by === "router1" || r.by === "router2" || r.by === "single") && r.latencyMs !== null ? [r.latencyMs] : []), 0.5)}, p95 ${q(rows.flatMap((r) => (r.by === "router1" || r.by === "router2" || r.by === "single") && r.latencyMs !== null ? [r.latencyMs] : []), 0.95)} (on the eval's clock, which does not advance during calls: see the call latency). Router input tokens mean ${(spend.routerTokens.reduce((x, y) => x + y, 0) / Math.max(1, spend.routerTokens.length)).toFixed(0)}.`,
+  `Router call latency ms p50 ${q(spend.routerMs, 0.5)?.toFixed(0)}, p95 ${q(spend.routerMs, 0.95)?.toFixed(0)}; route entry (breakpoint to decision) for router-decided moments p50 ${q(rows.flatMap((r) => (r.by === "router1" || r.by === "router2" || r.by === "single") && r.latencyMs !== null ? [r.latencyMs] : []), 0.5)}, p95 ${q(rows.flatMap((r) => (r.by === "router1" || r.by === "router2" || r.by === "single") && r.latencyMs !== null ? [r.latencyMs] : []), 0.95)}, for local decisions p50 ${q(rows.flatMap((r) => r.by === "local" && r.latencyMs !== null ? [r.latencyMs] : []), 0.5)}, p95 ${q(rows.flatMap((r) => r.by === "local" && r.latencyMs !== null ? [r.latencyMs] : []), 0.95)}${a["real-clock"] ? " (wall clock)" : " (the eval's fake clock, which does not advance during calls: see the call latency)"}. Router input tokens mean ${(spend.routerTokens.reduce((x, y) => x + y, 0) / Math.max(1, spend.routerTokens.length)).toFixed(0)}.`,
   "",
   "| Outcome | Said | Truth | Right | Precision | Recall |",
   "| --- | ---: | ---: | ---: | ---: | ---: |",
@@ -429,7 +431,7 @@ const md = [
   ...rows.map((r) => `| ${r.id} | ${r.category} | ${r.expected.outcome}${r.expected.route === null ? "" : `/${r.expected.route}`} | ${r.got.outcome}${r.got.route === null ? "" : `/${r.got.route}`} | ${r.by} | ${r.local ?? r.refused ?? ""} | ${r.answered ?? ""} | ${r.confidence?.toFixed(2) ?? ""} | ${r.routerCalls} | ${r.offered.join(", ")} | ${r.note ?? ""} |`),
   "",
 ];
-const stem = `corpus-${hostWrites ? "on" : "off"}${a["ask-maker"] === "jev" ? "-askjev" : ""}`;
+const stem = `corpus-${hostWrites ? "on" : "off"}${a["ask-maker"] === "jev" ? "-askjev" : ""}${a["real-clock"] ? "-clock" : ""}`;
 writeFileSync(join(OUT, `${stem}.md`), md.join("\n"));
 writeFileSync(join(OUT, `${stem}.json`), `${JSON.stringify({ hostWrites, spend, per, rows }, null, 2)}\n`);
 process.stdout.write(`${md.slice(0, 4).join("\n")}\n`);

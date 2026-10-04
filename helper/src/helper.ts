@@ -704,6 +704,8 @@ export class Helper {
         if (prevFocused !== null && moved) this.left(prevFocused, m.at);
         // Where the user is decides a write's permission: a run with no Tab whose next write is no longer where they are is revoked now (B22 review).
         if (moved) this.executor.recheck();
+        // Another window changed while the user is in an empty field: a source may have arrived, so fill may be listed now.
+        if (this.routing !== null && this.routing.context?.field?.empty === true && m.window.windowId !== this.routing.context.windowId) this.routing.candidatesChanged();
         this.routing?.observe();
         return null;
       }
