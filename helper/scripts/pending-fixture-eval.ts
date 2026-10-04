@@ -12,7 +12,9 @@
 // either is ever the frontmost app:
 //
 //   /usr/bin/lockf -k ~/.long-run/locks/gui.lock env CARET_GUI_LOCK=held CARET_ENV_FILE=/path/to/.env \
-//     node scripts/pending-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR
+//     node scripts/pending-fixture-eval.ts --bin ../apps/screen-reader/.build/debug --out DIR [--max-usd 0.20]
+//
+// Live Jev stops before spending more than --max-usd (scripts/spend.ts).
 import { execFile, execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -25,6 +27,8 @@ import { Store } from "../src/store.ts";
 import { loadJevKey, makeJevClient } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type Activity, type HelperMessage, type TaskState } from "../src/protocol.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { positiveNumber } from "./flags.ts";
+import { capJev, DEFAULT_MAX_USD } from "./spend.ts";
 import { newLaunchSecret, sendSecret } from "../src/launch.ts";
 /** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
 const launchSecret = newLaunchSecret();
@@ -35,6 +39,7 @@ const { values: a } = parseArgs({
     out: { type: "string" },
     runs: { type: "string", default: "10" },
     "cpu-seconds": { type: "string", default: "45" },
+    "max-usd": { type: "string", default: DEFAULT_MAX_USD },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "b4-pending.sock") },
   },
 });
@@ -45,6 +50,7 @@ const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
 const RUNS = Number(a.runs);
 const CPU_S = Number(a["cpu-seconds"]);
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 const TEST = "Caret Fixture — Test run";
 const UPLOAD = "Caret Fixture — Upload";
 const ORDINARY = ["reference", "distractors", "claim", "schedule", "roster", "executor", "notes"];
@@ -80,10 +86,11 @@ const sent: HelperMessage[] = [];
 const log: string[] = [];
 const dataDir = mkdtempSync(join(tmpdir(), "caret-pending-eval-"));
 const store = new Store(dataDir);
+const jev = capJev(makeJevClient(() => loadJevKey()), MAX_USD);
 let server: HelperServer | null = null;
 const helper = new Helper({
   store,
-  askJev: makeJevClient(() => loadJevKey()),
+  askJev: jev.ask,
   shadow: false,
   allowBackgroundFocus: false,
   publish: (m) => {
@@ -397,6 +404,7 @@ result.summary = {
 };
 result.runResults = runs;
 result.pendingStats = helper.pending.stats;
+result.jev = { calls: jev.calls(), usd: jev.usd(), maxUsd: MAX_USD };
 result.asks = helper.pending.asks;
 result.frontAfter = fronts[fronts.length - 1];
 result.frontChanges = fronts.slice(1).map((f) => ({ at: f.at, pid: f.pid, name: f.name }));
