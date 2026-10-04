@@ -43,8 +43,20 @@ export function planSpec(d: PlanDraft): PopupSpecT {
     const more = writes.length - rows.length;
     blocks.push({ type: "fields", rows, ...(more > 0 ? { more } : {}) });
   }
+  // An Ask's form controls the user sets (a select's option, a date), and the fields Caret never types (B25).
+  const controls = d.controls ?? [];
+  if (controls.length > 0 || (d.leftToYou ?? null) !== null) {
+    blocks.push({
+      type: "facts",
+      rows: [
+        ...controls.map((c) => ({ label: `You set ${c.name}`, value: { text: c.display, ref: { rule: "fieldLabel", derived: [node(windowId, c.key)] } } })),
+        ...(d.leftToYou === null || d.leftToYou === undefined ? [] : [{ label: "You type", value: { text: d.leftToYou, ref: { rule: "plan", derived: [{ node: windowId }] } } }]),
+      ],
+    });
+  }
   const h = d.checked.handoff;
-  if (h !== null) {
+  // A hand-off step that only carries an Ask's controls is listed above, not as a press.
+  if (h !== null && !controls.some((c) => c.key === h.node.key)) {
     const label = h.label === "" ? "the unlabelled button" : h.label;
     blocks.push({ type: "facts", rows: [{ label: h.why === "unverifiable" ? "You press" : `You press (${h.why})`, value: { text: label, ref: { ...node(windowId, h.node.key), quote: h.label } } }] });
   }

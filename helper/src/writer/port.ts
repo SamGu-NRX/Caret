@@ -5,9 +5,11 @@ import { chat, type ChatRoute } from "./chat.ts";
 import type { Snippet } from "../privacy.ts";
 import { readKey } from "./env.ts";
 import { extractProgram, PLAN_SYSTEM, PlanInputSchema, planUserMessage } from "./plan-prompt.ts";
+import { INTENT_SYSTEM, IntentInputSchema, intentResponseFormat, intentUserMessage } from "./intent-prompt.ts";
 
 export interface WriterRequest {
-  kind: "plan" | "polish" | "memoryProposal";
+  /** "intent" (B25): an Ask's intent as strict JSON over the snapshot's refs (intent-prompt.ts). */
+  kind: "plan" | "intent" | "polish" | "memoryProposal";
   /** Names the disclosure the caller accounted for this request; required so no write goes out unaccounted. */
   disclosureId: string;
   /**
@@ -24,7 +26,8 @@ export interface WriterResult {
   /** The model id the provider says served the request. */
   model: string;
   provider: string;
-  output: { program: string | null; reply: string };
+  /** `program` for a plan; `json` for an intent, parsed but not yet checked against its schema. */
+  output: { program: string | null; reply: string; json?: unknown };
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
@@ -45,8 +48,24 @@ export function makeWriterPort(route: ChatRoute, opts: { key?: () => string; fet
   return {
     route,
     async write(req) {
-      if (req.kind !== "plan") throw new Error(`writer kind ${req.kind} is not implemented yet`);
+      if (req.kind !== "plan" && req.kind !== "intent") throw new Error(`writer kind ${req.kind} is not implemented yet`);
       if (req.disclosureId.length === 0) throw new Error("writer request has no disclosureId");
+      if (req.kind === "intent") {
+        const input = IntentInputSchema.parse(req.input);
+        const messages = [
+          { role: "system" as const, content: INTENT_SYSTEM },
+          { role: "user" as const, content: intentUserMessage(input) },
+        ];
+        const signal = AbortSignal.any([req.signal, AbortSignal.timeout(WRITER_TIMEOUT_MS)]);
+        const r = await chat(route, key(), messages, req.maxOutputTokens, signal, opts.fetchFn, intentResponseFormat(input));
+        let json: unknown;
+        try {
+          json = JSON.parse(r.text);
+        } catch {
+          json = undefined;
+        }
+        return { model: r.servedModel, provider: route.provider, output: { program: null, reply: r.text, json }, inputTokens: r.inputTokens, outputTokens: r.outputTokens, reasoningTokens: r.reasoningTokens, latencyMs: r.latencyMs, costUsd: r.costUsd };
+      }
       const input = PlanInputSchema.parse(req.input);
       const messages = [
         { role: "system" as const, content: PLAN_SYSTEM },

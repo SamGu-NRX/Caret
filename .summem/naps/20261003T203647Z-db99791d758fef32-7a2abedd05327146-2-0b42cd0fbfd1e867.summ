@@ -1,0 +1,1 @@
+swift test under the heavy lock peaks at 0.25-0.44 GB RSS (B18): ask for a 2 GiB lease, since 6 GiB is refused below ~17 GiB free. Routine evals must copy new values each occurrence, or a closed destination's text is credited as the next source (B19).

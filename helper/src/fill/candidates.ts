@@ -7,6 +7,7 @@ import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { nearestText } from "./descriptor.ts";
 import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.ts";
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
+import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
 
 export interface Candidate {
   id: string;
@@ -307,10 +308,11 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     };
     for (const v of w.values) {
       const node = w.nodes.get(v.nodeKey);
+      if (secretValue(w, v)) continue;
       if (node !== undefined && !note(node, v.text, lineHolding(nodeText(node), v.text), valueKinds(v), null)) return;
     }
     for (const node of w.nodes.values()) {
-      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
+      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) {
         const sp = spanOfLine(raw);
@@ -376,7 +378,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (outOfTime()) return false;
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
-      if (node === undefined) continue;
+      if (node === undefined || secretValue(w, v)) continue;
       const line = lineHolding(nodeText(node), v.text);
       const terms = termsOf(node, line, [v.kind]);
       const names = wantsNames ? namesOutside(line, valuesOf.get(node.key)) : [];
@@ -386,7 +388,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       if (outOfTime()) return false;
       stats.nodes++;
-      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
+      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
@@ -514,7 +516,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (full() || outOfTime()) return stop();
       stats.values++;
       const node = w.nodes.get(v.nodeKey);
-      if (node === undefined) continue;
+      if (node === undefined || secretValue(w, v)) continue;
       add(w, node, v.text, v.kind, () => contextFor(w, node, v.text));
     }
   }
@@ -526,7 +528,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       if (full() || outOfTime()) return stop();
       stats.nodes++;
-      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
+      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
@@ -547,6 +549,14 @@ const constant =
     x;
 
 /**
+ * Whether a typed value is one Caret never types: by its shape, or because the field that holds it is labelled as
+ * one ("Password" holding "hunter2"; B25 review).
+ */
+function secretValue(w: WindowState, v: TypedValue): boolean {
+  return valueKind(v.text) !== null || labelKind(w.nodes.get(v.nodeKey)?.label) !== null;
+}
+
+/**
  * The span a screen line offers: a "Label: value" line offers its value, with the label as context; a
  * line too short or too long to be a value, with no letter or digit, or ending in a colon offers none.
  */
@@ -555,8 +565,11 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
   if (line.length < MIN_LINE || line.length > MAX_LINE || !/[\p{L}\p{N}]/u.test(line)) return null;
   if (line.endsWith(":")) return null; // a label, not a value
   const m = LABELLED.exec(line);
-  if (m !== null && m[1] !== undefined && m[2] !== undefined) return { line, text: m[2].trim(), label: m[1].trim() };
-  return { line, text: line, label: null };
+  // A value Caret never types (a password, a card or account number, a government ID, a one-time code or an API
+  // key, by its label or its shape: memory/sensitive.ts) is no span: it is never offered, so no fill or plan can
+  // choose it, and it never goes out in a question (B25 lead decision 2).
+  if (m !== null && m[1] !== undefined && m[2] !== undefined) return sensitiveKind(m[1], m[2]) === null ? { line, text: m[2].trim(), label: m[1].trim() } : null;
+  return valueKind(line) === null ? { line, text: line, label: null } : null;
 }
 
 /**
@@ -566,7 +579,7 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
 export function labelledLines(w: WindowState): { label: string; value: string; node: Node }[] {
   const out: { label: string; value: string; node: Node }[] = [];
   for (const node of w.nodes.values()) {
-    const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
+    const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
     if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
     for (const raw of nodeText(node).split(/\r?\n/)) {
       const s = spanOfLine(raw);
@@ -713,7 +726,7 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
   for (const w of model.windows.values()) {
     if (w.window.windowId === targetWindowId) continue;
     for (const node of w.nodes.values()) {
-      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure");
+      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) {
         const line = raw.replace(/\s+/g, " ").trim();

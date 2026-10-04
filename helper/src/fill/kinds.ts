@@ -204,8 +204,19 @@ const DATE_PART: ReadonlyMap<string, RegExp> = new Map([
   ["year", /^\d{4}$/u],
 ]);
 const ORGANIZATION = /\b(?:company|employer|organi[sz]ation)\b/;
+/** A label that spells out a date's format: "Moved in (MM/YYYY)", "Start date (DD.MM.YYYY)". */
+const DATE_FORMAT = /\b(?:mm|dd|yyyy|yy)(?:\s*[/.-]\s*(?:mm|dd|yyyy|yy))+\b/iu;
+/** A label that shows the currency beside the field, so the field takes the number alone: "Monthly rent ($)". */
+export const CURRENCY_SHOWN = /\(\s*(?:\$|€|£|¥|usd|eur|gbp)\s*\)/iu;
 /** A company's name: up to eight words with no brackets, @ or sentence punctuation ("Ridgeline Outdoor Co", "Acme, Inc.", "3M"). */
-const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^()[\]{}@<>;:!?]+$/u;
+const ORG_NAME = /^(?=(?:\S+\s*){1,8}$)[^()[\]{}@<>;:!?$€£¥]+$/u;
+/**
+ * What may follow a comma in a company's name: a legal suffix ("Acme, Inc.", "Ridgeline Outdoor, LLC"). Anything
+ * else after a comma is a list: B25's larger note budget offered "Brightline Dental Labs, lab technician, $5,200/mo
+ * gross", and live Jev put it in Current employer (evidence/screen/b25/fill-dev-1; a rule tuned on the B24 corpus).
+ */
+const ORG_SUFFIX = /^(?:inc|llc|ltd|limited|co|corp|corporation|company|gmbh|plc|llp|lp|pllc|pc|sa|s\.a|ag|bv|nv|pty(?: ltd)?|srl|oy|ab|as|kk)\.?$/iu;
+const orgName = (v: string): boolean => ORG_NAME.test(v) && v.split(",").slice(1).every((p) => ORG_SUFFIX.test(p.trim()));
 /** Kinds of value that have their own shape: none of them is a city, a street line or a name. */
 const SHAPED: ReadonlySet<TextKind> = new Set(["email", "url", "phone", "amount", "address", "street"]);
 
@@ -345,6 +356,16 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
   }
   if (PERSON_NAME.test(s)) fits.add("name");
   const v = value.trim();
+  // A label that spells out a numeric date format takes a value in that format only (B25: an Ask's scoped fill wrote
+  // "moved in Aug 2022, rent $1,450/mo" into "Moved in (MM/YYYY)", evidence/screen/b25/asks-dev-1-gpt-oss-120b; tuned
+  // on the B24 corpus). Converting "Aug 2022" to it is the value resolver's work, which plans do not do yet.
+  const format = DATE_FORMAT.exec(s)?.[0];
+  if (format !== undefined) {
+    const shape = new RegExp(`^${format.replace(/\s+/g, "").replace(/yyyy/giu, "\\d{4}").replace(/yy/giu, "\\d{2}").replace(/mm|dd/giu, "\\d{1,2}").replace(/[/.]/g, (c) => `\\${c}`)}$`, "u");
+    if (!shape.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is not written as ${format.toUpperCase()}, the format the field asks for`;
+  }
+  // A field that shows its currency takes the number alone; the same scoreboard wrote "$1,450" into "Monthly rent ($)".
+  if (CURRENCY_SHOWN.test(s) && /[$€£¥]/u.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' carries a currency sign, and the field shows its currency itself`;
   // A field for one part of a date takes only that part: the B24 corpus's "Day" (under Date of birth) took a
   // whole "04/12/1990" (evidence/screen/b24/after).
   // The field's own label decides (a placeholder "DD" beside "Day" must not hide it; fix-check review).
@@ -355,7 +376,7 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
   // "Junior Analyst at Ridgeline Outdoor Co (since 2024)" from a note's line (evidence/screen/b24/dev-4).
   // Only a field for the organization's name: "Company email" or "Employer phone" takes an email or a phone,
   // checked below (review). Digits are allowed: "3M", "Studio 54".
-  if (ORGANIZATION.test(s) && [...fits].every((f) => f === "name") && !ORG_NAME.test(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is more than a name, and the field takes a company or organization name`;
+  if (ORGANIZATION.test(s) && [...fits].every((f) => f === "name") && !orgName(v)) return `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is more than a name, and the field takes a company or organization name`;
   // A bare clock time goes only in a field that takes a time: the B24 Ask scoreboard's planner wrote "8:15" into
   // Delivery instructions for "actually make the delivery 8:15 instead", whose time field is a control Caret
   // does not write (asks-dev-1).
