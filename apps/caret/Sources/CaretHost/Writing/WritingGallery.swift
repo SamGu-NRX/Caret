@@ -42,7 +42,41 @@ extension Gallery {
             Item(name: "writing-open-fix", view: AnyView(WritingScene(moment: .open(downs: 1), character: character))),
             Item(name: "writing-open-fix-all", view: AnyView(WritingScene(moment: .open(downs: 1 + fixAllRow), character: character))),
             Item(name: "writing-toast", view: AnyView(WritingScene(moment: .toast, character: character))),
+            Item(name: "writing-line-choice", view: AnyView(WritingChoiceScene(character: character))),
+            Item(name: "writing-not-fixed", view: AnyView(
+                LineView(content: WritingCopy.error(WritingCopy.notFixed("revisionChanged")), character: character, animated: false)
+            )),
         ]
+    }
+
+    static let choiceText = "Can you adress the feedback?"
+
+    /// A misspelling whose checker answers disagree (lead decision 2): both on the line, no Tab.
+    static func choiceOffer() -> WritingOffer {
+        let text = choiceText
+        let target = TargetIdentity(pid: 4242, bundleID: "com.apple.TextEdit", windowID: "4242-1", elementID: "body", elementRevision: UTF16Text.digest(text))
+        let live = RangeEdit.Live(target: target, value: text, selection: .caret(UTF16Text.length(text)))
+        let mark = WritingCorrection(
+            span: UTF16Span((text as NSString).range(of: "adress")), original: "adress", replacement: "address",
+            otherReplacements: ["dress"], kind: .spelling, reason: WritingCopy.notInDictionary, source: .spellChecker, needsChoice: true
+        )
+        // Synthetic content built from the same values every time; it cannot fail to make an offer.
+        return WritingOffer.correction(marks: [mark], checkedRevision: UTF16Text.digest(text), live: live, now: StillClock().now)!
+    }
+}
+
+/// The sentence with its one mark, and the line naming both answers under it.
+struct WritingChoiceScene: View {
+    var character: FigureCharacter
+
+    var body: some View {
+        let offer = Gallery.choiceOffer()
+        VStack(alignment: .leading, spacing: 6) {
+            MarkedSentence(text: Gallery.choiceText, marks: offer.marks, active: offer.active)
+            CorrectionLineView(preview: offer.linePreview, hints: offer.lineHints, spoken: offer.spokenLine, character: character, choices: offer.lineChoices)
+                .padding(.leading, max(0, WritingScene.width(of: "Can you ") - 30))
+        }
+        .fixedSize()
     }
 }
 

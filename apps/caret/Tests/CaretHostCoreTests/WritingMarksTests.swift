@@ -78,6 +78,26 @@ final class WritingMarksTests: XCTestCase {
         XCTAssertEqual(against.marks, [], "the word was typed on")
     }
 
+    /// "she" was a sentence start; with "Today " in front it no longer is.
+    func testTextTypedAtTheSentencesStartOrAPeriodRemovedBeforeItDropsIt() {
+        let text = "Hi. she left. "
+        let capital = WritingCorrection(span: UTF16Span(start: 4, end: 7), original: "she", replacement: "She", kind: .punctuation, reason: "", source: .rule(.sentenceCapital))
+        var typed = marks(text, [capital], sentence: UTF16Span(start: 4, end: 13))
+        typed.observe(field: field, value: "Hi. Today she left. ")
+        XCTAssertEqual(typed.marks, [])
+        var unpunctuated = marks(text, [capital], sentence: UTF16Span(start: 4, end: 13))
+        unpunctuated.observe(field: field, value: "Hi she left. ")
+        XCTAssertEqual(unpunctuated.marks, [])
+    }
+
+    func testTheNextSentenceTypedAfterTheSpaceKeepsTheMark() {
+        let text = "Teh end. "
+        var m = marks(text, [correction("Teh", in: text, "The")], sentence: UTF16Span(start: 0, end: 8))
+        m.observe(field: field, value: "Teh end. N")
+        m.observe(field: field, value: "Teh end. Next")
+        XCTAssertEqual(m.marks.map(\.correction.original), ["Teh"])
+    }
+
     func testAnotherFieldDropsEveryMark() {
         let text = "We will recieve it. "
         var m = marks(text, [correction("recieve", in: text, "receive")])

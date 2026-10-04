@@ -203,6 +203,11 @@ public struct WritingOffer: Equatable, Sendable {
         return Preview(before: "", original: active.original, replacement: WritingCopy.either(fixes), after: "")
     }
 
+    /// The answers a line that needs a choice shows as equals; nil for a line with one fix.
+    public var lineChoices: [String]? {
+        active.needsChoice ? alternatives.filter { $0.kind == .fix }.map(\.label) : nil
+    }
+
     public var lineHints: [Hint] {
         if active.needsChoice { return [Hint(key: "↓", label: WritingCopy.chooseHint)] }
         return [Hint(key: "Tab", label: WritingCopy.fixHint), Hint(key: "↓", label: WritingCopy.moreHint)]

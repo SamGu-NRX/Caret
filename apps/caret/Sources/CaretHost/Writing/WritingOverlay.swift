@@ -81,7 +81,9 @@ final class WritingOverlay {
             panel.setContent(WritingAlternativesView(offer: offer))
             panel.text = "writing list"
         default:
-            panel.setContent(CorrectionLineView(preview: offer.linePreview, hints: offer.lineHints, spoken: offer.spokenLine, character: character))
+            panel.setContent(CorrectionLineView(
+                preview: offer.linePreview, hints: offer.lineHints, spoken: offer.spokenLine, character: character, choices: offer.lineChoices
+            ))
             panel.text = "writing line"
         }
         place(placement, role: role, enteringFade: entering && !panel.isVisible)

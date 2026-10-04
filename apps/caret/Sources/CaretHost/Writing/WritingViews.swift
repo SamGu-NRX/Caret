@@ -42,15 +42,15 @@ struct CorrectionLineView: View {
     var hints: [Hint]
     var spoken: String
     var character: FigureCharacter
+    /// Set for a correction that needs a choice: the answers, shown as equals.
+    var choices: [String]? = nil
 
     var body: some View {
         HStack(spacing: 0) {
             FigureView(character: character, state: .offering, facing: .right, height: 11, animated: false)
                 .frame(width: PopupView.figureSlot)
             Spacer().frame(width: 8)
-            (Text(preview.before).foregroundColor(Color(token: Tokens.secondary))
-                + Text(preview.replacement).font(.system(size: 13, weight: .semibold)).foregroundColor(Color(token: Tokens.ink))
-                + Text(preview.after).foregroundColor(Color(token: Tokens.secondary)))
+            words
                 .font(.system(size: 13))
                 .lineLimit(1)
                 .truncationMode(.head)
@@ -67,6 +67,17 @@ struct CorrectionLineView: View {
         .panelChrome(radius: 8)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(spoken)
+    }
+
+    /// The fix in Ink semibold between its context in Secondary. With `choices` (a correction
+    /// that needs a choice), each answer in Ink semibold and the "or" between them in Secondary.
+    private var words: Text {
+        let strong = { (s: String) in Text(s).font(.system(size: 13, weight: .semibold)).foregroundColor(Color(token: Tokens.ink)) }
+        let quiet = { (s: String) in Text(s).foregroundColor(Color(token: Tokens.secondary)) }
+        if let choices, !choices.isEmpty {
+            return choices.dropFirst().reduce(strong(WritingCopy.visible(choices[0]))) { $0 + quiet(" or ") + strong(WritingCopy.visible($1)) }
+        }
+        return quiet(preview.before) + strong(preview.replacement) + quiet(preview.after)
     }
 }
 

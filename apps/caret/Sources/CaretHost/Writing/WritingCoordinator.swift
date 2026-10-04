@@ -86,8 +86,16 @@ final class WritingCoordinator {
     // MARK: - Reads of the focused field
 
     func handle(_ change: FocusObserver.Change) {
-        guard allowed(), let element = change.element, let field = FieldReader.read(element),
-              policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
+        guard allowed(), let element = change.element else { return leaveField() }
+        // A read of the same element that fails, or comes back without its role, is a slow app,
+        // not the user leaving: keep the marks, the line and the result until a read says more.
+        let sameElement = self.element.map { CFEqual($0, element) } ?? false
+        guard let field = FieldReader.read(element) else {
+            if sameElement { return status.increment("writing.readFailed") }
+            return leaveField()
+        }
+        if sameElement, field.role == nil { return status.increment("writing.readFailed") }
+        guard policy.allows(pid: field.identity.pid, bundleID: field.identity.bundleID),
               !field.secure, Self.isProse(element, field: field)
         else { return leaveField() }
         if marks.observe(field: field.identity, value: field.value) {
@@ -411,10 +419,11 @@ final class WritingCoordinator {
         let alternative = taken?.claimID == result.claim.claimID ? taken?.alternative : nil
         taken = nil
         // Focus moved on while the write ran: the result has no field to report on here, and its
-        // ⌘Z must not wait for a key meant for another field.
-        guard let field, field.identity.elementID == result.claim.offer.target.elementID,
-              field.identity.windowID == result.claim.offer.target.windowID, field.identity.pid == result.claim.offer.target.pid
-        else {
+        // ⌘Z must not wait for a key meant for another field. Asked of the app now, not of the
+        // last read, which can lag a click by one coalesced notification.
+        let target = result.claim.offer.target
+        let focusedNow = FieldReader.readFocused(pid: target.pid)?.field.identity
+        guard field != nil, focusedNow?.elementID == target.elementID, focusedNow?.windowID == target.windowID else {
             ownWrite = nil
             recheckAfterWrite = nil
             return status.increment("writing.resultForAnotherField")

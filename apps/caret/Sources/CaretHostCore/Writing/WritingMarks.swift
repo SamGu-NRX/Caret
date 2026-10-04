@@ -115,9 +115,12 @@ public struct WritingMarks: Equatable, Sendable {
             var moved = mark
             let span = mark.correction.span
             let s = mark.sentence
-            // A replacement touches the sentence where the two overlap; a pure insertion only
-            // strictly inside it, so text typed after its end (the next sentence) leaves it be.
-            let touches = oldEnd > prefix ? prefix < s.end && oldEnd > s.start : prefix > s.start && prefix < s.end
+            // The sentence's context reaches back over the two units before it (". "), which the
+            // capital rule reads. A replacement touches it where the two overlap; a pure insertion
+            // anywhere from just after that context to before the sentence's end ("Today " typed
+            // in front of "she left."), but not at or after its end: the next sentence leaves it be.
+            let context = max(0, s.start - 2)
+            let touches = oldEnd > prefix ? prefix < s.end && oldEnd > context : prefix > context && prefix < s.end
             if touches { return nil }
             // Untouched, the sentence lies wholly before the edit or wholly after it.
             if s.start >= oldEnd, s.end > prefix { moved.sentence = s.shifted(by: delta) }
