@@ -126,6 +126,8 @@ export interface DocumentInfo {
 export interface StoreHooks {
   /** Runs between writing the temporary file and installing it: tests use it to play an editor saving at that moment. */
   beforeInstall?: (doc: DocId) => void;
+  /** Runs right after the current file is renamed aside, before its bytes are compared: the narrowest window. */
+  afterAside?: (doc: DocId) => void;
 }
 
 export const revisionOf = (b: Buffer | string): string => `sha256:${createHash("sha256").update(b).digest("hex")}`;
@@ -356,6 +358,7 @@ export class MemoryDocumentStore {
           if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new MemoryConflictError(file, `${file} was removed outside Caret while it saved`, null);
           throw e;
         }
+        this.hooks.afterAside?.(doc);
         let current: string | null;
         try {
           current = readRegular(aside, file).revision;

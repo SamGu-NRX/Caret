@@ -287,6 +287,16 @@ describe("the memory document store", () => {
     expect(readFileSync(path, "utf8")).toBe("# About me\n\nwritten by the editor\n");
   });
 
+  it("an editor creating the file after Caret renamed it aside wins: the exclusive link refuses Caret's install", () => {
+    store.put(about("about-aaa", "one"));
+    const path = join(root, "about-me.md");
+    const base = revisionOf(readFileSync(path));
+    store.hooks.afterAside = () => writeFileSync(path, "# About me\n\nsaved by the editor just now\n");
+    expect(() => store.save("about-me", base, "# About me\n\nCaret's\n")).toThrow(/was written outside Caret while it saved; keeping that version/);
+    expect(readFileSync(path, "utf8")).toBe("# About me\n\nsaved by the editor just now\n");
+    expect(readdirSync(root).sort()).toEqual(["about-me.md", "skills"]);
+  });
+
   it("does not report its own writes as changes, and reports an external edit, removal and a new duplicate id", () => {
     store.put(about("about-aaa", "one"));
     store.put({ id: "people-p1", kind: "people", status: "active", noticed: null, fields: { alias: "Dana", name: "Dana Reyes" } });
