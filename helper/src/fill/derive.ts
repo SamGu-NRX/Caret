@@ -9,6 +9,8 @@ import { words } from "./kinds.ts";
 export type NamePart = "first" | "middle" | "last" | "full";
 export type AddressPart = "street" | "unit" | "city" | "state" | "zip";
 export type FieldPart = NamePart | AddressPart;
+/** A field's part as fill asks for it: fieldPart's parts, or (B27) a place's country, which only fill derives. */
+export type FillPart = FieldPart | "country";
 
 const FIRST = /\b(?:first|given|forename)\b/;
 const MIDDLE = /\bmiddle\b/;
@@ -146,15 +148,41 @@ export function splitAddress(text: string): Partial<Record<AddressPart, string>>
   return out;
 }
 
+/** Whether a field asks for a country ("Country", "Country of residence"), not a country code. Written for common form labels, not measured. */
+export function asksCountry(label: string | null): boolean {
+  if (label === null) return false;
+  const s = label.toLowerCase();
+  return /\bcountry\b/.test(s) && !/\b(?:code|calling|dial(?:ling)?)\b/.test(s);
+}
+
+const PLACE_WORDS = /^\p{L}[\p{L} .'’-]*$/u;
+
+/**
+ * The city, state and country of a place written "City, State" or "City, State, Country", as a note's "Location:
+ * Oakland, California, United States (in the Bay Area)" says it (B27: Greenhouse's Country and City dropdowns). The
+ * second part must be a US state, which is what tells a place from a list of names or a "Last, First" name; a remark in
+ * parentheses closing the last part is left out. Each part is a substring of `text`. Null for anything else, or when
+ * a part is not plain words.
+ */
+export function splitPlace(text: string): { city: string; state: string; country: string | null } | null {
+  const parts = text.split(",").map((p) => p.trim());
+  if (parts.length < 2 || parts.length > 3) return null;
+  parts[parts.length - 1] = (parts.at(-1) as string).replace(/\s*\([^()]*\)$/u, "");
+  if (!parts.every((p) => PLACE_WORDS.test(p) && text.includes(p)) || !isState(parts[1] as string)) return null;
+  return { city: parts[0] as string, state: parts[1] as string, country: parts[2] ?? null };
+}
+
 /**
  * Whether a value reads as the part of a name or an address a field asks for: a person's full name splits
  * (splitName), a first, middle or last name is words of letters, a ZIP code is five digits (or ZIP+4), a
  * state is letters, and a unit names one. Street and city are left to kinds.ts misfit, which already reads
  * them. A sentence in a name field ("Dr. Simone Achebe, my manager at Ridgeline") does not fit.
  */
-export function partFits(part: FieldPart, value: string): boolean {
+export function partFits(part: FillPart, value: string): boolean {
   const v = value.trim();
   switch (part) {
+    case "country":
+      return PLACE_WORDS.test(v);
     case "full":
       return splitName(v).kind === "split";
     case "first":

@@ -12,13 +12,13 @@ import { randomInt, randomUUID } from "node:crypto";
 import { PROTOCOL_VERSION, type FillAsk, type FillField, type FillHandoff, type FillMemory, type FillProposal, type FillSource, type FillWithheld, type Node, type ValueKind } from "../protocol.ts";
 import { nodeText, type ScreenModel, type WindowState } from "../model.ts";
 import { candidateKinds, candidateTexts, collectCandidates, cutKinds, describeCandidate, labelledCandidate, labelledLines, type Candidate } from "./candidates.ts";
-import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap } from "./kinds.ts";
+import { CURRENCY_SHOWN, fieldKinds, fieldTerms, isKindTerm, isNameLike, kindTerm, misfit, NAME_TERM, overlap, textKind, words } from "./kinds.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
 import { consentLike, describeControl, formControls, inWebArea, optionInText, type Control, type FormControl } from "./controls.ts";
-import { fieldPart, joinName, namePart, partFits, splitAddress, splitName, type FieldPart } from "./derive.ts";
+import { asksCountry, fieldPart, joinName, namePart, partFits, splitAddress, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { clockTime, readDate } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
 import type { ResolveContext } from "../values/resolve.ts";
@@ -27,8 +27,36 @@ export const NONE = "none";
 /** The proposal's model name when a cut withheld every field and Jev was not asked. */
 export const NOT_ASKED = "not asked";
 export const FILLABLE_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "AXComboBox"]);
-/** A form question beyond this many fields is cut to the fields nearest the trigger. Assumed. */
+/**
+ * A form question beyond this many inputs is cut, keeping the trigger, then the inputs whose labels share the most words
+ * with the other windows, then the nearest (formInputs). A run of CHECKBOX_RUN or more sibling boxes counts as one.
+ * Assumed.
+ */
 export const MAX_FIELDS = 20;
+/**
+ * Sibling checkboxes at least this many in a row count as one input against MAX_FIELDS. W4's Lever replay
+ * (evidence/browser/w4/replay/final): 33 language boxes came before four radio questions in page order, and the
+ * nearest-first cap of 20 left all four out. Assumed: five boxes is already a list of options, not separate questions.
+ */
+export const CHECKBOX_RUN = 5;
+/**
+ * The window kind the page engine gives a browser tab it reads (v2/screen engines/page-link.ts toWindowSnapshot). A
+ * write to a web dropdown there becomes the engine's pageChooseOption: open the list, type the value as its filter,
+ * pick only when exactly one option's name equals it, and verify the control's shown text, react-select's hidden input
+ * and aria-expanded. A dropdown read through Accessibility has no such handler, so its value is a hand-off.
+ */
+export const PAGE_WINDOW_KIND = "page";
+
+/**
+ * Whether a value reads as one option's name, as a dropdown would list it: one line of at most six words and 60
+ * characters, with no remark in parentheses, no link and no sentence's closing punctuation. "United States", "Oakland"
+ * and "Oakland, CA, USA" do; "Oakland, California, United States (in the Bay Area)" and "authorized to work in the
+ * United States." do not. Written for common option names, not measured; the engine's exact-match pick is the check.
+ */
+export function optionName(value: string): boolean {
+  const v = value.trim();
+  return v !== "" && v.length <= 60 && !/[\r\n()]|:\/\//u.test(v) && !/[.!?;:]$/u.test(v) && v.split(/\s+/u).length <= 6;
+}
 /**
  * Lowest confidence, taken as the lower of the two asks, at which an agreed choice is proposed.
  * It is the lowest cutoff at which none of the five calibration sets (900 field judgments over four
@@ -138,11 +166,15 @@ export interface FormInput {
 }
 
 /**
- * The empty fields of the trigger's form, nearest the trigger first: text fields as formFields finds them,
- * then, unless `controls` is false, its empty selects, radio groups, unticked boxes and date and time fields
- * (controls.ts), so a form's every input is in one proposal (Q1 bug 10). The trigger is always included.
+ * The empty fields of the trigger's form: text fields as formFields finds them, then, unless `controls` is false, its
+ * empty selects, radio groups, unticked boxes and date and time fields (controls.ts), so a form's every input is in one
+ * proposal (Q1 bug 10), nearest the trigger first. The trigger is always included. A run of CHECKBOX_RUN sibling boxes
+ * counts as one input against `max` and is kept or cut whole (B27). Past `max`, the trigger comes first, then the inputs
+ * whose label, nearest label or placeholder shows the most of `source()`, the words (kinds.ts words) of the windows fill
+ * reads, ties nearest first; they come back in that order, so the most relevant claim the form window's share of a
+ * question first. A form within `max` keeps nearest-first order and never reads `source`.
  */
-export function formInputs(w: WindowState, triggerKey: string, max = MAX_FIELDS, controls = true): FormInput[] {
+export function formInputs(w: WindowState, triggerKey: string, max = MAX_FIELDS, controls = true, source: () => ReadonlySet<string> = () => new Set()): FormInput[] {
   // A web page's combobox (react-select, an airport picker) takes a pick from its list, not typed text, so it
   // is a named hand-off (Q1: Caret was about to type a school name into one).
   const text = formFields(w, triggerKey, Number.MAX_SAFE_INTEGER).map((node): FormInput =>
@@ -155,7 +187,43 @@ export function formInputs(w: WindowState, triggerKey: string, max = MAX_FIELDS,
   const center = (n: Node): [number, number] => (n.frame === undefined ? [0, 0] : [n.frame[0] + n.frame[2] / 2, n.frame[1] + n.frame[3] / 2]);
   const [tx, ty] = center(trigger);
   const dist = (n: Node): number => (n.key === triggerKey ? -1 : Math.hypot(center(n)[0] - tx, center(n)[1] - ty));
-  return [...text, ...other.filter((o) => !text.some((t) => t.node.key === o.node.key))].sort((a, b) => dist(a.node) - dist(b.node)).slice(0, max);
+  const all = [...text, ...other.filter((o) => !text.some((t) => t.node.key === o.node.key))].sort((a, b) => dist(a.node) - dist(b.node));
+  // Runs of sibling boxes, in page order with no other input between.
+  const byKey = new Map(all.map((x) => [x.node.key, x]));
+  const runOf = new Map<FormInput, FormInput[]>();
+  let run: FormInput[] = [];
+  const close = (): void => {
+    if (run.length >= CHECKBOX_RUN) for (const x of run) runOf.set(x, run);
+    run = [];
+  };
+  for (const n of w.nodes.values()) {
+    const x = byKey.get(n.key);
+    if (x === undefined) continue;
+    if (x.control !== "checkbox" || (run.length > 0 && run[0]?.node.parent !== n.parent)) close();
+    if (x.control === "checkbox") run.push(x);
+  }
+  close();
+  const units: FormInput[][] = [];
+  const placed = new Set<FormInput>();
+  for (const x of all) {
+    if (placed.has(x)) continue;
+    const unit = runOf.get(x) ?? [x];
+    for (const u of unit) placed.add(u);
+    units.push(unit);
+  }
+  if (units.length <= max) return units.flat();
+  const seen = source();
+  const shown = (x: FormInput): number => {
+    const d = describeField(w, x.node);
+    const said = [x.form?.label ?? d.label, d.nearest, d.placeholder].filter((t): t is string => typeof t === "string");
+    return new Set(words(said.join(" ")).filter((t) => seen.has(t))).size;
+  };
+  const rank = (u: FormInput[]): number => (u.some((x) => x.node.key === triggerKey) ? Number.MAX_SAFE_INTEGER : Math.max(...u.map(shown)));
+  return units
+    .map((u, i) => ({ u, i, r: rank(u) }))
+    .sort((a, b) => b.r - a.r || a.i - b.i)
+    .slice(0, max)
+    .flatMap((x) => x.u);
 }
 
 export interface AskField {
@@ -266,6 +334,11 @@ const CONTROL_WORDINGS: Partial<Record<Control, readonly [(where: string, d: str
     (where, d) => `A form in the ${where} has this menu: ${d} Which candidate says which option the user should pick? The user usually copies from the window they just left. Choose none if no candidate says.`,
     (where, d) => `Menu to set: ${d} It is in a form in the ${where}. Which value below names the option to pick? Answer none if no value below does.`,
   ],
+  // B27: its options are not shown, so the value must be the option's own name.
+  combobox: [
+    (where, d) => `A form in the ${where} has this dropdown: ${d} Its options are not shown. Which candidate is the name of the option the user should pick? The user usually copies from the window they just left. Choose none if no candidate is an option's name.`,
+    (where, d) => `Dropdown to set: ${d} It is in a form in the ${where}, and its list is closed. Which value below is the option to pick, as the list would name it? Answer none if no value below is.`,
+  ],
 };
 
 /** The answers to a question about whose details a value on screen is. */
@@ -333,7 +406,7 @@ export function buildFillRequest(
         "The user is filling in this form. The candidates are values visible in the user's other open windows. " +
         "Users most often copy from the window they were in just before the form." +
         (anyAbout ? " A few candidates are the user's own details, which the user told Caret; one fits a field only when the form asks for the user's own details there." : "") +
-        (anyDerived ? " Some candidates are a part of another, which Caret split out: a first or last name, or a street, city, state or ZIP code of an address." : "") +
+        (anyDerived ? " Some candidates are a part of another, which Caret split out: a first or last name, or a street, city, state, ZIP code or country of an address or place." : "") +
         (more.instruction === undefined ? "" : " The user asked Caret for this in the instruction above: a field gets a value only when the instruction asks for it, from where the instruction says.") +
         (more.person === null || more.person === undefined ? "" : ` The instruction asks for ${more.person}'s details.`),
     },
@@ -489,7 +562,7 @@ type Pick =
 const PERSON_LABEL = /\b(?:name|traveler|traveller|passenger|patient|guest|applicant|student|attendee|from|to|cc|reference|landlord|contact|recipient|sender|tenant|driver|member|employee|candidate|spouse|partner|roommate|manager|advisor)\b/i;
 /** "Avery Kim <avery.kim@example.com>": a display name before an address. */
 const DISPLAY_NAME = /^\s*"?([^"<>@]+?)"?\s*<[^<>\s@]+@[^<>\s]+>\s*$/u;
-const PART_SAYS: Record<FieldPart, string> = {
+const PART_SAYS: Record<FillPart, string> = {
   first: "first name",
   middle: "middle name",
   last: "last name",
@@ -499,10 +572,20 @@ const PART_SAYS: Record<FieldPart, string> = {
   city: "city",
   state: "state",
   zip: "ZIP code",
+  country: "country",
 };
-const ADDRESS_PARTS: ReadonlySet<FieldPart> = new Set(["street", "unit", "city", "state", "zip"]);
+const ADDRESS_PARTS: ReadonlySet<FillPart> = new Set(["street", "unit", "city", "state", "zip"]);
+/** Parts a place written "City, State, Country" gives (derive.ts splitPlace). */
+const PLACE_PARTS: ReadonlySet<FillPart> = new Set(["city", "state", "country"]);
 /** Label words that say only a field's kind, so they cannot tie one of a person's phones or emails to the field. */
 const KIND_ONLY_WORDS: ReadonlySet<string> = new Set(["phone", "telephone", "tel", "mobile", "cell", "number", "email", "mail", "address", "contact"]);
+/** Label words that say a value is a link, or nothing about what it is for. */
+const LINK_WORDS: ReadonlySet<string> = new Set(["url", "website", "web", "site", "link", "homepage", "page", "profile", "other"]);
+/** What a label says a value is for: its words less those naming a kind or a link ("Portfolio" from "Portfolio URL"). */
+const purposeOf = (labels: readonly (string | null)[]): Set<string> =>
+  new Set([...fieldTerms(labels)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t) && !LINK_WORDS.has(t)));
+/** Kinds of which a screen often shows several, each labelled for what it is for. */
+const LABELLED_KINDS: ReadonlySet<string> = new Set(["email", "phone", "url"]);
 /** Kinds whose values are someone's: whose they are is asked before one fills a field that wants someone's (B24 owner veto). */
 const PERSONAL_KINDS: ReadonlySet<ValueKind> = new Set(["email", "phone", "address"]);
 /** Labels of a message header's sender. */
@@ -537,6 +620,7 @@ export async function proposeFill(
   const resolveCtx: ResolveContext = opts.resolve ?? { locale: Intl.DateTimeFormat().resolvedOptions().locale, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, referenceInstant: null };
   const w = model.windows.get(windowId);
   if (w === undefined) throw new FillError(`unknown window ${windowId}`);
+  const pageOwned = w.window.kind === PAGE_WINDOW_KIND;
   // Every piece of screen text the asks carry goes through one ledger, which holds each window to its
   // budget (privacy.ts): the form's title and each field's descriptor, nearest field first, then the
   // candidates. A field whose descriptor does not fit is left out of the question; the trigger must fit.
@@ -556,12 +640,15 @@ export async function proposeFill(
     about: AboutValue[];
     control: Control;
     form: FormControl | null;
-    part: FieldPart | null;
+    part: FillPart | null;
     labelWords: (string | null)[];
     personal: boolean;
   };
   const fields: Field[] = [];
-  const inputs = scope === undefined ? formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false) : scopedInputs(w, scope.fields);
+  // The words of the windows fill reads, for formInputs to keep the inputs a long form's cap would cut by what they show.
+  const sourceWords = (): ReadonlySet<string> =>
+    new Set([...model.windows.values()].filter((x) => x.window.windowId !== windowId && opts.exclude?.has(x.window.windowId) !== true).flatMap((x) => [...x.nodes.values()].flatMap((n) => words(nodeText(n)))));
+  const inputs = scope === undefined ? formInputs(w, triggerKey, MAX_FIELDS, opts.controls !== false, sourceWords) : scopedInputs(w, scope.fields);
   const formHasCity = inputs.some((x) => x.control === "text" && fieldPart(describeField(w, x.node).label, false) === "city");
   for (const x of inputs) {
     const n = x.node;
@@ -577,11 +664,14 @@ export async function proposeFill(
     }
     const labelWords = c === null ? [d.label, d.nearest, d.placeholder] : [label, label === null ? d.nearest : null];
     const name = (c === null ? (d.label ?? d.nearest ?? d.placeholder) : (label ?? d.nearest)) ?? null;
-    const kinds = x.control === "date" ? new Set<ValueKind>(["date"]) : x.control === "time" ? new Set<ValueKind>(["time"]) : x.control === "text" ? fieldKinds(labelWords) : new Set<ValueKind>();
+    // A web page's dropdown (B27) takes a value the way a text field does, read by the same kinds and parts.
+    const typed = x.control === "text" || x.control === "combobox";
+    const kinds = x.control === "date" ? new Set<ValueKind>(["date"]) : x.control === "time" ? new Set<ValueKind>(["time"]) : typed ? fieldKinds(labelWords) : new Set<ValueKind>();
     const terms = fieldTerms(labelWords);
     for (const k of kinds) terms.add(kindTerm(k));
-    const part = x.control === "text" && derive ? fieldPart(name, formHasCity) : null;
-    const personal = x.control === "text" && (part !== null || [...kinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+    const part = typed && derive ? (fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : null;
+    // A country is no one's detail, so it asks no whose question.
+    const personal = x.control === "text" && ((part !== null && part !== "country") || [...kinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
     const about = x.control === "text" && memoryOk ? (opts.about ?? []).filter((a) => fieldAsksFor(a, name)) : [];
@@ -633,7 +723,8 @@ export async function proposeFill(
     const c = p.from === "window" ? p.c : p.from === "derived" && p.base.from === "window" ? p.base.c : null;
     if (anchorWindow === null || c === null || c.source.windowId !== anchorWindow.window.windowId) return false;
     if (p.from === "derived" && p.also !== null && p.also.source.windowId !== anchorWindow.window.windowId) return false;
-    return c.labelled === true || candidateKinds(model, c).size > 0 || f.control !== "text" || (f.terms.has(NAME_TERM) && isNameLike(c.text, c.context));
+    // A control's pick is tied by code matching its options or label; a dropdown shows none (B27), so it is tied like text.
+    return c.labelled === true || candidateKinds(model, c).size > 0 || (f.control !== "text" && f.control !== "combobox") || (f.terms.has(NAME_TERM) && isNameLike(c.text, c.context));
   };
   // The generator offers each text once, from the first window it reads it in, and reads a conversation's
   // names before any other window's lines: a mail's "To: Jordan Reyes" took the text, and the question said
@@ -693,11 +784,12 @@ export async function proposeFill(
             }
           }
         }
-      } else if (ADDRESS_PARTS.has(part)) {
+      } else if (ADDRESS_PARTS.has(part) || PLACE_PARTS.has(part)) {
         for (const c of candidates) {
-          const parts = splitAddress(c.text);
-          const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"];
-          if (v !== undefined) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
+          const parts = part === "country" ? null : splitAddress(c.text);
+          const place = PLACE_PARTS.has(part) ? splitPlace(c.text) : null;
+          const v = parts?.[part as "street" | "unit" | "city" | "state" | "zip"] ?? place?.[part as "city" | "state" | "country"] ?? undefined;
+          if (v !== undefined && v !== null) add(v, `"${v}" (the ${PART_SAYS[part]} of ${describeCandidate(c)})`, { from: "window", c });
         }
       }
       if (list.length > 0) derived.set(f.id, list);
@@ -746,7 +838,9 @@ export async function proposeFill(
   const unknownCut = (f: { terms: ReadonlySet<string> }): boolean => (removed.size > 0 && !takesName(f)) || (nameCut && takesName(f)) || cutAll || overlap(f.terms, cutTerms) > 0;
   const fieldCut = (f: { kinds: ReadonlySet<ValueKind>; terms: ReadonlySet<string> }): boolean => (f.kinds.size === 0 && opts.unknownKindRule !== false ? unknownCut(f) : isCut(f.kinds));
   // A select whose options the app does not show cannot be matched to a value, so it is named and left (controls.ts).
-  const askable = (f: Field): boolean => f.control !== "combobox" && (f.control !== "select" || f.form?.options !== null);
+  // A web dropdown's options are hidden too, but the page engine's handler picks the one option named exactly the
+  // value and verifies it, so it is asked (B27).
+  const askable = (f: Field): boolean => f.control !== "select" || f.form?.options !== null;
   // A field is asked when a window gave candidates, or when something the user told Caret fits it; with
   // every window candidate cut away and nothing from memory, there is nothing to ask about. Values from
   // memory go through the ledger too (privacy.ts memory), and when one cannot, none is offered.
@@ -983,6 +1077,23 @@ export async function proposeFill(
     const named = [...fieldTerms(f.labelWords)].filter((t) => !isKindTerm(t) && t !== NAME_TERM && !KIND_ONLY_WORDS.has(t));
     return !named.some((t) => said.has(t));
   };
+  /**
+   * Whether a window's value is one of several of its kind (an email, phone or link) on screen, labelled for a purpose
+   * the field's label does not name, so which of them the field wants is a guess. W4's real-site replay offered
+   * HubSpot's company "Website URL" the user's LinkedIn, GitHub and Portfolio links, the company's own not being a
+   * candidate, and both asks took Portfolio at 0.82 to 0.86 in 3 of 6 runs (evidence/browser/w4 run1;
+   * evidence/screen/b27/w4-replay-1 and -3). The same rule blanks Figma's "Other Website", whose answer key accepts
+   * either Portfolio or GitHub.
+   */
+  const oneOfSeveral = (f: Field, p: Pick): boolean => {
+    if (p.from !== "window" || p.c.labelled !== true || p.c.context === null) return false;
+    const kind = textKind(p.c.text);
+    if (!LABELLED_KINDS.has(kind)) return false;
+    const purpose = purposeOf([p.c.context]);
+    const named = purposeOf(f.labelWords);
+    if (purpose.size === 0 || [...purpose].some((t) => named.has(t))) return false;
+    return candidates.some((c) => c.text !== p.c.text && textKind(c.text) === kind);
+  };
   /** Whether a pick is tied to a field by more than Jev's choice (the untied rule above). */
   const tiedPick = (f: Field, p: Pick): boolean => {
     if (p.from === "instruction" || p.from === "memory") return true;
@@ -1015,7 +1126,10 @@ export async function proposeFill(
         return t === null ? { why: "ambiguous" } : t;
       }
       case "combobox":
-        return { why: "ambiguous" };
+        // Read as a text field is, then as one option's name: the page engine types it as the list's filter and picks
+        // only an option named exactly that (B27).
+        if (misfit(text, f.labelWords) !== null || (f.part !== null && !partFits(f.part, text))) return { why: "wrongKind" };
+        return optionName(text) ? { value: text, display: text } : { why: "ambiguous" };
       case "text":
         return misfit(text, f.labelWords) === null && (f.part === null || partFits(f.part, text)) ? { value: text, display: text } : { why: "wrongKind" };
     }
@@ -1050,7 +1164,7 @@ export async function proposeFill(
     // value to a field, as the anchor requires (fromAnchor): a "Label:" line, a typed kind, a name for a field that
     // takes one, or a part code derived for it. Untied, live Jev put a note's whole sentence in "Reason for moving"
     // (evidence/screen/b25/asks-dev-1-gpt-oss-120b, a rule tuned on the B24 corpus).
-    const untied = scope !== undefined && picked !== undefined && f.control === "text" && f.kinds.size === 0 && !tiedPick(f, picked);
+    const untied = scope !== undefined && picked !== undefined && (f.control === "text" || f.control === "combobox") && f.kinds.size === 0 && !tiedPick(f, picked);
     // A named person with more than one value of the field's kind on screen (a cell and an office phone): the screen
     // must say which is for this field, on the pick's own line. Live, "use Ines for the emergency contact" put her
     // signature's office phone in Emergency contact phone, where her mail says "my cell is …" beside "emergency
@@ -1067,15 +1181,18 @@ export async function proposeFill(
               ? "lowConfidence"
               : read !== null && "why" in read
                 ? read.why
-                : untied || whichOfTheirs
+                : untied || whichOfTheirs || (picked !== undefined && oneOfSeveral(f, picked))
                   ? "ambiguous"
                   : picked !== undefined && otherPerson(f, picked)
                   ? "otherPerson"
                   : null;
     const p = withheld === null ? picked : undefined;
     const got = p === undefined || read === null || "why" in read ? null : read;
-    const handoff: FillHandoff | null = f.control === "text" || p === undefined || got === null ? null : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f) };
-    const text = f.control === "text" && p !== undefined && got !== null;
+    // Caret writes a text field, and (B27) a dropdown the page engine owns: its write is that engine's verified pick.
+    // Any other control's value is handed to the user.
+    const writes = f.control === "text" || (f.control === "combobox" && pageOwned);
+    const handoff: FillHandoff | null = writes || p === undefined || got === null ? null : { value: got.value, display: got.display, source: sourceOf(p), memory: memoryRef(p, f) };
+    const text = writes && p !== undefined && got !== null;
     return {
       ...empty,
       handoff,
