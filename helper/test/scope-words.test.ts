@@ -77,6 +77,11 @@ describe("wholeFormPhrase", () => {
     "do everything in my details except email",
     "put that in this form",
     "do it on this form",
+    // A bare possessive or clause can be the value asked for, and any quote character marks an exact target (fourth review).
+    "fill in Bea's linkedin on this form",
+    "fill in what I typed on this form",
+    "do the whole form but `phone`",
+    "fill in everything «Email»",
   ])("reads no whole-form phrase in %j", (instruction) => {
     expect(wholeFormPhrase(instruction, TITLE)).toBeNull();
   });
@@ -147,6 +152,9 @@ describe("namedSection", () => {
     expect(namedSection("fill only part of my contact info", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'part'" });
     expect(namedSection("fill a bit of my details", ["Your details", "Education"], "Your details")).toMatchObject({ section: null, why: "it also says 'bit'" });
     expect(namedSection("do everything in my details except email", ["Your details", "Education"], "Your details")).toMatchObject({ section: null, why: "where it says to copy from also says 'details except'" });
+    expect(namedSection("fill only Bea's linkedin in my contact info", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "'Bea's linkedin' may be what it asks for, not where to copy from" });
+    expect(namedSection("fill only what I wrote in contact info", SECTIONS, "Contact information").section).toBeNull();
+    for (const q of ["fill in only the `contact info`", "fill in only the «contact info»", "fill in only the „contact info“"]) expect(namedSection(q, SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it quotes something" });
     expect(namedSection('only my "Email" in contact info', SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it quotes something" });
     // "only" alone does not rule the section out.
     expect(namedSection("my contact info only", SECTIONS, "Contact information").section).toBe("Contact information");

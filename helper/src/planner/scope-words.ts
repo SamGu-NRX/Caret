@@ -88,8 +88,16 @@ export const SECTION_WORDS: readonly SectionPhrase[] = [
   { says: "my details", re: /\bmy\s+details\b/, pick: (s) => s.filter((n) => /\b(?:details|personal|about\s+you)\b/i.test(n)) },
 ];
 
-/** Quoted text: a value to write or a field's exact name, either of which narrows the request. */
-const QUOTED = /"[^"]*"|“[^”]*”|(?<![\p{L}])'[^']*'(?![\p{L}])/u;
+/**
+ * Quoted text: a value to write or a field's exact name, either of which narrows the request. Any double-quote, guillemet,
+ * backtick or corner-bracket character counts, paired or not; a single quote counts when it opens and closes a span.
+ */
+const QUOTED = /["“”„‟«»‹›`「」『』]|(?<![\p{L}])'[^']*'(?![\p{L}])/u;
+/**
+ * How a source phrase must open to stand beside a scope phrase. A bare possessive or clause ("fill in Bea's linkedin on
+ * this form", "fill in what I typed on this form") can be the value asked for rather than where it comes from.
+ */
+const SOURCE_OPENS = /^(?:from|off|out\s+of|per|according\s+to|based\s+on|using|via|in)\b/i;
 
 const wordsOf = (s: string): string[] => s.toLowerCase().replace(/['’]s\b/g, "").match(/[\p{L}\p{N}]+/gu) ?? [];
 /** Every word of `s`, lower case, a possessive's "s" kept as its own word. */
@@ -104,8 +112,10 @@ function scopeText(instruction: string): { s: string } | { why: string } {
   const raw = instruction.replace(/[’‘]/g, "'");
   if (QUOTED.test(raw)) return { why: "it quotes something" };
   for (const p of sourcePhrases(raw)) {
+    const span = raw.slice(p.start, p.end).trim();
+    if (!SOURCE_OPENS.test(span)) return { why: `'${span}' may be what it asks for, not where to copy from` };
     const own = new Set([...wordsOf(p.name ?? ""), ...allWords(p.noun ?? "")]);
-    const odd = allWords(raw.slice(p.start, p.end)).filter((w) => !SOURCE_WORDS.has(w) && !SOURCE_NOUNS.has(w) && !own.has(w));
+    const odd = allWords(span).filter((w) => !SOURCE_WORDS.has(w) && !SOURCE_NOUNS.has(w) && !own.has(w));
     if (odd.length > 0) return { why: `where it says to copy from also says '${odd.join(" ")}'` };
   }
   return { s: fieldWords(raw).toLowerCase() };
