@@ -138,7 +138,7 @@ helper = new Helper({
   ...(args["fill-cutoff"] === undefined ? {} : { fillCutoff: Number(args["fill-cutoff"]) }),
   publish: (m) => server?.publish(m),
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
-  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined }),
+  ...(pages === null ? {} : { readerLink: pages.link, readerAnswers: readerSocket, pageCovers: (pid: number) => pages.registry.forBrowser(pid) !== undefined, pageDocument: (id: string) => pages.registry.documentOf(id) }),
   // Event cards add to the reader's EventKit adapter, which answers only when started with --calendar-test.
   calendar: "reader",
   // The code-mode plan writer (B24), when a Groq key is configured; without one, Ask works as before.

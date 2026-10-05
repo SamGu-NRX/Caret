@@ -289,7 +289,7 @@ export interface GoalScene {
   close(): Promise<void>;
 }
 
-export function goalScene(o: { scripts: CannedStep[][]; windows: DeskWindow[]; pageDocument?: (windowId: string) => string | null; userWindow?: string }): GoalScene {
+export function goalScene(o: { scripts: CannedStep[][]; windows: DeskWindow[]; pageDocument?: (windowId: string) => string | null; userWindow?: string; /** A real writer in place of the canned one (scripts/goal-scenes-eval.ts --writer live). */ writer?: WriterPort }): GoalScene {
   const dir = mkdtempSync(join(tmpdir(), "caret-goal-"));
   const store = new Store(join(dir, "data"));
   const desk = new GoalDesk();
@@ -306,7 +306,7 @@ export function goalScene(o: { scripts: CannedStep[][]; windows: DeskWindow[]; p
     allowBackgroundFocus: false,
     readerLink: desk,
     calendar,
-    writer,
+    writer: o.writer ?? writer,
     now: () => desk.at,
     publish: (m) => {
       published.push(m);
