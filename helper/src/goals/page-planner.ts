@@ -119,6 +119,19 @@ function ordered<T extends { node: Node }>(w: WindowState, xs: readonly T[]): T[
 const shortDigest = (s: string): string => sha256(s).slice(0, 16);
 const clip = (s: string, n = 60): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
+/**
+ * A value as Jev would read it in a goal's value question (gates.ts jevGate), with where it came from, as fill's own
+ * candidate descriptions say it: a page plan's value skips that question (gate "fill"), so this is read only by the
+ * disagreement report (P2) and logs. The preview says the field and value, not this.
+ */
+function provenance(f: Written): string {
+  const quoted = `"${f.span}"`;
+  if (f.memory !== null) return `${quoted} (the user's own ${f.memory.label}, which the user told Caret)`;
+  if (f.source === null) return `${quoted} (written in the user's instruction for this field)`;
+  const line = f.context === null ? "" : `on the line labelled '${f.context}' `;
+  return `${quoted} (${line}in ${f.source.appName} window '${f.source.windowTitle}')`;
+}
+
 /** Why fill left a field it asked about, in the preview's words. */
 const WITHHELD_SAYS: Record<string, string> = {
   disagree: "Caret wasn't sure what goes there",
@@ -243,7 +256,7 @@ export async function planPage(model: ScreenModel, o: PlanPageOptions): Promise<
     const v: ValueBinding = {
       ref: `p${ref}`,
       text: f.value,
-      display: f.display,
+      display: provenance(f),
       origin:
         f.memory !== null
           ? { kind: "memory", entryId: f.memory.id, fileRevision: "", digest: shortDigest(f.value) }
