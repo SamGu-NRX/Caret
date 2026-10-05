@@ -1734,6 +1734,8 @@ export const PAGE_SUBROLE = {
   month: "CaretMonthInput",
   week: "CaretWeekInput",
   file: "CaretFileInput",
+  /** B29: an input of type number, or a text input whose inputmode is numeric or decimal. Undo compares its value as a number. */
+  number: "CaretNumberInput",
   switch: "AXSwitch",
   pressGroup: "CaretPressGroup",
 } as const;
@@ -1782,6 +1784,8 @@ export const PageControl = z.object({
   group: z.object({ id: z.string().min(1), name: z.string().min(1) }).optional(),
   /** W4: a press-group option's aria-pressed. */
   pressed: z.boolean().optional(),
+  /** B29: a text input whose inputmode is numeric or decimal. */
+  numeric: z.literal(true).optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 

@@ -133,6 +133,9 @@ export class FixtureSite {
       // D2-04: one of each control a Fill all writes, beside the ones it leaves to the user.
       case "GET /mixed":
         return html(res, read("mixed.html"));
+      // B29: number fields whose page shows "1" as "1.00", beside a text field that does the same.
+      case "GET /number":
+        return html(res, read("number.html"));
       case "GET /holds.js":
         return send(res, "text/javascript", read("holds.js"));
       case "GET /hold": {

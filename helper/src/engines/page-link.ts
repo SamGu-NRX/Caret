@@ -109,6 +109,10 @@ function subroleOf(c: PageControl): string | undefined {
     case "week":
     case "file":
       return PAGE_SUBROLE[c.kind];
+    case "number":
+      return PAGE_SUBROLE.number;
+    case "text":
+      return c.numeric === true ? PAGE_SUBROLE.number : undefined;
     case "checkbox":
       return c.role === "switch" ? PAGE_SUBROLE.switch : undefined;
     default:

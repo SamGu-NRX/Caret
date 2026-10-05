@@ -374,6 +374,60 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     expect(u.notRestored.map((x) => x.reason)).toEqual(["the field changed while Caret wrote it and may hold your typing, so Caret left it as it is"]);
   });
 
+  describe("a page number field that reformats what Caret wrote (B29)", () => {
+    // "1" comes back as "1.00", as a page's own script formats a number on input.
+    // The content script answers such a write "failed" (actions.ts judge); "ok" stands for an engine whose read came first.
+    const reformatting = (ids: readonly string[], answer: "ok" | "failed" = "ok") => (v: Exclude<PageVerb, { kind: "pageWalk" }>, p: FakePage): object | null => {
+      if (v.kind !== "pageWrite" || !ids.includes(v.id) || v.sameAs !== undefined) return null;
+      p.find(v.id).value = "1.00";
+      const readings = { before: "", afterInput: "1.00", afterBlur: "1.00", invalid: false, error: null };
+      return answer === "ok" ? { outcome: "ok", detail: null, readings } : { outcome: "failed", detail: "the page holds another value than Caret wrote", readings };
+    };
+    const written = async (id: string, kind: PageControl["kind"], extra: Partial<PageControl> = {}) => {
+      page.controls = [c(id, kind, "Guests", { value: "", ...extra })];
+      await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
+      const key = `f0/${page.controls[0]!.key}`;
+      const r = await helper.executor.run("n1", { id: "n1", title: "n1", slots: {}, steps: [{ says: "Guests holds 1", end: { kind: "valueEquals", window: { titleStartsWith: TITLE }, target: { key, describe: "Guests" }, value: "1" } }] }, {}, undefined, { grant: true });
+      expect(page.find(id).value).toBe("1.00");
+      return { r, key };
+    };
+
+    it.each([
+      ["an input of type number", "number", {}, "ok"],
+      ["a text input with a numeric inputmode", "text", { numeric: true as const }, "ok"],
+      ["an input of type number, answered failed", "number", {}, "failed"],
+    ] as const)("undoes the write in %s: 1 and 1.00 are the same number", async (_, kind, extra, answer) => {
+      page.onAct = reformatting(["n"], answer);
+      const { key } = await written("n", kind, extra);
+      expect(helper.model.windows.get(WIN)?.nodes.get(key)?.subrole).toBe(PAGE_SUBROLE.number);
+      expect(helper.executor.ledger("n1")).toEqual([expect.objectContaining({ before: "", after: "1" })]);
+      expect(helper.executor.ledger("n1")[0]).not.toHaveProperty("mayIncludeInput");
+      const u = await helper.executor.undo("n1");
+      expect(u).toMatchObject({ restored: 1, notRestored: [] });
+      expect(page.find("n").value).toBe("");
+    });
+
+    it("never compares a text field as a number: the same reformat leaves an undo that refuses", async () => {
+      page.onAct = reformatting(["n"]);
+      const { key } = await written("n", "text");
+      expect(helper.model.windows.get(WIN)?.nodes.get(key)?.subrole).toBeUndefined();
+      expect(helper.executor.ledger("n1")).toEqual([expect.objectContaining({ after: "1", mayIncludeInput: true })]);
+      const u = await helper.executor.undo("n1");
+      expect(u).toMatchObject({ restored: 0, notRestored: [{ reason: expect.stringMatching(/may hold your typing/) }] });
+      expect(page.find("n").value).toBe("1.00");
+    });
+
+    it("still refuses a number the user changed: 1.00 against 12", async () => {
+      page.onAct = reformatting(["n"]);
+      await written("n", "number");
+      page.find("n").value = "12";
+      await host.link.run({ kind: "walk", pid: chrome.pid, windowId: WIN });
+      const u = await helper.executor.undo("n1");
+      expect(u).toMatchObject({ restored: 0, notRestored: [{ reason: "the field changed after Caret wrote it, so Caret left it as it is" }] });
+      expect(page.find("n").value).toBe("12");
+    });
+  });
+
   it("stops, recording nothing, when a box or a choice it is about to set was set by someone else since the walk (review R6)", async () => {
     const { popup } = await offer();
     page.onAct = (v) => (v.kind === "pageSetChecked" && v.id === "e5" ? { outcome: "alreadyTrue", detail: null } : null);

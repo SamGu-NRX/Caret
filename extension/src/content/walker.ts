@@ -333,6 +333,7 @@ export function walkControls(idOf: (el: Element) => string, onKept: (el: Element
     if ((f.el as HTMLInputElement).required === true || f.el.getAttribute("aria-required") === "true") c.required = true;
     if ((f.el as HTMLInputElement).disabled === true || f.el.getAttribute("aria-disabled") === "true") c.disabled = true;
     if (f.el.getAttribute("aria-invalid") === "true") c.invalid = true;
+    if (f.kind === "text" && /^(numeric|decimal)$/i.test(f.el.getAttribute("inputmode")?.trim() ?? "")) c.numeric = true;
     if (f.shadow !== undefined) c.shadow = f.shadow;
     controls.push(c);
     onKept(f.el, c);

@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { GRANT_MAX_MS, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
+import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, TaskProgress, type HelperMessage, type StopReason } from "../src/protocol.ts";
 import { CalendarBlocked, CalendarRefused, FakeCalendar } from "../src/executor/means.ts";
 import { RecoveryJournal } from "../src/executor/journal.ts";
+import { sameValue } from "../src/executor/executor.ts";
 import { classifyLabel, classifyPress } from "../src/executor/risk.ts";
 import { fillSlots, Plan, PlanError, type Step } from "../src/executor/schema.ts";
 import type { AskJev } from "../src/fill/jev.ts";
@@ -1047,5 +1048,33 @@ describe("quotedPart", () => {
     expect(quotedPart("City holds Austin", "Dallas")).toBeNull();
     expect(quotedPart("City holds Aus", "Austin")).toBeNull();
     expect(quotedPart("anything", "")).toBeNull();
+  });
+});
+
+describe("sameValue: undo identity (B29)", () => {
+  const num = { key: "k", parent: null, role: "AXTextField", subrole: PAGE_SUBROLE.number };
+  const txt = { key: "k", parent: null, role: "AXTextField" };
+  it.each([
+    ["1", "1.00", true],
+    ["1.5", "1.50", true],
+    ["-0", "0", true],
+    ["1e2", "100", true],
+    [".5", "0.5", true],
+    ["1.", "1", true],
+    ["1", "1", true],
+    ["1", "12", false],
+    ["1,000", "1000", false],
+    ["1,00", "1", false],
+    ["1 ", "1", false],
+    ["", "0", false],
+    ["0x10", "16", false],
+    ["Infinity", "1e999", false],
+    ["$1", "1", false],
+  ] as const)("in a number field, %j against %j is %s", (held, wrote, same) => {
+    expect(sameValue(num, held, wrote)).toBe(same);
+  });
+  it("compares a text field exactly", () => {
+    expect(sameValue(txt, "1.00", "1")).toBe(false);
+    expect(sameValue(txt, "Dana", "Dana")).toBe(true);
   });
 });

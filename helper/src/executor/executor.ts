@@ -13,7 +13,7 @@
 // A task started from an accepted offer holds an act grant for its window (protocol.ts ActGrant): the
 // reader acts in no other process or window for it, and in none at all once the grant ends.
 import { randomInt, randomUUID } from "node:crypto";
-import { GRANT_MAX_MS, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
+import { GRANT_MAX_MS, PAGE_SUBROLE, PROTOCOL_VERSION, type ActionType, type AppRef, type UseOutcome, type CalendarBlock, type Frame, type Node, type StopReason, type TaskCause, type TaskPhase, type TaskProgress, type UserInput, type ReaderVerb, type VerbResult } from "../protocol.ts";
 import { nodeText, type Change, type ScreenModel, type WindowState } from "../model.ts";
 import type { AskJev } from "../fill/jev.ts";
 import { CalendarBlocked, CalendarRefused, type CalendarPort, type ReaderLink, type UrlOpener } from "./means.ts";
@@ -1403,7 +1403,7 @@ export class Executor {
     if (field !== undefined && !sameValue(field, field.value ?? "", e.after)) {
       return final(
         e.unconfirmed === true
-          ? "Caret stopped while writing this field, and the field does not hold what it was writing, so Caret left it as it is"
+          ? "the field does not hold what Caret was writing, so Caret left it as it is"
           : "the field changed after Caret wrote it, so Caret left it as it is",
       );
     }
@@ -1598,10 +1598,19 @@ function contains(f: [number, number, number, number], p: [number, number]): boo
 /** undoWrite's answer for a write a crash cut off that never landed. */
 const UNTOUCHED = Symbol("untouched");
 
-/** Whether field `n`, read as `held`, holds exactly the value Caret wrote (B29: anything else may be the user's typing). */
-function sameValue(_n: Node, held: string, wrote: string): boolean {
-  return held === wrote;
+/**
+ * Whether field `n`, read as `held`, holds the value Caret wrote (B29: anything else may be the user's typing). Exactly,
+ * except in a page's number field (PAGE_SUBROLE.number), where both are compared as plain decimal numbers, since a page
+ * may show "1" as "1.00". Never in a text field, and never across grouping separators, signs of locale or units.
+ */
+export function sameValue(n: Node, held: string, wrote: string): boolean {
+  if (held === wrote) return true;
+  if (n.subrole !== PAGE_SUBROLE.number || !PLAIN_NUMBER.test(held) || !PLAIN_NUMBER.test(wrote)) return false;
+  return Number(held) === Number(wrote);
 }
+
+/** A decimal number as an input of type number holds one: optional sign, digits with at most one point, optional exponent. */
+const PLAIN_NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 /** Why the reader refused a restore, in words for the activity row. */
 function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult): string {

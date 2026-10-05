@@ -1045,6 +1045,29 @@ async function batch5(e: Engine, site: FixtureSite, published: HelperMessage[]):
     e.helper.handleReader({ type: "windowClosed", v: 1, at: Date.now(), windowId: "7001-1" });
     return `/submitted ${count}`;
   });
+
+  await check("B29: a number field the page shows as 1.00 after Caret wrote 1 is undone (type=number and inputmode=decimal); a text field doing the same is left as it is", async () => {
+    await openPage(e, site, "/number", "Code");
+    const fields = [["Guests", "#n_guests", ""], ["Amount", "#n_amount", ""], ["Code", "#n_code", "1.00"]] as const;
+    const out: string[] = [];
+    for (const [name, selector, afterUndo] of fields) {
+      const key = nodeKey(e, name);
+      const subrole = e.helper.model.windows.get(windowId)?.nodes.get(key)?.subrole;
+      expect((subrole === PAGE_SUBROLE.number) === (name !== "Code"), `${name} has subrole ${subrole}`);
+      const id = `b29-${name}`;
+      const step = { says: `${name} holds 1`, end: { kind: "valueEquals" as const, window: { titleStartsWith: "Apply: Number fields" }, target: { key, describe: name }, value: "1" } };
+      const r = await e.helper.executor.run(id, { id, title: id, slots: {}, steps: [step] }, {}, undefined, { grant: true });
+      const shown = await read(site, selector);
+      expect(shown === "1.00", `${name} shows ${JSON.stringify(shown)} after the run (${r.outcome}: ${r.detail})`);
+      const ledger = e.helper.executor.ledger(id);
+      expect(ledger.length === 1 && ledger[0]?.kind === "write" && ledger[0].after === "1", `${name} ledger ${JSON.stringify(ledger)}`);
+      const u = await e.helper.executor.undo(id);
+      const now = await read(site, selector);
+      expect(now === afterUndo && u.restored === (afterUndo === "" ? 1 : 0), `${name} after undo: ${JSON.stringify(now)}, ${JSON.stringify(u)}`);
+      out.push(`${name}: run ${r.outcome}, undo restored ${u.restored}${u.notRestored[0] === undefined ? "" : ` (${u.notRestored[0].reason})`}, shows ${JSON.stringify(now)}`);
+    }
+    return out.join("; ");
+  });
 }
 
 // ---- W4: what real application forms need (replicas built from the saved real-site markup) ----
