@@ -32,9 +32,11 @@ import surface_acceptance as sa
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXECUTOR = "Caret Fixture — Executor"
-SENTENCE = "I'll grab coffee with Dana on Thursday at 3."
+# "at 3pm", not "at 3": since D2-03 a time the sentence leaves AM or PM open makes no card. A card from a time
+# with no end asks how long it is (30 minutes first, highlighted); Tab takes the highlighted choice.
+SENTENCE = "I'll grab coffee with Dana on Thursday at 3pm."
 TITLE = "Coffee with Dana"
-SECOND = "Lunch with Sam on Friday at 1."
+SECOND = "Lunch with Sam on Friday at 1pm."
 LABEL = "dev.caret.h8-host"
 UID = os.getuid()
 SOCKS = tempfile.mkdtemp(prefix="caret-h8-")

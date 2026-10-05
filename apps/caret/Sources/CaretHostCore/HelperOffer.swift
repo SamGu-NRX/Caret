@@ -151,7 +151,15 @@ public enum EventCardCopy {
     /// The offer as it arrived, with its card's Calendar row replaced by the destination line
     /// (`EventCalendarCopy.cardLine`). Any other offer is returned as it is.
     public static func destined(_ message: OfferAction, line: String) -> OfferAction {
-        guard isEvent(message), var spec = message.variants else { return message }
+        guard isEvent(message), let spec = message.variants else { return message }
+        var out = message
+        out.variants = destinedSpec(spec, line: line)
+        return out
+    }
+
+    /// The card with its Calendar row replaced by the destination line.
+    public static func destinedSpec(_ card: PopupSpec, line: String) -> PopupSpec {
+        var spec = card
         spec.blocks = spec.blocks.map { block in
             guard case .facts(var facts) = block.content else { return block }
             facts.rows = facts.rows.map { row in
@@ -164,9 +172,7 @@ public enum EventCardCopy {
             block.content = .facts(facts)
             return block
         }
-        var out = message
-        out.variants = spec
-        return out
+        return spec
     }
 
     /// The host's destination line on a card, if it has one.
