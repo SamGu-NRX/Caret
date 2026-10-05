@@ -199,6 +199,23 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(rig.take(), [], "a second Tab takes nothing")
     }
 
+    /// CodeRabbit on PR #8: the debug socket's onboarding reply said what was typed into the try-it
+    /// field. It says how long it is, and whether it is the sample, and never the text.
+    func testTheDebugReplyNeverCarriesTheTryItText() throws {
+        let rig = Rig.atTryIt()
+        rig.send(.key(.character("hunter2")))
+        let typed = try XCTUnwrap(rig.flow.debugInfo().tryIt)
+        XCTAssertEqual(typed.valueLength, "hunter2".utf16.count)
+        XCTAssertFalse(typed.isSample)
+        let json = String(decoding: try JSONEncoder().encode(rig.flow.debugInfo()), as: UTF8.self)
+        XCTAssertFalse(json.contains("hunter2"), json)
+        for _ in 0..<7 { rig.send(.key(.delete)) }
+        rig.send(.key(.tab))
+        let sample = try XCTUnwrap(rig.flow.debugInfo().tryIt)
+        XCTAssertTrue(sample.isSample)
+        XCTAssertEqual(sample.valueLength, TryItSample.value.utf16.count)
+    }
+
     /// Q1 (A18): Cotypist's Tab took words before Caret saw the key. The try-it step names any
     /// running app known to take Tab, follows it quitting, and says what to do in one line.
     func testTryItNamesAnotherAppThatTakesTab() {

@@ -455,10 +455,6 @@ enum ObstacleProbe {
         return rows.flatMap { fy in columns.map { fx in CGPoint(x: rect.minX + rect.width * fx, y: rect.minY + rect.height * fy) } }
     }
 
-    static func obstacles(pid: pid_t, under candidates: [CGRect]) -> [CGRect] {
-        Session(pid: pid, until: nil).under(candidates) ?? []
-    }
-
     /// One placement's probing: the app's window frames are read once, and every hit-test stops
     /// at `until` (uptime nanoseconds).
     final class Session {

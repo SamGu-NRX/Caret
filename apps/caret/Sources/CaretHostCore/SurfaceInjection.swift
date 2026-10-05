@@ -34,8 +34,10 @@ public enum SurfaceInjection: Equatable, Sendable {
         do { json = try JSONDecoder().decode(JSON.self, from: data) } catch { throw Invalid("not JSON") }
         guard case .object(let o) = json, case .string(let kind)? = o["kind"] else { throw Invalid("needs an object with kind") }
         func pid() throws -> Int32 {
-            guard case .number(let n)? = o["pid"], n > 0, n == n.rounded() else { throw Invalid("needs a pid") }
-            return Int32(n)
+            // Int32(exactly:) refuses a fraction and anything past Int32.max, where Int32(_:) traps
+            // (CodeRabbit on PR #8: an injected pid of 1e10 crashed the host).
+            guard case .number(let n)? = o["pid"], let pid = Int32(exactly: n), pid > 0 else { throw Invalid("needs a pid") }
+            return pid
         }
         func string(_ key: String) throws -> String {
             guard case .string(let s)? = o[key], !s.isEmpty else { throw Invalid("needs \(key)") }

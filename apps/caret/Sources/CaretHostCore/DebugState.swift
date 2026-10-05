@@ -461,8 +461,11 @@ public struct DebugState: Codable, Equatable, Sendable {
     /// The debug socket's `onboarding` reply (`OnboardingFlow.debugInfo`).
     public struct OnboardingInfo: Codable, Equatable, Sendable {
         public struct TryItInfo: Codable, Equatable, Sendable {
-            /// The staged field's text: the synthetic sample value, or what the run typed.
-            public var value: String
+            /// How long the staged field's text is, in UTF-16 units. The text itself never leaves the
+            /// host: what a person types during onboarding can be anything (CodeRabbit #8).
+            public var valueLength: Int
+            /// The field holds exactly the synthetic sample value, which is what Tab puts there.
+            public var isSample: Bool
             public var offerVisible: Bool
             public var completed: Bool
             public var declined: Bool

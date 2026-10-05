@@ -53,6 +53,13 @@ public enum LinePlacement {
 
     /// Picks a frame. `obstacles` are the frames of whatever the candidates would cover (other
     /// fields, labels, the title bar); the field itself is never an obstacle.
+    /// The obstacles over `spots`, one probe per spot. A spot the probe could not finish (nil:
+    /// its deadline passed) counts as covered by itself, so an unchecked spot is never taken for a
+    /// clear one (CodeRabbit on PR #9).
+    public static func obstacles(over spots: [CGRect], probe: (CGRect) -> [CGRect]?) -> [CGRect] {
+        spots.flatMap { probe($0) ?? [$0] }
+    }
+
     public static func choose(
         field: CGRect, width: CGFloat, compactWidth: CGFloat, obstacles: [CGRect], bounds: CGRect
     ) -> Choice {

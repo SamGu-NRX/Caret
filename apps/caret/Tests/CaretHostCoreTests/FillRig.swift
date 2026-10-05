@@ -197,12 +197,12 @@ final class FillRig {
     }
 
     /// The insertion queue wrote the claim. `verified` true leaves an undo grant for the field.
-    func inserted(verified: Bool = true, reason: String? = nil) {
+    func inserted(verified: Bool = true, reason: String? = nil, grantsUndo: Bool = true) {
         guard let claim = inserting else { return XCTFail("no fill claim in flight") }
         inserting = nil
         arbiter.finishInsertion(claimID: claim.claimID, error: verified ? nil : reason)
         var grant: UndoGrant?
-        if verified {
+        if verified, grantsUndo {
             var target = claim.offer.target
             target.elementRevision = UTF16Text.digest(claim.insertionText)
             grant = UndoGrant(

@@ -101,7 +101,7 @@ final class HelperMemoryTests: XCTestCase {
         book.send = { sent.append($0); return true }
         book.linkChanged(true)
         var r = contract
-        r.requestId = sent.last!.requestId
+        r.requestId = try XCTUnwrap(sent.last, "no request was sent").requestId
         book.receive(r)
         XCTAssertTrue(book.state.acceptsAdd)
         XCTAssertTrue(book.debugInfo().acceptsAdd)
@@ -109,7 +109,7 @@ final class HelperMemoryTests: XCTestCase {
         XCTAssertTrue(book.state.acceptsAdd, "kept across a dropped connection")
         book.linkChanged(true)
         var plain = today
-        plain.requestId = sent.last!.requestId
+        plain.requestId = try XCTUnwrap(sent.last, "no request was sent").requestId
         book.receive(plain)
         XCTAssertFalse(book.state.acceptsAdd, "a helper that stops saying so hides the step again")
     }

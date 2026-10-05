@@ -150,22 +150,43 @@ class Watchdog:
         out = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True).stdout.strip()
         return os.path.basename(out) or "?"
 
+    # Reads of the HID idle time in a row that may fail before the run stops: the watchdog cannot see a
+    # person's input without them. One failure is retried (an ioreg line in an unexpected shape).
+    MAX_READ_FAILURES = 5
+
     def _run(self):
         import _thread
         last_pid = None
         tick = 0
+        failures = 0
         while not self._stop:
-            idle = hid_idle_seconds()
+            # An exception here used to end this thread silently, and the run went on posting keys with
+            # no watchdog (CodeRabbit on PR #9).
+            try:
+                idle = hid_idle_seconds()
+            except Exception as error:  # noqa: BLE001 - any failure leaves the watchdog blind
+                failures += 1
+                if failures >= self.MAX_READ_FAILURES:
+                    self.tripped = f"watchdog could not read the HID idle time {failures} times: {error!r}"
+                    _thread.interrupt_main()
+                    return
+                time.sleep(self.interval)
+                continue
+            failures = 0
             last_input = time.time() - idle
             if idle < 5 and last_input > self.start + 0.5 and not self.synthetic(last_input):
                 self.tripped = time.strftime("%H:%M:%S", time.localtime(last_input))
                 _thread.interrupt_main()
                 return
             if tick % 3 == 0:
-                pid = (self.front() or {}).get("pid")
-                if pid != last_pid:
-                    self.timeline.append((round(time.time() - self.start, 2), pid, self._name(pid) if pid else None))
-                    last_pid = pid
+                # The front-app timeline is evidence, not the guard: a failed read skips one entry.
+                try:
+                    pid = (self.front() or {}).get("pid")
+                    if pid != last_pid:
+                        self.timeline.append((round(time.time() - self.start, 2), pid, self._name(pid) if pid else None))
+                        last_pid = pid
+                except Exception:  # noqa: BLE001
+                    pass
             tick += 1
             time.sleep(self.interval)
 

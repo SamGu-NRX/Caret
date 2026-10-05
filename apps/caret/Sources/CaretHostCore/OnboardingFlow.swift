@@ -579,7 +579,7 @@ public final class OnboardingFlow {
         info.advancingAfterGrant = state.advancingAfterGrant ? true : nil
         info.otherTabOwners = state.otherTabOwners.isEmpty ? nil : state.otherTabOwners
         info.tryIt = DebugState.OnboardingInfo.TryItInfo(
-            value: state.tryIt.value, offerVisible: state.tryIt.offerVisible, completed: state.tryIt.completed,
+            valueLength: state.tryIt.value.utf16.count, isSample: state.tryIt.value == TryItSample.value, offerVisible: state.tryIt.offerVisible, completed: state.tryIt.completed,
             declined: state.tryIt.declined, tabs: state.tryIt.tabs
         )
         switch state.firstLook {

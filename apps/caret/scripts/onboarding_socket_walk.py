@@ -323,7 +323,7 @@ def main():
         check("deleting brings the offer back", r["tryIt"]["offerVisible"] is True, r["tryIt"])
         r = ob("next", "tryIt")
         r = ob("key tab")
-        check("Tab completes try-it with the sample value", r["tryIt"]["completed"] is True and r["tryIt"]["value"] == "$1,240.00", r["tryIt"])
+        check("Tab completes try-it with the sample value", r["tryIt"]["completed"] is True and r["tryIt"]["isSample"] is True, r["tryIt"])
 
         helper.mode = "found"
         sent = time.monotonic()

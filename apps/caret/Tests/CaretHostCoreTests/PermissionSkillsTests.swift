@@ -133,7 +133,7 @@ final class PermissionSkillsTests: XCTestCase {
         book.send = { sent.append($0); return true }
         book.linkChanged(true)
         var r = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[\#([permission(.writeHere, .ask), permission(.writeElsewhere, .ask), skill("s", wrote: .both)].joined(separator: ","))]}"#.utf8))
-        r.requestId = sent.last!.requestId
+        r.requestId = try XCTUnwrap(sent.last, "no request was sent").requestId
         book.receive(r)
         let info = book.debugInfo()
         XCTAssertEqual(info.onTheirOwn, ["Skill s"])

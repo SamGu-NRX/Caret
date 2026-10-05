@@ -68,4 +68,12 @@ final class WriteFallbackTests: XCTestCase {
         XCTAssertNil(WriteFallback.strayInsertion(focusIsApproved: false, value: nil, caret: 0, inserted: "Lumen Labs"), "unreadable")
         XCTAssertNil(WriteFallback.strayInsertion(focusIsApproved: false, value: "x", caret: 1, inserted: ""))
     }
+
+    /// CodeRabbit on PR #8: a reread of another element that happens to hold the old value said
+    /// `unchanged`, so the write read as ignored and the app moved to the paste route for good.
+    func testAnotherElementHoldingTheOldValueIsDifferentNotUnchanged() {
+        XCTAssertEqual(classify("", same: false, elapsed: 0.6), .different)
+        XCTAssertEqual(WriteFallback.afterAX(classify("", same: false, elapsed: 0.6), refused: false), .failed("writeMismatch"))
+        XCTAssertEqual(classify("", same: true, elapsed: 0.6), .unchanged, "the approved element unchanged is still an ignored write")
+    }
 }

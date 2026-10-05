@@ -195,7 +195,10 @@ final class FillOverlay {
         let compact = panel.measure(view(content, compact: true))
         let bounds = Screen.axVisibleFrame(around: field)
         let spots = LinePlacement.candidates(field: field, width: standard.width, compactWidth: compact.width, bounds: bounds).map(\.0)
-        let obstacles = ObstacleProbe.obstacles(pid: pid, under: spots)
+        // Hit-testing stops at the budget the other surfaces use, so a hung app cannot hold the main
+        // thread for seconds at 50 ms a point (CodeRabbit on PR #9).
+        let probe = ObstacleProbe.Session(pid: pid, until: DispatchTime.now().uptimeNanoseconds + SurfaceCoordinator.probeBudget)
+        let obstacles = LinePlacement.obstacles(over: spots, probe: { probe.under([$0]) })
         let choice = LinePlacement.choose(field: field, width: standard.width, compactWidth: compact.width, obstacles: obstacles, bounds: bounds)
         let frame = Screen.cocoa(choice.frame)
         // Above the field: pin the bottom right; below it: the top right.

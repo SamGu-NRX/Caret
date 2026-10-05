@@ -16,7 +16,7 @@ private func goldenProposal() throws -> FillProposal {
     for line in try goldenLines() {
         if case .fillProposal(let p) = try HelperInbound.decode(line) { return p }
     }
-    throw XCTSkip("golden file has no fillProposal")
+    throw Unexpected("golden file has no fillProposal")
 }
 
 final class HelperProtocolGoldenTests: XCTestCase {
@@ -112,7 +112,7 @@ final class HelperProtocolGoldenTests: XCTestCase {
         book.send = { sent.append($0); return true }
         book.linkChanged(true)
         var list = try HelperMemoryTests.reply(1)
-        list.requestId = sent.last!.requestId
+        list.requestId = try XCTUnwrap(sent.last, "no request was sent").requestId
         let skill = try HelperMemory.Reply.decode(HelperMemoryTests.line("host-memory-6", "memoryReply")).entries[0]
         list.entries.append(skill)
         book.receive(list)

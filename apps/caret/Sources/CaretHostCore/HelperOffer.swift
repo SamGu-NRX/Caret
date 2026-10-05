@@ -13,7 +13,11 @@ public enum HelperOffer: Equatable, Sendable {
 
     public init?(_ inbound: HelperInbound) {
         switch inbound {
-        case .alternatives(let m): self = .alternatives(m)
+        // The decoder refuses an empty list, but the type's initializer does not, and `offer` reads
+        // the first candidate (CodeRabbit on PR #8).
+        case .alternatives(let m):
+            guard !m.candidates.isEmpty else { return nil }
+            self = .alternatives(m)
         case .action(let m): self = .action(m)
         case .popup(let m): self = .popup(m)
         default: return nil

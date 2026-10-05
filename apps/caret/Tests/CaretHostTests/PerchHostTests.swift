@@ -50,6 +50,23 @@ private func replyLine(_ requestId: String, seq: Int, _ records: [TaskRecord]) t
     return try inbound(["type": "activityReply", "v": Proto.version, "requestId": requestId, "error": NSNull(), "seq": seq, "tasks": tasks, "events": [Any](), "truncated": false])
 }
 
+/// CodeRabbit on PR #9: after shutdown, a change from the feed still scheduled timers and moved
+/// panels through `refresh()`.
+@MainActor
+final class PerchShutdownTests: XCTestCase {
+    func testAfterShutdownAFeedChangeSchedulesNothing() throws {
+        let center = ActivityCenter()
+        let perch = PerchController(center: center, drawsOnScreen: false)
+        center.onChange = { perch.refresh() }
+        center.receive(try activityLine(1, task("run", .running, updatedAt: Int64(Date().timeIntervalSince1970 * 1000))))
+        XCTAssertTrue(perch.timersPending, "a running task keeps the perch's timers going")
+        perch.shutdown()
+        XCTAssertFalse(perch.timersPending)
+        center.receive(try activityLine(2, task("run2", .running, updatedAt: Int64(Date().timeIntervalSince1970 * 1000))))
+        XCTAssertFalse(perch.timersPending, "a feed change after shutdown starts nothing")
+    }
+}
+
 @MainActor
 final class ActivityCenterTests: XCTestCase {
     func testListsOnConnectAndAppliesOnlyItsOwnReply() throws {

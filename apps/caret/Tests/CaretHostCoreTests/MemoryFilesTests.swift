@@ -27,7 +27,8 @@ final class MemoryFilesTests: XCTestCase {
         }
 
         func reply(error: String? = nil, conflict: String?? = nil, documents: [MemoryDocument], text: String? = nil) {
-            files.receive(MemoryDocumentReply(requestId: sent.last!.requestId, error: error, conflict: conflict, folder: MemoryFilesTests.folder, documents: documents, text: text))
+            guard let last = sent.last else { return XCTFail("no document request was sent") }
+            files.receive(MemoryDocumentReply(requestId: last.requestId, error: error, conflict: conflict, folder: MemoryFilesTests.folder, documents: documents, text: text))
         }
 
         /// Opens about-me with `text` at revision a1.
@@ -182,12 +183,12 @@ final class MemoryFilesTests: XCTestCase {
 
     /// Review finding 1: a save's late reply must not close an editor opened since. Save A, close,
     /// open A again and type; then the first save's reply arrives.
-    func testALateSaveReplyLeavesANewerEditorAlone() {
+    func testALateSaveReplyLeavesANewerEditorAlone() throws {
         let r = Rig()
         r.open()
         r.files.updateText("first\n")
         r.files.save()
-        let firstSave = r.sent.last!.requestId
+        let firstSave = try XCTUnwrap(r.sent.last, "no request was sent").requestId
         r.files.close()
         r.open()
         r.files.updateText("second\n")
@@ -251,7 +252,7 @@ final class NoticedFactTests: XCTestCase {
             book.onEntryChanged = { [unowned self] in self.changed.append($0) }
             book.linkChanged(true)
             var reply = try HelperMemory.Reply.decode(MemoryDocumentsTests.line(2))
-            reply.requestId = sent.last!.requestId
+            reply.requestId = try XCTUnwrap(sent.last, "no request was sent").requestId
             book.receive(reply)
         }
 

@@ -135,7 +135,7 @@ final class OfferAcceptFromKeysTests: XCTestCase {
     private func accept(_ decision: OfferArbiter.Decision, file: StaticString = #filePath, line: UInt = #line) throws -> OfferAccept {
         guard case .consume(let claim) = decision else {
             XCTFail("expected a claim, got \(decision)", file: file, line: line)
-            throw XCTSkip("no claim")
+            throw Unexpected("no claim")
         }
         XCTAssertFalse(claim.insertsText, "an action is the helper's to run", file: file, line: line)
         return try XCTUnwrap(OfferAccept.from(claim, at: 42), file: file, line: line)
@@ -340,4 +340,13 @@ final class OfferLifecycleTests: XCTestCase {
         XCTAssertEqual(grant.taskID, "fill-2")
         XCTAssertNil(arbiter.snapshot().toast, "one undo per toast")
     }
+
+    /// CodeRabbit on PR #8: the decoder refuses an empty candidate list, but the type's initializer
+    /// does not, and `offer` reads the first candidate. Such a message is no offer at all.
+    func testAlternativesWithNoCandidatesAreNoOffer() {
+        let field = OfferField(pid: 5150, windowId: "5150-1", key: "k", frame: nil, window: OfferWindow(number: nil, title: "T"))
+        let empty = OfferAlternatives(offerKey: "alt-0", at: 1, field: field, candidates: [], quoted: false)
+        XCTAssertNil(HelperOffer(.alternatives(empty)))
+    }
 }
+

@@ -59,4 +59,26 @@ final class LinePlacementTests: XCTestCase {
         XCTAssertEqual(FillLineRule.resolve(toastSource: "from Mail", offerSource: "from Mail"), .deferLine)
         XCTAssertEqual(FillLineRule.resolve(toastSource: "from Mail", offerSource: "from Notes"), .replaceToast)
     }
+
+    /// CodeRabbit on PR #9: the fill line's probe had no deadline, and a point that timed out
+    /// counted as empty. A spot the probe could not finish now counts as covered.
+    func testASpotTheProbeCouldNotFinishIsNeverTakenAsClear() {
+        let spots = LinePlacement.candidates(field: field(0), width: 300, compactWidth: 240, bounds: screen).map(\.0)
+        let standardAbove = spots[0]
+        // Out of time on the first spot: it is not clear, so another one is taken.
+        var asked: [CGRect] = []
+        let obstacles = LinePlacement.obstacles(over: spots) { spot in
+            asked.append(spot)
+            return spot == standardAbove ? nil : []
+        }
+        XCTAssertEqual(asked, spots, "each spot is probed once")
+        XCTAssertEqual(obstacles, [standardAbove])
+        let choice = LinePlacement.choose(field: field(0), width: 300, compactWidth: 240, obstacles: obstacles, bounds: screen)
+        XCTAssertNotEqual(choice.frame, standardAbove)
+        XCTAssertEqual(choice.overlap, 0)
+        // A finished probe that found nothing leaves the standard spot clear, as before.
+        let clear = LinePlacement.obstacles(over: spots) { _ in [] }
+        XCTAssertEqual(LinePlacement.choose(field: field(0), width: 300, compactWidth: 240, obstacles: clear, bounds: screen).frame, standardAbove)
+    }
 }
+

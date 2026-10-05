@@ -28,8 +28,9 @@ final class MemoryBookTests: XCTestCase {
 
         /// Answers the last request with `reply`, renamed to its id.
         func answer(_ reply: HelperMemory.Reply) {
+            guard let last = sent.last else { return XCTFail("no memory request was sent") }
             var r = reply
-            r.requestId = sent.last!.requestId
+            r.requestId = last.requestId
             book.receive(r)
         }
 
@@ -535,5 +536,35 @@ final class MemoryBookTests: XCTestCase {
         XCTAssertEqual(info.sent, ["list", "pause:\(Self.about)", "add:typed-1"])
         let json = String(decoding: try JSONEncoder().encode(info), as: UTF8.self)
         XCTAssertFalse(json.contains("Dana Whitfield"))
+    }
+
+    /// CodeRabbit on PR #8: Skip while a typed value is on its way. If the helper keeps it anyway,
+    /// the book forgets what it kept, so the user's Skip holds.
+    func testSkipWhileAnAddIsInFlightForgetsWhatTheHelperKept() throws {
+        let rig = try Rig()
+        rig.book.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])
+        let add = try XCTUnwrap(rig.last)
+        XCTAssertEqual(add.op, .add)
+        rig.book.dropTyped(labels: ["Name"])
+        XCTAssertEqual(rig.state.typed, [])
+        var kept = try HelperMemoryTests.reply(5)
+        kept.requestId = add.requestId
+        let ids = kept.entries.map(\.id)
+        XCTAssertFalse(ids.isEmpty)
+        rig.book.receive(kept)
+        let forgets = rig.sent.filter { $0.op == .forget }
+        XCTAssertEqual(forgets.map(\.id), ids)
+        XCTAssertEqual(rig.state.typed, [], "nothing comes back as waiting")
+    }
+
+    /// A value not dropped is kept as before: no forget follows its add.
+    func testAnAddThatWasNotDroppedIsNotForgotten() throws {
+        let rig = try Rig()
+        rig.book.remember([TypedAbout(label: "Name", value: "Dana Whitfield")])
+        let add = try XCTUnwrap(rig.last)
+        var kept = try HelperMemoryTests.reply(5)
+        kept.requestId = add.requestId
+        rig.book.receive(kept)
+        XCTAssertEqual(rig.sent.filter { $0.op == .forget }.count, 0)
     }
 }

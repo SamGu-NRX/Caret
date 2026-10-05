@@ -53,12 +53,20 @@ with the screen track's `CaretScreenCore` (`apps/screen-reader`), also by path a
 The llama.cpp binary is gitignored. Put the macOS slice of the `b9402` release at
 `packages/keytype/Packages/ModelRuntime/Vendor/llama.xcframework` (KeyType ADR-007):
 
+From the repository root:
+
 ```sh
-gh release download b9402 --repo ggml-org/llama.cpp --pattern 'llama-b9402-xcframework.zip'
-unzip llama-b9402-xcframework.zip 'build-apple/llama.xcframework/Info.plist' \
+gh release download b9402 --repo ggml-org/llama.cpp --pattern 'llama-b9402-xcframework.zip' --dir /tmp
+unzip -d /tmp /tmp/llama-b9402-xcframework.zip 'build-apple/llama.xcframework/Info.plist' \
   'build-apple/llama.xcframework/macos-arm64_x86_64/*'
-# Then remove the non-macOS entries from Info.plist's AvailableLibraries (plutil -remove).
+# Keep only the macOS library in Info.plist: the other slices were not extracted.
+/usr/bin/python3 -c 'import plistlib,sys; p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["AvailableLibraries"]=[l for l in d["AvailableLibraries"] if l["SupportedPlatform"]=="macos"]; plistlib.dump(d,open(p,"wb"))' \
+  /tmp/build-apple/llama.xcframework/Info.plist
+mkdir -p packages/keytype/Packages/ModelRuntime/Vendor
+mv /tmp/build-apple/llama.xcframework packages/keytype/Packages/ModelRuntime/Vendor/
 ```
+
+The result holds `Info.plist` with one `macos` entry and `macos-arm64_x86_64/`.
 
 On the shared Mac, run every build under the lock:
 

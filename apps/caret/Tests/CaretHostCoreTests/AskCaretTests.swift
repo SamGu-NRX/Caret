@@ -12,7 +12,7 @@ private let goldenURL = URL(fileURLWithPath: #filePath)
 private func golden(_ type: String, _ index: Int = 0) throws -> Data {
     let lines = try String(contentsOf: goldenURL, encoding: .utf8).split(separator: "\n").map { Data($0.utf8) }
     let matching = lines.filter { (try? JSONSerialization.jsonObject(with: $0) as? [String: Any])?["type"] as? String == type }
-    guard matching.indices.contains(index) else { throw XCTSkip("golden file has no \(type) #\(index)") }
+    guard matching.indices.contains(index) else { throw Unexpected("golden file has no \(type) #\(index)") }
     return matching[index]
 }
 
@@ -49,7 +49,7 @@ final class AskCaretTests: XCTestCase {
     }
 
     private func asked() throws -> String {
-        guard case .plan(let request)? = sent.last else { throw XCTSkip("no planRequest sent") }
+        guard case .plan(let request)? = sent.last else { throw Unexpected("no planRequest sent") }
         return request.requestId
     }
 
@@ -58,7 +58,7 @@ final class AskCaretTests: XCTestCase {
         ask.edit("Put the order number in Reference and send it")
         XCTAssertTrue(ask.submit())
         ask.receive(try goldenProposal(answering: asked()))
-        guard case .proposed(let card) = ask.phase else { throw XCTSkip("no card: \(ask.phase)") }
+        guard case .proposed(let card) = ask.phase else { throw Unexpected("no card: \(ask.phase)") }
         return card
     }
 
@@ -660,7 +660,7 @@ final class EventCardCopyTests: XCTestCase {
     """#
 
     static func offer() throws -> OfferAction {
-        guard case .action(let m) = try HelperInbound.decode(Data(line.utf8)) else { throw XCTSkip("not an action") }
+        guard case .action(let m) = try HelperInbound.decode(Data(line.utf8)) else { throw Unexpected("not an action") }
         return m
     }
 

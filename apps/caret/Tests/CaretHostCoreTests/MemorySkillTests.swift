@@ -29,7 +29,7 @@ final class MemorySkillTests: XCTestCase {
         book.send = { sent.append($0); return true }
         book.linkChanged(true)
         var r = try reply(entries)
-        r.requestId = sent.last!.requestId
+        r.requestId = try XCTUnwrap(sent.last, "no request was sent").requestId
         book.receive(r)
         return (book, { sent })
     }
@@ -142,7 +142,7 @@ final class MemorySkillTests: XCTestCase {
         book.sendAnswer = { answers.append($0); return true }
         book.linkChanged(true)
         var r = try HelperMemory.Reply.decode(Data(#"{"type":"memoryReply","v":1,"requestId":"r","error":null,"entries":[\#(entries.joined(separator: ","))],"ops":["list","edit","pause","resume","forget","add","offerOnItsOwn"]}"#.utf8))
-        r.requestId = sent.last!.requestId
+        r.requestId = try XCTUnwrap(sent.last, "no request was sent").requestId
         book.receive(r)
         return (book, { sent }, { answers })
     }

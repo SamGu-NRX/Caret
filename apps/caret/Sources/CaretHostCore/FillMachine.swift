@@ -327,16 +327,16 @@ public final class FillMachine {
         status.cachedProposals = held.count
         guard !candidates.isEmpty else {
             emit(.unwatchApp(pid))
-            return withdraw("noProposal")
+            return withdraw("noProposal", pid: pid)
         }
         // A claim on its way into this app: its own write will change the field; leave the line.
         if arbiter.snapshot().insertingClaimID != nil {
             count("fill.skip.inserting")
             return emit(.publish)
         }
-        guard let field = world.focusedField(pid: pid) else { return withdraw("fieldUnreadable") }
-        guard world.allows(pid: pid, bundleID: field.identity.bundleID) else { return withdraw("notAllowed") }
-        guard field.selection.isEmpty else { return withdraw("selection") }
+        guard let field = world.focusedField(pid: pid) else { return withdraw("fieldUnreadable", pid: pid) }
+        guard world.allows(pid: pid, bundleID: field.identity.bundleID) else { return withdraw("notAllowed", pid: pid) }
+        guard field.selection.isEmpty else { return withdraw("selection", pid: pid) }
 
         let frame = field.frame
         let focusedFrame = Frame(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
@@ -354,7 +354,7 @@ public final class FillMachine {
                 if skip == .noFieldAtFocus { skip = reason }
             }
         }
-        withdraw(skip.rawValue)
+        withdraw(skip.rawValue, pid: pid)
     }
 
     /// Finds each proposed field's element while the form is laid out as the reader saw it, so a
@@ -386,7 +386,7 @@ public final class FillMachine {
     }
 
     func present(_ proposed: FillField, origin: FillOrigin, field: FillFieldRead, trigger: FillTrigger) {
-        guard let value = proposed.value else { return withdraw(FillSelection.Skip.answerNone.rawValue) }
+        guard let value = proposed.value else { return withdraw(FillSelection.Skip.answerNone.rawValue, pid: field.identity.pid) }
         // The frame is part of it: a field matched by its element after it moved is drawn again
         // where it is now (A18, bug 12).
         let key = [origin.proposalID, origin.fieldKey, field.identity.elementID, field.identity.elementRevision, "\(field.frame)"].joined(separator: "\u{1}")
@@ -397,13 +397,13 @@ public final class FillMachine {
         let frame = field.frame
         let anchors = [CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.maxX - 2, y: frame.minY + 2)]
         if let hold = world.hold(for: field.identity, anchors: anchors, requireFocus: true) {
-            return withdraw("held.\(hold.rawValue)")
+            return withdraw("held.\(hold.rawValue)", pid: field.identity.pid)
         }
         // A value whose source window has closed is not offered: Tab would only be refused
         // (SourceCheck), and "from Mail, Invoice 2041" would name a window that is gone (A14 walk-3).
         // Checked on every evaluation, not remembered: a source that opens again, or a newer proposal
         // from another source, is offered as usual.
-        if sourceGone(origin) { return withdraw("sourceGone") }
+        if sourceGone(origin) { return withdraw("sourceGone", pid: field.identity.pid) }
 
         let offer = Offer(
             text: value, kind: .fill(origin), target: field.identity, fieldValue: field.value,
@@ -433,16 +433,26 @@ public final class FillMachine {
         emit(.publish)
     }
 
-    func withdraw(_ reason: String) {
+    /// Takes the shown offer down. `pid`: the app this evaluation was about; the offer goes only when
+    /// it is in that app, so a focus change in a background app with a held proposal leaves the
+    /// offer in the front app alone (CodeRabbit on PR #8). Nil takes it down wherever it is.
+    func withdraw(_ reason: String, pid: Int32? = nil) {
         status.lastSkip = reason
         count("fill.skip.\(reason)")
-        if let shownOfferID {
+        if let shownOfferID, pid == nil || ownsShownOffer(pid: pid!) {
             arbiter.invalidate(offerID: shownOfferID)
             emit(.hideOffer(byTyping: false))
             self.shownOfferID = nil
             shownKey = nil
         }
         emit(.publish)
+    }
+
+    /// Whether the offer on screen is in this app. True when the arbiter no longer holds it: then
+    /// nothing else can be hurt by taking it down.
+    func ownsShownOffer(pid: Int32) -> Bool {
+        guard let shownOfferID, let current = arbiter.snapshot().current, current.id == shownOfferID else { return true }
+        return current.target.pid == pid
     }
 
     /// A newer offer from another producer replaced the fill offer on screen.
@@ -551,20 +561,24 @@ public final class FillMachine {
             valueLength: result.verified ? result.insertedLength : 0
         ))
 
-        if result.verified, let grant = result.undo {
+        if result.verified {
+            // A verified write with no undo grant still filled the field: it says so, with no ⌘Z
+            // (CodeRabbit on PR #8: it said "Nothing was filled.").
+            let grant = result.undo
             if let frame = lastFieldFrame {
                 // The form has usually moved focus on; the toast reports on work, not on a field.
-                startWatch(target: grant.target, anchors: [CGPoint(x: frame.maxX - 2, y: frame.minY + 2)], requireFocus: false)
+                startWatch(target: grant?.target ?? result.claim.offer.target, anchors: [CGPoint(x: frame.maxX - 2, y: frame.minY + 2)], requireFocus: false)
             }
-            let id = arbiter.showToast(grant)
+            let id = grant.map { arbiter.showToast($0) }
             // The toast names the app only ("Filled 4 fields from Mail", SURFACES.md section 6);
             // the offer line already named the window.
             let caption = "1 field \(origin.toastSource)"
             showToast(
-                FillToastDraw(kind: .done, lead: "Filled", text: caption, keycap: Hint(key: "⌘Z", label: "Undo"), field: lastFieldFrame, pid: pid, source: origin.sourceCaption),
-                lifetime: grant.lifetimeSeconds, grantID: id,
+                FillToastDraw(kind: .done, lead: "Filled", text: caption, keycap: grant == nil ? nil : Hint(key: "⌘Z", label: "Undo"), field: lastFieldFrame, pid: pid, source: origin.sourceCaption),
+                lifetime: grant?.lifetimeSeconds ?? UndoGrant.defaultLifetime, grantID: id,
                 info: DebugState.Toast(kind: "done", caption: "Filled \(caption)", grantID: id)
             )
+            // On screen either way, so a pop-up's toast gives way to it.
             emit(.toastSlotTaken)
         } else {
             let caption = Self.errorCaption(result.reason, field: result.strayField)

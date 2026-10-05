@@ -37,7 +37,7 @@ final class OfferArbiterTests: XCTestCase {
     private func claim(_ decision: OfferArbiter.Decision, file: StaticString = #filePath, line: UInt = #line) throws -> Claim {
         guard case .consume(let claim) = decision else {
             XCTFail("expected a claim, got \(decision)", file: file, line: line)
-            throw XCTSkip("no claim")
+            throw Unexpected("no claim")
         }
         return claim
     }

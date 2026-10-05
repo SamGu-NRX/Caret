@@ -18,7 +18,7 @@ final class SkillSurfaceTests: XCTestCase {
     /// The keep offer, re-aimed at `taskId`.
     static func offer(_ kind: String, task: String = "offer-5") throws -> SkillOffer {
         guard case .skillOffer(var o) = try HelperInbound.decode(goldenLine("skillOffer", containing: "\"kind\":\"\(kind)\"")) else {
-            throw XCTSkip("not a skill offer")
+            throw Unexpected("not a skill offer")
         }
         o.taskId = task
         return o

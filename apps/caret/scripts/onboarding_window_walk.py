@@ -196,7 +196,7 @@ def walk(binary, out_dir, appearance, run_dir, result):
 
     key("tab")
     r = wait(lambda r: (r.get("tryIt") or {}).get("completed"), 2)
-    check("a real Tab in the window takes try-it's offer", r is not None and r["tryIt"]["value"] == "$1,240.00" and r["tryIt"]["tabs"] == 1,
+    check("a real Tab in the window takes try-it's offer", r is not None and r["tryIt"]["isSample"] is True and r["tryIt"]["tabs"] == 1,
           tryIt=(r or ob()).get("tryIt"))
     time.sleep(0.4)
     result["shots"]["tryItFilled"] = shot("5-try-it-filled")

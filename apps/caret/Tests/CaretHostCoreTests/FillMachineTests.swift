@@ -633,3 +633,48 @@ final class MemoryFillTests: XCTestCase {
         XCTAssertEqual(field.key, "k:phone")
     }
 }
+
+/// CodeRabbit on PR #8, findings on FillMachine.swift.
+final class FillMachineReviewTests: XCTestCase {
+    private func shown() -> FillRig {
+        let rig = FillRig()
+        rig.world.front(.email)
+        rig.propose()
+        XCTAssertEqual(rig.takeLog(), ["watch 5150", "offer \(FillFx.email) \(FillFx.caption) showLine"])
+        return rig
+    }
+
+    /// A proposal held for a background app is evaluated when that app's focus or value changes. Its
+    /// skip used to take down the offer the user was looking at in the front app.
+    func testASkipInABackgroundAppLeavesTheFrontAppsOfferUp() throws {
+        let rig = shown()
+        let line = FillFx.line(id: "fill-other").replacingOccurrences(of: "\"pid\":5150,\"windowId\":\"5150-1\"", with: "\"pid\":\(Fx.other),\"windowId\":\"\(Fx.other)-1\"")
+        guard case .fillProposal(let other) = try HelperInbound.decode(Data(line.utf8)) else { return XCTFail("not a proposal") }
+        XCTAssertEqual(other.windowId, "\(Fx.other)-1")
+        rig.propose(other)
+        XCTAssertEqual(rig.machine.status.lastSkip, "fieldUnreadable", "the background app has no focused field to read")
+        rig.machine.fieldChanged(pid: Fx.other, at: 3)
+        XCTAssertNotNil(rig.machine.shownOfferID)
+        XCTAssertEqual(rig.arbiter.snapshot().current?.id, rig.machine.shownOfferID)
+        XCTAssertFalse(rig.takeLog().contains("hide offer"))
+        // The front app's own skip still takes it down.
+        rig.world.focused[Fx.app] = nil
+        rig.machine.fieldChanged(pid: Fx.app, at: 4)
+        XCTAssertNil(rig.machine.shownOfferID)
+        XCTAssertEqual(rig.takeLog(), ["hide offer"])
+    }
+
+    /// A verified write that left no undo grant filled the field. It said "Nothing was filled.".
+    func testAVerifiedFillWithNoUndoSaysFilledWithoutUndo() {
+        let rig = shown()
+        rig.press(Fx.tab())
+        rig.world.focus(.email, value: FillFx.email)
+        rig.inserted(grantsUndo: false)
+        XCTAssertEqual(rig.takeLog(), ["working", "toast done Filled 1 field from Caret Fixture", "toast slot"])
+        XCTAssertEqual(rig.sent.last?.outcome, .inserted)
+        XCTAssertNil(rig.machine.toastGrantID, "no ⌘Z without a grant")
+        XCTAssertTrue(rig.machine.toastVisible)
+        rig.clock.advance(by: UndoGrant.defaultLifetime + 0.1)
+        XCTAssertFalse(rig.machine.toastVisible)
+    }
+}

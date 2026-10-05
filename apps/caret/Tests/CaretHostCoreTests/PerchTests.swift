@@ -142,13 +142,17 @@ final class ActivityRowTests: XCTestCase {
     }
 
     func testRowsAreOrderedNeedsYouThenInProgressThenDoneNewestFirst() {
+        // Pinned: in UTC+4 `now` is local midnight, and Done today would hold neither done row
+        // (CodeRabbit on PR #10).
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Chicago")!
         let rows = ActivityList.rows([
             taskRecord("done-old", .done, updatedAt: t - 9_000),
             taskRecord("run", .running, updatedAt: t - 1_000),
             taskRecord("done-new", .done, updatedAt: t - 2_000),
             taskRecord("needs", .needsYou, updatedAt: t - 50_000),
             taskRecord("paused", .paused, updatedAt: t - 3_000),
-        ], now: now)
+        ], now: now, calendar: calendar)
         XCTAssertEqual(rows.map(\.id), ["paused", "needs", "run", "done-new", "done-old"])
     }
 

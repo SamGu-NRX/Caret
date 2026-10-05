@@ -149,6 +149,9 @@ public final class MemoryBook {
     public var sendNotRight: (MemoryNotRight) -> Bool = { _ in false }
     private var requests = 0
     private var typedCount = 0
+    /// Adds whose typed value the user dropped (Skip) while they were on their way. Whatever the
+    /// helper kept from one is forgotten when its reply comes (CodeRabbit on PR #8).
+    private var droppedAdds: Set<String> = []
     /// The last requests sent, "op:id", for the debug state.
     public private(set) var sentLog: [String] = []
 
@@ -191,6 +194,7 @@ public final class MemoryBook {
         guard let p = pending.removeValue(forKey: reply.requestId) else { return }
         p.timer.cancel()
         if let id = p.entryId { state.busy[id] = nil }
+        let dropped = droppedAdds.remove(reply.requestId) != nil
         if let error = reply.error {
             refused(p, error)
             return changed()
@@ -252,6 +256,10 @@ public final class MemoryBook {
         case .add:
             // A second add with the same label replaces that entry's value (protocol.ts MemoryRequest).
             for entry in reply.entries { onEntryChanged(entry.id) }
+            // Dropped while it was sent: the user kept none of it, so what the helper stored goes.
+            if dropped {
+                for entry in reply.entries { _ = post(HelperMemory.Request(requestId: nextId(), op: .forget, id: entry.id), op: .forget, entryId: entry.id) }
+            }
             state.typed.removeAll { $0.id == p.typedId }
             requestList()
         case .onItsOwn:
@@ -299,6 +307,7 @@ public final class MemoryBook {
 
     private func timedOut(_ requestId: String) {
         guard let p = pending.removeValue(forKey: requestId) else { return }
+        droppedAdds.remove(requestId)
         let message = "Caret didn't answer. Try again."
         switch p.op {
         case .list:
@@ -701,7 +710,11 @@ public final class MemoryBook {
 
     /// Removes a typed value that has not been kept yet.
     public func dropTyped(_ id: String) {
-        for t in state.typed where t.id == id { if case .sending(let r) = t.phase { pending[r]?.typedId = nil } }
+        for t in state.typed where t.id == id {
+            guard case .sending(let r) = t.phase else { continue }
+            pending[r]?.typedId = nil
+            droppedAdds.insert(r)
+        }
         state.typed.removeAll { $0.id == id }
         changed()
     }

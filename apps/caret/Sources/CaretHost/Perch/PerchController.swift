@@ -279,6 +279,9 @@ final class PerchController {
 
     /// The activity feed or the acknowledgement changed.
     func refresh() {
+        // After shutdown, a late change from the feed or the hidden setter would schedule timers and
+        // move panels again (CodeRabbit on PR #9).
+        guard !stopped else { return }
         let now = Date()
         model.character = FigureSettings.shared.character
         let next = center.subject(now: now)
@@ -615,10 +618,14 @@ final class PerchController {
         }?.bounds
     }
 
+    /// Any of the perch's timers is scheduled; for tests.
+    var timersPending: Bool { [expiryTimer, trackTimer, locateTimer, blinkTimer].contains { $0 != nil } }
+
     func shutdown() {
         stopped = true
         fadeWork?.cancel()
         expiryTimer?.invalidate()
+        expiryTimer = nil
         stopTimers()
         closeList()
         caption.exit(duration: 0)

@@ -34,6 +34,9 @@ public enum WriteFallback {
         elapsed: TimeInterval, ignoredAfter: TimeInterval, timeout: TimeInterval
     ) -> Settle? {
         if let value, value == expected { return sameElement ? .matched : .different }
+        // Another element's value says nothing about the approved one. Read as `unchanged`, it made
+        // `writeIgnored`, which moves the app to the paste route for good (CodeRabbit on PR #8).
+        if value != nil, !sameElement { return .different }
         if let value, value == unchanged, elapsed >= ignoredAfter { return .unchanged }
         if elapsed >= timeout { return value == unchanged ? .unchanged : .different }
         return nil
