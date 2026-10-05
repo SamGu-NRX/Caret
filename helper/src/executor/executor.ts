@@ -1357,7 +1357,8 @@ export class Executor {
         (sel.title === undefined || w.window.title === sel.title) &&
         (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)) &&
         (sel.number === undefined || w.window.number === sel.number) &&
-        (sel.page === undefined || w.window.kind === PAGE_WINDOW_KIND),
+        (sel.page === undefined || w.window.kind === PAGE_WINDOW_KIND) &&
+        (sel.windowId === undefined || w.window.windowId === sel.windowId),
     );
     if (hits.length === 0) throw StepStop.stop("windowGone", `no window matches ${k}`, "screen");
     if (hits.length > 1) throw StepStop.stop("ambiguous", `${hits.length} windows match ${k}; the plan must name one`);

@@ -136,7 +136,8 @@ function bindWindow(model: ScreenModel, sel: WindowSel, at: string): WindowState
       (sel.title === undefined || w.window.title === sel.title) &&
       (sel.titleStartsWith === undefined || w.window.title.startsWith(sel.titleStartsWith)) &&
       (sel.number === undefined || w.window.number === sel.number) &&
-      (sel.page === undefined || w.window.kind === PAGE_WINDOW_KIND),
+      (sel.page === undefined || w.window.kind === PAGE_WINDOW_KIND) &&
+      (sel.windowId === undefined || w.window.windowId === sel.windowId),
   );
   const named = sel.title ?? sel.titleStartsWith ?? "";
   if (hits.length === 0) throw new PlannerError("unknownWindow", `${at}: no open window matches '${named}'`);

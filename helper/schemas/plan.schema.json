@@ -69,6 +69,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -137,6 +141,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -201,6 +209,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -265,6 +277,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -329,6 +345,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -371,6 +391,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -409,6 +433,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -484,6 +512,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -554,6 +586,10 @@
                           "page": {
                             "type": "boolean",
                             "const": true
+                          },
+                          "windowId": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": false
@@ -738,6 +774,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -806,6 +846,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -870,6 +914,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -934,6 +982,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -998,6 +1050,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -1040,6 +1096,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -1078,6 +1138,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -1153,6 +1217,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false
@@ -1223,6 +1291,10 @@
                 "page": {
                   "type": "boolean",
                   "const": true
+                },
+                "windowId": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false

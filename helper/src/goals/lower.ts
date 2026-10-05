@@ -409,7 +409,7 @@ function executorPlan(id: string, s: { domain: GoalDomain; steps: readonly GoalS
     return `{{${name}}}`;
   };
   const d = s.domain;
-  const sel: WindowSel | null = d.kind === "window" ? { bundleId: d.bundleId, title: slot("title", d.title, "the window's title", d.windowId), ...(d.number === null ? {} : { number: d.number }), ...(d.page ? { page: true as const } : {}) } : null;
+  const sel: WindowSel | null = d.kind === "window" ? { bundleId: d.bundleId, title: slot("title", d.title, "the window's title", d.windowId), ...(d.number === null ? {} : { number: d.number }), ...(d.page ? { page: true as const, windowId: d.windowId } : {}) } : null;
   const out: Step[] = s.steps.map((x, i): Step => {
     if (x.kind === "calendar") {
       const ev = x.value?.event;

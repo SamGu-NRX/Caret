@@ -43,15 +43,16 @@ function snapshot(id: string, o: { view?: PageSnapshot["view"]; focused?: string
   };
 }
 
-/** A session whose engine answers each walk with `snap()` as it is at that moment. */
-function rig(snap: (id: string) => PageSnapshot) {
+/** A session whose engine answers each walk with `snap()` as it is at that moment, or refuses it with `refuse()`'s outcome. */
+function rig(snap: (id: string) => PageSnapshot, refuse: () => string | null = () => null) {
   const sent: HelperToEngine[] = [];
   const session = new EngineSession({ engine: "eng1", browser: chrome, extensionId: X, bridgeVersion: "0", connectedAt: 0 }, (m) => {
     sent.push(m);
     queueMicrotask(() => {
       if (m.type !== "pageCommand") return;
-      if (m.verb.kind === "pageWalk") session.receive(snap(m.id));
-      session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: "ok", detail: null } as never);
+      const no = m.verb.kind === "pageWalk" ? refuse() : null;
+      if (m.verb.kind === "pageWalk" && no === null) session.receive(snap(m.id));
+      session.receive({ type: "pageResult", v: 1, id: m.id, at: 1, outcome: no ?? "ok", detail: no === null ? null : "refused" } as never);
     });
     return true;
   }, 500);
@@ -100,7 +101,7 @@ describe("the page field the user is in, for the host", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function build(page: { focused: string | null; scroll: number }) {
+  function build(page: { focused: string | null; scroll: number; off?: boolean }) {
     const published: HelperMessage[] = [];
     const focus: unknown[] = [];
     let helper: Helper;
@@ -112,7 +113,7 @@ describe("the page field the user is in, for the host", () => {
       return handle(m);
     };
     wirePageEngines({ host, helper, publish: (m) => published.push(m), warn: () => {} });
-    const { session, sent } = rig((id) => snapshot(id, { focused: page.focused, scroll: page.scroll }));
+    const { session, sent } = rig((id) => snapshot(id, { focused: page.focused, scroll: page.scroll }), () => (page.off === true ? "siteOff" : null));
     host.registry.add(session);
     session.receive(hello);
     return { helper, published, session, sent, focus };
@@ -141,6 +142,21 @@ describe("the page field the user is in, for the host", () => {
     await settle();
     expect(fields(published).at(-1)).toMatchObject({ key: null, frame: null, windowId: W });
   });
+
+  it("says no field once the tab the user is in is one Caret cannot read (a site it is off for)", async () => {
+    const page = { focused: "e1" as string | null, scroll: 0, off: false };
+    const { helper, published, session } = build(page);
+    await settle();
+    helper.handleReader({ type: "appSwitch", v: 1, at: 2, from: null, to: chrome });
+    session.receive({ type: "pageFocus", v: 1, at: 3, tabId: 7, frameId: 0 });
+    await settle();
+    expect(fields(published).at(-1)?.key).toBe(KEY(email));
+    // The worker reports the switch to the off site's tab (H10 review 3); the walk is refused there.
+    page.off = true;
+    session.receive({ type: "pageFocus", v: 1, at: 4, tabId: 7, frameId: 0 });
+    await settle();
+    expect(fields(published).at(-1)).toMatchObject({ key: null, frame: null });
+  });
 });
 
 describe("Ask in a browser a page engine covers (H10)", () => {
@@ -163,7 +179,7 @@ describe("Ask in a browser a page engine covers (H10)", () => {
     helper = new Helper({
       store, askJev: () => Promise.reject(new Error("no Jev here")), shadow: false, allowBackgroundFocus: false, readerLink: host.link, calendar: null, publish: (m) => published.push(m), warn: () => {},
       pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined,
-      pageFront: o.front ?? ((pid) => pageFront(host.registry, pid)),
+      pageFront: o.front ?? ((pid, frame) => pageFront(host.registry, pid, frame)),
     });
     wirePageEngines({ host, helper, publish: () => {}, warn: () => {} });
     const { session, sent } = rig((id) => snapshot(id));
@@ -187,6 +203,27 @@ describe("Ask in a browser a page engine covers (H10)", () => {
     expect(p.error).toBeNull();
     expect(p).toMatchObject({ outcome: "proposed", attach: { field: "Resume" } });
     expect(sent.filter((m) => m.type === "pageCommand" && m.verb.kind === "pageWalk").length).toBe(walks + 1);
+  });
+
+  it("walks the tab even when the model's latest focus is another page, and binds the walked page alone among same-titled tabs (review 1, 4)", async () => {
+    const { helper } = await build();
+    // Tab 6, which the user left: the same title, the same form, focused later in the model than tab 7's walk.
+    const { session: other } = rig((id) => snapshot(id));
+    helper.handleReader({ ...toWindowSnapshot({ ...snapshot("s6"), tabId: 6 }, other, 2), at: Date.now() + 5000 });
+    expect(helper.model.userWindow()?.window.windowId).toBe("page:eng1:6");
+    const p = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "ask-3", at: 1, instruction: "attach my resume" });
+    expect(p.error).toBeNull();
+    expect(p.window?.windowId).toBe(W);
+  });
+
+  it("plans in the page shown in a browser window the request names, matched by its frame, and refuses another frame (review 2)", async () => {
+    const { helper } = await build();
+    const p = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "ask-4", at: 1, instruction: "attach my resume", windowId: "4100-1" });
+    expect(p.error).toBeNull();
+    expect(p.window?.windowId).toBe(W);
+    helper.handleReader({ type: "snapshot", v: 1, seq: 2, at: Date.now() + 2000, reason: "focus", app: chrome, window: { windowId: "4100-2", kind: "standard", title: "Other window", frame: [600, 30, 760, 512], number: 36 }, focused: false, root: null, nodes: [], values: [], focusedKey: null, stats: { walkMs: 0, visited: 0, truncated: false } });
+    const q = await helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "ask-5", at: 1, instruction: "attach my resume", windowId: "4100-2" });
+    expect(q).toMatchObject({ outcome: "error", error: { code: "noWindow", says: SAYS.pageUnread } });
   });
 
   it("refuses with the page sentence when the engine cannot read that tab, rather than planning in the toolbar", async () => {

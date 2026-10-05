@@ -262,7 +262,7 @@ export function fillPlan(model: ScreenModel, p: GroundedProposal): { plan: Plan;
       ...(f.memory === null ? {} : { memory: memoryRefOf(f.memory) }),
       end: {
         kind: "valueEquals" as const,
-        window: { bundleId: p.bundleId, title: "{{title}}", ...(w?.window.kind === PAGE_WINDOW_KIND ? { page: true as const } : {}) },
+        window: { bundleId: p.bundleId, title: "{{title}}", ...(w?.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: p.windowId } : {}) },
         target: { key: f.key, describe: `the {{l${i}}} field` },
         value: `{{v${i}}}`,
       },

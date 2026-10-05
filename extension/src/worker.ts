@@ -409,16 +409,15 @@ chrome.runtime.onMessage.addListener((m: unknown, sender) => {
 /**
  * H10: the tab the user is in changed (another tab selected, another browser window focused) or its zoom changed. The
  * helper walks the new active tab as for a focus report, so the host learns which field, if any, has focus there now,
- * rather than keeping the field of a tab the user left. Sent only for the active tab of the focused window, and not
- * for a site Caret is off for.
+ * rather than keeping the field of a tab the user left. Sent only for the active tab of the focused window. Sent for a
+ * site Caret is off for too: the walk is refused there (siteOff), which tells the host no field of Caret's has focus,
+ * so an offer drawn for the tab the user left goes (H10 review). Nothing about the site travels.
  */
 async function frontTabChanged(): Promise<void> {
   if (engine === null) return;
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => [] as chrome.tabs.Tab[]);
   const win = await chrome.windows.getLastFocused().catch(() => undefined);
   if (tab?.id === undefined || win === undefined || !win.focused || tab.windowId !== win.id) return;
-  const top = frameOrigin((await chrome.webNavigation.getAllFrames({ tabId: tab.id })) ?? [], 0);
-  if (top !== null && sitesOff.has(top)) return;
   const now = Date.now();
   if (now - (lastFocus.get(tab.id) ?? 0) < FOCUS_EVERY_MS) return;
   lastFocus.set(tab.id, now);

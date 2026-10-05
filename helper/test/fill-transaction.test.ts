@@ -455,6 +455,8 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     // The reader's window of the same browser, with the page's title and a window number, as the real app has it: the
     // plan must still bind the page window alone (WindowSel.page).
     await helper.handleReader(snap([node("tb/address", "AXTextField", { label: "Address and search bar" })], { at: Date.now(), windowId: "4100-1", title: TITLE, app: chrome, number: 35 }));
+    // And another tab with the same form and title (H10 review 4): the run binds the proposal's own page alone.
+    await helper.handleReader(toWindowSnapshot({ ...page.snapshot("s9"), tabId: 9 }, page.session, 99));
     const task = fillFieldTask(p.id, KEY("e2"));
     const r = await helper.handleFillAll({ type: "fillAll", v: PROTOCOL_VERSION, proposalId: p.id, fieldKey: KEY("e2"), at: Date.now() });
     expect(r).toMatchObject({ outcome: "done" });

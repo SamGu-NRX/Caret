@@ -480,7 +480,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     return refused(new SaidError("nothingToDo", `${saysNoValue(checked.fields.map((f) => f.name))}${left === null ? "" : ` ${left}`}`, `no value for ${checked.fields.map((f) => f.name).join(", ")} on screen, in memory or in the instruction`));
   }
 
-  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const } : {}) };
+  const sel: WindowSel = { bundleId: w.app.bundleId, title: w.window.title, ...(w.window.number === undefined ? {} : { number: w.window.number }), ...(w.window.kind === PAGE_WINDOW_KIND ? { page: true as const, windowId: w.window.windowId } : {}) };
   const slots: Record<string, string> = {};
   const slotNames: Record<string, string> = {};
   const steps: Step[] = writes.map((f, i) => {

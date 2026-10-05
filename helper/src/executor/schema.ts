@@ -23,6 +23,12 @@ export const WindowSel = z
      * page matched both and stopped as ambiguous. Absent: any window, as before.
      */
     page: z.literal(true).optional(),
+    /**
+     * H10 review: only the window with this id. Set on a plan made for one page now (a fill, an Ask, a goal), whose
+     * page and another tab with the same title would otherwise both match. A plan kept to run later names none: the
+     * id lasts only as long as the page engine's session.
+     */
+    windowId: z.string().min(1).optional(),
   })
   .refine((w) => w.title !== undefined || w.titleStartsWith !== undefined, { message: "a window needs title or titleStartsWith" });
 export type WindowSel = z.infer<typeof WindowSel>;

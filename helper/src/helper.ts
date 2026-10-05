@@ -167,7 +167,7 @@ export interface HelperOptions {
    * one Caret is off for, no frame answered, or that tab is not active in a focused window. Ask plans in it, never in
    * Accessibility's view of the browser, which shows no web content (evidence/host/h10/probe).
    */
-  pageFront?: (pid: number) => Promise<string | null>;
+  pageFront?: (pid: number, windowFrame?: readonly [number, number, number, number]) => Promise<string | null>;
   /**
    * Where calendar end states are written: a port, "reader" for the reader's EventKit adapter over the
    * same link the executor acts through (ReaderCalendar), or null for none.
@@ -1197,10 +1197,15 @@ export class Helper {
     // H10: in a browser a page engine covers, Ask reads the page of the tab the user is in, walked now. The reader's
     // window of the same browser shows only its toolbar, so planning there said "This form has no field for that"
     // (Q2's VM run); the model's most recent focus could name either, as both belong to the browser's process.
-    const browser = windowId === null ? this.model.frontmostPid : (this.model.windows.get(windowId)?.app.pid ?? null);
-    if (browser !== null && (windowId === null || !isPageWindow(windowId)) && this.opts.pageCovers?.(browser) === true) {
-      const page = (await this.opts.pageFront?.(browser)) ?? null;
-      if (page === null) return this.planFailed(m.requestId, "noWindow", `the page engine for process ${browser} could not read the tab the user is in`, SAYS.pageUnread);
+    // A request that names no window gets the tab walked now even when the model's latest focus is already a page: that
+    // can be a tab the user just left (H10 review). One that names the reader's window of a browser gets the page shown
+    // in that window, matched by the window's frame, or a refusal; never whichever window happens to be focused.
+    const named = m.window !== undefined || m.windowId !== undefined;
+    const browser = named ? (windowId === null ? null : (this.model.windows.get(windowId)?.app.pid ?? null)) : this.model.frontmostPid;
+    if (browser !== null && (!named || (windowId !== null && !isPageWindow(windowId))) && this.opts.pageCovers?.(browser) === true) {
+      const frame = named && windowId !== null ? (this.model.windows.get(windowId)?.window.frame ?? null) : undefined;
+      const page = named && frame === null ? null : ((await this.opts.pageFront?.(browser, frame ?? undefined)) ?? null);
+      if (page === null) return this.planFailed(m.requestId, "noWindow", `the page engine for process ${browser} could not read the tab ${named ? "in the window named" : "the user is in"}`, SAYS.pageUnread);
       this.opts.store.count("plan.pageWindow", 1);
       windowId = page;
     }
