@@ -6,7 +6,7 @@ import { PlanningSnapshotSchema } from "../../src/codemode/types.ts";
 import { listModels } from "../../src/writer/chat.ts";
 import { CANDIDATES, GATEWAY_GPT_OSS_120B, GROQ_GPT_OSS_120B, GROQ_QWEN_3_8_27B, WRITER_ROUTE } from "../../src/writer/config.ts";
 import { extractProgram, PLAN_API, planUserMessage } from "../../src/writer/plan-prompt.ts";
-import { GOAL_API } from "../../src/writer/goal-prompt.ts";
+import { GOAL_API, GOAL_SYSTEM } from "../../src/writer/goal-prompt.ts";
 import { makeWriterPort } from "../../src/writer/port.ts";
 import { CANNED_PROGRAM, FORM, MAIL } from "./fixtures.ts";
 import { WRITER_CORPUS } from "./writer-corpus.ts";
@@ -36,6 +36,16 @@ describe("plan prompt", () => {
     expect(documented).toEqual(exposed);
     // A single-window plan's writer never reads draft(), which the worker refuses outside a goal (B30).
     expect([...PLAN_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort()).toEqual(exposed.filter((x) => x !== "draft"));
+  });
+
+  test("the goal API says which targets fill takes and which press takes (G2)", () => {
+    // Each line replaced in PLAN_API is gone from GOAL_API, so a reworded PLAN_API cannot silently keep the old text.
+    expect(GOAL_API).not.toContain("put a value into a fillable target");
+    expect(GOAL_API).not.toContain("press a target, expecting one of its allowedPressEffects");
+    expect(GOAL_API).toContain("A target whose canFill is\n   * false is a button: press() it, never fill() it.");
+    expect(GOAL_API).toContain("A field\n   * has none and is never pressed.");
+    expect(GOAL_SYSTEM).toContain("fill() takes only fields; press() takes only buttons.");
+    expect(GOAL_SYSTEM).toContain("Never put a value into another target because the right one is missing.");
   });
 
   test("the inventory carries labels and refs, not value origins", () => {

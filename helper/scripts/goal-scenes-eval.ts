@@ -134,7 +134,7 @@ interface Row {
  * Wraps a writer to space its calls and add up what each cost and how long it took. A call that waited gets a fresh
  * abort signal: the caller's was made before the wait (B25: a 15 s gap aborted every request otherwise).
  */
-function metered(w: WriterPort, into: { cost: number; latency: number[]; model: string; errors: string[] }): WriterPort {
+function metered(w: WriterPort, into: { cost: number; latency: number[]; model: string; errors: string[]; programs: string[] }): WriterPort {
   return {
     route: w.route,
     async write(req) {
@@ -150,6 +150,7 @@ function metered(w: WriterPort, into: { cost: number; latency: number[]; model: 
       }
       into.cost += r.costUsd;
       into.latency.push(r.latencyMs);
+      into.programs.push(r.output.program ?? "(no program)");
       into.model = r.model;
       return r;
     },
@@ -165,7 +166,7 @@ for (let run = 1; run <= runs; run++) {
       console.log(`budget: $${spent.toFixed(4)} spent of $${budget}; stopping before '${s.name}'`);
       break;
     }
-    const meter = { cost: 0, latency: [] as number[], model: live ? route.model : "canned", errors: [] as string[] };
+    const meter = { cost: 0, latency: [] as number[], model: live ? route.model : "canned", errors: [] as string[], programs: [] as string[] };
     const sc = goalScene({ scripts: structuredClone(s.canned), windows: s.windows(), userWindow: s.user, ...(live ? { writer: metered(makeWriterPort(route), meter) } : {}), askJev: jevLive === null ? standInJev() : async (req) => { const r = await jevLive(req); meter.cost += r.costUsd; return r; } });
     s.during?.(sc);
     const first = await sc.request(s.instruction);
@@ -223,6 +224,8 @@ for (let run = 1; run <= runs; run++) {
     for (const note of rows.at(-1)?.notes ?? []) console.log(`  note: ${note}`);
     console.log(`${s.name} [${meter.model}]: ${end}; valid ${first.event === "segment"}${refused === null ? "" : ` (${refused})`}; oracle ${bad.length === 0 ? "ok" : bad.join("; ")}; verified ${rows.at(-1)?.verified}; replayed ${replayed}; sends ${sends}; $${meter.cost.toFixed(4)}`);
     writeFileSync(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.goals.ndjson`), sc.goals.map((g) => JSON.stringify(g)).join("\n") + "\n");
+    // The writer's programs, to count the ones the sandbox refused and why (G2, the writer's contract).
+    if (live) writeFileSync(join(OUT, `${s.name.replace(/[^a-z0-9]+/gi, "-")}-${run}.programs.ts`), meter.programs.map((p, i) => `// program ${i + 1} (${meter.model})\n${p}\n`).join("\n"));
     await sc.close();
   }
 }
