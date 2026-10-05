@@ -202,6 +202,15 @@ final class EventDestinationTests: XCTestCase {
         }
     }
 
+    /// VM run 4: EventKit's status lagged at notDetermined after the grant. The request's own answer
+    /// stands while the status lags; any other status wins.
+    func testTheRequestsAnswerStandsWhileTheStatusLags() {
+        XCTAssertEqual(CalendarAccess.effective(status: .notDetermined, answered: .fullAccess), .fullAccess)
+        XCTAssertEqual(CalendarAccess.effective(status: .notDetermined, answered: nil), .notDetermined)
+        XCTAssertEqual(CalendarAccess.effective(status: .denied, answered: .fullAccess), .denied, "a later refusal in System Settings wins")
+        XCTAssertEqual(CalendarAccess.effective(status: .fullAccess, answered: .denied), .fullAccess)
+    }
+
     func testTheCardLineNamesTheCalendar() {
         let c = FakeCalendars()
         XCTAssertEqual(EventCalendarCopy.cardLine(.notAsked), "Adding to your default calendar")

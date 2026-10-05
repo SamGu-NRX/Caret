@@ -13,6 +13,15 @@ public enum CalendarAccess: String, Codable, Sendable {
     /// The reader needs full access: it reads each event back after adding it and before undoing it.
     /// Write-only access, which System Settings can grant, is not enough.
     public var granted: Bool { self == .fullAccess }
+
+    /// The access to act on, from EventKit's status and the answer this process's own request got.
+    /// In the rig guest (evidence/host/h8, VM run 4), after Allow macOS recorded the grant for
+    /// dev.caret.host, yet `EKEventStore.authorizationStatus` in the same Caret process kept answering
+    /// notDetermined, 20 s on. So while the status still says notDetermined, the request's answer stands;
+    /// any other status (a later refusal in System Settings) wins over it.
+    public static func effective(status: CalendarAccess, answered: CalendarAccess?) -> CalendarAccess {
+        status == .notDetermined ? (answered ?? status) : status
+    }
 }
 
 /// A calendar Caret may add events to.

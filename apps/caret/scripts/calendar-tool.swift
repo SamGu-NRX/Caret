@@ -9,6 +9,8 @@
 //   calendar-tool prompt WORD            the on-screen alert whose text names WORD and Calendar: its app,
 //                                        window, texts and buttons (needs Accessibility)
 //   calendar-tool allow WORD             presses that alert's "Allow" button by Accessibility
+//   calendar-tool poll SECONDS           Calendar authorization twice a second, one line each, in one process:
+//                                        whether a grant that lands while a process runs reaches its status
 import AppKit
 import ApplicationServices
 import EventKit
@@ -98,6 +100,17 @@ args.removeFirst()
 switch command {
 case "status":
     out(["access": statusName()])
+case "poll":
+    guard args.count == 1, let seconds = Double(args[0]) else { fail("usage: poll SECONDS") }
+    let end = Date().addingTimeInterval(seconds)
+    while Date() < end {
+        // A new store each time, as well as the class status: does either see a grant that came after start?
+        let calendars = EKEventStore().calendars(for: .event).count
+        print("{\"at\":\"\(iso.string(from: Date()))\",\"access\":\"\(statusName())\",\"calendars\":\(calendars)}")
+        fflush(stdout)
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+    exit(0)
 case "default":
     guard let c = store().defaultCalendarForNewEvents else { out(nil) }
     out(["id": c.calendarIdentifier, "title": c.title, "source": c.source?.title ?? "", "writable": c.allowsContentModifications])

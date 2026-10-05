@@ -16,11 +16,15 @@ final class EventKitCalendars: CalendarDirectory, CalendarAccessAsking {
 
     private var store: EKEventStore?
     private var storeAccess: CalendarAccess?
+    /// What this process's own request was answered (`CalendarAccess.effective`).
+    private var answered: CalendarAccess?
     private var changes: NSObjectProtocol?
     /// Calendars or the default changed (`EKEventStoreChanged`), or access did. Main thread.
     var onChange: (() -> Void)?
 
-    var access: CalendarAccess {
+    var access: CalendarAccess { CalendarAccess.effective(status: status, answered: answered) }
+
+    private var status: CalendarAccess {
         switch EKEventStore.authorizationStatus(for: .event) {
         case .notDetermined: return .notDetermined
         case .restricted: return .restricted
@@ -54,11 +58,18 @@ final class EventKitCalendars: CalendarDirectory, CalendarAccessAsking {
             if access == .notDetermined { FileHandle.standardError.write(Data("caret: calendar: no \(Self.usageKey) in this build; not asking\n".utf8)) }
             return done(access)
         }
-        EKEventStore().requestFullAccessToEvents { [weak self] _, error in
+        // The store that asks is kept: after a grant it reads the calendars even while the status lags.
+        let asking = EKEventStore()
+        asking.requestFullAccessToEvents { [weak self] granted, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let error { FileHandle.standardError.write(Data("caret: calendar: access request: \(error.localizedDescription)\n".utf8)) }
-                self.store = nil
+                self.answered = granted ? .fullAccess : .denied
+                self.store = granted ? asking : nil
+                self.storeAccess = granted ? .fullAccess : nil
+                let calendars = granted ? asking.calendars(for: .event).count : 0
+                FileHandle.standardError.write(Data("caret: calendar: granted \(granted), status \(self.status.rawValue), \(calendars) calendars\n".utf8))
+                if granted { self.watch(asking) }
                 done(self.access)
                 self.onChange?()
             }
@@ -75,11 +86,15 @@ final class EventKitCalendars: CalendarDirectory, CalendarAccessAsking {
         let s = EKEventStore()
         store = s
         storeAccess = now
+        watch(s)
+        return s
+    }
+
+    private func watch(_ s: EKEventStore) {
         if let changes { NotificationCenter.default.removeObserver(changes) }
         changes = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: s, queue: .main) { [weak self] _ in
             self?.onChange?()
         }
-        return s
     }
 
     private static func writable(_ c: EKCalendar) -> WritableCalendar {

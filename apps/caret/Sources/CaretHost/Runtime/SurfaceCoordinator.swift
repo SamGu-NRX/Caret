@@ -130,6 +130,19 @@ final class SurfaceCoordinator {
 
     // MARK: - Events in, forwarded to the machine
 
+    /// macOS's Calendar prompt takes the foreground, and closing it left the app the user accepted the
+    /// card in inactive (VM run 4: the fixture's title greyed after Allow), so the working and done lines,
+    /// which show only over the app in front, never came back and ⌘Z went unclaimed. The app is given the
+    /// front again, only when what holds it now is the prompt's own process or Caret: an app the user
+    /// switched to meanwhile keeps it.
+    static func giveBackFront(before: NSRunningApplication?, after: NSRunningApplication?) {
+        guard let before, !before.isTerminated, before.processIdentifier != after?.processIdentifier else { return }
+        let promptOwners: Set<String> = ["com.apple.UserNotificationCenter"]
+        let mine = after?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        guard after == nil || mine || promptOwners.contains(after?.bundleIdentifier ?? "") else { return }
+        _ = before.activate(options: [])
+    }
+
     /// The calendar choice as the reader will read it at the add: from the settings file, not the
     /// in-memory settings, which keep a change whose save failed (review finding 2). Unreadable, the
     /// reader refuses the add; the card then names the in-memory choice.
@@ -266,8 +279,11 @@ final class SurfaceCoordinator {
         case .dropHelperSession: client?.dropSession()
         case .toastSlotTaken: onToastChanged?()
         case .askCalendarAccess:
+            let before = NSWorkspace.shared.frontmostApplication
             calendars.requestAccess { [weak self] access in
-                FileHandle.standardError.write(Data("caret: calendar: access \(access.rawValue) after asking\n".utf8))
+                let after = NSWorkspace.shared.frontmostApplication
+                FileHandle.standardError.write(Data("caret: calendar: access \(access.rawValue) after asking; front \(after?.bundleIdentifier ?? "none"), was \(before?.bundleIdentifier ?? "none")\n".utf8))
+                Self.giveBackFront(before: before, after: after)
                 self?.machine.calendarAccessAnswered()
             }
         case .count(let name): status.increment(name)

@@ -203,6 +203,10 @@ def run(app, out_dir):
     pressed = tool("allow", "Caret")
     sa.check("the prompt's Allow is pressed", pressed.get("pressed") is True, pressed=pressed)
     end = sa.wait_for(lambda: progress(key_, ("done", "handoff", "stopped")), 30, 0.2)
+    time.sleep(0.3)
+    front = sa.front_pid()
+    results["frontAfterAllow"] = front
+    sa.check("the app the card was accepted in has the front again", pid in (front.get("pid"), front.get("lsappinfo")), front=front, fixture=pid)
     sa.check("the run ends done", (end or {}).get("phase") == "done", end=end)
     # The toast with ⌘Z lives 5 s: the capture and the read-back come first, quickly, then ⌘Z.
     results["steps"].append({"step": "after-add", "shot": shot(out_dir, pid, hpid, "2b-after-add")})
