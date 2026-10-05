@@ -7486,7 +7486,8 @@
                     "abstain",
                     "write",
                     "ask",
-                    "act"
+                    "act",
+                    "error"
                   ]
                 },
                 {
@@ -7504,6 +7505,17 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "failure": {
+              "type": "string",
+              "enum": [
+                "failed",
+                "timeout",
+                "missing",
+                "forged",
+                "nonfinite",
+                "stale"
               ]
             },
             "expires": {

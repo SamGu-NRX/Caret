@@ -19,7 +19,11 @@ const lines = readFileSync(new URL("../fixtures/golden/routing.ndjson", import.m
 describe("the routing protocol lines", () => {
   it("parses every golden line and writes it back byte for byte", () => {
     const types = lines.map((l) => (JSON.parse(l) as { type: string }).type);
-    expect(types).toEqual(["hello", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision"]);
+    expect(types).toEqual([
+      "hello", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision",
+      // R2: a failed decision, a write session that a sentence end keeps (decided at once), and a stale context.
+      "routingContext", "routeDecision", "routingContext", "routeDecision", "routingContext", "routeDecision", "routingContext", "routeDecision", "routeDecision",
+    ]);
     for (const l of lines) {
       const m = JSON.parse(l) as { type: string };
       const schema = m.type === "hello" || m.type === "routingContext" ? ConsumerMessage : HelperMessage;
@@ -41,6 +45,14 @@ describe("the routing protocol lines", () => {
     expect(bad({ ...at("routingContext"), breakpoint: "word" })).toBe(true);
     expect(bad({ ...at("routingContext"), textRevision: "" })).toBe(true);
     expect(bad({ ...at("routingContext"), key: undefined })).toBe(true);
+    // R2 decision 1: a failed decision says why, and only a failed decision does.
+    const failed = at("routeDecision", 6);
+    expect(failed).toMatchObject({ outcome: "error", failure: "timeout" });
+    expect(bad({ ...failed, failure: undefined })).toBe(true);
+    expect(bad({ ...failed, failure: "lowConfidence" })).toBe(true);
+    expect(bad({ ...failed, route: "fillAll" })).toBe(true);
+    expect(bad({ ...write, failure: "failed" })).toBe(true);
+    expect(bad({ ...at("routeDecision", 1), failure: "stale" })).toBe(true);
   });
 });
 

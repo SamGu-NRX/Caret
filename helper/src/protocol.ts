@@ -585,11 +585,23 @@ export const RoutingContext = z.object({
 export type RoutingContext = z.infer<typeof RoutingContext>;
 
 /**
+ * Why a routeDecision is `error` (R2 lead decision 1): the router did not decide, so the host does what it does with
+ * no router for this context. `failed`: the Jev call or the router's own code threw. `timeout`: the call ran out of
+ * time. `missing`, `forged`, `nonfinite`: Jev answered nothing, an option nobody listed, or a confidence outside 0..1.
+ * `stale`: the answer came for a context that had already changed. A weak but readable answer is not a failure: it is
+ * `abstain`.
+ */
+export const RouteFailure = z.enum(["failed", "timeout", "missing", "forged", "nonfinite", "stale"]);
+export type RouteFailure = z.infer<typeof RouteFailure>;
+
+/**
  * Helper to host: the router's decision for one context, or that a decision is being made again. It grants nothing:
  * `act` and `ask` arrive as the producer's own offer, which the user accepts with Tab as before. `write` lets the
  * host's writing help run in this field until the next routeDecision or `expires`, whichever comes first. A null
  * outcome means a breakpoint ended the last decision and a new one is under way: the host stops its writing help in
- * this field until the next routeDecision.
+ * this field until the next routeDecision. `error` means the router failed for this context (`failure` says how): the
+ * host falls back to its behavior without a router there, as it does when no decision comes in time. A write session
+ * survives a sentence end in its own field: that context's decision is `write` again, sent at once with no model call.
  */
 export const RouteDecision = z
   .object({
@@ -603,13 +615,16 @@ export const RouteDecision = z
     key: z.string().min(1).nullable(),
     /** The host's textRevision when it sent one for this field, else the helper's own digest of the field. */
     textRevision: z.string().min(1).max(64),
-    outcome: z.enum(["abstain", "write", "ask", "act"]).nullable(),
+    outcome: z.enum(["abstain", "write", "ask", "act", "error"]).nullable(),
     /** For act, what was chosen: "fillAll", "workflow:event", "workflow:openApp", "workflow:loop", "handoff" and so on. */
     route: z.string().min(1).max(80).nullable(),
+    /** Present on an error decision only. */
+    failure: RouteFailure.optional(),
     expires: ms,
   })
   .refine((m) => m.route === null || m.outcome === "act", { message: "only an act decision names a route", path: ["route"] })
-  .refine((m) => m.outcome !== "write" || m.key !== null, { message: "a write decision names its field", path: ["key"] });
+  .refine((m) => m.outcome !== "write" || m.key !== null, { message: "a write decision names its field", path: ["key"] })
+  .refine((m) => (m.outcome === "error") === (m.failure !== undefined), { message: "an error decision, and only one, says its failure", path: ["failure"] });
 export type RouteDecision = z.infer<typeof RouteDecision>;
 
 // MARK: - markdown memory (M1, plan section 6 and lead decisions 1-3 of 2026-10-04)

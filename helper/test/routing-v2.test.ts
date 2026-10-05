@@ -191,7 +191,11 @@ describe("the routing coordinator", () => {
     expect(jev.routerCalls()).toHaveLength(2);
     jev.release();
     await coord.idle();
-    expect(decisions.map((d) => [d.outcome, d.calls])).toEqual([["write", 1]]);
+    // The first context's late reply is a failed decision about that context, never its answer.
+    expect(decisions.map((d) => [d.outcome, d.failure, d.key, d.calls])).toEqual([
+      ["error", "stale", BODY(0), 1],
+      ["write", null, BODY(2), 1],
+    ]);
     expect(coord.writing).toEqual({ windowId: NOTE, key: BODY(2) });
   });
 
@@ -246,7 +250,7 @@ describe("the routing coordinator", () => {
     expect(coord.stats.router2Skipped).toBe(1);
   });
 
-  it("never retries: a failed request abstains after exactly one call, and the same context asks no more", async () => {
+  it("never retries: a failed request is a failed decision after exactly one call, and the same context asks no more", async () => {
     cands = [candidate("a")];
     jev.router1 = () => new Error("Jev HTTP 503");
     show("Hello");
@@ -255,8 +259,34 @@ describe("the routing coordinator", () => {
     clock.advance(10 * ROUTER1_COOLDOWN_MS);
     await coord.idle();
     expect(jev.routerCalls()).toHaveLength(1);
-    expect(decisions.map((d) => [d.outcome, d.refused])).toEqual([["abstain", { router: 1, why: "failed" }]]);
+    expect(decisions.map((d) => [d.outcome, d.failure, d.refused])).toEqual([["error", "failed", { router: 1, why: "failed" }]]);
     expect(cands[0]?.ran).toBe(0);
+  });
+
+  it("decides error, never abstain, when a router fails, times out, or answers what cannot be read; a weak answer still abstains (R2 decision 1)", async () => {
+    const timeout = Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+    const cases: { r1: Answer | Error | null; r2?: Answer | Error; outcome: string; failure: string | null }[] = [
+      { r1: new Error("Jev HTTP 503"), outcome: "error", failure: "failed" },
+      { r1: timeout, outcome: "error", failure: "timeout" },
+      { r1: { choice: "act", confidence: Number.NaN }, outcome: "error", failure: "nonfinite" },
+      { r1: { choice: "launch", confidence: 0.99 }, outcome: "error", failure: "forged" },
+      { r1: null, outcome: "error", failure: "missing" },
+      { r1: { choice: "act", confidence: 0.9 }, r2: timeout, outcome: "error", failure: "timeout" },
+      { r1: { choice: "act", confidence: 0.49 }, outcome: "abstain", failure: null },
+      { r1: { choice: "act", confidence: 0.9 }, r2: { choice: "r1", confidence: 0.6 }, outcome: "abstain", failure: null },
+    ];
+    cands = [candidate("a"), candidate("b")];
+    let i = 0;
+    for (const c of cases) {
+      jev.router1 = () => c.r1;
+      jev.router2 = () => c.r2 ?? { choice: "r1", confidence: 0.9 };
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      show(`case ${i++}`, i % 3);
+      await coord.idle();
+    }
+    expect(decisions.map((d) => [d.outcome, d.failure])).toEqual(cases.map((c) => [c.outcome, c.failure]));
+    expect(coord.writing).toBeNull();
+    expect(coord.stats.byOutcome.error).toBe(6);
   });
 
   it("rejects forged, nonfinite, missing and weak answers from either router", async () => {
@@ -287,7 +317,8 @@ describe("the routing coordinator", () => {
       Object.entries({ router1_forged: 1, router1_nonfinite: 2, router1_lowConfidence: 1, router1_missing: 1, router2_forged: 2, router2_lowConfidence: 2 }).sort(),
     );
     expect(a.ran + b.ran).toBe(0);
-    expect(decisions.every((d) => d.outcome === "abstain")).toBe(true);
+    // Only a weak answer abstains; one that cannot be read is a failed decision (R2 decision 1).
+    expect(decisions.map((d) => (d.refused?.why === "lowConfidence" ? d.outcome === "abstain" : d.outcome === "error"))).toEqual(cases.map(() => true));
     // An outcome that is a real word but not legal now is forged too: write with no host to take it.
     hostWrites = false;
     jev.router1 = () => ({ choice: "write", confidence: 0.99 });
@@ -337,7 +368,9 @@ describe("the routing coordinator", () => {
     await coord.idle();
     expect(coord.stats.staleDrops).toBe(1);
     expect(coord.writing).toBeNull();
-    expect(decisions).toEqual([]);
+    // The stale context is published as failed, so a host waiting on it falls back rather than reading abstain (R2 decision 1).
+    expect(decisions.map((d) => [d.outcome, d.failure, d.answered])).toEqual([["error", "stale", "write"]]);
+    decisions.length = 0;
     // The same with no context at all: the user went to an app whose windows the model does not hold.
     clock.advance(ROUTER1_COOLDOWN_MS);
     show("Draft two", 1);
@@ -348,7 +381,7 @@ describe("the routing coordinator", () => {
     await coord.idle();
     expect(coord.stats.staleDrops).toBe(2);
     expect(coord.writing).toBeNull();
-    expect(decisions).toEqual([]);
+    expect(decisions.map((d) => [d.outcome, d.failure])).toEqual([["error", "stale"]]);
   });
 
   it("refuses a request the privacy budget will not carry, before any call", async () => {
@@ -525,6 +558,37 @@ describe("the helper with routing on", () => {
     const crit = (jev.routerCalls("outcome")[0]?.questions.outcome as { criteria: Record<string, string> }).criteria;
     expect(Object.keys(crit)).toEqual(["abstain", "act"]);
     expect(routed.routing?.decisions.map((d) => [d.outcome, d.by, d.route])).toEqual([["act", "single", "fillAll"]]);
+  });
+
+  it("stops the router on shutdown: a reply still on its way, a cooldown timer and a late observe do nothing (R2 decision 4)", async () => {
+    jev.other = jevPickingText(() => VALUE);
+    jev.holding = true;
+    jev.router1 = () => ({ choice: "act", confidence: 0.9 });
+    const h = make(true);
+    void h.handleReader(snap([text("m/statictext:sig~0", `Dana Whitfield\n${VALUE}`)], { at: clock.at - 5000, windowId: SRC, app: MAIL_APP, title: "Signature", values: [value("email", VALUE, "m/statictext:sig~0")] }));
+    void h.handleReader(snap([field(EMAIL, "", { label: "Email", frame: [100, 40, 200, 24] })], { at: clock.at, windowId: FORM, title: "Claim form", focused: true, focusedKey: EMAIL }));
+    await h.handleReader(focus(FORM, EMAIL, clock.at));
+    expect(jev.routerCalls()).toHaveLength(1);
+    // A second context waits out the cooldown on a timer.
+    clock.advance(100);
+    void h.handleReader(snap([field(EMAIL, "", { label: "Email", frame: [100, 40, 200, 24] })], { at: clock.at, windowId: FORM, title: "Claim form 2", focused: true, focusedKey: EMAIL }));
+    const decided = h.routing?.decisions.length;
+    const counted = vi.spyOn(store, "count");
+    const before = sent.length;
+    h.shutdown();
+    jev.release();
+    await h.routing?.idle();
+    clock.advance(10 * ROUTER1_COOLDOWN_MS);
+    h.routing?.observe();
+    h.routing?.candidatesChanged();
+    h.routing?.observe();
+    h.routing?.readerRestarted();
+    await h.routing?.idle();
+    expect(jev.routerCalls()).toHaveLength(1);
+    expect(h.routing?.decisions.length).toBe(decided);
+    expect(sent.slice(before)).toEqual([]);
+    expect(counted.mock.calls.filter(([m]) => String(m).startsWith("route."))).toEqual([]);
+    expect(h.routing?.stopped).toBe(true);
   });
 
   it("makes no fill and no further call when Router 1 abstains", async () => {

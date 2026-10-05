@@ -7,16 +7,18 @@
 //      composition, nothing legal to do, or a request the privacy budgets refuse.
 //   2. Router 1: one Jev Choice over the outcomes legal now. At most one request in flight and one Router 1 start per
 //      ROUTER1_COOLDOWN_MS; a context that changes meanwhile replaces the one waiting (it is not queued), and a reply
-//      for a context that is no longer current is dropped. No retry: a failed, forged, nonfinite or low-confidence
-//      answer abstains.
+//      for a context that is no longer current is dropped. No retry. A low-confidence answer abstains; a call that
+//      failed or timed out, an answer that cannot be read (missing, forged, nonfinite) and a stale reply decide `error`
+//      (R2 lead decision 1), so the host can tell "the router said no" from "the router did not answer" and fall back.
 //   3. Router 2, only after act: one Choice over the registry frozen for the same context, skipped when it lists one
 //      real route.
 // A decision grants nothing. The chosen producer runs its own checks and makes an offer the user still has to accept;
 // skills keep only the autonomy the user already gave them (patterns/skills.ts), which this file never reads.
 import type { AskJev } from "../fill/jev.ts";
 import type { ScreenModel } from "../model.ts";
+import type { RouteFailure } from "../protocol.ts";
 import { breakpoint, contextNow, type Breakpoint, type FocusSeen, type HostEditing, type RoutingContext } from "./context.ts";
-import { PrivacyRefusal, ROUTER1_FLOOR, ROUTER2_FLOOR, router1Request, router2Request, sendRouter, type Refusal } from "./judge.ts";
+import { PrivacyRefusal, ROUTER1_FLOOR, ROUTER2_FLOOR, router1Request, router2Request, sendRouter, type Read, type Refusal } from "./judge.ts";
 import { freeze, realRoutes, type Outcome, type Registry, type Route, type RouteCandidate } from "./routes.ts";
 
 /** Router 1 starts at most once in this long. From plan section 3 (the two-second rule); not measured here. */
@@ -47,7 +49,9 @@ export interface Decision {
   breakpoint: Breakpoint;
   /** The outcomes code made legal, abstain first. */
   legal: readonly Outcome[];
-  outcome: Outcome;
+  /** `error`: the router did not decide (`failure` says why); the host falls back for this context. */
+  outcome: Outcome | "error";
+  failure: RouteFailure | null;
   /** Which step decided: local rules, Router 1, or Router 2 (or code, when Router 2 had one route). */
   by: "local" | "router1" | "router2" | "single";
   local: LocalReason | null;
@@ -152,6 +156,7 @@ export class RoutingCoordinator {
   private readonly asked = new Set<string>();
   private writeSession: { gen: number; windowId: string; key: string; at: number; textRevision: string } | null = null;
   private hostBreaks = 0;
+  private stoppedAt: number | null = null;
   readonly decisions: Decision[] = [];
   readonly stats: RoutingStats = {
     contexts: 0,
@@ -229,6 +234,7 @@ export class RoutingCoordinator {
    * arrives, a waiting context is dropped, and the write session ends. The next observation opens a new context.
    */
   private invalidate(why: "reader" | "none"): void {
+    if (this.stoppedAt !== null) return;
     this.gen++;
     this.cur = null;
     this.prev = null;
@@ -237,6 +243,25 @@ export class RoutingCoordinator {
     this.cancelTimer?.();
     this.cancelTimer = null;
     this.endWrite(why);
+  }
+
+  /**
+   * Stops routing for good (Helper.shutdown, R2 lead decision 4): the cooldown timer is cancelled, a waiting context is
+   * dropped, and nothing that arrives later (a reply on its way, an observe from a producer's late answer) decides,
+   * counts, publishes or runs a candidate, since the stores behind those may already be closed. `idle()` still resolves
+   * once the call in flight returns.
+   */
+  stop(): void {
+    if (this.stoppedAt !== null) return;
+    this.stoppedAt = this.deps.now();
+    this.waiting = false;
+    this.cancelTimer?.();
+    this.cancelTimer = null;
+    this.cur = null;
+  }
+
+  get stopped(): boolean {
+    return this.stoppedAt !== null;
   }
 
   /** The write session open now, for the host's decision message and tests. */
@@ -259,7 +284,7 @@ export class RoutingCoordinator {
    * cheap then: candidates are listed again only at a breakpoint or when a producer said they changed.
    */
   observe(): void {
-    if (!this.deps.live()) return;
+    if (this.stoppedAt !== null || !this.deps.live()) return;
     const inputs = { model: this.deps.model, focus: this.focus, host: this.host, readerSession: this.deps.readerSession(), memoryRevision: this.memoryRevision, settingsRevision: this.settingsRevision, hostBreaks: this.hostBreaks };
     const base = contextNow({ ...inputs, candidates: this.lastCandidates.map((c) => c.id) });
     if (base === null) {
@@ -327,7 +352,7 @@ export class RoutingCoordinator {
   /** Starts the waiting context's Router 1 call when the slot is free and the cooldown has passed. */
   private pump(): void {
     const c = this.cur;
-    if (c === null || !this.waiting || this.inflight !== null) return;
+    if (this.stoppedAt !== null || c === null || !this.waiting || this.inflight !== null) return;
     const wait = this.lastRouter1At + ROUTER1_COOLDOWN_MS - this.deps.now();
     if (wait > 0) {
       if (this.cancelTimer === null) {
@@ -341,7 +366,12 @@ export class RoutingCoordinator {
     }
     this.waiting = false;
     const run = this.decide(c)
-      .catch((e: unknown) => this.deps.warn?.(`routing: deciding context ${c.gen} failed: ${e instanceof Error ? e.message : String(e)}`))
+      .catch((e: unknown) => {
+        if (this.stoppedAt !== null) return;
+        this.deps.warn?.(`routing: deciding context ${c.gen} failed: ${e instanceof Error ? e.message : String(e)}`);
+        // The host is told, rather than left waiting for a decision that will not come.
+        if (!c.decided && c.gen === this.gen) this.finish(c, { outcome: "error", failure: "failed", by: "router1", local: null, refused: null, route: null, confidence: null, answered: null });
+      })
       .finally(() => {
         this.inflight = null;
         this.pump();
@@ -349,11 +379,22 @@ export class RoutingCoordinator {
     this.inflight = run;
   }
 
-  private stale(c: Current): boolean {
+  /**
+   * Whether `c` is no longer the current context. Its reply is not used, and the context is published as a failed
+   * decision (R2 lead decision 1): a host still waiting on it falls back instead of hearing nothing or an abstain.
+   */
+  private stale(c: Current, by: "router1" | "router2", read: Read<string>): boolean {
     if (c.gen === this.gen) return false;
     this.stats.staleDrops++;
     this.deps.count?.("route.stale_drop");
+    this.finish(c, { outcome: "error", failure: "stale", by, local: null, refused: null, route: null, confidence: read.confidence, answered: read.choice }, null, false);
     return true;
+  }
+
+  /** A router's answer that was not taken: weak but readable abstains; anything else is a failed decision. */
+  private refused(c: Current, router: 1 | 2, read: Read<string> & { ok: false }): void {
+    const failure: RouteFailure | null = read.why === "lowConfidence" ? null : read.why;
+    this.finish(c, { outcome: failure === null ? "abstain" : "error", failure, by: router === 1 ? "router1" : "router2", local: null, refused: { router, why: read.why }, route: null, confidence: read.confidence, answered: read.choice });
   }
 
   private async decide(c: Current): Promise<void> {
@@ -370,9 +411,10 @@ export class RoutingCoordinator {
     this.deps.count?.("route.router1_call");
     const t0 = this.deps.now();
     const r1 = await sendRouter(this.deps.askJev, built, "outcome", ROUTER1_FLOOR);
+    if (this.stoppedAt !== null) return;
     keep(this.stats.callMs, this.deps.now() - t0);
-    if (this.stale(c)) return;
-    if (!r1.read.ok) return this.finish(c, { outcome: "abstain", by: "router1", local: null, refused: { router: 1, why: r1.read.why }, route: null, confidence: r1.read.confidence, answered: r1.read.choice });
+    if (this.stale(c, "router1", r1.read)) return;
+    if (!r1.read.ok) return this.refused(c, 1, r1.read);
     const outcome = r1.read.choice;
     const confidence = r1.read.confidence;
     const answered = outcome;
@@ -418,9 +460,10 @@ export class RoutingCoordinator {
     this.deps.count?.("route.router2_call");
     const t0 = this.deps.now();
     const r2 = await sendRouter(this.deps.askJev, built, "route", ROUTER2_FLOOR);
+    if (this.stoppedAt !== null) return;
     keep(this.stats.callMs, this.deps.now() - t0);
-    if (this.stale(c)) return;
-    if (!r2.read.ok) return this.finish(c, { outcome: "abstain", by: "router2", local: null, refused: { router: 2, why: r2.read.why }, route: null, confidence: r2.read.confidence, answered: r2.read.choice });
+    if (this.stale(c, "router2", r2.read)) return;
+    if (!r2.read.ok) return this.refused(c, 2, r2.read);
     const route = c.reg.routes.find((r) => r.option === r2.read.choice) as Route;
     return this.choose(c, route, "router2", r2.read.confidence);
   }
@@ -445,10 +488,14 @@ export class RoutingCoordinator {
     this.asked.add(questionId);
   }
 
-  private finish(c: Current, d: Pick<Decision, "outcome" | "by" | "local" | "refused" | "route" | "confidence" | "answered">, chosen: RouteCandidate | null = null): void {
+  /**
+   * Records and publishes `c`'s decision. `release`: held offers the decision did not choose are let go. A stale
+   * context's are not: the context that replaced it lists the same held offers and may still choose them.
+   */
+  private finish(c: Current, d: Pick<Decision, "outcome" | "by" | "local" | "refused" | "route" | "confidence" | "answered"> & { failure?: RouteFailure | null }, chosen: RouteCandidate | null = null, release = true): void {
     c.decided = true;
     const now = this.deps.now();
-    const decision: Decision = { gen: c.gen, at: now, windowId: c.ctx.windowId, key: c.ctx.field?.key ?? null, breakpoint: c.breakpoint, legal: c.legal, ...d, calls: c.calls, latencyMs: now - c.at, textRevision: c.ctx.textRevision };
+    const decision: Decision = { gen: c.gen, at: now, windowId: c.ctx.windowId, key: c.ctx.field?.key ?? null, breakpoint: c.breakpoint, legal: c.legal, ...d, failure: d.failure ?? null, calls: c.calls, latencyMs: now - c.at, textRevision: c.ctx.textRevision };
     keep(this.decisions, decision);
     const s = this.stats;
     bump(s.byOutcome, d.outcome);
@@ -457,7 +504,7 @@ export class RoutingCoordinator {
       s.avoided++;
       bump(s.byLocal, d.local ?? "?");
       this.deps.count?.(`route.local_${d.local ?? "?"}`);
-    } else keep(s.entryMs, decision.latencyMs);
+    } else if (d.failure !== "stale") keep(s.entryMs, decision.latencyMs);
     if (d.refused !== null) {
       bump(s.refused, `router${d.refused.router}_${d.refused.why}`);
       this.deps.count?.(`route.refused${d.refused.router}_${d.refused.why}`);
@@ -468,7 +515,7 @@ export class RoutingCoordinator {
       this.deps.count?.(`route.route_${k}`);
     }
     // Held offers this decision did not choose are let go now; another context lists its own.
-    for (const x of c.candidates) if (x !== chosen && x.drop !== undefined) x.drop();
+    if (release) for (const x of c.candidates) if (x !== chosen && x.drop !== undefined) x.drop();
     this.deps.onDecision?.(decision);
   }
 }

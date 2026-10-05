@@ -613,7 +613,7 @@ export class Helper {
             ...(ro.setTimer === undefined ? {} : { setTimer: ro.setTimer }),
             count: (m, n) => opts.store.count(m, n ?? 1),
             onDecision: (d) => {
-              this.publishRouteDecision({ context: d.gen, windowId: d.windowId, key: d.key, textRevision: d.textRevision, outcome: d.outcome, route: d.outcome === "act" ? d.route : null });
+              this.publishRouteDecision({ context: d.gen, windowId: d.windowId, key: d.key, textRevision: d.textRevision, outcome: d.outcome, route: d.outcome === "act" ? d.route : null, ...(d.failure === null ? {} : { failure: d.failure }) });
               ro.onDecision?.(d);
             },
             onWriteEnded: (w) => this.publishRouteDecision({ context: w.gen, windowId: w.windowId, key: w.key, textRevision: w.textRevision, outcome: null, route: null }),
@@ -915,7 +915,7 @@ export class Helper {
   }
 
   /** Sends a routeDecision; the server gives it only to hosts that declared ROUTING_CAPABILITY. */
-  private publishRouteDecision(d: Pick<RouteDecision, "context" | "windowId" | "key" | "textRevision" | "outcome" | "route">): void {
+  private publishRouteDecision(d: Pick<RouteDecision, "context" | "windowId" | "key" | "textRevision" | "outcome" | "route" | "failure">): void {
     const at = this.now();
     const msg = RouteDecision.safeParse({ type: "routeDecision", v: PROTOCOL_VERSION, at, ...d, expires: at + ROUTE_DECISION_HOLDS_MS });
     if (!msg.success) return this.opts.warn?.(`routing: a routeDecision failed the protocol check: ${msg.error.issues[0]?.message ?? "invalid"}`);
@@ -1795,6 +1795,8 @@ export class Helper {
   }
 
   shutdown(): void {
+    // First, so nothing a late reply or a producer's answer starts reaches the router after the stores close (R2).
+    this.routing?.stop();
     this.record(this.transfers.flush());
     this.patterns.shutdown();
     this.pending.shutdown();
