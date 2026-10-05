@@ -605,16 +605,16 @@ describe("a grounded whole-form scope (B28)", () => {
 
   it("maps 'up top' to the section the form starts with, and asks when the first field sits under no heading", async () => {
     const m = greenhouse({ "About you": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
-    expect(written(await askG("do the bit up top", m).run)).toEqual(CONTACT);
+    expect(written(await askG("just fill in up top", m).run)).toEqual(CONTACT);
     const flat = greenhouse({ Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
-    expect(((await askG("do the bit up top", flat).run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
+    expect(((await askG("just fill in up top", flat).run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
   });
 
   it("maps 'my details' to a details section, and asks when two sections could be it", async () => {
     const m = greenhouse({ "Your details": ["First Name", "Last Name", "Email", "Phone"], Education: ["Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
-    expect(written(await askG("put my details in", m).run)).toEqual(CONTACT);
+    expect(written(await askG("fill in my details", m).run)).toEqual(CONTACT);
     const two = greenhouse({ "Your details": ["First Name", "Last Name"], "Personal links": ["Email", "Phone", "Graduation Date (MM/YYYY)", "LinkedIn Profile"] });
-    expect(((await askG("put my details in", two).run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
+    expect(((await askG("fill in my details", two).run.catch((x: unknown) => x)) as AskRefused).message).toBe(SAYS.whichFields);
   });
 
   it("asks when the instruction rules the section out or names a field besides it (B28 review)", async () => {

@@ -20,6 +20,8 @@ const APP_NOUNS = ["linkedin", "terminal", "slack", "notion", "excel", "github",
 /** Nouns that name a source by what it is called on screen: an app or a site in a window's title, or a document. */
 const NAMED_NOUNS = [...APP_NOUNS, "profile", "calendar", "doc", "document", "file", "draft", "spreadsheet", "sheet", "resume", "cv", "letter", "invoice", "receipt", "confirmation"];
 const NOUN = [...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS].join("|");
+/** Every noun a source phrase can end in, for scope-words.ts, which checks a source phrase holds nothing else. */
+export const SOURCE_NOUNS: ReadonlySet<string> = new Set([...NOTE_NOUNS, ...MAIL_NOUNS, ...NAMED_NOUNS]);
 const NAME = "\\p{Lu}[\\p{L}'’-]*";
 const OWNER = `(?:my|the|this|that|his|her|their|our|your|${NAME}['’]s)`;
 /**

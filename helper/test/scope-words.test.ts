@@ -18,7 +18,7 @@ describe("wholeFormPhrase", () => {
     ["all of it", "all of it please"],
     ["the rest", "do the rest from my note"],
     ["the rest", "do the rest of this form"],
-    ["what you can", "put in what you can"],
+    ["what you can", "fill in what you can"],
     ["what you can", "fill whatever you can"],
     ["this form", "please handle this form"],
     ["this application", "help me with this application"],
@@ -29,8 +29,8 @@ describe("wholeFormPhrase", () => {
   });
 
   it("lets only its filler words stand beside a phrase, and pins both filler lists", () => {
-    expect([...FILLER].sort()).toEqual(["a", "ahead", "all", "and", "application", "can", "complete", "could", "do", "everything", "fill", "finish", "for", "form", "go", "handle", "help", "hey", "in", "it", "just", "me", "my", "now", "of", "ok", "okay", "on", "out", "please", "pls", "plz", "put", "rest", "thank", "thanks", "that", "the", "then", "this", "up", "what", "whatever", "with", "would", "you"]);
-    expect([...SECTION_FILLER].filter((w) => !FILLER.has(w)).sort()).toEqual(["bit", "only", "part", "section", "stuff"]);
+    expect([...FILLER].sort()).toEqual(["a", "ahead", "all", "and", "application", "can", "complete", "could", "do", "everything", "fill", "finish", "for", "form", "go", "handle", "help", "hey", "in", "just", "me", "my", "now", "of", "ok", "okay", "on", "out", "please", "pls", "plz", "thank", "thanks", "the", "then", "this", "up", "with", "would", "you"]);
+    expect([...SECTION_FILLER].filter((w) => !FILLER.has(w)).sort()).toEqual(["only"]);
     expect(wholeFormPhrase("hey can you just do this form for me now, thanks", TITLE)).toBe("this form");
     expect(wholeFormPhrase("hey can you just do this form for my landlord", TITLE)).toBeNull();
   });
@@ -47,7 +47,7 @@ describe("wholeFormPhrase", () => {
     "fill out the pizza order",
     // Section phrases name a part of the form, never the whole.
     "just do my contact info up top",
-    "put my details in",
+    "fill in my details",
     "fill in everything in my contact info",
     // A word that narrows or negates turns the phrase over to Jev.
     "just my email, leave the rest",
@@ -71,8 +71,19 @@ describe("wholeFormPhrase", () => {
     // A quoted field, and part of a field.
     'fill "Email" on this form',
     "do the rest of the address",
+    // A source phrase that holds more than a source, a section inside one, and words that point at one value (B28
+    // third review).
+    "do everything from my note except email",
+    "do everything in my details except email",
+    "put that in this form",
+    "do it on this form",
   ])("reads no whole-form phrase in %j", (instruction) => {
     expect(wholeFormPhrase(instruction, TITLE)).toBeNull();
+  });
+
+  it("lets a source phrase stand beside the phrase when it holds only source words", () => {
+    expect(wholeFormPhrase("fill out the form from Dana's latest note", TITLE)).toBe("fill out");
+    expect(wholeFormPhrase("do everything from what Dana sent me", TITLE)).toBe("everything");
   });
 
   it("lets the form's own name share a word with a field ('the pizza order', 'Pizza Size')", () => {
@@ -82,13 +93,19 @@ describe("wholeFormPhrase", () => {
 });
 
 describe("namesTheForm", () => {
-  it("needs every word of the object but 'form' and 'application' in the title", () => {
+  it("needs a run of the title's words ending in 'form' or 'application', or a whole part of the title", () => {
     expect(namesTheForm("rental application", TITLE)).toBe(true);
     expect(namesTheForm("Cedar Court form", TITLE)).toBe(true);
     expect(namesTheForm("Northgate application", "Northgate Analytics - Data Analyst")).toBe(true);
+    expect(namesTheForm("pizza order", "Pizza order")).toBe(true);
+    expect(namesTheForm("data analyst", "Northgate Analytics - Data Analyst")).toBe(true);
     expect(namesTheForm("pizza order", "httpbin.org/forms/post")).toBe(false);
     expect(namesTheForm("landlord application", TITLE)).toBe(false);
     expect(namesTheForm("application", TITLE)).toBe(false);
+    // Words scattered through the title, or a part of one of its parts, do not name the form (B28 third review).
+    expect(namesTheForm("email only", "Email signup | Members only")).toBe(false);
+    expect(namesTheForm("email", "Email signup | Members only")).toBe(false);
+    expect(namesTheForm("court", TITLE)).toBe(false);
   });
 });
 
@@ -106,14 +123,14 @@ describe("namedSection", () => {
   });
 
   it("maps 'up top' to the first field's section, and asks when the first field has none", () => {
-    expect(namedSection("do the bit up top", SECTIONS, "Contact information").section).toBe("Contact information");
-    expect(namedSection("do the bit up top", SECTIONS, null)).toEqual({ phrases: ["up top"], section: null, why: "no one section of this form means that" });
+    expect(namedSection("just fill in up top", SECTIONS, "Contact information").section).toBe("Contact information");
+    expect(namedSection("just fill in up top", SECTIONS, null)).toEqual({ phrases: ["up top"], section: null, why: "no one section of this form means that" });
   });
 
   it("maps 'my details' to the one details section", () => {
-    expect(namedSection("put my details in", ["Your details", "Education"], "Your details").section).toBe("Your details");
-    expect(namedSection("put my details in", ["Your details", "Personal links"], "Your details").section).toBeNull();
-    expect(namedSection("put my details in", SECTIONS, "Contact information").section).toBeNull();
+    expect(namedSection("fill in my details", ["Your details", "Education"], "Your details").section).toBe("Your details");
+    expect(namedSection("fill in my details", ["Your details", "Personal links"], "Your details").section).toBeNull();
+    expect(namedSection("fill in my details", SECTIONS, "Contact information").section).toBeNull();
   });
 
   it("asks when two phrases mean different sections, and takes them when they agree", () => {
@@ -122,12 +139,15 @@ describe("namedSection", () => {
   });
 
   it("asks, rather than map, when the instruction says more than the section (B28 reviews)", () => {
-    expect(namedSection("skip my contact info, do the rest", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'skip'" });
-    expect(namedSection("avoid my contact info, do the rest", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'avoid'" });
+    expect(namedSection("skip my contact info, do the rest", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'skip rest'" });
+    expect(namedSection("avoid my contact info, do the rest", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'avoid rest'" });
     expect(namedSection("my contact info, but not the phone", SECTIONS, "Contact information").section).toBeNull();
     expect(namedSection("only my email in contact info", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'email'" });
     expect(namedSection("only the second box in contact info", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'second box'" });
-    expect(namedSection('only my "Email" in contact info', SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it quotes something too" });
+    expect(namedSection("fill only part of my contact info", SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it also says 'part'" });
+    expect(namedSection("fill a bit of my details", ["Your details", "Education"], "Your details")).toMatchObject({ section: null, why: "it also says 'bit'" });
+    expect(namedSection("do everything in my details except email", ["Your details", "Education"], "Your details")).toMatchObject({ section: null, why: "where it says to copy from also says 'details except'" });
+    expect(namedSection('only my "Email" in contact info', SECTIONS, "Contact information")).toMatchObject({ section: null, why: "it quotes something" });
     // "only" alone does not rule the section out.
     expect(namedSection("my contact info only", SECTIONS, "Contact information").section).toBe("Contact information");
   });
