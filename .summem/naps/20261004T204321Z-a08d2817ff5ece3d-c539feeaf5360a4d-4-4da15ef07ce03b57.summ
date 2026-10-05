@@ -1,1 +1,0 @@
-W3: XPCHostLink sends nothing until a verified reply. Memory markdown: MemoryStore(dir) uses <dir>/Memory (real folder only without --data-dir) and grants no authority (that stays in memory.sqlite). oxc rejects raw U+2028 in a regex; write \u2028.

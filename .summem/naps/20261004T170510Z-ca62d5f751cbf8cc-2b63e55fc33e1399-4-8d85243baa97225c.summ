@@ -1,0 +1,1 @@
+T1-A17: NSSpellChecker orthography is a start only; VM jobs run rig-dismiss-setup.py in a watcher loop; host keeps the wrote line as host-memory-8; in TextEdit an AX write to an empty document leaves Undo off, pid-posted Cmd-V shows Undo Paste.

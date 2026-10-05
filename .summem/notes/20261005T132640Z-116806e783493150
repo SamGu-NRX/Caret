@@ -1,0 +1,1 @@
+H6: keys posted with CGEventPostToPid never pass the host's event tap, so its latency recorder gets no key stamp; ghost_latency_routing.py routes each key through the debug hook 'key char:x' first, which stamps it, then posts it to the fixture.

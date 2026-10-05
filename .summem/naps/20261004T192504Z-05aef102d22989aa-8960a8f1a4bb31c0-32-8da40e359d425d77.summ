@@ -1,1 +1,0 @@
-B24-W3: select hand-off; page snapshot mirrors Chrome AX; bridge->host via XPC; accept.ts needs --sign-identity; push v2/* to sam. Since H5 only file URLs/promises/nil types block paste. U1: panels +24pt shadow. build-app.sh holds build.lock; acting debug cmds need --test-hooks.

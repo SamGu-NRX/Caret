@@ -1,0 +1,1 @@
+H6: the host can't compute the reader's window id/key; RouteFollower binds them from a routeDecision whose textRevision is sha256(text+NUL+'unknown')[:16]. Empty fields share that digest, so their binding stays tentative until the host's revision is echoed.

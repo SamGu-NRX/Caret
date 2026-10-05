@@ -1,1 +1,0 @@
-H5: the reader's Swift tests decode and re-encode every line of helper/fixtures/golden/protocol.ndjson; lines only the helper and the host speak go in helper/fixtures/golden/host.ndjson, which both read by path.
