@@ -234,6 +234,8 @@ def run(app, out_dir):
     k = sa.key("cmd-z", pid)
     undone = sa.wait_for(lambda: progress(key_, ("undone",)), 20, 0.2)
     sa.check("⌘Z undoes the run", k.get("consumed") and bool(undone), key=k, undone=undone, progress=helper_state().get("progress"))
+    toast = ((sa.host().get("surface") or {}).get("toast") or {}).get("caption")
+    sa.check("the line says the event was taken back out", toast == "Taken back out of Calendar", toast=toast)
     gone = tool("event", ev["id"]) if ev else "no event"
     after = tool("find", TITLE, "9")
     sa.check("undo removed exactly that event: its id is gone and no such event is left", gone is None and after == [], event=gone, found=after)
