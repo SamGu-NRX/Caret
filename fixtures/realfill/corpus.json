@@ -1,5 +1,5 @@
 {
-  "about": "B24 real-form corpus. Every name, address, number and email is invented (example.* domains, 555 numbers). The scoreboard (helper/scripts/realfill-eval.ts) opens each form with its source and the shared decoy windows, and scores each field against `expected`.",
+  "about": "B24 real-form corpus. Every name, address, number and email is invented (example.* domains, 555 numbers). The scoreboard (helper/scripts/realfill-eval.ts) opens each form with its source and the shared decoy windows, and scores each field against `expected`. B27: the two dropdowns expect what a careful person picks; B24 had marked them handoff when fill gave no dropdown a value.",
   "decoys": [
     { "kind": "note", "file": "sources/draft.txt" },
     { "kind": "mail", "file": "sources/colleague-thread.mail.json" }
@@ -34,10 +34,10 @@
         { "label": "Email", "control": "email", "expected": "jordan.reyes@example.org" },
         { "label": "Phone", "control": "tel", "expected": "(512) 555-0147" },
         { "label": "Resume/CV", "control": "file", "expected": "handoff" },
-        { "label": "School", "control": "combobox", "expected": "handoff" },
+        { "label": "School", "control": "combobox", "expected": "The University of Texas at Austin" },
         { "label": "Degree", "control": "select", "options": ["Select...", "Associate's Degree", "Bachelor's Degree", "Master's Degree", "Doctorate", "Other"], "expected": "Bachelor's Degree" },
         { "label": "Graduation Date (MM/YYYY)", "control": "text", "expected": "05/2027" },
-        { "label": "Are you legally authorized to work in the United States?", "control": "combobox", "expected": "handoff" },
+        { "label": "Are you legally authorized to work in the United States?", "control": "combobox", "expected": "Yes" },
         { "label": "LinkedIn Profile", "control": "url", "expected": "https://www.linkedin.com/in/jordan-reyes-dev" }
       ]
     },

@@ -156,6 +156,9 @@ export function asksCountry(label: string | null): boolean {
 }
 
 const PLACE_WORDS = /^\p{L}[\p{L} .'’-]*$/u;
+/** USPS codes of the states and DC. isState takes any two capitals, which would read "London, UK" as a US place (B27 review). */
+const STATE_CODES = new Set("AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split(" "));
+const usState = (s: string): boolean => STATE_CODES.has(s) || US_STATES.has(s.toLowerCase());
 
 /**
  * The city, state and country of a place written "City, State" or "City, State, Country", as a note's "Location:
@@ -168,7 +171,7 @@ export function splitPlace(text: string): { city: string; state: string; country
   const parts = text.split(",").map((p) => p.trim());
   if (parts.length < 2 || parts.length > 3) return null;
   parts[parts.length - 1] = (parts.at(-1) as string).replace(/\s*\([^()]*\)$/u, "");
-  if (!parts.every((p) => PLACE_WORDS.test(p) && text.includes(p)) || !isState(parts[1] as string)) return null;
+  if (!parts.every((p) => PLACE_WORDS.test(p) && text.includes(p)) || !usState(parts[1] as string)) return null;
   return { city: parts[0] as string, state: parts[1] as string, country: parts[2] ?? null };
 }
 

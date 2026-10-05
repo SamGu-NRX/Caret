@@ -3,7 +3,7 @@
 // stand-in Jev for the anchor, the derived values, the controls and the owner veto. All text is synthetic.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScreenModel } from "../src/model.ts";
-import { CHECKBOX_RUN, describeInput, emptyInput, formInputs, MAX_FIELDS, memoryRefOf, memoryValue, optionName, PAGE_WINDOW_KIND, parseMemoryRef, proposeFill } from "../src/fill/fill.ts";
+import { CHECKBOX_RUN, describeInput, emptyInput, formInputs, MAX_FIELDS, memoryRefOf, memoryValue, optionName, PAGE_WINDOW_KIND, parseMemoryRef, proposeFill, type FillScope, type Whose } from "../src/fill/fill.ts";
 import { asksCountry, fieldPart, joinName, partFits, splitAddress, splitName, splitPlace } from "../src/fill/derive.ts";
 import { writtenFields } from "../src/offers/fill-popup.ts";
 import { clockTime, readDate } from "../src/fill/when.ts";
@@ -532,6 +532,8 @@ describe("a web dropdown (B27)", () => {
     ["one two three four five six seven", false],
     ["Line one\nLine two", false],
     ["", false],
+    // B27 corpus run: a Yes/No dropdown was handed this; a comma is a place's or a remark's.
+    ["yes, US citizen", false],
   ])("optionName(%j) is %s", (v, ok) => {
     expect(optionName(v)).toBe(ok);
   });
@@ -541,6 +543,9 @@ describe("a web dropdown (B27)", () => {
     ["Austin, TX", { city: "Austin", state: "TX", country: null }],
     ["Reyes, Jordan", null],
     ["Paris, France", null],
+    // Two capitals are a state only when they are a USPS code (B27 review).
+    ["London, UK", null],
+    ["Paris, FR", null],
     ["Fernhill Robotics, https://fernhill.example.test, 4 employees", null],
     ["4410 Speedway, Austin, Texas 78751", null],
   ])("splitPlace(%j)", (t, want) => {
@@ -635,5 +640,86 @@ describe("one of several labelled links, emails or phones (B27)", () => {
   it("fills a link labelled only as a link, beside others", async () => {
     const p = await fill(["Website: https://pat.example.test", "GitHub: https://github.com/pat-example"], { "Website URL": "https://pat.example.test" });
     expect(at(p, 1)).toMatchObject({ value: "https://pat.example.test", withheld: null });
+  });
+});
+
+// What the B27 review and the B27 corpus run found, each with its input.
+describe("B27 review", () => {
+  const W = "dev.caret.page/review";
+  const TE = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
+  const CHROME = { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" };
+  /** A source window, then a page form whose first input is a text field (the trigger) and the rest as given. */
+  function desk(source: Node[], inputs: Node[], kind = PAGE_WINDOW_KIND, app = TE): ScreenModel {
+    const m = new ScreenModel();
+    m.apply(snap(source, { at: 900, windowId: "src", title: "Source", app, focused: true }));
+    const nodes = [node(`${W}/webarea:~0`, "AXWebArea", { label: "Form" }), field(`${W}/textfield:company~0`, "", { parent: `${W}/webarea:~0`, label: "Company", frame: [100, 60, 200, 20] }), ...inputs];
+    m.apply(snap(nodes, { at: 1000, windowId: "form", kind, title: "Form", app: CHROME, focused: true, focusedKey: `${W}/textfield:company~0` }));
+    return m;
+  }
+  const combo = (label: string, y: number): Node => field(`${W}/combobox:${label}~0`, "", { parent: `${W}/webarea:~0`, role: "AXComboBox", label, frame: [100, y, 200, 20] });
+  const byLabel = (table: Record<string, string>) => (_: string, ins: string): string | null => table[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] ?? null;
+  const NAME = { id: "about-name", label: "Name", value: "Sam Rivera", kind: "name" as const };
+  const EMAIL = { id: "about-email", label: "Email", value: "sam.rivera@example.com", kind: "email" as const };
+
+  it("holds a dropdown that takes a person's name to the owner veto", async () => {
+    const m = desk([field("src/mail", "Name: Dana Whitfield\nTeam: Operations", { role: "AXTextArea" })], [combo("Your full name", 100)], PAGE_WINDOW_KIND, MAIL_APP);
+    const p = await proposeFill(m, jevPickingText(byLabel({ "Your full name": "Dana Whitfield" }), 0.95, () => "user", () => "other"), "form", `${W}/textfield:company~0`, 2000);
+    expect(p.fields.find((f) => f.key === `${W}/combobox:Your full name~0`)).toMatchObject({ value: null, handoff: null });
+  });
+
+  it("asks whose a First name dropdown wants before it takes the user's first name from memory", async () => {
+    const m = desk([field("src/note", "Order 1182", { role: "AXTextArea" })], [combo("First name", 100)]);
+    const fill = (who: Whose) => proposeFill(m, jevPickingText(byLabel({ "First name": "Sam" }), 0.95, () => who), "form", `${W}/textfield:company~0`, 2000, { about: [NAME, EMAIL] });
+    expect((await fill("user")).fields.find((f) => f.key === `${W}/combobox:First name~0`)).toMatchObject({ value: "Sam", memory: { id: NAME.id, part: "first" } });
+    expect((await fill("other")).fields.find((f) => f.key === `${W}/combobox:First name~0`)).toMatchObject({ value: null, withheld: "lowConfidence" });
+  });
+
+  it("vetoes a value both owner asks call someone else's, even with one under the whose cutoff", async () => {
+    const sig = "Thanks,\nDana Whitfield\nOperations Lead, Lumen Labs\n(415) 555-0162";
+    const m = desk([text("src/sig", sig)], [field(`${W}/textfield:phone~0`, "", { parent: `${W}/webarea:~0`, label: "Phone number", frame: [100, 100, 200, 20] })], "AXStandardWindow", MAIL_APP);
+    m.apply(snap([text("src/sig", sig)], { at: 900, windowId: "src", title: "Re: deposit", app: MAIL_APP, values: [value("phone", "(415) 555-0162", "src/sig")] }));
+    let n = 0;
+    const inner = jevPickingText(byLabel({ "Phone number": "(415) 555-0162" }), 0.92, () => "user", () => "other");
+    // The two asks of each stage: the first gives its owner answers 0.47, the second 0.67 (b2b-probe, seed 24).
+    const ask: AskJev = async (r) => {
+      const out = await inner(r);
+      const k = n++;
+      for (const [id, a] of Object.entries(out.answers)) if (id.endsWith("_owner")) a.confidence = k % 2 === 0 ? 0.47 : 0.67;
+      return out;
+    };
+    const p = await proposeFill(m, ask, "form", `${W}/textfield:company~0`, 2000, { about: [NAME, EMAIL] });
+    expect(p.fields.find((f) => f.key === `${W}/textfield:phone~0`)).toMatchObject({ value: null });
+  });
+
+  it("fills a link the user's instruction names for the field, though other links are on screen", async () => {
+    const note = ["LinkedIn: https://www.linkedin.com/in/pat-example", "GitHub: https://github.com/pat-example", "Portfolio: https://pat.example.test"].join("\n");
+    const url = field(`${W}/textfield:website~0`, "", { parent: `${W}/webarea:~0`, label: "Website URL", frame: [100, 100, 200, 20] });
+    const m = desk([field("src/note", note, { role: "AXTextArea" })], [url], "AXStandardWindow");
+    const scope: FillScope = { fields: [url.key], windows: null, memory: false, instruction: "put https://pat.example.test in Website URL", person: null, literals: new Map([[url.key, "https://pat.example.test"]]) };
+    const p = await proposeFill(m, jevPickingText(byLabel({ "Website URL": "https://pat.example.test" }), 0.95), "form", url.key, 2000, { scope });
+    expect(p.fields.find((f) => f.key === url.key)).toMatchObject({ value: "https://pat.example.test", withheld: null });
+  });
+
+  it("keeps nearest-first order within the cap, whatever order a run of boxes has on the page", () => {
+    const m = new ScreenModel();
+    // The boxes come in page order farthest first.
+    const boxes = Array.from({ length: CHECKBOX_RUN }, (_, i) => node(`${W}/checkbox:b${i}~0`, "AXCheckBox", { parent: `${W}/webarea:~0`, label: `Box ${i}`, frame: [100, 400 - 40 * i, 20, 20] }));
+    m.apply(snap([node(`${W}/webarea:~0`, "AXWebArea"), field(`${W}/textfield:t~0`, "", { parent: `${W}/webarea:~0`, label: "Name", frame: [100, 100, 200, 20] }), ...boxes], { at: 1000, windowId: "form", focused: true, focusedKey: `${W}/textfield:t~0` }));
+    const keys = formInputs(m.windows.get("form") as never, `${W}/textfield:t~0`).map((x) => x.node.key);
+    expect(keys).toEqual([`${W}/textfield:t~0`, ...boxes.map((b) => b.key).reverse()]);
+  });
+
+  it("ends a run of boxes at any other input, even one that holds a value", () => {
+    const m = new ScreenModel();
+    const box = (i: number): Node => node(`${W}/checkbox:b${i}~0`, "AXCheckBox", { parent: `${W}/webarea:~0`, label: `Box ${i}` });
+    const radios = ["Will you need visa sponsorship?", "Are you a Singapore citizen?"].flatMap((q, i) => [
+      node(`${W}/group:r${i}~0`, "AXGroup", { parent: `${W}/webarea:~0`, subrole: "AXFieldset", label: q }),
+      ...["Yes", "No"].map((o) => node(`${W}/group:r${i}/radiobutton:${o}~0`, "AXRadioButton", { parent: `${W}/group:r${i}~0`, label: o })),
+    ]);
+    const filled = field(`${W}/textfield:filled~0`, "already typed", { parent: `${W}/webarea:~0`, label: "Nickname" });
+    m.apply(snap([node(`${W}/webarea:~0`, "AXWebArea"), field(`${W}/textfield:t~0`, "", { parent: `${W}/webarea:~0`, label: "Full name" }), box(0), box(1), filled, box(2), box(3), box(4), ...radios], { at: 1000, windowId: "form", focused: true, focusedKey: `${W}/textfield:t~0` }));
+    // Eight inputs, none grouped: a cap of four keeps the trigger, both radios the source speaks to, and one box.
+    const kept = formInputs(m.windows.get("form") as never, `${W}/textfield:t~0`, 4, true, () => new Set(["visa", "sponsorship", "singapore", "citizen"]));
+    expect(kept.map((x) => x.control)).toEqual(["text", "radio", "radio", "checkbox"]);
   });
 });

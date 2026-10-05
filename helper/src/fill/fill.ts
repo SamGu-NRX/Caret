@@ -39,6 +39,8 @@ export const MAX_FIELDS = 20;
  * nearest-first cap of 20 left all four out. Assumed: five boxes is already a list of options, not separate questions.
  */
 export const CHECKBOX_RUN = 5;
+/** Roles of the inputs a form shows, asked or not: what ends a run of sibling checkboxes. */
+const INPUT_ROLES: ReadonlySet<string> = new Set(["AXTextField", "AXTextArea", "AXComboBox", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXDateField", "AXTimeField"]);
 /**
  * The window kind the page engine gives a browser tab it reads (v2/screen engines/page-link.ts toWindowSnapshot). A
  * write to a web dropdown there becomes the engine's pageChooseOption: open the list, type the value as its filter,
@@ -49,13 +51,16 @@ export const PAGE_WINDOW_KIND = "page";
 
 /**
  * Whether a value reads as one option's name, as a dropdown would list it: one line of at most six words and 60
- * characters, with no remark in parentheses, no link and no sentence's closing punctuation. "United States", "Oakland"
- * and "Oakland, CA, USA" do; "Oakland, California, United States (in the Bay Area)" and "authorized to work in the
- * United States." do not. Written for common option names, not measured; the engine's exact-match pick is the check.
+ * characters, with no remark in parentheses, no link, no sentence's closing punctuation, and no comma unless it is a
+ * place ("Oakland, CA, USA"). "United States" and "Oakland" do; "Oakland, California, United States (in the Bay
+ * Area)", "authorized to work in the United States." and "yes, US citizen" do not (the last went to a Yes/No dropdown
+ * on the B24 corpus's Greenhouse form, evidence/screen/b27/fill-final). Written for common option names, not
+ * measured; the engine's exact-match pick is the check.
  */
 export function optionName(value: string): boolean {
   const v = value.trim();
-  return v !== "" && v.length <= 60 && !/[\r\n()]|:\/\//u.test(v) && !/[.!?;:]$/u.test(v) && v.split(/\s+/u).length <= 6;
+  if (v === "" || v.length > 60 || /[\r\n()]|:\/\//u.test(v) || /[.!?;:]$/u.test(v) || v.split(/\s+/u).length > 6) return false;
+  return !v.includes(",") || splitPlace(v) !== null;
 }
 /**
  * Lowest confidence, taken as the lower of the two asks, at which an agreed choice is proposed.
@@ -209,8 +214,14 @@ export function formInputs(w: WindowState, triggerKey: string, max = MAX_FIELDS,
   };
   for (const n of w.nodes.values()) {
     const x = byKey.get(n.key);
-    if (x === undefined) continue;
-    if (x.control !== "checkbox" || (run.length > 0 && run[0]?.node.parent !== n.parent)) close();
+    const box = n.role === "AXCheckBox" && (run.length === 0 || run[0]?.node.parent === n.parent);
+    // Any other input closes a run, asked or not (a filled field between two lists of boxes; B27 review). A ticked
+    // box of the same list does not.
+    if (x === undefined) {
+      if (INPUT_ROLES.has(n.role) && !box) close();
+      continue;
+    }
+    if (!box || x.control !== "checkbox") close();
     if (x.control === "checkbox") run.push(x);
   }
   close();
@@ -222,7 +233,7 @@ export function formInputs(w: WindowState, triggerKey: string, max = MAX_FIELDS,
     for (const u of unit) placed.add(u);
     units.push(unit);
   }
-  if (units.length <= max) return units.flat();
+  if (units.length <= max) return all;
   const seen = source();
   const shown = (x: FormInput): number => {
     const d = describeField(w, x.node);
@@ -681,8 +692,9 @@ export async function proposeFill(
     const terms = fieldTerms(labelWords);
     for (const k of kinds) terms.add(kindTerm(k));
     const part = typed && derive ? (fieldPart(name, formHasCity) ?? (asksCountry(name) ? "country" : null)) : null;
-    // A country is no one's detail, so it asks no whose question.
-    const personal = x.control === "text" && ((part !== null && part !== "country") || [...kinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
+    // A country is no one's detail, so it asks no whose question. A dropdown that takes a person's details meets the owner
+    // veto and the whose gate as a text field does (B27 review: "Your full name" took another person's name otherwise).
+    const personal = typed && ((part !== null && part !== "country") || [...kinds].some((k) => PERSONAL_KINDS.has(k)) || (terms.has(NAME_TERM) && /\bname\b/i.test(name ?? "")));
     // An Ask that names no memory, or names another person for a personal field, is not offered the user's own.
     const memoryOk = scope === undefined || (scope.memory && (scope.person === null || !personal));
     const about = x.control === "text" && memoryOk ? (opts.about ?? []).filter((a) => fieldAsksFor(a, name)) : [];
@@ -1003,6 +1015,13 @@ export async function proposeFill(
   const anchoredCut = (p: Pick): boolean => kindCut(p) || (nameCut && nameish(p));
   const memoryOf = (p: Pick): AboutValue | null => (p.from === "memory" ? p.a : p.from === "derived" && p.base.from === "memory" ? p.base.a : null);
   const windowOf = (p: Pick): Candidate | null => (p.from === "window" ? p.c : p.from === "derived" && p.base.from === "window" ? p.base.c : null);
+  /** Both asks' answer to a question with fixed options when they give the same one, at any confidence, or null. */
+  const sameChoice = (q: string, q2: string = q): string | null => {
+    const [x1, x2] = staged ? [w1, w2] : [r1, r2];
+    const a1 = x1?.answers[q];
+    const a2 = x2?.answers[q2];
+    return a1 !== undefined && a2 !== undefined && a1.choice === a2.choice && a1.choice in WHOSE_CRITERIA ? a1.choice : null;
+  };
   /** Both asks' answer to a question with fixed options (whose, owner), agreed at the whose cutoff, or null. */
   const agreedChoice = (q: string, q2: string = q): string | null => {
     const [x1, x2] = staged ? [w1, w2] : [r1, r2];
@@ -1050,6 +1069,11 @@ export async function proposeFill(
     const wants = agreedChoice(whoseId(f.id));
     const is = agreedChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? ""));
     if (wants !== null && is !== null && wants !== "unclear" && is !== "unclear") return wants !== is;
+    // A veto only withholds, so both asks calling the value someone else's is enough at any confidence when the field
+    // wants the user's. B27's corpus run put a colleague's signature phone in a demo request's Phone number: in five
+    // reruns all ten owner answers said "other", at 0.47 to 0.67, and the one under WHOSE_CUTOFF let it through
+    // (evidence/screen/b27/b2b-probe, seed 24).
+    if (wants === "user" && sameChoice(ownerId(c.id), ownerId(secondId.get(c.id) ?? "")) === "other") return true;
     // Someone else's value goes only in a field both asks say wants someone else's: an RSVP's Phone, its whose
     // answer split at 0.48 and 0.60, took the sender's signature phone, which both asks called hers (dev-10).
     if (is === "other") return true;
@@ -1097,7 +1121,8 @@ export async function proposeFill(
    * either Portfolio or GitHub.
    */
   const oneOfSeveral = (f: Field, p: Pick): boolean => {
-    if (p.from !== "window" || p.c.labelled !== true || p.c.context === null) return false;
+    // A value the user's instruction spells out for this field is their choice among them (B27 review).
+    if (p.from !== "window" || p.c.labelled !== true || p.c.context === null || literalOf(f) === p.c.text) return false;
     const kind = textKind(p.c.text);
     if (!LABELLED_KINDS.has(kind)) return false;
     const purpose = purposeOf([p.c.context]);
