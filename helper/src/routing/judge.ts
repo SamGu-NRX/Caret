@@ -1,7 +1,7 @@
 // The two routers' questions to Jev and the checks on their answers. Each is one Choice over options code listed:
 // Router 1 over the outcomes legal now, Router 2 over the registry's route ids. Every piece of screen text goes
 // through a SnippetLedger (privacy.ts), so the request declares what it carries and each window keeps its budget.
-// An answer counts only when it names a listed option with a finite confidence at or above ROUTE_FLOOR; anything
+// An answer counts only when it names a listed option with a finite confidence at or above its router's floor; anything
 // else abstains, with the reason logged. Nothing here acts.
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
 import type { ScreenModel, WindowState } from "../model.ts";
@@ -13,11 +13,22 @@ import type { RoutingContext } from "./context.ts";
 import type { Outcome, Registry, RouteCandidate } from "./routes.ts";
 
 /**
- * The confidence a router's choice needs. Provisional: plan section 3 sets 0.75 as a conservative start, not a
- * transferred calibration (fill's calibration answers another question). No routing calibration run exists; the
- * corpus run reports what this floor keeps and drops (evidence/screen/d2-02).
+ * The confidence Router 1's choice needs. Jev's Choice `confidence` is the margin between its two most likely options
+ * (an answer of 0.74 against 0.26 comes back as 0.49), so a floor of 0.75 asks for about 0.875 on the winner.
+ *
+ * 0.5, provisional until real use (lead decision, 2026-10-04). Evidence, all in ~/.caret-run/evidence/screen/d2-02:
+ * - Held-out half of the blind routing corpus (even ids, not tuned on; corpus-run2/summary.md), ambient moments: at
+ *   0.75 write was 100% precise with 40% recall and act 100% / 15%; at 0.5 write 64% / 70% and act 67% / 29%, with one
+ *   act where writing help was expected (m18: a fill offered from a cover-letter box; its twin m19, the same field on a
+ *   blank form, is labeled fill, and Jev gives both act 0.8 against write 0.13, so no rule on the field's role tells
+ *   them apart). Every act is an offer behind Tab, and fill's own value gates still decide every value.
+ * - The real-day replay (day-replay.md, a counterfactual over the shadow store's hashes): useful fill offers kept rise
+ *   from 1.2-1.4 an hour at 0.75 to 2.5-2.8 at 0.5, against 5.5 findable, with no offers where the entry was not on
+ *   screen and at most $0.0020 of Jev an active hour (about 20 times less than producers alone).
  */
-export const ROUTE_FLOOR = 0.75;
+export const ROUTER1_FLOOR = 0.5;
+/** The confidence Router 2's choice of route needs. Plan section 3's provisional 0.75, not calibrated; the corpus never reached Router 2. */
+export const ROUTER2_FLOOR = 0.75;
 /** Form labels Router 1 sees for the field the user is in, nearest first. Enough to tell a form; not measured. */
 const FORM_LABELS = 6;
 
@@ -26,7 +37,7 @@ export type Refusal = "missing" | "forged" | "nonfinite" | "lowConfidence" | "fa
 export type Read<T extends string> = { ok: true; choice: T; confidence: number } | { ok: false; why: Refusal; choice: string | null; confidence: number | null };
 
 /** Checks one Choice answer against the options code listed. A choice outside them is forged, whatever its confidence. */
-export function readChoice<T extends string>(r: JevResult, question: string, options: readonly T[], floor = ROUTE_FLOOR): Read<T> {
+export function readChoice<T extends string>(r: JevResult, question: string, options: readonly T[], floor: number): Read<T> {
   const a = r.answers[question];
   if (a === undefined) return { ok: false, why: "missing", choice: null, confidence: null };
   if (!(options as readonly string[]).includes(a.choice)) return { ok: false, why: "forged", choice: a.choice, confidence: a.confidence };
@@ -149,12 +160,12 @@ export function router2Request(model: ScreenModel, ctx: RoutingContext, reg: Reg
 }
 
 /** Sends one router request; a transport failure is a refusal, never retried. */
-export async function sendRouter<T extends string>(askJev: AskJev, b: Built<T>, question: string): Promise<{ read: Read<T>; result: JevResult | null }> {
+export async function sendRouter<T extends string>(askJev: AskJev, b: Built<T>, question: string, floor: number): Promise<{ read: Read<T>; result: JevResult | null }> {
   let result: JevResult;
   try {
     result = await askJev(b.request);
   } catch {
     return { read: { ok: false, why: "failed", choice: null, confidence: null }, result: null };
   }
-  return { read: readChoice(result, question, b.options), result };
+  return { read: readChoice(result, question, b.options, floor), result };
 }

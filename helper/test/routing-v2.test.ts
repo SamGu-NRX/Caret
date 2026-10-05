@@ -264,7 +264,9 @@ describe("the routing coordinator", () => {
       { r1: { choice: "launch", confidence: 0.99 }, why: "router1_forged" },
       { r1: { choice: "act", confidence: Number.NaN }, why: "router1_nonfinite" },
       { r1: { choice: "act", confidence: 1.5 }, why: "router1_nonfinite" },
-      { r1: { choice: "act", confidence: 0.74 }, why: "router1_lowConfidence" },
+      { r1: { choice: "act", confidence: 0.49 }, why: "router1_lowConfidence" },
+      // Router 1 takes 0.5 and above; Router 2 keeps 0.75 (judge.ts).
+      { r1: { choice: "act", confidence: 0.5 }, r2: { choice: "r1", confidence: 0.74 }, why: "router2_lowConfidence" },
       { r1: null, why: "router1_missing" },
       { r1: { choice: "act", confidence: 0.9 }, r2: { choice: "r9", confidence: 0.99 }, why: "router2_forged" },
       { r1: { choice: "act", confidence: 0.9 }, r2: { choice: "handoff ", confidence: 0.99 }, why: "router2_forged" },
@@ -282,7 +284,7 @@ describe("the routing coordinator", () => {
       await coord.idle();
     }
     expect(Object.entries(coord.stats.refused).sort()).toEqual(
-      Object.entries({ router1_forged: 1, router1_nonfinite: 2, router1_lowConfidence: 1, router1_missing: 1, router2_forged: 2, router2_lowConfidence: 1 }).sort(),
+      Object.entries({ router1_forged: 1, router1_nonfinite: 2, router1_lowConfidence: 1, router1_missing: 1, router2_forged: 2, router2_lowConfidence: 2 }).sort(),
     );
     expect(a.ran + b.ran).toBe(0);
     expect(decisions.every((d) => d.outcome === "abstain")).toBe(true);
@@ -290,7 +292,7 @@ describe("the routing coordinator", () => {
     hostWrites = false;
     jev.router1 = () => ({ choice: "write", confidence: 0.99 });
     clock.advance(ROUTER1_COOLDOWN_MS);
-    show("again", 0);
+    show("again", (i + 1) % 3);
     await coord.idle();
     expect(decisions.at(-1)?.refused).toEqual({ router: 1, why: "forged" });
     expect(coord.writing).toBeNull();

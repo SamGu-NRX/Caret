@@ -16,7 +16,7 @@
 import type { AskJev } from "../fill/jev.ts";
 import type { ScreenModel } from "../model.ts";
 import { breakpoint, contextNow, type Breakpoint, type FocusSeen, type HostEditing, type RoutingContext } from "./context.ts";
-import { PrivacyRefusal, router1Request, router2Request, sendRouter, type Refusal } from "./judge.ts";
+import { PrivacyRefusal, ROUTER1_FLOOR, ROUTER2_FLOOR, router1Request, router2Request, sendRouter, type Refusal } from "./judge.ts";
 import { freeze, realRoutes, type Outcome, type Registry, type Route, type RouteCandidate } from "./routes.ts";
 
 /** Router 1 starts at most once in this long. From plan section 3 (the two-second rule); not measured here. */
@@ -354,7 +354,7 @@ export class RoutingCoordinator {
     this.stats.router1Calls++;
     this.deps.count?.("route.router1_call");
     const t0 = this.deps.now();
-    const r1 = await sendRouter(this.deps.askJev, built, "outcome");
+    const r1 = await sendRouter(this.deps.askJev, built, "outcome", ROUTER1_FLOOR);
     keep(this.stats.callMs, this.deps.now() - t0);
     if (this.stale(c)) return;
     if (!r1.read.ok) return this.finish(c, { outcome: "abstain", by: "router1", local: null, refused: { router: 1, why: r1.read.why }, route: null, confidence: r1.read.confidence, answered: r1.read.choice });
@@ -402,7 +402,7 @@ export class RoutingCoordinator {
     this.stats.router2Calls++;
     this.deps.count?.("route.router2_call");
     const t0 = this.deps.now();
-    const r2 = await sendRouter(this.deps.askJev, built, "route");
+    const r2 = await sendRouter(this.deps.askJev, built, "route", ROUTER2_FLOOR);
     keep(this.stats.callMs, this.deps.now() - t0);
     if (this.stale(c)) return;
     if (!r2.read.ok) return this.finish(c, { outcome: "abstain", by: "router2", local: null, refused: { router: 2, why: r2.read.why }, route: null, confidence: r2.read.confidence, answered: r2.read.choice });
