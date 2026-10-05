@@ -1,1 +1,0 @@
-D2-04: accept.ts's fixture reader answers watchInput ok, so accept now runs executor tasks on page windows (B28's 'accept cannot run executor.run' no longer holds); page input still comes from the extension's guard.
