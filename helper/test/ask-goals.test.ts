@@ -7,7 +7,7 @@ import { PROTOCOL_VERSION, type GoalProgress } from "../src/protocol.ts";
 import { WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterPort } from "../src/writer/port.ts";
 import type { PlanningSnapshot } from "../src/codemode/types.ts";
-import { areaKey, cannedProgram, caseWindow, detailsWindow, fieldKey, goalScene, mailWindow, SUPPORT, type CannedStep, type GoalScene } from "./goal-desk.ts";
+import { areaKey, cannedProgram, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, SUPPORT, type CannedStep, type GoalScene } from "./goal-desk.ts";
 
 const ORDER = "ORD-2026-48213";
 const PROBLEM = "The desk lamp arrived with a cracked base and does not switch on.";
@@ -85,5 +85,30 @@ describe("Ask's plan route for a host that runs goal plans", () => {
     const r = await ask(sc, false);
     expect(r.type).toBe("planProposal");
     expect(sc.writer2.kinds).not.toContain("goal");
+  });
+});
+
+describe("an Ask from the email the user is reading", () => {
+  it("acts in the reply and copies from the email, which stays a source", async () => {
+    const steps: CannedStep[] = [
+      { fill: { window: "Re: Order", target: "To", value: "priya.raman@northwind.example" } },
+      { fill: { window: "Re: Order", target: "Message", value: "cracked base" } },
+    ];
+    const writer = { ...askAndGoalWriter("plan"), write: async (req: Parameters<WriterPort["write"]>[0]) => {
+      const base = { model: "canned", provider: "canned", inputTokens: 0, outputTokens: 0, reasoningTokens: 0, latencyMs: 0, costUsd: 0 };
+      if (req.kind === "intent") {
+        const json = { route: "plan", why: "none", scope: "none", section: "none", fields: [], sources: ["any"], whose: "user", literals: [] };
+        return { ...base, output: { program: null, reply: JSON.stringify(json), json } };
+      }
+      const program = cannedProgram((req.input as { snapshots: PlanningSnapshot[] }).snapshots, steps);
+      return { ...base, output: { program, reply: program } };
+    } };
+    const sc = goalScene({ scripts: [], windows: [mailWindow(), replyWindow()], userWindow: "6161-1", writer, askJev: silentJev, ask: { maker: "writer", writer } });
+    scenes.push(sc);
+    const r = await sc.helper.handlePlanRequest({ type: "planRequest", v: PROTOCOL_VERSION, requestId: "m1", at: sc.desk.at, instruction: "reply to Priya with the problem", windowId: "6161-1" }, sc.session, true, true);
+    expect(r).toMatchObject({ type: "goalProgress", event: "segment", where: { kind: "window", title: "Re: Order ORD-2026-48213 arrived damaged" } });
+    sc.goals.push(r as GoalProgress);
+    await sc.accept((r as GoalProgress).goalId);
+    expect(sc.desk.node("6161-2", fieldKey(MAIL, "To"))?.value).toBe("priya.raman@northwind.example");
   });
 });

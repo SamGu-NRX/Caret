@@ -1064,10 +1064,14 @@ export class Helper {
    * used ones with a field or a button.
    */
   private goalWindows(first: string | null = null): string[] {
-    const user = (first === null ? undefined : this.model.windows.get(first)) ?? this.model.userWindow();
     const usable = (w: { nodes: Map<string, { editable?: boolean; role: string }> }): boolean => [...w.nodes.values()].some((n) => n.editable === true || n.role === "AXButton");
+    const lead = (first === null ? undefined : this.model.windows.get(first)) ?? this.model.userWindow();
+    // A window with no field or button (the email the user is reading) is a source, not where the goal acts: listed
+    // first, its own values would be left out of the inventory (planner/codeplan.ts valueList reads other windows').
+    // B30's cases asked from the email, and no plan could copy its sender into the reply's To.
+    const user = lead !== null && lead !== undefined && usable(lead) ? lead : null;
     const rest = [...this.model.windows.values()].filter((w) => w !== user && usable(w)).sort((a, b) => b.lastFocusedAt - a.lastFocusedAt);
-    return [...(user === null || user === undefined ? [] : [user]), ...rest].map((w) => w.window.windowId);
+    return [...(user === null ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
   private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null): ReturnType<typeof planGoal> {
