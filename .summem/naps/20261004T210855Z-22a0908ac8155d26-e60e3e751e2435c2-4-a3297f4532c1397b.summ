@@ -1,1 +1,0 @@
-Remotes and Groq writers: push v2/* only to remote sam; Ask intents use gpt-oss-120b, plan programs qwen3.8 (about 1,000 output tokens a minute and 200k a day); space writer calls with a fresh AbortSignal after each wait. U+2731 marks required labels on the job form.

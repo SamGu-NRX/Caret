@@ -1,0 +1,1 @@
+B30: drafted goal text is checked in goals/drafts.ts as whole typed facts; every digit must land in a fact, and a from value ref stands for its source window or memory. Two reviews found recombination holes: add whole-expression rules, never token allowlists.

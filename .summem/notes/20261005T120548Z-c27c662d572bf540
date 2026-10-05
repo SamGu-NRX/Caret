@@ -1,0 +1,1 @@
+B30: goal writes never touch Cc/Bcc or Subject, and To takes only the From address in the header block of the message the reply window answers (Re: <subject>), rechecked at accept (drafts.ts senderOf). D2-06 scenes rely on mailWindow line 0 being its From header.
