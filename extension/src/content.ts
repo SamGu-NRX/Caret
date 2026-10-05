@@ -8,12 +8,17 @@
 // W3 adds a third, only while the worker has armed this frame because a grant covers it: the user pressed a pointer
 // or a key here. Only events the browser marks trusted count, so neither the page's script nor Caret's own synthetic
 // events (the combobox handler's presses) can raise it; nothing about the element or the key travels.
+//
+// S1 adds a passive input listener that sends nothing: per text field, in memory, it notes whether the text came from
+// the user's own typing (content/entry.ts). A walk reports that one word per field, so Caret saves an answer as the
+// user's words only when they typed it.
 import type { FocusMoved, FrameReport, GrantAlive, NavChanged, ToContent, UserActed } from "./shared/messages.ts";
 import { act } from "./content/actions.ts";
 import { isUsersOwn } from "./shared/input.ts";
 import { clean } from "./content/names.ts";
 import { Registry, navigationEntry } from "./content/registry.ts";
 import { deepActiveElement, visible, walkControls } from "./content/walker.ts";
+import { EntryTracker } from "./content/entry.ts";
 
 declare global {
   // Set once per isolated world, so a script injected again after install (worker onInstalled) does nothing.
@@ -40,10 +45,14 @@ function contentBox(f: HTMLIFrameElement): [number, number] {
   return [f.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight), f.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom)];
 }
 
-function walk(reg: Registry): FrameReport {
+function walk(reg: Registry, entries: EntryTracker | null): FrameReport {
   const href = location.href;
   const nav = navigationEntry();
-  const out = walkControls((el) => reg.idOf(el), (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form }));
+  const out = walkControls(
+    (el) => reg.idOf(el),
+    (el, c) => reg.remember(c.id, el, { strongKey: c.strongKey, kind: c.kind, name: c.name, href, nav, form: c.form }),
+    (el, value) => entries?.entryOf(el, value),
+  );
   const active = deepActiveElement();
   let focused: FrameReport["focused"] = null;
   if (active !== null) {
@@ -101,12 +110,28 @@ if (globalThis.__caretContent === undefined) {
   let takeovers = 0;
   /** Injected after the document loaded: its own earlier listeners may hide the user's input, so it takes no act. */
   const late = globalThis.__caretLate === true;
+  /**
+   * How each text field's text was entered (S1). Not kept in a late-injected document: edits made before this script
+   * arrived were never seen, so no field there can be shown to hold only the user's typing.
+   */
+  const entries = late ? null : new EntryTracker();
+  if (entries !== null) {
+    addEventListener(
+      "input",
+      (e) => {
+        const el = e.composedPath()[0];
+        if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return;
+        entries.onInput(el, e.isTrusted, e instanceof InputEvent ? e.inputType : "", el.value);
+      },
+      { capture: true, passive: true },
+    );
+  }
 
   chrome.runtime.onMessage.addListener((m: unknown, sender, reply) => {
     // Only this extension's worker: a content script's own message would carry a tab, and nothing else can reach here.
     if (sender.id !== chrome.runtime.id || sender.tab !== undefined || !isToContent(m)) return false;
     if (m.op === "walk") {
-      reply(walk(reg));
+      reply(walk(reg, entries));
       return false;
     }
     if (m.op === "viewport") {
