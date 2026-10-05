@@ -422,6 +422,22 @@ describe("review: what may press, and when a segment may act", () => {
   });
 });
 
+describe("re-check: presses that may have landed", () => {
+  it("a Next whose effect never showed is still a press the goal made: the fresh plan may not press it again", async () => {
+    const wizard: CannedStep[] = [
+      { fill: { window: "Report a problem", target: "Order number", value: ORDER } },
+      { press: { window: "Report a problem", target: "Next", effect: "e:reveal" } },
+    ];
+    const sc = scene({ scripts: [wizard, [{ press: { window: "Report a problem", target: "Next", effect: "e:reveal" } }]], windows: [mailWindow(), wizardWindow(false)], userWindow: "7171-3" });
+    const first = await sc.request("report the damaged lamp");
+    expect((await sc.accept(first.goalId))?.outcome).toBe("stopped");
+    const stop = last(sc, "stopped");
+    expect(stop && [stop.reason, stop.freshPlan]).toEqual(["timeout", null]);
+    expect(sc.desk.pressed.length).toBe(1);
+    expect(sc.warnings.some((l) => /would press 'Next' again, which Caret already did for this goal/.test(l))).toBe(true);
+  });
+});
+
 const TO_SUPPORT_ONE_WINDOW: CannedStep[] = [
   { fill: { window: "Re: Order", target: "To", value: "priya.raman@northwind.example" } },
   { fill: { window: "Re: Order", target: "Message", value: "cracked base" } },

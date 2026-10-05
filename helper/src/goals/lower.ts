@@ -131,6 +131,7 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
     if (done.some((d) => t.domain.kind === "window" && d.windowId === t.domain.windowId && d.key === t.key && d.effect === verdict.capability.effect)) {
       throw new GoalError("replay", `the plan would press ${named(t)} again, which Caret already did for this goal`, t.ref);
     }
+    if (steps.some((x) => x.kind === "press" && x.target.ref === t.ref && x.effect === verdict.capability.effect)) throw new GoalError("replay", `the plan presses ${named(t)} twice`, t.ref);
     const step: GoalStep = { ref: s.ref, index, kind: "press", says: verdict.capability.says(t.label), target: t, value: null, writes: null, effect: verdict.capability.effect, handoff: null };
     steps.push(step);
     lastPress = step;

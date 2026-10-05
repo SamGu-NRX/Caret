@@ -240,6 +240,27 @@ describe("W3 page findings, helper side", () => {
     });
   });
 
+  describe("D2-06 re-check: a verb made for one kind of control", () => {
+    it("is refused when the key now names another kind: nothing is sent to the page", async () => {
+      const model = new ScreenModel();
+      const p = new FakePage();
+      const link = new PageEngineLink(p.session, (s) => model.apply(s));
+      p.session.receive(hello);
+      expect((await link.run({ kind: "walk", pid: chrome.pid, windowId: WIN })).outcome).toBe("ok");
+      const now = Date.now();
+      link.grant({ type: "actGrant", v: 1, taskId: "t-role", pid: chrome.pid, windowId: WIN, at: now, expires: now + 60_000 });
+      const sent = p.verbs.length;
+      // The Department combobox is written as if it were a native select (AXPopUpButton), and a text field as a combobox.
+      const a = await link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: "f0/form[apply]/combobox:department~0", role: "AXPopUpButton", attribute: "value", expect: "", value: "Research", taskId: "t-role" });
+      const b = await link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: "f0/form[apply]/textbox:first name~0", role: "AXComboBox", attribute: "value", expect: "", value: "Robin", taskId: "t-role" });
+      expect([a.outcome, b.outcome]).toEqual(["changed", "changed"]);
+      expect(a.detail).toMatch(/is now a AXComboBox, not the AXPopUpButton/);
+      expect(p.verbs.length).toBe(sent);
+      // The same writes with the roles the model shows go through.
+      expect((await link.run({ kind: "write", pid: chrome.pid, windowId: WIN, key: "f0/form[apply]/textbox:first name~0", role: "AXTextField", attribute: "value", expect: "", value: "Robin", taskId: "t-role" })).outcome).toBe("ok");
+    });
+  });
+
   describe("1f: only the focused window's tab is the user's", () => {
     it("a background window's selected tab is not focused in the model and is never the user's window", async () => {
       // The user is in WIN (walked in its focused window above). Another profile's tab, selected in a background

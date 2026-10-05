@@ -269,6 +269,17 @@ export function toVerbOutcome(r: PageResult): VerbResult {
   }
 }
 
+/**
+ * The reader role a key's node has in a tab's last walk, as toWindowSnapshot projects it: AXGroup for a radio or press
+ * group, the control's ROLE otherwise; null when no control has the key. A verb whose role is not this one was resolved
+ * against another kind of control (D2-06 re-check: a select replaced by a combobox at the same key), and is refused.
+ */
+export function projectedRole(s: PageSnapshot | undefined, key: string): string | null {
+  if (pressGroupFor(s, key) !== null || radioGroupFor(s, key) !== null) return "AXGroup";
+  const t = targetFor(s, key);
+  return t === null ? null : ROLE[t.control.kind];
+}
+
 export class PageEngineLink implements ReaderLink {
   private readonly session: EngineSession;
   private seq = 0;
@@ -298,6 +309,8 @@ export class PageEngineLink implements ReaderLink {
         if (verb.attribute !== "value") return verbResult("axError", `a page field takes value writes only, not ${verb.attribute}`);
         const snap = this.session.tabs.get(w.tabId);
         if (verb.taskId === undefined) return verbResult("notAllowed", "a page write needs its task's grant");
+        const role = projectedRole(snap, verb.key);
+        if (role !== null && role !== verb.role) return verbResult("changed", `${verb.key} is now a ${role}, not the ${verb.role} the write was made for`);
         const group = pressGroupFor(snap, verb.key);
         if (group !== null) return this.pressAnswer(w.tabId, verb.key, group, verb.expect, verb.value, verb.taskId, verb.sameAs !== undefined);
         const radios = radioGroupFor(snap, verb.key);
@@ -351,6 +364,7 @@ export class PageEngineLink implements ReaderLink {
         const t = targetFor(this.session.tabs.get(w.tabId), verb.key);
         if (t === null) return verbResult("noElement", `no element ${verb.key} in the tab's last walk`);
         if (verb.taskId === undefined) return verbResult("notAllowed", "a page press needs its task's grant");
+        if (ROLE[t.control.kind] !== verb.role) return verbResult("changed", `${verb.key} is now a ${ROLE[t.control.kind]}, not the ${verb.role} the press was made for`);
         if (t.control.name !== verb.label) return verbResult("changed", `the element is now named '${t.control.name}', not '${verb.label}'`);
         return this.act({ kind: "pagePress", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId: verb.taskId }, w.tabId);
       }

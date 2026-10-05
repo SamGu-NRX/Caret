@@ -205,6 +205,10 @@ describe("lowering refuses, by name", () => {
     expect(refusal(lower([{ ref: "a", kind: "fill", target: "t1", value: "v99" }]))).toBe("schema");
     expect(refusal(lower([{ ref: "a", kind: "fill", target: "t1", value: "v1" }, { ref: "b", kind: "fill", target: "t1", value: "v1" }]))).toBe("schema");
     expect(refusal(() => lowerGoal("g", "x", { ...draft([{ ref: "a", kind: "fill", target: "t1", value: "v1" }]), programDigest: "nope" }, inv))).toBe("schema");
+    // Two steps that press the same control for the same effect: a press is not idempotent.
+    expect(refusal(lower([{ ref: "a", kind: "press", target: "t4", effect: "e:reveal" }, { ref: "b", kind: "press", target: "t4", effect: "e:reveal" }]))).toBe("replay");
+    // Nor may a fresh plan make a press the goal already made.
+    expect(refusal(() => lowerGoal("g", "x", draft([{ ref: "a", kind: "press", target: "t4", effect: "e:reveal" }]), inv, [{ windowId: "w-a", key: "k-t4", effect: "e:reveal" }]))).toBe("replay");
     // A wait right after the press whose effect it names is merged into that press.
     expect(refusal(lower([{ ref: "a", kind: "press", target: "t4", effect: "e:reveal" }, { ref: "b", kind: "waitFor", effect: "e:reveal", timeoutMs: 500 }]))).toBe("none");
   });

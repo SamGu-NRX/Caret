@@ -23,6 +23,7 @@ import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { windowRevision } from "./inventory.ts";
 import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep } from "./plan.ts";
+import type { DonePress } from "./lower.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
 export const ACCEPT_MS = 120_000;
@@ -64,6 +65,11 @@ interface Run {
   replaces: string | null;
   /** Steps of an earlier goal this one was replanned from, verified there. */
   carried: StepReceipt[];
+  /**
+   * Every press a segment of this goal (or one it replaces) dispatched, verified or not: one whose effect did not show
+   * may still have landed, so a fresh plan may not make it again (re-check: a Next that timed out was pressed twice).
+   */
+  pressed: DonePress[];
   cursor: GoalCursor;
   state: State;
   expires: number;
@@ -80,6 +86,8 @@ export interface Replan {
   instruction: string;
   /** What the stopped goal already did, verified. */
   completed: readonly StepReceipt[];
+  /** Every press it dispatched, verified or not: the fresh plan may make none of them again. */
+  pressed: readonly DonePress[];
   why: GoalStopReason;
 }
 
@@ -155,7 +163,7 @@ export class GoalRuns {
   }
 
   /** Offers a goal's first segment for acceptance, as the reply to `requestId` (or as a fresh plan replacing another). */
-  propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[] } | null = null): GoalProgress {
+  propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[] } | null = null): GoalProgress {
     if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
     // The run owns its own frozen copy: what is shown is what runs, whatever the caller does with its object later.
     const plan = structuredClone(given);
@@ -168,6 +176,7 @@ export class GoalRuns {
       requestId,
       replaces: replaces?.goalId ?? null,
       carried: replaces?.carried ?? [],
+      pressed: replaces?.pressed ?? [],
       cursor: { programHash: plan.programHash, planDigest: plan.digest, segment: 0, nextStep: 0, sourceRevisions: Object.fromEntries(plan.inventory.revisions), receipts: [], bindings },
       state: "awaiting",
       expires: this.deps.now() + ACCEPT_MS,
@@ -283,6 +292,12 @@ export class GoalRuns {
     const run = goalId === undefined ? undefined : this.runs.get(goalId);
     if (run === undefined || run.task === null || run.task.id !== m.taskId) return;
     const seg = run.plan.segments[run.task.segment] as GoalSegment;
+    // A press is counted from the moment the executor says it is about to make it: a refused one is counted too, which
+    // only makes a fresh plan stricter, and one whose answer was lost (it may have landed) is never missed.
+    if (m.phase === "acting" && m.step !== null) {
+      const s = seg.steps[m.step];
+      if (s?.kind === "press" && seg.domain.kind === "window" && !run.pressed.some((p) => p.key === s.target.key && p.effect === s.effect)) run.pressed.push({ windowId: seg.domain.windowId, key: s.target.key, effect: s.effect });
+    }
     if ((m.phase === "verified" || m.phase === "skipped") && m.step !== null) {
       const s = seg.steps[m.step];
       if (s !== undefined) this.receipt(run, seg, s, m.phase === "verified" ? "verified" : "alreadyTrue");
@@ -411,12 +426,12 @@ export class GoalRuns {
     const completed = [...run.carried, ...run.cursor.receipts.filter((r) => r.status !== "handoff")];
     let plan: GoalPlan | null;
     try {
-      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, why });
+      plan = await replan({ goalId: `${run.plan.goalId.replace(/~\d+$/, "")}~${++this.replans}`, instruction: run.plan.instruction, completed, pressed: [...run.pressed], why });
     } catch {
       plan = null;
     }
     if (plan === null || this.runs.has(plan.goalId)) return null;
-    const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed });
+    const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed] });
     return msg.event === "segment" ? { ...msg, reason } : msg;
   }
 

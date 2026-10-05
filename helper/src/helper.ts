@@ -495,7 +495,7 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.completed.filter((x) => x.effect !== null).map((x) => ({ windowId: x.target.windowId, key: x.target.key, effect: x.effect }))),
+      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.pressed),
     });
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
