@@ -117,7 +117,8 @@ const liveGoalWriter = a.writer === "canned" ? null : spaced(makeWriterPort(devW
 function cannedSteps(c: Case): CannedStep[] {
   const title = (id: string): string => c.windows.find((w) => w.id === id)?.title ?? id;
   return [
-    ...c.expect.events.map((e): CannedStep => ({ fill: { window: "Calendar", target: "Caret", value: e.title } })),
+    // An event value displays as "the event '<title code derived>', ..." (inventory.ts); a case has at most one.
+    ...c.expect.events.map((): CannedStep => ({ fill: { window: "Calendar", target: "Caret", value: "the event '" } })),
     ...c.expect.copies.map((x): CannedStep => ({ fill: { window: title(x.window), target: x.label, value: x.value } })),
     ...c.expect.drafts.map((x): CannedStep => ({ draft: { window: title(x.window), target: x.label, text: "(canned: the local model writes this)", from: c.windows.filter((w) => w.id !== x.window).map((w) => w.title) } })),
   ];
