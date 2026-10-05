@@ -16,14 +16,18 @@ public struct ActionLine: Equatable, Sendable {
     /// A question about the run whose toast shows with it (a B19 keep or promote offer): Tab answers
     /// it and leaves the toast's ⌘Z in place; Esc declines it and closes both (`OfferArbiter`).
     public var answersToast: Bool
+    /// The helper's event card (`EventCardCopy.isEvent`): accepting it may first ask for Calendar access.
+    public var eventCard: Bool
 
-    public init(offerKey: String, app: String, endState: PopupSpec.Value, actions: [PopupSpec.Action], variants: PopupSpec? = nil, answersToast: Bool = false) {
+    public init(offerKey: String, app: String, endState: PopupSpec.Value, actions: [PopupSpec.Action], variants: PopupSpec? = nil,
+                answersToast: Bool = false, eventCard: Bool = false) {
         self.offerKey = offerKey
         self.app = app
         self.endState = endState
         self.actions = actions
         self.variants = variants
         self.answersToast = answersToast
+        self.eventCard = eventCard
     }
 
     public var primary: PopupSpec.Action? { actions.first { $0.key == .tab } }

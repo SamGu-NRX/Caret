@@ -89,7 +89,8 @@ public final class SettingsStore {
 
     /// `settings set <name> <value>` on the debug socket, the menu bar's choices by name:
     ///   role fill|repeat|watch|calendar|words on|off, level quiet|balanced|eager,
-    ///   character pebble|seed|wren, paused on|off, routing on|off (H6: "Caret decides when to help").
+    ///   character pebble|seed|wren, paused on|off, routing on|off (H6: "Caret decides when to help"),
+    ///   calendar <EventKit calendar id>|default (H8: where accepted events go).
     public func set(_ words: [String]) -> String? {
         func onOff(_ word: String) -> Bool? { word == "on" ? true : (word == "off" ? false : nil) }
         switch (words.first, words.count) {
@@ -108,8 +109,11 @@ public final class SettingsStore {
         case ("routing", 2):
             guard let on = onOff(words[1]) else { return "usage: settings set routing on|off" }
             update(source: .socket) { $0.routing = on }
+        case ("calendar", 2):
+            // H8: an EventKit calendar identifier, or "default".
+            update(source: .socket) { $0.eventCalendar = words[1] == "default" ? nil : words[1] }
         default:
-            return "usage: settings set role|level|character|paused|routing ..."
+            return "usage: settings set role|level|character|paused|routing|calendar ..."
         }
         return nil
     }

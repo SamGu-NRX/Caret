@@ -91,6 +91,8 @@ final class SurfaceCoordinator {
     /// Called when this coordinator's toast took the arbiter's one toast slot, so the fill line's
     /// own toast can take itself down (they share the slot).
     var onToastChanged: (() -> Void)?
+    /// H8: where accepted events go, and the one place that asks macOS for Calendar access.
+    private let calendars = EventKitCalendars.shared
     private var character: FigureCharacter { FigureSettings.shared.character }
     /// M1: the row under the slip naming where the offer's noticed fact came from, and its "Not
     /// right", for the offer on screen (`NotRight.swift`).
@@ -113,6 +115,7 @@ final class SurfaceCoordinator {
         world.owner = self
         machine.output = { [weak self] command in MainActor.assumeIsolated { self?.perform(command) } }
         machine.sendToHelper = { [weak self] message in MainActor.assumeIsolated { self?.send(message) ?? false } }
+        machine.calendarAccessUndetermined = { EventKitCalendars.shared.access == .notDetermined }
         notRightTarget.onClick = { [weak self] in self?.beginNotRight() }
         panel.panel.interceptKey = { [weak self] event in
             MainActor.assumeIsolated { self?.slipKey(event) ?? false }
@@ -127,7 +130,15 @@ final class SurfaceCoordinator {
 
     // MARK: - Events in, forwarded to the machine
 
-    func receive(_ offer: HelperOffer) { machine.receive(offer) }
+    /// An event card arrives naming where Tab would put the event (`EventCardCopy.destined`).
+    func receive(_ offer: HelperOffer) {
+        guard case .action(let m) = offer, EventCardCopy.isEvent(m) else {
+            machine.receive(offer)
+            return
+        }
+        let destination = calendars.destination(choice: SettingsStore.shared.settings.eventCalendar)
+        machine.receive(.action(EventCardCopy.destined(m, line: EventCalendarCopy.cardLine(destination))))
+    }
     func provenance(_ p: MemoryProvenance) { machine.provenance(p) }
     func withdrawn(_ message: OfferWithdrawn) { machine.withdrawn(message) }
     func helperGone() { machine.helperGone() }
@@ -247,6 +258,11 @@ final class SurfaceCoordinator {
         case .workingChanged(let working): onWorkingChanged?(working)
         case .dropHelperSession: client?.dropSession()
         case .toastSlotTaken: onToastChanged?()
+        case .askCalendarAccess:
+            calendars.requestAccess { [weak self] access in
+                FileHandle.standardError.write(Data("caret: calendar: access \(access.rawValue) after asking\n".utf8))
+                self?.machine.calendarAccessAnswered()
+            }
         case .count(let name): status.increment(name)
         case .publish: publish()
         case .log(let line): FileHandle.standardError.write(Data("caret: surface: \(line)\n".utf8))

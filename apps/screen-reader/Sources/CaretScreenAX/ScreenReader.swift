@@ -25,7 +25,7 @@ public struct ReaderOptions: Sendable {
     /// The helper's act grants, filled by the socket client as grant lines arrive.
     public var grants = GrantTable()
     public var pasteboardPoll: TimeInterval = 0.5
-    /// The calendar adapter, only with --calendar-test; nil answers every calendar verb notAllowed.
+    /// The calendar adapter, only with --calendar-test or --calendar-user; nil answers every calendar verb notAllowed.
     public var calendar: CalendarAdapter?
     /// False leaves AXManualAccessibility alone. A read-only audit beside another reader sets nothing in
     /// any app; the other reader has already asked Chromium and Electron apps for their trees.

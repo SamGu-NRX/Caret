@@ -190,11 +190,17 @@ public final class SurfaceMachine {
     public var output: (SurfaceCommand) -> Void = { _ in }
     /// Sends to the helper; true when written. Set once, before offers flow.
     public var sendToHelper: (SurfaceSend) -> Bool = { _ in false }
+    /// H8: Caret has never asked for Calendar access (`CalendarAccess.notDetermined`), so accepting an
+    /// event card asks first. Read at each accept. Set once, before offers flow.
+    public var calendarAccessUndetermined: () -> Bool = { false }
 
     public internal(set) var shown: Shown?
     /// The offer a newer one replaced on the panel, kept until the next replacement: a Tab the tap
     /// took on it may reach main after the newer offer was drawn (`claimed`).
     var displacedShown: Shown?
+    /// H8: an accepted event card's `offerAccept`, waiting for macOS to answer the Calendar prompt
+    /// (`askCalendarAccess`). Sent once it answers; `endWork` drops it, so it never outlives its work.
+    var calendarHeld: OfferAccept?
     /// An offer held by `SurfaceGate`, retried until it may be drawn, it is withdrawn, or 30 s pass.
     var pending: Pending?
     var pendingTimer: SurfaceTimer?
@@ -929,18 +935,39 @@ public final class SurfaceMachine {
             offerKey: accept?.offerId, actionId: accept?.actionId, row: claim.choice.row,
             overrides: accept?.overrides, source: claim.offer.source.rawValue, kind: claim.offer.kind.name
         )
-        let unsent = claim.offer.source == .helper && accept.map { !sendToHelper(.accept($0)) } == true
+        // H8: the first event card accepted asks macOS for Calendar access before the helper hears of it,
+        // so the reader, which never asks, finds the answer in place. Never at launch, never for a card
+        // only shown: Tab is the user asking for the event.
+        let asks = claim.offer.source == .helper && accept != nil && claim.offer.kind.actionLine?.eventCard == true && calendarAccessUndetermined()
+        let unsent = !asks && claim.offer.source == .helper && accept.map { !sendToHelper(.accept($0)) } == true
         // The panel stays: the line, in place, becomes the working caption.
         if !headless { emit(.clearCaret(offerID: shown.offerID)) }
         stopWatch()
         self.shown = nil
         startWork(claim, offerKey: accept?.offerId ?? "?")
         work?.anchor = Anchor(field: shown.field, caret: shown.caret)
+        if asks, let accept {
+            calendarHeld = accept
+            count("surface.calendar.asked")
+            emit(.askCalendarAccess)
+        }
         guard !headless else { return unsent ? failUnsent() : publish() }
         // The working line and its result follow the same rule as the offer: the app in front and
         // the line's anchor uncovered. Focus may move; the line reports on work, not on a field.
         startWatch(.line, target: claim.offer.target, anchors: [CGPoint(x: shown.caret.midX, y: shown.caret.midY)], requireFocus: false, field: shown.field)
         if unsent { return failUnsent() }
+        publish()
+    }
+
+    /// macOS answered the Calendar prompt `askCalendarAccess` raised, either way: a refusal still sends
+    /// the accept, and the reader's `blocked: tcc` ends it on the line that says where to allow access.
+    /// Nothing is sent when the work it was for ended while macOS asked (Esc, the helper going).
+    public func calendarAccessAnswered() {
+        guard let held = calendarHeld, work?.offerKey == held.offerId else { return }
+        calendarHeld = nil
+        var accept = held
+        accept.at = nowMs
+        guard sendToHelper(.accept(accept)) else { return failUnsent() }
         publish()
     }
 

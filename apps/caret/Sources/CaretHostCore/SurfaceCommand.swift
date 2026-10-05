@@ -22,6 +22,9 @@ public enum SurfaceCommand: Equatable, Sendable {
     case dropHelperSession
     /// This machine's toast took the arbiter's one toast slot; the fill line's toast must give way.
     case toastSlotTaken
+    /// H8: an event card was accepted while Caret had never asked for Calendar access. Ask macOS now
+    /// (its prompt), then call `SurfaceMachine.calendarAccessAnswered()`, whatever the answer.
+    case askCalendarAccess
     /// Count an event in the host status (`surface.*` counters).
     case count(String)
     /// The debug state changed; republish it.

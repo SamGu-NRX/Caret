@@ -107,6 +107,12 @@ CARET_ALLOW_BUNDLES=com.apple.TextEdit .build/Caret.app/Contents/MacOS/Caret
 - `--status-item off` (`CARET_STATUS_ITEM=off`): no menu bar item, for runs that put nothing on
   screen.
 - SIGTERM and SIGINT shut down cleanly, freeing llama/Metal before exit.
+- Model keys: see "Model keys in the packaged app" in the top-level README. Only `TYPESAFE_API_KEY` and
+  `CARET_ENV_FILE` reach the helper; Groq works only through the env file.
+- Calendar (H8): Tab on an event card adds the event to the calendar chosen in What Caret knows, else the
+  default calendar for new events. The reader writes it (`caret-screen --calendar-user <settings file>`);
+  Caret asks macOS for Calendar access the first time an event card is accepted, never at launch, and ⌘Z
+  removes only the event Caret added, by its identifier.
 
 ## Asking Caret
 
@@ -149,8 +155,10 @@ command per connection with JSON: `state` (default), `latency-reset`, `ping`, an
   Injected offers are never reported to the helper.
 - `progress done|error` ends the work an accepted action line or pop-up started.
 - `settings` reads the settings file, the choices and the gate they make; `settings set role
-  fill|repeat|watch|calendar|words on|off`, `level quiet|balanced|eager`, `character pebble|seed|wren` and
-  `paused on|off` change one as the menu bar does.
+  fill|repeat|watch|calendar|words on|off`, `level quiet|balanced|eager`, `character pebble|seed|wren`,
+  `paused on|off`, `routing on|off` and `calendar <EventKit calendar id>|default` change one as the menu bar
+  and What Caret knows do.
+- `state` carries `calendar`: Calendar access, the event card's line ("Adding to Work") and the calendar's id.
 - `activity open|close|more` opens or closes the activity list, or shows the next five Done rows.
 - `ask` reads the ask field at the top of the activity list (`AskCaret`): its text, phase, card and
   line. With `--test-hooks`, `ask type <text>`, `ask submit` (Return), `ask key tab|esc` and `ask open`

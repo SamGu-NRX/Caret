@@ -229,6 +229,14 @@ extension SurfaceMachine {
     /// revoke the work this session accepted (B22).
     public func stopWork(_ line: StatusLine) {
         guard let work, work.statusID == line.id else { return }
+        if calendarHeld?.offerId == work.offerKey {
+            // H8: the accept still waits on macOS's Calendar prompt. The helper never heard of it, so
+            // there is nothing to stop there, and the answer will send nothing.
+            endWork()
+            count("surface.calendar.stoppedWhileAsking")
+            takeLineDown(exit: 0.08)
+            return publish()
+        }
         let helperWork = work.unprompted || work.source == .helper
         var delivered = true
         // A skill's run with no Tab is handed back, not ended: it pauses where it is, and the
@@ -348,6 +356,9 @@ extension SurfaceMachine {
     func endWork() {
         for timer in workTimers { timer.cancel() }
         workTimers = []
+        // An accept held for macOS's Calendar prompt lives exactly as long as its work: offer keys start
+        // again from 1 with a new helper, so a later work could share its key.
+        calendarHeld = nil
         guard let work else { return }
         arbiter.clearStatus(id: work.statusID)
         self.work = nil

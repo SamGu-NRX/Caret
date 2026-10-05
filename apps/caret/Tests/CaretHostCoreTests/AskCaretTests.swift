@@ -652,7 +652,7 @@ final class AskCaretTests: XCTestCase {
     }
 }
 
-/// The event card's words while the calendar is undecided (brief A13, part 2).
+/// The event card's words (brief A13, part 2; the destination line is H8's, `EventDestinationTests`).
 final class EventCardCopyTests: XCTestCase {
     /// The helper's event offer as event-card.ts builds it: the line, and the card ↓ opens.
     static let line = #"""
@@ -689,10 +689,10 @@ final class EventCardCopyTests: XCTestCase {
     }
 
     /// B16's blocked hand-off (golden line 45): no Calendar access. The line says what is missing
-    /// and where to give it; Caret never asks for it.
+    /// and where to give it.
     func testABlockedCalendarStepSaysWhatIsMissing() {
         XCTAssertEqual(Captions.blocked(.tcc), "Nothing was added: Caret needs Calendar access in Privacy & Security.")
-        XCTAssertEqual(Captions.blocked(.noLocalSource), "Nothing was added: Caret adds events only to an On My Mac calendar.")
+        XCTAssertEqual(Captions.blocked(.noLocalSource), "Nothing was added: Caret found no calendar it can add to.")
         XCTAssertEqual(OfferLifecycle.ending(of: progress("event-1", .handoff, step: 0, steps: 1, blocked: "tcc"), workKey: "event-1"), .handoff(blocked: .tcc))
     }
 

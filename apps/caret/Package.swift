@@ -69,6 +69,8 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("AppKit"),
+                // H8: the user's calendars for the event card's destination and What Caret knows.
+                .linkedFramework("EventKit"),
             ]
         ),
         .executableTarget(

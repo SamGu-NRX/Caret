@@ -38,6 +38,8 @@ enum MemoryAction: Equatable {
     case siteOn(String)
     /// H6: "Caret decides when to help" (true) or "Always suggest as I type".
     case routing(Bool)
+    /// H8: the calendar accepted events go to; nil for the default.
+    case calendar(String?)
 }
 
 /// "What Caret knows" (DIRECTION.md 5.8): what Caret remembers, in groups, and what it may do per
@@ -76,6 +78,8 @@ struct MemoryView: View {
     var sites = SitesPage.State()
     /// Permissions: "When Caret helps" (H6, `CaretSettings.routing`).
     var routing = false
+    /// Permissions: "Calendar for new events" (H8); nil draws no row.
+    var calendarRow: CalendarChoiceRow?
     var animated = true
     var now = Date()
     /// A row drawn as if the pointer were on it, for renders (hover does not exist off screen).
@@ -220,6 +224,10 @@ struct MemoryView: View {
         VStack(alignment: .leading, spacing: 0) {
             RoutingRowView(routing: routing) { send(.routing($0)) }
             Hairline()
+            if let calendarRow {
+                CalendarRowView(row: calendarRow) { send(.calendar($0)) }
+                Hairline()
+            }
             let rows = MemoryPage.rules(state, now: now, calendar: calendar, locale: locale)
             ForEach(rows) { row in
                 RuleRowView(row: row) { send(.setRule(row.action, $0)) }
@@ -789,6 +797,47 @@ struct RoutingRowView: View {
         .padding(.vertical, 12)
         .accessibilityElement(children: .contain)
         .probed("routing")
+    }
+}
+
+/// "Calendar for new events" (H8): the second row of Permissions, shaped as the routing row above it.
+/// Its words at the left, with what happens now under them; the pop-up in the rule rows' column. Before
+/// Calendar access the pop-up holds only the default and is off, and the sentence says when Caret asks.
+/// A pick saves at once and the sentence changes with it, with no motion, as on the routing row.
+struct CalendarRowView: View {
+    var row: CalendarChoiceRow
+    var choose: (String?) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(EventCalendarCopy.title)
+                    .font(Tokens.Font.row)
+                    .foregroundStyle(Color(token: Tokens.ink))
+                Text(EventCalendarCopy.covers)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                Text(row.detail)
+                    .font(Tokens.Font.chromeSmall)
+                    .foregroundStyle(Color(token: Tokens.ink2))
+                    .padding(.top, 3)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            PopUpChoice(
+                label: EventCalendarCopy.title,
+                items: row.items.map { .init(value: $0.id, title: $0.title, enabled: true) },
+                // Every pick is saved, Default included: a saved calendar that is gone shows as Default, and
+                // picking Default then clears it.
+                current: row.current, width: RuleRowView.columnWidth, choose: choose
+            )
+            .disabled(!row.enabled)
+            .opacity(row.enabled ? 1 : 0.6)
+            .frame(width: RuleRowView.columnWidth, alignment: .leading)
+        }
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .contain)
+        .probed("calendar")
     }
 }
 

@@ -50,7 +50,9 @@ With `--calendar-test` the reader answers the helper's calendar verbs (`calendar
 - A read that fails answers `axError` "cannot read the calendar", never "not there", so undo never counts a failed read as an event removed.
 - `calendarDispose`, and the reader stopping, delete the calendars it created. A reader that is killed leaves them behind.
 
-Without the flag every calendar verb answers `notAllowed`. `--calendar-probe` prints the authorization status and nothing else, and `--calendar-audit TITLE` lists, through a store of its own, every event calendar with that title, its source and its event count. Both only read and need no Accessibility. Calendar is a per-user TCC service, decided for the responsible process by its real path. The VM run that exercised all of this against real EventKit is in `~/.caret-run/evidence/screen/b16/`.
+The shipped app passes `--calendar-user SETTINGS` instead (H8). The same verbs then go to the user's own calendars: the one chosen in What Caret knows (`eventCalendar` in the host's settings file SETTINGS, read at each add) while it accepts events, else the default calendar for new events. In that mode the reader never creates or deletes a calendar (`calendarDispose` is refused), finds, reads and removes only events it added, each by its id and only while it is still in the calendar it went into, and answers `blocked: noLocalSource` when no calendar takes new events. It still never asks for access: Caret asks when the user first accepts an event card, and the reader, as Caret's child, has Caret's answer. The two flags cannot be combined.
+
+Without either flag every calendar verb answers `notAllowed`. `--calendar-probe` prints the authorization status and nothing else, and `--calendar-audit TITLE` lists, through a store of its own, every event calendar with that title, its source and its event count. Both only read and need no Accessibility. Calendar is a per-user TCC service, decided for the responsible process by its real path. The VM run that exercised all of this against real EventKit is in `~/.caret-run/evidence/screen/b16/`.
 
 ## Who it talks to
 

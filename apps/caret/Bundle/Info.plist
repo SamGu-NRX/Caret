@@ -31,5 +31,9 @@
 	</dict>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!-- H8: macOS shows this in its Calendar prompt, which Caret raises the first time the user accepts an event card.
+	     Full access, not add-only: Caret reads each event back after adding it and before undoing it. -->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Caret adds the events you accept to your calendar, and reads each one back so it can undo it.</string>
 </dict>
 </plist>

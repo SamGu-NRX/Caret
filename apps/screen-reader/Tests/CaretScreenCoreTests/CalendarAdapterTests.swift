@@ -51,6 +51,8 @@ private final class FakeBackend: CalendarBackend, @unchecked Sendable {
         return events[id]
     }
     func removeEvent(id: String) throws { calls.append("remove \(id)"); events.removeValue(forKey: id) }
+    func defaultCalendarID() -> String? { calls.append("default"); return nil }
+    func isWritable(calendarID: String) -> Bool { calls.append("writable \(calendarID)"); return calendars[calendarID] != nil }
 }
 
 private func t(_ s: String) -> Date { CalendarTime.parse(s)! }

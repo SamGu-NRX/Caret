@@ -31,6 +31,8 @@ enum Step {
     /// The insertion queue finished writing a text claim.
     case inserted
     case helperDown
+    /// macOS answered the Calendar prompt (`SurfaceMachine.calendarAccessAnswered`).
+    case calendarAnswered
     /// Checks the state now.
     case expect(Expect)
     /// Checks the commands issued since the last `did`, in order.
@@ -89,7 +91,11 @@ extension XCTestCase {
     }
 
     func play(_ t: Transition) {
-        let rig = SurfaceRig(headless: t.headless)
+        play(SurfaceRig(headless: t.headless), t)
+    }
+
+    /// The steps on a rig the test set up itself (H8: one whose Calendar access a test controls).
+    func play(_ rig: SurfaceRig, _ t: Transition) {
         for (index, step) in t.steps.enumerated() {
             let at = "\(t.name), step \(index + 1)"
             switch step {
@@ -112,6 +118,7 @@ extension XCTestCase {
             case .fillLineToast: rig.fillLineToast()
             case .inserted: rig.inserted()
             case .helperDown: rig.helperConnected = false
+            case .calendarAnswered: rig.machine.calendarAccessAnswered()
             case .forgetLog: rig.takeLog()
             case .did(let expected):
                 XCTAssertEqual(rig.takeLog(), expected, at, file: t.file, line: t.line)

@@ -1,0 +1,88 @@
+import CaretHostCore
+import EventKit
+import Foundation
+
+/// The user's calendars through EventKit, for the event card's destination line and What Caret knows
+/// (H8 decision 1). Reading the authorization status asks nothing; `requestAccess` is the one call that
+/// puts macOS's prompt up, and only the first accepted event card makes it (`SurfaceMachine`). A store
+/// is made only once access is granted, and made again after any change in access, since a store made
+/// before a grant does not see the calendars. The reader writes the event itself (caret-screen
+/// --calendar-user); as Caret's child it is covered by Caret's answer.
+final class EventKitCalendars: CalendarDirectory {
+    static let shared = EventKitCalendars()
+
+    /// The Info.plist key macOS shows in its prompt. Without it, asking for access ends the process.
+    static let usageKey = "NSCalendarsFullAccessUsageDescription"
+
+    private var store: EKEventStore?
+    private var storeAccess: CalendarAccess?
+    private var changes: NSObjectProtocol?
+    /// Calendars or the default changed (`EKEventStoreChanged`), or access did. Main thread.
+    var onChange: (() -> Void)?
+
+    var access: CalendarAccess {
+        switch EKEventStore.authorizationStatus(for: .event) {
+        case .notDetermined: return .notDetermined
+        case .restricted: return .restricted
+        case .denied: return .denied
+        case .fullAccess: return .fullAccess
+        case .writeOnly: return .writeOnly
+        @unknown default: return .denied
+        }
+    }
+
+    func writableCalendars() -> [WritableCalendar] {
+        guard let s = grantedStore() else { return [] }
+        return s.calendars(for: .event).filter(\.allowsContentModifications).map(Self.writable)
+    }
+
+    func defaultCalendar() -> WritableCalendar? {
+        guard let c = grantedStore()?.defaultCalendarForNewEvents, c.allowsContentModifications else { return nil }
+        return Self.writable(c)
+    }
+
+    /// Where the next accepted event goes, by the choice saved in What Caret knows.
+    func destination(choice: String?) -> EventDestination {
+        EventDestination.resolve(choice: choice, in: self)
+    }
+
+    /// Puts macOS's Calendar prompt up when Caret has never asked, and calls `done` on main with the access
+    /// that results. A build without the usage string (a bare `swift run`) does not ask: `done` hears the
+    /// access as it is, and the reader's `blocked: tcc` says the rest.
+    func requestAccess(_ done: @escaping (CalendarAccess) -> Void) {
+        guard access == .notDetermined, Bundle.main.object(forInfoDictionaryKey: Self.usageKey) != nil else {
+            if access == .notDetermined { FileHandle.standardError.write(Data("caret: calendar: no \(Self.usageKey) in this build; not asking\n".utf8)) }
+            return done(access)
+        }
+        EKEventStore().requestFullAccessToEvents { [weak self] _, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let error { FileHandle.standardError.write(Data("caret: calendar: access request: \(error.localizedDescription)\n".utf8)) }
+                self.store = nil
+                done(self.access)
+                self.onChange?()
+            }
+        }
+    }
+
+    private func grantedStore() -> EKEventStore? {
+        let now = access
+        guard now.granted else {
+            store = nil
+            return nil
+        }
+        if let store, storeAccess == now { return store }
+        let s = EKEventStore()
+        store = s
+        storeAccess = now
+        if let changes { NotificationCenter.default.removeObserver(changes) }
+        changes = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: s, queue: .main) { [weak self] _ in
+            self?.onChange?()
+        }
+        return s
+    }
+
+    private static func writable(_ c: EKCalendar) -> WritableCalendar {
+        WritableCalendar(id: c.calendarIdentifier, title: c.title, account: c.source?.title ?? "")
+    }
+}

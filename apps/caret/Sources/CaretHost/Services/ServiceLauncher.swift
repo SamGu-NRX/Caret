@@ -193,8 +193,14 @@ final class ServiceLauncher {
     }
 
     private func startReader() {
-        let args = ["--auth-fd", "0", "--socket", home.screenSocket, "--deny-list", home.denyList]
-        spawn(.reader, path: programs.reader, args: args, env: Self.childEnvironment(ProcessInfo.processInfo.environment))
+        spawn(.reader, path: programs.reader, args: Self.readerArguments(home: home, settingsPath: SettingsStore.path),
+              env: Self.childEnvironment(ProcessInfo.processInfo.environment))
+    }
+
+    /// `--calendar-user`: the reader adds accepted events to the user's calendars, the one chosen in What Caret knows
+    /// (`CaretSettings.eventCalendar` in `settingsPath`) or else the default for new events (H8 decision 1).
+    static func readerArguments(home: CaretHome, settingsPath: String) -> [String] {
+        ["--auth-fd", "0", "--socket", home.screenSocket, "--deny-list", home.denyList, "--calendar-user", settingsPath]
     }
 
     /// The children's environment, built rather than inherited: nothing like NODE_OPTIONS or DYLD_* reaches them.

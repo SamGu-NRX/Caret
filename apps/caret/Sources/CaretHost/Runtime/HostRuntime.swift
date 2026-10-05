@@ -943,6 +943,12 @@ public final class HostRuntime {
         case "state":
             var state = makeState(arbiter: arbiter, status: status, tap: tap, helper: helper, writeMethods: writeMethods)
             state.surface = DispatchQueue.main.sync { hooks.surface() }
+            state.calendar = DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    let calendars = EventKitCalendars.shared
+                    return DebugState.CalendarInfo(calendars.destination(choice: SettingsStore.shared.settings.eventCalendar), access: calendars.access)
+                }
+            }
             let running = DispatchQueue.main.sync { NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier) }
             let others = OtherTabOwners.running(in: running)
             state.otherTabOwners = others.isEmpty ? nil : others

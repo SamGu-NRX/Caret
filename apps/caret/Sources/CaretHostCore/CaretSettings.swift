@@ -101,6 +101,10 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// A5 fixture showed 3 of its 9 wanted offers (evidence/host/h6, offers-routing-c5), and the lead
     /// keeps it off until the router keeps every wanted offer (2026-10-05).
     public var routing = false
+    /// H8, What Caret knows: the EventKit identifier of the calendar accepted events go to; nil for the
+    /// user's default calendar for new events. The reader reads it from this file (caret-screen
+    /// --calendar-user), so the key and its absence for "default" are a contract (CalendarChoiceFile).
+    public var eventCalendar: String?
 
     public init() {}
 
@@ -112,7 +116,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = set.sorted()
     }
 
-    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing }
+    enum CodingKeys: String, CodingKey { case version, roles, level, character, paused, onboarded, memory, sitesOff, routing, eventCalendar }
 
     /// Strict: a file written by a newer host, or a role or level this host does not know, is an
     /// error the caller reports, not a guess.
@@ -140,6 +144,11 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         sitesOff = Array(Set(sites)).sorted()
         // Absent from a file written before H6: the default, as for a new user.
         routing = try c.decodeIfPresent(Bool.self, forKey: .routing) ?? false
+        // Absent from a file written before H8, or when the user keeps the default.
+        eventCalendar = try c.decodeIfPresent(String.self, forKey: .eventCalendar)
+        if eventCalendar?.isEmpty == true {
+            throw DecodingError.dataCorruptedError(forKey: .eventCalendar, in: c, debugDescription: "eventCalendar is empty; leave it out for the default calendar")
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -154,6 +163,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         try c.encode(memory, forKey: .memory)
         try c.encode(sitesOff, forKey: .sitesOff)
         try c.encode(routing, forKey: .routing)
+        try c.encodeIfPresent(eventCalendar, forKey: .eventCalendar)
     }
 
     public var gate: GatePolicy { GatePolicy(self) }

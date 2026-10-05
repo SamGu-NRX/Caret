@@ -196,13 +196,16 @@ public enum Captions {
         return "Your turn: fill \(field.label ?? "it") in \(app). \(why)"
     }
 
-    /// A calendar step the user must enable first (B16 `blocked`). Names what is missing; Caret
-    /// never asks for Calendar access itself, so the line says where the user can give it.
+    /// A calendar step the user must enable first (B16 `blocked`). Names what is missing and, for
+    /// access, where to give it: Caret asks once, at the first accepted card (H8), and a refusal there
+    /// is changed only in System Settings.
     public static func blocked(_ reason: CalendarBlock) -> String {
         switch reason {
         // One line of at most about 68 characters: the A13 render of a longer one was cut at 520 pt.
         case .tcc: return "Nothing was added: Caret needs Calendar access in Privacy & Security."
-        case .noLocalSource: return "Nothing was added: Caret adds events only to an On My Mac calendar."
+        // H8: in the shipped app the reader answers this when no calendar takes new events (its test mode
+        // when there is no On My Mac account), so the line names neither.
+        case .noLocalSource: return "Nothing was added: Caret found no calendar it can add to."
         }
     }
 

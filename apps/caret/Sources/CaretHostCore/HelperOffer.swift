@@ -115,34 +115,77 @@ public enum HelperOffer: Equatable, Sendable {
 
 extension ActionLine {
     public init(_ message: OfferAction) {
+        let event = EventCardCopy.isEvent(message)
         self.init(
             offerKey: message.offerKey, app: message.app, endState: message.endState,
-            actions: message.actions, variants: message.variants.map { EventCardCopy.isEvent(message) ? EventCardCopy.card($0) : $0 }
+            actions: message.actions, variants: message.variants.map { event ? EventCardCopy.card($0) : $0 }, eventCard: event
         )
     }
 }
 
 /// The host's words on the helper's event card (B16, `helper/src/offers/event-card.ts`).
 ///
-/// Where accepted events go is still Sam's decision (brief A13). Until he decides, accepting writes
-/// only through the helper's test calendar path, so the card must not promise a calendar: its Tab
-/// action says "Add to calendar" and the row naming the helper's calendar is dropped. The helper's
-/// source block holds the sentence itself, which the generic source line would draw as "from I'll
-/// grab coffee…", so it becomes a quoted Secondary row with the same ref. Every other block is
-/// drawn as the helper sent it. An event offer is told by its end state's ref, the helper's
-/// `eventCard` rule, not by the app name.
+/// The helper's card has a Calendar row naming the calendar the helper was started with ("Caret"),
+/// which is not where the shipped app writes: the reader adds to the user's chosen or default
+/// calendar (H8, `EventDestination`). So the host replaces that row, as an offer arrives, with its
+/// own line under the time ("Adding to Work", `destined`), and drops the helper's row from any card
+/// that arrives without one. With the line there, Tab says only "Add", as DIRECTION.md's card does;
+/// without it, "Add to calendar". The helper's source block holds the sentence itself, which the
+/// generic source line would draw as "from I'll grab coffee…", so it becomes a quoted Secondary row
+/// with the same ref. Every other block is drawn as the helper sent it. An event offer is told by its
+/// end state's ref, the helper's `eventCard` rule, not by the app name.
 public enum EventCardCopy {
-    public static let addLabel = "Add to calendar"
-    /// The helper's facts row that names where the event would go.
+    public static let addLabel = "Add"
+    /// Tab's label on a card that names no destination.
+    public static let addToCalendarLabel = "Add to calendar"
+    /// The helper's facts row that names its own calendar.
     static let calendarRowLabel = "Calendar"
+    /// The rule on the host's destination line, which tells it apart from the helper's rows.
+    public static let destinationRule = "calendarDestination"
 
     public static func isEvent(_ message: OfferAction) -> Bool {
         if case .derived(let rule, _) = message.endState.ref { return rule == "eventCard" }
         return false
     }
 
-    /// The card with no calendar named and its Tab action labelled "Add to calendar".
+    /// The offer as it arrived, with its card's Calendar row replaced by the destination line
+    /// (`EventCalendarCopy.cardLine`). Any other offer is returned as it is.
+    public static func destined(_ message: OfferAction, line: String) -> OfferAction {
+        guard isEvent(message), var spec = message.variants else { return message }
+        spec.blocks = spec.blocks.map { block in
+            guard case .facts(var facts) = block.content else { return block }
+            facts.rows = facts.rows.map { row in
+                guard row.label == calendarRowLabel else { return row }
+                let from: [PopupSpec.Ref]
+                if case .derived(_, let sources) = row.value.ref { from = sources } else { from = [row.value.ref] }
+                return PopupSpec.Facts.Row(value: PopupSpec.Value(line, ref: .derived(rule: destinationRule, from: from)), secondary: true)
+            }
+            var block = block
+            block.content = .facts(facts)
+            return block
+        }
+        var out = message
+        out.variants = spec
+        return out
+    }
+
+    /// The host's destination line on a card, if it has one.
+    public static func destinationLine(_ spec: PopupSpec) -> String? {
+        for block in spec.blocks {
+            guard case .facts(let facts) = block.content else { continue }
+            if let row = facts.rows.first(where: isDestination) { return row.value.text }
+        }
+        return nil
+    }
+
+    static func isDestination(_ row: PopupSpec.Facts.Row) -> Bool {
+        if case .derived(let rule, _) = row.value.ref { return rule == destinationRule }
+        return false
+    }
+
+    /// The card as drawn: the helper's own Calendar row gone, the sentence quoted, and Tab labelled.
     public static func card(_ spec: PopupSpec) -> PopupSpec {
+        let named = destinationLine(spec) != nil
         var out = spec
         out.blocks = spec.blocks.compactMap { block in
             var block = block
@@ -157,7 +200,7 @@ public enum EventCardCopy {
             case .actions(var actions):
                 actions.items = actions.items.map { item in
                     var item = item
-                    if item.key == .tab { item.label = addLabel }
+                    if item.key == .tab { item.label = named ? addLabel : addToCalendarLabel }
                     return item
                 }
                 block.content = .actions(actions)

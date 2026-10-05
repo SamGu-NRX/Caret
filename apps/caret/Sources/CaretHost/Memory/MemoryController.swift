@@ -18,6 +18,8 @@ final class MemoryController {
         /// "Not on this site" (H5): the Sites tab.
         @Published var sites = SitesPage.State()
         @Published var routing = false
+        /// H8: "Calendar for new events".
+        @Published var calendar: CalendarChoiceRow?
     }
 
     let book: MemoryBook
@@ -60,8 +62,19 @@ final class MemoryController {
             MainActor.assumeIsolated {
                 self?.model.sites.off = settings.sitesOff
                 self?.model.routing = settings.routing
+                self?.readCalendars()
             }
         }
+        // Reading the calendars asks nothing; with access not yet asked for, the row says when Caret asks.
+        EventKitCalendars.shared.onChange = { [weak self] in MainActor.assumeIsolated { self?.readCalendars() } }
+        readCalendars()
+    }
+
+    /// The calendar row, read again whenever the choice, the calendars or access may have changed: on a
+    /// settings change, on EventKit's change notice, and when the window opens (access changed in System
+    /// Settings sends nothing).
+    private func readCalendars() {
+        model.calendar = CalendarChoiceRow.make(choice: SettingsStore.shared.settings.eventCalendar, directory: EventKitCalendars.shared)
     }
 
     // MARK: - Not on this site
@@ -108,6 +121,7 @@ final class MemoryController {
     func open() {
         // Read while the browser is still the front app: the window coming forward ends that.
         model.sites.here = BrowserPage.frontOrigin()
+        readCalendars()
         book.requestList()
         files.requestList()
         if let window {
@@ -212,6 +226,7 @@ final class MemoryController {
         case .siteOff(let origin): turnSiteOff(origin)
         case .siteOn(let origin): turnSiteOn(origin)
         case .routing(let on): SettingsStore.shared.update(source: .menu) { $0.routing = on }
+        case .calendar(let id): SettingsStore.shared.update(source: .menu) { $0.eventCalendar = id }
         }
     }
 
@@ -373,6 +388,6 @@ private struct MemoryRoot: View {
     var send: (MemoryAction) -> Void
 
     var body: some View {
-        MemoryView(state: model.state, files: model.files, tab: model.tab, character: figure.character, sites: model.sites, routing: model.routing, editorApp: editorApp(), send: send)
+        MemoryView(state: model.state, files: model.files, tab: model.tab, character: figure.character, sites: model.sites, routing: model.routing, calendarRow: model.calendar, editorApp: editorApp(), send: send)
     }
 }

@@ -17,9 +17,9 @@
 # Only one bundle stays on disk: building one variant deletes the other. The whole script runs under the shared build
 # lock unless CARET_NO_LOCK is set (for a caller that already holds it).
 #
-#   Contents/MacOS/Caret                       the host (dev.caret.host)
+#   Contents/MacOS/Caret                       the host (dev.caret.host, Bundle/caret.entitlements)
 #   Contents/Helpers/node                      Node, pinned below (dev.caret.node, Bundle/node.entitlements)
-#   Contents/Helpers/caret-screen              the reader (dev.caret.screen)
+#   Contents/Helpers/caret-screen              the reader (dev.caret.screen, Bundle/caret-screen.entitlements)
 #   Contents/Helpers/caret-bridge              the Native Messaging host Chrome starts (dev.caret.bridge)
 #   Contents/Resources/helper/                 the helper, bundled (scripts/helper-bundle.config.mjs)
 #   Contents/Resources/Caret for Chrome/       the unpacked extension, for Add to Chrome
@@ -120,9 +120,9 @@ else
   sign() { codesign --force --sign "$IDENTITY" --options runtime "${ts[@]}" "$@"; }
 fi
 sign --identifier dev.caret.node --entitlements Bundle/node.entitlements "$contents/Helpers/node"
-sign --identifier dev.caret.screen "$contents/Helpers/caret-screen"
+sign --identifier dev.caret.screen --entitlements Bundle/caret-screen.entitlements "$contents/Helpers/caret-screen"
 sign --identifier dev.caret.bridge "$contents/Helpers/caret-bridge"
 sign "$contents/Frameworks/llama.framework"
-sign --identifier dev.caret.host "$app"
+sign --identifier dev.caret.host --entitlements Bundle/caret.entitlements "$app"
 codesign --verify --deep --strict "$app"
 echo "$PWD/$app"

@@ -670,6 +670,26 @@ public struct DebugState: Codable, Equatable, Sendable {
 
     /// H6: the host following the helper's router (`RouteFollower`). Ids and counts, never text.
     public var routing: RoutingInfo?
+    /// H8: Calendar access and where the next accepted event goes. Ids and the calendar's title only.
+    public var calendar: CalendarInfo?
+
+    public struct CalendarInfo: Codable, Equatable, Sendable {
+        /// `CalendarAccess` by name.
+        public var access: String
+        /// The event card's line ("Adding to Work").
+        public var line: String
+        /// The calendar's EventKit identifier, once access lets it be read.
+        public var calendarId: String?
+        /// The user picked it; false for the default.
+        public var chosen: Bool
+
+        public init(_ d: EventDestination, access: CalendarAccess) {
+            self.access = access.rawValue
+            line = EventCalendarCopy.cardLine(d)
+            calendarId = d.calendar?.id
+            if case .calendar(_, let chosen, _) = d { self.chosen = chosen } else { chosen = false }
+        }
+    }
     /// Keystroke to ghost-text paint for the key that finished a sentence or paragraph, the
     /// breakpoint the router decides at; `latency` holds every key's.
     public var breakpointLatency: LatencyRecorder.Summary?

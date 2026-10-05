@@ -175,4 +175,14 @@ final class ServiceLauncherTests: XCTestCase {
         XCTAssertEqual(launcher.helper.starts, 7, "a second Restart started another helper")
         await launcher.stop()
     }
+
+    /// H8: the shipped reader answers calendar verbs in the user's calendars, reading the choice from
+    /// the host's settings file; never the test scope.
+    func testTheReaderAddsToTheUsersCalendarsByTheHostsSettingsFile() throws {
+        let home = try CaretHome.resolve(override: dir, userHome: NSHomeDirectory())
+        let args = ServiceLauncher.readerArguments(home: home, settingsPath: "\(dir)/host-settings.json")
+        let at = try XCTUnwrap(args.firstIndex(of: "--calendar-user"))
+        XCTAssertEqual(args[at + 1], "\(dir)/host-settings.json")
+        XCTAssertFalse(args.contains("--calendar-test"))
+    }
 }

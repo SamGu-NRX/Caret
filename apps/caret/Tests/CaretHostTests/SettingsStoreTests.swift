@@ -1,4 +1,5 @@
 import CaretHostCore
+import CaretScreenCore
 import XCTest
 @testable import CaretHost
 
@@ -32,6 +33,16 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(next.settings.onboarded)
         XCTAssertEqual(next.settings.memory.first { $0.key == "role.watch" }?.value, "off")
         XCTAssertEqual(next.settings.memory.first?.source, .onboarding)
+    }
+
+    /// H8: the calendar picked in What Caret knows, saved where the reader reads it.
+    func testTheCalendarChoiceIsWrittenAndReadBackByTheNextLaunch() throws {
+        SettingsStore(path: path).update(source: .menu) { $0.eventCalendar = "work-1" }
+        XCTAssertEqual(SettingsStore(path: path).settings.eventCalendar, "work-1")
+        XCTAssertEqual(try CalendarChoiceFile.read(path), "work-1")
+        SettingsStore(path: path).update(source: .menu) { $0.eventCalendar = nil }
+        XCTAssertNil(SettingsStore(path: path).settings.eventCalendar)
+        XCTAssertNil(try CalendarChoiceFile.read(path), "back to the default")
     }
 
     func testAnUnreadableFileIsReportedAndLeftAloneUntilTheUserChangesSomething() throws {
