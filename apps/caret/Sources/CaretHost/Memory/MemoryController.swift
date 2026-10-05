@@ -17,7 +17,7 @@ final class MemoryController {
         @Published var tab: MemoryView.Tab = .memory
         /// "Not on this site" (H5): the Sites tab.
         @Published var sites = SitesPage.State()
-        @Published var routing = true
+        @Published var routing = false
     }
 
     let book: MemoryBook

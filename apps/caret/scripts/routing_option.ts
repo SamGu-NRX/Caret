@@ -6,7 +6,8 @@
 //   --routing live   the helper runs D2-02's router. Router 1 and Router 2 questions go to live Jev;
 //                    every other question goes to the script's own fake, as before. Spend stops at
 //                    SPEND_CAP_USD: past it a router question fails, which the router reads as abstain.
-//   --host-routing on|off   the host's "Caret decides when to help", set over the debug socket.
+//   --host-routing off|on   the host's "Caret decides when to help", set over the debug socket. Off by
+//                    default, as the setting ships (lead decision, 2026-10-05).
 //
 // The Jev key is read at call time from CARET_ENV_FILE (default: the main checkout's .env), never printed.
 import type { AskJev } from "../../../helper/src/fill/jev.ts";
@@ -18,7 +19,7 @@ export const SPEND_CAP_USD = 0.006;
 
 export const routingOptions = {
   routing: { type: "string", default: "off" },
-  "host-routing": { type: "string", default: "on" },
+  "host-routing": { type: "string", default: "off" },
 } as const;
 
 export interface RoutedJev {

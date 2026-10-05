@@ -97,8 +97,10 @@ public struct CaretSettings: Codable, Equatable, Sendable {
     /// each once. The helper's page engines read and act in no frame at these origins.
     public var sitesOff: [String] = []
     /// H6, What Caret knows: "Caret decides when to help" (true) or "Always suggest as I type"
-    /// (false, how Caret worked before the router). On by default (brief H6).
-    public var routing = true
+    /// (false, how Caret worked before the router). Off by default, an opt-in: with the router on, the
+    /// A5 fixture showed 3 of its 9 wanted offers (evidence/host/h6, offers-routing-c5), and the lead
+    /// keeps it off until the router keeps every wanted offer (2026-10-05).
+    public var routing = false
 
     public init() {}
 
@@ -137,7 +139,7 @@ public struct CaretSettings: Codable, Equatable, Sendable {
         }
         sitesOff = Array(Set(sites)).sorted()
         // Absent from a file written before H6: the default, as for a new user.
-        routing = try c.decodeIfPresent(Bool.self, forKey: .routing) ?? true
+        routing = try c.decodeIfPresent(Bool.self, forKey: .routing) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {

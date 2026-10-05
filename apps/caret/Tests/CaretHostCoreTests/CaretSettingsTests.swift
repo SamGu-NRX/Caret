@@ -39,17 +39,25 @@ final class CaretSettingsTests: XCTestCase {
         }
     }
 
-    /// H6: "Caret decides when to help" starts on, a file from before H6 reads with it on, and
-    /// "Always suggest as I type" is kept as chosen.
-    func testRoutingStartsOnAndAnOlderFileReadsWithItOn() throws {
-        XCTAssertTrue(CaretSettings().routing)
+    /// H6, lead decision: "Always suggest as I type" is the default and a file from before H6 reads
+    /// with it; "Caret decides when to help" is kept when chosen. With the default, the hello takes
+    /// no route decisions and still names Fill all and Ask choices.
+    func testRoutingStartsOffAndAnOlderFileReadsWithItOff() throws {
+        XCTAssertFalse(CaretSettings().routing)
         let before = #"{"version":2,"roles":["fill"],"level":"quiet","character":"seed","paused":false,"onboarded":true,"memory":[]}"#
-        XCTAssertTrue(try JSONDecoder().decode(CaretSettings.self, from: Data(before.utf8)).routing)
+        XCTAssertFalse(try JSONDecoder().decode(CaretSettings.self, from: Data(before.utf8)).routing)
         var s = CaretSettings()
-        s.routing = false
+        s.routing = true
         let data = try JSONEncoder().encode(s)
-        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains(#""routing":false"#))
-        XCTAssertFalse(try JSONDecoder().decode(CaretSettings.self, from: data).routing)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains(#""routing":true"#))
+        XCTAssertTrue(try JSONDecoder().decode(CaretSettings.self, from: data).routing)
+        let caps = HostHello.capabilities(routing: CaretSettings().routing)
+        XCTAssertFalse(caps.contains(Routing.capability))
+        XCTAssertTrue(caps.contains(HostHello.fillAllCapability))
+        XCTAssertTrue(caps.contains(HostHello.askChoicesCapability))
+        let follower = RouteFollower(enabled: CaretSettings().routing)
+        follower.linkChanged(up: true, routing: false, nowMs: 1)
+        XCTAssertEqual(follower.gate(nowMs: 2), .allow(.off), "nothing waits on a decision")
     }
 
     /// A version 1 file predates the calendar role: it had no way to turn it off, so it reads with

@@ -75,7 +75,7 @@ struct MemoryView: View {
     /// The Sites tab: where Caret stays out (H5).
     var sites = SitesPage.State()
     /// Permissions: "When Caret helps" (H6, `CaretSettings.routing`).
-    var routing = true
+    var routing = false
     var animated = true
     var now = Date()
     /// A row drawn as if the pointer were on it, for renders (hover does not exist off screen).
