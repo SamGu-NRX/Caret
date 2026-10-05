@@ -7,7 +7,10 @@ import * as config from "../src/writer/config.ts";
 import { writersOnStart } from "../src/writer/startup.ts";
 import { SAYS } from "../src/planner/says.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
+import { GatewayNeedsCard } from "../src/writer/chat.ts";
+import { makeWriterPort } from "../src/writer/port.ts";
 import { goalScene, mailWindow, replyWindow, standInJev } from "./goal-desk.ts";
+import { FORM } from "./codemode/fixtures.ts";
 
 const src = (path: string): string => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
 
@@ -72,5 +75,44 @@ describe("a goal with no program writer", () => {
     expect(jev.calls).toBe(0);
     expect(fetches).toEqual([]);
     await sc.close();
+  });
+});
+
+describe("Vercel AI Gateway route", () => {
+  const KEY = "vck-test-not-a-real-key";
+  const fake = (status: number, body: unknown, seen: { url: string; body: Record<string, unknown>; auth: string }[] = []): typeof fetch =>
+    (async (url: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown>, auth: (init?.headers as Record<string, string>).Authorization ?? "" });
+      return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+  const plan = { kind: "plan" as const, disclosureId: "l1", input: { goal: "Sign me up", snapshots: [FORM] }, maxOutputTokens: 16, signal: new AbortController().signal };
+  // The body the gateway sent on 2026-10-05 for a free model, with the key added to show it is never echoed.
+  const card = { error: { message: `AI Gateway requires a valid credit card on file to service requests. key=${KEY}`, type: "customer_verification_required" } };
+
+  it("is chosen by model id, goes to the OpenAI-compatible endpoint and reads AI_GATEWAY_API_KEY", async () => {
+    const seen: { url: string; body: Record<string, unknown>; auth: string }[] = [];
+    const route = config.devWriterRoute("gateway:inclusionai/ling-3.1-flash-free");
+    expect(route).toMatchObject({ provider: "gateway", keyName: "AI_GATEWAY_API_KEY", model: "inclusionai/ling-3.1-flash-free" });
+    const ok = { model: "inclusionai/ling-3.1-flash-free", choices: [{ message: { content: "```ts\nasync function main(caret) {}\n```" } }], usage: { prompt_tokens: 10, completion_tokens: 5 } };
+    const w = await makeWriterPort(route, { key: () => KEY, fetchFn: fake(200, ok, seen) }).write(plan);
+    expect(seen[0]).toMatchObject({ url: "https://ai-gateway.vercel.sh/v1/chat/completions", auth: `Bearer ${KEY}` });
+    expect(seen[0]!.body).toMatchObject({ model: "inclusionai/ling-3.1-flash-free", max_tokens: 16 });
+    expect(w).toMatchObject({ provider: "gateway", model: "inclusionai/ling-3.1-flash-free", costUsd: 0 });
+  });
+
+  it("surfaces a 403 'credit card on file' as its own error, even for a free model", async () => {
+    const err = await makeWriterPort(config.gatewayRoute("poolside/laguna-s-2.1-free"), { key: () => KEY, fetchFn: fake(403, card) }).write(plan).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GatewayNeedsCard);
+    expect((err as Error).message).toBe("Vercel AI Gateway needs a card on file, even for free models");
+    expect(err).toMatchObject({ provider: "gateway", status: 403 });
+    expect(String(err)).not.toContain(KEY);
+  });
+
+  it("leaves any other 403, and the same words from another provider, as the provider's own error", async () => {
+    const other = await makeWriterPort(config.gatewayRoute("poolside/laguna-s-2.1-free"), { key: () => KEY, fetchFn: fake(403, { error: { message: "model not allowed", type: "forbidden" } }) }).write(plan).catch((e: unknown) => e);
+    expect(other).not.toBeInstanceOf(GatewayNeedsCard);
+    expect(String(other)).toContain("gateway HTTP 403 forbidden: model not allowed");
+    const groq = await makeWriterPort(config.GROQ_QWEN_3_8_27B, { key: () => KEY, fetchFn: fake(403, card) }).write(plan).catch((e: unknown) => e);
+    expect(groq).not.toBeInstanceOf(GatewayNeedsCard);
   });
 });

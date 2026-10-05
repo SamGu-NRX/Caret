@@ -5,7 +5,9 @@
 import type { ChatRoute } from "./chat.ts";
 
 const GROQ = "https://api.groq.com/openai/v1";
-const GATEWAY = "https://ai-gateway.vercel.sh/v1";
+/** Vercel AI Gateway's OpenAI-compatible endpoint. */
+export const GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1";
+const GATEWAY = GATEWAY_BASE_URL;
 /** Groq's model table, console.groq.com/docs/models.md, read 2026-10-04. */
 const GROQ_PRICES = "console.groq.com/docs/models.md, 2026-10-04";
 
@@ -38,14 +40,15 @@ export const GROQ_QWEN_3_8_27B: ChatRoute = {
 
 /**
  * Vercel AI Gateway's OpenAI-compatible endpoint, by model id (L1 lead decision 4; off unless --dev-writer names one).
- * The free models are the two `scripts/gateway-probe.ts` found listed on 2026-10-05; every completion on this account
- * then answered HTTP 403 "requires a valid credit card on file", even for them (chat.ts GatewayNeedsCard), so none of
- * these routes has been measured. gpt-oss-120b is pinned to Cerebras, the lowest p50 latency the gateway listed for it
+ * The free models are the three language models `scripts/gateway-probe.ts` found priced 0 on 2026-10-05; a
+ * completion on this account then answered HTTP 403 "requires a valid credit card on file" even for them
+ * (chat.ts GatewayNeedsCard; evidence/screen/l1/gateway-probe.txt), so none of these routes has been measured. gpt-oss-120b is pinned to Cerebras, the lowest p50 latency the gateway listed for it
  * on 2026-10-04 (157 ms, /v1/models/openai/gpt-oss-120b/endpoints); its routing fields are unverified.
  */
 const GATEWAY_MODELS: Readonly<Record<string, Pick<ChatRoute, "extraBody" | "pricing">>> = {
-  "inclusionai/ling-3.1-flash-free": { extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "ai-gateway.vercel.sh/v1/models, free tier, 2026-10-05" } },
-  "poolside/laguna-s-2.1-free": { extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "ai-gateway.vercel.sh/v1/models, free tier, 2026-10-05" } },
+  "inclusionai/ling-3.1-flash": { extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "ai-gateway.vercel.sh/v1/models, priced 0, 2026-10-05" } },
+  "inclusionai/ling-3.1-flash-free": { extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "ai-gateway.vercel.sh/v1/models, priced 0, 2026-10-05" } },
+  "poolside/laguna-s-2.1-free": { extraBody: {}, pricing: { inputUsdPerMTok: 0, outputUsdPerMTok: 0, source: "ai-gateway.vercel.sh/v1/models, priced 0, 2026-10-05" } },
   "openai/gpt-oss-120b": {
     extraBody: { reasoning: { effort: "low" }, providerOptions: { gateway: { order: ["cerebras"], only: ["cerebras"] } } },
     pricing: { inputUsdPerMTok: 0.35, outputUsdPerMTok: 0.75, source: "ai-gateway.vercel.sh/v1/models/openai/gpt-oss-120b/endpoints (cerebras), 2026-10-04" },

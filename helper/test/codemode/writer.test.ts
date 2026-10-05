@@ -109,7 +109,8 @@ describe("WriterPort", () => {
     const body = { error: { message: `AI Gateway requires a valid credit card on file. key=${KEY}`, type: "customer_verification_required" } };
     const port = makeWriterPort(GATEWAY_GPT_OSS_120B, { key: () => KEY, fetchFn: fakeFetch(403, body) });
     const err = await port.write(request()).catch((e: Error) => e);
-    expect(String(err)).toContain("gateway HTTP 403 customer_verification_required");
+    // L1: this refusal has its own error (chat.ts GatewayNeedsCard; test/models-l1.test.ts).
+    expect(String(err)).toContain("Vercel AI Gateway needs a card on file, even for free models");
     expect(String(err)).not.toContain(KEY);
   });
 

@@ -65,6 +65,21 @@ export class ChatHttpError extends Error {
   }
 }
 
+/**
+ * Vercel AI Gateway's refusal of an account with no card: HTTP 403, type customer_verification_required, "requires a
+ * valid credit card on file". It came for every completion on 2026-10-04 and again on 2026-10-05 for the free models
+ * (L1), so it is said plainly rather than as the provider's text. Never retried, never sent to another route.
+ */
+export class GatewayNeedsCard extends ChatHttpError {
+  constructor(errorType: string | null) {
+    super("gateway", 403, errorType, "requires a valid credit card on file");
+    this.message = "Vercel AI Gateway needs a card on file, even for free models";
+  }
+}
+
+const needsCard = (provider: ChatRoute["provider"], status: number, type: string | null, message: string): boolean =>
+  provider === "gateway" && status === 403 && (type === "customer_verification_required" || /credit card on file/i.test(message));
+
 export const costOf = (p: Pricing, inputTokens: number, outputTokens: number): number => (inputTokens * p.inputUsdPerMTok + outputTokens * p.outputUsdPerMTok) / 1_000_000;
 
 export async function chat(
@@ -101,6 +116,7 @@ export async function chat(
     } catch {
       // not JSON; keep the text
     }
+    if (needsCard(route.provider, res.status, type, message)) throw new GatewayNeedsCard(type);
     const retry = Number(res.headers.get("retry-after"));
     throw new ChatHttpError(route.provider, res.status, type, message, Number.isFinite(retry) && retry > 0 ? retry : null);
   }
