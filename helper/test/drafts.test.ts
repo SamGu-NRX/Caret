@@ -3,7 +3,7 @@
 // Every name, address and number is invented.
 import { describe, expect, it } from "vitest";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
-import { addsRecipient, checkDraftText, confirmClaims, covers, DraftRefused, factsIn, noClaim, recipientField, sentencesOf, subjectField, type DraftBasis } from "../src/goals/drafts.ts";
+import { addsRecipient, senderOf, checkDraftText, confirmClaims, covers, DraftRefused, factsIn, noClaim, recipientField, sentencesOf, subjectField, type DraftBasis } from "../src/goals/drafts.ts";
 
 const MAIL = {
   title: "Order ORD-2026-48213 arrived damaged",
@@ -145,7 +145,7 @@ describe("fields and instructions about who a message goes to", () => {
     expect(recipientField(label)).toBe(want);
   });
   it("reads subject lines", () => {
-    expect(["Subject", "Subject:", "subject line"].map(subjectField)).toEqual([true, true, true]);
+    expect(["Subject", "Subject:", "subject line", "Subject (optional)", "Email subject"].map(subjectField)).toEqual([true, true, true, true, true]);
     expect(["Message", "Subject area", "Description"].map(subjectField)).toEqual([false, false, false]);
   });
   it.each([
@@ -232,8 +232,8 @@ describe("review 1: drafts that slipped a fact through", () => {
   });
 
   it.each([
-    ["I have ９９ guests.", ["newFact", "99"]],
-    ["I have ⁹ guests.", ["newFact", "9"]],
+    ["I have ９９ guests.", ["unreadable", "９"]],
+    ["I have ⁹ guests.", ["unreadable", "⁹"]],
     ["I have ٩٩ guests.", ["unreadable", "٩"]],
     ["I came thirteenth.", ["newFact", "thirteenth"]],
     ["The chapter xvi is ready.", ["newFact", "xvi"]],
@@ -255,5 +255,49 @@ describe("review 1: drafts that slipped a fact through", () => {
     expect(why("The price is USD 500.", none("say the price is USD 500"))).toEqual(["money", "USD 500"]);
     expect(why("Yes to the 500 quote.", none("say yes to the 500 quote"))).toEqual(["money", "500 quote"]);
     expect(why("The quote is $45.00.", none("say thanks", [{ title: "Quote", text: "$45.00" }]))).toBeNull();
+  });
+});
+
+// B30 re-check of review 1: what the first fixes still let through, now refused.
+describe("review 1 re-check", () => {
+  const none = (instruction: string, windows: { title: string; text: string }[] = []): DraftBasis => ({ instruction, windows, memory: [] });
+
+  it("binds a reply's To to the From of the message it answers, in the header only", () => {
+    const msg = (text: string, title = "Invoice") => ({ title, text });
+    expect(senderOf("Re: Invoice", msg("From: Priya <priya@example.com>\nReply-To: Mallory <mallory@example.com>"), "priya@example.com")).toBe(true);
+    expect(senderOf("Re: Invoice", msg("From: Priya <priya@example.com>\nReply-To: Mallory <mallory@example.com>"), "mallory@example.com")).toBe(false);
+    expect(senderOf("Re: Invoice", msg("From: Mallory <mallory@example.com>\nHere is a sample:\nSubject: Invoice", "Unrelated"), "mallory@example.com")).toBe(false);
+    expect(senderOf("Re: Invoice", msg("Hello\nFrom: Mallory <mallory@example.com>"), "mallory@example.com")).toBe(false);
+    expect(senderOf("Invoice", msg("From: Priya <priya@example.com>"), "priya@example.com")).toBe(false);
+    expect(senderOf("Re: Re: Invoice", msg("From: Priya <priya@example.com>\nSubject: Invoice", "Mail"), "priya@example.com")).toBe(true);
+  });
+
+  it("reads label variants by their words", () => {
+    expect(["Carbon-copy", "Blind carbon copy", "CC (optional)", "cc_list"].map(recipientField)).toEqual(["copy", "copy", "copy", "copy"]);
+    expect(["To (required)", "To*", "Recipient(s)"].map(recipientField)).toEqual(["to", "to", "to"]);
+    expect(["Subject area", "Topic"].map(subjectField)).toEqual([false, false]);
+  });
+
+  it("refuses text whose checked form differs from what is written, and keeps a number's sign", () => {
+    expect(why("I need ½ liters.", none("say I need 1 or 2 liters"))).toEqual(["unreadable", "½"]);
+    expect(why("The code is AB¹².", none("say thanks", [{ title: "Code", text: "AB12" }]))).toEqual(["unreadable", "¹"]);
+    expect(why("I have -5 items.", none("say I have 5 items"))).toEqual(["newFact", "-5"]);
+    expect(why("It is 5 degrees.", none("say it is 5 degrees"))).toBeNull();
+  });
+
+  it("does not invent a currency, and reads an amount in words beside a money word", () => {
+    expect(why("The price is 500 euros.", none("say the price", [{ title: "Quote", text: "price 500" }]))).toEqual(["newFact", "500 euros"]);
+    expect(why("The price is five hundred.", none("say the price is five hundred"))).toEqual(["money", "price is five hundred"]);
+  });
+
+  it("reads a date with what places it", () => {
+    expect(why("See you next October.", none("confirm the date", [{ title: "Note", text: "October" }]))).toEqual(["newFact", "next October"]);
+    expect(why("See you Friday after next.", none("confirm the date", [{ title: "Note", text: "Friday" }]))).toEqual(["newFact", "Friday after next"]);
+    expect(why("See you next Friday.", none("confirm the date", [{ title: "Note", text: "next Friday" }]))).toBeNull();
+  });
+
+  it("keeps a link's path case", () => {
+    expect(why("Please see https://example.com/SECRET.", none("share the link", [{ title: "Note", text: "https://example.com/secret" }]))).toEqual(["newFact", "https://example.com/SECRET"]);
+    expect(why("Please see https://EXAMPLE.com/secret.", none("share the link", [{ title: "Note", text: "https://example.com/secret" }]))).toBeNull();
   });
 });

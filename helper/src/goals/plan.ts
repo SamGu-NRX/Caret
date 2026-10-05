@@ -53,8 +53,6 @@ export interface ValueBinding {
    * still hold when the draft is written. Null for a value code read or derived.
    */
   draft: { windows: string[]; memory: { id: string; text: string }[] } | null;
-  /** An email address its source shows on a From, Reply-To or Sender line: the one address a To field may take. */
-  sender: boolean;
 }
 
 /** Everything a program's refs may stand for, kept on the host side of the sandbox. */
@@ -91,6 +89,8 @@ export interface GoalStep {
   effect: string | null;
   /** For a hand-off: why it is the user's. */
   handoff: HandoffWhy | null;
+  /** A write into a To field (B30): its value must still be the answered message's sender right before it runs. */
+  to: boolean;
 }
 
 export type SegmentReason = "start" | "crossWindow" | "afterReveal";

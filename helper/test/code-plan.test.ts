@@ -164,7 +164,7 @@ describe("lowering", () => {
 const win = { kind: "window" as const, windowId: "w-a", pid: 10, bundleId: "dev.caret.a", appName: "A", title: "Form A", number: null, windowKind: "standard", page: false };
 const page = { ...win, windowId: "page:e1:3", bundleId: "com.google.Chrome", appName: "Chrome", title: "Apply", windowKind: "page", page: true };
 const tgt = (ref: string, over: Partial<TargetBinding> = {}): TargetBinding => ({ ref, domain: win, key: `k-${ref}`, role: "AXTextField", label: `Field ${ref}`, control: "text", value: "", options: null, ...over });
-const val = (ref: string, text: string, over: Partial<ValueBinding> = {}): ValueBinding => ({ ref, text, display: `"${text}"`, origin: { kind: "span", snapshot: "s1", source: "w-src", startUTF16: 0, endUTF16: text.length, digest: "d" }, source: { windowId: "w-src", key: "src", revision: "r" }, memory: null, event: null, draft: null, sender: false, ...over });
+const val = (ref: string, text: string, over: Partial<ValueBinding> = {}): ValueBinding => ({ ref, text, display: `"${text}"`, origin: { kind: "span", snapshot: "s1", source: "w-src", startUTF16: 0, endUTF16: text.length, digest: "d" }, source: { windowId: "w-src", key: "src", revision: "r" }, memory: null, event: null, draft: null, ...over });
 
 function inventory(targets: TargetBinding[], values: ValueBinding[]): GoalInventory {
   return { readerSession: 1, targets: new Map(targets.map((t) => [t.ref, t])), values: new Map(values.map((v) => [v.ref, v])), revisions: new Map([["w-a", "r1"]]), documents: new Map(), windowRefs: new Map(), texts: new Map() };
@@ -240,7 +240,7 @@ describe("lowering refuses, by name", () => {
 });
 
 describe("the digest", () => {
-  const step: GoalStep = { ref: "a", index: 0, kind: "write", says: "Field t1: ORD-1", target: tgt("t1"), value: val("v1", "ORD-1"), writes: "ORD-1", effect: null, handoff: null };
+  const step: GoalStep = { ref: "a", index: 0, kind: "write", says: "Field t1: ORD-1", target: tgt("t1"), value: val("v1", "ORD-1"), writes: "ORD-1", effect: null, handoff: null, to: false };
   const base: { index: number; domain: GoalDomain; reason: "start"; steps: GoalStep[] } = { index: 0, domain: win, reason: "start", steps: [step] };
   const X = "e".repeat(64);
   const d0 = segmentDigest("p".repeat(64), base, [], X);

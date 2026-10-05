@@ -18,7 +18,7 @@ import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { matchOption } from "../fill/controls.ts";
 import { misfit } from "../fill/kinds.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
-import { answers, checkDraftText, DraftRefused, recipientField, subjectField, type DraftBasis } from "./drafts.ts";
+import { checkDraftText, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
 import { saysPress } from "../planner/says.ts";
@@ -67,15 +67,20 @@ export function frozenBasis(instruction: string, v: ValueBinding, inv: GoalInven
  * subject line is never written, and a To field takes only the address on the From line of the message the window
  * answers ("Re: <its subject>"). An email field in a window with a Send button is a To field whatever its label.
  */
-function recipientCheck(t: TargetBinding, v: ValueBinding, inv: GoalInventory): void {
-  if (subjectField(t.label)) throw new GoalError("recipient", "Caret doesn't write subject lines", `${t.ref} <- ${v.ref}`);
+/** Whether a target is a To field: by its label, or an email field in a window with a Send button. */
+export function toField(t: TargetBinding, inv: GoalInventory): "to" | "copy" | null {
   const composer = t.domain.kind === "window" && [...inv.targets.values()].some((x) => x.domain.kind === "window" && t.domain.kind === "window" && x.domain.windowId === t.domain.windowId && x.control === "button" && /^send\b/iu.test(x.label.trim()));
-  const r = recipientField(t.label) ?? (composer && fieldKinds([t.label]).has("email") ? "to" : null);
+  return recipientField(t.label) ?? (composer && fieldKinds([t.label]).has("email") ? "to" : null);
+}
+
+function recipientCheck(t: TargetBinding, v: ValueBinding, inv: GoalInventory): boolean {
+  if (subjectField(t.label)) throw new GoalError("recipient", "Caret doesn't write subject lines", `${t.ref} <- ${v.ref}`);
+  const r = toField(t, inv);
   if (r === "copy") throw new GoalError("recipient", "Caret doesn't add people to a message. Add them yourself", `${t.ref} <- ${v.ref}`);
-  if (r !== "to") return;
+  if (r !== "to") return false;
   const src = v.source === null ? undefined : inv.texts.get(v.source.windowId);
-  const answered = t.domain.kind === "window" && src !== undefined && answers(t.domain.title, src);
-  if (v.draft !== null || !v.sender || !answered) throw new GoalError("recipient", `Caret puts only the sender of the message you're answering in ${named(t)}`, `${t.ref} <- ${v.ref}`);
+  if (v.draft !== null || t.domain.kind !== "window" || src === undefined || !senderOf(t.domain.title, src, v.text)) throw new GoalError("recipient", `Caret puts only the sender of the message you're answering in ${named(t)}`, `${t.ref} <- ${v.ref}`);
+  return true;
 }
 
 /** A drafted value's own checks (goals/drafts.ts), against the field it goes in and its frozen basis. */
@@ -90,7 +95,6 @@ function draftCheck(t: TargetBinding, v: ValueBinding, basis: DraftBasis): void 
 }
 
 function lowerFill(t: TargetBinding, v: ValueBinding, inv: GoalInventory): Pick<GoalStep, "kind" | "says" | "writes" | "handoff"> {
-  if (t.control !== "calendar") recipientCheck(t, v, inv);
   if (t.control === "calendar") {
     if (v.event === null) throw new GoalError("wrongKind", `${v.display} is not an event Caret can add to a calendar`, `${t.ref} <- ${v.ref}`);
     return { kind: "calendar", says: `Add '${v.event.title}' to your ${t.label} calendar, ${v.event.says}`, writes: null, handoff: null };
@@ -154,7 +158,7 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
       else if (v === undefined) throw new GoalError("schema", "a draft names a basis the snapshot did not list", `${d.ref} from ${ref}`);
     }
     const digest = createHash("sha256").update(d.text).digest("hex");
-    drafted.set(d.ref, { ref: d.ref, text: d.text, display: d.text, origin: { kind: "draft", draftId: d.ref, model: writerModel, basis: d.from, digest }, source: null, memory: null, event: null, draft: { windows: [...new Set(windows)], memory }, sender: false });
+    drafted.set(d.ref, { ref: d.ref, text: d.text, display: d.text, origin: { kind: "draft", draftId: d.ref, model: writerModel, basis: d.from, digest }, source: null, memory: null, event: null, draft: { windows: [...new Set(windows)], memory } });
   }
   const steps: GoalStep[] = [];
   const warnings: string[] = [];
@@ -174,12 +178,10 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
       const v = inv.values.get(s.value) ?? drafted.get(s.value);
       if (v === undefined) throw new GoalError("schema", "the plan names a value the snapshot did not list", s.value);
       if (steps.some((x) => x.target.ref === t.ref && x.kind !== "calendar")) throw new GoalError("schema", `the plan fills ${named(t)} twice`, t.ref);
-      if (v.draft !== null) {
-        recipientCheck(t, v, inv);
-        draftCheck(t, v, frozenBasis(instruction, v, inv));
-      }
+      if (v.draft !== null) draftCheck(t, v, frozenBasis(instruction, v, inv));
+      const to = t.control === "calendar" ? false : recipientCheck(t, v, inv);
       const lowered = lowerFill(t, v, inv);
-      steps.push({ ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, ...lowered });
+      steps.push({ ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, ...lowered });
       lastPress = null;
       continue;
     }
@@ -189,7 +191,7 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
     if (verdict.kind === "handoff") {
       // Asked for as Caret's own press: the preview says plainly that it is not.
       if (s.effect !== YOURS_EFFECT) warnings.push(`${verdict.says.charAt(0).toUpperCase()}${verdict.says.slice(1)}.`);
-      steps.push({ ref: s.ref, index, kind: "handoff", says: verdict.says.charAt(0).toUpperCase() + verdict.says.slice(1), target: t, value: null, writes: null, effect: null, handoff: verdict.why });
+      steps.push({ ref: s.ref, index, kind: "handoff", says: verdict.says.charAt(0).toUpperCase() + verdict.says.slice(1), target: t, value: null, writes: null, effect: null, handoff: verdict.why, to: false });
       lastPress = null;
       continue;
     }
@@ -198,7 +200,7 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
       throw new GoalError("replay", `the plan would press ${named(t)} again, which Caret already did for this goal`, t.ref);
     }
     if (steps.some((x) => x.kind === "press" && x.target.ref === t.ref && x.effect === verdict.capability.effect)) throw new GoalError("replay", `the plan presses ${named(t)} twice`, t.ref);
-    const step: GoalStep = { ref: s.ref, index, kind: "press", says: verdict.capability.says(t.label), target: t, value: null, writes: null, effect: verdict.capability.effect, handoff: null };
+    const step: GoalStep = { ref: s.ref, index, kind: "press", says: verdict.capability.says(t.label), target: t, value: null, writes: null, effect: verdict.capability.effect, handoff: null, to: false };
     steps.push(step);
     lastPress = step;
   }

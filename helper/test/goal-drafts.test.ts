@@ -222,3 +222,29 @@ describe("review 1: goals that slipped a fact or a recipient through", () => {
     expect(refusedSays(g)).toBe("Caret doesn't write subject lines");
   });
 });
+
+describe("review 1 re-check: To at acceptance", () => {
+  it("stops before writing To when the message no longer shows that sender", async () => {
+    const sc = scene([REPLY]);
+    const g = await sc.request("draft a reply to Priya saying I'm in");
+    const mail = sc.desk.windows.get("6161-1") as DeskWindow;
+    const from = mail.nodes[0];
+    if (from === undefined) throw new Error("no From line");
+    from.label = `To: Priya Raman <${EMAIL}>`;
+    sc.desk.show(mail);
+    await sc.accept(g.goalId);
+    expect(sc.desk.writes).toEqual([]);
+    expect(sc.goals.find((x) => x.event === "stopped")).toMatchObject({ reason: "sourceChanged" });
+  });
+
+  it("refuses Reply-To and a Carbon-copy or Subject (optional) label", async () => {
+    const mail: DeskWindow = { ...mailWindow(), nodes: [...mailWindow().nodes.slice(0, 1), { key: "rt", parent: null, role: "AXStaticText", label: "Reply-To: Mallory <mallory@example.com>" }, ...mailWindow().nodes.slice(1)], values: [...(mailWindow().values ?? []), { kind: "email", text: "mallory@example.com", nodeKey: "rt" }] };
+    const g = await scene([[{ fill: { window: "Re: Order", target: "To", value: "mallory@example.com" } }]], { windows: [mail, replyWindow()] }).request("reply to Priya");
+    expect(refusedSays(g)).toBe("Caret puts only the sender of the message you're answering in 'To'");
+    for (const label of ["Carbon-copy", "Subject (optional)"]) {
+      const w: DeskWindow = { ...replyWindow(), nodes: [textField(MAIL, "To"), textField(MAIL, label), textArea(MAIL, "Message"), button(MAIL, "Send")] };
+      const r = await scene([[{ fill: { window: "Re: Order", target: label, value: EMAIL } }]], { windows: [mailWindow(), w] }).request("reply to Priya");
+      expect(refusedSays(r), label).toMatch(/^Caret doesn't (add people|write subject lines)/);
+    }
+  });
+});

@@ -22,7 +22,7 @@ import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
-import { checkDraftText, DraftRefused } from "./drafts.ts";
+import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
 import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep } from "./plan.ts";
 import type { DonePress } from "./lower.ts";
 
@@ -276,6 +276,12 @@ export class GoalRuns {
       if (v === null) continue;
       const draftMoved = this.draftMoved(run, s);
       if (draftMoved !== null) return draftMoved;
+      // A To field's address must still be the From of the message the reply answers, as the windows read now (B30).
+      if (s.to) {
+        const reply = s.target.domain.kind === "window" ? this.deps.model.windows.get(s.target.domain.windowId) : undefined;
+        const src = v.source === null ? undefined : this.deps.model.windows.get(v.source.windowId);
+        if (reply === undefined || src === undefined || !senderOf(reply.window.title, basisText(src), v.text)) return { reason: "sourceChanged", says: `'${v.text}' is no longer the sender of the message you're answering` };
+      }
       if (v.memory !== null && !this.deps.memoryHolds(v.memory, v.text)) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
       if (v.source === null) continue;
       const sw = this.deps.model.windows.get(v.source.windowId);

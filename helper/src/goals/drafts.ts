@@ -126,11 +126,16 @@ const digitsOf = (s: string): string => s.replace(/\D/gu, "");
 const MINUTE_WORDS: Record<string, number> = { "o'clock": 0, "o’clock": 0, oclock: 0, fifteen: 15, thirty: 30, "forty-five": 45, "forty five": 45 };
 function dateWord(m: RegExpExecArray): Fact {
   const w = (m[2] ?? "").toLowerCase().replace(/\.$/u, "");
-  return { kind: "date", text: m[0], weekday: WEEKDAYS[w] ?? null, month: WEEKDAYS[w] === undefined ? (MONTHS[w] ?? null) : null, day: null, year: null, rel: m[1] === undefined || m[1] === "" ? null : m[1].toLowerCase() };
+  return { kind: "date", text: m[0], weekday: WEEKDAYS[w] ?? null, month: WEEKDAYS[w] === undefined ? (MONTHS[w] ?? null) : null, day: null, year: null, rel: m[1] === undefined || m[1] === "" ? null : m[1].toLowerCase().replace(/\s+/gu, " ") };
 }
 /** A sentence's period after "PM" is the sentence's, not the time's ("p.m." keeps its own). */
 const timeText = (t: string): string => (/[ap]m\.$/iu.test(t) && !/[ap]\.m\.$/iu.test(t) ? t.slice(0, -1) : t);
-const urlNorm = (s: string): string => s.toLowerCase().replace(/^https?:\/\//u, "").replace(/^www\./u, "").replace(/[/.,;:!?)]+$/u, "");
+/** A link's host in lower case without scheme or "www."; its path and query keep their case, which servers may read. */
+function urlNorm(s: string): string {
+  const t = s.replace(/^https?:\/\//iu, "").replace(/^www\./iu, "").replace(/[/.,;:!?)]+$/u, "");
+  const cut = t.search(/[/?#]/u);
+  return cut < 0 ? t.toLowerCase() : `${t.slice(0, cut).toLowerCase()}${t.slice(cut)}`;
+}
 const money = (text: string, amount: string, mult: string | undefined, currency: string | undefined): Fact => ({ kind: "money", text, amount: times(decimal(amount), MULT[(mult ?? "").toLowerCase()] ?? 1), currency: currency === undefined ? null : (CURRENCY[currency.toLowerCase()] ?? null) });
 
 interface Rule {
@@ -157,7 +162,9 @@ const RULES: readonly Rule[] = [
   },
   { re: new RegExp(`${B}(\\d{4})-(\\d{1,2})-(\\d{1,2})${E}`, "gu"), make: (m) => ({ kind: "date", text: m[0], weekday: null, month: Number(m[2]), day: Number(m[3]), year: Number(m[1]), rel: null }) },
   { re: new RegExp(`${B}(\\d{1,2})\\/(\\d{1,2})(?:\\/(\\d{2,4}))?${E}`, "gu"), make: (m) => ({ kind: "date", text: m[0], weekday: null, month: Number(m[1]), day: Number(m[2]), year: m[3] === undefined ? null : Number(m[3].length === 2 ? `20${m[3]}` : m[3]), rel: null }) },
-  { re: new RegExp(`${B}(this|next|last|coming)\\s+(${WEEKDAY_RE})${E}`, "giu"), make: dateWord },
+  // A weekday or month with what places it: "next Friday", "this coming October", "Friday after next", "early November".
+  { re: new RegExp(`${B}((?:this\\s+)?(?:next|last|coming|this|early|late|mid|end of|beginning of|start of))[\\s-]+(${WEEKDAY_RE}|${MONTH_RE})${E}`, "giu"), make: dateWord },
+  { re: new RegExp(`${B}()(${WEEKDAY_RE}|${MONTH_RE}|week|month|weekend)\\s+(?:after|before)\\s+(?:next|last|that)${E}`, "giu"), make: (m) => ({ ...dateWord(m), rel: m[0].toLowerCase().replace(/\\s+/gu, " ") }) },
   // Money: a currency sign, code or word with an amount, and an amount beside a word such as "quote".
   { re: new RegExp(`([$€£¥])\\s?(${NUM})(?:\\s?(k|m|bn|thousand|million|billion)${E})?`, "giu"), make: (m) => money(m[0], m[2] ?? "", m[3], m[1]) },
   { re: new RegExp(`${B}(usd|eur|gbp|jpy|cad|aud)\\s?(${NUM})(?:\\s?(k|m|bn|thousand|million|billion)${E})?`, "giu"), make: (m) => money(m[0], m[2] ?? "", m[3], m[1]) },
@@ -165,6 +172,7 @@ const RULES: readonly Rule[] = [
   { re: new RegExp(`${B}(${WORDS})\\s+(dollars?|bucks|euros?|pounds?)${E}`, "giu"), make: (m) => money(m[0], String(wordValue(m[1] ?? "")), undefined, m[2]) },
   { re: new RegExp(`${B}(?:${MONEY_NOUN})\\s+(?:of|is|was|at|for|comes to|will be|would be)?\\s*(${NUM})${E}`, "giu"), make: (m) => money(m[0], m[1] ?? "", undefined, undefined) },
   { re: new RegExp(`${B}(${NUM})\\s+(?:${MONEY_NOUN})${E}`, "giu"), make: (m) => money(m[0], m[1] ?? "", undefined, undefined) },
+  { re: new RegExp(`${B}(?:${MONEY_NOUN})\\s+(?:of|is|was|at|for|comes to|will be|would be)?\\s*(${WORDS})${E}`, "giu"), make: (m) => money(m[0], String(wordValue(m[1] ?? "")), undefined, undefined) },
   // Times, each read whole: "half past three", "quarter to 4", "3:30 pm", "three thirty", "4 o'clock", "at 4", noon.
   {
     re: new RegExp(`${B}(half|quarter)\\s+(past|after|to|before|till|til)\\s+(${H})(?:\\s?(a\\.?m\\.?|p\\.?m\\.?))?(?![\\p{L}\\p{N}])`, "giu"),
@@ -243,7 +251,10 @@ export function factsIn(raw: string): Fact[] {
     }
     let j = i;
     while (j < text.length && !taken[j] && (/\d/u.test(text[j] as string) || (/[.,]/u.test(text[j] as string) && /\d/u.test(text[j + 1] ?? "") && !taken[j + 1]))) j++;
-    claim(i, j, { kind: "number", text: text.slice(i, j), value: decimal(text.slice(i, j)) });
+    // A sign that stands before the digits is the number's: "-5" is not 5.
+    const signed = i > 0 && !taken[i - 1] && /[-+−]/u.test(text[i - 1] as string) && !/[\p{L}\p{N}]/u.test(text[i - 2] ?? "");
+    const from = signed ? i - 1 : i;
+    claim(from, j, { kind: "number", text: text.slice(from, j), value: `${signed && text[i - 1] !== "+" ? "-" : ""}${decimal(text.slice(i, j))}` });
     i = j;
   }
   // A word right after a greeting or thanks is someone's name, whatever its case.
@@ -304,7 +315,8 @@ export function covers(c: Fact, f: Fact): boolean {
       return (c as typeof f).value === f.value;
     case "money": {
       const x = c as typeof f;
-      return x.amount === f.amount && (f.currency === null || x.currency === null || x.currency === f.currency);
+      // A draft that names a currency needs a source that names the same one.
+      return x.amount === f.amount && (f.currency === null || x.currency === f.currency);
     }
     case "time": {
       const x = c as typeof f;
@@ -378,8 +390,12 @@ function shape(text: string): void {
   if (n > DRAFT_MAX_CHARS) throw new DraftRefused("tooLong", `the draft has ${n} characters, and a draft has at most ${DRAFT_MAX_CHARS}`);
   for (const [re, what] of NOT_PROSE) if (re.test(t)) throw new DraftRefused("notProse", `the draft has ${what}, and a draft is plain sentences`);
   if ((t.match(/\n/gu) ?? []).length > MAX_LINE_BREAKS) throw new DraftRefused("notProse", `the draft has more than ${MAX_LINE_BREAKS} line breaks, and a draft is a few short sentences`);
-  // A number Caret can't read as one, once compatibility forms are folded: digits of another script, fractions.
-  const odd = /[^\P{N}0-9]/u.exec(folded(t));
+  // What is checked must be what is written: a character that compatibility folding would change ("½", "¹²", "ｆ")
+  // is refused, not folded, as is any digit outside 0-9. Spaces of other widths and the ellipsis are the exceptions.
+  const plain = t.replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/gu, " ").replace(/…/gu, "...");
+  const changed = [...plain].find((c) => c.normalize("NFKC") !== c);
+  if (changed !== undefined) throw new DraftRefused("unreadable", `the draft writes ${q(changed)}, which Caret can't check as written`, changed);
+  const odd = /[^\P{N}0-9]/u.exec(plain);
   if (odd !== null) throw new DraftRefused("unreadable", `the draft writes a number as ${q(odd[0])}, which Caret can't check`, odd[0]);
 }
 
@@ -418,7 +434,14 @@ export function checkDraftText(text: string, basis: DraftBasis): Fact[] {
 
 // MARK: - fields
 
-const labelWords = (label: string): string => folded(label).toLowerCase().replace(/[*:✱∗]/gu, " ").replace(/\s+/gu, " ").trim();
+/** A label as the field rules read it: lower case, parenthetical notes ("(optional)") and marks gone, separators as spaces. */
+const labelWords = (label: string): string =>
+  folded(label)
+    .toLowerCase()
+    .replace(/\([^)]*\)|\[[^\]]*\]/gu, " ")
+    .replace(/[*:✱∗_\-–—/.,]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
 
 /**
  * Whether a field says who a message goes to, by its label: "copy" (Cc, Bcc, carbon copy, copy to) or "to" (a label
@@ -427,13 +450,13 @@ const labelWords = (label: string): string => folded(label).toLowerCase().replac
  */
 export function recipientField(label: string): "to" | "copy" | null {
   const l = labelWords(label);
-  if (/\bb?cc\b|\b(?:carbon|blind)(?:\s+carbon)?\s*copy\b|\bcopy\s+to\b/u.test(l)) return "copy";
-  if (l === "to" || l.startsWith("to ") || /\b(?:recipients?|addressees?|send\s+to|reply[- ]to|forward\s+to|mail\s+to|email\s+to|deliver\s+to)\b/u.test(l)) return "to";
+  if (/\bb?cc\b|\b(?:carbon|blind)(?: carbon)? ?copy\b|\bcopy to\b/u.test(l)) return "copy";
+  if (l === "to" || l.startsWith("to ") || /\b(?:recipients?|addressees?|send to|reply to|forward to|mail to|email to|deliver to)\b/u.test(l)) return "to";
   return null;
 }
 
 /** A subject line, which a goal never writes. */
-export const subjectField = (label: string): boolean => /^(?:subject|subject line|re|topic|title of (?:the )?(?:email|message|mail))$/u.test(labelWords(label));
+export const subjectField = (label: string): boolean => /^(?:(?:email|message|mail) )?subject(?: line)?$|^re$/u.test(labelWords(label));
 
 /** A message title with its "Re:", "Fwd:" and kin taken off, for matching a reply to the message it answers. */
 export const baseSubject = (title: string): string => {
@@ -442,19 +465,34 @@ export const baseSubject = (title: string): string => {
   return t.toLowerCase();
 };
 
+const HEADER_LINE = /^\s*(from|to|cc|bcc|subject|date|sent|reply-to)\s*:\s*(.*)$/iu;
+
+/** A message's header block: its leading header lines only, up to the first line that is not one. */
+export function messageHeader(text: string): { from: string[]; subject: string | null } {
+  const from: string[] = [];
+  let subject: string | null = null;
+  for (const line of text.split("\n")) {
+    const m = HEADER_LINE.exec(folded(line));
+    if (m === null) break;
+    const name = (m[1] ?? "").toLowerCase();
+    if (name === "from") from.push(m[2] ?? "");
+    else if (name === "subject" && subject === null) subject = m[2] ?? "";
+  }
+  return { from, subject };
+}
+
 /**
- * Whether the window titled `reply` answers the message `source`: the reply's title is "Re: " and the message's title,
- * or a subject line the message shows. A To field takes only that message's sender.
+ * Whether `address` is the sender of the message the window titled `reply` answers: the reply's title is "Re: " and
+ * the message's title or its header's subject, and the address is on the header's From line. Reply-To, Sender and a
+ * subject or From line in the body do not count. A To field takes only this address, checked again before writing.
  */
-export function answers(reply: string, source: { title: string; text: string }): boolean {
-  if (!/^\s*re\s*:/iu.test(folded(reply))) return false;
+export function senderOf(reply: string, source: { title: string; text: string }, address: string): boolean {
+  if (!/^\s*re\s*:/iu.test(folded(reply)) || !address.includes("@")) return false;
   const base = baseSubject(reply);
-  if (base === "") return false;
-  if (baseSubject(source.title) === base) return true;
-  return source.text.split("\n").some((l) => {
-    const m = /^\s*subject\s*:\s*(.*)$/iu.exec(folded(l));
-    return m !== null && baseSubject(m[1] ?? "") === base;
-  });
+  const header = messageHeader(source.text);
+  if (base === "" || !(baseSubject(source.title) === base || (header.subject !== null && baseSubject(header.subject) === base))) return false;
+  const want = address.trim().toLowerCase();
+  return header.from.some((l) => (l.match(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+/gu) ?? []).some((a) => a.toLowerCase() === want));
 }
 
 /**

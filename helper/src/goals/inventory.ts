@@ -34,8 +34,6 @@ export function basisText(w: WindowState): { title: string; text: string } {
   return { title: w.window.title, text: [...w.nodes.values()].map((n) => nodeText(n)).filter((t) => t !== "").join("\n") };
 }
 
-/** A From, Reply-To or Sender line: the address on it is the message's sender. */
-const SENDER_LINE = /^\s*(?:from|reply-to|reply to|sender)\s*:/iu;
 
 export interface InventoryOptions {
   instruction: string;
@@ -94,9 +92,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
         ? { kind: "memory", entryId: x.memory, fileRevision: "", digest: digest(x.text) }
         : { kind: "span", snapshot, source: x.window?.window.windowId ?? "instruction", startUTF16: 0, endUTF16: x.text.length, digest: digest(x.text) };
     const source = x.window !== null && x.key !== null ? { windowId: x.window.window.windowId, key: x.key, revision: windowRevision(x.window) } : null;
-    const node = x.window !== null && x.key !== null ? x.window.nodes.get(x.key) : undefined;
-    const sender = node !== undefined && x.text.includes("@") && nodeText(node).split("\n").some((l) => SENDER_LINE.test(l) && l.includes(x.text));
-    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null, sender };
+    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null };
   };
 
   windows.forEach((w, i) => {
@@ -202,7 +198,6 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
         memory: null,
         event: { title: c.title, start: time.start, end: time.end, says: time.says, sentence },
         draft: null,
-        sender: false,
       });
     }
   }
