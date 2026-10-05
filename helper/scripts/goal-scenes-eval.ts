@@ -13,6 +13,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { GoalProgress } from "../src/protocol.ts";
 import { YOURS_EFFECT } from "../src/goals/capabilities.ts";
 import { devWriterRoute } from "../src/writer/routes.ts";
@@ -22,7 +23,7 @@ import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { loadJevKey, makeJevClient } from "../src/fill/jev.ts";
 import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";
 
-const { values: a } = parseArgs({ options: { out: { type: "string" }, writer: { type: "string", default: "canned" }, drafts: { type: "string", default: "program" }, "local-model": { type: "string", default: new URL("../../apps/local-model/.build/release/caret-local-model", import.meta.url).pathname }, "model-path": { type: "string", default: `${process.env.HOME}/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf` }, budget: { type: "string", default: "0.15" }, runs: { type: "string", default: "1" }, "space-ms": { type: "string", default: "0" }, jev: { type: "string", default: "none" } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, writer: { type: "string", default: "canned" }, drafts: { type: "string", default: "program" }, "local-model": { type: "string", default: fileURLToPath(new URL("../../apps/local-model/.build/release/caret-local-model", import.meta.url)) }, "model-path": { type: "string", default: `${process.env.HOME}/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf` }, budget: { type: "string", default: "0.15" }, runs: { type: "string", default: "1" }, "space-ms": { type: "string", default: "0" }, jev: { type: "string", default: "none" } } });
 // B30: a live writer may draft text, whose claims Jev checks. G2: every copied value is Jev's to confirm too, so a run
 // without live Jev uses test/goal-desk.ts's stand-in, which confirms every value and claim; its rows say "jev stand-in".
 const jevLive = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;

@@ -14,6 +14,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { PROTOCOL_VERSION, type AppRef, type GoalProgress, type Node, type TypedValue } from "../src/protocol.ts";
 import { ASK_MAKER } from "../src/writer/config.ts";
@@ -23,7 +24,7 @@ import { startLocalModel } from "../src/writer/local-model.ts";
 import { toolLocalModel, type LocalModelPort } from "../src/writer/local-port.ts";
 import { button, cannedGoalWriter, draftRefusals as draftRefused, goalRefusals, goalScene, line, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";
 
-const { values: a } = parseArgs({ options: { out: { type: "string" }, cases: { type: "string", default: "fixtures/goals/b30-cases.json,fixtures/goals/b30-lead-cases.json" }, budget: { type: "string", default: "0.15" }, "space-ms": { type: "string", default: "25000" }, only: { type: "string" }, maker: { type: "string", default: ASK_MAKER }, "intent-model": { type: "string" }, writer: { type: "string", default: "canned" }, drafts: { type: "string", default: "local" }, "local-model": { type: "string", default: new URL("../../apps/local-model/.build/release/caret-local-model", import.meta.url).pathname }, "model-path": { type: "string", default: `${process.env.HOME}/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf` } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, cases: { type: "string", default: "fixtures/goals/b30-cases.json,fixtures/goals/b30-lead-cases.json" }, budget: { type: "string", default: "0.15" }, "space-ms": { type: "string", default: "25000" }, only: { type: "string" }, maker: { type: "string", default: ASK_MAKER }, "intent-model": { type: "string" }, writer: { type: "string", default: "canned" }, drafts: { type: "string", default: "local" }, "local-model": { type: "string", default: fileURLToPath(new URL("../../apps/local-model/.build/release/caret-local-model", import.meta.url)) }, "model-path": { type: "string", default: `${process.env.HOME}/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf` } } });
 if (a.drafts !== "local" && a.drafts !== "program") throw new Error("--drafts is local or program");
 if (a.drafts === "program" && a.writer === "canned") throw new Error("--drafts program needs a live --writer: the canned writer's draft text is a placeholder");
 // How Ask makes its intent: Jev's staged questions, or a writer on the route --intent-model names.
