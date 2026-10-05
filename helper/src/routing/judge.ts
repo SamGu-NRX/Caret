@@ -58,19 +58,28 @@ const OUTCOME_SAYS: Record<Outcome, string> = {
 };
 /**
  * Router 1's task question, about the one candidate whose producer checked evidence in code (routes.ts `evidence`). It is
- * asked on its own, beside the outcome question, because the task is offered next to whatever else the moment gets.
- * Before R3 the event card was one more option of the outcome question: with writing legal Router 1 chose write for all
- * of the D2-02 corpus's event moments (m26 0.61, m36 0.74, m37 0.87, m43 0.68) or abstained under the floor (m06, m25);
- * beside a kept write session, where write is no option and abstain says the user is reading, Jev split almost evenly
- * (margins 0.02, 0.10, 0.00 and 0.16 over four calls in R2's latency session: evidence/screen/r3/latency,
- * router-requests-before.ndjson). The answer still only makes an offer the user takes with Tab, after the producer's own
- * checks (the event card's two attend asks).
+ * asked on its own, beside the outcome question, because the task is offered next to whatever else the moment gets. The
+ * task, its sentence and what code found go in the request's state as `offer`; the producer's rule for when to offer it
+ * goes in the instructions; the options are short.
+ *
+ * Measured (evidence/screen/r3): before R3 the event card was one more option of the outcome question. With writing
+ * legal, Router 1 chose write for all of the D2-02 corpus's event moments (m26 0.61, m36 0.74, m37 0.87, m43 0.68) or
+ * abstained under the floor (m06, m25). Beside a kept write session, where write is no option and abstain says the user
+ * is reading, Jev split almost evenly: margins 0.02, 0.10, 0.00 and 0.16 over four calls in R2's latency session
+ * (latency/router-requests-before.ndjson). A first task question with the sentence and facts inside the act option still
+ * split (0.00, 0.01: router-requests-after.ndjson). In a live probe of 3 wanted and 4 unwanted sentences (cancelled,
+ * declined, hypothetical, other people), 2 runs each (task-wording/probe.json), that wording was right 8 of 14 times at
+ * the 0.5 floor, the offer as state with short options 10, and with the producer's rule in the instructions 14 (wanted
+ * act 0.85 to 0.93; unwanted abstain 0.81 to 1.0, the hypothetical at abstain 0.09 and 0.26). The offer inside the
+ * instructions instead of the state was right 12 times (probe-v4.json). An answer still only makes an offer the user
+ * takes with Tab, after the producer's own checks (the event card's two attend asks).
  */
 export const TASK_QUESTION = {
-  instructions: "Apart from anything else Caret does here (it may also be helping the user write), should Caret offer this one task now? It would only appear as an offer; nothing happens unless the user accepts it.",
-  abstain: "No: the user would not want it offered now. It does not fit what they are doing, or what it rests on is over, cancelled, declined, only wondered about, or about other people without the user.",
-  act: "Yes, offer it now:",
+  abstain: "No: do not offer it now.",
+  act: "Yes: offer it now.",
 } as const;
+const taskInstructions = (offerWhen: string): string =>
+  `Caret found the task in \`offer\` in what the user is doing. Should Caret offer it now, beside anything else it does here? ${offerWhen} It is only an offer: nothing happens unless the user accepts it.`;
 export const TASK_OPTIONS = ["abstain", "act"] as const;
 export type TaskChoice = (typeof TASK_OPTIONS)[number];
 
@@ -82,6 +91,8 @@ interface Taken {
   ledger: SnippetLedger;
   state: Record<string, unknown>;
   says: Map<string, string>;
+  /** Candidates whose quotes fit their windows' budgets. */
+  quoted: Set<string>;
 }
 
 /** A router's request could not be built within the privacy budgets: the field the user is in did not fit. */
@@ -110,12 +121,13 @@ function describe(model: ScreenModel, ctx: RoutingContext, candidates: readonly 
     if (labels !== null) state.form = labels;
   }
   const says = new Map<string, string>();
+  const quoted = new Set<string>();
   for (const c of candidates) {
-    const quoted = c.quotes.every((q) => ledger.take(q.window, q.kind, q.texts));
-    const evidence = c.evidence === undefined ? "" : ` ${quoted ? c.evidence.says : c.evidence.plain}`;
-    says.set(c.id, `${quoted ? c.says : c.plain}${evidence}`);
+    const fits = c.quotes.every((q) => ledger.take(q.window, q.kind, q.texts));
+    if (fits) quoted.add(c.id);
+    says.set(c.id, fits ? c.says : c.plain);
   }
-  return { ledger, state, says };
+  return { ledger, state, says, quoted };
 }
 
 /** The other empty fields around the focused one, as a count and the first labels that fit; null when it is no form. */
@@ -155,7 +167,7 @@ export interface Built1 extends Built<Outcome> {
 export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: readonly Outcome[], reg: Registry): Built1 {
   const acts = reg.routes.flatMap((r) => (r.candidate === null ? [] : [r.candidate]));
   const asking = legal.includes("ask") && reg.question !== null ? [reg.question] : [];
-  const task = legal.includes("act") ? reg.task : null;
+  const task = legal.includes("act") && reg.task?.evidence !== undefined ? reg.task : null;
   const t = describe(model, ctx, [...acts, ...asking, ...(task === null ? [] : [task])]);
   const options = legal.filter((o) => o !== "act" || acts.length > 0);
   const questions: JevRequest["questions"] = {};
@@ -172,8 +184,13 @@ export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: r
       criteria,
     };
   }
-  if (task !== null) questions.task = { type: "choice", instructions: TASK_QUESTION.instructions, criteria: { abstain: TASK_QUESTION.abstain, act: `${TASK_QUESTION.act} ${t.says.get(task.id) ?? task.plain}` } };
-  const request: JevRequest = { state: t.state, questions, ...t.ledger.declared(), retry429: false };
+  const state = { ...t.state };
+  const ev = task?.evidence;
+  if (task !== null && ev !== undefined) {
+    state.offer = t.quoted.has(task.id) ? { task: ev.task, sentence: ev.sentence, found: ev.found } : { task: ev.task, found: ev.plain };
+    questions.task = { type: "choice", instructions: taskInstructions(ev.offerWhen), criteria: { abstain: TASK_QUESTION.abstain, act: TASK_QUESTION.act } };
+  }
+  const request: JevRequest = { state, questions, ...t.ledger.declared(), retry429: false };
   return { request, options: options.length > 1 ? options : [], task };
 }
 

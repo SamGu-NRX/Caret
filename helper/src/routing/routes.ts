@@ -31,6 +31,19 @@ export interface Quoted {
   texts: readonly string[];
 }
 
+/** A task's evidence as Router 1's task question carries it (judge.ts). The event card is the one producer with it. */
+export interface TaskEvidence {
+  /** What doing it would be, with no screen text: "Add an event to the user's calendar". */
+  task: string;
+  /** The sentence it rests on, screen text taken through the candidate's `quotes`. */
+  sentence: string;
+  /** What the producer's code found in the sentence, in code's words; `plain` says it without screen text. */
+  found: string;
+  plain: string;
+  /** When the user wants it offered and when not, the producer's own rule. */
+  offerWhen: string;
+}
+
 /**
  * One thing a producer could do at this moment, listed by code before any model call. Its `run` is the producer's
  * own path (its asks, checks and offer); its `says` is code-written and quotes screen text only through `quotes`.
@@ -51,14 +64,12 @@ export interface RouteCandidate {
   /** The one fact this candidate needs from the user before it can be offered; set only when code can name it. */
   question?: { fact: string; says: string };
   /**
-   * What the producer's own code checked before listing it, in code's words: for the event card, the person and the time
-   * it found in the sentence and where the sentence came from. A ready candidate with evidence is Router 1's task question
+   * What the producer's own code checked before listing it. A ready candidate with evidence is Router 1's task question
    * (judge.ts), asked beside the outcome question rather than as one of its options, because such a task is offered next
    * to whatever else the moment gets (writing help included) and asking it inside the outcome question lost it every
-   * time (brief R3: R2's latency session, and the D2-02 corpus's event moments). `says` quotes screen text only through
-   * `quotes`; `plain` is used when they do not fit.
+   * time (brief R3: R2's latency session, and the D2-02 corpus's event moments).
    */
-  evidence?: { says: string; plain: string };
+  evidence?: TaskEvidence;
   /** Makes the offer (or asks the question) through the producer. */
   run: () => void;
   /** The context's decision did not choose it. Producers that held an offer for this moment let it go. */
