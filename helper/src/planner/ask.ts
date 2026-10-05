@@ -357,14 +357,17 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // A writer's fill with an empty list, for an instruction whose field words name no field, is read as the whole form,
   // which Jev must then confirm (confirmScope): B25's writer gave "can you get this enrollment form done from what I
   // jotted down" an empty list, and the Ask refused it as a field the form does not have (held-07).
-  const inferredAll = makerName === "writer" && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && intent.fields.length === 0 && !snap.fields.some(namesField);
+  // The writer's intent and the heads maker's one request are each one answer; the staged Jev maker asked every part
+  // twice and confirmed its fields itself. The checks below hold the first two to Jev's confirmation (P1).
+  const oneAnswer = makerName !== "jev";
+  const inferredAll = oneAnswer && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && intent.fields.length === 0 && !snap.fields.some(namesField);
   // A writer's list of every empty field Caret may type is the whole form, and Jev must confirm it as one question, as
   // for an inferred whole form: B26's held-out-2 run listed all nine fields for "fill out the pizza order from my
   // note", "pizza" named only Pizza Size, and Jev, asked about each other field alone, said no to eight. Taken as a
   // plain "all", it stood without any confirmation when no field word named a field ("fill only the first box"; B26's
   // second review).
   const empties = snap.fields.filter((f) => !f.filled && f.neverTyped === null).map((f) => f.ref);
-  const listsAll = makerName === "writer" && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
+  const listsAll = oneAnswer && fixed.fields === undefined && intent.route === "fill" && intent.scope === "list" && empties.length > 1 && empties.every((r) => intent.fields.includes(r));
   let checked: ReturnType<typeof checkIntent>;
   try {
     checked = checkIntent(inferredAll || listsAll ? { ...intent, scope: "all" } : intent, snap, fixed);
@@ -410,7 +413,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   // instruction asks for them (B25 review; B28 lead decision 1; the rule the code-mode writer has had since B24,
   // codeplan.ts confirmFields). Jev's own intents confirmed their fields already.
   // Fields the user picked are the scope they asked for (B29): no maker's reading of the instruction is checked there.
-  if (checked.route === "fill" && makerName === "writer" && !bySection && fixed.fields === undefined) {
+  if (checked.route === "fill" && oneAnswer && !bySection && fixed.fields === undefined) {
     try {
       checked = await confirmScope(instruction, checked, inferredAll || listsAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField);
     } catch (e) {

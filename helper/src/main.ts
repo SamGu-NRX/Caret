@@ -41,8 +41,8 @@ const DEFAULT_DATA_DIR = join(homedir(), "Library", "Application Support", "Care
  * How Ask makes its intent (writer/config.ts ASK_MAKER). With the writer and no key for its route, Ask runs the
  * planner as before B25 and says so; it never moves to another model or to Jev.
  */
-function askFromEnv(say: (line: string) => void): { maker: "jev" } | { maker: "writer"; writer: WriterPort } | null {
-  if (ASK_MAKER === "jev") return { maker: "jev" };
+function askFromEnv(say: (line: string) => void): { maker: "jev" | "heads" } | { maker: "writer"; writer: WriterPort } | null {
+  if (ASK_MAKER !== "writer") return { maker: ASK_MAKER };
   try {
     readKey(INTENT_ROUTE.keyName);
   } catch (e) {

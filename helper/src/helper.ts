@@ -92,6 +92,7 @@ import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
 import { fillSays } from "./planner/says.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
+import { headsIntentMaker } from "./planner/intent-heads.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
 import type { PlanErrorCode } from "./protocol.ts";
@@ -200,7 +201,7 @@ export interface HelperOptions {
    * How an Ask's instruction becomes an intent (B25, planner/ask.ts): Jev's staged questions, or the writer's
    * strict JSON through this port. Absent or null: Ask runs the planner, then the code-mode writer, as before B25.
    */
-  ask?: { maker: "jev" } | { maker: "writer"; writer: WriterPort } | null;
+  ask?: { maker: "jev" | "heads" } | { maker: "writer"; writer: WriterPort } | null;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Replaces the level's offers per hour (OfferGate), for fixture evaluations that make dozens of offers in minutes. Never set in normal use. */
@@ -291,7 +292,7 @@ export class Helper {
   /** The configured plan writer, wrapped so each request is recorded (recordRead). */
   private readonly writer: WriterPort | null;
   /** How an Ask makes its intent; the writer's port is wrapped like the plan writer's. Null: the planner as before B25. */
-  private readonly askConfig: { maker: "jev" } | { maker: "writer"; writer: WriterPort } | null;
+  private readonly askConfig: { maker: "jev" | "heads" } | { maker: "writer"; writer: WriterPort } | null;
   /** What the last "Read and prepare" use's request declared, so the two asks of one question, which declare the same text, count once. */
   private lastRead: { declared: string; at: number } | null = null;
   /** Offers already recorded as a use of "Show in Caret's UI", by key; bounded. */
@@ -430,7 +431,7 @@ export class Helper {
     const writer = opts.writer ?? null;
     this.writer = writer === null ? null : recorded(writer, "the plan writer");
     const askOpt = opts.ask ?? null;
-    this.askConfig = askOpt === null || askOpt.maker === "jev" ? askOpt : { maker: "writer", writer: recorded(askOpt.writer, "the intent writer") };
+    this.askConfig = askOpt === null || askOpt.maker !== "writer" ? askOpt : { maker: "writer", writer: recorded(askOpt.writer, "the intent writer") };
     this.mode = opts.shadow ? "shadow" : "live";
     const routed = opts.routing != null && this.ask !== null;
     // A producer's candidate arrived outside the user's own field (a held pattern offer, a resolved watch, a heard line):
@@ -1195,7 +1196,7 @@ export class Helper {
     if (askConfig !== null) {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
-        const maker = askConfig.maker === "jev" ? jevIntentMaker(ask) : writerIntentMaker(askConfig.writer, () => offerKey);
+        const maker = askConfig.maker === "writer" ? writerIntentMaker(askConfig.writer, () => offerKey) : askConfig.maker === "heads" ? headsIntentMaker(ask) : jevIntentMaker(ask);
         const d: AskDraft | AskGoal = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), goals: canGoal, ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
         store.count(`plan.ask_${d.route}`, 1);
         this.countAskRoute(d.route === "goal" ? "plan" : d.route);

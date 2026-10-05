@@ -125,7 +125,11 @@ export const WRITER_MAX_OUTPUT_TOKENS = 1000;
  * gpt-oss-120b. B26's scoreboards ran on gpt-oss-20b instead, which still had tokens, and say so. A second try two
  * hours later (code at 312cee5) ran out again within a few asks: 120b answered 2 of 20, qwen3.8 4 of 20.
  */
-export const ASK_MAKER: "writer" | "jev" = "writer";
+/*
+ * P1 (plans/fast-browser.md): "heads" is Jev in one request (planner/intent-heads.ts), to replace the Groq writer here;
+ * its scoreboard is in evidence/screen/p1. The lead's merge of L1 points "jev" at it.
+ */
+export const ASK_MAKER: "writer" | "jev" | "heads" = "writer";
 /** The writer route for intents; a change is explicit configuration and a fresh scoreboard run, never a fallback. */
 export const INTENT_ROUTE: ChatRoute = GROQ_GPT_OSS_120B;
 

@@ -16,7 +16,7 @@ import { PlannerError } from "./validate.ts";
 
 /** What making one intent cost, for the proposal's log and the scoreboard. */
 export interface MakerUse {
-  maker: "writer" | "jev";
+  maker: "writer" | "jev" | "heads";
   model: string;
   calls: number;
   inputTokens: number;
@@ -26,7 +26,8 @@ export interface MakerUse {
 }
 
 export interface IntentMaker {
-  readonly name: "writer" | "jev";
+  /** "heads" is the one-request Jev maker (intent-heads.ts). */
+  readonly name: "writer" | "jev" | "heads";
   make(snap: IntentSnapshot, signal?: AbortSignal): Promise<{ intent: AskIntent; use: MakerUse }>;
 }
 

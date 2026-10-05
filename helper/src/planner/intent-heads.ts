@@ -1,0 +1,185 @@
+// Ask's intent as one Jev request with heads (P1, plans/fast-browser.md "Intent as one request with heads"). One
+// request carries every question about the instruction; the scope answer decides which of the others are read:
+//   - scope, the operation head: the whole form, a section, particular fields, a plan, unclear, or refuse;
+//   - why, read only when scope is refuse;
+//   - section, read only when scope is section;
+//   - source and whose, always read;
+//   - one yes/no question per field, read only when scope is fields.
+// The staged Jev maker (intent-makers.ts) asked two stages twice each and rarely cleared both floors, so 14 to 16 of
+// B24's 20 asks ended as "which fields?" (writer/config.ts). Here a whole-form scope settles in one answer.
+//
+// One request means no second wording agrees with the first, so planAsk checks this maker's scope as it checks the
+// writer's (ask.ts confirmScope: Jev, asked twice, confirms fields the instruction does not name and a whole form the
+// instruction does not state). Values the instruction spells out are tied to fields by code (tieLiterals), never by Jev.
+import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
+import type { IntentMaker, MakerUse } from "./intent-makers.ts";
+import { ROUTE_CUTOFF, NOUL_FLOOR } from "./intent-makers.ts";
+import type { AskIntent, IntentField, IntentSnapshot } from "./intent.ts";
+import { relevance } from "./planner.ts";
+import { fieldWords, restrictsSources } from "./sources.ts";
+import { PlannerError } from "./validate.ts";
+import type { AskPart } from "./says.ts";
+
+/** Lowest confidence for the scope, section, why, source and whose heads: the memo's floors, plan section 3's provisional router floor, not calibrated. */
+export const HEAD_FLOOR = ROUTE_CUTOFF;
+/** Lowest probability of yes for a field the instruction asks for (scope fields): plan section 4's provisional floor, not calibrated. */
+export const FIELD_FLOOR = NOUL_FLOOR;
+
+const SCOPE: Record<string, string> = {
+  all: "Fill every empty field of the form Caret can: the whole form, or everything Caret knows.",
+  section: "Fill the fields under one heading of the form.",
+  fields: "Fill or change only particular fields that the instruction names or describes.",
+  plan: "More than filling fields with values that already exist: press a button, submit, send, add an event to the calendar, write a message, reply or description in new words, or a task of several steps.",
+  unclear: "The instruction is too unclear to say which fields it means.",
+  refuse: "Something Caret must not or cannot do here: pay, give a card number, a password, a one-time code or a Social Security number, or fill a field this form does not have.",
+};
+const WHY: Record<string, string> = {
+  neverTyped: "It asks for a card number, a password, a one-time code, or a Social Security or other government ID number.",
+  payment: "It asks to pay.",
+  pressOrSend: "It asks to submit, send or press something, and nothing else.",
+  noSuchField: "It asks for a field this form does not have.",
+  nothingToFill: "Something else Caret should not do.",
+};
+
+const TASK = "Caret reads the user's instruction about the form on screen: what to do, which fields, from where, and for whom. Answer from the instruction; Caret finds the values itself.";
+
+/** The one request: the form, sources and people as state, the heads as Choice questions, one Noul per field. */
+export function headsRequest(snap: IntentSnapshot): JevRequest {
+  const declared = snap.ledger.declared();
+  const sectionRef = new Map(snap.sections.map((s) => [s.name, s.ref]));
+  const state = {
+    instruction: snap.instruction,
+    form: {
+      title: snap.title === null ? `${snap.window.app.name} window` : `${snap.window.app.name} window '${snap.title}'`,
+      sections: snap.sections.map((s) => ({ id: s.ref, name: s.name })),
+      fields: snap.fields.map((f) => ({ id: f.ref, name: f.name, control: f.neverTyped === null ? f.control : "never typed by Caret", filled: f.filled, section: f.section === null ? null : (sectionRef.get(f.section) ?? null) })),
+    },
+    sources: snap.windows.map((w) => ({ id: w.ref, title: `${w.app}: ${w.title}${w.from === null ? "" : ` (from ${w.from})`}` })),
+    people: snap.persons.map((p) => ({ id: p.ref, span: p.span })),
+    task: TASK,
+  };
+  const scope = snap.sections.length > 0 ? SCOPE : Object.fromEntries(Object.entries(SCOPE).filter(([k]) => k !== "section"));
+  const source: Record<string, string> = { any: "The instruction does not say where the values come from.", ...(snap.memory.length > 0 ? { memory: "What the user told Caret about themselves (their own name and email)." } : {}), instruction: "Only values the instruction itself spells out." };
+  for (const w of snap.windows) source[w.ref] = `The ${w.app} window '${w.title}'${w.from === null ? "" : `, from ${w.from}`}.`;
+  const whose: Record<string, string> = { user: "The user's own details, or each field's own: the instruction names no one else whose details go in." };
+  for (const p of snap.persons) whose[p.ref] = `The details of ${p.span}, whom the instruction names.`;
+  whose.unclear = "Someone else's details, but the instruction does not say whose.";
+  const questions: JevRequest["questions"] = {
+    scope: { type: "choice", instructions: "Which fields of the form does the instruction ask Caret to fill, or what else does it ask?", criteria: scope },
+    why: { type: "choice", instructions: "If Caret should refuse the instruction, why?", criteria: WHY },
+    source: { type: "choice", instructions: "Where does the instruction say the values come from?", criteria: source },
+    whose: { type: "choice", instructions: "Whose details does the instruction ask Caret to put in the form?", criteria: whose },
+  };
+  if (snap.sections.length > 0) {
+    const section: Record<string, string> = Object.fromEntries(snap.sections.map((s) => [s.ref, `The fields under '${s.name}'.`]));
+    section.none = "No one heading of the form.";
+    questions.section = { type: "choice", instructions: "Which heading's fields does the instruction ask Caret to fill?", criteria: section };
+  }
+  const nouls: NonNullable<JevRequest["nouls"]> = {};
+  for (const f of snap.fields) nouls[`n_${f.ref}`] = { type: "noul", instructions: `Does the instruction ask to fill or change '${f.name}'?` };
+  return { state, questions, nouls, snippets: declared.snippets, charged: declared.charged };
+}
+
+/** A head's answer when it clears the floor, else null. Throws when Jev left the question unanswered. */
+function settled(r: JevResult, id: string): string | null {
+  const a = r.answers[id];
+  if (a === undefined) throw new PlannerError("jevFailed", `Jev gave no answer about the instruction's ${id}`);
+  return a.confidence >= HEAD_FLOOR ? a.choice : null;
+}
+
+const CLAUSE = /\s*(?:;|\.(?=\s|$)|,|\s+and\s+)\s*/iu;
+
+/**
+ * Ties each value the instruction spells out to the one field in scope its clause names by its words: "make the
+ * delivery 8:15" ties 8:15 to Preferred delivery time. A clause that names no field, or two equally, ties nothing; one
+ * value and one field in scope tie to each other. A tie only offers the value in that field's fill question; Jev still
+ * chooses it there.
+ */
+export function tieLiterals(snap: IntentSnapshot, scoped: readonly IntentField[]): { field: string; text: string }[] {
+  const out: { field: string; text: string }[] = [];
+  const words = fieldWords(snap.instruction);
+  const clauses = words.split(CLAUSE);
+  for (const span of snap.literals) {
+    const clause = clauses.find((c) => c.includes(span));
+    let field: IntentField | undefined;
+    if (clause !== undefined) {
+      const said = clause.split(span).join(" ");
+      const scored = scoped.map((f) => ({ f, n: relevance(said, f.name) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
+      if (scored.length > 0 && (scored.length === 1 || (scored[0] as { n: number }).n > (scored[1] as { n: number }).n)) field = scored[0]?.f;
+    }
+    if (field === undefined && clause !== undefined && snap.literals.length === 1 && scoped.length === 1) field = scoped[0];
+    if (field !== undefined && !out.some((l) => l.field === field.ref)) out.push({ field: field.ref, text: span });
+  }
+  return out;
+}
+
+/** Jev as an intent maker in one request (P1). */
+export function headsIntentMaker(askJev: AskJev): IntentMaker {
+  return {
+    name: "heads",
+    async make(snap) {
+      let r: JevResult;
+      try {
+        r = await askJev(headsRequest(snap));
+      } catch (e) {
+        throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+      }
+      const use: MakerUse = { maker: "heads", model: r.model, calls: 1, inputTokens: r.inputTokens, outputTokens: 0, costUsd: r.costUsd, latencyMs: r.latencyMs };
+      return { intent: readHeads(snap, r), use };
+    },
+  };
+}
+
+/** The intent one answer gives, at the floors: an unsettled part is asked about (B29), never read wider. */
+export function readHeads(snap: IntentSnapshot, r: JevResult): AskIntent {
+  const base: AskIntent = { route: "ask", why: "whichFields", scope: "all", section: "none", fields: [], sources: [], whose: "user", literals: [] };
+  const scope = settled(r, "scope");
+  if (scope === "refuse") {
+    const why = settled(r, "why");
+    return { ...base, route: "refuse", why: why !== null && why in WHY ? (why as AskIntent["why"]) : "nothingToFill", scope: "none" };
+  }
+  if (scope === "plan") return { ...base, route: "plan", why: "none", scope: "none" };
+
+  const open: AskPart[] = [];
+  // Which fields.
+  let kind: "all" | "section" | "list" = "all";
+  let section = "none";
+  let listed: IntentField[] = [];
+  if (scope === "all") kind = "all";
+  else if (scope === "section") {
+    const s = snap.sections.length === 0 ? null : settled(r, "section");
+    if (s !== null && s !== "none" && snap.sections.some((x) => x.ref === s)) ((kind = "section"), (section = s));
+    else open.push("fields");
+  } else if (scope === "fields") {
+    kind = "list";
+    listed = snap.fields.filter((f) => (r.nouls?.[`n_${f.ref}`] ?? 0) >= FIELD_FLOOR);
+  } else open.push("fields"); // unclear, or below the floor
+
+  // In scope for tying values: every empty field Caret may type, the section's, or the confirmed list.
+  const sectionName = snap.sections.find((x) => x.ref === section)?.name;
+  const empty = snap.fields.filter((f) => !f.filled && f.neverTyped === null);
+  const scoped = kind === "all" ? empty : kind === "section" ? empty.filter((f) => f.section === sectionName) : listed.filter((f) => f.neverTyped === null);
+  const literals = open.includes("fields") ? [] : tieLiterals(snap, scoped);
+  const fields = kind === "list" ? [...new Set([...listed.map((f) => f.ref), ...literals.map((l) => l.field)])] : [];
+  if (kind === "list" && fields.length === 0) open.push("fields");
+
+  // Where from. Unsettled, it is every source, as an ambient fill reads them, unless the instruction names its own
+  // source or keeps Caret to some: then reading every window would widen what the user said (B25 review), so it asks.
+  const source = settled(r, "source");
+  const known = source !== null && (source === "any" || source === "memory" || source === "instruction" || snap.windows.some((w) => w.ref === source));
+  if (!known && (snap.named.length > 0 || restrictsSources(snap.instruction))) open.push("source");
+  const sources = known ? [source] : [];
+
+  // Whose. Unsettled with a person named, or someone else unnamed, is a question; unsettled with no one named is the user.
+  const whose = settled(r, "whose");
+  const person = whose !== null && snap.persons.some((p) => p.ref === whose) ? whose : null;
+  if (whose === "unclear" || (whose === null && snap.persons.length > 0)) open.push("person");
+
+  const parts = { scope: kind, section, fields, sources, whose: person ?? "user", literals };
+  if (open.length > 0) {
+    const first = open[0] as AskPart;
+    const why = first === "fields" ? "whichFields" : first === "source" ? "whichSource" : whose === "unclear" ? "otherPersonUnnamed" : "whichPerson";
+    return { route: "ask", why, ...parts, open };
+  }
+  return { route: "fill", why: "none", ...parts };
+}
