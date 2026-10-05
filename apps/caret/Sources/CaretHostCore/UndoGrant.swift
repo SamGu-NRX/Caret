@@ -31,18 +31,24 @@ public struct UndoGrant: Equatable, Sendable {
     /// own `HostAuthority` grant taken at the key; `UndoGuard`, which reverts an insertion, does not
     /// apply.
     public var rangeUndo: RangeEdit?
+    /// How a writing fix's ⌘Z reverts it: Caret's AX restore, or the app's own Undo where that is
+    /// proven (`NativeUndoApps`). Only range grants use it.
+    public var strategy: UndoStrategy = .axRestore
     public var createdAt: Date
     public var lifetimeSeconds: Double
 
     /// The grant for a helper task's writes. `target` is the field the offer was taken in, so only
     /// a ⌘Z headed for that app takes it.
     /// The grant for a writing fix. `target` is the field as the fix left it.
-    public static func range(_ undo: RangeEdit, priorValue: String, writtenValue: String, writeID: UInt64, createdAt: Date = Date()) -> UndoGrant {
+    public static func range(
+        _ undo: RangeEdit, priorValue: String, writtenValue: String, writeID: UInt64, strategy: UndoStrategy = .axRestore, createdAt: Date = Date()
+    ) -> UndoGrant {
         var grant = UndoGrant(
             target: undo.target, priorValue: priorValue, writtenValue: writtenValue, insertedStart: undo.replace.start,
             insertedLength: undo.replace.length, origin: nil, writeID: writeID, createdAt: createdAt
         )
         grant.rangeUndo = undo
+        grant.strategy = strategy
         return grant
     }
 

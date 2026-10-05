@@ -537,11 +537,14 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var grantID: UInt64
         public var ok: Bool
         public var error: String?
+        /// A writing fix's undo: `axRestore` or `nativeUndo` (`UndoStrategy`). Nil for other grants.
+        public var strategy: String?
 
-        public init(grantID: UInt64, ok: Bool, error: String?) {
+        public init(grantID: UInt64, ok: Bool, error: String?, strategy: String? = nil) {
             self.grantID = grantID
             self.ok = ok
             self.error = error
+            self.strategy = strategy
         }
     }
 

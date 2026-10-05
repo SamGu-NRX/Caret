@@ -29,6 +29,7 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
     private static let keyV: CGKeyCode = 9
     private static let keyDelete: CGKeyCode = 51
     private static let keyTab: CGKeyCode = 48
+    private static let keyZ: CGKeyCode = 6
 
     init(pid: pid_t, element: AXUIElement, stillTarget: @escaping () -> Bool) {
         self.pid = pid
@@ -50,6 +51,11 @@ final class PidKeystrokeSynthesizer: KeystrokeSynthesizing {
 
     /// A plain Tab, used after a fill so the form's own focus order moves to the next field.
     func tab() { post(Self.keyTab, flags: [], text: "\t") }
+
+    /// One ⌘Z: the app's own Undo, for a writing fix's toast where it is proven (`NativeUndo`).
+    /// Marked like every key here, so the host's tap lets it through to the app untouched. True
+    /// when the key-down was posted.
+    func undo() -> Bool { post(Self.keyZ, flags: .maskCommand) }
 
     func type(_ string: String) {
         guard !string.isEmpty else { return }

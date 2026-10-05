@@ -4,9 +4,13 @@ presses keys at the HID level (a17-tool type, key, cmdz) and changes the guest's
 
   writing_vm_acceptance.py <out_dir>
 
+  native  The capability the toast's ⌘Z relies on (V1a check 6, option A): Tab fixes a misspelling,
+          the toast is left to go, and then one TextEdit ⌘Z puts back exactly the sentence as typed
+          and the next undoes the typing. NativeUndoApps lists TextEdit on this proof.
   fix     A typed misspelling at a sentence's end is underlined and its line shows. Tab fixes exactly
           that range and nothing else, with the caret back where it was. ⌘Z while the toast is up
-          puts it back, and the next ⌘Z is TextEdit's own: it undoes typing, not the fix.
+          puts it back by TextEdit's own Undo (the host reports `nativeUndo`), and the next ⌘Z is
+          TextEdit's: it undoes typing, not the fix.
   fixall  Two errors in one sentence. ↓ opens the list, ↓ to "Fix all in this paragraph" shows its
           diff, Tab applies both as one write, and one ⌘Z puts both back.
   choice  "adress", whose checker answers disagree: the line shows both and does not own Tab.
@@ -160,7 +164,9 @@ def undo_group(pid, out_dir, name, typed, fixed):
     wait_for(lambda: state().get("lastUndo") not in (None, earlier), 3)
     u1 = tool("value", pid).get("value")
     shot(pid, out_dir, f"{name}-after-cmdz")
-    check(f"{name}: ⌘Z on the toast puts the original back", u1 == typed, value=u1, typed=typed, undo=state().get("lastUndo"))
+    undo = state().get("lastUndo") or {}
+    check(f"{name}: ⌘Z on the toast puts the original back", u1 == typed and undo.get("ok") is True and undo.get("strategy") == "nativeUndo",
+          value=u1, typed=typed, undo=undo)
     u2 = tool("cmdz", pid).get("value")
     check(f"{name}: the next ⌘Z is TextEdit's and undoes typing, not the fix back in",
           u2 is not None and u2 != u1 and u2 != fixed and typed.startswith(u2), value=u2)
@@ -192,6 +198,28 @@ def fix(pid, out_dir):
     check("fix: the toast holds ⌘Z", (state().get("writing") or {}).get("panelRole") == "toast", writing=state().get("writing"))
     shot(pid, out_dir, "fix-toast")
     undo_group(pid, out_dir, "fix", sentence, fixed)
+
+
+def native(pid, out_dir):
+    """TextEdit's own Undo after Caret's AX fix, with Caret's toast gone, so ⌘Z is TextEdit's."""
+    tool("newdoc", pid)
+    sentence = "They will recieve it soon. "
+    typed, offer = type_sentence(pid, sentence)
+    check("native: the sentence typed", typed == sentence and offer is not None, value=typed)
+    before = last_insertion().get("claimID", 0)
+    press(pid, "tab")
+    ins = wait_for(lambda: (lambda i: i if i.get("claimID", 0) > before else None)(last_insertion()), 5) or {}
+    fixed = sentence.replace("recieve", "receive")
+    check("native: Tab fixed it", ins.get("ok") is True and tool("value", pid).get("value") == fixed, insertion=ins)
+    # The toast holds ⌘Z for its lifetime (UndoGrant.defaultLifetime, 5 s); after it, ⌘Z is TextEdit's.
+    gone = wait_for(lambda: (state().get("writing") or {}).get("panelRole") != "toast", 8, 0.2)
+    time.sleep(0.5)
+    earlier = state().get("lastUndo")
+    u1 = tool("cmdz", pid).get("value")
+    check("native: with the toast gone, one TextEdit ⌘Z puts back exactly the sentence as typed",
+          gone is not None and u1 == sentence and state().get("lastUndo") == earlier, value=u1, typed=sentence)
+    u2 = tool("cmdz", pid).get("value")
+    check("native: the next TextEdit ⌘Z undoes the typing", u2 is not None and u2 != u1 and sentence.startswith(u2), value=u2)
 
 
 def fixall(pid, out_dir):
@@ -239,7 +267,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     try:
         pid = setup(out_dir)
-        for case in (fix, fixall, choice):
+        for case in (native, fix, fixall, choice):
             if tool("activate", pid).get("front"):
                 case(pid, out_dir)
             else:

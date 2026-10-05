@@ -1,4 +1,5 @@
 import AppCompatibility
+import AppKit
 import ApplicationServices
 import AutocompleteCore
 import CaretHostCore
@@ -395,7 +396,9 @@ final class InsertionExecutor: @unchecked Sendable {
     /// history over (q1 bug 5).
     private func runUndo(_ grant: UndoGrant, _ authorization: HostAuthority.Grant) {
         func done(_ ok: Bool, _ error: String?) {
-            status.update { $0.lastUndo = DebugState.UndoInfo(grantID: grant.id, ok: ok, error: error) }
+            status.update {
+                $0.lastUndo = DebugState.UndoInfo(grantID: grant.id, ok: ok, error: error, strategy: grant.rangeUndo == nil ? nil : grant.strategy.rawValue)
+            }
             onUndone(UndoResult(grant: grant, ok: ok, error: error))
         }
         if grant.rangeUndo != nil { return runRangeUndo(grant, authorization, done: done) }
@@ -499,7 +502,8 @@ final class InsertionExecutor: @unchecked Sendable {
                 list.append((writeID, element, processStart))
                 if list.count > 8 { list.removeFirst(list.count - 8) }
             }
-            finish(error: nil, undo: .range(applied.undo, priorValue: before.value, writtenValue: applied.value, writeID: writeID))
+            finish(error: nil, undo: .range(applied.undo, priorValue: before.value, writtenValue: applied.value, writeID: writeID,
+                                            strategy: NativeUndoApps.strategy(bundleID: claim.offer.target.bundleID)))
         }
     }
 
@@ -517,6 +521,11 @@ final class InsertionExecutor: @unchecked Sendable {
         let stillTarget = { [policy] in
             authority.isLive(authorization) && policy.allowsLive(pid: pid) && ProcessStart.of(pid) == processStart
                 && AXRead.focusedElement(pid: pid).map { CFEqual($0, element) } == true
+        }
+        if grant.strategy == .nativeUndo {
+            let target = NativeUndoOnApp(pid: pid, element: element, stillTarget: stillTarget, live: { authority.isLive(authorization) })
+            let outcome = NativeUndo.run(grant, on: target)
+            return done(outcome == .reverted, outcome.error)
         }
         guard stillTarget() else { return done(false, authority.isLive(authorization) ? "targetNotAllowed" : "revoked") }
         guard let before = FieldReader.read(element) else { return done(false, "fieldUnreadable") }
@@ -599,6 +608,26 @@ final class InsertionExecutor: @unchecked Sendable {
         case .failure(let refusal): return .failed(refusal.code)
         case .success(let undo): return .applied(AppliedRange(value: approved.resultingValue, undo: undo))
         }
+    }
+
+    /// `NativeUndo`'s effects on the app: Accessibility reads, one pid-directed ⌘Z, a caret move.
+    private struct NativeUndoOnApp: NativeUndoTarget {
+        let pid: pid_t
+        let element: AXUIElement
+        let stillTarget: () -> Bool
+        let live: () -> Bool
+
+        func refusal() -> String? { stillTarget() ? nil : live() ? "targetNotAllowed" : "revoked" }
+        /// `NSRunningApplication.isActive` may be read off the main thread (NSRunningApplication.h:
+        /// its properties are returned atomically); this runs on the insertion queue.
+        func isFrontmost() -> Bool { NSRunningApplication(processIdentifier: pid)?.isActive == true }
+        func read() -> RangeEdit.Live? { FieldReader.read(element).map(InsertionExecutor.rangeLive) }
+        func postUndo() -> Bool { PidKeystrokeSynthesizer(pid: pid, element: element, stillTarget: stillTarget).undo() }
+        func select(_ selection: UTF16Selection) {
+            AXRead.setRange(kAXSelectedTextRangeAttribute, location: selection.start, length: selection.end - selection.start, on: element)
+        }
+        func sleep(_ seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
+        var now: Date { Date() }
     }
 
     /// The field as the range guard reads it. Input-method composition is not visible through
