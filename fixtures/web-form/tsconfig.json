@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["accept.ts", "server.ts"]
+  "include": ["accept.ts", "server.ts", "oracle.ts", "tasks/**/*.ts", "tests/**/*.ts"]
 }

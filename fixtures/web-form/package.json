@@ -7,7 +7,10 @@
   "scripts": {
     "serve": "node server.ts",
     "vendor": "node build-vendor.mjs",
-    "accept": "node accept.ts"
+    "accept": "node accept.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test --test-concurrency=1 'tests/*.test.ts'",
+    "tasks:bundle": "node tasks/build-bundle.mjs"
   },
   "devDependencies": {
     "@puppeteer/browsers": "3.2.3",

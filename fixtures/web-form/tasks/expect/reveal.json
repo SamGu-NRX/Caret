@@ -1,0 +1,67 @@
+{
+  "page": "reveal",
+  "sources": {
+    "note": "Apartment + paperwork stuff\nHome: 48 Larchmere Avenue, Toronto, Ontario (moved in June).\nMail still goes to my parents' place until the building fixes the mailboxes: 112 Birchmount Road, Hamilton, L8P 2K4.\nContracting through Bluefin Staffing Partners since January, placed at the distribution centre.\nFinished the logistics certificate at Lakeshore Polytechnic Institute in 2024. Done with school.",
+    "email": {
+      "from": "Dan Mbeki <dan.mbeki.home@example.org>",
+      "to": "Priya Castellanos <priya.castellanos@example.com>",
+      "subject": "Put you in for the warehouse systems analyst job",
+      "body": "Hey Priya,\n\nI submitted the referral for the Warehouse Systems Analyst opening on our team. When the application asks how you heard about it, pick Employee referral and list me as Daniel Mbeki with my work address, daniel.mbeki@example.net. The referral system won't match this personal address.\n\nMy cell is 555-0131 if you want to talk through the role first.\n\nDan"
+    },
+    "memory": [
+      {
+        "key": "full name",
+        "value": "Priya Castellanos"
+      },
+      {
+        "key": "personal email",
+        "value": "priya.castellanos@example.com"
+      },
+      {
+        "key": "citizenship",
+        "value": "Canadian citizen; authorized to work in Canada; does not need visa sponsorship"
+      }
+    ]
+  },
+  "expected": {
+    "full_name": "Priya Castellanos",
+    "email": "priya.castellanos@example.com",
+    "country": "Canada",
+    "region": "Ontario",
+    "employment_type": "Contractor",
+    "agency": "Bluefin Staffing Partners",
+    "student_school": "none",
+    "student_grad_year": "none",
+    "authorized": "Yes",
+    "sponsorship": "No",
+    "heard": "Employee referral",
+    "referrer_name": "Daniel Mbeki",
+    "referrer_email": "daniel.mbeki@example.net",
+    "street": "48 Larchmere Avenue",
+    "city": "Toronto",
+    "mailing_differs": "true",
+    "mail_street": "112 Birchmount Road",
+    "mail_city": "Hamilton",
+    "mail_postal": "L8P 2K4",
+    "notes": "none"
+  },
+  "basis": {
+    "full_name": "memory 'full name': 'Priya Castellanos'",
+    "email": "memory 'personal email': 'priya.castellanos@example.com' (not Dan's addresses)",
+    "country": "note: 'Home: 48 Larchmere Avenue, Toronto, Ontario'",
+    "region": "note: 'Toronto, Ontario'; shown as Province once Country is Canada",
+    "employment_type": "note: 'Contracting through Bluefin Staffing Partners since January'",
+    "agency": "note: 'Contracting through Bluefin Staffing Partners'; shown because employment type is Contractor",
+    "authorized": "memory 'citizenship': 'authorized to work in Canada'",
+    "sponsorship": "memory 'citizenship': 'does not need visa sponsorship'; shown because authorized is Yes",
+    "heard": "email: 'pick Employee referral'",
+    "referrer_name": "email: 'list me as Daniel Mbeki'",
+    "referrer_email": "email: 'with my work address, daniel.mbeki@example.net' (not the sender address dan.mbeki.home@example.org)",
+    "street": "note: 'Home: 48 Larchmere Avenue, Toronto, Ontario'",
+    "city": "note: 'Home: 48 Larchmere Avenue, Toronto, Ontario'",
+    "mailing_differs": "note: 'Mail still goes to my parents' place'",
+    "mail_street": "note: 'my parents' place ...: 112 Birchmount Road, Hamilton, L8P 2K4'",
+    "mail_city": "note: '112 Birchmount Road, Hamilton, L8P 2K4'",
+    "mail_postal": "note: '112 Birchmount Road, Hamilton, L8P 2K4'"
+  }
+}
