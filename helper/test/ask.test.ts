@@ -352,6 +352,18 @@ describe("the heads intent maker (P1)", () => {
     expect(read("fill this out, only use what I typed", { scope: "all", source: "w1" }, {}, low)).toMatchObject({ route: "ask", why: "whichSource", open: ["source"] });
   });
 
+  it("puts the instruction's own sources before a settled source head (P1 review)", () => {
+    // Named windows stand for "any" or another window, settled or not: checkIntent reads "any" as every window.
+    const s = snapOf("fill my email from my rental notes");
+    const notes = s.windows.find((w) => w.title === "Rental notes.txt")?.ref;
+    expect(read("fill my email from my rental notes", { scope: "all", source: "any" })).toMatchObject({ route: "fill", sources: [notes] });
+    expect(read("fill my email from my rental notes", { scope: "all", source: s.windows.find((w) => w.title === "Draft.txt")?.ref ?? "" })).toMatchObject({ route: "fill", sources: [notes] });
+    // An instruction that keeps Caret to its own words takes only "instruction"; anything else is asked.
+    expect(read("fill my email, only use what I typed", { scope: "all", source: "any" })).toMatchObject({ route: "ask", why: "whichSource", open: ["source"] });
+    expect(read("fill my email, only use what I typed", { scope: "all", source: "memory" })).toMatchObject({ route: "ask", open: ["source"] });
+    expect(read("fill my email, only use what I typed", { scope: "all", source: "instruction" })).toMatchObject({ route: "fill", sources: ["instruction"] });
+  });
+
   it("asks whose details for someone unnamed, or for an unsettled answer when someone is named; the user's own otherwise", () => {
     expect(read("add his number", { scope: "all", source: "any", whose: "unclear" })).toMatchObject({ route: "ask", why: "otherPersonUnnamed", open: ["person"] });
     expect(read("use Gary for this", { scope: "all", source: "any", whose: "p1" }, {}, { whose: HEAD_FLOOR - 0.01 })).toMatchObject({ route: "ask", why: "whichPerson", open: ["person"] });
@@ -367,6 +379,18 @@ describe("the heads intent maker (P1)", () => {
     expect(tieLiterals(two, two.fields.filter((f) => !f.filled && f.neverTyped === null))).toEqual([]);
     const named = snapOf("set landlord phone to 512-555-0193");
     expect(tieLiterals(named, named.fields.filter((f) => !f.filled && f.neverTyped === null))).toEqual([{ field: refOf(named, "Landlord phone"), text: "512-555-0193" }]);
+  });
+
+  it("never ties a value to a field in scope when its clause names another field of the form (P1 review)", () => {
+    const s = snapOf('set Full name to "Alice" and fill landlord name');
+    expect(tieLiterals(s, s.fields.filter((f) => f.name === "Landlord name"))).toEqual([]);
+    expect(tieLiterals(s, s.fields.filter((f) => f.name === "Full name" || f.name === "Landlord name"))).toEqual([{ field: refOf(s, "Full name"), text: "Alice" }]);
+    // A quoted value may hold a comma; its clause is still the one around it.
+    const q = snapOf('set landlord name to "Pruitt, Gary"');
+    expect(tieLiterals(q, q.fields.filter((f) => !f.filled && f.neverTyped === null))).toEqual([{ field: refOf(q, "Landlord name"), text: "Pruitt, Gary" }]);
+    // One value, one field in scope, and a clause that names no field: they tie.
+    const one = snapOf("actually make it 8:15");
+    expect(tieLiterals(one, one.fields.filter((f) => f.name === "Delivery time"))).toEqual([{ field: refOf(one, "Delivery time"), text: "8:15" }]);
   });
 
   it("goes through planAsk's confirmation as the writer's intent does: a listed field the instruction does not name stands only on Jev's yes", async () => {

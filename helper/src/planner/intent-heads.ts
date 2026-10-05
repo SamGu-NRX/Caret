@@ -90,24 +90,27 @@ function settled(r: JevResult, id: string): string | null {
 const CLAUSE = /\s*(?:;|\.(?=\s|$)|,|\s+and\s+)\s*/iu;
 
 /**
- * Ties each value the instruction spells out to the one field in scope its clause names by its words: "make the
- * delivery 8:15" ties 8:15 to Preferred delivery time. A clause that names no field, or two equally, ties nothing; one
- * value and one field in scope tie to each other. A tie only offers the value in that field's fill question; Jev still
- * chooses it there.
+ * Ties each value the instruction spells out to the field its clause names by its words: "make the delivery 8:15"
+ * ties 8:15 to Preferred delivery time. The clause is the text around the value up to the nearest clause breaks, so a
+ * quoted value may hold commas. The field must be the one field of the whole form the clause names best, and in scope:
+ * "set Full name to Alice and fill Company" ties Alice to nothing when only Company is in scope (P1 review). A clause
+ * that names no field of the form ties its value to the one field in scope, when the instruction spells out one value.
+ * A tie only offers the value in that field's fill question; Jev still chooses it there.
  */
 export function tieLiterals(snap: IntentSnapshot, scoped: readonly IntentField[]): { field: string; text: string }[] {
   const out: { field: string; text: string }[] = [];
   const words = fieldWords(snap.instruction);
-  const clauses = words.split(CLAUSE);
   for (const span of snap.literals) {
-    const clause = clauses.find((c) => c.includes(span));
+    const at = words.indexOf(span);
+    // A value inside a source phrase ("from Dana's note") is not a value for a field.
+    if (at < 0) continue;
+    const said = `${words.slice(0, at).split(CLAUSE).at(-1) ?? ""} ${words.slice(at + span.length).split(CLAUSE)[0] ?? ""}`;
+    const named = snap.fields.map((f) => ({ f, n: relevance(said, f.name) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
     let field: IntentField | undefined;
-    if (clause !== undefined) {
-      const said = clause.split(span).join(" ");
-      const scored = scoped.map((f) => ({ f, n: relevance(said, f.name) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n);
-      if (scored.length > 0 && (scored.length === 1 || (scored[0] as { n: number }).n > (scored[1] as { n: number }).n)) field = scored[0]?.f;
-    }
-    if (field === undefined && clause !== undefined && snap.literals.length === 1 && scoped.length === 1) field = scoped[0];
+    if (named.length > 0) {
+      const best = named[0] as { f: IntentField; n: number };
+      if ((named.length === 1 || best.n > (named[1] as { n: number }).n) && scoped.includes(best.f)) field = best.f;
+    } else if (snap.literals.length === 1 && scoped.length === 1) field = scoped[0];
     if (field !== undefined && !out.some((l) => l.field === field.ref)) out.push({ field: field.ref, text: span });
   }
   return out;
@@ -163,16 +166,21 @@ export function readHeads(snap: IntentSnapshot, r: JevResult): AskIntent {
   const fields = kind === "list" ? [...new Set([...listed.map((f) => f.ref), ...literals.map((l) => l.field)])] : [];
   if (kind === "list" && fields.length === 0) open.push("fields");
 
-  // Where from. Unsettled, the instruction's own words decide. Naming no source, it is every source, as an ambient fill
-  // reads them. Naming windows, it is those windows as code resolved them (sources.ts), which checkIntent reads whatever
-  // a maker says: reading every window would widen what the user said (B25 review). Keeping Caret to some sources ("only
-  // what I typed"), or naming a window the request does not list, it asks.
+  // Where from. The instruction's own words come first, whatever the head says, since checkIntent reads "any" as every
+  // window but the excluded ones (P1 review: a settled "any" read Draft.txt for "my email from my rental notes"):
+  //   - keeping Caret to some sources ("only what I typed", "don't read other windows"): only "instruction" stands, and
+  //     anything else is asked;
+  //   - naming windows: those windows as code resolved them (sources.ts); one the request does not list is asked;
+  //   - saying nothing: the head's answer, or every source, as an ambient fill reads them, when it is unsettled.
   const source = settled(r, "source");
   const known = source !== null && (source === "any" || source === "memory" || source === "instruction" || snap.windows.some((w) => w.ref === source));
   let sources: string[] = known ? [source] : [];
-  if (!known && (snap.named.length > 0 || restrictsSources(snap.instruction))) {
+  if (restrictsSources(snap.instruction)) {
+    if (source === "instruction") sources = ["instruction"];
+    else open.push("source");
+  } else if (snap.named.length > 0) {
     const named = snap.named.map((n) => snap.windows.find((w) => w.windowId === n.windowId)?.ref);
-    if (restrictsSources(snap.instruction) || named.some((x) => x === undefined)) open.push("source");
+    if (named.some((x) => x === undefined)) open.push("source");
     else sources = named as string[];
   }
 
