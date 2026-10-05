@@ -127,7 +127,7 @@ describe("goal messages on the socket", () => {
     const reply = await host.waitFor((m) => m.type === "goalProgress");
     expect(reply).toMatchObject({ event: "stopped", reason: "refused", requestId: "r1", says: "No plan writer is configured, so Caret cannot plan this" });
     // A published goalProgress reaches the goal-planning host and no other consumer.
-    server.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: 1, goalId: "g", requestId: null, event: "finished", outcome: "done", verified: 1, skipped: 0, says: "Done: 1 step verified." });
+    server.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: 1, goalId: "g", requestId: null, event: "finished", outcome: "done", verified: 1, skipped: 0, left: [], says: "Done: 1 step verified." });
     await host.waitFor((m) => m.type === "goalProgress" && m.goalId === "g");
     await new Promise((r) => setTimeout(r, 50));
     expect(other.received.filter((m) => (m as { type: string }).type === "goalProgress")).toEqual([]);

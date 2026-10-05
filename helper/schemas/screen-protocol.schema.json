@@ -8191,7 +8191,8 @@
                   "type": "string",
                   "enum": [
                     "done",
-                    "handoff"
+                    "handoff",
+                    "partial"
                   ]
                 },
                 "verified": {
@@ -8203,6 +8204,15 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
+                },
+                "left": {
+                  "maxItems": 24,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  }
                 },
                 "says": {
                   "type": "string",
@@ -8220,6 +8230,7 @@
                 "outcome",
                 "verified",
                 "skipped",
+                "left",
                 "says"
               ],
               "additionalProperties": false

@@ -23,7 +23,8 @@ import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
 import { basisText, windowRevision } from "./inventory.ts";
 import { checkDraftText, DraftRefused, senderOf } from "./drafts.ts";
-import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep } from "./plan.ts";
+import { owedFields } from "./left.ts";
+import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep, type LeftItem } from "./plan.ts";
 import type { DonePress } from "./lower.ts";
 
 /** How long a segment's preview may wait for its acceptance: the act grant's own limit (protocol.ts GRANT_MAX_MS). */
@@ -71,6 +72,11 @@ interface Run {
    * may still have landed, so a fresh plan may not make it again (re-check: a Next that timed out was pressed twice).
    */
   pressed: DonePress[];
+  /**
+   * What the goal leaves undone (G2): its plan's left items and those of every goal it replaces, which a fresh plan
+   * does not wipe out. Checked again when the goal ends (leftNow).
+   */
+  owed: LeftItem[];
   cursor: GoalCursor;
   state: State;
   expires: number;
@@ -165,7 +171,7 @@ export class GoalRuns {
   }
 
   /** Offers a goal's first segment for acceptance, as the reply to `requestId` (or as a fresh plan replacing another). */
-  propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[] } | null = null): GoalProgress {
+  propose(given: GoalPlan, session: string | undefined, requestId: string | null, replaces: { goalId: string; carried: StepReceipt[]; pressed: DonePress[]; owed: LeftItem[] } | null = null): GoalProgress {
     if (this.runs.has(given.goalId)) throw new Error(`goal ${given.goalId} already exists`);
     // Only lowering's gates (G2, gates.ts) mark a write: a plan built any other way is a bug, never offered.
     const unchecked = given.segments.flatMap((s) => s.steps).find((s) => s.kind === "write" && s.gate === null);
@@ -182,6 +188,7 @@ export class GoalRuns {
       replaces: replaces?.goalId ?? null,
       carried: replaces?.carried ?? [],
       pressed: replaces?.pressed ?? [],
+      owed: [...(replaces?.owed ?? []).filter((x) => !plan.left.some((y) => y.windowId === x.windowId && y.key === x.key)), ...plan.left],
       cursor: { programHash: plan.programHash, planDigest: plan.digest, segment: 0, nextStep: 0, sourceRevisions: Object.fromEntries(plan.inventory.revisions), receipts: [], bindings },
       state: "awaiting",
       expires: this.deps.now() + ACCEPT_MS,
@@ -398,14 +405,66 @@ export class GoalRuns {
     this.finish(run, "done");
   }
 
-  private finish(run: Run, outcome: "done" | "handoff"): void {
+  /**
+   * The goal's end. `reached` is how its last segment ended: every step verified ("done"), or at the hand-off the plan
+   * planned ("handoff"). What is still left then decides the outcome (G2): anything besides the recipient makes it
+   * partial, a recipient alone makes it a hand-off, and only nothing left is done.
+   */
+  private finish(run: Run, reached: "done" | "handoff"): void {
     this.endTask(run);
     run.state = "finished";
     const verified = run.cursor.receipts.filter((r) => r.status === "verified").length;
     const skipped = run.cursor.receipts.filter((r) => r.status === "alreadyTrue").length;
-    const handoff = run.plan.segments.flatMap((x) => x.steps).find((x) => x.kind === "handoff");
-    const says = outcome === "handoff" && handoff !== undefined ? `Ready: ${verified} done${skipped > 0 ? `, ${skipped} already so` : ""}. ${handoff.says}.` : `Done: ${verified} step${verified === 1 ? "" : "s"} verified${skipped > 0 ? `, ${skipped} already so` : ""}.`;
-    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "finished", outcome, verified, skipped, says });
+    const left = this.leftNow(run);
+    const outcome = left.some((l) => l.why !== "recipient") ? "partial" : left.length > 0 ? "handoff" : reached;
+    const handoff = reached === "handoff" ? run.plan.segments.flatMap((x) => x.steps).find((x) => x.kind === "handoff") : undefined;
+    const tally = `${verified}${skipped > 0 ? `, ${skipped} already so` : ""}`;
+    const names = left.map((l) => `'${l.label}'`).join(", ");
+    const says =
+      outcome === "partial"
+        ? `Partly done: ${verified} step${verified === 1 ? "" : "s"} verified${skipped > 0 ? `, ${skipped} already so` : ""}. Left for you: ${names}.`
+        : outcome === "handoff"
+          ? [`Ready: ${tally} done.`, ...left.map((l) => `You add the recipient in '${l.label}'.`), ...(handoff === undefined ? [] : [`${handoff.says}.`])].join(" ")
+          : `Done: ${verified} step${verified === 1 ? "" : "s"} verified${skipped > 0 ? `, ${skipped} already so` : ""}.`;
+    this.deps.publish({ type: "goalProgress", v: PROTOCOL_VERSION, at: this.deps.now(), goalId: run.plan.goalId, requestId: null, event: "finished", outcome, verified, skipped, left: left.slice(0, 24).map((l) => clip(l.says, 300)), says: clip(says, 600) });
+  }
+
+  /**
+   * What the goal leaves undone as the screen reads now. A write code dropped stays left unless a later plan for the
+   * same goal wrote that field; a required field or a recipient is left while it reads empty, or when its window is
+   * gone (nothing can show it was filled). Every window the goal meant to write in is read again for fields its kind
+   * requires (left.ts), and a step Caret planned that has no receipt is left too.
+   */
+  private leftNow(run: Run): LeftItem[] {
+    const receipts = [...run.carried, ...run.cursor.receipts].filter((r) => r.status !== "handoff");
+    const wrote = (windowId: string, key: string): boolean => receipts.some((r) => r.target.windowId === windowId && r.target.key === key);
+    const out: LeftItem[] = [];
+    const add = (l: LeftItem): void => {
+      if (!out.some((x) => x.windowId === l.windowId && x.key === l.key)) out.push(l);
+    };
+    for (const l of run.owed) {
+      if (l.why === "dropped") {
+        if (!wrote(l.windowId, l.key)) add(l);
+        continue;
+      }
+      const n = this.deps.model.windows.get(l.windowId)?.nodes.get(l.key);
+      if (n === undefined || (n.value ?? "").trim() === "") add(l);
+    }
+    const steps = run.plan.segments.flatMap((x) => x.steps);
+    const windows = new Set([...run.owed.map((l) => l.windowId), ...steps.flatMap((x) => (x.kind === "write" && x.target.domain.kind === "window" ? [x.target.domain.windowId] : []))]);
+    for (const id of windows) {
+      const w = this.deps.model.windows.get(id);
+      if (w === undefined) continue;
+      for (const f of owedFields(w)) {
+        if (!f.empty) continue;
+        add({ windowId: id, key: f.key, label: f.label, why: f.why, says: f.why === "recipient" ? `You add the recipient in '${f.label}'` : `'${f.label}' is required, and this plan leaves it empty` });
+      }
+    }
+    for (const x of steps) {
+      if (x.kind === "handoff" || run.cursor.receipts.some((r) => r.step === x.index && r.status !== "handoff")) continue;
+      add({ windowId: x.target.domain.kind === "window" ? x.target.domain.windowId : "calendar", key: x.target.key, label: x.target.label, why: "dropped", says: `Caret didn't confirm '${x.target.label}'` });
+    }
+    return out;
   }
 
   private async segmentStopped(run: Run, seg: GoalSegment, m: Pick<Extract<TaskProgress, { phase: "stopped" }>, "step" | "stopReason" | "detail">): Promise<void> {
@@ -472,7 +531,7 @@ export class GoalRuns {
       plan = null;
     }
     if (plan === null || this.runs.has(plan.goalId)) return null;
-    const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed] });
+    const msg = this.propose(plan, run.session, null, { goalId: run.plan.goalId, carried: completed, pressed: [...run.pressed], owed: run.owed });
     return msg.event === "segment" ? { ...msg, reason } : msg;
   }
 
@@ -584,6 +643,8 @@ export class GoalRuns {
     for (const run of this.runs.values()) if (run.state === "awaiting") this.stop(run, "readerRestarted", null, `${SAYS.readerRestarted}, so the plan's windows no longer apply`);
   }
 }
+
+const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
 function deepFreeze<T>(v: T): T {
   if (v !== null && typeof v === "object" && !Object.isFrozen(v)) {
