@@ -57,7 +57,7 @@ export function consentLike(label: string): boolean {
  * ticked or offered (D2-04 review: "Receive product announcements" was written). Boxes only: a menu labelled
  * "Preferred contact method" is a plain choice.
  */
-const SIGN_UP = /\b(?:receive|announcements?|communications?|contact(?:ed)?|call me|calls|sms|texts?|messages|alerts|reminders|digest|mailing|partners?|third[- ]part(?:y|ies)|shar(?:e|ing)|sell|ads|advertis\w*|personali[sz]\w*|tracking|cookies?|surveys?|research|feedback|deals|discounts)\b/i;
+const SIGN_UP = /\b(?:receive|announcements?|communications?|contact(?:ed)?|call me|calls|sms|texts?|messages|alerts|reminders|digest|mailing|partners?|third[- ]part(?:y|ies)|shar(?:e|ing)|sell|ads|advertis\w*|personali[sz]\w*|tracking|cookies?|surveys?|research|feedback|deals|discounts|hear (?:about|from)|interested in|learn (?:about|more)|verif(?:y|ies|ied|ication))\b/i;
 /** Whether a box is one Caret never ticks or offers: a consent or a sign-up. */
 export function boxNeverTicked(label: string): boolean {
   return CONSENT.test(label) || SIGN_UP.test(label);
@@ -166,6 +166,8 @@ const OPENING = /^(?:are you|do you have|do you|have you|can you|is your|are you
 const ASKS = /^(?:(?:are|do|does|did|have|has|can|could|will|would|is|was|were|should|shall|may|might)\s+(?:you|your|they|we|he|she|it|this|there|i)\b|(?:what|which|when|where|who|whom|whose|why|how)\b)/u;
 /** Answers that say yes to a "Label: answer" line. */
 const AFFIRMATIVE = /^(?:yes|y|true|✓|✔)$/i;
+/** Words of a list's label or line that make its items no plain choice: "Do not include: bacon", "If available: bacon". */
+const NOT_A_CHOICE = new Set(["if", "unless", "except", "excluding", "exclude", "avoid", "optional", "maybe", "possibly", "perhaps", "allergic", "allergy", "allergies", "instead"]);
 
 /** Lower-case words with their apostrophes kept, so "don't" stays one word. */
 const tokens = (s: string): string[] => norm(s.replace(/[’‘]/g, "'")).split(/[^\p{L}\p{N}']+/u).filter((w) => w !== "");
@@ -192,14 +194,32 @@ function asks(span: string): boolean {
 }
 
 /**
- * Whether a source states the fact a box asks (D2-04), so a Fill all may tick it: the picked span is the user's own
- * statement of the box's fact ("I have a valid driving license" for "Do you have a valid driving license?"), or it is the
- * yes of a "Label: answer" line whose label is that fact ("Valid driving license: yes"). Only the opening words that say
- * who asks or speaks, and articles, are set aside (factWords); every other word must match, in order, so a modal, a
- * tense or a condition makes it no match. A bare phrase ("Valid driving license") states nothing by itself: under
- * "Requirements:" it is the job's, not the user's, so the direct match needs a first-person span. Nothing is inferred
- * from a related fact ("Age: 34" for "Are you over 18?"), a question, or text or a context with a negating word the
- * label lacks. A consent or sign-up box never reaches this (boxNeverTicked).
+ * What a box's label is, which decides whether Caret proposes a tick for it at all (D2-04, after two reviews found
+ * consent and certification wording no word list catches):
+ * - "question": it asks the user a fact ("Are you over 18?", "Do you have a valid driving license?"). A tick a source
+ *   states may be written. An opt-in asked as a question ("Would you like to receive …", "Do you want …", "Can we …")
+ *   is no fact; it is "statement".
+ * - "statement": the user speaks ("I have read …", "I want to hear …", "I verify …", "My answers are correct"). That is
+ *   how consents, certifications and sign-ups read, so such a box never gets a value, written or handed off.
+ * - "other": a bare phrase ("Valid driving license", "Bacon"). A tick may only be handed to the user, never written.
+ */
+export function boxKind(label: string): "question" | "statement" | "other" {
+  const t = tokens(label).join(" ");
+  if (/^(?:would you like|would you be|do you want|do you wish|do you agree|do you consent|can we|may we|shall we|should we|could we|is it ok)\b/u.test(t)) return "statement";
+  if (/^(?:are you|do you have|do you|have you|can you|is your|are your|will you be|did you|were you)\b/u.test(t)) return "question";
+  if (/^(?:i|i'm|i've|i'd|i'll|me|my|we|we're|our|us)\b/u.test(t)) return "statement";
+  return "other";
+}
+
+/**
+ * Whether a source states the fact a box asks (D2-04): the picked span is the user's own statement of the box's fact
+ * ("I have a valid driving license" for "Do you have a valid driving license?"), or it is the yes of a "Label: answer"
+ * line whose label is that fact ("Valid driving license: yes"). Only the opening words that say who is asked or speaks,
+ * and articles, are set aside (factWords); every other word must match, in order, so a modal, a tense or a condition
+ * makes it no match. A bare phrase ("Valid driving license") states nothing by itself: under "Requirements:" it is the
+ * job's, not the user's, so the direct match needs a first-person span. Nothing is inferred from a related fact ("Age:
+ * 34" for "Are you over 18?"), a question, or text or a context with a negating word the label lacks. Which boxes may
+ * take such a tick at all is boxKind's and boxNeverTicked's.
  */
 export function statesFact(label: string, span: string, context: string | null): boolean {
   const want = factWords(label);
@@ -210,23 +230,17 @@ export function statesFact(label: string, span: string, context: string | null):
 
 /**
  * Whether a span lists the box's label as one of two or more items ("Toppings: bacon, extra cheese" for "Bacon"): a
- * choice the source states, as an option of a list. The item must be the label exactly (its words, in order); a span
- * with "or", a question or a negating word states no choice.
+ * choice the source states, as an option of a list. The item must be the label exactly (its words, in order). A span
+ * or its line's label with "or", a question, a negating word or a condition ("Do not include:", "If available:")
+ * states no choice (D2-04 second review).
  */
-export function namedInList(label: string, span: string): boolean {
+export function namedInList(label: string, span: string, context: string | null = null): boolean {
   if (asks(span) || negates(label, span) || /\bor\b/iu.test(span)) return false;
+  if (context !== null && (negates(label, context) || asks(context) || tokens(context).some((w) => NOT_A_CHOICE.has(w)))) return false;
+  if (tokens(span).some((w) => NOT_A_CHOICE.has(w))) return false;
   const items = span.split(/\s*(?:,|;|\/|&|\band\b|\bplus\b)\s*/iu).map((x) => x.trim()).filter((x) => x !== "");
   const want = wordsOf(label).join(" ");
   return items.length >= 2 && want !== "" && items.some((x) => wordsOf(x).join(" ") === want);
-}
-
-/**
- * Whether a box's label is a question to the user or a statement by them ("Are you over 18?", "I have a valid driving
- * license"): a Fill all writes a stated fact only into such a box (D2-04 review). A bare phrase ("Valid driving
- * license") is handed to the user to tick, since a consent can read as one too.
- */
-export function statementLabel(label: string): boolean {
-  return OPENING.test(`${tokens(label).join(" ")} `);
 }
 
 const ROLE_NAMES: Record<FormControl["control"], string> = {

@@ -171,7 +171,9 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null,
 function otherChecked(el: Element): boolean {
   if (el instanceof HTMLInputElement && el.type === "radio") {
     if (el.name === "") return false;
-    const root = el.form ?? (el.getRootNode() as Document | ShadowRoot);
+    // The whole tree, filtered by form owner: a peer outside the form element can belong to it by its form attribute
+    // (D2-04 second review), and one in another form is another choice.
+    const root = el.getRootNode() as Document | ShadowRoot;
     const peers = [...root.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)].filter((x) => x !== el && (x as HTMLInputElement).form === el.form);
     return peers.some((x) => (x as HTMLInputElement).checked);
   }

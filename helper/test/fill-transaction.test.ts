@@ -16,12 +16,12 @@ import { wirePageEngines } from "../src/engines/wire.ts";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
 import { ScreenModel } from "../src/model.ts";
-import { boxNeverTicked, namedInList, negates, statementLabel, statesFact } from "../src/fill/controls.ts";
+import { boxKind, boxNeverTicked, namedInList, negates, statesFact } from "../src/fill/controls.ts";
 import { readClock, readDate, readDateTime } from "../src/fill/when.ts";
 import { PAGE_WINDOW_KIND, proposeFill } from "../src/fill/fill.ts";
 import { fillPopupEligible, recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { parsePopupSpec } from "../src/popup.ts";
-import { field, focus, jevPickingText, node, snap, text } from "./builders.ts";
+import { field, focus, jevPickingText, node, snap, text, value } from "./builders.ts";
 
 const X = "kcmlnoabcdefghijklmnopabcdefghij";
 const chrome = { pid: 4100, bundleId: "com.google.chrome.for.testing", name: "Google Chrome for Testing" };
@@ -37,7 +37,7 @@ const NOTE = [
   "Email: robin@example.test",
   "Country: Canada",
   "Shift: Night",
-  "I have a valid driving license: yes",
+  "Valid driving license: yes",
   "Age: 34",
   "Start date: October 20, 2026",
   "Interview time: 3:30 PM",
@@ -51,7 +51,7 @@ const PICKS: Record<string, string> = {
   Email: "robin@example.test",
   Country: "Canada",
   Shift: "Night",
-  "I have a valid driving license": "yes",
+  "Do you have a valid driving license?": "yes",
   "Are you over 18?": "34",
   "Start date": "October 20, 2026",
   "Interview time": "3:30 PM",
@@ -73,7 +73,7 @@ function mixedControls(): PageControl[] {
     c("e3", "select", "Country", { options: [{ value: "", label: "Choose a country", selected: true }, { value: "ca", label: "Canada", selected: false }, { value: "mx", label: "Mexico", selected: false }, { value: "us", label: "United States", selected: false }] }),
     c("e4", "radio", "Day", { checked: false, group: shift }),
     c("e5", "radio", "Night", { checked: false, group: shift }),
-    c("e6", "checkbox", "I have a valid driving license", { checked: false }),
+    c("e6", "checkbox", "Do you have a valid driving license?", { checked: false }),
     c("e7", "checkbox", "Are you over 18?", { checked: false }),
     c("e8", "checkbox", "Send me news and offers", { checked: false }),
     c("e9", "date", "Start date", { value: "" }),
@@ -430,6 +430,33 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     expect(get(p, boxes[4]!.key)).toBeUndefined();
   });
 
+  it("gives no value to a box the user speaks in, the second review's included, nor to a list item under a negated or conditional line", async () => {
+    const note = ["I want to hear about new products: yes", "I verify my answers are correct: yes", "Do not include: bacon, extra cheese", "If available: onion, mushroom"].join("\n");
+    const boxes = [box("I want to hear about new products"), box("I verify my answers are correct"), box("Bacon"), box("Mushroom")];
+    const p = await proposeFill(desk(note, boxes), ask({ "I want to hear about new products": "yes", "I verify my answers are correct": "yes", Bacon: "bacon, extra cheese", Mushroom: "onion, mushroom" }), "form", `${W}/textfield:name~0`, 2000);
+    for (const b of boxes) expect(get(p, b.key)?.handoff ?? null, b.label).toBeNull();
+  });
+
+  it("writes a box's tick only from a 'Label: yes' line; the user's own sentence, or a bare-phrase box, is handed to them", async () => {
+    const note = ["I have a valid driving license", "Remote work: yes", "Toppings: bacon, extra cheese"].join("\n");
+    const boxes = [box("Do you have a valid driving license?"), box("Remote work"), box("Bacon")];
+    const p = await proposeFill(desk(note, boxes), ask({ "Do you have a valid driving license?": "I have a valid driving license", "Remote work": "yes", Bacon: "bacon, extra cheese" }), "form", `${W}/textfield:name~0`, 2000);
+    for (const b of boxes) expect(get(p, b.key)?.handoff, b.label).toMatchObject({ value: PAGE_CHECKED });
+    for (const b of boxes) expect(get(p, b.key)?.handoff?.writes, b.label).toBeUndefined();
+  });
+
+  it("rechecks an unlabelled control's line whole, and a labelled control's line by what it holds (second review)", async () => {
+    const m = desk("Canada\nStart: Tuesday, October 20, 2026", [...select("Country", ["Canada", "Mexico"]), dateField("Start", PAGE_SUBROLE.date)]);
+    // The reader's typed date inside the line, as it reads one: the span is the date, the line's value is longer.
+    m.apply(snap([field("te/note", "Canada\nStart: Tuesday, October 20, 2026", { role: "AXTextArea" })], { at: 950, windowId: "note", title: "Details.txt", app: NOTE_APP, values: [value("date", "October 20, 2026", "te/note")] }));
+    const p = await proposeFill(m, ask({ Country: "Canada", Start: "October 20, 2026" }), "form", `${W}/textfield:name~0`, 2000);
+    const g = writtenFields(p, m.windows.get("form"));
+    expect(g.fields.map((f) => [f.value, f.context])).toEqual([["Canada", null], ["2026-10-20", "Start"]]);
+    expect(recheckFill(m, g, () => null)).toBeNull();
+    m.apply(snap([field("te/note", "Not Canada\nStart: Tuesday, October 20, 2026", { role: "AXTextArea" })], { at: 1100, windowId: "note", title: "Details.txt", app: NOTE_APP }));
+    expect(recheckFill(m, g, () => null)).toBe("the source te/note changed");
+  });
+
   it("never offers the review's marketing and certification boxes, nor ticks a conditional statement even as a hand-off (R1, R5)", async () => {
     const note = ["Receive product announcements: yes", "All information is accurate: yes", "Willing to relocate: for the right role"].join("\n");
     const boxes = [box("Receive product announcements"), box("All information is accurate"), box("Are you willing to relocate?")];
@@ -461,7 +488,8 @@ describe("what a Fill all writes, control by control (D2-04)", () => {
     );
     expect(get(p, unlabelled.key)).toBeUndefined();
     expect(get(p, `${W}/checkbox:Remote work~0`)?.handoff).toEqual({ value: PAGE_CHECKED, display: "Ticked", source: expect.anything(), memory: null, context: "Remote work" });
-    expect(get(p, `${W}/checkbox:I can start right away~0`)?.handoff).toMatchObject({ writes: true });
+    // The user speaks in that box's label, as consents do: no value at all.
+    expect(get(p, `${W}/checkbox:I can start right away~0`)).toMatchObject({ handoff: null, withheld: "ambiguous" });
   });
 
   it("writes an option only on an exact match, and hands off one the span names among other words", async () => {
@@ -546,9 +574,17 @@ describe("the checkbox rule (D2-04): stated facts only", () => {
     for (const l of ["I have a valid driving license", "Are you over 18?", "Willing to relocate", "Bacon"]) expect(boxNeverTicked(l), l).toBe(false);
   });
 
-  it("writes a stated fact only into a box whose label asks or speaks for the user", () => {
-    for (const l of ["I have a valid driving license", "Are you over 18?", "Do you have a car?", "I'm available on weekends"]) expect(statementLabel(l), l).toBe(true);
-    for (const l of ["Valid driving license", "Remote work", "Mushroom", "Receive product announcements"]) expect(statementLabel(l), l).toBe(false);
+  it("proposes a tick only for a box that asks the user a fact, or hands one off for a bare phrase; a box the user speaks in gets none", () => {
+    for (const l of ["Are you over 18?", "Do you have a car?", "Have you worked here before?", "Are you willing to relocate?"]) expect(boxKind(l), l).toBe("question");
+    for (const l of ["I have a valid driving license", "I want to hear about new products", "I verify my answers are correct", "My answers are correct", "Would you like to receive our newsletter?", "Do you want to join?", "Can we contact you?"]) expect(boxKind(l), l).toBe("statement");
+    for (const l of ["Valid driving license", "Remote work", "Bacon"]) expect(boxKind(l), l).toBe("other");
+  });
+
+  it("names no list item under a negated or conditional line (second review)", () => {
+    expect(namedInList("Bacon", "bacon, extra cheese", "Toppings")).toBe(true);
+    expect(namedInList("Bacon", "bacon, extra cheese", "Do not include")).toBe(false);
+    expect(namedInList("Bacon", "bacon, extra cheese", "If available")).toBe(false);
+    expect(namedInList("Bacon", "bacon, extra cheese if they have it", null)).toBe(false);
   });
 });
 

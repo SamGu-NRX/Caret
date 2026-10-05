@@ -204,14 +204,23 @@ export function recheckFill(model: ScreenModel, p: GroundedProposal, about: Abou
     const sw = model.windows.get(f.source.windowId);
     const src = sw?.nodes.get(f.source.nodeKey);
     if (sw === undefined || src === undefined) return `the source ${f.source.nodeKey} is gone`;
-    // A value read from a "Label: value" line needs that very line: "Valid driving license: no" beside "Needs renewal:
-    // yes" still shows "yes", but no longer says it (D2-04 review).
+    // A control's value read from a "Label: value" line needs that very line: "Valid driving license: no" beside "Needs
+    // renewal: yes" still shows "yes", but no longer says it (D2-04 review). A box's line must still say exactly the yes
+    // it said; any other control's line must still hold the span ("Start date: Tuesday, October 20, 2026" holds the
+    // date "October 20, 2026"; second review). A control's value from an unlabelled line needs a line that is the span,
+    // or the same typed value: "I have a valid driving license? No." holds the old span but says otherwise.
+    const key = f.source.nodeKey;
+    const typed = sw.values.some((v) => v.nodeKey === key && v.text === f.span);
     if (f.context !== null) {
-      const key = f.source.nodeKey;
-      if (!labelledLines(sw).some((l) => l.node.key === key && l.label === f.context && l.value === f.span)) return `the source ${key} changed`;
+      const box = f.control === "checkbox";
+      if (!labelledLines(sw).some((l) => l.node.key === key && l.label === f.context && (box ? l.value === f.span : l.value.includes(f.span)))) return `the source ${key} changed`;
       continue;
     }
-    if (!nodeText(src).includes(f.span) && !sw.values.some((v) => v.nodeKey === f.source.nodeKey && v.text === f.span)) return `the source ${f.source.nodeKey} changed`;
+    if (f.control !== "text") {
+      if (!typed && !nodeText(src).split(/\r?\n/).some((l) => l.trim() === f.span.trim())) return `the source ${key} changed`;
+      continue;
+    }
+    if (!nodeText(src).includes(f.span) && !typed) return `the source ${key} changed`;
   }
   return null;
 }

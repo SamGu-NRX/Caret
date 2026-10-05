@@ -17,7 +17,7 @@ import { SnippetLedger, type Declared } from "../privacy.ts";
 import { describeField, fieldLabelText } from "./descriptor.ts";
 import { ABOUT_SAYS, fieldAsksFor, fieldAsksForNamePart, type AboutValue } from "./about.ts";
 import type { AskJev, JevRequest, JevResult } from "./jev.ts";
-import { boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statementLabel, statesFact, type Control, type FormControl } from "./controls.ts";
+import { boxKind, boxNeverTicked, consentLike, describeControl, formControls, inWebArea, matchOption, namedInList, optionInText, statesFact, type Control, type FormControl } from "./controls.ts";
 import { asksCountry, fieldPart, joinName, namePart, partFits, splitAddress, splitName, splitPlace, type FillPart } from "./derive.ts";
 import { clockTime, readClock, readDate, readDateTime } from "./when.ts";
 import { labelKind, type SensitiveKind } from "../memory/sensitive.ts";
@@ -1186,15 +1186,21 @@ export async function proposeFill(
       }
       case "checkbox": {
         const label = f.form?.label ?? null;
-        if (label === null) return { why: "ambiguous" };
+        // A box the user speaks in ("I have read …", "I verify …") reads like a consent or certification: never a value.
+        const kind = label === null ? "statement" : boxKind(label);
+        if (label === null || kind === "statement") return { why: "ambiguous" };
         const c = windowOf(p);
-        // A value from memory is never offered to a box; an instruction's literal speaks for the user.
-        const stated = (p.from === "window" || p.from === "instruction") && statesFact(label, text, p.from === "window" && c?.labelled === true ? c.context : null);
-        const listed = (p.from === "window" || p.from === "instruction") && namedInList(label, text);
+        // The label of the "Label: value" line the span came from; a value from memory is never offered to a box.
+        const context = p.from === "window" && c?.labelled === true ? c.context : null;
+        const fromLine = context !== null && statesFact(label, text, context) && !/^(?:i|i'm|i've)\b/iu.test(text.trim());
+        const stated = (p.from === "window" || p.from === "instruction") && statesFact(label, text, context);
+        const listed = (p.from === "window" || p.from === "instruction") && namedInList(label, text, context);
         if (!stated && !listed) return { why: "ambiguous" };
-        // Whose fact it is: the user's own note, the window they just left, or what they told Caret to put there.
-        const own = p.from === "instruction" || (c !== null && anchorWindow !== null && c.source.windowId === anchorWindow.window.windowId);
-        return { value: PAGE_CHECKED, display: "Ticked", writes: page && own && f.node.subrole !== PAGE_SUBROLE.switch && (listed || statementLabel(label)) };
+        // Written only as the yes of a "Label: yes" line in the window the user just left, for a box that asks the user a
+        // fact, and never an ARIA switch: the recheck before the run asks the source for that very line. Anything else
+        // that states the tick is handed to the user (D2-04 second review).
+        const own = c !== null && anchorWindow !== null && c.source.windowId === anchorWindow.window.windowId;
+        return { value: PAGE_CHECKED, display: "Ticked", writes: page && own && fromLine && kind === "question" && f.node.subrole !== PAGE_SUBROLE.switch };
       }
       case "date": {
         const format = f.form?.format ?? "date";

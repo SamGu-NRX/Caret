@@ -24,11 +24,7 @@
       <option value="mx">Mexico</option>
       <option value="us">United States</option>
     </select></p>
-  <fieldset><legend>Shift</legend>
-    <label><input type="radio" name="shift" value="day"> Day</label>
-    <label><input type="radio" name="shift" value="night"> Night</label>
-  </fieldset>
-  <p><label><input type="checkbox" id="m_license" name="license"> I have a valid driving license</label></p>
+  <p><label><input type="checkbox" id="m_license" name="license"> Do you have a valid driving license?</label></p>
   <p><label><input type="checkbox" id="m_over18" name="over18"> Are you over 18?</label></p>
   <p><label><input type="checkbox" id="m_news" name="news"> Send me news and offers</label></p>
   <p><label><input type="checkbox" id="m_terms" name="terms"> I agree to the terms of service</label></p>
@@ -38,6 +34,12 @@
   <p><label for="m_resume">Resume</label><input id="m_resume" name="resume" type="file"></p>
   <p><button type="button" id="m_next">Next</button> <button type="submit">Submit</button></p>
 </form>
+<!-- Outside the form element, owned by it through the form attribute: a radio's choice is all its same-named buttons of
+     one form owner, wherever they sit (D2-04 second review). -->
+<fieldset><legend>Shift</legend>
+  <label><input type="radio" name="shift" value="day" form="apply"> Day</label>
+  <label><input type="radio" name="shift" value="night" form="apply"> Night</label>
+</fieldset>
 <section><div id="react-root"></div></section>
 <script src="/fixture.js"></script>
 <script src="/app.bundle.js"></script>
