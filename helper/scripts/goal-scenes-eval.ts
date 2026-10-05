@@ -5,6 +5,9 @@
 //   node scripts/goal-scenes-eval.ts --out DIR                          canned writer (the gating run)
 //   CARET_ENV_FILE=… node scripts/goal-scenes-eval.ts --out DIR --writer provider:model [--budget 0.15] [--runs N] [--jev live]
 // L1: a live writer is only the route --writer names ("groq:<model>" or "gateway:<model>", writer/routes.ts devWriterRoute).
+// --drafts local: the local model writes drafts' words (G1's caret-local-model, the GGUF read by path; take a heavy
+// lease), and scene 2's reply Message is a draft from the mail instead of the instruction's words, judged by whether it
+// says "I'm in". The other scenes ask for no words and run as they are.
 // Reports, per scene and writer: plan offered (valid), refused for an unsupported route, segments and acceptances,
 // steps verified, fresh previews, the end, the oracle, false done, replayed mutations and sends; and the cost.
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -13,11 +16,13 @@ import { parseArgs } from "node:util";
 import type { GoalProgress } from "../src/protocol.ts";
 import { YOURS_EFFECT } from "../src/goals/capabilities.ts";
 import { devWriterRoute } from "../src/writer/routes.ts";
+import { startLocalModel } from "../src/writer/local-model.ts";
+import { toolLocalModel, type LocalModelPort } from "../src/writer/local-port.ts";
 import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
 import { loadJevKey, makeJevClient } from "../src/fill/jev.ts";
 import { areaKey, button, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "../test/goal-desk.ts";
 
-const { values: a } = parseArgs({ options: { out: { type: "string" }, writer: { type: "string", default: "canned" }, budget: { type: "string", default: "0.15" }, runs: { type: "string", default: "1" }, "space-ms": { type: "string", default: "0" }, jev: { type: "string", default: "none" } } });
+const { values: a } = parseArgs({ options: { out: { type: "string" }, writer: { type: "string", default: "canned" }, drafts: { type: "string", default: "program" }, "local-model": { type: "string", default: new URL("../../apps/local-model/.build/release/caret-local-model", import.meta.url).pathname }, "model-path": { type: "string", default: `${process.env.HOME}/Library/Application Support/app.cotypist.Cotypist/Models/gemma-4-E2B-i1-Q4_K_M.gguf` }, budget: { type: "string", default: "0.15" }, runs: { type: "string", default: "1" }, "space-ms": { type: "string", default: "0" }, jev: { type: "string", default: "none" } } });
 // B30: a live writer may draft text, whose claims Jev checks. G2: every copied value is Jev's to confirm too, so a run
 // without live Jev uses test/goal-desk.ts's stand-in, which confirms every value and claim; its rows say "jev stand-in".
 const jevLive = a.jev === "live" ? makeJevClient(() => loadJevKey()) : null;
@@ -36,6 +41,29 @@ const ORDER = "ORD-2026-48213";
 const PROBLEM = "The desk lamp arrived with a cracked base and does not switch on.";
 const EMAIL = "priya.raman@northwind.example";
 
+if (a.drafts !== "program" && a.drafts !== "local") throw new Error("--drafts is program or local");
+const tool = a.drafts === "local" ? await startLocalModel({ binary: a["local-model"] ?? "", modelPath: a["model-path"] ?? "" }) : null;
+const draftCalls: { scene: string; ms: number; text: string | null; stop: string | null; error: string | null }[] = [];
+let currentScene = "";
+const drafter: LocalModelPort | null = tool === null ? null : (() => {
+  const port = toolLocalModel(tool);
+  return {
+    via: port.via,
+    async complete(ask, signal) {
+      const t0 = performance.now();
+      try {
+        const r = await port.complete(ask, signal);
+        draftCalls.push({ scene: currentScene, ms: performance.now() - t0, text: r.text, stop: r.stop, error: null });
+        return r;
+      } catch (e) {
+        draftCalls.push({ scene: currentScene, ms: performance.now() - t0, text: null, stop: null, error: e instanceof Error ? e.message.slice(0, 200) : String(e) });
+        throw e;
+      }
+    },
+  };
+})();
+if (tool !== null) console.log(`local model ${tool.model} loaded in ${Math.round(tool.loadMs)} ms`);
+
 interface Scene {
   name: string;
   instruction: string;
@@ -45,6 +73,8 @@ interface Scene {
   canned: CannedStep[][];
   /** What the desk must hold at the end, by window and key; and the calendar's events by title. */
   expect: { fields: [string, string, string][]; events: string[] };
+  /** --drafts local: the canned programs with a draft in place of the instruction's words, and what the draft must say. */
+  local?: { canned: CannedStep[][]; field: [string, string, RegExp] };
   /** Changes the scene makes while it runs (a dialog), after the given act. */
   during?: (sc: GoalScene) => void;
 }
@@ -73,6 +103,15 @@ const SCENES: Scene[] = [
       { press: { window: "Re: Order", target: "Send", effect: YOURS_EFFECT } },
     ]],
     expect: { fields: [["6161-2", fieldKey(MAIL, "To"), EMAIL], ["6161-2", areaKey(MAIL, "Message"), "I'm in"]], events: ["Meet Priya"] },
+    local: {
+      canned: [[
+        { fill: { window: "Calendar", target: "Caret", value: "Meet Priya" } },
+        { fill: { window: "Re: Order", target: "To", value: EMAIL } },
+        { draft: { window: "Re: Order", target: "Message", text: "(canned: the local model writes this)", from: ["Order ORD-2026-48213 arrived damaged"] } },
+        { press: { window: "Re: Order", target: "Send", effect: YOURS_EFFECT } },
+      ]],
+      field: ["6161-2", areaKey(MAIL, "Message"), /\bI(?:'m| am) in\b/i],
+    },
   },
   {
     name: "form behind a Next step",
@@ -167,7 +206,9 @@ for (let run = 1; run <= runs; run++) {
       break;
     }
     const meter = { cost: 0, latency: [] as number[], model: route === null ? "canned" : route.model, errors: [] as string[], programs: [] as string[] };
-    const sc = goalScene({ scripts: structuredClone(s.canned), windows: s.windows(), userWindow: s.user, ...(route === null ? {} : { writer: metered(makeWriterPort(route), meter) }), askJev: jevLive === null ? standInJev() : async (req) => { const r = await jevLive(req); meter.cost += r.costUsd; return r; } });
+    currentScene = s.name;
+    const local = drafter === null ? undefined : s.local;
+    const sc = goalScene({ scripts: structuredClone(local?.canned ?? s.canned), ...(drafter === null ? {} : { drafter }), windows: s.windows(), userWindow: s.user, ...(route === null ? {} : { writer: metered(makeWriterPort(route), meter) }), askJev: jevLive === null ? standInJev() : async (req) => { const r = await jevLive(req); meter.cost += r.costUsd; return r; } });
     s.during?.(sc);
     const first = await sc.request(s.instruction);
     let acceptances = 0;
@@ -186,7 +227,8 @@ for (let run = 1; run <= runs; run++) {
     const bad: string[] = [];
     for (const [w, k, v] of s.expect.fields) {
       const got = sc.desk.node(w, k)?.value ?? "";
-      if (got !== v) bad.push(`${k.split("/").at(-1)} '${got}' (want '${v}')`);
+      const drafted = local !== undefined && local.field[0] === w && local.field[1] === k ? local.field[2] : null;
+      if (drafted !== null ? !drafted.test(got) : got !== v) bad.push(`${k.split("/").at(-1)} '${got}' (want ${drafted === null ? `'${v}'` : String(drafted)})`);
     }
     const events = [...sc.calendar.events.values()].map((e) => e.title);
     if (JSON.stringify(events) !== JSON.stringify(s.expect.events)) bad.push(`calendar ${JSON.stringify(events)} (want ${JSON.stringify(s.expect.events)})`);
@@ -246,7 +288,9 @@ const summary = {
   sends: sum((r) => r.sends),
   costUsd: spent,
   costPerVerifiedTask: verifiedTasks === 0 ? null : spent / verifiedTasks,
+  localDrafts: tool === null ? null : { model: tool.model, calls: draftCalls },
 };
+await tool?.close();
 writeFileSync(join(OUT, "goal-scenes.json"), JSON.stringify({ summary, rows }, null, 2) + "\n");
 const md = [
   `# Goal scenes (${summary.writer})`,

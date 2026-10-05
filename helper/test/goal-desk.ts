@@ -14,6 +14,7 @@ import type { ReaderLink } from "../src/executor/means.ts";
 import type { PlanningSnapshot } from "../src/codemode/types.ts";
 import { GROQ_QWEN_3_8_27B as FAKE_WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterPort } from "../src/writer/port.ts";
+import type { LocalModelPort } from "../src/writer/local-port.ts";
 import { classifyPress } from "../src/executor/risk.ts";
 import { snap } from "./builders.ts";
 import { FakeGrants } from "./fake-grants.ts";
@@ -360,6 +361,8 @@ export function goalScene(o: {
   ask?: HelperOptions["ask"];
   /** Whether the helper has a calendar to add events to; true by default. */
   calendar?: boolean;
+  /** L1: the local model that writes drafts' words; the program's text by default. */
+  drafter?: LocalModelPort;
 }): GoalScene {
   const dir = mkdtempSync(join(tmpdir(), "caret-goal-"));
   const store = new Store(join(dir, "data"));
@@ -379,6 +382,7 @@ export function goalScene(o: {
     readerLink: desk,
     ...(o.calendar === false ? {} : { calendar }),
     writer: o.writer === null ? null : (o.writer ?? writer),
+    ...(o.drafter === undefined ? {} : { drafter: o.drafter }),
     now: () => desk.at,
     publish: (m) => {
       published.push(m);

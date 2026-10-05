@@ -10,7 +10,9 @@ import { SAYS } from "../src/planner/says.ts";
 import { PROTOCOL_VERSION } from "../src/protocol.ts";
 import { GatewayNeedsCard } from "../src/writer/chat.ts";
 import { makeWriterPort } from "../src/writer/port.ts";
-import { goalScene, mailWindow, replyWindow, standInJev } from "./goal-desk.ts";
+import { goalRefusals, goalScene, mailWindow, replyWindow, standInJev } from "./goal-desk.ts";
+import { DRAFT_GRAMMAR } from "../src/writer/local-draft.ts";
+import { LocalModelUnavailable, type LocalModelPort, type LocalTextAsk } from "../src/writer/local-port.ts";
 import { FORM } from "./codemode/fixtures.ts";
 
 const src = (path: string): string => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
@@ -120,5 +122,62 @@ describe("Vercel AI Gateway route", () => {
     expect(String(other)).toContain("gateway HTTP 403 forbidden: model not allowed");
     const groq = await makeWriterPort(config.GROQ_QWEN_3_8_27B, { key: () => KEY, fetchFn: fake(403, card) }).write(plan).catch((e: unknown) => e);
     expect(groq).not.toBeInstanceOf(GatewayNeedsCard);
+  });
+});
+
+describe("drafts from the local model (lead decision 6; measured, on no default path)", () => {
+  const MAIL_TITLE = "Order ORD-2026-48213 arrived damaged";
+  /** A program that drafts the reply's Message from the mail; its own text is a placeholder the local model replaces. */
+  const drafting = [[{ draft: { window: "Re: Order", target: "Message", text: "(the program's own words)", from: [MAIL_TITLE] } }]];
+  /** A LocalModelPort that answers `text` and keeps every request. */
+  const port = (text: string | Error): LocalModelPort & { asks: LocalTextAsk[] } => {
+    const asks: LocalTextAsk[] = [];
+    return {
+      via: "tool",
+      asks,
+      async complete(ask) {
+        asks.push(ask);
+        if (text instanceof Error) throw text;
+        return { model: "gemma-test.gguf", text, latencyMs: 120, promptTokens: 400, outputTokens: 12, stop: "eog" };
+      },
+    };
+  };
+  const scene = (drafter: LocalModelPort) => goalScene({ scripts: structuredClone(drafting), windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: standInJev(), drafter });
+
+  it("asks for a draft under the sentence grammar, from the mail it names, and offers the local text", async () => {
+    const local = port("Hi Priya, I'm in.");
+    const sc = scene(local);
+    const r = await sc.request('draft a reply to Priya saying "I\'m in"');
+    expect(r).toMatchObject({ event: "segment" });
+    expect(local.asks).toHaveLength(1);
+    expect(local.asks[0]).toMatchObject({ kind: "draft", grammar: DRAFT_GRAMMAR, prompt: { field: { name: "Message" } } });
+    expect(local.asks[0]!.prompt.basis[0]).toMatch(new RegExp(`^${MAIL_TITLE}\\n`));
+    const steps = (r as Extract<typeof r, { event: "segment" }>).steps;
+    expect(steps.find((s) => s.drafted !== undefined)?.drafted).toBe("Hi Priya, I'm in.");
+    expect(JSON.stringify(r)).not.toContain("the program's own words");
+    await sc.close();
+  });
+
+  it("still refuses a local draft that adds a fact, and writes nothing", async () => {
+    const sc = scene(port("Hi Priya, I'm in and I'll bring the spare lamp on Friday at 5 PM."));
+    const r = await sc.request('draft a reply to Priya saying "I\'m in"');
+    expect(r).toMatchObject({ event: "stopped", reason: "refused" });
+    expect(goalRefusals(sc, "draft")).toBe(1);
+    expect(sc.desk.writes).toEqual([]);
+    await sc.close();
+  });
+
+  it("says the local model failed, and never offers the program's own text instead", async () => {
+    const sc = scene(port(new LocalModelUnavailable("busy", "the host's local model answered busy")));
+    const r = await sc.request('draft a reply to Priya saying "I\'m in"');
+    expect(r).toMatchObject({ event: "stopped", reason: "refused", says: "Caret's local model couldn't write the draft just now" });
+    expect(JSON.stringify(sc.goals)).not.toContain("the program's own words");
+    await sc.close();
+  });
+
+  it("refuses a draft the model cut off at its cap", async () => {
+    const cut: LocalModelPort = { via: "tool", complete: async () => ({ model: "m", text: "Hi Priya, I'm in.", latencyMs: 1, promptTokens: 1, outputTokens: 96, stop: "maxTokens" }) };
+    const r = await scene(cut).request('draft a reply to Priya saying "I\'m in"');
+    expect(r).toMatchObject({ event: "stopped", reason: "refused", says: "The draft ran past its length, so Caret left it out" });
   });
 });

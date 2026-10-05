@@ -94,6 +94,7 @@ import { fillSays, SAYS } from "./planner/says.ts";
 import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
 import { splitName } from "./fill/derive.ts";
 import type { WriterPort } from "./writer/port.ts";
+import type { LocalModelPort } from "./writer/local-port.ts";
 import type { PlanErrorCode } from "./protocol.ts";
 
 /** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
@@ -196,6 +197,11 @@ export interface HelperOptions {
    * (unsure or nothing to do) goes to it (planner/codeplan.ts). Absent: those instructions fail as before.
    */
   writer?: WriterPort | null;
+  /**
+   * L1: the local model that writes goal drafts' words (goals/propose.ts PlanGoalOptions.drafter). main.ts never sets it
+   * (lead decision 2026-10-05: measured, on no default path); the evaluations do.
+   */
+  drafter?: LocalModelPort;
   /**
    * How an Ask's instruction becomes an intent (B25, planner/ask.ts): Jev's staged questions, or the writer's
    * strict JSON through this port. Absent or null: Ask runs the planner, then the code-mode writer, as before B25.
@@ -1110,6 +1116,7 @@ export class Helper {
       ...(this.opts.pageDocument === undefined ? {} : { pageDocument: this.opts.pageDocument }),
       done,
       carried,
+      ...(this.opts.drafter === undefined ? {} : { drafter: this.opts.drafter }),
     });
   }
 
