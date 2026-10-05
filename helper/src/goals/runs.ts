@@ -289,8 +289,8 @@ export class GoalRuns {
 
   /**
    * For a drafted value (B30): why its facts no longer hold, or null. Every window it was drafted from must still be open,
-   * and the draft must pass goals/drafts.ts's code checks against those windows as they read now: a fact that left the
-   * screen leaves the draft unsupported.
+   * every memory entry must still give its value, and the draft must pass goals/drafts.ts's code checks against those
+   * windows as they read now: a fact that left the screen leaves the draft unsupported.
    */
   private draftMoved(run: Run, s: GoalStep): { reason: GoalStopReason; says: string } | null {
     const d = s.value?.draft;
@@ -302,8 +302,9 @@ export class GoalRuns {
       if (w === undefined) return moved;
       windows.push(basisText(w));
     }
+    if (d.memory.some((m) => !this.deps.memoryHolds(m.id, m.text))) return moved;
     try {
-      checkDraftText(s.value.text, { instruction: run.plan.instruction, windows, memory: d.texts });
+      checkDraftText(s.value.text, { instruction: run.plan.instruction, windows, memory: d.memory.map((m) => m.text) });
     } catch (e) {
       if (e instanceof DraftRefused) return moved;
       throw e;

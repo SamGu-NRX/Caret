@@ -165,11 +165,13 @@ describe("fields and instructions about who a message goes to", () => {
 });
 
 describe("the claims Jev checks", () => {
+  const d = (text: string, b: DraftBasis = basis("reply to Priya Raman")) => ({ text, basis: b });
   it("leaves out greetings, thanks, sign-offs and a name alone, and keeps every other sentence", () => {
     const s = sentencesOf("Hi Priya,\nI'm in! See you Thursday.\nThanks,\nSam");
     expect(s).toEqual(["Hi Priya,", "I'm in!", "See you Thursday.", "Thanks,", "Sam"]);
-    expect(s.filter((x) => !noClaim(x))).toEqual(["I'm in!", "See you Thursday."]);
-    expect(["Yes.", "Sure!", "Best,", "Best regards, Sam", "Thank you so much!"].map(noClaim)).toEqual([false, false, true, true, true]);
+    const b = basis("reply to Priya, signed Sam");
+    expect(s.filter((x) => !noClaim(x, b))).toEqual(["I'm in!", "See you Thursday."]);
+    expect(["Yes.", "Sure!", "Best,", "Best regards, Sam", "Thank you so much!"].map((x) => noClaim(x, b))).toEqual([false, false, true, true, true]);
   });
 
   const jev = (yes: (text: string) => number) => {
@@ -183,26 +185,75 @@ describe("the claims Jev checks", () => {
 
   it("asks both wordings about each claim and passes only what both confirm at the floor", async () => {
     const j = jev(() => 0.97);
-    await expect(confirmClaims("draft a reply saying I'm in", ["Hi Priya, I'm in! See you then."], j.ask, [])).resolves.toMatchObject({ calls: 2 });
+    await expect(confirmClaims("draft a reply saying I'm in", [d("Hi Priya, I'm in! See you then.")], j.ask, [])).resolves.toMatchObject({ calls: 2 });
     expect(j.seen.map((r) => Object.keys(r.nouls ?? {}))).toEqual([["c1", "c2"], ["c1", "c2"]]);
   });
 
   it("refuses a sentence one wording doubts, naming it", async () => {
     let n = 0;
     const ask: AskJev = async (req) => ({ model: "jev-test", answers: {}, nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, n++ === 1 ? 0.6 : 0.99])), inputTokens: 1, latencyMs: 1, costUsd: 0 });
-    await expect(confirmClaims("say I'm in", ["I'm in. I'll bring dessert."], ask, [])).rejects.toMatchObject({ why: "claim", word: "I'll bring dessert." });
+    await expect(confirmClaims("say I'm in", [d("I'm in. I'll bring dessert.")], ask, [])).rejects.toMatchObject({ why: "claim", word: "I'll bring dessert." });
   });
 
   it("refuses on doubt when there is no Jev or Jev fails, and asks nothing for a draft with no claim", async () => {
-    await expect(confirmClaims("say I'm in", ["I'm in."], null, [])).rejects.toMatchObject({ why: "unchecked" });
-    await expect(confirmClaims("say I'm in", ["I'm in."], async () => { throw new Error("HTTP 500"); }, [])).rejects.toMatchObject({ why: "unchecked" });
-    await expect(confirmClaims("say thanks", ["Thanks, Priya!"], null, [])).resolves.toEqual({ calls: 0, costUsd: 0 });
+    await expect(confirmClaims("say I'm in", [d("I'm in.")], null, [])).rejects.toMatchObject({ why: "unchecked" });
+    await expect(confirmClaims("say I'm in", [d("I'm in.")], async () => { throw new Error("HTTP 500"); }, [])).rejects.toMatchObject({ why: "unchecked" });
+    await expect(confirmClaims("say thanks", [d("Thanks, Priya!")], null, [])).resolves.toEqual({ calls: 0, costUsd: 0 });
   });
 
   it("carries only the declared snippets its text holds, charged to their windows", async () => {
     const j = jev(() => 0.99);
-    await confirmClaims("say I'm in", ["Priya Raman, I'm in."], j.ask, [{ windowId: "m1", kind: "candidate", text: "Priya Raman" }, { windowId: "m2", kind: "candidate", text: "Dana Whitfield" }]);
+    await confirmClaims("say I'm in", [d("Priya Raman, I'm in.")], j.ask, [{ windowId: "m1", kind: "candidate", text: "Priya Raman" }, { windowId: "m2", kind: "candidate", text: "Dana Whitfield" }]);
     expect(j.seen[0]?.snippets.map((x) => x.text)).toEqual(["Priya Raman"]);
     expect(j.seen[0]?.charged).toEqual({ m1: 11 });
+  });
+});
+
+// B30 review 1: each input the reviewer showed passing, now refused.
+describe("review 1: drafts that slipped a fact through", () => {
+  const none = (instruction: string, windows: { title: string; text: string }[] = []): DraftBasis => ({ instruction, windows, memory: [] });
+
+  it("reads a greeting's or thanks' remainder as a claim unless it is a name the basis shows", async () => {
+    const b = none("say thanks");
+    for (const t of ["Thanks, I'll pay.", "Thanks, I refuse.", "Thanks mallory."]) expect(noClaim(t, b), t).toBe(false);
+    await expect(confirmClaims("say thanks", [{ text: "Thanks, I'll pay.", basis: b }], null, [])).rejects.toMatchObject({ why: "unchecked" });
+    expect(why("Thanks mallory.", b)).toEqual(["newFact", "mallory"]);
+    expect(noClaim("Thanks Priya.", none("thank Priya"))).toBe(true);
+    expect(noClaim("Thanks Priya.", none("say thanks"))).toBe(false);
+  });
+
+  it.each([
+    ["See you October third.", "say thanks", "October 8\n3 guests", "October third"],
+    ["See you at half past three.", "confirm the meeting time", "at three", "half past three"],
+    ["See you next Friday.", "say thanks", "last Friday", "next Friday"],
+    ["See you the 3rd of October.", "say thanks", "October 8\n3 guests", "the 3rd of October"],
+  ])("reads %j whole, not as pieces the basis has", (draft, instruction, text, word) => {
+    expect(why(draft, none(instruction, [{ title: "Note", text: text.replace("\\n", "\n") }]))).toEqual(["newFact", word]);
+  });
+
+  it.each([
+    ["I have ９９ guests.", ["newFact", "99"]],
+    ["I have ⁹ guests.", ["newFact", "9"]],
+    ["I have ٩٩ guests.", ["unreadable", "٩"]],
+    ["I came thirteenth.", ["newFact", "thirteenth"]],
+    ["The chapter xvi is ready.", ["newFact", "xvi"]],
+    ["The chapter XVI is ready.", ["newFact", "XVI"]],
+    ["Thanks 李雷.", ["newFact", "李雷"]],
+    ["Please see evil.xyz.", ["newFact", "evil.xyz"]],
+    ["Please write mallory at evil dot xyz.", ["newFact", "mallory at evil dot xyz"]],
+  ])("refuses %j", (draft, want) => {
+    expect(why(draft, none("say thanks"))).toEqual(want);
+  });
+
+  it("refuses digits split by invisible characters", () => {
+    expect(why("Please call 5\u200b5\u200b5\u200b1\u200b2\u200b3\u200b4.", none("say thanks", [{ title: "Note", text: "1 2 3 4 5" }]))?.[0]).toBe("notProse");
+  });
+
+  it("compares amounts and numbers exactly, and reads a currency code as money", () => {
+    expect(why("The quote is $45.009.", none("say thanks", [{ title: "Quote", text: "$45.00" }]))).toEqual(["newFact", "$45.009"]);
+    expect(why("I have 9007199254740993 items.", none("say thanks", [{ title: "Stock", text: "9007199254740992 items" }]))).toEqual(["newFact", "9007199254740993"]);
+    expect(why("The price is USD 500.", none("say the price is USD 500"))).toEqual(["money", "USD 500"]);
+    expect(why("Yes to the 500 quote.", none("say yes to the 500 quote"))).toEqual(["money", "500 quote"]);
+    expect(why("The quote is $45.00.", none("say thanks", [{ title: "Quote", text: "$45.00" }]))).toBeNull();
   });
 });

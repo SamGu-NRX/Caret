@@ -11,7 +11,7 @@ import type { MemoryValue } from "../planner/trace.ts";
 import { WRITER_MAX_OUTPUT_TOKENS } from "../writer/config.ts";
 import type { WriterPort } from "../writer/port.ts";
 import { buildInventory } from "./inventory.ts";
-import { GoalError, lowerGoal, type DonePress } from "./lower.ts";
+import { frozenBasis, GoalError, lowerGoal, type DonePress } from "./lower.ts";
 import { addsRecipient, confirmClaims, DraftRefused } from "./drafts.ts";
 import type { GoalPlan } from "./plan.ts";
 
@@ -66,7 +66,7 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
   if (!ran.ok) throw new GoalError("schema", "the plan program broke the rules a plan must keep", `${ran.kind}: ${ran.detail.slice(0, 200)}`);
   const plan = lowerGoal(o.goalId, o.instruction, ran.plan, inv.inventory, o.done ?? [], written.model);
   // Code checked each draft's facts in lowering; what it says the user promises or turns down goes to Jev (B30).
-  const drafts = plan.segments.flatMap((g) => g.steps.flatMap((x) => (x.value?.draft == null ? [] : [x.value.text])));
+  const drafts = plan.segments.flatMap((g) => g.steps.flatMap((x) => (x.value?.draft == null ? [] : [{ text: x.value.text, basis: frozenBasis(o.instruction, x.value, inv.inventory) }])));
   try {
     await confirmClaims(o.instruction, drafts, o.askJev, inv.ledger.declared().snippets);
   } catch (e) {

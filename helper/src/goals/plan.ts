@@ -47,10 +47,12 @@ export interface ValueBinding {
   /** A calendar event code derived from `sentence` (event-card.ts), which its source must still show; null for every other value. */
   event: { title: string; start: string; end: string; says: string; sentence: string } | null;
   /**
-   * Text the writer composed (B30, goals/drafts.ts): the windows, by id, and the values' texts the program named as its
-   * basis, which every fact in it must come from with the instruction. Null for a value code read or derived.
+   * Text the writer composed (B30, goals/drafts.ts): the windows, by id, and the memory entries its facts may come from
+   * beside the instruction. A value the program named as its basis stands for its source: a window's value adds that
+   * window, an instruction span adds nothing (the instruction is always in), a memory value adds its entry, which must
+   * still hold when the draft is written. Null for a value code read or derived.
    */
-  draft: { windows: string[]; texts: string[] } | null;
+  draft: { windows: string[]; memory: { id: string; text: string }[] } | null;
   /** An email address its source shows on a From, Reply-To or Sender line: the one address a To field may take. */
   sender: boolean;
 }

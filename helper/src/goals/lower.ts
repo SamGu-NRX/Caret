@@ -18,7 +18,8 @@ import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { matchOption } from "../fill/controls.ts";
 import { misfit } from "../fill/kinds.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
-import { checkDraftText, DraftRefused, recipientField, subjectField, type DraftBasis } from "./drafts.ts";
+import { answers, checkDraftText, DraftRefused, recipientField, subjectField, type DraftBasis } from "./drafts.ts";
+import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
 import { saysPress } from "../planner/says.ts";
 import { executable, goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type GoalPlan, type GoalSegment, type GoalStep, type SegmentReason, type TargetBinding, type ValueBinding } from "./plan.ts";
@@ -52,29 +53,34 @@ function named(t: TargetBinding): string {
   return t.label === "" ? "a field" : `'${t.label}'`;
 }
 
-/** What a draft's facts are checked against: the instruction, its basis windows as frozen, and its basis values' texts. */
+/** What a draft's facts are checked against: the instruction, its basis windows as frozen, and its memory values. */
 export function frozenBasis(instruction: string, v: ValueBinding, inv: GoalInventory): DraftBasis {
   const windows = (v.draft?.windows ?? []).flatMap((id) => {
     const t = inv.texts.get(id);
     return t === undefined ? [] : [t];
   });
-  return { instruction, windows, memory: v.draft?.texts ?? [] };
+  return { instruction, windows, memory: (v.draft?.memory ?? []).map((m) => m.text) };
 }
 
 /**
- * Who a message goes to is the user's (B30): a Cc or Bcc field is never written, and a To field takes only an address
- * its source shows as the sender of the message being answered. Checked for every value, copied or drafted.
+ * Who a message goes to is the user's (B30), for every value, copied or drafted: a Cc or Bcc field is never written, a
+ * subject line is never written, and a To field takes only the address on the From line of the message the window
+ * answers ("Re: <its subject>"). An email field in a window with a Send button is a To field whatever its label.
  */
-function recipientCheck(t: TargetBinding, v: ValueBinding): void {
-  const r = recipientField(t.label);
+function recipientCheck(t: TargetBinding, v: ValueBinding, inv: GoalInventory): void {
+  if (subjectField(t.label)) throw new GoalError("recipient", "Caret doesn't write subject lines", `${t.ref} <- ${v.ref}`);
+  const composer = t.domain.kind === "window" && [...inv.targets.values()].some((x) => x.domain.kind === "window" && t.domain.kind === "window" && x.domain.windowId === t.domain.windowId && x.control === "button" && /^send\b/iu.test(x.label.trim()));
+  const r = recipientField(t.label) ?? (composer && fieldKinds([t.label]).has("email") ? "to" : null);
   if (r === "copy") throw new GoalError("recipient", "Caret doesn't add people to a message. Add them yourself", `${t.ref} <- ${v.ref}`);
-  if (r === "to" && (v.draft !== null || !v.sender)) throw new GoalError("recipient", `Caret puts only the sender of the message you're answering in ${named(t)}`, `${t.ref} <- ${v.ref}`);
+  if (r !== "to") return;
+  const src = v.source === null ? undefined : inv.texts.get(v.source.windowId);
+  const answered = t.domain.kind === "window" && src !== undefined && answers(t.domain.title, src);
+  if (v.draft !== null || !v.sender || !answered) throw new GoalError("recipient", `Caret puts only the sender of the message you're answering in ${named(t)}`, `${t.ref} <- ${v.ref}`);
 }
 
 /** A drafted value's own checks (goals/drafts.ts), against the field it goes in and its frozen basis. */
 function draftCheck(t: TargetBinding, v: ValueBinding, basis: DraftBasis): void {
   if (t.control !== "text") throw new GoalError("wrongKind", `Caret writes drafts only in a text field, and ${named(t)} is not one`, `${t.ref} <- ${v.ref}`);
-  if (subjectField(t.label)) throw new GoalError("draft", "Caret doesn't write subject lines", `${t.ref} <- ${v.ref}`);
   try {
     checkDraftText(v.text, basis);
   } catch (e) {
@@ -83,8 +89,8 @@ function draftCheck(t: TargetBinding, v: ValueBinding, basis: DraftBasis): void 
   }
 }
 
-function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "says" | "writes" | "handoff"> {
-  recipientCheck(t, v);
+function lowerFill(t: TargetBinding, v: ValueBinding, inv: GoalInventory): Pick<GoalStep, "kind" | "says" | "writes" | "handoff"> {
+  if (t.control !== "calendar") recipientCheck(t, v, inv);
   if (t.control === "calendar") {
     if (v.event === null) throw new GoalError("wrongKind", `${v.display} is not an event Caret can add to a calendar`, `${t.ref} <- ${v.ref}`);
     return { kind: "calendar", says: `Add '${v.event.title}' to your ${t.label} calendar, ${v.event.says}`, writes: null, handoff: null };
@@ -131,20 +137,24 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
   if (!/^[0-9a-f]{64}$/.test(draft.programDigest)) throw new GoalError("schema", "the plan has no program behind it", draft.programDigest);
   // Drafted texts (B30) as values: their basis is the windows and values the program named, by what they stood for.
   // Memory a fill of this plan copies is part of every draft's basis ("memory the plan used").
-  const usedMemory = draft.steps.flatMap((s) => (s.kind === "fill" ? [inv.values.get(s.value)] : [])).flatMap((v) => (v !== undefined && v.origin.kind === "memory" ? [v.text] : []));
+  const memoryOf = (v: ValueBinding | undefined): { id: string; text: string }[] => (v !== undefined && v.memory !== null ? [{ id: v.memory, text: v.text }] : []);
+  const usedMemory = draft.steps.flatMap((s) => (s.kind === "fill" ? memoryOf(inv.values.get(s.value)) : []));
   const drafted = new Map<string, ValueBinding>();
   for (const d of draft.drafts) {
     const windows: string[] = [];
-    const texts: string[] = [...usedMemory];
+    const memory = [...usedMemory];
     for (const ref of d.from) {
       const w = inv.windowRefs.get(ref);
       const v = inv.values.get(ref);
       if (w !== undefined) windows.push(w);
-      else if (v !== undefined) texts.push(v.text);
-      else throw new GoalError("schema", "a draft names a basis the snapshot did not list", `${d.ref} from ${ref}`);
+      // A value stands for its source, never for loose text: a window's value brings its window (so its facts are
+      // checked as the window's, for conflicts and again before writing), memory its entry, an instruction span nothing.
+      else if (v !== undefined && v.source !== null) windows.push(v.source.windowId);
+      else if (v !== undefined && v.memory !== null) memory.push(...memoryOf(v));
+      else if (v === undefined) throw new GoalError("schema", "a draft names a basis the snapshot did not list", `${d.ref} from ${ref}`);
     }
     const digest = createHash("sha256").update(d.text).digest("hex");
-    drafted.set(d.ref, { ref: d.ref, text: d.text, display: d.text, origin: { kind: "draft", draftId: d.ref, model: writerModel, basis: d.from, digest }, source: null, memory: null, event: null, draft: { windows: [...new Set(windows)], texts }, sender: false });
+    drafted.set(d.ref, { ref: d.ref, text: d.text, display: d.text, origin: { kind: "draft", draftId: d.ref, model: writerModel, basis: d.from, digest }, source: null, memory: null, event: null, draft: { windows: [...new Set(windows)], memory }, sender: false });
   }
   const steps: GoalStep[] = [];
   const warnings: string[] = [];
@@ -165,10 +175,10 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
       if (v === undefined) throw new GoalError("schema", "the plan names a value the snapshot did not list", s.value);
       if (steps.some((x) => x.target.ref === t.ref && x.kind !== "calendar")) throw new GoalError("schema", `the plan fills ${named(t)} twice`, t.ref);
       if (v.draft !== null) {
-        recipientCheck(t, v);
+        recipientCheck(t, v, inv);
         draftCheck(t, v, frozenBasis(instruction, v, inv));
       }
-      const lowered = lowerFill(t, v);
+      const lowered = lowerFill(t, v, inv);
       steps.push({ ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, ...lowered });
       lastPress = null;
       continue;

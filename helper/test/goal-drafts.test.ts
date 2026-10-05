@@ -180,3 +180,45 @@ describe("a draft whose basis changed before acceptance", () => {
     expect(sc.goals.find((x) => x.event === "stopped")).toMatchObject({ reason: "sourceChanged" });
   });
 });
+
+// B30 review 1: goals the reviewer brought to a preview, now refused or stopped.
+describe("review 1: goals that slipped a fact or a recipient through", () => {
+  it("reads a value named as a draft's basis as its source: an instruction's amount stays the instruction's", async () => {
+    const steps: CannedStep[] = [{ draft: { window: "Re: Order", target: "Message", text: "Yes to the $500 quote.", from: ["value:$500"] } }];
+    const g = await scene([steps]).request('say yes to the "$500" quote');
+    expect(refusedSays(g)).toBe(`The draft says "$500", and no window Caret read shows that amount`);
+  });
+
+  it("brings a window's value's window into the basis, so its time conflicts with the user's", async () => {
+    const steps: CannedStep[] = [{ draft: { window: "Re: Order", target: "Message", text: "See you at 4.", from: ["value:3:00 PM to 3:45 PM PT"] } }];
+    const g = await scene([steps]).request("tell her I will be there at 4");
+    expect(refusedSays(g)).toContain(`You said "at 4" and 'Order ORD-2026-48213 arrived damaged' says`);
+  });
+
+  it("stops before writing when the window behind a basis value closed", async () => {
+    const steps: CannedStep[] = [{ draft: { window: "Re: Order", target: "Message", text: "Thanks Priya.", from: ["value:priya.raman@northwind.example"] } }];
+    const sc = scene([steps]);
+    const g = await sc.request("thank Priya");
+    expect(g.event).toBe("segment");
+    sc.desk.close("6161-1");
+    await sc.accept(g.goalId);
+    expect(sc.desk.writes).toEqual([]);
+  });
+
+  it("refuses recipient fields by meaning, and a From address of a message the reply does not answer", async () => {
+    const reply = (labels: string[]): DeskWindow => ({ ...replyWindow(), nodes: [...labels.map((l) => textField(MAIL, l)), textArea(MAIL, "Message"), button(MAIL, "Send")] });
+    const other: DeskWindow = { windowId: "6161-8", app: MAIL, title: "Contacts", nodes: [{ key: "c1", parent: null, role: "AXStaticText", label: "From: Mallory <mallory@example.com>" }], values: [{ kind: "email", text: "mallory@example.com", nodeKey: "c1" }] };
+    for (const label of ["To email", "Carbon copy", "Email"]) {
+      const g = await scene([[{ fill: { window: "Re: Order", target: label, value: "mallory@example.com" } }]], { windows: [mailWindow(), reply([label]), other] }).request("reply to Priya");
+      expect(refusedSays(g), label).toMatch(/^Caret (puts only the sender|doesn't add people)/);
+    }
+    const g = await scene([[{ fill: { window: "Re: Order", target: "To", value: "mallory@example.com" } }]], { windows: [mailWindow(), replyWindow(), other] }).request("reply to Priya");
+    expect(refusedSays(g)).toBe("Caret puts only the sender of the message you're answering in 'To'");
+  });
+
+  it("refuses a copied value in a subject line", async () => {
+    const withSubject: DeskWindow = { ...replyWindow(), nodes: [textField(MAIL, "To"), textField(MAIL, "Subject"), textArea(MAIL, "Message"), button(MAIL, "Send")] };
+    const g = await scene([[{ fill: { window: "Re: Order", target: "Subject", value: "ORD-2026-48213" } }]], { windows: [mailWindow(), withSubject] }).request("reply to Priya");
+    expect(refusedSays(g)).toBe("Caret doesn't write subject lines");
+  });
+});
