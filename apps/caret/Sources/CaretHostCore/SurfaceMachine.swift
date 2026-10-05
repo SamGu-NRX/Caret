@@ -155,6 +155,9 @@ public final class SurfaceMachine {
     /// Half a second, assumed: fast enough that a surface over someone else's window does not
     /// linger, and a window-list read costs about a millisecond.
     public static let recheckInterval: TimeInterval = 0.5
+    /// How long after macOS answers its Calendar prompt the line's watch waits for the user's app to be in
+    /// front again. Assumed, not measured: activation came back within a second in the VM's runs.
+    public static let calendarFrontGrace: TimeInterval = 1.5
     /// How long a held offer is retried before it is dropped. Assumed, not measured.
     public static let holdLimit: TimeInterval = 30
     /// How long the line Esc left waits for the helper's own ending before it goes anyway (no
@@ -977,7 +980,17 @@ public final class SurfaceMachine {
         calendarHeld = nil
         var accept = held
         accept.at = nowMs
-        if !headless { watchLine() }
+        if !headless, let work, let anchor = work.anchor {
+            // The app the card was accepted in gets the front back only after the answer (VM run 7: still
+            // UserNotificationCenter's when it came), so the watch starts a moment later, for the working
+            // line or the done line that may have replaced it by then.
+            let target = work.target
+            let key = work.offerKey
+            _ = clock.schedule(after: Self.calendarFrontGrace, repeats: false) { [weak self] in
+                guard let self, self.work?.offerKey == key || self.result?.taskID == key else { return }
+                self.startWatch(.line, target: target, anchors: [CGPoint(x: anchor.caret.midX, y: anchor.caret.midY)], requireFocus: false, field: anchor.field)
+            }
+        }
         guard sendToHelper(.accept(accept)) else { return failUnsent() }
         publish()
     }

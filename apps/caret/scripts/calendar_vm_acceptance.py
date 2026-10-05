@@ -216,6 +216,8 @@ def run(app, out_dir):
     sa.check("the app the card was accepted in has the front again", pid in (front.get("pid"), front.get("lsappinfo")), front=front, fixture=pid)
     sa.check("the run ends done", (end or {}).get("phase") == "done", end=end)
     # The toast with ⌘Z lives 5 s: the capture and the read-back come first, quickly, then ⌘Z.
+    st = sa.host()
+    results["afterDone"] = {"surface": st.get("surface"), "helper": st.get("helper")}
     results["steps"].append({"step": "after-add", "shot": shot(out_dir, pid, hpid, "2b-after-add")})
     default = tool("default")
     found = tool("find", TITLE, "9")
@@ -243,7 +245,8 @@ def run(app, out_dir):
     time.sleep(0.3)
     sf = sa.host().get("surface") or {}
     sa.check("the next card says Adding to the default calendar by name", sf.get("eventDestination") == f"Adding to {(default or {}).get('title')}",
-             eventDestination=sf.get("eventDestination"), drawn=bool(s))
+             eventDestination=sf.get("eventDestination"), drawn=bool(s), offers=helper_state().get("offers"), asked=helper_state().get("asked"),
+             lastUnshown=sf.get("lastUnshown"), held=sf.get("held"))
     results["steps"].append({"step": "second-card", "shot": shot(out_dir, pid, hpid, "4-card-with-access")})
     sa.key("esc", pid)
     results["calendarAfter"] = tool("find", "Lunch with Sam", "9")

@@ -170,9 +170,14 @@ final class CalendarPermissionFlowTests: XCTestCase {
             .press(Fx.tab()),
             .screen { $0.behind() }, .activated, .wait(1),
             .expect(.custom("the line is not taken down while macOS asks", { !$0.counts.contains { $0.hasPrefix("surface.lineHidden") } })),
-            .screen { $0.front() }, .calendarAnswered,
+            // VM run 7: the answer comes before the app is back in front.
+            .calendarAnswered,
             .sent(["accept event-1 add"]),
             .taskLine(Fx.progress("event-1", .done, steps: 1)),
+            .wait(0.6),
+            .screen { $0.front() }, .activated,
+            .wait(2),
+            .expect(.custom("still not taken down", { !$0.counts.contains { $0.hasPrefix("surface.lineHidden") } })),
             .expect(.undoOwned(true)),
         ]))
     }
