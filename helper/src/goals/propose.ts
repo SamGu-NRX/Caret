@@ -92,15 +92,16 @@ export async function planGoal(model: ScreenModel, o: PlanGoalOptions, use: { va
 
 /**
  * Each draft's words from the local model (L1), for the field the program fills with it and from the windows and memory
- * it names, each window as its title and message were frozen. A draft no fill uses is left as written: lowering drops it.
+ * it names, each window as its title and message were frozen. A draft no text field takes is left as written: lowering
+ * drops it (lower.ts), so the model is not asked.
  */
-async function localDrafts(drafter: LocalModelPort, instruction: string, plan: DraftPlan, inv: GoalInventory, now: number, signal?: AbortSignal): Promise<{ plan: DraftPlan; model: string }> {
-  let model = "";
+async function localDrafts(drafter: LocalModelPort, instruction: string, plan: DraftPlan, inv: GoalInventory, now: number, signal?: AbortSignal): Promise<{ plan: DraftPlan; model: string | null }> {
+  let model: string | null = null;
   const drafts: DraftPlan["drafts"] = [];
   for (const d of plan.drafts) {
     const fill = plan.steps.find((s) => s.kind === "fill" && s.value === d.ref);
     const target = fill?.kind === "fill" ? inv.targets.get(fill.target) : undefined;
-    if (target === undefined) {
+    if (target === undefined || target.control !== "text") {
       drafts.push(d);
       continue;
     }
