@@ -64,11 +64,12 @@ export interface AskResume {
   makerName: IntentMaker["name"];
   fixed: AskFixed;
   /**
-   * The form as the question saw it: its title, and each field's name, section and whether it held text. A field the
-   * continued Ask acts on must read the same, and the title must too, or the Ask refuses (B29 review 1: a field
-   * relabelled "Recovery email" and filled after the question was written over).
+   * The form as the question saw it: its title, and each field as fieldSeen reads it. Every field the continued Ask
+   * fills must read the same, and the title must too, or the Ask refuses (B29 review 1: a field relabelled "Recovery
+   * email" and filled after the question was written over; re-check: a whole-form scope, and a select swapped for a
+   * text field, got past a check of the intent's named fields only).
    */
-  seen: { title: string; fields: Record<string, { name: string; section: string | null; filled: boolean }> };
+  seen: { title: string; fields: Record<string, string> };
 }
 
 /** One question an Ask asks (B29): its part, text and options, the form it is about, and what continues it. */
@@ -132,15 +133,20 @@ const changed = (what: string): never => {
   throw new SaidError("unknownWindow", SAYS.windowChanged, `since Caret asked, ${what}`);
 };
 
-/** Refuses a continued Ask when the form, or a field it would act on, no longer reads as the question saw it. */
-function checkSeen(r: AskResume, snap: IntentSnapshot): void {
+/** What a field is, as a continued Ask compares it: its name, section, control, role, whether it holds text, and its options. */
+function fieldSeen(snap: IntentSnapshot, f: IntentField): string {
+  const role = snap.window.nodes.get(f.key)?.role ?? "";
+  const options = [...snap.window.nodes.values()].filter((c) => c.parent === f.key).map((c) => `${c.role}:${c.label ?? ""}`);
+  return JSON.stringify([f.name, f.section, f.control, role, f.filled, options]);
+}
+
+/**
+ * Refuses a continued Ask when the form's title, or any field it is about to fill, no longer reads as the question saw
+ * it. Only the fields in the final scope count: an unpicked field may change freely (re-check).
+ */
+function checkSeen(r: AskResume, snap: IntentSnapshot, fields: readonly IntentField[]): void {
   if (snap.window.window.title !== r.seen.title) changed("the form's title changed");
-  const keys = [...(r.fixed.fields ?? []), ...r.intent.fields.map((x) => r.refs.fields[x]), ...r.intent.literals.map((l) => r.refs.fields[l.field])];
-  for (const key of new Set(keys)) {
-    const was = key === undefined ? undefined : r.seen.fields[key];
-    const now = snap.fields.find((f) => f.key === key);
-    if (was === undefined || now === undefined || now.name !== was.name || now.section !== was.section || now.filled !== was.filled) changed(`the field '${was?.name ?? key ?? "?"}' changed`);
-  }
+  for (const f of fields) if (r.seen.fields[f.key] !== fieldSeen(snap, f)) changed(`the field '${f.name}' changed`);
 }
 
 /** An intent read against a later snapshot of the same form: each ref by what it stood for. */
@@ -260,7 +266,6 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   try {
     snap = intentSnapshot(instruction, model, w, memory.values());
     // A continued Ask reads the maker's intent against the form as it is now, and asks the maker nothing.
-    if (resume !== undefined) checkSeen(resume, snap);
     made = resume === undefined ? await o.maker.make(snap) : { intent: remapIntent(resume.intent, resume.refs, snap), use: resume.maker };
     intent = applyFixed(made.intent, fixed, snap);
   } catch (e) {
@@ -284,7 +289,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
         maker: use,
         makerName,
         fixed,
-        seen: { title: w.window.title, fields: Object.fromEntries(snap.fields.map((f) => [f.key, { name: f.name, section: f.section, filled: f.filled }])) },
+        seen: { title: w.window.title, fields: Object.fromEntries(snap.fields.map((f) => [f.key, fieldSeen(snap, f)])) },
       },
     };
   };
@@ -363,6 +368,15 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   if (checked.route === "fill" && makerName === "writer" && !bySection && fixed.fields === undefined) {
     try {
       checked = await confirmScope(instruction, checked, inferredAll || listsAll ? "inferred" : intent.scope, intent.section, snap, askJev, namesField);
+    } catch (e) {
+      return refused(e);
+    }
+  }
+
+  // A continued Ask fills only a form that still reads as the question saw it, field by field in the final scope.
+  if (resume !== undefined && checked.route === "fill") {
+    try {
+      checkSeen(resume, snap, [...checked.fields, ...checked.leftToYou]);
     } catch (e) {
       return refused(e);
     }

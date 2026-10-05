@@ -248,6 +248,52 @@ describe("review 1: a question about a form that changed is refused (B29)", () =
   });
 });
 
+describe("re-check: the fields a continued Ask fills must read as the question saw them (B29)", () => {
+  const W = `${P}/webarea:~0`;
+  const SELECT = `${P}/popupbutton:country~0`;
+  const country = (options: string[]): Node[] => [
+    node(SELECT, "AXPopUpButton", { parent: W, label: "Country", frame: [100, 400, 200, 20] }),
+    ...options.map((o, i) => node(`${SELECT}/menuitem:${o.toLowerCase()}~${i}`, "AXMenuItem", { parent: SELECT, label: o })),
+  ];
+  const at = (extra: Node[], edit: (ns: Node[]) => Node[] = (ns) => ns): ScreenModel => {
+    const m = desk({ extra });
+    m.apply(snap(edit(page(extra)), { at: 1100, windowId: "form", title: "Apply", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true }));
+    return m;
+  };
+  const sourceQ = async (instruction: string, x: Partial<AskIntent> | ((s: IntentSnapshot) => Partial<AskIntent>), extra: Node[] = []): Promise<Q> =>
+    questionOf(await fail(planAsk(instruction, desk({ extra }), memory, about, { askJev: jevBy(() => null).ask, maker: maker(x), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
+  const note = (q: Q): string => q.options.find((c) => c.option.kind === "window" && c.option.title === "Rental notes.txt")?.option.id as string;
+
+  it("refuses a whole-form continuation whose field was relabelled", async () => {
+    const instruction = "fill this in from Rental notes.txt";
+    const q = await sourceQ(instruction, { route: "ask", why: "whichSource", scope: "all", sources: [] });
+    const m = at([], (ns) => ns.map((n) => (n.key === KEY("email") ? { ...n, label: "Recovery email" } : n)));
+    const e = await fail(answer(q, [note(q)], { model: m, ask: jevBy((x) => (x.includes("mail") ? "elena.vance@example.com" : null)).ask, instruction }));
+    expect(e.message).toBe(SAYS.windowChanged);
+  });
+
+  it.each([
+    ["its options changed", country(["Canada", "Peru"])],
+    ["it became a text field under the same key", [field(SELECT, "", { parent: W, label: "Country", frame: [100, 400, 200, 20] })]],
+  ])("refuses a continuation whose select %s", async (_, after) => {
+    const instruction = "set the country";
+    const extra = country(["Canada", "Mexico"]);
+    const q = await sourceQ(instruction, (x) => ({ route: "ask", why: "whichSource", fields: [x.fields.find((f) => f.name === "Country")?.ref ?? "?"], sources: [] }), extra);
+    const m = at(after);
+    const e = await fail(answer(q, [q.options[0]?.option.id as string], { model: m, ask: jevBy(() => "Canada").ask, instruction }));
+    expect(e.message).toBe(SAYS.windowChanged);
+  });
+
+  it("goes on when only a field the user did not pick changed", async () => {
+    const instruction = "fill the landlord name and phone";
+    const q = questionOf(await fail(planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((x) => ({ route: "ask", why: "whichFields", fields: ["Landlord name", "Landlord phone"].map((n) => x.fields.find((f) => f.name === n)?.ref ?? "?") })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
+    const name = q.options.find((c) => c.option.label === "Landlord name")?.option.id as string;
+    const m = at([], (ns) => ns.map((n) => (n.key === KEY("landlord phone") ? { ...n, label: "Office phone" } : n)));
+    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "user").ask, instruction });
+    expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("landlord name")]);
+  });
+});
+
 describe("Ask asks whose details, with the user and the people on screen (B29)", () => {
   const instruction = "add his cell number in the landlord phone";
 
@@ -294,5 +340,14 @@ describe("what stays a refusal (B29)", () => {
     // Jev finds nothing for the picked field: the Ask ends there, not with the same question again.
     const e = await fail(answer(q, ["o1"], { ask: jevBy(() => null).ask, instruction: "do the landlord bit" }));
     expect(questionOf(e)).toBeUndefined();
+  });
+});
+
+describe("option words (B29 measurement)", () => {
+  it("never fits a field by a word that only says how to ask: 'can you add my…' offers no 'contact you' field", async () => {
+    const W = `${P}/webarea:~0`;
+    const extra = [field(KEY("how should we contact you?"), "", { parent: W, label: "How should we contact you?", frame: [100, 400, 200, 20] })];
+    const e = await fail(planAsk("can you add my landlord's name", desk({ extra }), memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "ask", why: "whichFields", scope: "none" }), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
+    expect(labels(questionOf(e))).toEqual(["Full name", "Landlord name", "Landlord phone"]);
   });
 });

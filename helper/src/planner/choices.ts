@@ -16,9 +16,9 @@ import type { ScreenModel } from "../model.ts";
 import { MAX_ASK_OPTIONS, type AskOption } from "../protocol.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { collectCandidates } from "../fill/candidates.ts";
-import { fieldKinds, fieldTerms, NAME_TERM, overlap } from "../fill/kinds.ts";
+import { fieldKinds, fieldTerms, NAME_TERM, overlap, words } from "../fill/kinds.ts";
 import { mentionedKind } from "../memory/sensitive.ts";
-import { namesShortLabel, relevance } from "./planner.ts";
+import { namesShortLabel } from "./planner.ts";
 import { normalizeInstruction, SECTION_WORDS } from "./scope-words.ts";
 import { fieldWords, restrictsSources } from "./sources.ts";
 import { ASKS, asksPress, type AskPart } from "./says.ts";
@@ -75,6 +75,25 @@ function labelWords(snap: IntentSnapshot, f: IntentField): (string | null)[] {
 const kindWords = (snap: IntentSnapshot, f: IntentField): (string | null)[] => [...labelWords(snap, f), f.section];
 
 /**
+ * Words of a request that say how or how much, never which field: "can you add my…", "choose whatever…", "fill this
+ * bit". With them, "can you add my insurance member ID" offered "How should we contact you?" and "choose whatever shirt
+ * size" offered every workshop under "Choose your workshops" (B29 measurement). Only options depend on this list, never
+ * what Caret may write: a missing word costs a stray option the user does not pick. Written from those cases, not measured.
+ */
+const NOT_FIELD_WORDS: ReadonlySet<string> = new Set([
+  "can", "could", "would", "will", "please", "pls", "plz", "just", "only", "also", "too", "now", "then", "again", "instead", "actually", "ok", "okay",
+  "fill", "put", "add", "enter", "type", "write", "copy", "set", "make", "use", "change", "pick", "choose", "select", "do", "go", "get", "grab", "sign", "up", "out", "down",
+  "whatever", "everything", "anything", "all", "rest", "stuff", "bit", "part", "thing", "things", "one", "ones", "some", "any", "what", "which", "know", "fits", "fit",
+  "form", "field", "fields", "box", "boxes", "info", "information", "details", "here", "there", "it", "them", "us", "we", "he", "she", "they", "her", "his", "their", "our", "its", "me",
+]);
+
+/** How many of a name's words the request says, by kinds.ts words() less NOT_FIELD_WORDS. */
+function sharedWords(request: string, name: string): number {
+  const asked = new Set(words(request).filter((w) => !NOT_FIELD_WORDS.has(w)));
+  return new Set(words(name).filter((w) => asked.has(w))).size;
+}
+
+/**
  * The empty fields that fit the instruction, in document order: those it names by their words or by their section's,
  * and those a section phrase's meaning takes; else those of a kind of value it names; else every empty field.
  */
@@ -86,9 +105,9 @@ export function fittingFields(snap: IntentSnapshot): IntentField[] {
   const typed = (f: IntentField): boolean => f.control === "text" || f.control === "combobox";
   const named = all.filter(
     (f) =>
-      relevance(fw, f.name) > 0 ||
+      sharedWords(fw, f.name) > 0 ||
       namesShortLabel(fw, f.name) ||
-      (f.section !== null && relevance(fw, f.section) > 0) ||
+      (f.section !== null && sharedWords(fw, f.section) > 0) ||
       meanings.some((m) => m({ labelWords: labelWords(snap, f), name: f.name, typed: typed(f) })),
   );
   if (named.length > 0) return named;
