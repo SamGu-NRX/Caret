@@ -11,7 +11,7 @@ import { lowerGoal } from "../src/goals/lower.ts";
 import type { GoalInventory, ValueBinding } from "../src/goals/plan.ts";
 import { macClock } from "../src/offers/event-time.ts";
 import type { GoalProgress } from "../src/protocol.ts";
-import { cannedProgram, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { cannedProgram, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, textField, textKey, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -67,6 +67,43 @@ describe("a value code derived with no choice skips Jev's value question", () =>
     const g = preview(await sc.request("draft a reply to Priya saying I'm in"));
     expect(says(g)).toEqual(["Message: I'm in."]);
     expect(g.warnings).toEqual([`You add the recipient in 'To phone number': '${EMAIL}' is an email address, and the field takes a phone number.`]);
+  });
+});
+
+// Review of G3 (theo-astra-reviewer aa7209c305829aaa7): code derived the value, but something was still chosen.
+describe("a derived value with a choice left in it goes to Jev", () => {
+  const twoMeetings = (): DeskWindow => {
+    const m = mailWindow();
+    return {
+      ...m,
+      nodes: [...m.nodes, { key: textKey(MAIL, 5), parent: null, role: "AXStaticText", label: "Can we also meet with Dana on Friday, October 9, 2026 from 1:00 PM to 1:30 PM PT?" }],
+      values: [...(m.values ?? []), { kind: "date", text: "Friday, October 9, 2026", nodeKey: textKey(MAIL, 5) }, { kind: "time", text: "1:00 PM to 1:30 PM PT", nodeKey: textKey(MAIL, 5) }],
+    };
+  };
+
+  it("asks Jev about an event the writer picked from two the inventory derived", async () => {
+    const jev = standInJev({ belongs: (q) => !q.includes("Meet Priya") });
+    const sc = scene({ scripts: [[MEETING]], windows: [twoMeetings(), replyWindow()], userWindow: "6161-2", askJev: jev });
+    const r = await sc.request("add only Dana's meeting to my calendar, not Priya's");
+    expect(jev.asked.filter((q) => q.includes("'the Caret calendar'"))).toHaveLength(2);
+    expect(r.event === "stopped" && r.says).toBe("Caret left the event out of your 'Caret' calendar: Jev didn't confirm 'Meet Priya' belongs there");
+  });
+
+  it("asks Jev about an event when the instruction asks for none", async () => {
+    const jev = standInJev();
+    const sc = scene({ scripts: [[MEETING, MESSAGE]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: jev });
+    await sc.request("draft a reply to Priya saying I'm in");
+    expect(jev.asked.filter((q) => q.includes("'the Caret calendar'"))).toHaveLength(2);
+  });
+
+  it("leaves To to the user when two answered messages have different senders", async () => {
+    const other: DeskWindow = { ...mailWindow(), windowId: "6161-3", nodes: mailWindow().nodes.map((n, i) => (i === 0 ? { ...n, label: "From: Alex Moreno <alex.moreno@example.com>" } : n)), values: [{ kind: "email", text: "alex.moreno@example.com", nodeKey: textKey(MAIL, 0) }] };
+    const jev = standInJev();
+    const sc = scene({ scripts: [[MESSAGE]], windows: [other, mailWindow(), replyWindow()], userWindow: "6161-2", askJev: jev });
+    const g = preview(await sc.request("draft a reply to Priya saying I'm in"));
+    expect(says(g)).toEqual(["Message: I'm in."]);
+    expect(g.warnings).toEqual(["You add the recipient in 'To': more than one message this one answers has a sender, and Caret doesn't pick between them."]);
+    expect(jev.asked.filter((q) => q.includes("@"))).toEqual([]);
   });
 });
 

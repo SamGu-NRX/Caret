@@ -16,7 +16,6 @@ describe("numberFieldMisfit", () => {
     ["Ticket #", "www.example.com/t/9"],
     ["Confirmation code", "+1 512 555 0142"],
     ["Order number", "(512) 555-0142"],
-    ["Order number", "512-555-0142"],
     ["Order number", "512.555.0142 ext. 9"],
     ["Order number", "2026-10-08"],
     ["Order number", "10/08/2026"],
@@ -33,6 +32,10 @@ describe("numberFieldMisfit", () => {
     ["Promo code", "MAY"],
     ["Promo code", "MAY2026"],
     ["Ticket #", "4821"],
+    // Review of G3 (theo-astra-reviewer aa7209c305829aaa7): punctuation alone is no phone, and a date needs its year.
+    ["Order number", "512-555-0142"],
+    ["Version number", "1.2.3"],
+    ["HS code", "10.06.30"],
     // Reference alone names no number (B16 and B17 put links and order numbers in one Reference field).
     ["Reference", "https://northwind.example/orders/48213"],
     // Fields that name another shape are misfit's own, and a field with no ID word is not one of these.

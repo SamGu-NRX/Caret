@@ -394,17 +394,20 @@ export function misfit(value: string, labelWords: readonly (string | null | unde
  * "Reference" alone is not one: B16 and B17 put links and order numbers in one Reference field.
  */
 export const NUMBER_FIELD = /\b(?:number|no|num|nr|code)\b|#/u;
-/** A phone number by its punctuation: a leading +, an area code in brackets, an extension, or 3-3-4 digit groups. */
-const PHONE_SHAPE = /^\+|\(\d{2,4}\)|^\d{3}[\s.-]\d{3}[\s.-]\d{4}$/u;
-/** A date with a month and a day or year: three numeric parts ("2026-10-08", "10/08/2026"), or a month name with a number. */
-const NUMERIC_DATE = /^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/u;
+/**
+ * A phone number by what only a phone carries: a leading +, an area code in brackets, or an extension. Digit groups
+ * alone ("512-555-0142") can be an order number, and are left to Jev (G3 review).
+ */
+const PHONE_SHAPE = /^\+|\(\d{2,4}\)/u;
+/** A whole date with its year: three numeric parts with a four-digit year first or last ("2026-10-08", "10/08/2026"). "1.2.3" and "10.06.30" are versions and codes. */
+const NUMERIC_DATE = /^(?:\d{4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{4})$/u;
 const MONTH_WORD = /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/iu;
 
 /**
  * Why a value does not fit a field that names a number or code and no other kind, or null: an email address, a web
  * link, a phone number or a date is never one (G2 for goals, G3 for every fill). misfit leaves ID fields unchecked
  * otherwise. Only a clear shape counts, since an order number can be any run of digits: a phone needs phone
- * punctuation ("5125550142" stays an order number), and a date needs two parts ("MAY" stays a promo code). Written for
+ * punctuation ("5125550142" and "512-555-0142" stay order numbers), and a date needs its parts ("MAY" stays a promo code). Written for
  * M2's scene 1 ("Order number" took priya.raman@northwind.example), not measured on real forms.
  */
 export function numberFieldMisfit(value: string, labelWords: readonly (string | null | undefined)[]): string | null {
@@ -417,7 +420,7 @@ export function numberFieldMisfit(value: string, labelWords: readonly (string | 
   const said =
     k === "email" ? "an email address"
     : k === "url" ? "a web link"
-    : k === "phone" && PHONE_SHAPE.test(v.replace(PHONE_EXT, "")) ? "a phone number"
+    : k === "phone" && (PHONE_SHAPE.test(v) || PHONE_EXT.test(v)) ? "a phone number"
     : dateShaped(v) && (NUMERIC_DATE.test(v) || (MONTH_WORD.test(v) && /\d/u.test(v))) ? "a date"
     : null;
   return said === null ? null : `'${v.length <= 60 ? v : `${v.slice(0, 59)}…`}' is ${said}, and the field takes a number or code`;

@@ -205,6 +205,8 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   }
   let steps: GoalStep[] = [];
   const warnings: string[] = [];
+  const asked = eventsAsked(instruction);
+  const soleEvent = asked >= 1 && [...inv.values.values()].filter((v) => v.event !== null).length === 1;
   const left: LeftItem[] = [];
   /** A dropped write is left to the user; in a message's recipient field, as its recipient (left.ts). An event is named by itself. */
   const dropAs = (t: TargetBinding, why: string, v?: ValueBinding | null): void => {
@@ -254,9 +256,10 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         dropAs(t, gated, v);
         continue;
       }
-      // An event the helper derived (inventory.ts eventsIn) has nothing left to choose but which calendar, which the
-      // writer named and the user sees: it skips Jev's value question (G3). Any other value is the writer's pick.
-      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : lowered.kind === "calendar" && isDerived(v) ? "derived" : "jev";
+      // An event the helper derived (inventory.ts eventsIn) skips Jev's value question (G3) only when nothing was left
+      // to choose: the instruction asks for an event and the inventory derived exactly one. With two, which one the
+      // writer picked is a choice, and Jev answers whether it is the one asked for. Any other value is the writer's pick.
+      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : lowered.kind === "calendar" && isDerived(v) && soleEvent ? "derived" : "jev";
       const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered };
       steps.push(gate === "derived" ? markDerived(step) : step);
       lastPress = null;
@@ -289,9 +292,15 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     for (const f of inv.owed.get(windowId) ?? []) {
       if (f.why !== "recipient" || !f.empty || steps.some((x) => x.kind === "write" && x.target.domain.kind === "window" && x.target.domain.windowId === windowId && x.target.key === f.key)) continue;
       const t = [...inv.targets.values()].find((x) => x.domain.kind === "window" && x.domain.windowId === windowId && x.key === f.key && x.control === "text");
-      const sender = t === undefined || t.domain.kind !== "window" ? undefined : senderValue(t.domain.title, inv);
+      const senders = t === undefined || t.domain.kind !== "window" ? [] : senderValues(t.domain.title, inv);
+      const sender = senders[0];
       if (t === undefined || sender === undefined) {
         left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': Caret found no sender of a message this one answers` });
+        continue;
+      }
+      // Two answered messages (the same subject) from different people: which sender is a choice code does not make.
+      if (new Set(senders.map((v) => v.text.trim().toLowerCase())).size > 1) {
+        left.push({ windowId, key: f.key, label: f.label, why: "recipient", says: `You add the recipient in '${f.label}': more than one message this one answers has a sender, and Caret doesn't pick between them` });
         continue;
       }
       recipientCheck(t, sender, inv);
@@ -338,7 +347,6 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
     }
   }
   // Events the instruction asks for that no step adds: the goal cannot be done without them (runs.ts counts receipts).
-  const asked = eventsAsked(instruction);
   const adds = steps.filter((x) => x.kind === "calendar").length;
   // An event a gate dropped is already left, and said; the rest the plan has no step for at all.
   const droppedEvents = left.filter((l) => l.windowId === "calendar").length;
@@ -369,9 +377,9 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   return { goalId, instruction, programHash: draft.programDigest, segments, warnings, left, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv };
 }
 
-/** The value the inventory lists that is the From address of the message the window titled `reply` answers. */
-function senderValue(reply: string, inv: GoalInventory): ValueBinding | undefined {
-  return [...inv.values.values()].find((v) => {
+/** The values the inventory lists that are the From address of a message the window titled `reply` answers. */
+function senderValues(reply: string, inv: GoalInventory): ValueBinding[] {
+  return [...inv.values.values()].filter((v) => {
     const src = v.source === null ? undefined : inv.texts.get(v.source.windowId);
     return v.draft === null && v.event === null && src !== undefined && senderOf(reply, src, v.text);
   });
