@@ -25,7 +25,7 @@ import { matchOption } from "../fill/controls.ts";
 import type { SnippetLedger } from "../privacy.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
 import { checkDraftText, eventsAsked, DraftRefused, recipientField, senderOf, subjectField, type DraftBasis } from "./drafts.ts";
-import { codeGate, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
+import { codeGate, eventAsAsked, isDerived, jevGate, JevUnavailable, markDerived } from "./gates.ts";
 import { fieldKinds } from "../fill/kinds.ts";
 import { createHash } from "node:crypto";
 import { saysPress } from "../planner/says.ts";
@@ -207,6 +207,8 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
   const warnings: string[] = [];
   const asked = eventsAsked(instruction);
   const soleEvent = asked >= 1 && [...inv.values.values()].filter((v) => v.event !== null).length === 1;
+  /** Words of the labels the targets showed ("To", the calendar's name): an instruction names them, not an event. */
+  const labelWords = new Set([...inv.targets.values()].flatMap((t) => t.label.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "")));
   const left: LeftItem[] = [];
   /** A dropped write is left to the user; in a message's recipient field, as its recipient (left.ts). An event is named by itself. */
   const dropAs = (t: TargetBinding, why: string, v?: ValueBinding | null): void => {
@@ -257,9 +259,11 @@ export async function lowerGoal(goalId: string, instruction: string, draft: Draf
         continue;
       }
       // An event the helper derived (inventory.ts eventsIn) skips Jev's value question (G3) only when nothing was left
-      // to choose: the instruction asks for an event and the inventory derived exactly one. With two, which one the
-      // writer picked is a choice, and Jev answers whether it is the one asked for. Any other value is the writer's pick.
-      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : lowered.kind === "calendar" && isDerived(v) && soleEvent ? "derived" : "jev";
+      // to choose: the instruction asks for an event, the inventory derived exactly one, and the instruction names
+      // nothing that event's sentence lacks (gates.ts eventAsAsked). Otherwise which event is a choice, and Jev answers
+      // whether it is the one asked for. Any other value is the writer's pick.
+      const derived = lowered.kind === "calendar" && v.event !== null && isDerived(v) && soleEvent && eventAsAsked(instruction, v.event, labelWords);
+      const gate = lowered.kind === "handoff" ? null : v.draft !== null ? "draft" : derived ? "derived" : "jev";
       const step: GoalStep = { ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, to, gate, ...lowered };
       steps.push(gate === "derived" ? markDerived(step) : step);
       lastPress = null;

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runCodePlan } from "../src/codemode/sandbox.ts";
 import { DoneMessage } from "../src/codemode/types.ts";
 import { buildInventory } from "../src/goals/inventory.ts";
+import { eventAsAsked } from "../src/goals/gates.ts";
 import { lowerGoal } from "../src/goals/lower.ts";
 import type { GoalInventory, ValueBinding } from "../src/goals/plan.ts";
 import { macClock } from "../src/offers/event-time.ts";
@@ -70,6 +71,33 @@ describe("a value code derived with no choice skips Jev's value question", () =>
   });
 });
 
+describe("eventAsAsked", () => {
+  const event = { title: "Meet Priya", sentence: "Can we meet with Priya on Thursday, October 8, 2026 from 3:00 PM to 3:45 PM PT to sort it out?" };
+  const ignore = new Set(["to", "message", "caret"]);
+  it("takes an instruction that names nothing or only what the event's sentence says", () => {
+    for (const i of [
+      "add this meeting to my calendar",
+      'add this meeting to my calendar and draft a reply to Priya saying "I\'m in, Dana"',
+      "Add Priya's meeting on Thursday at 3 to the Caret calendar. I'll be there.",
+      "Put the October 8 meeting with Priya in my calendar",
+      "add the 3pm meeting with priya. Copy her address into the To field.",
+    ])
+      expect(eventAsAsked(i, event, ignore), i).toBe(true);
+  });
+  it("leaves the event to Jev when the instruction picks by anything the sentence lacks", () => {
+    for (const i of [
+      "add Dana's meeting to my calendar",
+      "add only Dana's meeting to my calendar, not Priya's",
+      "add the Friday meeting",
+      "add the meeting on October 9",
+      "add tomorrow's meeting with Priya",
+      "add the 4pm meeting",
+      "Add the meeting from the Mail app",
+    ])
+      expect(eventAsAsked(i, event, ignore), i).toBe(false);
+  });
+});
+
 // Review of G3 (theo-astra-reviewer aa7209c305829aaa7): code derived the value, but something was still chosen.
 describe("a derived value with a choice left in it goes to Jev", () => {
   const twoMeetings = (): DeskWindow => {
@@ -85,6 +113,15 @@ describe("a derived value with a choice left in it goes to Jev", () => {
     const jev = standInJev({ belongs: (q) => !q.includes("Meet Priya") });
     const sc = scene({ scripts: [[MEETING]], windows: [twoMeetings(), replyWindow()], userWindow: "6161-2", askJev: jev });
     const r = await sc.request("add only Dana's meeting to my calendar, not Priya's");
+    expect(jev.asked.filter((q) => q.includes("'the Caret calendar'"))).toHaveLength(2);
+    expect(r.event === "stopped" && r.says).toBe("Caret left the event out of your 'Caret' calendar: Jev didn't confirm 'Meet Priya' belongs there");
+  });
+
+  // Re-check (theo-astra-reviewer a04623b09ee16fc17): the only event is still a choice when the instruction asks for another.
+  it("asks Jev about the only event when the instruction names someone its sentence does not", async () => {
+    const jev = standInJev({ belongs: () => false });
+    const sc = scene({ scripts: [[MEETING]], windows: [mailWindow(), replyWindow()], userWindow: "6161-2", askJev: jev });
+    const r = await sc.request("add Dana's meeting to my calendar");
     expect(jev.asked.filter((q) => q.includes("'the Caret calendar'"))).toHaveLength(2);
     expect(r.event === "stopped" && r.says).toBe("Caret left the event out of your 'Caret' calendar: Jev didn't confirm 'Meet Priya' belongs there");
   });

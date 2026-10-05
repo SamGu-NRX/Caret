@@ -50,6 +50,36 @@ export function isDerived(x: ValueBinding | GoalStep): boolean {
   return derived.has(x);
 }
 
+const WEEKDAY_OR_MONTH = /^(?:mon|tues?|wed|thu(?:rs)?|fri|sat|sun)(?:day|nesday|urday)?$|^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)$/u;
+/** Days and times said relative to now, which only the value resolver could match to an event. */
+const RELATIVE_TIME = /^(?:today|tonight|tomorrow|yesterday|week|weekend|month|morning|afternoon|evening|noon|midnight)$/u;
+const I_FORMS = new Set(["i", "i'm", "i’m", "i've", "i’ve", "i'll", "i’ll", "i'd", "i’d"]);
+
+/**
+ * Whether the instruction picks out this event by nothing the event's own sentence lacks (G3 re-check): every name it
+ * capitalizes inside a sentence ("Dana's", "Priya"), weekday or month, and number must be a word of the event's sentence
+ * or title, and it may say no relative time ("tomorrow"). Quoted text is what to write, not which event, and is left
+ * out; so are `ignore`, the words of the labels the goal's targets showed ("To", the calendar's name). Anything else
+ * leaves the event to Jev's value question, as before G3. Written for the D2-06 and B30 instructions, not measured: a
+ * name written in lower case ("add dana's meeting") is not seen, and the preview still names the event.
+ */
+export function eventAsAsked(instruction: string, event: { title: string; sentence: string }, ignore: ReadonlySet<string>): boolean {
+  const has = new Set(`${event.sentence} ${event.title}`.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== ""));
+  const unquoted = instruction.replace(/"[^"]*"|“[^”]*”/gu, " ");
+  for (const sentence of unquoted.split(/[.!?;:]+\s+|\n+/u)) {
+    const words = sentence.split(/\s+/u).map((w) => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}'’]+$/gu, "")).filter((w) => w !== "");
+    for (const [i, raw] of words.entries()) {
+      const w = raw.replace(/['’]s$/u, "");
+      const low = w.toLowerCase();
+      if (RELATIVE_TIME.test(low)) return false;
+      const named = (i > 0 && /^\p{Lu}/u.test(w) && !I_FORMS.has(raw.toLowerCase())) || WEEKDAY_OR_MONTH.test(low);
+      if (named && !ignore.has(low) && !has.has(low)) return false;
+      for (const n of w.match(/\d+/gu) ?? []) if (!has.has(n) && ![...has].some((h) => h.startsWith(n) && /^\d+[ap]m$/u.test(h))) return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Label words of a single-line field that takes free words. A draft goes in a text area whose own label names no shape
  * (an email, a link, a phone, a date, a time, an amount, an address), or in a text field whose own label has one of
