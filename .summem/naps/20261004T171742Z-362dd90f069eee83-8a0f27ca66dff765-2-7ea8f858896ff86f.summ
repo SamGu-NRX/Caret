@@ -1,1 +1,0 @@
-B23: crash-recovery-eval.ts SIGKILLs a real helper mid skill run; its 'restarted helper is still running' check catches a crash after the last publish. The reader joins only a 0700 socket dir owned by the user (never /tmp itself): tests use mkdtemp.

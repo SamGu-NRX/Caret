@@ -1,1 +1,0 @@
-T1 and B23 host gotchas: compare field values by UTF-16 or digest, not String ==; spell-check language is a hint only; v2/host must say host: true in its hello; reader marks make undo answer notSameElement for a replaced field.
