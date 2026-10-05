@@ -368,10 +368,10 @@ describe("one Fill all over a mixed form (D2-04)", () => {
     };
     const r = await accept(popup.offerKey);
     expect(r?.outcome).toBe("stopped");
-    expect(helper.executor.ledger(popup.offerKey).find((e) => e.kind === "write" && e.key === KEY("e9"))).toMatchObject({ before: "", after: "2026-10-20", unconfirmed: true });
+    expect(helper.executor.ledger(popup.offerKey).find((e) => e.kind === "write" && e.key === KEY("e9"))).toMatchObject({ before: "", after: "2026-10-20", mayIncludeInput: true });
     const u = await helper.executor.undo(popup.offerKey);
     expect(page.shown("e9")).toBe("2026-12-01");
-    expect(u.notRestored.map((x) => x.step)).toHaveLength(1);
+    expect(u.notRestored.map((x) => x.reason)).toEqual(["the field changed while Caret wrote it and may hold your typing, so Caret left it as it is"]);
   });
 
   it("stops, recording nothing, when a box or a choice it is about to set was set by someone else since the walk (review R6)", async () => {

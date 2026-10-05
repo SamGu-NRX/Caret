@@ -22,9 +22,11 @@ const step = z.number().int().nonnegative();
 
 /**
  * One undo ledger entry. A write records the value it replaced and the mark under which the reader keeps the
- * element it wrote (null when none was recorded: such a write is never restored). `unconfirmed`: the helper
- * stopped while the write was on its way, so it may not have landed. A calendar entry's `eventId` is null for an
- * add whose answer the crash lost; undo then looks the event up by its slot.
+ * element it wrote (null when none was recorded: such a write is never restored). `after` is always the value Caret
+ * meant to write, never a later read (B29). `unconfirmed`: the helper stopped while the write was on its way, so it
+ * may not have landed. `mayIncludeInput`: the read-back differed from `after`, so the field may hold the user's
+ * typing, and undo refuses it. A calendar entry's `eventId` is null for an add whose answer the crash lost; undo then
+ * looks the event up by its slot.
  */
 export const LedgerEntrySchema = z.discriminatedUnion("kind", [
   z.object({
@@ -38,6 +40,7 @@ export const LedgerEntrySchema = z.discriminatedUnion("kind", [
     after: z.string(),
     mark: z.string().min(1).nullable(),
     unconfirmed: z.literal(true).optional(),
+    mayIncludeInput: z.literal(true).optional(),
   }),
   z.object({ kind: z.literal("calendar"), step, eventId: z.string().min(1).nullable(), calendar: z.string(), title: z.string(), start: z.string(), end: z.string() }),
   z.object({ kind: z.literal("press"), step, label: z.string(), windowId: z.string() }),

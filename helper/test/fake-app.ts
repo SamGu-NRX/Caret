@@ -48,6 +48,11 @@ export class FakeApp implements ReaderLink {
   failWalks = 0;
   /** Rewrites each written value, as an app that formats input does. */
   normalize: ((v: string) => string) | null = null;
+  /**
+   * A keystroke the user types into the written field after the write lands and before the walk that reads it back,
+   * delivered once (B29). The executor learns of the input only later, as the reader's watch is not instant.
+   */
+  keystrokeAfterWrite: string | null = null;
   /** Called after each verb, so a test can change the app between steps. */
   afterVerb: ((app: FakeApp, v: ReaderVerb) => void) | null = null;
   /** Called when a verb arrives, before the fake judges it: a control the user sends while the verb is on its way. */
@@ -128,6 +133,10 @@ export class FakeApp implements ReaderLink {
         if (verb.attribute !== "value") this.focusedKey = verb.key;
         const dropped = verb.attribute === "value" ? this.dropWrites : verb.attribute === "focusValue" ? this.dropFocusValues : this.dropInserts;
         if (!dropped) this.setValue(verb.key, this.normalize === null ? verb.value : this.normalize(verb.value));
+        if (!dropped && this.keystrokeAfterWrite !== null) {
+          this.setValue(verb.key, (this.node(verb.key)?.value ?? "") + this.keystrokeAfterWrite);
+          this.keystrokeAfterWrite = null;
+        }
         if (verb.attribute === this.vanishAfter) this.vanished = n;
         if (this.timeoutAfterWrite) return { outcome: "axError", detail: "no answer from the reader within 5000 ms" };
       } else this.focusedKey = verb.key;

@@ -952,16 +952,14 @@ export class Executor {
     const after = this.window(w.window.windowId);
     const now = after.nodes.get(node.key);
     if (attribute === "value") {
-      // The reader wrote, so the write goes in the ledger before it is judged: an app that reformats
-      // the value fails the comparison but must still be undoable. `after` is what the field holds now.
-      // D2-04 review: that is so only when nothing else can have changed the field since. A page write the engine
-      // answered ok held `value` when the engine read it back, so a different value now is someone's later edit, not
-      // the page's reformatting; nor is a value read after the user's input reached the task. Then the entry keeps
-      // what Caret wrote, unconfirmed, and undo restores only a field that still holds it, never the user's edit.
+      // The reader wrote, so the write goes in the ledger before it is judged. Its `after` is the value Caret meant to
+      // write, never this read (B29 lead decision): a keystroke the user typed right as Caret wrote can reach the field
+      // before the read-back and the task's input watch later, so a read that differs may hold the user's typing, and
+      // an app's reformatting looks the same. Such an entry is marked, and undo refuses it rather than restore over
+      // text it cannot tell is its own. Before B29 a reader write kept the read as `after`, and undo erased the keystroke.
       if (now !== undefined && (now.value ?? "") !== before) {
-        const held = now.value ?? "";
-        const ours = held === value || (w.window.kind !== "page" && task.interrupt === null);
-        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: ours ? held : value, mark: mark ?? null, ...(ours ? {} : { unconfirmed: true }) });
+        const ours = sameValue(node, now.value ?? "", value);
+        this.addLedger(task, { kind: "write", step: i, pid: w.app.pid, windowId: w.window.windowId, key: node.key, role: node.role, before, after: value, mark: mark ?? null, ...(ours ? {} : { mayIncludeInput: true }) });
       }
       // A field the walk lost and then found again (B15's WebKit window) comes back as an added node holding the value.
       const recorded = seen.some((c) => (c.kind === "value" || (c.kind === "added" && seen.some((r) => r.kind === "removed" && r.key === node.key))) && c.key === node.key && c.after === value);
@@ -1399,7 +1397,19 @@ export class Executor {
     // that is gone says nothing either way (a Yes/No press whose page then left, B28 review), so it is not counted.
     const field = this.deps.model.windows.get(e.windowId)?.nodes.get(e.key);
     if (e.unconfirmed === true && field !== undefined && (field.value ?? "") === e.before) return UNTOUCHED;
-    const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: e.after, value: e.before, taskId: task.id, sameAs: e.mark };
+    // B29: undo restores only a field that holds what Caret wrote, decided here from the read just made, so no restore
+    // is sent over text that may be the user's. The reader rechecks the field against that read right before it writes.
+    if (e.mayIncludeInput === true) return final("the field changed while Caret wrote it and may hold your typing, so Caret left it as it is");
+    if (field !== undefined && !sameValue(field, field.value ?? "", e.after)) {
+      return final(
+        e.unconfirmed === true
+          ? "Caret stopped while writing this field, and the field does not hold what it was writing, so Caret left it as it is"
+          : "the field changed after Caret wrote it, so Caret left it as it is",
+      );
+    }
+    // A field the walk lost (B15's WebKit window) is left to the reader's own check against what Caret wrote.
+    const held = field === undefined ? e.after : (field.value ?? "");
+    const restore: ReaderVerb = { kind: "write", pid: e.pid, windowId: e.windowId, key: e.key, role: e.role, attribute: "value", expect: held, value: e.before, taskId: task.id, sameAs: e.mark };
     const seen: Change[] = [];
     const off = this.deps.onChanges((cs) => {
       for (const c of cs) if (c.windowId === e.windowId) seen.push(c);
@@ -1416,7 +1426,7 @@ export class Executor {
       };
       await refind();
       for (const fallback of FALLBACKS) {
-        if (r.outcome !== "ok" || !this.dropped(e.windowId, e.key, e.after, seen)) break;
+        if (r.outcome !== "ok" || !this.dropped(e.windowId, e.key, held, seen)) break;
         if (task.undoStopped !== null) return task.undoStopped;
         const other = seen.find((c) => c.editable && c.key !== e.key && (c.kind === "value" || c.kind === "removed"));
         if (other !== undefined) return final(`${other.key} changed while the field was restored, so the restore was not tried again`);
@@ -1587,6 +1597,11 @@ function contains(f: [number, number, number, number], p: [number, number]): boo
 
 /** undoWrite's answer for a write a crash cut off that never landed. */
 const UNTOUCHED = Symbol("untouched");
+
+/** Whether field `n`, read as `held`, holds exactly the value Caret wrote (B29: anything else may be the user's typing). */
+function sameValue(_n: Node, held: string, wrote: string): boolean {
+  return held === wrote;
+}
 
 /** Why the reader refused a restore, in words for the activity row. */
 function undoRefused(e: Extract<LedgerEntry, { kind: "write" }>, r: VerbResult): string {

@@ -433,14 +433,40 @@ describe("executor", () => {
     expect(watches).toEqual([[FIXTURE_APP.pid], []]);
   });
 
-  it("records a write the app reformatted, stops on the mismatch, and can still undo it", async () => {
+  it("records what it wrote when the app reformatted it, stops on the mismatch, and refuses the undo, as a reformat reads like typing (B29)", async () => {
     app.normalize = (v) => v.toUpperCase();
     const r = await helper.executor.run("t1", plan([write(K("textfield:email~0"), "dana@example.com")]), {});
     expect(r).toMatchObject({ outcome: "stopped", step: 0 });
-    expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ before: "old@example.com", after: "DANA@EXAMPLE.COM" })]);
+    expect(helper.executor.ledger("t1")).toEqual([expect.objectContaining({ before: "old@example.com", after: "dana@example.com", mayIncludeInput: true })]);
     app.normalize = null;
-    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 1 });
-    expect(app.node(K("textfield:email~0"))?.value).toBe("old@example.com");
+    expect(await helper.executor.undo("t1")).toMatchObject({ restored: 0, notRestored: [{ step: 0, reason: expect.stringMatching(/may hold your typing/) }] });
+    expect(app.node(K("textfield:email~0"))?.value).toBe("DANA@EXAMPLE.COM");
+  });
+
+  it("never takes a keystroke that lands between its write and the read-back for its own: undo leaves the field (B29)", async () => {
+    // The user types "s" right as Caret writes "Dana"; the read-back walk sees "Danas" before the input reaches the task.
+    app.keystrokeAfterWrite = "s";
+    const r = await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(r).toMatchObject({ outcome: "stopped", step: 0 });
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Danas");
+    const ledger = helper.executor.ledger("t1");
+    const u = await helper.executor.undo("t1");
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Danas");
+    expect(u.restored).toBe(0);
+    expect(u.notRestored).toEqual([{ step: 0, reason: "the field changed while Caret wrote it and may hold your typing, so Caret left it as it is" }]);
+    expect(ledger).toEqual([expect.objectContaining({ before: "", after: "Dana", mayIncludeInput: true })]);
+    // No restore was sent: undo refused from the field it read, before any write.
+    expect(acts().filter((v) => v.kind === "write" && v.sameAs !== undefined)).toEqual([]);
+  });
+
+  it("refuses an undo whose field no longer holds exactly what Caret wrote, before sending any restore (B29)", async () => {
+    await helper.executor.run("t1", plan([write(K("textfield:name~0"), "Dana")]), {});
+    expect(helper.executor.ledger("t1")).toEqual([expect.not.objectContaining({ mayIncludeInput: true })]);
+    app.setValue(K("textfield:name~0"), "Dana ");
+    const u = await helper.executor.undo("t1");
+    expect(u.notRestored).toEqual([{ step: 0, reason: "the field changed after Caret wrote it, so Caret left it as it is" }]);
+    expect(app.node(K("textfield:name~0"))?.value).toBe("Dana ");
+    expect(acts().filter((v) => v.kind === "write" && v.sameAs !== undefined)).toEqual([]);
   });
 
   it("records a write whose answer was lost, so undo can still restore it", async () => {
