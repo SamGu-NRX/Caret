@@ -106,6 +106,10 @@ public final class RouteFollower {
     /// Decisions in a row naming a firmly bound field's text under other ids before the host takes the
     /// new ids. Two, so one decision about another empty field never moves a firm binding. Assumed.
     static let contradictionsToRebind = 2
+    /// How long a field may read as gone and still come back as the same focus. One TextEdit document
+    /// kept focus for a whole run and the follower still counted 15 focus changes (evidence/host/h6,
+    /// ghost-off-6): reads that found no field between keystrokes. The bound is assumed, not measured.
+    public static let blinkMs: Int64 = 1000
     /// Decisions kept to match a field the host focuses after they arrived. A bound, not measured.
     static let keptDecisions = 8
     /// Texts kept per field to match a decision's digest against, the newest last. A bound, not measured.
@@ -167,6 +171,8 @@ public final class RouteFollower {
     public let entryLatency = LatencyRecorder(capacity: 200)
 
     private var field: Field?
+    /// The field the last read found gone, and when, in case it comes straight back (`blinkMs`).
+    private var blinked: (Field, Int64)?
     private struct Ids: Equatable { var windowId: String; var key: String }
     /// The helper's ids for fields the user left, newest last, and whether the binding was firm. A firm
     /// one binds its field again on return and never binds another; a tentative one keeps only a
@@ -206,12 +212,19 @@ public final class RouteFollower {
     /// sentence or paragraph the user just finished. Ordinary typing returns nil.
     public func observe(_ read: Read?, nowMs: Int64) -> RoutingContext? {
         guard let read else {
+            if let f = field { blinked = (f, nowMs) }
             leave()
             return nil
         }
         var target = read.target
         target.elementRevision = ""
         let selection = Self.selectionMode(read.selection)
+        // A read that found no field between two reads of the same one (an app busy for a moment) is
+        // no focus change: the field comes back as it was, decision and all.
+        if field == nil, let (left, at) = blinked, left.target == target, nowMs - at <= Self.blinkMs {
+            field = left
+        }
+        blinked = nil
         guard var f = field, f.target == target else {
             leave()
             var fresh = Field(
@@ -388,6 +401,7 @@ public final class RouteFollower {
         unavailable = false
         recent = []
         known = []
+        blinked = nil
         if var f = field {
             f.windowId = nil
             f.key = nil

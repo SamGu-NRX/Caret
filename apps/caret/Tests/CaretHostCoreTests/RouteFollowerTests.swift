@@ -159,12 +159,28 @@ final class RouteFollowerTests: XCTestCase {
         let first = try XCTUnwrap(f.observe(read("Plans for the week. "), nowMs: t0 + 100))
         _ = f.receive(decision(.write, context: 4, at: t0 + 300, revision: first.textRevision), nowMs: t0 + 301)
         XCTAssertNil(f.observe(nil, nowMs: t0 + 1000))
-        XCTAssertNil(f.observe(read("Plans for the week. "), nowMs: t0 + 2000))
+        XCTAssertNil(f.observe(read("Plans for the week. "), nowMs: t0 + 2500))
         XCTAssertEqual(f.boundField?.key, bodyKey)
-        XCTAssertEqual(f.receive(decision(.write, context: 6, at: t0 + 2010, revision: RouteFollower.helperDigest("Plans for the week. ")), nowMs: t0 + 2011).0, .applied)
+        XCTAssertEqual(f.receive(decision(.write, context: 6, at: t0 + 2510, revision: RouteFollower.helperDigest("Plans for the week. ")), nowMs: t0 + 2511).0, .applied)
         let next = try XCTUnwrap(f.observe(read("Plans for the week. Lunch. "), nowMs: t0 + 3000))
         XCTAssertEqual(next.key, bodyKey)
         XCTAssertNotEqual(next.textRevision, first.textRevision)
+    }
+
+    /// A read that finds no field between two reads of the same one is no focus change: the binding and
+    /// the decision stay. Gone longer than `blinkMs`, the field comes back as a new focus.
+    func testAMomentWithNoFieldReadIsNoFocusChange() {
+        let f = written()
+        XCTAssertNil(f.observe(nil, nowMs: t0 + 100))
+        XCTAssertNil(f.observe(read("Plans for the week"), nowMs: t0 + 150))
+        XCTAssertEqual(f.gate(nowMs: t0 + 151), .allow(.write))
+        XCTAssertEqual(f.stats.breakpoints["focus"], 1)
+        XCTAssertNil(f.observe(nil, nowMs: t0 + 200))
+        _ = f.observe(read("Plans for the week"), nowMs: t0 + 200 + RouteFollower.blinkMs + 1)
+        XCTAssertEqual(f.stats.breakpoints["focus"], 2)
+        // The field's ids come back from `known`, and the helper's last decision for them, with no newer
+        // context since, still holds.
+        XCTAssertEqual(f.gate(nowMs: t0 + 200 + RouteFollower.blinkMs + 2), .allow(.write))
     }
 
     /// Binding found a range selection the helper took as unknown: one context tells it.
