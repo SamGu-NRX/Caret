@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { Store } from "../src/store.ts";
-import { recheckFill, type GroundedProposal } from "../src/offers/fill-popup.ts";
+import { recheckFill, writtenFields } from "../src/offers/fill-popup.ts";
 import { loadRecording } from "./socket-reader.ts";
 import { ScreenModel } from "../src/model.ts";
 import { collectCandidates, setGeneratorClock } from "../src/fill/candidates.ts";
@@ -291,7 +291,7 @@ describe("B13 review: a field that changes meaning while Jev answers", () => {
     const src = rec.find((x): x is Snapshot => x.type === "snapshot" && x.window.windowId === "6160-1") as Snapshot;
     const emailNode = src.values.find((v) => v.kind === "email");
     expect(emailNode).toBeDefined();
-    const p = {
+    const p = writtenFields({
       type: "fillProposal",
       v: PROTOCOL_VERSION,
       id: "p1",
@@ -303,6 +303,8 @@ describe("B13 review: a field that changes meaning while Jev answers", () => {
       fields: [
         {
           key: EMAIL,
+          control: "text",
+          handoff: null,
           frame: null,
           descriptor: "Text field. Label: 'Email'.",
           choice: "c1",
@@ -316,7 +318,7 @@ describe("B13 review: a field that changes meaning while Jev answers", () => {
       candidates: 1,
       jev: { model: "t", latencyMs: 0, inputTokens: 0, costUsd: 0 },
       cutoff: 0.75,
-    } as unknown as GroundedProposal;
+    } as unknown as FillProposal);
     expect(recheckFill(m, p, () => null)).toBeNull();
     m.apply({ ...form, at: 3200, nodes: form.nodes.map((n) => (n.key === EMAIL ? { ...n, label: "Work phone" } : n)) });
     expect(recheckFill(m, p, () => null)).toBe(`the field ${EMAIL} now reads differently`);

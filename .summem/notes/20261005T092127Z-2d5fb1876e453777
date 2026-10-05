@@ -1,0 +1,1 @@
+B29: sources.ts RESTRICTS also matches 'without using X', and such an instruction gets no source question; tests of an excluded source window use 'not from X'.

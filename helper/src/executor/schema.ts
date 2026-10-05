@@ -34,8 +34,14 @@ export const Target = z
     label: z.string().optional(),
     /** What the element is, in words. Shown to the user on a hand-off and to Jev when the locator is ambiguous. */
     describe: z.string(),
+    /**
+     * D2-06: only the element at `key`, and only while it still has `role` (and `label`, when given). Never another
+     * element by role or label: a goal plan's acceptance covers the element it previewed, not a look-alike.
+     */
+    exact: z.literal(true).optional(),
   })
-  .refine((t) => t.key !== undefined || t.label !== undefined || t.role !== undefined, { message: "a target needs key, label or role" });
+  .refine((t) => t.key !== undefined || t.label !== undefined || t.role !== undefined, { message: "a target needs key, label or role" })
+  .refine((t) => t.exact === undefined || (t.key !== undefined && t.role !== undefined), { message: "an exact target needs key and role" });
 export type Target = z.infer<typeof Target>;
 
 const InWindow = { window: WindowSel, target: Target };
@@ -67,6 +73,13 @@ export const EndState = z.discriminatedUnion("kind", [
    * user's. It never holds beforehand, and nothing can undo it: a page may upload a file the moment it gets one.
    */
   z.object({ kind: z.literal("fileAttached"), ...InWindow, wants: z.string().min(1).max(80) }),
+  /**
+   * D2-06: pressing `via` (a press, required) showed at least one editable field the window did not show right before
+   * the press, and changed or removed none it did show; the window keeps its id and title. An event, not a state: it
+   * never holds before the press, so a run never skips it. Only a goal plan writes it, for a press a registered
+   * capability describes (goals/capabilities.ts). `target` is the control pressed.
+   */
+  z.object({ kind: z.literal("fieldsRevealed"), ...InWindow }),
   /** An event with this title, start and end exists in the named calendar. Checked through the calendar interface, not the screen. */
   z.object({
     kind: z.literal("calendarEvent"),

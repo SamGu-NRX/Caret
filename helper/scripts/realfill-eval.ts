@@ -5,7 +5,10 @@
 // reading their note. A memory source becomes the About entries proposeFill offers. Then one proposeFill per
 // form, and every corpus field is scored against its expected value.
 //
-//   node scripts/realfill-eval.ts --out DIR [--windows FILE] [--forms a,b] [--spend-limit USD] [--seed N]
+//   node scripts/realfill-eval.ts --out DIR [--windows FILE] [--forms a,b] [--spend-limit USD] [--seed N] [--page DIR]
+//
+// --page DIR (D2-04): each form as the page engine read it (DIR/<form id>.snapshot.json, from fixtures/web-form/accept.ts
+// --sites) in place of the reader's recorded window, so selects, radios, boxes and dates are written where they can be.
 //
 // A field is right when the proposed value is the expected one (or one it accepts), wrong when a value is
 // proposed that is not, missed when an expected value got none, and a correct blank when "none" or
@@ -22,7 +25,9 @@ import { collectCandidates, cutKinds } from "../src/fill/candidates.ts";
 import { formInputs } from "../src/fill/fill.ts";
 import { describeField } from "../src/fill/descriptor.ts";
 import { fieldTerms } from "../src/fill/kinds.ts";
-import { Snapshot, type FillField, type FillProposal, type Node } from "../src/protocol.ts";
+import { PageSnapshot, Snapshot, type FillField, type FillProposal, type Node } from "../src/protocol.ts";
+import { toWindowSnapshot } from "../src/engines/page-link.ts";
+import { EngineSession } from "../src/engines/session.ts";
 import { rng } from "../test/large-scene.ts";
 import { buildDesk, loadCorpus, nodesFor, T0, type CorpusField, type CorpusForm } from "./realfill-corpus.ts";
 
@@ -37,6 +42,7 @@ const { values: a } = parseArgs({
     seed: { type: "string", default: "24" },
     /** Writes every Jev question and answer to this NDJSON file (synthetic corpus text only), for reading the checks. */
     "log-jev": { type: "string" },
+    page: { type: "string" },
   },
 });
 if (a.out === undefined) throw new Error("--out is required");
@@ -62,7 +68,7 @@ let current = "";
 
 type Verdict = "right" | "wrong" | "missed" | "blank" | "unseen";
 interface Scored {
-  /** True when the proposed value is a hand-off (a control the user sets), not a write. */
+  /** True when the proposed value is a hand-off (a control the user sets), not a write. A control a Fill all writes (D2-04, FillHandoff.writes) is a write. */
   handoff: boolean;
   label: string;
   control: string;
@@ -81,7 +87,7 @@ function score(f: CorpusField, nodes: Node[], fields: readonly FillField[]): Sco
   const withValue = mine.filter((x) => valueOf(x) !== null);
   const proposed = withValue.length === 0 ? null : withValue.map(valueOf).join(" | ");
   const fillable = f.expected !== "none" && f.expected !== "handoff";
-  const base = { handoff: withValue.some((x) => x.value === null), label: f.label, control: f.control, expected: f.expected, proposed };
+  const base = { handoff: withValue.some((x) => x.value === null && x.handoff?.writes !== true), label: f.label, control: f.control, expected: f.expected, proposed };
   if (proposed !== null) {
     const good = [f.expected, ...(f.accept ?? [])];
     return { ...base, verdict: fillable && withValue.length === 1 && good.includes(proposed) ? "right" : "wrong", why: null };
@@ -100,9 +106,28 @@ interface SourceCut {
   removedKinds: string[];
 }
 const results: { form: CorpusForm; proposal: FillProposal | null; error: string | null; scored: Scored[]; source: SourceCut }[] = [];
+
+/** The form as the page engine read it, in the app of the reader's recorded window of it, or null without --page. */
+function pageWindow(form: CorpusForm): Snapshot | null {
+  if (a.page === undefined) return null;
+  const file = join(resolve(a.page), `${form.id}.snapshot.json`);
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch {
+    process.stderr.write(`${form.id}: no page snapshot at ${file}; left out\n`);
+    return null;
+  }
+  const recorded = snaps.find((s) => s.window.title === form.title || s.window.title.startsWith(`${form.title} - `));
+  const browser = recorded?.app ?? { pid: 4100, bundleId: "com.google.chrome.for.testing", name: "Google Chrome for Testing" };
+  const session = new EngineSession({ engine: "corpus", browser, extensionId: "kcmlnoabcdefghijklmnopabcdefghij", bridgeVersion: "0", connectedAt: 0 }, () => true);
+  return toWindowSnapshot(PageSnapshot.parse(JSON.parse(raw)), session, 1);
+}
 for (const [fi, form] of corpus.forms.entries()) {
   if (only !== null && !only.has(form.id)) continue;
-  const { model, form: w, source: sw, trigger, about } = buildDesk(corpus, snaps, form);
+  const page = pageWindow(form);
+  if (a.page !== undefined && page === null) continue;
+  const { model, form: w, source: sw, trigger, about } = buildDesk(corpus, snaps, form, page ?? undefined);
   current = form.id;
   let proposal: FillProposal | null = null;
   let error: string | null = null;
@@ -135,18 +160,23 @@ for (const [fi, form] of corpus.forms.entries()) {
 const all = results.flatMap((r) => r.scored);
 const count = (xs: readonly Scored[], v: Verdict) => xs.filter((s) => s.verdict === v).length;
 const fillable = (xs: readonly Scored[]) => xs.filter((s) => s.expected !== "none" && s.expected !== "handoff").length;
+/** Fields given a value Caret writes, right or wrong; and fields given one the user sets. */
+const written = (xs: readonly Scored[]) => xs.filter((s) => s.proposed !== null && !s.handoff).length;
+const handed = (xs: readonly Scored[]) => xs.filter((s) => s.proposed !== null && s.handoff).length;
 const md: string[] = [
   "# Real-form scoreboard (B24)",
   "",
   `Windows: ${a.windows}. Jev calls ${calls}, $${spent.toFixed(4)}. Seed ${a.seed}.`,
   "",
-  "| form | source | fillable | right | wrong | missed | correct blanks | not found | source budget | source cut | kinds cut |",
-  "|---|---|---|---|---|---|---|---|---|---|---|",
+  "| form | source | fillable | right | written | handed off | wrong | missed | correct blanks | not found | source budget | source cut | kinds cut |",
+  "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
   ...results.map(
     (r) =>
-      `| ${r.form.id} | ${r.form.source.kind} | ${fillable(r.scored)} | ${count(r.scored, "right")} | ${count(r.scored, "wrong")} | ${count(r.scored, "missed")} | ${count(r.scored, "blank")} | ${count(r.scored, "unseen")} | ${r.source.budget ?? ""}${r.source.half ? " (half)" : ""} | ${r.source.cut ? "yes" : "no"} | ${r.source.removedKinds.join(", ")} |`,
+      `| ${r.form.id} | ${r.form.source.kind} | ${fillable(r.scored)} | ${count(r.scored, "right")} | ${written(r.scored)} | ${handed(r.scored)} | ${count(r.scored, "wrong")} | ${count(r.scored, "missed")} | ${count(r.scored, "blank")} | ${count(r.scored, "unseen")} | ${r.source.budget ?? ""}${r.source.half ? " (half)" : ""} | ${r.source.cut ? "yes" : "no"} | ${r.source.removedKinds.join(", ")} |`,
   ),
-  `| **all** | | ${fillable(all)} | ${count(all, "right")} | ${count(all, "wrong")} | ${count(all, "missed")} | ${count(all, "blank")} | ${count(all, "unseen")} | | ${results.filter((r) => r.source.cut).length} cut | |`,
+  `| **all** | | ${fillable(all)} | ${count(all, "right")} | ${written(all)} | ${handed(all)} | ${count(all, "wrong")} | ${count(all, "missed")} | ${count(all, "blank")} | ${count(all, "unseen")} | | ${results.filter((r) => r.source.cut).length} cut | |`,
+  "",
+  "Written: fields given a value Caret writes in the form's one Fill all (text, and in a page the engine owns its controls); handed off: a value the user sets.",
   "",
   `Right values Caret writes: ${all.filter((s) => s.verdict === "right" && !s.handoff).length}; right values handed to the user (a select, radio, box, date or time): ${all.filter((s) => s.verdict === "right" && s.handoff).length}.`,
   "",

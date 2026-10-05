@@ -74,6 +74,7 @@ import { Browser, computeExecutablePath, detectBrowserPlatform, install } from "
 import { Helper } from "../../helper/src/helper.ts";
 import { Store } from "../../helper/src/store.ts";
 import { pageHost, type PageHost } from "../../helper/src/engines/host.ts";
+import { PAGE_SUBROLE } from "../../helper/src/protocol.ts";
 import { newLaunchSecret } from "../../helper/src/launch.ts";
 import type { EngineSession } from "../../helper/src/engines/session.ts";
 import { pageWindowId } from "../../helper/src/engines/windows.ts";
@@ -82,7 +83,9 @@ import { ConfirmedFiles } from "../../helper/src/engines/attach.ts";
 import { toVerbOutcome, type PageEngineLink } from "../../helper/src/engines/page-link.ts";
 import type { ReaderLink } from "../../helper/src/executor/means.ts";
 import type { AskJev } from "../../helper/src/fill/jev.ts";
-import type { HelperMessage, PageControl, PageFrame, PageResult, PageSnapshot, PageVerb } from "../../helper/src/protocol.ts";
+import type { GoalProgress, HelperMessage, OfferPopup, PageControl, PageFrame, PageResult, PageSnapshot, PageVerb } from "../../helper/src/protocol.ts";
+import { YOURS_EFFECT } from "../../helper/src/goals/capabilities.ts";
+import { cannedGoalWriter, type CannedStep } from "../../helper/test/goal-desk.ts";
 import { FixtureSite } from "./server.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -847,6 +850,393 @@ async function batch2(e: Engine, site: FixtureSite, tmp: string, published: Help
   });
 }
 
+// ---- D2-04: one Fill all over a form of every kind of control (public/mixed.html) ----
+
+const MIXED_TITLE = "Apply: Mixed controls";
+/** The note the user just left, shown to the helper as the reader would show a TextEdit window: values for every field Caret may fill, and an age that answers no box. */
+const MIXED_NOTE = [
+  "Full name: Robin Vale",
+  "Email: robin@example.test",
+  "Preferred name: Robin Vale",
+  "Country: Canada",
+  "Shift: Night",
+  "Valid driving license: yes",
+  "Age: 34",
+  "Start date: October 20, 2026",
+  "Interview time: 3:30 PM",
+  "Available from: Oct 19, 2026 at 9:00 AM",
+  "Country of residence: United States",
+].join("\n");
+/**
+ * What canned Jev picks on the mixed form, by the label its question quotes: what a careful model picks, and "34" for
+ * "Are you over 18?", which an over-eager one might, so the box rule is what keeps that box unticked.
+ */
+const MIXED_PICKS: Record<string, string> = {
+  "Full name": "Robin Vale",
+  Email: "robin@example.test",
+  "Preferred name": "Robin Vale",
+  Country: "Canada",
+  Shift: "Night",
+  "Do you have a valid driving license?": "yes",
+  "Are you over 18?": "34",
+  "Start date": "October 20, 2026",
+  "Interview time": "3:30 PM",
+  "Available from": "Oct 19, 2026 at 9:00 AM",
+  "Country of residence": "United States",
+};
+/** Each control of the mixed form and what it reads after one Fill all (fixture.js "read": a box or radio as "true"/"false"). */
+const MIXED_FILLED: Record<string, string> = {
+  "#m_name": "Robin Vale",
+  "#m_email": "robin@example.test",
+  "#m_country": "ca",
+  'input[name="shift"][value="day"]': "false",
+  'input[name="shift"][value="night"]': "true",
+  "#m_license": "true",
+  "#m_over18": "false",
+  "#m_news": "false",
+  "#m_terms": "false",
+  "#m_start": "2026-10-20",
+  "#m_time": "15:30",
+  "#m_from": "2026-10-19T09:00",
+  "#m_resume": "",
+  "#preferred": "Robin Vale",
+};
+const MIXED_EMPTY: Record<string, string> = Object.fromEntries(Object.keys(MIXED_FILLED).map((k) => [k, k.includes("shift") || ["#m_license", "#m_over18", "#m_news", "#m_terms"].includes(k) ? "false" : ""]));
+
+async function batch5(e: Engine, site: FixtureSite, published: HelperMessage[]): Promise<void> {
+  const windowId = pageWindowId(e.session.info.engine, e.tabId);
+  const textEdit = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
+  const readAll = async (): Promise<Record<string, string>> => Object.fromEntries(await Promise.all(Object.keys(MIXED_FILLED).map(async (k) => [k, (await read(site, k)) ?? "(none)"] as const)));
+  const diff = (got: Record<string, string>, want: Record<string, string>): string => Object.entries(want).filter(([k, v]) => got[k] !== v).map(([k, v]) => `${k} ${JSON.stringify(got[k])} (want ${JSON.stringify(v)})`).join("; ");
+  /** A fresh load of the mixed form, then the note focused and left for the browser, as the user would. */
+  const open = async (): Promise<void> => {
+    await openPage(e, site, "/mixed", "Country of residence");
+    const at = Date.now();
+    await e.helper.handleReader({ type: "snapshot", v: 1, seq: 1, at, reason: "focus", app: textEdit, window: { windowId: "7001-1", kind: "standard", title: "Robin's details.txt", frame: [0, 0, 600, 400] }, focused: true, root: null, nodes: [{ key: "com.apple.TextEdit/standard/textarea:~0", parent: null, role: "AXTextArea", value: MIXED_NOTE, editable: true }], values: [], focusedKey: null, stats: { walkMs: 1, visited: 1, truncated: false } });
+    await e.helper.handleReader({ type: "focus", v: 1, at, app: textEdit, windowId: "7001-1", key: "com.apple.TextEdit/standard/textarea:~0", role: "AXTextArea", editable: true, empty: false, frontmost: true });
+    e.helper.handleReader({ type: "appSwitch", v: 1, at: Date.now(), from: textEdit, to: e.session.info.browser });
+  };
+  /** Every page verb and scoped grant the run sends while `fn` runs. */
+  const watched = async <T>(fn: (seen: PageVerb[], grants: string[]) => Promise<T>): Promise<T> => {
+    const seen: PageVerb[] = [];
+    const grants: string[] = [];
+    const command = e.session.command.bind(e.session);
+    const grantFn = e.session.grant.bind(e.session);
+    e.session.command = (v, ms) => (seen.push(v), command(v, ms));
+    e.session.grant = (g) => (grants.push(g.taskId), grantFn(g));
+    try {
+      return await fn(seen, grants);
+    } finally {
+      e.session.command = command;
+      e.session.grant = grantFn;
+    }
+  };
+  const acts = (seen: readonly PageVerb[]): Exclude<PageVerb, { kind: "pageWalk" }>[] => seen.flatMap((v) => (v.kind === "pageWalk" ? [] : [v]));
+  const fullName = (): string => {
+    const n = [...(e.helper.model.windows.get(windowId)?.nodes.values() ?? [])].find((x) => x.label === "Full name");
+    if (n === undefined) throw new Error("the model has no Full name field");
+    return n.key;
+  };
+  let taskId = "";
+
+  await check("D2-04: one Fill all writes every control of a mixed form (text, select, radio, box, date, time, date and time, react-select) and reads each back, under one grant, pressing nothing", async () => {
+    await open();
+    const mark = published.length;
+    const focused = await site.command({ cmd: "focus", selector: "#m_name" });
+    let popup: OfferPopup | undefined;
+    for (let i = 0; i < 60 && popup === undefined; i++) {
+      await sleep(250);
+      popup = published.slice(mark).find((m): m is OfferPopup => m.type === "popup" && m.field.windowId === windowId);
+    }
+    // Without a pop-up, say what fill made of each field: a text field without a value keeps the form to per-field offers.
+    const said = published.slice(mark).map((m) => (m.type === "error" ? `error ${m.message}` : m.type === "fillProposal" ? `fillProposal [${m.fields.map((f) => `${f.descriptor.slice(0, 40)} -> ${f.value ?? f.handoff?.value ?? f.withheld ?? f.choice}`).join(" | ")}]` : m.type));
+    expect(popup !== undefined, `no pop-up for ${windowId} (page hasFocus ${focused.value}); published since: ${said.join(", ") || "nothing"}`);
+    const header = popup!.spec.blocks.find((b) => b.type === "header");
+    expect(header?.type === "header" && header.title.text === "Fill 10 fields", `header ${JSON.stringify(header)}`);
+    taskId = popup!.offerKey;
+    const r = await watched(async (seen, grants) => {
+      const out = await e.helper.handleOfferAccept({ type: "offerAccept", v: 1, offerId: taskId, actionId: "fillAll", overrides: {}, at: Date.now() });
+      return { out, seen: acts(seen), grants };
+    });
+    expect(r.out?.outcome === "done", `the run ended ${r.out?.outcome}: ${r.out?.detail}`);
+    const got = await readAll();
+    expect(diff(got, MIXED_FILLED) === "", `after Fill all: ${diff(got, MIXED_FILLED)}`);
+    await stateHas(site, "country", "us");
+    await stateHas(site, "preferred", "Robin Vale");
+    const kinds = r.seen.map((v) => v.kind);
+    expect(r.seen.length === 10 && kinds.every((k) => k !== "pagePress" && k !== "pageAttachFile") && r.seen.every((v) => v.taskId === taskId), `acts: ${kinds.join(", ")}`);
+    expect(new Set(r.grants).size === 1 && r.grants[0] === taskId, `grants: ${r.grants.join(", ")}`);
+    return `pop-up '${header?.type === "header" ? header.title.text : ""}', ${r.out?.detail}; acts ${kinds.join(", ")}; one task's grant to ${new Set(r.grants).size} task(s)`;
+  });
+
+  await check("D2-04: the box the source does not answer, the sign-up box and the file input are untouched and listed as yours; the terms box never leaves the page", async () => {
+    const popup = published.find((m): m is OfferPopup => m.type === "popup" && m.offerKey === taskId);
+    const yours = popup?.spec.blocks.find((b) => b.id === "yours");
+    const rows = yours?.type === "facts" ? yours.rows.map((x) => x.value.text) : [];
+    expect(JSON.stringify(rows) === JSON.stringify(["Are you over 18?", "Send me news and offers", "Resume"]), `yours: ${JSON.stringify(rows)}`);
+    const action = popup?.spec.blocks.find((b) => b.type === "actions");
+    expect(action?.type === "actions" && action.items[0]?.label === "Fill 10", `action ${JSON.stringify(action)}`);
+    const untouched = ["#m_over18", "#m_news", "#m_terms", "#m_resume"].map((k) => `${k}=${JSON.stringify(MIXED_FILLED[k])}`);
+    return `yours ${JSON.stringify(rows)}; ${untouched.join(", ")} (read in the check above)`;
+  });
+
+  await check("D2-04: one undo restores every field, newest first, each only on the element Caret wrote (rebind: false)", async () => {
+    const r = await watched(async (seen) => ({ u: await e.helper.executor.undo(taskId), seen: acts(seen) }));
+    expect(r.u.restored === 10 && r.u.notRestored.length === 0, `undo ${JSON.stringify(r.u)}`);
+    expect(r.seen.length === 10 && r.seen.every((v) => v.rebind === false && typeof v.sameAs === "string"), `restores: ${JSON.stringify(r.seen.map((v) => [v.kind, v.rebind, v.sameAs !== undefined]))}`);
+    const got = await readAll();
+    expect(diff(got, MIXED_EMPTY) === "", `after undo: ${diff(got, MIXED_EMPTY)}`);
+    await stateHas(site, "country", null);
+    await stateHas(site, "preferred", "");
+    return `restored ${r.u.restored}, not restored ${r.u.notRestored.length}; restores ${r.seen.map((v) => v.kind).join(", ")}`;
+  });
+
+  await check("D2-04: a reload mid-task stops the transaction (the host's Command-1 path, fillAll), and nothing goes into the new page", async () => {
+    await open();
+    const p = await e.helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: fullName() });
+    expect(p !== null, "no proposal");
+    const r = await watched(async (seen) => {
+      const command = e.session.command.bind(e.session);
+      let n = 0;
+      e.session.command = async (v, ms) => {
+        const a = await command(v, ms);
+        if (v.kind !== "pageWalk" && ++n === 3) {
+          const since = Date.now();
+          await site.command({ cmd: "navigate", url: `${site.mainOrigin}/mixed` });
+          await site.waitForLoad((h) => h.endsWith("/mixed"), since);
+        }
+        return a;
+      };
+      return { out: await e.helper.handleFillAll({ type: "fillAll", v: 1, proposalId: p!.id, at: Date.now() }), seen: acts(seen) };
+    });
+    expect(r.out?.outcome === "stopped", `the run ended ${r.out?.outcome}: ${r.out?.detail}`);
+    await sleep(500);
+    const got = await readAll();
+    expect(diff(got, MIXED_EMPTY) === "", `the reloaded page holds: ${diff(got, MIXED_EMPTY)}`);
+    return `${r.out?.outcome}: ${r.out?.detail}; ${r.seen.length} acts sent (3 before the reload)`;
+  });
+
+  await check("D2-04: a click in the page mid-task stops the transaction; what it wrote stays for undo", async () => {
+    await open();
+    const cdp = need(e.cdp, "DevTools pipe");
+    const { sessionId } = await cdp.page(`${site.mainOrigin}/mixed`);
+    const p = await e.helper.handleConsumer({ type: "fillRequest", v: 1, windowId, fieldKey: fullName() });
+    expect(p !== null, "no proposal");
+    const r = await watched(async (seen) => {
+      const command = e.session.command.bind(e.session);
+      let n = 0;
+      e.session.command = async (v, ms) => {
+        const a = await command(v, ms);
+        if (v.kind !== "pageWalk" && ++n === 3) {
+          await cdp.click(sessionId, "#m_title");
+          await sleep(500);
+        }
+        return a;
+      };
+      return { out: await e.helper.handleFillAll({ type: "fillAll", v: 1, proposalId: p!.id, at: Date.now() }), seen: acts(seen) };
+    });
+    expect(r.out?.outcome === "paused" && /click/.test(r.out.detail ?? ""), `the run ended ${r.out?.outcome}: ${r.out?.detail}`);
+    const ledger = e.helper.executor.ledger(p!.id).length;
+    expect(r.seen.length === 3 && ledger === 3, `${r.seen.length} acts, ${ledger} in the ledger`);
+    const u = await e.helper.executor.undo(p!.id);
+    const got = await readAll();
+    expect(u.restored === 3 && diff(got, MIXED_EMPTY) === "", `undo ${JSON.stringify(u)}; page ${diff(got, MIXED_EMPTY)}`);
+    return `${r.out?.outcome}: ${r.out?.detail}; ${ledger} writes kept and undone`;
+  });
+
+  await check("D2-04 review: a choice the user answered since the walk is never overwritten: checking Night while Day is checked is stale, and Day stays", async () => {
+    await open();
+    expect((await e.host.link.run({ kind: "walk", pid: e.session.info.browser.pid, windowId })).outcome === "ok", "walk");
+    const group = [...(e.helper.model.windows.get(windowId)?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === "Shift");
+    expect(group !== undefined && group.value === "", `the Shift group is ${JSON.stringify(group)}`);
+    await site.command({ cmd: "check", selector: 'input[name="shift"][value="day"]' });
+    const now = Date.now();
+    e.host.link.grant({ type: "actGrant", v: 1, taskId: "t-d204-r6", pid: e.session.info.browser.pid, windowId, at: now, expires: now + 60_000 });
+    const r = await e.host.link.run({ kind: "write", pid: e.session.info.browser.pid, windowId, key: group!.key, role: "AXGroup", attribute: "value", expect: "", value: "Night", taskId: "t-d204-r6", mark: "m-d204-r6" });
+    e.host.link.grant({ type: "actRevoke", v: 1, taskId: "t-d204-r6", at: Date.now() });
+    const day = await read(site, 'input[name="shift"][value="day"]');
+    const night = await read(site, 'input[name="shift"][value="night"]');
+    expect(r.outcome === "changed" && day === "true" && night === "false", `write ${r.outcome} ${r.detail ?? ""}; day ${day}, night ${night}`);
+    return `write ${r.outcome} (${r.detail}); day ${day}, night ${night}`;
+  });
+
+  await check("D2-04: /submitted reads 0 after every Fill all, undo and stop", async () => {
+    const count = ((await (await fetch(`${site.mainOrigin}/submitted`)).json()) as { count: number }).count;
+    expect(count === 0, `/submitted reads ${count}`);
+    e.helper.handleReader({ type: "windowClosed", v: 1, at: Date.now(), windowId: "7001-1" });
+    return `/submitted ${count}`;
+  });
+
+  await check("B29: a number field the page shows as 1.00 after Caret wrote 1 is undone (type=number and inputmode=decimal); a text field doing the same is left as it is", async () => {
+    await openPage(e, site, "/number", "Code");
+    const fields = [["Guests", "#n_guests", ""], ["Amount", "#n_amount", ""], ["Code", "#n_code", "1.00"]] as const;
+    const out: string[] = [];
+    for (const [name, selector, afterUndo] of fields) {
+      const key = nodeKey(e, name);
+      const subrole = e.helper.model.windows.get(windowId)?.nodes.get(key)?.subrole;
+      expect((subrole === PAGE_SUBROLE.number) === (name !== "Code"), `${name} has subrole ${subrole}`);
+      const id = `b29-${name}`;
+      const step = { says: `${name} holds 1`, end: { kind: "valueEquals" as const, window: { titleStartsWith: "Apply: Number fields" }, target: { key, describe: name }, value: "1" } };
+      const r = await e.helper.executor.run(id, { id, title: id, slots: {}, steps: [step] }, {}, undefined, { grant: true });
+      const shown = await read(site, selector);
+      expect(shown === "1.00", `${name} shows ${JSON.stringify(shown)} after the run (${r.outcome}: ${r.detail})`);
+      const ledger = e.helper.executor.ledger(id);
+      expect(ledger.length === 1 && ledger[0]?.kind === "write" && ledger[0].after === "1", `${name} ledger ${JSON.stringify(ledger)}`);
+      const u = await e.helper.executor.undo(id);
+      const now = await read(site, selector);
+      expect(now === afterUndo && u.restored === (afterUndo === "" ? 1 : 0), `${name} after undo: ${JSON.stringify(now)}, ${JSON.stringify(u)}`);
+      out.push(`${name}: run ${r.outcome}, undo restored ${u.restored}${u.notRestored[0] === undefined ? "" : ` (${u.notRestored[0].reason})`}, shows ${JSON.stringify(now)}`);
+    }
+    return out.join("; ");
+  });
+}
+
+// ---- D2-06: accepted goal plans on a real page ----
+
+const GOAL_ORDER = "ORD-2026-48213";
+const GOAL_PROBLEM = "The desk lamp arrived with a cracked base and does not switch on.";
+const GOAL_MAIL = { pid: 6161, bundleId: "dev.caret.mailfixture", name: "Mail Fixture" };
+const GOAL_MAIL_LINES = ["From: Priya Raman <priya.raman@northwind.example>", `Order number: ${GOAL_ORDER}`, `Problem: ${GOAL_PROBLEM}`];
+const goalMailKey = (i: number): string => `${GOAL_MAIL.bundleId}/standard/statictext:line ${i}~0`;
+const TO_SUPPORT_PAGE: CannedStep[] = [
+  { fill: { window: "Support request", target: "Order number", value: GOAL_ORDER } },
+  { fill: { window: "Support request", target: "Description", value: "cracked base" } },
+];
+
+/**
+ * D2-06 page scenes: a synthetic mail window (a native source, as the reader would send it) and the support page in the
+ * real browser. Goals are planned by a canned writer (`scripts`, a queue this batch fills) and accepted one segment at a
+ * time through the helper's own goal path, which runs the real executor against the page engine.
+ */
+async function batch6(e: Engine, site: FixtureSite, scripts: CannedStep[][], published: HelperMessage[]): Promise<void> {
+  const session = "accept-goal-host";
+  e.helper.hostConnected(session);
+  let n = 0;
+  const showMail = (): void => {
+    void e.helper.handleReader({
+      type: "snapshot", v: 1, seq: 1, at: Date.now(), reason: "request", app: GOAL_MAIL,
+      window: { windowId: "6161-1", kind: "standard", title: `Order ${GOAL_ORDER} arrived damaged`, frame: [0, 0, 600, 400] },
+      focused: false, root: null,
+      nodes: GOAL_MAIL_LINES.map((l, i) => ({ key: goalMailKey(i), parent: null, role: "AXStaticText", label: l })),
+      values: [{ kind: "email", text: "priya.raman@northwind.example", nodeKey: goalMailKey(0) }, { kind: "id", text: GOAL_ORDER, nodeKey: goalMailKey(1) }],
+      focusedKey: null, stats: { walkMs: 1, visited: 3, truncated: false },
+    });
+  };
+  const goals = (): GoalProgress[] => published.filter((m): m is GoalProgress => m.type === "goalProgress");
+  const request = async (instruction: string, plans: CannedStep[][]): Promise<GoalProgress> => {
+    scripts.push(...plans);
+    return e.helper.handleGoalRequest({ type: "goalRequest", v: 1, requestId: `d206-${++n}`, instruction, at: Date.now() }, session);
+  };
+  const preview = (goalId: string, first?: GoalProgress): Extract<GoalProgress, { event: "segment" }> | undefined =>
+    [...(first === undefined ? [] : [first]), ...goals()].reverse().find((g): g is Extract<GoalProgress, { event: "segment" }> => g.goalId === goalId && g.event === "segment");
+  const accept = async (goalId: string, first?: GoalProgress): Promise<Awaited<ReturnType<Helper["handleGoalAccept"]>>> => {
+    const p = preview(goalId, first);
+    const r = await e.helper.handleGoalAccept({ type: "goalAccept", v: 1, goalId, segment: p?.segment ?? 0, digest: p?.digest ?? "0".repeat(64), at: Date.now() }, session);
+    await e.helper.goals.idle();
+    return r;
+  };
+  /** Every non-walk page verb and scoped grant the run sends while `fn` runs. */
+  const watched = async <T>(fn: () => Promise<T>, during?: (v: PageVerb, n: number) => Promise<void>): Promise<{ out: T; seen: Exclude<PageVerb, { kind: "pageWalk" }>[]; grants: string[] }> => {
+    const seen: Exclude<PageVerb, { kind: "pageWalk" }>[] = [];
+    const grants: string[] = [];
+    const command = e.session.command.bind(e.session);
+    const grantFn = e.session.grant.bind(e.session);
+    e.session.command = async (v, ms) => {
+      const a = await command(v, ms);
+      if (v.kind !== "pageWalk") {
+        seen.push(v);
+        await during?.(v, seen.length);
+      }
+      return a;
+    };
+    e.session.grant = (g) => (grants.push(g.taskId), grantFn(g));
+    try {
+      return { out: await fn(), seen, grants };
+    } finally {
+      e.session.command = command;
+      e.session.grant = grantFn;
+    }
+  };
+  const fields = async (): Promise<[string, string]> => [(await read(site, "#s_order")) ?? "(none)", (await read(site, "#s_desc")) ?? "(none)"];
+
+  await check("D2-06: a goal from the mail fills the support page in one accepted segment, each write read back by the page, pressing nothing", async () => {
+    await openPage(e, site, "/support", "Description");
+    showMail();
+    const first = await request("copy the order number from the email into the support request and put the problem in the description", [TO_SUPPORT_PAGE]);
+    expect(first.event === "segment" && first.segments === 1 && first.where.kind === "window" && first.where.title === "Support request", `preview ${JSON.stringify(first)}`);
+    const r = await watched(() => accept(first.goalId, first));
+    expect(r.out?.outcome === "done", `the segment ended ${r.out?.outcome}: ${r.out?.detail}`);
+    const got = await fields();
+    expect(got[0] === GOAL_ORDER && got[1] === GOAL_PROBLEM, `page holds ${JSON.stringify(got)}`);
+    expect(r.seen.length === 2 && r.seen.every((v) => v.kind === "pageWrite"), `acts ${r.seen.map((v) => v.kind).join(", ")}`);
+    expect(new Set(r.grants).size === 1 && r.grants[0] === `${first.goalId}:s0`, `grants ${r.grants.join(", ")}`);
+    const fin = goals().find((g) => g.goalId === first.goalId && g.event === "finished");
+    expect(fin?.event === "finished" && fin.outcome === "done" && fin.verified === 2, `finished ${JSON.stringify(fin)}`);
+    // The same acceptance again runs nothing.
+    const again = await watched(() => accept(first.goalId, first));
+    expect(again.out === null && again.seen.length === 0, `a repeated acceptance ran ${again.seen.length} acts`);
+    return `${fin?.event === "finished" ? fin.says : ""}; acts ${r.seen.map((v) => v.kind).join(", ")}; grants ${r.grants.join(", ")}; repeat refused, 0 acts`;
+  });
+
+  await check("D2-06: Continue on the page is the user's: a goal ends there as a hand-off, the page engine is never asked to press, and Continue as Caret's own press is refused before any preview", async () => {
+    await openPage(e, site, "/support", "Description");
+    showMail();
+    const refused = await request("fill in the order number and continue", [[TO_SUPPORT_PAGE[0] as CannedStep, { press: { window: "Support request", target: "Continue", effect: "e:reveal" } }]]);
+    expect(refused.event === "stopped" && refused.reason === "refused", `asked as Caret's press: ${JSON.stringify(refused)}`);
+    const first = await request("fill in the order number, then I continue", [[TO_SUPPORT_PAGE[0] as CannedStep, { press: { window: "Support request", target: "Continue", effect: YOURS_EFFECT } }]]);
+    expect(first.event === "segment" && first.steps.at(-1)?.kind === "handoff", `preview ${JSON.stringify(first)}`);
+    const r = await watched(() => accept(first.goalId, first));
+    expect(r.out?.outcome === "handoff", `the segment ended ${r.out?.outcome}: ${r.out?.detail}`);
+    expect(r.seen.length === 1 && r.seen[0]?.kind === "pageWrite", `acts ${r.seen.map((v) => v.kind).join(", ")}`);
+    const hidden = await attr(site, "#more", "hidden");
+    expect(hidden !== undefined && hidden !== null, `the Contact email row shows (hidden=${String(hidden)})`);
+    const fin = goals().find((g) => g.goalId === first.goalId && g.event === "finished");
+    return `as Caret's press: ${refused.event === "stopped" ? refused.says : ""}; as yours: ${fin?.event === "finished" ? `${fin.outcome}, ${fin.says}` : "none"}; acts ${r.seen.map((v) => v.kind).join(", ")}`;
+  });
+
+  await check("D2-06: a reload mid-plan stops the goal as a reload, nothing goes into the new page, and the fresh preview runs only once accepted", async () => {
+    await openPage(e, site, "/support", "Description");
+    showMail();
+    const first = await request("copy the order number and the problem from the email into the support request", [TO_SUPPORT_PAGE, TO_SUPPORT_PAGE]);
+    expect(first.event === "segment", `preview ${JSON.stringify(first)}`);
+    const r = await watched(
+      () => accept(first.goalId, first),
+      async (_v, k) => {
+        if (k !== 1) return;
+        const since = Date.now();
+        await site.command({ cmd: "navigate", url: `${site.mainOrigin}/support` });
+        await site.waitForLoad((h) => h.endsWith("/support"), since);
+        // The new page's controls are walked before the run goes on, as a user would see them.
+        for (let i = 0; i < 40 && !(await walk(e)).frames.some((f) => f.controls.some((c) => c.name === "Description")); i++) await sleep(250);
+      },
+    );
+    expect(r.out?.outcome === "stopped", `the segment ended ${r.out?.outcome}: ${r.out?.detail}`);
+    const stop = goals().find((g) => g.goalId === first.goalId && g.event === "stopped");
+    expect(stop?.event === "stopped" && stop.reason === "reload" && stop.freshPlan !== null, `stopped ${JSON.stringify(stop)}`);
+    const empty = await fields();
+    expect(empty[0] === "" && empty[1] === "", `the reloaded page holds ${JSON.stringify(empty)}`);
+    expect(r.seen.length === 1, `${r.seen.length} acts before the stop`);
+    const fresh = stop?.event === "stopped" ? (stop.freshPlan ?? "") : "";
+    const freshPreview = preview(fresh);
+    expect(freshPreview?.reason === "freshPlan" && freshPreview.replaces === first.goalId, `fresh preview ${JSON.stringify(freshPreview)}`);
+    // The stopped goal's own preview runs nothing.
+    const old = await watched(() => accept(first.goalId, first));
+    expect(old.out === null && old.seen.length === 0, "the stopped goal's preview ran");
+    const again = await watched(() => accept(fresh));
+    expect(again.out?.outcome === "done", `the fresh plan ended ${again.out?.outcome}: ${again.out?.detail}`);
+    const got = await fields();
+    expect(got[0] === GOAL_ORDER && got[1] === GOAL_PROBLEM, `after the fresh plan the page holds ${JSON.stringify(got)}`);
+    return `${stop?.event === "stopped" ? stop.says : ""}; fresh plan ${fresh} accepted: ${again.out?.outcome}, ${again.seen.length} acts`;
+  });
+
+  await check("D2-06: /submitted reads 0 after every goal, and no goal pressed anything", async () => {
+    const count = ((await (await fetch(`${site.mainOrigin}/submitted`)).json()) as { count: number }).count;
+    expect(count === 0, `/submitted reads ${count}`);
+    e.helper.handleReader({ type: "windowClosed", v: 1, at: Date.now(), windowId: "6161-1" });
+    return `/submitted ${count}`;
+  });
+}
+
 // ---- W4: what real application forms need (replicas built from the saved real-site markup) ----
 
 const Q_YEARS = "Do you have a minimum of 7 years of experience building software?";
@@ -954,7 +1344,8 @@ async function batch4(e: Engine, site: FixtureSite, tmp: string): Promise<void> 
   await check("W4 2: Ashby replica: a toggle the page never marks is failed, one whose mousedown moves it into a form is never clicked, a question whose name changed is stale, a veteran question (with unreadable text beside it) and buttons in a form or a disabled fieldset are no press group, and pagePress stays a hand-off", async () => {
     const s = await walk(e);
     const w = e.helper.model.windows.get(windowId);
-    const groups = [...(w?.nodes.values() ?? [])].filter((n) => n.role === "AXGroup" && n.subrole === "AXFieldset").map((n) => n.label);
+    // Question groups of either kind: a radio group (AXFieldset) or, since D2-04 marks it apart, a Yes/No press group.
+    const groups = [...(w?.nodes.values() ?? [])].filter((n) => n.role === "AXGroup" && (n.subrole === "AXFieldset" || n.subrole === PAGE_SUBROLE.pressGroup)).map((n) => n.label);
     // The veteran question stays out though unreadable text sits beside its buttons; buttons in a form or a disabled fieldset are no press group.
     expect(groups.includes("Do you hold a current security clearance?") && !groups.includes("Are you a protected veteran?") && !groups.includes("Are you willing to relocate?") && !groups.includes("Can you work night shifts?") && !groups.some((g) => (g ?? "").includes("pizza")), `question groups: ${JSON.stringify(groups)}`);
     const broken = [...(w?.nodes.values() ?? [])].find((n) => n.role === "AXGroup" && n.label === "Do you hold a current security clearance?");
@@ -1743,13 +2134,17 @@ async function main(): Promise<number> {
   const sockPath = join(sockDir, "page.sock");
   let jevCalls = 0;
   // Canned Jev: picks the About email batch 2 adds wherever a question offers it, says such a field is the user's,
-  // and answers none to everything else.
+  // and answers none to everything else. On D2-04's mixed form it picks each field's value by the label its question
+  // quotes (MIXED_PICKS), and says every value there is the user's.
   const askJev: AskJev = async (req) => {
     jevCalls++;
+    const mixed = JSON.stringify(req.state).includes(MIXED_TITLE);
     const answers = Object.fromEntries(
       Object.entries(req.questions).map(([k, q]) => {
-        if (k.endsWith("_whose")) return [k, { choice: "user", confidence: 0.95 }];
-        const pick = Object.entries(q.criteria).find(([, t]) => t?.includes('"robin@example.test"'))?.[0];
+        if (k.endsWith("_whose") || (mixed && k.endsWith("_owner"))) return [k, { choice: "user", confidence: 0.95 }];
+        const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+        const want = mixed ? MIXED_PICKS[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] : undefined;
+        const pick = Object.entries(q.criteria).find(([, t]) => (want === undefined ? t?.includes('"robin@example.test"') : t?.startsWith(`"${want}"`)))?.[0];
         return [k, pick === undefined ? { choice: "none", confidence: 0.9 } : { choice: pick, confidence: 0.95 }];
       }),
     );
@@ -1757,7 +2152,10 @@ async function main(): Promise<number> {
   };
   const warnings: string[] = [];
   const warn = (l: string): void => void warnings.push(l);
-  const noReader: ReaderLink = { run: async () => ({ type: "verbResult", v: 1, id: "none", at: Date.now(), outcome: "noWindow", detail: "no reader in fixture mode" }) };
+  // No native reader here. Its one verb the executor needs for a page task is watchInput (the browser's real key and
+  // pointer input), which a headless browser on no screen never gets: the stand-in answers it ok, so a run reaches the
+  // page engine, whose own guard reports the user's input in the page (D2-04). Every other verb has no window.
+  const noReader: ReaderLink = { run: async (v) => ({ type: "verbResult", v: 1, id: "none", at: Date.now(), outcome: v.kind === "watchInput" ? "ok" : "noWindow", detail: v.kind === "watchInput" ? null : "no reader in fixture mode" }) };
   const store = new Store(join(tmp, "data"));
   // Assigned right below; the host needs a way to reach it before it exists.
   let helper: Helper;
@@ -1765,7 +2163,9 @@ async function main(): Promise<number> {
   const launchSecret = newLaunchSecret();
   const host = pageHost({ path: sockPath, secret: launchSecret, reader: noReader, apply: (m) => void helper.handleReader(m), warn });
   const published: HelperMessage[] = [];
-  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, calendar: null, publish: (m) => void published.push(m), warn });
+  // D2-06: goal plans come from a canned writer whose programs batch 6 queues before each request.
+  const goalScripts: CannedStep[][] = [];
+  helper = new Helper({ store, askJev, shadow: false, allowBackgroundFocus: false, readerLink: host.link, pageCovers: (pid) => host.registry.forBrowser(pid) !== undefined, pageDocument: (id) => host.registry.documentOf(id), calendar: null, writer: cannedGoalWriter(goalScripts), publish: (m) => void published.push(m), warn });
   wirePageEngines({ host, helper, publish: (m) => void published.push(m), warn });
   await host.server.listen();
   undo.push({
@@ -1894,6 +2294,8 @@ async function main(): Promise<number> {
 
   await checks(e, site);
   await batch2(e, site, tmp, published);
+  await batch5(e, site, published);
+  await batch6(e, site, goalScripts, published);
   // Batch 3 before the decoy page, which has no control channel to navigate away from.
   await batch3(e, site);
   await batch4(e, site, tmp);

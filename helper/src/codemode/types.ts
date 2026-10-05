@@ -167,4 +167,6 @@ export interface WorkerInput {
   programDigest: string;
   snapshots: PlanningSnapshot[];
   limits: SandboxLimits;
+  /** Steps may target any snapshot the program read (sandbox.ts RunOptions.multiWindow). */
+  multiWindow: boolean;
 }

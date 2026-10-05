@@ -20,7 +20,7 @@ import { occursBounded, secretIn, type MemoryValue } from "./trace.ts";
 import { instructionValues } from "./spans.ts";
 import { fieldWords, namedSources, onlyInSources, restrictsSources, senderNames, senderOf, type NamedSource } from "./sources.ts";
 import { PlannerError } from "./validate.ts";
-import { SAYS, SaidError, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn } from "./says.ts";
+import { SAYS, SaidError, Unclear, saysLeftToYou, saysNeverTyped, saysPressAsked, saysSsn, type AskPart } from "./says.ts";
 
 export const ROUTES = ["fill", "plan", "ask", "refuse"] as const;
 export type AskRoute = (typeof ROUTES)[number];
@@ -42,6 +42,22 @@ export interface AskIntent {
   /** "user", "unnamed" (someone else, not named), or a person ref ("p1") from the snapshot. */
   whose: string;
   literals: readonly { field: string; text: string }[];
+  /**
+   * The parts a maker could not settle, in the order to ask them (B29). Only on route "ask"; the rest of the intent
+   * holds what it did settle. Absent when the maker says only `why`.
+   */
+  open?: readonly AskPart[];
+}
+
+/**
+ * What the user picked in answer to an Ask's questions (B29), by what code resolved each pick to: the fields' node
+ * keys, the window to copy from, whose details. Each replaces that part of the intent and grants nothing else.
+ */
+export interface AskFixed {
+  fields?: readonly string[];
+  /** A window by id, or what the user told Caret. */
+  source?: { kind: "window"; windowId: string } | { kind: "memory" };
+  person?: { kind: "user" } | { kind: "person"; name: string };
 }
 
 export interface IntentField {
@@ -222,7 +238,12 @@ function sayWhy(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: read
   }
 }
 
+/** The part each unclear reason leaves open (B29): a question with choices may settle it. */
+export const UNCLEAR_PART: Partial<Record<Reason, AskPart>> = { whichFields: "fields", whichSource: "source", whichPerson: "person", otherPersonUnnamed: "person" };
+
 function stop(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readonly IntentField[] = [], kind: SensitiveKind | null = null): never {
+  const part = UNCLEAR_PART[why];
+  if (part !== undefined) throw new Unclear(part, sayWhy(why, snap, fields, kind), `the intent's reason: ${why}`);
   const code = why in REFUSE_CODE ? REFUSE_CODE[why as keyof typeof REFUSE_CODE] : "unsure";
   throw new SaidError(code, sayWhy(why, snap, fields, kind), `the intent's reason: ${why}`);
 }
@@ -233,8 +254,12 @@ function stop(why: Exclude<Reason, "none">, snap: IntentSnapshot, fields: readon
  * the snapshot found in the instruction. Throws PlannerError("schema") for an intent that breaks those rules, and
  * the refusal's or the question's code when the intent (or a rule code applies regardless of it) says so:
  * someone's details by a pronoun with no one named, or only fields Caret never types.
+ *
+ * `fixed` holds the user's picks (B29), already applied to `intent` by the caller for its fields and source. A picked
+ * person settles whose details go in, the pronoun rule included. A picked source is the only source read: a picked
+ * window is consented to as a window the instruction names is, and no other window is read, named or not.
  */
-export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedIntent {
+export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskFixed = {}): CheckedIntent {
   const bad = (what: string): never => {
     throw new PlannerError("schema", `the intent ${what}`);
   };
@@ -243,7 +268,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   // Someone's details by a pronoun, with no one named, is refused whatever the maker said: fill would take the
   // user's own (B25 held-out rule 4).
   // Read on the field words: "everything's in her email" names where to copy from, not someone's email (B26 held-out-2).
-  if (snap.persons.length === 0 && PRONOUN_DETAILS.test(fieldWords(snap.instruction))) stop("otherPersonUnnamed", snap);
+  if (fixed.person === undefined && snap.persons.length === 0 && PRONOUN_DETAILS.test(fieldWords(snap.instruction))) stop("otherPersonUnnamed", snap);
   // An instruction that names a kind Caret never types ("my SSN goes in there too") is refused for that, whatever
   // reason the maker gave: B25's held-out run told the user "Caret stops before payment" for an SSN.
   if ((intent.route === "refuse" || intent.route === "ask") && mentionedKind(snap.instruction) !== null) stop("neverTyped", snap);
@@ -306,6 +331,13 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
     if (named.length === 0) (any = true), (memory = true);
   }
   if (!any) for (const id of named) windows.add(id);
+  // A picked source is the only one (B29 review 1): the windows the instruction named are not read beside it.
+  if (fixed.source !== undefined) {
+    any = false;
+    windows.clear();
+    if (fixed.source.kind === "window") windows.add(fixed.source.windowId);
+    memory = fixed.source.kind === "memory";
+  }
   if (snap.excluded.length > 0) {
     // Every source but those: the listed windows, less the excluded. A window past the snapshot's list is not read.
     if (any) for (const x of snap.windows) windows.add(x.windowId);
@@ -314,12 +346,15 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
   }
 
   let person: string | null = null;
-  if (intent.whose === "unnamed") stop("otherPersonUnnamed", snap);
-  else if (intent.whose !== "user") person = (snap.persons.find((p) => p.ref === intent.whose) ?? bad(`names person '${intent.whose}', whom the instruction does not name`)).span;
-  // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
-  // is not whose details go in: the source's words never set the scope. Unless the instruction asks for someone's
-  // details by a pronoun ("from Dana's message, with her contact details"): then the source is whose they are.
-  if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
+  if (fixed.person !== undefined) person = fixed.person.kind === "user" ? null : fixed.person.name;
+  else {
+    if (intent.whose === "unnamed") stop("otherPersonUnnamed", snap);
+    else if (intent.whose !== "user") person = (snap.persons.find((p) => p.ref === intent.whose) ?? bad(`names person '${intent.whose}', whom the instruction does not name`)).span;
+    // A person the instruction names only as where to copy from ("from Morgan's email", "the Saturday Chris mentioned")
+    // is not whose details go in: the source's words never set the scope. Unless the instruction asks for someone's
+    // details by a pronoun ("from Dana's message, with her contact details"): then the source is whose they are.
+    if (person !== null && onlyInSources(snap.instruction, person) && !PRONOUN_DETAILS.test(fieldWords(snap.instruction))) person = null;
+  }
 
   const scope: FillScope = {
     fields: fields.map((f) => f.key),
@@ -328,7 +363,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot): CheckedInt
     instruction: snap.instruction,
     person,
     literals,
-    consented: new Set(named),
+    consented: fixed.source === undefined ? new Set(named) : new Set(fixed.source.kind === "window" ? [fixed.source.windowId] : []),
     first: [...new Set(snap.named.flatMap((n) => n.names))],
   };
   // The fill engine's trigger: the focused field when it is in scope, else the first field in scope.

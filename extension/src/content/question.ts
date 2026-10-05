@@ -105,10 +105,14 @@ export function questionTexts(members: readonly Element[]): string[] {
   return textsAround(members, startOf(members));
 }
 
-/** The radios that share `el`'s name in its form (or its tree, outside a form), `el` included, in document order. */
+/**
+ * The radios that share `el`'s name and form owner, `el` included, in document order. The whole tree is searched: a
+ * button outside its form element belongs to it through its form attribute (D2-04 second review), so searching the form
+ * element alone split one choice into groups of one.
+ */
 export function radioPeers(el: HTMLInputElement): HTMLInputElement[] {
   if (el.name === "") return [el];
-  const root: ParentNode = el.form ?? (el.getRootNode() as Document | ShadowRoot);
+  const root = el.getRootNode() as Document | ShadowRoot;
   return [...root.querySelectorAll<HTMLInputElement>("input[type=radio]")].filter((r) => r.name === el.name && r.form === el.form);
 }
 

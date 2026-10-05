@@ -47,6 +47,14 @@ export function matches(w: WindowState, t: Target): Node[] {
 
 /** Resolution without Jev: the exact key, else a unique role and label match. Several matches return them for a Jev question. */
 export function resolveLocally(w: WindowState, t: Target): { node: Node; how: "key" | "unique" } | { ambiguous: Node[] } | { missing: string } {
+  // An exact target (D2-06) is the element at its key with its role and label, or nothing: no fallback to a match.
+  if (t.exact === true) {
+    const n = t.key === undefined ? undefined : w.nodes.get(t.key);
+    if (n === undefined) return { missing: `no element with key ${t.key ?? "(none)"}` };
+    if (n.role !== t.role) return { missing: `the element at ${t.key} is now a ${n.role}, not a ${t.role}` };
+    if (t.label !== undefined && norm(n.label) !== norm(t.label)) return { missing: `the element at ${t.key} is now labelled '${n.label ?? ""}', not '${t.label}'` };
+    return { node: n, how: "key" };
+  }
   if (t.key !== undefined) {
     const n = w.nodes.get(t.key);
     if (n !== undefined) return { node: n, how: "key" };

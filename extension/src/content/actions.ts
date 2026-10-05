@@ -135,13 +135,26 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null,
       const now = checkedOf(el);
       if (now === undefined) return answer("unsupported", "the element is not a checkbox or radio");
       if (now === verb.checked) return answer("alreadyTrue", null);
-      if (!verb.checked && verb.control === "radio") return answer("unsupported", "a radio is cleared by choosing another one");
+      if (!verb.checked && verb.control === "radio") {
+        // D2-04: a click never clears a radio, so the one way back to no choice is the undo of Caret's own pick, on the
+        // very button it checked (sameAs, already required above), and only for a native radio: an ARIA radio's checked
+        // state is the page's own script's to change.
+        if (verb.sameAs === undefined) return answer("unsupported", "a radio is cleared by choosing another one");
+        if (!(el instanceof HTMLInputElement) || el.type !== "radio") return answer("unsupported", "Caret clears only a native radio button it checked itself");
+        if (disabled) return answer("failed", "the control is disabled");
+        return clearRadio(el, gate);
+      }
       if (disabled) return answer("failed", "the control is disabled");
+      // D2-04 review: Caret checks a radio only in a choice that is still unanswered, read at each stage; the user's own
+      // answer made since the walk is never overwritten.
+      const answered = (): boolean => verb.control === "radio" && verb.checked && otherChecked(el);
+      if (answered()) return answer("stale", "another answer of this choice is checked now");
       // Focus first, as a real click does, so a page that reacts to focus does so before the grant is asked again.
       (el as HTMLElement).focus();
       const ready = await gate("after focus, before the click");
       if (ready !== null) return ready;
       if (checkedOf(el) === verb.checked) return answer("alreadyTrue", null);
+      if (answered()) return answer("stale", "another answer of this choice was checked when it took focus");
       (el as HTMLElement).click();
       await settle();
       const after = checkedOf(el);
@@ -150,6 +163,39 @@ async function actOn(el: Element, verb: Mutating, check: () => ActAnswer | null,
   }
 }
 
+
+/**
+ * Whether another button of the radio's own choice is checked: a native radio's same-named buttons in its form (or its
+ * root, outside one), or an ARIA radio's siblings in its radiogroup.
+ */
+function otherChecked(el: Element): boolean {
+  if (el instanceof HTMLInputElement && el.type === "radio") {
+    if (el.name === "") return false;
+    // The whole tree, filtered by form owner: a peer outside the form element can belong to it by its form attribute
+    // (D2-04 second review), and one in another form is another choice.
+    const root = el.getRootNode() as Document | ShadowRoot;
+    const peers = [...root.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`)].filter((x) => x !== el && (x as HTMLInputElement).form === el.form);
+    return peers.some((x) => (x as HTMLInputElement).checked);
+  }
+  const group = el.closest('[role="radiogroup"]');
+  return group !== null && [...group.querySelectorAll('[role="radio"]')].some((x) => x !== el && x.getAttribute("aria-checked") === "true");
+}
+
+/**
+ * The undo of a radio pick (D2-04): the checked setter, then input and change, as a framework's listeners expect after
+ * a change; read on the next frame. A page whose own state put the button back (a controlled React radio) reads as
+ * "the page kept the old state", which the helper reports as not restored.
+ */
+async function clearRadio(el: HTMLInputElement, gate: Gate): Promise<ActAnswer> {
+  const ready = await gate("before the radio was cleared");
+  if (ready !== null) return ready;
+  if (!el.checked) return answer("alreadyTrue", null);
+  (Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked")?.set as (this: HTMLInputElement, v: boolean) => void).call(el, false);
+  el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle();
+  return checkedOf(el) === false ? answer("ok", null) : answer("failed", "the page kept the old state");
+}
 
 const current = (el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): string => (el instanceof HTMLSelectElement ? (el.selectedOptions[0]?.value ?? "") : el.value);
 

@@ -1,0 +1,1 @@
+D2-04: find a radio's peers tree-wide by name and form owner: a button outside its form element joins it through the form attribute. The walker's radioPeers and the content script's otherChecked both searched the form element only.

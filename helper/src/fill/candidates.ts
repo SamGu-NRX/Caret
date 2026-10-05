@@ -9,6 +9,15 @@ import { heldAsConversation, heldToHalf, type SnippetLedger } from "../privacy.t
 import { isKindTerm, isNameLike, kindTerm, NAME_TERM, namesIn, overlap, valueKinds, words } from "./kinds.ts";
 import { labelKind, sensitiveKind, valueKind } from "../memory/sensitive.ts";
 
+/**
+ * A field whose typed value is a candidate, as a line of text is: editable, holding text, not secure, not a kind memory
+ * never keeps. A page checkbox is editable too since D2-04 (engines/page-link.ts), but what it holds, "checked", is its
+ * state, not text anyone typed.
+ */
+function sourceField(node: Node): boolean {
+  return node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null && node.role !== "AXCheckBox";
+}
+
 export interface Candidate {
   id: string;
   text: string;
@@ -317,7 +326,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
       if (node !== undefined && !note(node, v.text, lineHolding(nodeText(node), v.text), valueKinds(v), null)) return;
     }
     for (const node of w.nodes.values()) {
-      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
+      const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) {
         const sp = spanOfLine(raw);
@@ -393,7 +402,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       if (outOfTime()) return false;
       stats.nodes++;
-      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
+      const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
@@ -540,7 +549,7 @@ export function collectCandidates(model: ScreenModel, targetWindowId: string, o:
     for (const node of w.nodes.values()) {
       if (full() || outOfTime()) return stop();
       stats.nodes++;
-      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
+      const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       const lines = timed("split", () => nodeText(node).split(/\r?\n/));
       for (const raw of lines) {
@@ -591,7 +600,7 @@ function spanOfLine(raw: string): { line: string; text: string; label: string | 
 export function labelledLines(w: WindowState): { label: string; value: string; node: Node }[] {
   const out: { label: string; value: string; node: Node }[] = [];
   for (const node of w.nodes.values()) {
-    const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
+    const isSourceField = sourceField(node);
     if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
     for (const raw of nodeText(node).split(/\r?\n/)) {
       const s = spanOfLine(raw);
@@ -738,7 +747,7 @@ export function countSpans(model: ScreenModel, targetWindowId: string): { spans:
   for (const w of model.windows.values()) {
     if (w.window.windowId === targetWindowId) continue;
     for (const node of w.nodes.values()) {
-      const isSourceField = node.editable === true && (node.value ?? "").length > 0 && !node.states?.includes("secure") && labelKind(node.label) === null;
+      const isSourceField = sourceField(node);
       if (!LINE_ROLES.has(node.role) && !isSourceField) continue;
       for (const raw of nodeText(node).split(/\r?\n/)) {
         const line = raw.replace(/\s+/g, " ").trim();

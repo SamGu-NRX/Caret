@@ -176,29 +176,25 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       };
       const route = agreed("route");
       const base: AskIntent = { route: "ask", why: "whichFields", scope: "all", section: "none", fields: [], sources: [], whose: "user", literals: [] };
-      if (route === null || !(route in ROUTE_CRITERIA)) return { intent: base, use };
       if (route === "refuse") {
         const why = agreed("why");
         return { intent: { ...base, route: "refuse", why: why !== null && why in REFUSE_REASONS ? (why as AskIntent["why"]) : "nothingToFill" }, use };
       }
-      if (route === "ask") return { intent: base, use };
       if (route === "plan") return { intent: { ...base, route: "plan", why: "none" }, use };
+      // An unsettled route is read as a fill whose fields are open (B29): the user's pick of fields says it is one. The
+      // other parts both asks settled stand; any part left unsettled is open, and asked about, never read wider.
+      const routeOpen = route === null || route !== "fill";
       const scope = agreed("scope");
       const source = agreed("source");
       if (source === "missing") return { intent: { ...base, route: "refuse", why: "notOnScreen" }, use };
-      // An unsettled source or person is a question, never a wider reading: "any" would read windows the instruction
-      // may have ruled out, and "user" would give a named person's fields the user's own details (B25 review).
-      if (source === null) return { intent: { ...base, why: "whichSource" }, use };
       const whose = agreed("whose");
-      if (whose === "unnamed") return { intent: { ...base, route: "refuse", why: "otherPersonUnnamed" }, use };
-      if (whose === null && snap.persons.length > 0) return { intent: { ...base, why: "whichPerson" }, use };
       const ties = snap.literals.flatMap((span, i) => {
         const f = agreed(`lit${i + 1}`);
         const field = f === null || f === "none" ? undefined : snap.fields.find((x) => x.ref === f);
         return field === undefined ? [] : [{ span, field }];
       });
       // Stage two: Noul questions that confirm a list's fields and each value's field.
-      const listed = scope === "list" ? snap.fields : [];
+      const listed = scope === "list" && !routeOpen ? snap.fields : [];
       const stage2 = (wording: 0 | 1): JevRequest => {
         const nouls: NonNullable<JevRequest["nouls"]> = {};
         for (const f of listed) nouls[`n_${f.ref}`] = { type: "noul", instructions: WORDS.field[wording](f.name) };
@@ -215,21 +211,25 @@ export function jevIntentMaker(askJev: AskJev, o: { rand?: (n: number) => number
       const literals = ties.filter((_, i) => yes(`t${i + 1}`)).map((t) => ({ field: t.field.ref, text: t.span }));
       // A list is the fields both asks confirm, and the fields a confirmed value is for.
       const fields = [...new Set([...listed.filter((f) => yes(`n_${f.ref}`)).map((f) => f.ref), ...literals.map((l) => l.field)])];
-      if (scope === null || (scope === "list" && fields.length === 0)) return { intent: base, use };
-      const section = scope !== "all" && scope !== "list" ? scope : "none";
-      return {
-        intent: {
-          route: "fill",
-          why: "none",
-          scope: scope === "all" ? "all" : scope === "list" ? "list" : "section",
-          section,
-          fields: scope === "list" ? fields : [],
-          sources: [source],
-          whose: whose ?? "user",
-          literals,
-        },
-        use,
+      // An unsettled source or person is a question, never a wider reading: "any" would read windows the instruction
+      // may have ruled out, and "user" would give a named person's fields the user's own details (B25 review).
+      const open: ("fields" | "source" | "person")[] = [];
+      if (routeOpen || scope === null || (scope === "list" && fields.length === 0)) open.push("fields");
+      if (source === null) open.push("source");
+      if (whose === "unnamed" || (whose === null && snap.persons.length > 0)) open.push("person");
+      const settled = {
+        scope: scope === null || scope === "all" ? ("all" as const) : scope === "list" ? ("list" as const) : ("section" as const),
+        section: scope !== null && scope !== "all" && scope !== "list" ? scope : "none",
+        fields: scope === "list" ? fields : [],
+        sources: source === null ? [] : [source],
+        whose: whose === null || whose === "unnamed" ? "user" : whose,
+        literals,
       };
+      if (open.length > 0) {
+        const why = open[0] === "fields" ? "whichFields" : open[0] === "source" ? "whichSource" : whose === "unnamed" ? "otherPersonUnnamed" : "whichPerson";
+        return { intent: { route: "ask", why, ...settled, open }, use };
+      }
+      return { intent: { route: "fill", why: "none", ...settled }, use };
     },
   };
 }

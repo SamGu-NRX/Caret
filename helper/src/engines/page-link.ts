@@ -3,7 +3,7 @@
 // tab's snapshot to the screen model before answering, as the reader does, and maps the page outcome back onto
 // the reader's. Its grant() turns the executor's one-window ActGrant into one ScopedActGrant per frame of the tab
 // as last walked, each pinned to that frame's origin and navigation generation.
-import { PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type VerbOutcome, type VerbResult } from "../protocol.ts";
+import { PAGE_CHECKED, PAGE_SUBROLE, PROTOCOL_VERSION, type ActGrant, type ActRevoke, type CalendarGrant, type Node, type NodeState, type PageControl, type PageControlKind, type PageFrame, type PageResult, type PageSnapshot, type PageVerb, type ReaderVerb, type Snapshot, type VerbOutcome, type VerbResult } from "../protocol.ts";
 import type { ReaderLink } from "../executor/means.ts";
 import type { EngineSession } from "./session.ts";
 import { ConfirmedFiles } from "./attach.ts";
@@ -24,8 +24,9 @@ const ROLE: Record<PageControlKind, string> = {
 /**
  * The subrole a file input's node carries (H5). Chrome's Accessibility shows a file input as a button, so the role
  * alone cannot tell it from one; the planner reads this to find where a confirmed file goes (planner/attach.ts).
+ * H5 and D2-04 each named one; it is D2-04's PAGE_SUBROLE.file, so fill and attach read the same node the same way.
  */
-export const FILE_INPUT_SUBROLE = "caretFileInput";
+export const FILE_INPUT_SUBROLE = PAGE_SUBROLE.file;
 
 /** Kinds a pageWrite sets. A contenteditable is a hand-off in v1 (memo section 1, write path). */
 export const TEXT_KINDS: ReadonlySet<PageControlKind> = new Set(["text", "email", "tel", "url", "number", "search", "date", "time", "datetime", "month", "week", "textarea"]);
@@ -79,6 +80,21 @@ function radioGroupKey(frameId: number, c: PageControl): string {
   return `${frameKey(frameId)}/radiogroup:${typeof ident === "string" ? `${c.form ?? ""}/${ident}` : c.key}`;
 }
 
+/** A frame's radio buttons under one group node, in walk order. */
+function radioMembers(f: PageFrame, groupKey: string): PageControl[] {
+  return f.controls.filter((c) => c.kind === "radio" && radioGroupKey(f.frameId, c) === groupKey);
+}
+
+/** The radio group a node key names in a tab's last walk: its frame and buttons, or null (D2-04). */
+export function radioGroupFor(s: PageSnapshot | undefined, key: string): { frameId: number; documentId: string; buttons: PageControl[] } | null {
+  if (s === undefined) return null;
+  for (const f of s.frames) {
+    const buttons = radioMembers(f, key);
+    if (buttons.length > 0) return { frameId: f.frameId, documentId: f.documentId, buttons };
+  }
+  return null;
+}
+
 /** The node key of a press group (W4): one per group container, by the registry id the walk gave it. */
 const pressGroupKey = (frameId: number, groupId: string): string => `${frameKey(frameId)}/pressgroup:${groupId}`;
 
@@ -90,6 +106,27 @@ function pressedValue(options: readonly PageControl[]): string {
   return options.filter((o) => o.pressed === true).map((o) => o.name).join(", ");
 }
 
+/** The reader-like subrole of a page control whose role alone does not say what fill must know (PAGE_SUBROLE). */
+function subroleOf(c: PageControl): string | undefined {
+  switch (c.kind) {
+    case "date":
+    case "time":
+    case "datetime":
+    case "month":
+    case "week":
+    case "file":
+      return PAGE_SUBROLE[c.kind];
+    case "number":
+      return PAGE_SUBROLE.number;
+    case "text":
+      return c.numeric === true ? PAGE_SUBROLE.number : undefined;
+    case "checkbox":
+      return c.role === "switch" ? PAGE_SUBROLE.switch : undefined;
+    default:
+      return undefined;
+  }
+}
+
 /**
  * The window snapshot the screen model takes for a tab: one AXWebArea per frame, its controls below it.
  *
@@ -97,6 +134,11 @@ function pressedValue(options: readonly PageControl[]): string {
  * labelled with the question, holding one AXRadioButton per option, checked when pressed. The group node holds the
  * answer as its value and is editable: a write of an option's name is the one press the page engine makes there
  * (pageChooseOption on that option, content/press.ts), verified by aria-pressed afterwards.
+ *
+ * D2-04: a radio group's node does the same for its buttons: it holds the checked button's name ("" for none) and is
+ * editable, and a write of a button's name checks that button (pageSetChecked), verified by its checked state. A
+ * checkbox holds PAGE_CHECKED while ticked and "" while not, and is editable the same way. So the executor reads,
+ * writes, verifies and undoes both as it does a text field.
  */
 export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: number): Snapshot {
   const nodes: Node[] = [];
@@ -110,7 +152,8 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         parent = radioGroupKey(f.frameId, c);
         if (!groups.has(parent)) {
           groups.add(parent);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }) });
+          const checked = radioMembers(f, parent).find((m) => m.checked === true);
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", ...(c.group === undefined ? {} : { label: c.group.name }), value: checked?.name ?? "", editable: true });
         }
       }
       const press = isPressOption(c);
@@ -119,7 +162,7 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
         if (!groups.has(parent)) {
           groups.add(parent);
           const options = f.controls.filter((o) => isPressOption(o) && o.group.id === c.group.id);
-          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: "AXFieldset", label: c.group.name, value: pressedValue(options), editable: true });
+          nodes.push({ key: parent, parent: frameKey(f.frameId), role: "AXGroup", subrole: PAGE_SUBROLE.pressGroup, label: c.group.name, value: pressedValue(options), editable: true });
         }
       }
       const states: NodeState[] = [];
@@ -133,17 +176,20 @@ export function toWindowSnapshot(s: PageSnapshot, session: EngineSession, seq: n
       // and nothing is chosen whatever it says (HubSpot's "Employees*" select shows a prompt with value ""), so the node
       // holds no value and fill counts it unfilled (I2's queue, W4).
       const selected = c.kind === "select" ? c.options?.find((o) => o.selected) : undefined;
-      const value = c.kind === "select" ? (selected === undefined ? undefined : selected.value === "" ? "" : selected.label) : c.value;
+      const box = c.kind === "checkbox";
+      const value = c.kind === "select" ? (selected === undefined ? undefined : selected.value === "" ? "" : selected.label) : box ? (c.checked === true ? PAGE_CHECKED : "") : c.value;
+      const subrole = subroleOf(c);
       nodes.push({
         key: nodeKey(f.frameId, c),
         parent,
         role: press ? "AXRadioButton" : ROLE[c.kind],
-        ...(c.kind === "file" ? { subrole: FILE_INPUT_SUBROLE } : {}),
+        ...(subrole === undefined || press ? {} : { subrole }),
         label: c.name,
         ...(value === undefined ? {} : { value }),
         // A custom listbox takes a value too (pageChooseOption picks the option named exactly that), and so does a native
-        // select (pageSelect, verified by selectedOptions; W3): without `editable` the executor never reaches their write.
-        ...(VALUE_KINDS.has(c.kind) ? { editable: true as const } : {}),
+        // select (pageSelect, verified by selectedOptions; W3) and a checkbox (pageSetChecked, D2-04): without `editable`
+        // the executor never reaches their write.
+        ...(VALUE_KINDS.has(c.kind) || box ? { editable: true as const } : {}),
         ...(states.length > 0 ? { states } : {}),
       });
       // A native select's options, as the AXMenuItem children fill reads a select's options from (controls.ts), so a
@@ -230,6 +276,17 @@ export function toVerbOutcome(r: PageResult): VerbResult {
   }
 }
 
+/**
+ * The reader role a key's node has in a tab's last walk, as toWindowSnapshot projects it: AXGroup for a radio or press
+ * group, the control's ROLE otherwise; null when no control has the key. A verb whose role is not this one was resolved
+ * against another kind of control (D2-06 re-check: a select replaced by a combobox at the same key), and is refused.
+ */
+export function projectedRole(s: PageSnapshot | undefined, key: string): string | null {
+  if (pressGroupFor(s, key) !== null || radioGroupFor(s, key) !== null) return "AXGroup";
+  const t = targetFor(s, key);
+  return t === null ? null : ROLE[t.control.kind];
+}
+
 export class PageEngineLink implements ReaderLink {
   private readonly session: EngineSession;
   private seq = 0;
@@ -259,8 +316,12 @@ export class PageEngineLink implements ReaderLink {
         if (verb.attribute !== "value") return verbResult("axError", `a page field takes value writes only, not ${verb.attribute}`);
         const snap = this.session.tabs.get(w.tabId);
         if (verb.taskId === undefined) return verbResult("notAllowed", "a page write needs its task's grant");
+        const role = projectedRole(snap, verb.key);
+        if (role !== null && role !== verb.role) return verbResult("changed", `${verb.key} is now a ${role}, not the ${verb.role} the write was made for`);
         const group = pressGroupFor(snap, verb.key);
         if (group !== null) return this.pressAnswer(w.tabId, verb.key, group, verb.expect, verb.value, verb.taskId, verb.sameAs !== undefined);
+        const radios = radioGroupFor(snap, verb.key);
+        if (radios !== null) return this.checkRadio(w.tabId, verb.key, radios, verb);
         const t = targetFor(snap, verb.key);
         if (t === null) return verbResult("noElement", `no element ${verb.key} in the tab's last walk`);
         if (verb.sameAs !== undefined) {
@@ -295,14 +356,22 @@ export class PageEngineLink implements ReaderLink {
         } else if (t.control.kind === "combobox") {
           // The model shows what the control shows (react-select's chip); the handler picks the option named `value`.
           page = { kind: "pageChooseOption", ...base, expect: verb.expect, value: verb.value };
+        } else if (t.control.kind === "checkbox") {
+          // D2-04: the model shows a box as PAGE_CHECKED or "" (toWindowSnapshot), so a write of one of the two sets the
+          // checked state, which the content script verifies; it never toggles blindly (alreadyTrue when it holds).
+          const shown = t.control.checked === true ? PAGE_CHECKED : "";
+          if (verb.value !== PAGE_CHECKED && verb.value !== "") return verbResult("axError", `a checkbox holds '${PAGE_CHECKED}' or nothing, not '${verb.value}'`);
+          if (shown !== verb.expect) return verbResult("changed", `'${t.control.name}' is ${shown === "" ? "not ticked" : "ticked"}, which is not what the write expects`);
+          page = { kind: "pageSetChecked", ...base, checked: verb.value === PAGE_CHECKED };
         } else return verbResult("axError", `'${t.control.name}' is a ${t.control.kind}, which takes no value write`);
         if (verb.mark !== undefined) this.remember(verb.mark, { tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id });
-        return this.act(page, w.tabId);
+        return page.kind === "pageSetChecked" && verb.sameAs === undefined ? this.notUnderIt(await this.act(page, w.tabId), t.control.name) : this.act(page, w.tabId);
       }
       case "press": {
         const t = targetFor(this.session.tabs.get(w.tabId), verb.key);
         if (t === null) return verbResult("noElement", `no element ${verb.key} in the tab's last walk`);
         if (verb.taskId === undefined) return verbResult("notAllowed", "a page press needs its task's grant");
+        if (ROLE[t.control.kind] !== verb.role) return verbResult("changed", `${verb.key} is now a ${ROLE[t.control.kind]}, not the ${verb.role} the press was made for`);
         if (t.control.name !== verb.label) return verbResult("changed", `the element is now named '${t.control.name}', not '${verb.label}'`);
         return this.act({ kind: "pagePress", tabId: w.tabId, frameId: t.frameId, documentId: t.documentId, id: t.id, control: t.control.kind, name: t.control.name, taskId: verb.taskId }, w.tabId);
       }
@@ -327,6 +396,42 @@ export class PageEngineLink implements ReaderLink {
     if (shown !== expect) return verbResult("changed", `'${g.question}' shows '${shown}' answered, not '${expect}' (${key})`);
     const o = want[0];
     return this.act({ kind: "pageChooseOption", tabId, frameId: g.frameId, documentId: g.documentId, id: o.id, control: "button", name: o.name, taskId, expect, value, question: g.question }, tabId);
+  }
+
+  /**
+   * A write to a radio group's node (D2-04). Forward, it checks the one button named `value`, while the group shows
+   * `expect` checked ("" for none), and records that button under the write's mark. An undo (`sameAs`) may only put the
+   * group back to no choice: it unchecks the very button its forward write checked (rebind: false), which the content
+   * script does only for an undo. Any other undo is refused: a restore that checks another button is a new choice.
+   */
+  private async checkRadio(tabId: number, key: string, g: NonNullable<ReturnType<typeof radioGroupFor>>, verb: Extract<ReaderVerb, { kind: "write" }>): Promise<VerbResult> {
+    const taskId = verb.taskId as string;
+    const shown = g.buttons.find((b) => b.checked === true)?.name ?? "";
+    if (shown !== verb.expect) return verbResult("changed", `the choice ${key} shows '${shown}' checked, not '${verb.expect}'`);
+    if (verb.sameAs !== undefined) {
+      const was = this.marks.get(verb.sameAs);
+      const b = was === undefined ? undefined : g.buttons.find((x) => x.id === was.id);
+      if (was === undefined || b === undefined || was.tabId !== tabId || was.frameId !== g.frameId || was.documentId !== g.documentId) {
+        return verbResult("notSameElement", "the page engine holds no button of this choice under this mark (it restarted, the page reloaded, or the button was replaced)");
+      }
+      if (verb.value !== "") return verbResult("notSameElement", `Caret puts a choice back only to no answer; choosing '${verb.value}' again is yours`);
+      return this.act({ kind: "pageSetChecked", tabId, frameId: g.frameId, documentId: g.documentId, id: b.id, control: "radio", name: b.name, taskId, checked: false, rebind: false, sameAs: verb.sameAs }, tabId);
+    }
+    if (verb.value === "") return verbResult("axError", "a choice is cleared only by undoing Caret's own pick");
+    const want = g.buttons.filter((b) => b.name === verb.value);
+    if (want.length !== 1 || want[0] === undefined) return verbResult("noElement", `the choice ${key} has ${want.length} buttons named '${verb.value}'`);
+    const b = want[0];
+    if (verb.mark !== undefined) this.remember(verb.mark, { tabId, frameId: g.frameId, documentId: g.documentId, id: b.id });
+    return this.notUnderIt(await this.act({ kind: "pageSetChecked", tabId, frameId: g.frameId, documentId: g.documentId, id: b.id, control: "radio", name: b.name, taskId, checked: true, ...(verb.mark === undefined ? {} : { mark: verb.mark }) }, tabId), b.name);
+  }
+
+  /**
+   * A forward tick or radio check the page answered "already so" was made by someone else after the walk that planned
+   * it (D2-04 review): Caret did nothing, and the field changed under the task, which stops it. Recorded as a write,
+   * its undo would clear the user's own tick.
+   */
+  private notUnderIt(r: VerbResult, name: string): VerbResult {
+    return r.outcome === "ok" && r.detail === "alreadyTrue" ? verbResult("changed", `'${name}' was set by someone else since the walk`) : r;
   }
 
   private async walk(tabId: number): Promise<VerbResult> {

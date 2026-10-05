@@ -33,6 +33,8 @@ export interface PageControl {
   group?: { id: string; name: string };
   /** A press-group option's aria-pressed (W4). */
   pressed?: boolean;
+  /** A text input whose inputmode is numeric or decimal (B29): undo compares its value as a number. */
+  numeric?: true;
 }
 
 export type PageOutcome = "ok" | "alreadyTrue" | "notAllowed" | "stale" | "failed" | "handoff" | "noElement" | "notSameElement" | "excluded" | "unsupported" | "error" | "siteOff";

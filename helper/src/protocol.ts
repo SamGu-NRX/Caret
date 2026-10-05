@@ -446,6 +446,28 @@ export const FillRequest = z.object({
 });
 export type FillRequest = z.infer<typeof FillRequest>;
 
+/**
+ * The hello capability for `fillAll` (D2-04). Only a host that sends it may send one; anyone else's is refused by
+ * name, as a routingContext without ROUTING_CAPABILITY is.
+ */
+export const FILL_ALL_CAPABILITY = "fillAll";
+
+/**
+ * Host to helper (D2-04): Command-1 on a per-field fill proposal (ghost fill) asks the helper to fill the whole form
+ * in one transaction, as the fill pop-up's Fill all does: every field the proposal gives a value Caret writes (text,
+ * and the controls whose handoff says `writes`), under one grant, each read back, undone in one undo. The run is the
+ * task `proposalId`, reported as taskProgress under that id; a refusal is an error plus a stopped taskProgress with
+ * stopReason "refused", as an offerAccept's is. A proposal can be run once, and only while every field and source
+ * still shows what it showed.
+ */
+export const FillAll = z.object({
+  type: z.literal("fillAll"),
+  v: z.literal(PROTOCOL_VERSION),
+  proposalId: z.string().min(1),
+  at: ms,
+});
+export type FillAll = z.infer<typeof FillAll>;
+
 /** Runs a plan (executor/schema.ts) with its slots filled. Progress comes back as taskProgress. */
 export const RunPlan = z.object({
   type: z.literal("runPlan"),
@@ -859,6 +881,60 @@ export const PlanRequest = z
   .refine((m) => m.windowId === undefined || m.window === undefined, "a planRequest names its window by window or windowId, not both");
 export type PlanRequest = z.infer<typeof PlanRequest>;
 
+/** Options one askQuestion lists at most. Assumed, not measured: the brief's cap for "which fields". */
+export const MAX_ASK_OPTIONS = 8;
+
+/**
+ * Consumer to helper (B29): the user's answer to an askQuestion, by option id. A question takes one answer, from the
+ * connection it was sent to. The helper replies under this message's `requestId` with a planProposal (or a further
+ * askQuestion); a question that is unknown, expired or answered gets a planProposal error with code `questionGone`.
+ */
+export const AskAnswer = z.object({
+  type: z.literal("askAnswer"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(200),
+  at: ms,
+  questionId: z.string().min(1),
+  picks: z.array(z.string().min(1)).min(1).max(MAX_ASK_OPTIONS),
+});
+export type AskAnswer = z.infer<typeof AskAnswer>;
+
+// MARK: - goal plans (D2-06)
+
+/**
+ * The hello capability for goal plans: a code plan that may span windows and the calendar, run one segment at a time.
+ * Only a host that declares it may send goalRequest or goalAccept, and only such hosts get goalProgress.
+ */
+export const GOAL_PLANS_CAPABILITY = "goalPlans";
+
+/** Host to helper: plan this goal. The reply is a goalProgress under `requestId`: the first segment's preview, or a stop saying why not. */
+export const GoalRequest = z.object({
+  type: z.literal("goalRequest"),
+  v: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(200),
+  instruction: z.string().min(1).max(500),
+  at: ms,
+});
+export type GoalRequest = z.infer<typeof GoalRequest>;
+
+const Digest = z.string().regex(/^[0-9a-f]{64}$/, "a digest is 64 lowercase hex digits");
+
+/**
+ * Host to helper: the user accepted segment `segment` of goal `goalId` as previewed. `digest` is the preview's: an
+ * acceptance of any other plan, a segment already accepted, one from another connection, or one after the preview
+ * expired is refused by name and nothing runs. One acceptance runs one segment, under one grant for its one window
+ * (or the calendar). Nothing else accepts a goal's steps.
+ */
+export const GoalAccept = z.object({
+  type: z.literal("goalAccept"),
+  v: z.literal(PROTOCOL_VERSION),
+  goalId: z.string().min(1).max(240),
+  segment: z.number().int().nonnegative(),
+  digest: Digest,
+  at: ms,
+});
+export type GoalAccept = z.infer<typeof GoalAccept>;
+
 /**
  * The user's answer to a skillOffer (B19), by the offer's `id`. The helper ends the offer with
  * offerWithdrawn: `taken` after accept, `dismissed` after decline. An answer to an offer that is gone
@@ -910,7 +986,7 @@ export const FileConfirmReply = z
   });
 export type FileConfirmReply = z.infer<typeof FileConfirmReply>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({
@@ -961,22 +1037,38 @@ export const FillWithheld = z.enum(["disagree", "lowConfidence", "sourceCut", "w
 export type FillWithheld = z.infer<typeof FillWithheld>;
 
 /**
- * What a control is (B24): a text field Caret writes, or a control the user sets from Caret's proposal. Chrome
- * shows native selects, radio groups, checkboxes and date and time inputs through Accessibility; the executor
- * writes none of them yet, so their values come as `handoff`. "combobox" is a web page's custom dropdown
- * (react-select and the like): typing into it does not pick an option. Since B27 its value is `value`, a write, only
- * in a window the page engine owns, whose write is the engine's verified pick (pageChooseOption); anywhere else it is
- * a `handoff` the user sets.
+ * What a control is (B24): a text field Caret writes, or a control whose value comes as `handoff`. "combobox" is a
+ * web page's custom dropdown (react-select and the like): typing into it does not pick an option. A control's value
+ * is never `value`, whoever sets it: in a window the page engine owns, Caret writes it in a Fill all (D2-04,
+ * FillHandoff.writes); anywhere else the user sets it.
  */
 export const FillControl = z.enum(["text", "date", "time", "select", "radio", "checkbox", "combobox"]);
 export type FillControl = z.infer<typeof FillControl>;
 
 /**
- * A value for a control Caret does not write: the option to pick, "checked" for a box to tick, or an ISO date
- * (YYYY-MM-DD) or time (HH:MM, 24-hour), with what it is read from. `value` stays null for such a control, so a
- * consumer that does not know this key never writes it. `display` is how the host says it ("Mar 3, 1991").
+ * A value for a control: the option to pick, "checked" for a box to tick, or the input's own wire format of a date
+ * (YYYY-MM-DD), time (HH:MM, 24-hour) or date and time (YYYY-MM-DDTHH:MM), with what it is read from. `value` stays
+ * null for such a control, so a consumer that does not know this key never writes it itself. `display` is how the
+ * host says it ("Mar 3, 1991").
+ *
+ * `writes` (D2-04): Caret writes this control in the form's one Fill all transaction, through the page engine's
+ * verified handler for it (a native select by option label, a checkbox or radio by its checked state, a date or time
+ * by its value, a custom dropdown by its option's name), and undoes it with the rest. Absent: the user sets it. Before
+ * D2-04 a page dropdown's pick came as `value`, which the host's decoder refuses on any control but text.
  */
-export const FillHandoff = z.object({ value: z.string(), display: z.string(), source: FillSource.nullable(), memory: FillMemory.nullable() });
+export const FillHandoff = z.object({
+  value: z.string(),
+  display: z.string(),
+  source: FillSource.nullable(),
+  memory: FillMemory.nullable(),
+  /**
+   * D2-04: when the value was read from a "Label: value" line of the source, that label ("Valid driving license" in
+   * "Valid driving license: yes"). A recheck before the Fill all asks the source for that very line, since a short
+   * value such as "yes" can stay on screen in another line after the one it came from says "no".
+   */
+  context: z.string().min(1).optional(),
+  writes: z.literal(true).optional(),
+});
 export type FillHandoff = z.infer<typeof FillHandoff>;
 
 export const FillField = z.object({
@@ -1589,7 +1681,6 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
 
 // MARK: - the planner: "do X" becomes a checked plan
 
-
 /**
  * Why no plan was proposed. `schema`: the drafted plan is not a valid plan. `noWindow`: no open window
  * can carry the task, or Jev chose none. `unsure`: Jev's two asks disagreed, or agreed below the cutoff.
@@ -1604,12 +1695,13 @@ export function firstLookProblem(m: Pick<FirstLookReply, "outcome" | "found" | "
  * is not the one the risk table gives its control. `unavailable`: Jev is off, the helper is in shadow
  * mode, Caret is paused, or no reader is connected. `jevFailed`: the Jev request failed. `privacy`: the
  * question would carry more of a window than one Jev request may (privacy.ts), so it was not asked. `internal`: the
- * planner failed in a way no other code names; the helper logged why.
+ * planner failed in a way no other code names; the helper logged why. `questionGone`: an askAnswer named a question that
+ * is unknown, expired, already answered or another connection's (B29).
  */
 export const PlanErrorCode = z.enum([
   "schema", "noWindow", "unsure", "nothingToDo", "unsupportedStep", "multipleWindows", "unknownWindow", "ambiguousWindow",
   "unknownTarget", "ambiguousTarget", "notEditable", "untracedValue", "wrongKind", "stepAfterHandoff", "riskMismatch", "unavailable", "jevFailed", "privacy", "internal",
-  "unseenWindow",
+  "unseenWindow", "questionGone",
 ]);
 export type PlanErrorCode = z.infer<typeof PlanErrorCode>;
 
@@ -1670,6 +1762,62 @@ export const PlanProposal = z
 export type PlanProposal = z.infer<typeof PlanProposal>;
 
 /**
+ * The hello capability for Ask questions with choices (B29). A consumer that sends it may get an askQuestion in place
+ * of a planProposal whose error asks the user something, and may answer it with askAnswer. Any other consumer gets
+ * the planProposal error as before; an askAnswer from it is refused by name.
+ */
+export const ASK_CHOICES_CAPABILITY = "askChoices";
+
+/**
+ * One choice of an askQuestion, typed by what it fixes. `id` is the helper's, valid for that question only; the host
+ * sends it back and never a field key or window id. `field`: a field of the form (its label, and its section's
+ * heading). `window`: an open window to copy from, as the user knows it. `memory`: what the user told Caret about
+ * themselves. `you`: the user's own details. `person`: someone named in the instruction or on screen.
+ */
+export const AskOption = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("field"), id: z.string().min(1), label: z.string().min(1), section: z.string().nullable() }),
+  z.object({ kind: z.literal("window"), id: z.string().min(1), app: z.string(), title: z.string() }),
+  z.object({ kind: z.literal("memory"), id: z.string().min(1) }),
+  z.object({ kind: z.literal("you"), id: z.string().min(1) }),
+  z.object({ kind: z.literal("person"), id: z.string().min(1), name: z.string().min(1) }),
+]);
+export type AskOption = z.infer<typeof AskOption>;
+
+/**
+ * Helper to the asker, in place of a planProposal (B29): the Ask needs one part settled, and code listed that part's
+ * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window, or memory) or `person` (whose
+ * details). `text` is the question as the user reads it. Answered with askAnswer naming `questionId` and the picks,
+ * once, before `expires`; the answer's reply is a planProposal or another askQuestion. `window` is the form.
+ */
+export const AskQuestion = z
+  .object({
+    type: z.literal("askQuestion"),
+    v: z.literal(PROTOCOL_VERSION),
+    requestId: z.string(),
+    at: ms,
+    questionId: z.string().min(1),
+    part: z.enum(["fields", "source", "person"]),
+    text: z.string().min(1),
+    pick: z.enum(["one", "many"]),
+    options: z.array(AskOption).min(1).max(MAX_ASK_OPTIONS),
+    window: z.object({ pid: z.number().int(), windowId: z.string(), appName: z.string(), title: z.string() }),
+    expires: ms,
+  })
+  .superRefine((m, ctx) => {
+    const kinds = { fields: ["field"], source: ["window", "memory"], person: ["you", "person"] }[m.part];
+    const pick = m.part === "fields" ? "many" : "one";
+    const problem = m.pick !== pick
+      ? `a ${m.part} question picks ${pick}`
+      : m.options.some((o) => !kinds.includes(o.kind))
+        ? `a ${m.part} question lists only ${kinds.join(" or ")} options`
+        : new Set(m.options.map((o) => o.id)).size !== m.options.length
+          ? "option ids repeat"
+          : null;
+    if (problem !== null) ctx.addIssue({ code: "custom", message: problem, path: ["options"] });
+  });
+export type AskQuestion = z.infer<typeof AskQuestion>;
+
+/**
  * Whether Caret can see the pages of a Chromium browser (browser layer W2, memo section 6). `missing`: the reader
  * reports the browser frontmost, the user has typed in it since it came to the front, and no Caret page engine is
  * connected for that process. The host shows "Caret can't see this page yet" at most once per browser per session
@@ -1685,9 +1833,92 @@ export const PageEngineState = z.object({
 });
 export type PageEngineState = z.infer<typeof PageEngineState>;
 
+/** One step of a goal as the user reads it: what it does, and whether Caret does it or hands it over. */
+export const GoalStepView = z.object({
+  index: z.number().int().nonnegative(),
+  kind: z.enum(["write", "calendar", "press", "handoff"]),
+  says: z.string().min(1).max(600),
+});
+export type GoalStepView = z.infer<typeof GoalStepView>;
+
+/**
+ * Why a goal stopped. `refused`: code will not offer the plan (the sentence says which check). `dialog`: a dialog or
+ * sheet opened in the window. `reload`: the page reloaded or navigated. `sourceChanged`: a window or memory entry a value
+ * came from no longer shows it. `targetChanged`: a field changed, went or was replaced before Caret reached it.
+ * `timeout`: what a press should do did not happen in time. `unexpectedEffect`: something other than what the step
+ * predicted changed. `handedOff`: Caret could not do a step it planned (an app that did not take a write, focus that
+ * moved) and left it to the user, before the plan's own end. `revealed`: the plan's last press showed fields it could
+ * not name, so the goal is not done; `freshPlan` names a plan for them when Caret could make one. `windowGone`, `you` (the user stopped it or took the window
+ * back), `readerRestarted`, `hostGone`, `expired` (no acceptance in time), `error` (anything else; the sentence says what).
+ */
+export const GoalStopReason = z.enum(["refused", "dialog", "reload", "sourceChanged", "targetChanged", "timeout", "unexpectedEffect", "handedOff", "revealed", "windowGone", "you", "readerRestarted", "hostGone", "expired", "error"]);
+export type GoalStopReason = z.infer<typeof GoalStopReason>;
+
+const GoalHead = {
+  type: z.literal("goalProgress"),
+  v: z.literal(PROTOCOL_VERSION),
+  at: ms,
+  goalId: z.string().min(1).max(240),
+  /** The goalRequest this answers; null on every later message. */
+  requestId: z.string().min(1).max(200).nullable(),
+};
+
+/**
+ * Helper to a host that declared GOAL_PLANS_CAPABILITY (D2-06). `segment`: a segment waits for the user's acceptance
+ * (goalAccept with this `digest`) until `expires`; `reason` says why it is separate (`start`, `crossWindow`: another
+ * window or the calendar, `afterReveal`: a press showed new fields, `freshPlan`: replanned after a stop) and `replaces`
+ * names the goal it was replanned from. `step`: one step verified, already true, or handed to the user, with the
+ * executor task it ran in. `stopped`: the goal stopped; `freshPlan` names the replanned goal offered in its place, or
+ * null. `finished`: every segment ran; `outcome` is `done` only when every step Caret makes was verified and none is
+ * left to the user, `handoff` when the last step is the user's (a draft is ready; the user sends it).
+ */
+export const GoalProgress = z.discriminatedUnion("event", [
+  z.object({
+    ...GoalHead,
+    event: z.literal("segment"),
+    segment: z.number().int().nonnegative(),
+    segments: z.number().int().positive(),
+    reason: z.enum(["start", "crossWindow", "afterReveal", "freshPlan"]),
+    replaces: z.string().min(1).max(240).nullable(),
+    digest: Digest,
+    expires: ms,
+    where: z.discriminatedUnion("kind", [z.object({ kind: z.literal("window"), app: z.string(), title: z.string() }), z.object({ kind: z.literal("calendar"), calendar: z.string().min(1) })]),
+    steps: z.array(GoalStepView).min(1).max(24),
+    warnings: z.array(z.string().min(1).max(600)).max(24),
+  }),
+  z.object({
+    ...GoalHead,
+    event: z.literal("step"),
+    segment: z.number().int().nonnegative(),
+    taskId: z.string().min(1),
+    step: z.number().int().nonnegative(),
+    steps: z.number().int().positive(),
+    phase: z.enum(["verified", "skipped", "handoff"]),
+    says: z.string().min(1).max(600),
+  }),
+  z.object({
+    ...GoalHead,
+    event: z.literal("stopped"),
+    segment: z.number().int().nonnegative().nullable(),
+    step: z.number().int().nonnegative().nullable(),
+    reason: GoalStopReason,
+    says: z.string().min(1).max(600),
+    freshPlan: z.string().min(1).max(240).nullable(),
+  }),
+  z.object({
+    ...GoalHead,
+    event: z.literal("finished"),
+    outcome: z.enum(["done", "handoff"]),
+    verified: z.number().int().nonnegative(),
+    skipped: z.number().int().nonnegative(),
+    says: z.string().min(1).max(600),
+  }),
+]);
+export type GoalProgress = z.infer<typeof GoalProgress>;
+
 export const HelperMessage = z.discriminatedUnion("type", [
   FillProposal, HelperError, TaskProgress, PatternOffer, OfferWithdrawn, MemoryReply, Activity, ActivityReply, OfferAlternatives, OfferAction, OfferPopup, FirstLookReply, PlanProposal, SkillOffer,
-  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply,
+  PageEngineState, MemoryProvenance, MemoryDocumentReply, RouteDecision, FileConfirmReply, AskQuestion, GoalProgress,
 ]);
 /** The messages that put something on screen at the caret; each is checked against HelperMessage before it is published. */
 export const HOST_OFFER_TYPES: ReadonlySet<string> = new Set(["alternatives", "action", "popup"]);
@@ -1745,6 +1976,33 @@ export const PageControlKind = z.enum([
 ]);
 export type PageControlKind = z.infer<typeof PageControlKind>;
 
+/**
+ * Subroles the page engine's window snapshot (engines/page-link.ts toWindowSnapshot) gives nodes whose reader role
+ * alone does not say what fill must know (D2-04): a date-like input's own value format (each is AXDateField or
+ * AXTimeField, as Chrome's Accessibility shows them), a file input (an AXButton, like a dropzone), an ARIA switch (an
+ * AXCheckBox that often acts at once, which a Fill all leaves to the user), and a Yes/No question built from toggle
+ * buttons (W4), whose press cannot be taken back, so a Fill all leaves it to the user too. A radio group keeps
+ * Chrome's AXFieldset.
+ */
+export const PAGE_SUBROLE = {
+  date: "CaretDateInput",
+  time: "CaretTimeInput",
+  datetime: "CaretDateTimeInput",
+  month: "CaretMonthInput",
+  week: "CaretWeekInput",
+  file: "CaretFileInput",
+  /** B29: an input of type number, or a text input whose inputmode is numeric or decimal. Undo compares its value as a number. */
+  number: "CaretNumberInput",
+  switch: "AXSwitch",
+  pressGroup: "CaretPressGroup",
+} as const;
+
+/**
+ * What a page checkbox's node holds while it is ticked (D2-04); "" while it is not. A Fill all writes this value to tick
+ * one, and its undo writes "" back. It is the value FillHandoff carries for a box to tick.
+ */
+export const PAGE_CHECKED = "checked";
+
 /** [x, y, width, height] in CSS pixels of the frame's own viewport. */
 export const PageRect = z.tuple([z.number(), z.number(), z.number(), z.number()]);
 
@@ -1783,6 +2041,8 @@ export const PageControl = z.object({
   group: z.object({ id: z.string().min(1), name: z.string().min(1) }).optional(),
   /** W4: a press-group option's aria-pressed. */
   pressed: z.boolean().optional(),
+  /** B29: a text input whose inputmode is numeric or decimal. */
+  numeric: z.literal(true).optional(),
 });
 export type PageControl = z.infer<typeof PageControl>;
 

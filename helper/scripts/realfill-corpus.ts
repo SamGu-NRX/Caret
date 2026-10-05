@@ -134,7 +134,12 @@ export interface Desk {
  * minutes ago, the form's source focused just before the form (the window the user just left), and the form
  * focused on its first empty text field, as a person arrives at a form after reading their note.
  */
-export function buildDesk(corpus: Corpus, snaps: readonly Snapshot[], form: CorpusForm): Desk {
+/**
+ * `page`: the form as the page engine reads it (D2-04: a snapshot accept.ts --sites took of the corpus page, through
+ * engines/page-link.ts toWindowSnapshot), in place of the reader's recorded window, so a Fill all's writes of selects,
+ * radios, boxes and dates are measured where Caret makes them.
+ */
+export function buildDesk(corpus: Corpus, snaps: readonly Snapshot[], form: CorpusForm, page?: Snapshot): Desk {
   const windowOf = (title: string): Snapshot => {
     const hits = snaps.filter((s) => s.window.title === title || s.window.title.startsWith(`${title} - `));
     if (hits.length !== 1) throw new Error(`${hits.length} recorded windows are titled '${title}'`);
@@ -152,7 +157,7 @@ export function buildDesk(corpus: Corpus, snaps: readonly Snapshot[], form: Corp
   });
   const src = sourceSnap(form.source);
   if (src !== null) put(src, T0 - 30_000);
-  const formSnap = windowOf(form.title);
+  const formSnap = page ?? windowOf(form.title);
   const trigger = formSnap.nodes.find((n) => n.editable === true && (n.role === "AXTextField" || n.role === "AXTextArea") && (n.value ?? "") === "" && n.parent !== null && !n.key.includes("address and search bar"));
   if (trigger === undefined) throw new Error(`form ${form.id} has no empty text field to start from`);
   put(formSnap, T0, trigger.key);

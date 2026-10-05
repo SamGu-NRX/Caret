@@ -555,6 +555,39 @@ export function parseMoment(span: ValueRef, ctx: ResolveContext): Resolution<Mom
   return finish(c, span, (m) => sayMoment(m));
 }
 
+/**
+ * A time of day alone, for a time field (D2-04): "HH:MM", or "HH:MM:SS" when the text gives seconds. A span that names
+ * the day too ("Saturday, October 17 at 8:45am") is read as the moment it names (parseMoment), so a wall time Daylight
+ * Saving skips or repeats there asks, as it does for a date and time; only its time of day is kept. A time field holds a
+ * wall time with no zone, and nothing says which zone the form means, so Caret converts none: a span that names a zone,
+ * or a source whose zone is not the user's (ResolveContext.sourceTimeZone), is unsupported.
+ */
+export function parseClock(span: ValueRef, ctx: ResolveContext): Resolution<string> {
+  const toks = readTokens(span);
+  if (typeof toks === "string") return unsupported(toks);
+  const ss = sides(toks);
+  if (typeof ss === "string") return unsupported(ss);
+  if (ss.length !== 1) return unsupported(`"${span.quote}" is a range, not one time`);
+  const s = ss[0] as Side;
+  const t = s.times[0];
+  if (t === undefined) return unsupported(`"${span.quote}" names no time of day`);
+  if (s.zones.length > 0) return unsupported(`"${span.quote}" names a time zone, and a time field holds a time with none`);
+  const source = ctx.sourceTimeZone === undefined ? ctx.timeZone : ctx.sourceTimeZone;
+  if (source !== ctx.timeZone) return unsupported(`"${span.quote}" is a time in the source's zone, which is not the user's`);
+  const clock = (time: Temporal.PlainTime): string => time.toString({ smallestUnit: time.second === 0 ? "minute" : "second" });
+  if (s.dates.length > 0) {
+    const m = parseMoment(span, ctx);
+    if (m.kind === "unsupported") return m;
+    if (m.kind === "ask") return ask(m.question, []);
+    const time = Temporal.PlainDateTime.from(m.value.local).toPlainTime();
+    return resolved(clock(time), sayClock(time), [span], m.assumptions);
+  }
+  const c = timeChoices(t.time, t.text, s.part);
+  if (c.kind === "one" && c.value.dayShift !== 0) return ask(`"${t.text}": the start of that day or its end?`, []);
+  const shown: Choice<string> = c.kind === "one" ? one(clock(c.value.time), c.assumptions) : c.kind === "many" ? many(c.question, c.values.map((w) => clock(w.time))) : c;
+  return finish(shown, span, (v) => sayClock(Temporal.PlainTime.from(v)));
+}
+
 /** Start and end wall times for a range, with an end's AM/PM carried back to a bare start. */
 function rangeTimes(a: Extract<Tok, { t: "time" }>, b: Extract<Tok, { t: "time" }>, aPart: DayPart | null, bPart: DayPart | null): { start: Choice<WallTime>; end: Choice<WallTime> } {
   // The start's day-part word ("morning") helps read a bare end hour, but never contradicts an end whose

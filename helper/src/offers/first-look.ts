@@ -452,14 +452,15 @@ function emptyFields(w: WindowState): string[] {
 /** The proposal with only fields still empty whose source is still open, when that leaves a pop-up's worth; else null. */
 function stillGrounded(model: ScreenModel, p: FillProposal, aboutNow: AboutNow): GroundedProposal | null {
   const w = model.windows.get(p.windowId);
-  if (w === undefined) return null;
-  // The fields Caret writes: a first look's pop-up runs text fields only, the rest are hand-offs (B24).
-  const fields = writtenFields(p).fields.filter((f) => {
+  if (w === undefined || !fillPopupEligible(p)) return null;
+  // The fields Caret writes: text, and in a page the engine owns, the controls it writes (D2-04); the pop-up lists the rest.
+  const written = writtenFields(p, w);
+  const fields = written.fields.filter((f) => {
     const n = w.nodes.get(f.key);
     return n !== undefined && (n.value ?? "") === "" && (f.source === null || model.windows.has(f.source.windowId));
   });
-  const q = { ...p, fields };
-  return fillPopupEligible(q) && recheckFill(model, q, aboutNow) === null ? q : null;
+  const q = { ...written, fields };
+  return fields.length >= 2 && recheckFill(model, q, aboutNow) === null ? q : null;
 }
 
 function sourceText(app: string, title: string): string {

@@ -17,6 +17,11 @@ import {
   PROTOCOL_VERSION,
   type ActivityReply,
   type ActivityRequest,
+  type FillAll,
+  type GoalAccept,
+  type HelperError,
+  type GoalProgress,
+  type GoalRequest,
   type FillProposal,
   type FillResult,
   type FillRequest,
@@ -40,6 +45,8 @@ import {
   type OfferPopup,
   type PlanProposal,
   type PlanRequest,
+  type AskAnswer,
+  AskQuestion,
   type HelperToReader,
   type ReaderMessage,
   type ReaderVerb,
@@ -77,6 +84,11 @@ import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
 import { planWithCode } from "./planner/codeplan.ts";
+import { GoalRuns } from "./goals/runs.ts";
+import { planGoal } from "./goals/propose.ts";
+import { GoalError, type DonePress } from "./goals/lower.ts";
+import type { GoalPlan } from "./goals/plan.ts";
+import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
 import { fillSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
 import { planAttach } from "./planner/attach.ts";
@@ -90,7 +102,8 @@ import type { FileConfirm, FileConfirmReply, PlanErrorCode } from "./protocol.ts
 const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
-import { AskRefused } from "./planner/ask.ts";
+import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
+import type { AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
 import { ASK_ROUTES, type RouteCandidate } from "./routing/routes.ts";
 import type { RoutingContext } from "./routing/context.ts";
@@ -172,6 +185,11 @@ export interface HelperOptions {
   settings?: UserSettings;
   /** The calendar event cards add to; "Caret" when absent. The calendar port writes only to a calendar it created (B16). */
   eventCalendar?: string;
+  /**
+   * D2-06: a page window's document generation (its frames' documents and navigations), so a goal plan that a reload
+   * overtook stops as a reload. main.ts reads it from the page engines; absent, a reload stops a goal as a changed field.
+   */
+  pageDocument?: (windowId: string) => string | null;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
   /**
@@ -218,6 +236,8 @@ const PHASE_STATE: Record<TaskPhase, TaskState> = {
 const CARET_FILL_MATCH_MS = 10_000;
 /** Proposals are remembered this long so a late fillResult can still be matched. Assumed. */
 const PROPOSAL_KEEP_MS = 10 * 60 * 1000;
+/** How long an Ask's question waits for the user's pick (B29). Assumed, not measured: as long as a proposal is kept. */
+const ASK_QUESTION_MS = PROPOSAL_KEEP_MS;
 
 /** A value the host reported inserting for Caret, and the transfer it was matched to, if any yet. */
 interface CaretFill {
@@ -266,7 +286,7 @@ export class Helper {
   /** Forms whose fill was in flight when an About entry was added; the focused field is asked about again when that fill ends. */
   private readonly refillAfter = new Set<string>();
   /** Recent proposals, by id: the window and each proposed field's value, so fillResult can be checked and matched. */
-  private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null }>();
+  private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null; proposal: FillProposal }>();
   /** Every Jev request goes through this, which records it as a use of "Read and prepare" (B17). Null when Jev is off. */
   private readonly ask: AskJev | null;
   /** The configured plan writer, wrapped so each request is recorded (recordRead). */
@@ -295,6 +315,8 @@ export class Helper {
   readonly pending: PendingWatcher;
   private readonly socketLink: SocketReaderLink | null;
   private readonly changeListeners = new Set<(changes: readonly Change[]) => void>();
+  /** Accepted goal plans, one segment at a time (D2-06, goals/runs.ts). */
+  readonly goals: GoalRuns;
   /** The read-only audit, when the helper runs one. */
   readonly audit: Audit | null;
   /** Field values of a window just before a focus walk replaced them, for the shadow logger. */
@@ -331,6 +353,12 @@ export class Helper {
    */
   private readonly planOffers = new Map<string, { at: number; draft: PlanDraft; instruction: string; expect: Record<string, Record<string, string>> }>();
   private planSeq = 0;
+  /**
+   * Ask questions waiting for the user's pick (B29), by question id: the connection that may answer, when the question
+   * lapses, and what continues the Ask. Each is answered once; a reader restart drops them all, as it drops plan offers.
+   */
+  private readonly askQuestions = new Map<string, { session: string | undefined; expires: number; draft: AskQuestionDraft }>();
+  private askSeq = 0;
   /** A reader is on the socket: set by its hello, cleared when it disconnects. An in-process reader link is always there. */
   private readerConnected: boolean;
   /**
@@ -422,20 +450,16 @@ export class Helper {
       calendar: opts.calendar === "reader" ? new ReaderCalendar(opts.readerLink ?? (this.socketLink as SocketReaderLink)) : (opts.calendar ?? null),
       urls: opts.urls ?? null,
       askJev: this.ask,
-      publish: (m) => this.publish(m),
+      publish: (m) => {
+        this.publish(m);
+        this.goals.onProgress(m);
+      },
       onTask: (e) => this.onTaskEvent(e),
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
       // A plan may write a first, middle or last name code split from a remembered name (B24): the entry must
       // still give exactly that part, by the same split, not any substring.
-      memoryHolds: (ref, value) => {
-        const { id, part } = parseMemoryRef(ref);
-        const text = this.memory.text(id);
-        if (text === null || text === undefined) return false;
-        // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
-        // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
-        return memoryValue(text, part) === value;
-      },
+      memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       authorize: (a) => this.authorize(a),
       // The one file each run may attach: confirmed by the user in the slip (fileConfirm), read once (H5).
       files: this.files,
@@ -467,6 +491,19 @@ export class Helper {
     if (this.memory.migration.outcome === "migrated" || this.memory.migration.outcome === "resumed") opts.store.count("memory.migrated", this.memory.migration.moved);
     // An edit in an editor or the memory window withdraws the offers that used it and revokes tasks that copy it.
     this.memory.onOutsideChange = (changes) => this.memoryChangedOutside(changes);
+    this.goals = new GoalRuns({
+      executor: this.executor,
+      model: this.model,
+      publish: (m) => {
+        if (this.mode === "live") this.opts.publish(m);
+      },
+      now: () => this.now(),
+      readerSession: () => this.readerSession,
+      bind: (taskId, session) => this.bindNew(taskId, session),
+      memoryHolds: (ref, value) => this.memoryHolds(ref, value),
+      ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
+      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.pressed),
+    });
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.patterns = new PatternEngine({
@@ -626,6 +663,9 @@ export class Helper {
    * permission is not one Caret always hands off.
    */
   private authorize(a: Authorization): Revocation | null {
+    // A goal's running segment acts only while the screen it was accepted on still holds (D2-06, goals/runs.ts).
+    const moved = this.goals.blocked(a.taskId);
+    if (moved !== null) return moved;
     const bound = this.taskHosts.get(a.taskId);
     if (bound !== undefined && [...bound].some((h) => !this.sessions.has(h))) return { why: "the host that started it disconnected", by: "host" };
     if (a.unprompted && (bound === undefined || bound.size === 0)) return { why: "no host was connected to show it", by: "host" };
@@ -693,6 +733,8 @@ export class Helper {
         this.audit?.readerRestarted(this.now());
         this.firstLooks.clear();
         this.planOffers.clear();
+        this.askQuestions.clear();
+        this.goals.readerRestarted();
         this.routing?.readerRestarted();
         this.readerConnected = true;
         if (m.mode === "shadow") this.mode = "shadow";
@@ -706,6 +748,8 @@ export class Helper {
         }
         const changes = this.model.apply(m);
         if (changes.length > 0) for (const l of this.changeListeners) l(changes);
+        // A dialog in a running goal segment's app, or a source of its values that changed, stops it (D2-06).
+        this.goals.onChanges(changes);
         const w = this.model.windows.get(m.window.windowId);
         if (w !== undefined) {
           this.text.observe(w, m.at);
@@ -783,6 +827,8 @@ export class Helper {
         this.audit?.onWindowClosed(m.windowId, m.at);
         this.model.close(m.windowId, m.at);
         forgetWindow(m.windowId);
+        // A goal segment that copies from this window, or acts in it, stops now (D2-06).
+        this.goals.onChanges([]);
         this.checkFills(m.windowId);
         this.routing?.candidatesChanged();
         this.routing?.observe();
@@ -923,6 +969,7 @@ export class Helper {
       this.routing?.observe();
     }
     if (!this.sessions.delete(session)) return;
+    this.goals.hostGone(session);
     // The binding stays, naming a session that is gone, so authorize also refuses a task whose run has not begun.
     for (const [taskId, bound] of [...this.taskHosts]) {
       if (bound.has(session)) this.executor.revoke(taskId, { why: "the host that started it disconnected", by: "host" });
@@ -959,6 +1006,16 @@ export class Helper {
     return r;
   }
 
+  /** Whether memory entry `ref` (an id, or "id#first" for a name's part) still gives exactly `value`. */
+  private memoryHolds(ref: string, value: string): boolean {
+    const { id, part } = parseMemoryRef(ref);
+    const text = this.memory.text(id);
+    if (text === null || text === undefined) return false;
+    // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
+    // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
+    return memoryValue(text, part) === value;
+  }
+
   /** Memory the planner may copy from: About values and people's names, not paused. */
   private plannerMemory(): MemoryValue[] {
     const out: MemoryValue[] = [];
@@ -971,33 +1028,164 @@ export class Helper {
   }
 
   /**
+   * A goal plan (D2-06): the writer's program over the windows the goal may act in and the calendar, lowered to
+   * segments. The reply, to the asker only, previews the first segment, which runs only after goalAccept; or says
+   * why no plan is offered.
+   */
+  async handleGoalRequest(m: GoalRequest, session?: string): Promise<GoalProgress> {
+    this.opts.store.count("goal.request", 1);
+    let goalId = `goal-${++this.planSeq}-${m.requestId}`.slice(0, 200);
+    while (this.idTaken(`${goalId}:s0`)) goalId = `goal-${++this.planSeq}-${m.requestId}`.slice(0, 200);
+    const refuse = (says: string): GoalProgress => this.goals.refused(goalId, m.requestId, says);
+    if (this.writer === null) return refuse("No plan writer is configured, so Caret cannot plan this");
+    if (this.mode !== "live") return refuse("Caret is in shadow mode");
+    if (this.gate.settings.paused) return refuse("Caret is paused");
+    if (!this.readerConnected) return refuse("No screen reader is connected");
+    const session0 = this.readerSession;
+    try {
+      const plan = await this.goalPlan(goalId, m.instruction);
+      if (session0 !== this.readerSession) return refuse("The screen reader restarted while Caret planned, so the plan's windows no longer apply");
+      this.opts.store.count("goal.proposed", 1);
+      return this.goals.propose(plan, session, m.requestId);
+    } catch (e) {
+      if (!(e instanceof GoalError)) throw e;
+      this.opts.store.count(`goal.refused_${e.code}`, 1);
+      this.opts.warn?.(`goal ${goalId}: ${e.message}`);
+      return refuse(e.says.charAt(0).toUpperCase() + e.says.slice(1));
+    }
+  }
+
+  /**
+   * The host's acceptance of one goal segment. A refusal goes back as an error naming why, to `reply` (the asker's own
+   * connection) when given, else published as in-process callers read it; nothing runs.
+   */
+  async handleGoalAccept(m: GoalAccept, session?: string, reply?: (e: HelperError) => void): Promise<TaskResult | null> {
+    const r = await this.goals.accept(m, session);
+    if ("refused" in r) {
+      this.opts.store.count("goal.acceptRefused", 1);
+      const e: HelperError = { type: "error", v: PROTOCOL_VERSION, at: this.now(), message: `goalAccept refused: ${r.refused}` };
+      if (reply === undefined) this.opts.publish(e);
+      else reply(e);
+      return null;
+    }
+    return r.result;
+  }
+
+  /** Whether calendar end states have somewhere to go (HelperOptions.calendar). */
+  private get executorHasCalendar(): boolean {
+    return this.opts.calendar !== undefined && this.opts.calendar !== null;
+  }
+
+  /** The windows a goal may act in: the user's own first, then the most recently used ones with a field or a button. */
+  private goalWindows(): string[] {
+    const user = this.model.userWindow();
+    const usable = (w: { nodes: Map<string, { editable?: boolean; role: string }> }): boolean => [...w.nodes.values()].some((n) => n.editable === true || n.role === "AXButton");
+    const rest = [...this.model.windows.values()].filter((w) => w !== user && usable(w)).sort((a, b) => b.lastFocusedAt - a.lastFocusedAt);
+    return [...(user === null || user === undefined ? [] : [user]), ...rest].map((w) => w.window.windowId);
+  }
+
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = []): ReturnType<typeof planGoal> {
+    const writer = this.writer;
+    if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
+    const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
+    return planGoal(this.model, {
+      goalId,
+      instruction,
+      writer,
+      askJev: this.ask,
+      windows: this.goalWindows(),
+      memory: this.plannerMemory(),
+      calendar,
+      clock: macClock(new Date(this.now())),
+      now: this.now(),
+      readerSession: this.readerSession,
+      ...(this.opts.pageDocument === undefined ? {} : { pageDocument: this.opts.pageDocument }),
+      done,
+    });
+  }
+
+  /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
+  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[]): Promise<GoalPlan | null> {
+    if (this.writer === null || this.mode !== "live" || this.gate.settings.paused) return null;
+    try {
+      return await this.goalPlan(goalId, instruction, done);
+    } catch (e) {
+      if (!(e instanceof GoalError)) throw e;
+      this.opts.warn?.(`goal ${goalId}: no fresh plan: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
    * The user asked Caret to do something. The planner drafts a plan against the screen model and memory
    * and checks it (planner/); a plan that passes is recorded as an offer under its key and runs only when
    * the host accepts it. The reply goes to the asker only.
    */
-  async handlePlanRequest(m: PlanRequest): Promise<PlanProposal> {
+  async handlePlanRequest(m: PlanRequest): Promise<PlanProposal>;
+  async handlePlanRequest(m: PlanRequest, from: string | undefined, canAsk: boolean): Promise<PlanProposal | AskQuestion>;
+  async handlePlanRequest(m: PlanRequest, from?: string, canAsk = false): Promise<PlanProposal | AskQuestion> {
+    this.opts.store.count("plan.request", 1);
+    let windowId: string | null = null;
+    try {
+      windowId = requestedWindow(this.model, m);
+    } catch (e) {
+      if (!(e instanceof PlannerError)) throw e;
+      return this.planFailed(m.requestId, e.code, e.message, e instanceof SaidError ? e.message : saysFor(e.code));
+    }
+    return this.planAndPropose(m.requestId, m.instruction, windowId, undefined, from, canAsk);
+  }
+
+  /**
+   * The user's pick in answer to an Ask's question (B29): the question must be one this connection was asked and not
+   * yet answered or lapsed, and every pick one of its options (one for a single-choice question). The picks fix that
+   * part, and the same Ask goes on from there: its reply is a proposal, a refusal, or the next question.
+   */
+  async handleAskAnswer(m: AskAnswer, from?: string): Promise<PlanProposal | AskQuestion> {
+    this.opts.store.count("plan.askAnswer", 1);
+    const q = this.askQuestions.get(m.questionId);
+    if (q === undefined || q.session !== from || q.expires <= this.now()) return this.planFailed(m.requestId, "questionGone", `no open question ${m.questionId} for this connection`);
+    this.askQuestions.delete(m.questionId);
+    const ids = new Set(m.picks);
+    const picked = q.draft.options.filter((c) => ids.has(c.option.id));
+    if (picked.length !== m.picks.length || ids.size !== m.picks.length || (q.draft.pick === "one" && picked.length !== 1)) {
+      return this.planFailed(m.requestId, "schema", `the answer picks ${m.picks.join(", ")}, which question ${m.questionId} did not list as ${q.draft.pick === "one" ? "one choice" : "choices"}`);
+    }
+    // Each pick fixes only the part it names: the fields picked, else the one window or person.
+    const fixed: AskFixed = { ...q.draft.resume.fixed };
+    for (const c of picked) {
+      if (c.fixes.fields !== undefined) fixed.fields = [...(fixed.fields ?? []), ...c.fixes.fields];
+      if (c.fixes.source !== undefined) fixed.source = c.fixes.source;
+      if (c.fixes.person !== undefined) fixed.person = c.fixes.person;
+    }
+    const resume = { ...q.draft.resume, fixed };
+    return this.planAndPropose(m.requestId, resume.instruction, resume.windowId, resume, from, true);
+  }
+
+  private planFailed(requestId: string, code: Parameters<typeof planError>[1], detail: string, says: string = saysFor(code)): PlanProposal {
+    this.opts.store.count(`plan.error_${code}`, 1);
+    return planError(requestId, code, detail, this.now(), says);
+  }
+
+  /** Plans an Ask or a planner task and offers it; an Ask that asks a question returns it to a consumer that can answer. */
+  private async planAndPropose(requestId: string, instruction: string, windowId: string | null, resume: AskOptions["resume"], from: string | undefined, canAsk: boolean): Promise<PlanProposal | AskQuestion> {
     const store = this.opts.store;
-    store.count("plan.request", 1);
     // Every refusal carries the user's sentence (H5): a SaidError's own, or the one for its code.
-    const fail = (code: Parameters<typeof planError>[1], detail: string, says: string = saysFor(code)): PlanProposal => {
-      store.count(`plan.error_${code}`, 1);
-      return planError(m.requestId, code, detail, this.now(), says);
-    };
+    const fail = (code: Parameters<typeof planError>[1], detail: string, says?: string): PlanProposal => this.planFailed(requestId, code, detail, says);
     const said = (e: PlannerError): string => (e instanceof SaidError ? e.message : saysFor(e.code));
     const ask = this.ask;
     if (ask === null) return fail("unavailable", "Jev is off");
     if (this.mode !== "live") return fail("unavailable", "the helper is in shadow mode");
     if (this.gate.settings.paused) return fail("unavailable", "Caret is paused", SAYS.paused);
     if (!this.readerConnected) return fail("unavailable", "no reader is connected", SAYS.noReader);
-    let offerKey = `plan-${++this.planSeq}-${m.requestId}`;
-    while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${m.requestId}`;
+    let offerKey = `plan-${++this.planSeq}-${requestId}`;
+    while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${requestId}`;
     const session = this.readerSession;
     let draft: PlanDraft;
     const askConfig = this.askConfig;
     // "Attach my resume" (H5): code plans it, with no model, when the page holds a file input that fits.
     let attachDraft: PlanDraft | null = null;
     try {
-      attachDraft = planAttach(m.instruction, this.model, requestedWindow(this.model, m), offerKey);
+      attachDraft = planAttach(instruction, this.model, windowId, offerKey);
     } catch (e) {
       if (!(e instanceof PlannerError)) throw e;
       return fail(e.code, e.message, said(e));
@@ -1008,20 +1196,22 @@ export class Helper {
     } else if (askConfig !== null) {
       // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
       try {
-        const windowId = requestedWindow(this.model, m);
         const maker = askConfig.maker === "jev" ? jevIntentMaker(ask) : writerIntentMaker(askConfig.writer, () => offerKey);
-        const d = await planAsk(m.instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), ...(windowId === null ? {} : { windowId }), ...this.opts.plannerHooks });
+        const d: AskDraft = await planAsk(instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), ...(windowId === null ? {} : { windowId }), ...(resume === undefined ? {} : { resume }), ...this.opts.plannerHooks });
         store.count(`plan.ask_${d.route}`, 1);
         this.countAskRoute(d.route);
         draft = d;
       } catch (e) {
         if (!(e instanceof PlannerError)) throw e;
         if (e instanceof AskRefused && e.intent !== null) this.countAskRoute(e.intent.route);
+        // B29: a question with choices, to a consumer that said it can answer one; anyone else reads the refusal.
+        if (e instanceof AskAsks && canAsk && session === this.readerSession) return this.askQuestion(requestId, e.question, from);
         return fail(e.code, e.message, said(e));
       }
+    } else if (resume !== undefined) {
+      return fail("questionGone", "Ask is not configured, so no question can be continued");
     } else try {
-      const windowId = requestedWindow(this.model, m);
-      draft = await planTask(m.instruction, this.model, { values: () => this.plannerMemory() }, {
+      draft = await planTask(instruction, this.model, { values: () => this.plannerMemory() }, {
         askJev: ask,
         offerKey,
         now: this.now(),
@@ -1034,11 +1224,11 @@ export class Helper {
       // The plan it builds is checked by the same validatePlan and offered the same way; on failure the
       // planner's own error stands, with the writer's reason added.
       const writer = this.writer;
-      const windowId = CODE_PLAN_AFTER.has(e.code) && writer !== null ? (e.windowId ?? requestedWindow(this.model, m)) : null;
-      if (writer === null || windowId === null) return fail(e.code, e.message, said(e));
+      const codeWindow = CODE_PLAN_AFTER.has(e.code) && writer !== null ? (e.windowId ?? windowId) : null;
+      if (writer === null || codeWindow === null) return fail(e.code, e.message, said(e));
       store.count("plan.codeMode", 1);
       try {
-        draft = await planWithCode(m.instruction, this.model, { values: () => this.plannerMemory() }, { writer, askJev: ask, offerKey, windowId, now: this.now() });
+        draft = await planWithCode(instruction, this.model, { values: () => this.plannerMemory() }, { writer, askJev: ask, offerKey, windowId: codeWindow, now: this.now() });
         store.count("plan.codeModeProposed", 1);
       } catch (e2) {
         if (!(e2 instanceof PlannerError)) throw e2;
@@ -1048,8 +1238,8 @@ export class Helper {
     }
     // Window ids start over with a new reader; a plan drafted in the old session names other windows now.
     if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply", SAYS.windowChanged);
-    if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused", this.mode !== "live" ? saysFor("unavailable") : SAYS.paused);
-    const reply = proposed(m.requestId, draft, this.now());
+    if (this.mode !== "live" || this.gate.settings.paused) return fail("unavailable", this.mode !== "live" ? "the helper is in shadow mode" : "Caret is paused", this.mode !== "live" ? undefined : SAYS.paused);
+    const reply = proposed(requestId, draft, this.now());
     const w = draft.checked.window;
     const anchor = draft.checked.writes[0]?.node.key ?? draft.checked.handoff?.node.key ?? w.window.windowId;
     const spec = reply.spec;
@@ -1062,10 +1252,21 @@ export class Helper {
     this.rememberOfferMemory(offerKey, msg);
     this.recordShownOffer(offerKey, w.window.windowId, specSays(spec));
     const expect = { [w.window.windowId]: Object.fromEntries(draft.checked.writes.map((wr) => [wr.node.key, wr.node.value ?? ""])) };
-    this.planOffers.set(offerKey, { at: this.now(), draft, instruction: m.instruction, expect });
+    this.planOffers.set(offerKey, { at: this.now(), draft, instruction, expect });
     store.count("plan.proposed", 1);
     if (draft.checked.handoff !== null) store.count(`plan.handoff_${draft.checked.handoff.why}`, 1);
     return reply;
+  }
+
+  /** Keeps a question for its answer and builds its message; the options carry ids only, never keys or window ids. */
+  private askQuestion(requestId: string, q: AskQuestionDraft, from: string | undefined): AskQuestion | PlanProposal {
+    const at = this.now();
+    const questionId = `ask-${++this.askSeq}-${requestId}`.slice(0, 240);
+    const msg = AskQuestion.safeParse({ type: "askQuestion", v: PROTOCOL_VERSION, requestId, at, questionId, part: q.part, text: q.text, pick: q.pick, options: wireOptions(q), window: q.window, expires: at + ASK_QUESTION_MS });
+    if (!msg.success) return this.planFailed(requestId, "schema", `the question failed the protocol check: ${msg.error.issues[0]?.message ?? "invalid"}`);
+    this.askQuestions.set(questionId, { session: from, expires: msg.data.expires, draft: q });
+    this.opts.store.count(`plan.asked_${q.part}`, 1);
+    return msg.data;
   }
 
   /**
@@ -1317,6 +1518,28 @@ export class Helper {
     return out;
   }
 
+  /**
+   * The host's Command-1 on a per-field fill proposal (D2-04, protocol FillAll): the transaction the fill pop-up's Fill
+   * all runs, for every field the proposal gives a value Caret writes. The proposal must be one this helper published
+   * and still keeps, not run before, and every destination and source must still show what it showed (recheckFill).
+   * The run is the task `proposalId`, bound to the host session that asked. A refusal is an error and a stopped
+   * taskProgress, as an offerAccept's is.
+   */
+  async handleFillAll(m: FillAll, session?: string): Promise<TaskResult | null> {
+    if (this.mode !== "live") return this.refuseAccept(m.proposalId, "the helper is in shadow mode and does not act");
+    const kept = this.proposals.get(m.proposalId);
+    if (kept === undefined) return this.refuseAccept(m.proposalId, "no such fill proposal, or it expired");
+    if (this.executor.has(m.proposalId)) return this.refuseAccept(m.proposalId, "this proposal was already filled");
+    const p = writtenFields(kept.proposal, this.model.windows.get(kept.windowId));
+    if (p.fields.length === 0) return this.refuseAccept(m.proposalId, "Caret writes none of this proposal's fields");
+    const stale = recheckFill(this.model, p, this.aboutNow);
+    if (stale !== null) return this.refuseAccept(m.proposalId, `${stale}; nothing was written`);
+    this.bindNew(m.proposalId, session);
+    const { plan, slots } = fillPlan(this.model, p);
+    // The destinations were empty just now; one the user fills before the run's first read stops it.
+    return this.runFrom("fill", m.proposalId, plan, slots, { [p.windowId]: Object.fromEntries(p.fields.map((f) => [f.key, ""])) });
+  }
+
   /** Esc on running work: a stop for the task the offer started. */
   handleOfferStop(m: OfferStop): Promise<TaskResult | UndoResult | null> {
     return this.handleTask({ type: "taskControl", v: PROTOCOL_VERSION, taskId: m.offerId, action: "stop" });
@@ -1561,6 +1784,8 @@ export class Helper {
       }
       switch (m.action) {
         case "resume":
+          // A goal's segment runs only from an acceptance of its digest (D2-06): never from a generic resume.
+          if (this.goals.owns(m.taskId)) throw new Error(`task ${m.taskId} is a goal's step; a goal goes on only from a fresh acceptance`);
           this.rebind(m.taskId, session, this.executor.resumeRefusal(m.taskId));
           return await this.executor.resume(m.taskId);
         case "undo":
@@ -1592,6 +1817,8 @@ export class Helper {
     this.patterns.tick(now);
     for (const [k, f] of [...this.firstLooks]) if (expired("firstLook", f.at, now)) this.withdrawFirstLook(k, "expired");
     for (const [k, p] of [...this.planOffers]) if (expired("plan", p.at, now)) this.withdrawPlan(k, "expired");
+    for (const [k, q] of [...this.askQuestions]) if (q.expires <= now) this.askQuestions.delete(k);
+    this.goals.tick(now);
     this.events.tick(now);
     if (this.mode === "shadow") this.shadowLogger.tick(now);
     this.audit?.tick(now);
@@ -1715,15 +1942,16 @@ export class Helper {
       // no per-field insert for a fillResult to report, and the proposal is not kept for one. An
       // explicit fillRequest asks for the proposal itself (scripts/fill-eval.ts reads its fields), so it
       // always gets one.
-      // The pop-up runs the fields Caret writes; a form's selects, boxes, dates and times are hand-offs (B24).
-      const written = writtenFields(p);
-      if (!explicit && fillPopupEligible(written)) {
+      // The pop-up runs the fields Caret writes: text, and in a page the engine owns, the controls it writes (D2-04).
+      // What it leaves to the user, the pop-up lists.
+      const written = writtenFields(p, this.model.windows.get(p.windowId));
+      if (!explicit && fillPopupEligible(p)) {
         if (this.fillOverBeforeShown(written, formKey, focuses) !== null) {
           store.count("fill.popup_stale", 1, now);
           return p;
         }
         store.count("fill.popup", 1, now);
-        if (this.publish(buildFillPopup(this.model, written, p.fields.filter((f) => f.handoff !== null)), () => this.acceptFill(written))) {
+        if (this.publish(buildFillPopup(this.model, written), () => this.acceptFill(written))) {
           this.fillPopups.set(written.id, { p: written, form: formKey });
           // The hour runs from when the offer is shown, not from when it was asked for.
           this.gate.spoke(this.now());
@@ -1738,6 +1966,8 @@ export class Helper {
         // For the use a fillResult records: the field's name and the form's app, as they were when proposed.
         labels: new Map(valued.map((f) => [f.key, fieldLabel(this.model, p.windowId, f.key)])),
         app: this.model.windows.get(p.windowId)?.app.name ?? null,
+        // For the host's Command-1 (fillAll), which runs the whole proposal as the pop-up's Fill all does.
+        proposal: p,
       });
       this.publish(p);
       if (!explicit && p.fields.some((f) => f.value !== null)) this.gate.spoke(this.now());
@@ -2293,7 +2523,8 @@ function clipUse(s: string): string {
 
 /** Whether a field is the pop-up's trigger or one of the fields it fills. */
 function inFillForm(p: GroundedProposal, windowId: string, key: string): boolean {
-  return windowId === p.windowId && (key === p.triggerKey || p.fields.some((f) => f.key === key));
+  // A field the pop-up leaves to the user is part of the form too: setting it first keeps the offer (D2-04).
+  return windowId === p.windowId && (key === p.triggerKey || p.fields.some((f) => f.key === key) || p.yours.some((y) => y.key === key));
 }
 
 /** A zod issue path as a JSON path: ["spec", "blocks", 2, "rows", 0] is spec.blocks[2].rows[0]. */

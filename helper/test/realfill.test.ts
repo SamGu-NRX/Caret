@@ -9,7 +9,7 @@ import { writtenFields } from "../src/offers/fill-popup.ts";
 import { clockTime, readDate } from "../src/fill/when.ts";
 import { consentLike, formControls, matchOption, optionInText } from "../src/fill/controls.ts";
 import { describeField, fieldLabelText } from "../src/fill/descriptor.ts";
-import type { FillProposal, Node } from "../src/protocol.ts";
+import { FillProposal, type Node } from "../src/protocol.ts";
 import type { AskJev, JevRequest } from "../src/fill/jev.ts";
 import { field, jevPickingText, MAIL_APP, node, snap, text, value } from "./builders.ts";
 import { MESSAGES } from "./desks.ts";
@@ -459,7 +459,8 @@ describe("B24: a message header's sender", () => {
 });
 
 // B27: a web page's dropdown takes a value from a source like a text field. Where the page engine owns the window, the
-// value is a step its verified pick carries out; anywhere else it is a hand-off that names the value.
+// value is a hand-off a Fill all writes through the engine's verified pick (D2-04: FillHandoff.writes, since a control's
+// value on the wire is never `value`); anywhere else it is a hand-off that names the value for the user.
 describe("a web dropdown (B27)", () => {
   const W = "dev.caret.page/page";
   /** A note the user just left, then a form of a text field (the trigger) and dropdowns, in a page or an Accessibility window. */
@@ -481,12 +482,18 @@ describe("a web dropdown (B27)", () => {
     const note = "School: University of Texas at Austin";
     const ask = jevPickingText(byLabel({ School: "University of Texas at Austin" }));
     const page = await proposeFill(dropdowns(note, ["School"], PAGE_WINDOW_KIND), ask, "form", `${W}/textfield:email~0`, 2000);
-    expect(dropdown(page, 0)).toMatchObject({ control: "combobox", value: "University of Texas at Austin", handoff: null, source: { windowId: "note" }, withheld: null });
+    expect(dropdown(page, 0)).toMatchObject({ control: "combobox", value: null, source: null, handoff: { value: "University of Texas at Austin", source: { windowId: "note" }, writes: true }, withheld: null });
     const ax = await proposeFill(dropdowns(note, ["School"], "AXStandardWindow"), ask, "form", `${W}/textfield:email~0`, 2000);
     expect(dropdown(ax, 0)).toMatchObject({ control: "combobox", value: null, source: null, handoff: { value: "University of Texas at Austin", source: { windowId: "note" } }, withheld: null });
-    // The pop-up writes a page dropdown that carries a value, and never one that does not.
-    expect(writtenFields(page).fields.map((f) => f.control)).toEqual(["text", "combobox"]);
-    expect(writtenFields(ax).fields.map((f) => f.control)).toEqual(["text"]);
+    expect(dropdown(ax, 0)?.handoff?.writes).toBeUndefined();
+    // Both are valid on the wire, which refuses a value on any control but text (the host's decoder too).
+    expect(FillProposal.safeParse(page).success).toBe(true);
+    expect(FillProposal.safeParse(ax).success).toBe(true);
+    // The pop-up writes a page dropdown that carries a value, and never one in an Accessibility window, which it lists as the user's.
+    expect(writtenFields(page).fields.map((f) => f.control)).toEqual(["combobox"]);
+    expect(writtenFields(page).fields[0]).toMatchObject({ value: "University of Texas at Austin", source: { windowId: "note" } });
+    expect(writtenFields(ax).fields.map((f) => f.control)).toEqual([]);
+    expect(writtenFields(ax).yours.map((y) => [y.key, y.value?.display ?? null])).toEqual([[`${W}/textfield:email~0`, null], [`${W}/combobox:0~0`, "University of Texas at Austin"]]);
   });
 
   it("asks it as a dropdown whose options are hidden", async () => {
@@ -507,8 +514,8 @@ describe("a web dropdown (B27)", () => {
     // Questions quote a label without its required marker.
     const inner = jevPickingText(byLabel({ Country: "United States", "Location (City)": "Oakland", "Where will you work from?": "Oakland, California, United States (in the Bay Area)" }));
     const p = await proposeFill(dropdowns(note, labels, PAGE_WINDOW_KIND), (r) => (requests.push(r), inner(r)), "form", `${W}/textfield:email~0`, 2000);
-    expect(dropdown(p, 0)).toMatchObject({ value: "United States", source: { windowId: "note" }, withheld: null });
-    expect(dropdown(p, 1)).toMatchObject({ value: "Oakland", source: { windowId: "note" }, withheld: null });
+    expect(dropdown(p, 0)).toMatchObject({ handoff: { value: "United States", source: { windowId: "note" }, writes: true }, withheld: null });
+    expect(dropdown(p, 1)).toMatchObject({ handoff: { value: "Oakland", source: { windowId: "note" }, writes: true }, withheld: null });
     expect(dropdown(p, 2)).toMatchObject({ value: null, handoff: null, withheld: "ambiguous" });
     const offered = Object.values(requests.find((r) => r.questions.f2 !== undefined)?.questions.f2?.criteria ?? {}).join(" ");
     expect(offered).toContain('"United States" (the country of');
@@ -670,7 +677,7 @@ describe("B27 review", () => {
   it("asks whose a First name dropdown wants before it takes the user's first name from memory", async () => {
     const m = desk([field("src/note", "Order 1182", { role: "AXTextArea" })], [combo("First name", 100)]);
     const fill = (who: Whose) => proposeFill(m, jevPickingText(byLabel({ "First name": "Sam" }), 0.95, () => who), "form", `${W}/textfield:company~0`, 2000, { about: [NAME, EMAIL] });
-    expect((await fill("user")).fields.find((f) => f.key === `${W}/combobox:First name~0`)).toMatchObject({ value: "Sam", memory: { id: NAME.id, part: "first" } });
+    expect((await fill("user")).fields.find((f) => f.key === `${W}/combobox:First name~0`)).toMatchObject({ handoff: { value: "Sam", memory: { id: NAME.id, part: "first" }, writes: true } });
     expect((await fill("other")).fields.find((f) => f.key === `${W}/combobox:First name~0`)).toMatchObject({ value: null, withheld: "lowConfidence" });
   });
 
