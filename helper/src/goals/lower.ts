@@ -382,11 +382,16 @@ function cut(programHash: string, steps: readonly GoalStep[], warnings: readonly
     }
     groups.push({ domain: s.target.domain, reason: last === undefined ? "start" : revealed && sameDomain(last.domain, s.target.domain) ? "afterReveal" : "crossWindow", steps: [s] });
   }
-  return groups.map((g, index) => {
-    const base = { index, domain: g.domain, reason: g.reason, steps: g.steps };
-    const { plan, slots } = executorPlan(`segment-${index}`, base);
-    return { ...base, plan, slots, digest: segmentDigest(programHash, base, warnings, executable({ plan, slots })) };
-  });
+  return groups.map((g, index) => segmentOf(programHash, { index, domain: g.domain, reason: g.reason, steps: g.steps }, warnings));
+}
+
+/**
+ * A segment from its steps: the executor plan and slots made from them, and the digest over both. H9's edit of a draft
+ * (runs.ts edit) rebuilds the one segment it changes here, so an edited segment is lowered exactly as a planned one.
+ */
+export function segmentOf(programHash: string, base: Pick<GoalSegment, "index" | "domain" | "reason" | "steps">, warnings: readonly string[]): GoalSegment {
+  const { plan, slots } = executorPlan(`segment-${base.index}`, base);
+  return { ...base, plan, slots, digest: segmentDigest(programHash, base, warnings, executable({ plan, slots })) };
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   type ActivityRequest,
   type FillAll,
   type GoalAccept,
+  type GoalEdit,
   type HelperError,
   type GoalProgress,
   type GoalRequest,
@@ -1094,6 +1095,24 @@ export class Helper {
       return null;
     }
     return r.result;
+  }
+
+  /**
+   * H9: the user's own words over a draft in the segment waiting for acceptance. The new preview is published (to goal
+   * hosts, as every later segment is); a refusal goes back as an error naming why, to `reply` when given. Nothing runs.
+   */
+  handleGoalEdit(m: GoalEdit, session?: string, reply?: (e: HelperError) => void): GoalProgress | null {
+    const r = this.goals.edit(m, session);
+    if ("refused" in r) {
+      this.opts.store.count("goal.editRefused", 1);
+      const e: HelperError = { type: "error", v: PROTOCOL_VERSION, at: this.now(), message: `goalEdit refused: ${r.refused}` };
+      if (reply === undefined) this.opts.publish(e);
+      else reply(e);
+      return null;
+    }
+    this.opts.store.count("goal.edited", 1);
+    this.opts.publish(r.preview);
+    return r.preview;
   }
 
   /** Whether calendar end states have somewhere to go (HelperOptions.calendar). */

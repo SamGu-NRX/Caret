@@ -16,7 +16,7 @@ import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
 import { owedFields, type OwedField } from "./left.ts";
-import type { GoalControl, GoalDomain, GoalInventory, TargetBinding, ValueBinding, ValueOrigin } from "./plan.ts";
+import type { GoalControl, GoalDomain, GoalInventory, ReadValue, TargetBinding, ValueBinding, ValueOrigin } from "./plan.ts";
 
 /** Windows one goal may act in. With the calendar, that is the writer's four snapshots (PlanInputSchema). */
 export const MAX_GOAL_WINDOWS = 3;
@@ -95,7 +95,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
 
   // Values first: the instruction, memory and other windows' candidates, measured against the first window's room.
   const listed = valueList(o.instruction, model, first, o.memory, ledger, o.now, WINDOW_CHARS);
-  const valueOf = (x: Value, snapshot: string): ValueBinding => {
+  const valueOf = (x: Value, snapshot: string): ReadValue => {
     const ref = `v${++v}`;
     const origin: ValueOrigin =
       x.memory !== null
@@ -185,8 +185,8 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
 }
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */
-function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: SnippetLedger, nextRef: () => string): ValueBinding[] {
-  const out: ValueBinding[] = [];
+function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventClock, snapshot: string, ledger: SnippetLedger, nextRef: () => string): ReadValue[] {
+  const out: ReadValue[] = [];
   for (const n of w.nodes.values()) {
     const text = nodeText(n);
     if (text === "") continue;

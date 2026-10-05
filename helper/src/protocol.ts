@@ -981,6 +981,25 @@ export const GoalAccept = z.object({
 export type GoalAccept = z.infer<typeof GoalAccept>;
 
 /**
+ * Host to helper (H9): the user replaced the text Caret drafted for step `step` of the segment previewed under `digest`
+ * with their own words. The helper checks it as it checks an acceptance (this goal, this connection, the segment waiting,
+ * its digest, in time) and that the step is a drafted write, then previews the segment again with `text` as the user's
+ * value, not a draft, under a new digest. Nothing runs: the new preview needs its own goalAccept, and an acceptance of
+ * the old digest is refused. A refusal comes back as an error naming why ("goalEdit refused: ...").
+ */
+export const GoalEdit = z.object({
+  type: z.literal("goalEdit"),
+  v: z.literal(PROTOCOL_VERSION),
+  goalId: z.string().min(1).max(240),
+  segment: z.number().int().nonnegative(),
+  digest: Digest,
+  step: z.number().int().nonnegative(),
+  text: z.string().min(1).max(600),
+  at: ms,
+});
+export type GoalEdit = z.infer<typeof GoalEdit>;
+
+/**
  * The user's answer to a skillOffer (B19), by the offer's `id`. The helper ends the offer with
  * offerWithdrawn: `taken` after accept, `dismissed` after decline. An answer to an offer that is gone
  * (expired, answered, or never made) is refused with an error and changes nothing.
@@ -1031,7 +1050,7 @@ export const FileConfirmReply = z
   });
 export type FileConfirmReply = z.infer<typeof FileConfirmReply>;
 
-export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept]);
+export const ConsumerMessage = z.discriminatedUnion("type", [Hello, FillRequest, FillAll, RunPlan, TaskControl, OfferControl, MemoryRequest, FillResult, ActivityRequest, OfferAccept, OfferStop, Settings, FirstLook, PlanRequest, SkillAnswer, MemoryNotRight, MemoryDocumentRequest, RoutingContext, FileConfirm, AskAnswer, GoalRequest, GoalAccept, GoalEdit]);
 export type ConsumerMessage = z.infer<typeof ConsumerMessage>;
 
 export const FillSource = z.object({

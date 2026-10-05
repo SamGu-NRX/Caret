@@ -215,12 +215,14 @@ export class HelperServer {
             else void this.helper().handleFillAll(m.data, from);
           }
           // D2-06: a goal plan's request (answered to the asker only) and each segment's acceptance, from a goal-planning host only.
-          else if (m.data.type === "goalRequest" || m.data.type === "goalAccept") {
+          else if (m.data.type === "goalRequest" || m.data.type === "goalAccept" || m.data.type === "goalEdit") {
             if (!this.goalPlans.has(s)) {
               this.reject(s, `${m.data.type} needs a host hello with "${GOAL_PLANS_CAPABILITY}" in its capabilities`);
               continue;
             }
             if (m.data.type === "goalAccept") void this.helper().handleGoalAccept(m.data, from, (e) => void (!s.destroyed && s.write(JSON.stringify(e) + "\n")));
+            // H9: the user's words over a draft; the new preview is published to goal hosts, a refusal answered to this one.
+            else if (m.data.type === "goalEdit") this.helper().handleGoalEdit(m.data, from, (e) => void (!s.destroyed && s.write(JSON.stringify(e) + "\n")));
             else {
               const requestId = m.data.requestId;
               void this.helper()

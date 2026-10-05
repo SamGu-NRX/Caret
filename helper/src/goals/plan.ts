@@ -46,7 +46,8 @@ export interface ValueBinding {
   ref: string;
   text: string;
   display: string;
-  origin: ValueOrigin;
+  /** `you` (H9): text the user typed over a draft in the preview (runs.ts edit); its digest is the text's. */
+  origin: ValueOrigin | { kind: "you"; digest: string };
   /** The window and node it was read from, and the window's revision then; null for the instruction and memory. */
   source: { windowId: string; key: string; revision: string } | null;
   /** The memory entry it was copied from (Step.memory), or null. */
@@ -63,6 +64,9 @@ export interface ValueBinding {
   /** Whose details the value is when code knows (a memory entry's `whose`); null for a window's value, a draft or an event. */
   owner: "user" | "other" | null;
 }
+
+/** A value code read or derived for a planning snapshot: never the user's edit, so its origin is one the sandbox knows. */
+export type ReadValue = ValueBinding & { origin: ValueOrigin };
 
 /** Everything a program's refs may stand for, kept on the host side of the sandbox. */
 export interface GoalInventory {
@@ -105,10 +109,11 @@ export interface GoalStep {
   /**
    * How a write's value passed fill's value gates (G2, goals/gates.ts): "jev" for a value (or a calendar event) Jev
    * confirmed belongs there, "draft" for text Caret composed, whose claims goals/drafts.ts checks instead of Jev's field
-   * question (lead decision 3). Null for presses and hand-offs. GoalRuns.propose refuses a write or calendar step
-   * that has none.
+   * question (lead decision 3), "you" for the user's own words typed over a draft in the preview (H9, runs.ts edit),
+   * which pass the draft's field and never-typed checks and no fact check. Null for presses and hand-offs.
+   * GoalRuns.propose refuses a write or calendar step that has none.
    */
-  gate: "jev" | "draft" | null;
+  gate: "jev" | "draft" | "you" | null;
 }
 
 /**
