@@ -133,6 +133,8 @@ process.on("exit", () => {
   reader?.kill("SIGTERM");
   fixture.kill("SIGTERM");
 });
+// Node runs exit handlers on a signal only when the signal has a listener; without one, the children outlive the script.
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => process.exit(143));
 let fixturePid = 0;
 let foreground: Front | null = null;
 const ours = (pid: number): boolean => pid > 0 && (pid === fixture.pid || pid === fixturePid || pid === (reader?.pid ?? -1));

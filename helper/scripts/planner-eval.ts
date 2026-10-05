@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveNumber } from "./flags.ts";
 import { Helper } from "../src/helper.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
@@ -29,6 +30,40 @@ import { fixtureExecutable } from "./fixture-path.ts";
 import { newLaunchSecret, sendSecret } from "../src/launch.ts";
 /** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
 const launchSecret = newLaunchSecret();
+import { makeWriterPort, type WriterPort } from "../src/writer/port.ts";
+import { ChatHttpError } from "../src/writer/chat.ts";
+import { CANDIDATES, WRITER_ROUTE } from "../src/writer/config.ts";
+
+/** The configured writer, one call at least 15 s after the last (Groq allows qwen3.8 1,000 output tokens a minute). */
+function spacedWriter(route = WRITER_ROUTE): WriterPort {
+  const port = makeWriterPort(route);
+  let last = 0;
+  return {
+    route: port.route,
+    async write(req) {
+      const wait = last + 15_000 - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      for (let attempt = 0; ; attempt++) {
+        last = Date.now();
+        try {
+          // The caller's signal was made before the spacing wait; a fresh one bounds the call itself, as the scoreboard does.
+          const r = await port.write({ ...req, signal: AbortSignal.timeout(20_000) });
+          writerCalls++;
+          writerUsd += r.costUsd;
+          return r;
+        } catch (e) {
+          // One counted wait-and-retry on a 429 (B25: the Ask scoreboard shares the intent route's per-minute limit).
+          if (attempt > 0 || !(e instanceof ChatHttpError) || e.status !== 429) throw e;
+          writerRetries++;
+          await new Promise((res) => setTimeout(res, Math.min(60, e.retryAfterS ?? 20) * 1000));
+        }
+      }
+    },
+  };
+}
+let writerCalls = 0;
+let writerRetries = 0;
+let writerUsd = 0;
 
 const { values: a } = parseArgs({
   options: {
@@ -39,13 +74,28 @@ const { values: a } = parseArgs({
     "max-usd": { type: "string", default: "0.10" },
     cases: { type: "string" },
     socket: { type: "string", default: join(homedir(), ".caret-run", "sockets", "planner-eval.sock") },
+    // B24: the code-mode writer (writer/config.ts) for instructions the planner cannot ground, as the helper
+    // runs it when a Groq key is configured; calls are spaced 15 s apart for Groq's per-minute output limit.
+    writer: { type: "boolean", default: false },
+    /**
+     * B25: Ask as a scoped fill (planner/ask.ts), its intent made by "jev" or by the writer with this model id
+     * (writer/config.ts CANDIDATES), as the helper runs it with HelperOptions.ask. Needs --jev live.
+     */
+    ask: { type: "string" },
   },
 });
 if (a.bin === undefined || a.out === undefined) throw new Error("--bin and --out are required");
 if (a.jev !== "fake" && a.jev !== "live") throw new Error("--jev is fake or live");
+if (a.ask !== undefined && a.jev !== "live") throw new Error("--ask needs --jev live: the fake Jev answers plan questions only");
+function askConfig(maker: string): { maker: "jev" } | { maker: "writer"; writer: WriterPort } {
+  if (maker === "jev") return { maker: "jev" };
+  const route = CANDIDATES.find((r) => r.model === maker);
+  if (route === undefined) throw new Error(`--ask ${maker} is neither jev nor one of ${CANDIDATES.map((r) => r.model).join(", ")}`);
+  return { maker: "writer", writer: spacedWriter(route) };
+}
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
-const MAX_USD = Number(a["max-usd"]);
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 const TITLE = "Caret Fixture — Executor";
 
 // MARK: - the cases
@@ -166,6 +216,8 @@ const helper = new Helper({
   },
   sendToReader: (cmd) => server?.sendToReader(cmd) ?? false,
   plannerHooks: { beforeCheck: () => hooks.beforeCheck?.() ?? Promise.resolve() },
+  ...(a.writer === true ? { writer: spacedWriter() } : {}),
+  ...(a.ask === undefined ? {} : { ask: askConfig(a.ask) }),
 });
 server = new HelperServer(a.socket, () => helper, (l) => errors.push(l), launchSecret);
 await server.listen();
@@ -351,6 +403,7 @@ md.push(`- Achievable plans verified through the executor: ${achievable.filter((
 md.push(`- Hand-off plans that ended in a hand-off with their writes verified: ${rows.filter((r) => r.id.startsWith("h") && r.verified === true).length} of ${rows.filter((r) => r.id.startsWith("h")).length}`);
 md.push(`- Send, Delete or Pay presses the fixture saw: ${presses}`);
 md.push(`- Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}${a.jev === "live" ? ` (budget $${MAX_USD})` : " (fake)"}; helper errors: ${errors.length}; taskProgress messages: ${grants.length}`, "");
+if (a.writer === true || a.ask !== undefined) md.push(`- Writer calls (code mode ${a.writer === true ? WRITER_ROUTE.model : "off"}; Ask intents ${a.ask ?? "off"}): ${writerCalls} calls, ${writerRetries} 429 retries, $${writerUsd.toFixed(5)}`, "");
 md.push("| Case | Instruction | Expected | Proposal | As expected | Run | Verified by the fixture | Jev calls |", "| --- | --- | --- | --- | --- | --- | --- | --- |");
 for (const r of rows) {
   md.push(`| ${r.id} | ${r.instruction} | ${r.expected} | ${r.outcome}${r.code === null ? "" : ` ${r.code}`}${r.handoff === null ? "" : ` (${r.handoff.why}: ${r.handoff.label})`} | ${r.proposalOk ? "yes" : `no: ${r.proposalProblem}`} | ${r.run ?? "-"} | ${r.verified === null ? "-" : r.verified ? "yes" : `no: ${r.verifyProblem}`} | ${r.jevCalls} |`);

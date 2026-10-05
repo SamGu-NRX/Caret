@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Helper } from "../src/helper.ts";
 import { ScreenModel } from "../src/model.ts";
+import { formFields } from "../src/fill/fill.ts";
 import { HelperServer } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { PROTOCOL_VERSION, type HelperMessage } from "../src/protocol.ts";
@@ -100,9 +101,18 @@ describe("review fixes", () => {
     expect(await closed).toBe(true);
   });
 
-  it("a filled editable field never counts as empty for fill", () => {
+  it("a filled editable field never counts as empty for fill, even when its value repeats its label", () => {
     const m = new ScreenModel();
-    m.apply(snap([node(K("textfield:city~0"), "AXTextField", { editable: true, label: "City", value: "City" })], { at: 1, windowId: FORM }));
-    expect(m.windows.get(FORM)?.nodes.get(K("textfield:city~0"))?.value).toBe("City");
+    m.apply(
+      snap(
+        [
+          node(K("textfield:street~0"), "AXTextField", { editable: true, label: "Street" }),
+          node(K("textfield:city~0"), "AXTextField", { editable: true, label: "City", value: "City" }),
+        ],
+        { at: 1, windowId: FORM },
+      ),
+    );
+    const w = m.windows.get(FORM)!;
+    expect(formFields(w, K("textfield:street~0")).map((n) => n.key)).toEqual([K("textfield:street~0")]);
   });
 });

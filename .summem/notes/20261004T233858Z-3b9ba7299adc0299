@@ -1,0 +1,1 @@
+I4: when two merged branches each napped the same notes, git keeps both naps and wake lists their lines twice (T2's 60b138f0/b105c8e9 vs H4's 7234fe4d); summem has no command to drop one, so fold before branching or accept the duplicate.

@@ -26,7 +26,8 @@ extension SurfaceMachine {
         guard let shown, let key = shown.offerKey, work == nil, resultTimer == nil, panelUp else { return nil }
         switch shown.offer.kind {
         case .action, .popup: return provenances.last { $0.key == key }?.value
-        case .ghost, .fill: return nil
+        // A writing fix comes from the spell checker, never from noticed facts.
+        case .ghost, .fill, .writing: return nil
         }
     }
 }

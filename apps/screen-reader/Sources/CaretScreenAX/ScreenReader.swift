@@ -400,16 +400,26 @@ public final class ScreenReader {
         ctx.emitter.send(.pasteboard(Pasteboard(at: nowMs(), changeCount: c)))
     }
 
-    /// Chromium and Electron build their accessibility tree only on request. AXManualAccessibility asks
-    /// for it without AXEnhancedUserInterface, which made Chromium replay typed keys in Screenpipe #3884.
+    /// Electron builds its accessibility tree only on request. AXManualAccessibility asks for it without
+    /// AXEnhancedUserInterface, which made Chromium replay typed keys in Screenpipe #3884. Chromium browsers are not
+    /// asked (W2): Chromium's mac code does not handle the attribute (-25205 in the reader log), and Caret reads their
+    /// pages through its page engine. Every app the reader adds gets one line saying which happened.
     private func enableManualAccessibility(_ app: NSRunningApplication) {
         let pid = app.processIdentifier
-        guard opts.setManualAccessibility, !manualAXSet.contains(pid), let url = app.bundleURL, AppClassifier.isChromiumFamily(bundleURL: url) else { return }
+        guard opts.setManualAccessibility, !manualAXSet.contains(pid), let url = app.bundleURL else { return }
+        let family = AppClassifier.family(bundleURL: url)
+        let name = app.localizedName ?? "?"
+        if family == .chromiumBrowser {
+            manualAXSet.insert(pid)
+            ctx.log("AXManualAccessibility not attempted on \(name): a Chromium browser, read by the page engine")
+            return
+        }
+        guard family.setsManualAccessibility else { return }
         manualAXSet.insert(pid)
         let el = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(el, AX.elementTimeout)
         let r = AXUIElementSetAttributeValue(el, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        ctx.log("AXManualAccessibility on \(app.localizedName ?? "?"): \(r == .success ? "set" : "error \(r.rawValue)")")
+        ctx.log("AXManualAccessibility on \(name) (\(family.rawValue)): \(r == .success ? "set" : "error \(r.rawValue)")")
     }
 
     /// Background walks pause on battery below 20%. The threshold is an assumption.
@@ -464,27 +474,6 @@ private let pressTapCallback: CGEventTapCallBack = { _, type, event, refcon in
     let number = Int(event.getIntegerValueField(.mouseEventWindowUnderMousePointer))
     box.onPress(event.location, number > 0 ? number : nil, nowMs())
     return Unmanaged.passUnretained(event)
-}
-
-public enum AppClassifier {
-    /// True for Electron apps and Chromium browsers: a framework under Contents/Frameworks that is
-    /// Electron's, or that ships a renderer helper app the way every Chromium build does.
-    public static func isChromiumFamily(bundleURL: URL) -> Bool {
-        let fm = FileManager.default
-        let frameworks = bundleURL.appendingPathComponent("Contents/Frameworks")
-        guard let items = try? fm.contentsOfDirectory(atPath: frameworks.path) else { return false }
-        for f in items where f.hasSuffix(".framework") {
-            if f == "Electron Framework.framework" { return true }
-            let versions = frameworks.appendingPathComponent(f).appendingPathComponent("Versions")
-            for v in (try? fm.contentsOfDirectory(atPath: versions.path)) ?? [] {
-                let helpers = versions.appendingPathComponent(v).appendingPathComponent("Helpers")
-                if let hs = try? fm.contentsOfDirectory(atPath: helpers.path), hs.contains(where: { $0.contains("Helper (Renderer)") }) {
-                    return true
-                }
-            }
-        }
-        return false
-    }
 }
 
 /// Apps that are never walked. One bundle identifier prefix per line; "#" starts a comment.

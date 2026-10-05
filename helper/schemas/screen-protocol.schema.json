@@ -50,6 +50,15 @@
             "challenge": {
               "type": "string",
               "minLength": 16
+            },
+            "capabilities": {
+              "maxItems": 32,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
             }
           },
           "required": [
@@ -812,6 +821,15 @@
             "challenge": {
               "type": "string",
               "minLength": 16
+            },
+            "capabilities": {
+              "maxItems": 32,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
             }
           },
           "required": [
@@ -1404,6 +1422,108 @@
             "at"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "memoryNotRight"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "memoryId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "offerKey": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "correction": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "memoryId",
+            "offerKey",
+            "correction"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "memoryDocumentRequest"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "list",
+                "read",
+                "save"
+              ]
+            },
+            "doc": {
+              "type": "string",
+              "pattern": "^(?:about-me|people|preferences|skills\\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$"
+            },
+            "baseRevision": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 262144
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "op"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -1451,6 +1571,143 @@
                 "properties": {
                   "key": {
                     "type": "string"
+                  },
+                  "control": {
+                    "default": "text",
+                    "type": "string",
+                    "enum": [
+                      "text",
+                      "date",
+                      "time",
+                      "select",
+                      "radio",
+                      "checkbox",
+                      "combobox"
+                    ]
+                  },
+                  "handoff": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "display": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "pid": {
+                                    "type": "integer",
+                                    "minimum": -9007199254740991,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "windowId": {
+                                    "type": "string"
+                                  },
+                                  "bundleId": {
+                                    "type": "string"
+                                  },
+                                  "appName": {
+                                    "type": "string"
+                                  },
+                                  "windowTitle": {
+                                    "type": "string"
+                                  },
+                                  "nodeKey": {
+                                    "type": "string"
+                                  },
+                                  "kind": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "date",
+                                          "time",
+                                          "email",
+                                          "phone",
+                                          "url",
+                                          "address",
+                                          "amount",
+                                          "id"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "pid",
+                                  "windowId",
+                                  "bundleId",
+                                  "appName",
+                                  "windowTitle",
+                                  "nodeKey",
+                                  "kind"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "memory": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "label": {
+                                    "type": "string"
+                                  },
+                                  "says": {
+                                    "type": "string"
+                                  },
+                                  "part": {
+                                    "type": "string",
+                                    "enum": [
+                                      "first",
+                                      "middle",
+                                      "last"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "label",
+                                  "says"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "value",
+                          "display",
+                          "source",
+                          "memory"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "frame": {
                     "anyOf": [
@@ -1571,6 +1828,14 @@
                           },
                           "says": {
                             "type": "string"
+                          },
+                          "part": {
+                            "type": "string",
+                            "enum": [
+                              "first",
+                              "middle",
+                              "last"
+                            ]
                           }
                         },
                         "required": [
@@ -1592,7 +1857,10 @@
                         "enum": [
                           "disagree",
                           "lowConfidence",
-                          "sourceCut"
+                          "sourceCut",
+                          "wrongKind",
+                          "otherPerson",
+                          "ambiguous"
                         ]
                       },
                       {
@@ -1667,6 +1935,8 @@
                 },
                 "required": [
                   "key",
+                  "control",
+                  "handoff",
                   "frame",
                   "descriptor",
                   "choice",
@@ -2324,7 +2594,8 @@
                         "enum": [
                           "learning",
                           "active",
-                          "paused"
+                          "paused",
+                          "noticed"
                         ]
                       },
                       "says": {
@@ -2355,6 +2626,35 @@
                           "count",
                           "lastSeen",
                           "app"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "noticed": {
+                        "type": "object",
+                        "properties": {
+                          "app": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "windowTitle": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "at": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Milliseconds since the Unix epoch"
+                          }
+                        },
+                        "required": [
+                          "app",
+                          "windowTitle",
+                          "at"
                         ],
                         "additionalProperties": false
                       },
@@ -2416,7 +2716,8 @@
                         "enum": [
                           "learning",
                           "active",
-                          "paused"
+                          "paused",
+                          "noticed"
                         ]
                       },
                       "says": {
@@ -2447,6 +2748,35 @@
                           "count",
                           "lastSeen",
                           "app"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "noticed": {
+                        "type": "object",
+                        "properties": {
+                          "app": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "windowTitle": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "at": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Milliseconds since the Unix epoch"
+                          }
+                        },
+                        "required": [
+                          "app",
+                          "windowTitle",
+                          "at"
                         ],
                         "additionalProperties": false
                       },
@@ -2499,7 +2829,8 @@
                         "enum": [
                           "learning",
                           "active",
-                          "paused"
+                          "paused",
+                          "noticed"
                         ]
                       },
                       "says": {
@@ -2530,6 +2861,35 @@
                           "count",
                           "lastSeen",
                           "app"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "noticed": {
+                        "type": "object",
+                        "properties": {
+                          "app": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "windowTitle": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "at": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Milliseconds since the Unix epoch"
+                          }
+                        },
+                        "required": [
+                          "app",
+                          "windowTitle",
+                          "at"
                         ],
                         "additionalProperties": false
                       },
@@ -2645,7 +3005,8 @@
                         "enum": [
                           "learning",
                           "active",
-                          "paused"
+                          "paused",
+                          "noticed"
                         ]
                       },
                       "says": {
@@ -2761,7 +3122,8 @@
                         "enum": [
                           "learning",
                           "active",
-                          "paused"
+                          "paused",
+                          "noticed"
                         ]
                       },
                       "says": {
@@ -2899,7 +3261,8 @@
                         "enum": [
                           "learning",
                           "active",
-                          "paused"
+                          "paused",
+                          "noticed"
                         ]
                       },
                       "says": {
@@ -6527,6 +6890,300 @@
             "says",
             "detail",
             "actions"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pageEngine"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "browser": {
+              "type": "object",
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "bundleId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pid",
+                "bundleId",
+                "name"
+              ],
+              "additionalProperties": false
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "missing",
+                "connected"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "browser",
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "memoryProvenance"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "at": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Milliseconds since the Unix epoch"
+            },
+            "offerKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "facts": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "memoryId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "about",
+                      "people",
+                      "preference"
+                    ]
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "says": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "noticed": {
+                    "type": "object",
+                    "properties": {
+                      "app": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "windowTitle": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "at": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991,
+                        "description": "Milliseconds since the Unix epoch"
+                      }
+                    },
+                    "required": [
+                      "app",
+                      "windowTitle",
+                      "at"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "memoryId",
+                  "kind",
+                  "label",
+                  "says",
+                  "noticed"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "at",
+            "offerKey",
+            "facts"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "memoryDocumentReply"
+            },
+            "v": {
+              "type": "number",
+              "const": 1
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "conflict": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "revision": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "revision"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "folder": {
+              "type": "string",
+              "minLength": 1
+            },
+            "documents": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "doc": {
+                    "type": "string",
+                    "pattern": "^(?:about-me|people|preferences|skills\\/[A-Za-z0-9][A-Za-z0-9_-]{2,79})$"
+                  },
+                  "file": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "revision": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "diagnostics": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "line": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "field": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "severity": {
+                          "type": "string",
+                          "enum": [
+                            "error",
+                            "warning"
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "line",
+                        "field",
+                        "severity",
+                        "message"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "doc",
+                  "file",
+                  "path",
+                  "revision",
+                  "bytes",
+                  "diagnostics"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "v",
+            "requestId",
+            "error",
+            "conflict",
+            "folder",
+            "documents",
+            "text"
           ],
           "additionalProperties": false
         }

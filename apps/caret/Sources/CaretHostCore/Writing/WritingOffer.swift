@@ -107,7 +107,8 @@ public struct WritingOffer: Equatable, Sendable {
         alternatives.append(Alternative(kind: .original, label: WritingCopy.original, detail: active.original, edit: nil, diff: []))
 
         let bounds = paragraph ?? paragraphSpan(around: active.span, in: live.value)
-        let inParagraph = sorted.filter { bounds.contains($0.span) }
+        // A mark that needs a choice has no fix to apply unseen, so Fix all leaves it alone.
+        let inParagraph = sorted.filter { bounds.contains($0.span) && !$0.needsChoice }
         if inParagraph.count >= 2, let fixAll = fixAll(inParagraph, live: live, language: language, now: now) {
             alternatives.append(fixAll)
         }
@@ -139,8 +140,18 @@ public struct WritingOffer: Equatable, Sendable {
         case dismiss
     }
 
-    /// Whether this offer takes Tab now. A mark alone does not.
-    public var ownsTab: Bool { presentation != .mark }
+    /// Whether Tab applies something now: the line's fix, or the highlighted row of the open list.
+    /// A mark alone does not, and neither does the line of a correction that needs a choice.
+    public var ownsTab: Bool {
+        switch presentation {
+        case .mark: return false
+        case .line: return !active.needsChoice
+        case .expanded: return true
+        }
+    }
+
+    /// Whether the offer holds keys at all (↓ and Esc on a line), and so holds its slot.
+    public var holdsKeys: Bool { presentation != .mark }
 
     public mutating func send(_ event: Event) -> Effect {
         switch (presentation, event) {
@@ -150,6 +161,8 @@ public struct WritingOffer: Equatable, Sendable {
             return .passThrough
         case (_, .escape):
             return .dismiss
+        case (.line, .tab) where active.needsChoice:
+            return .passThrough
         case (_, .tab):
             return choose(current)
         case (.line, .down):
@@ -182,14 +195,31 @@ public struct WritingOffer: Equatable, Sendable {
     /// highlighted in the open list.
     public var shownDiff: [Preview] { alternatives[current].diff }
 
-    /// The line's words: the fix with the word before it, "We were".
-    public var linePreview: Preview { alternatives[0].diff[0] }
+    /// The line's words: the fix with the word before it, "We were". For a correction that needs a
+    /// choice, both answers and no context: "address or dress".
+    public var linePreview: Preview {
+        guard active.needsChoice else { return alternatives[0].diff[0] }
+        let fixes = alternatives.filter { $0.kind == .fix }.map(\.label)
+        return Preview(before: "", original: active.original, replacement: WritingCopy.either(fixes), after: "")
+    }
 
-    public var lineHints: [Hint] { [Hint(key: "Tab", label: WritingCopy.fixHint), Hint(key: "↓", label: WritingCopy.moreHint)] }
+    /// The answers a line that needs a choice shows as equals; nil for a line with one fix.
+    public var lineChoices: [String]? {
+        active.needsChoice ? alternatives.filter { $0.kind == .fix }.map(\.label) : nil
+    }
+
+    public var lineHints: [Hint] {
+        if active.needsChoice { return [Hint(key: "↓", label: WritingCopy.chooseHint)] }
+        return [Hint(key: "Tab", label: WritingCopy.fixHint), Hint(key: "↓", label: WritingCopy.moreHint)]
+    }
 
     /// What VoiceOver reads for the line.
     public var spokenLine: String {
-        WritingCopy.spokenLine(reason: active.reason, original: active.original, replacement: active.replacement)
+        if active.needsChoice {
+            let fixes = alternatives.filter { $0.kind == .fix }.map(\.label)
+            return WritingCopy.spokenChoice(reason: active.reason, original: active.original, choices: fixes)
+        }
+        return WritingCopy.spokenLine(reason: active.reason, original: active.original, replacement: active.replacement)
     }
 
     /// The toast after `alternative` is applied: "Fixed “was” to “were”", ⌘Z Undo.
@@ -273,13 +303,15 @@ public struct WritingOffer: Equatable, Sendable {
     /// The offer holding the slot, as arbitration sees it.
     public struct Slot: Equatable, Sendable {
         public var producer: Producer
-        public var ownsTab: Bool
+        /// It takes some key now (Tab, or ↓ and Esc on a line that needs a choice). A quiet mark
+        /// takes none and holds nothing.
+        public var holdsKeys: Bool
         /// The user has moved through its alternatives.
         public var navigating: Bool
 
-        public init(producer: Producer, ownsTab: Bool, navigating: Bool) {
+        public init(producer: Producer, holdsKeys: Bool, navigating: Bool) {
             self.producer = producer
-            self.ownsTab = ownsTab
+            self.holdsKeys = holdsKeys
             self.navigating = navigating
         }
     }
@@ -290,11 +322,11 @@ public struct WritingOffer: Equatable, Sendable {
     /// Otherwise the higher producer wins, and a newer offer from the same producer replaces the
     /// older one. A quiet mark holds nothing, so ordinary completion can appear beside it.
     public static func incomingWins(_ incoming: Producer, over current: Slot?) -> Bool {
-        guard let current, current.ownsTab else { return true }
+        guard let current, current.holdsKeys else { return true }
         if incoming == .explicitRequest { return true }
         if current.navigating { return false }
         return incoming >= current.producer
     }
 
-    public var slot: Slot { Slot(producer: producer, ownsTab: ownsTab, navigating: presentation == .expanded) }
+    public var slot: Slot { Slot(producer: producer, holdsKeys: holdsKeys, navigating: presentation == .expanded) }
 }

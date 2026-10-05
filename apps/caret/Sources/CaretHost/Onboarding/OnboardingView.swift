@@ -192,6 +192,7 @@ struct WelcomeScreen: View {
 
     static let headline = "Caret works where you type."
     static let line = "It offers the next words, and sometimes the next step. Tab takes it. Typing says no."
+    static let loginLine = "Caret starts when you log in. You can turn that off in Login Items."
 
     enum Beat { case before, entered, looking, bowing, rest }
     @State private var beat: Beat = Self.performed ? .rest : .before
@@ -228,6 +229,13 @@ struct WelcomeScreen: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 9)
             Spacer(minLength: 0)
+            // Opening Caret made it a login item (SMAppService agent, H4); say so on the first screen.
+            // Room below, so it reads as the page's last line rather than a caption on Continue.
+            Text(Self.loginLine)
+                .font(Tokens.Font.chromeSmall)
+                .foregroundStyle(Color(token: Tokens.ink2))
+                .multilineTextAlignment(.center)
+                .padding(.bottom, 14)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 12)
@@ -526,6 +534,13 @@ struct PermissionsScreen: View {
                             granted: state.permissions.inputMonitoring, animated: animated
                         ) { send(.openSystemSettings(.inputMonitoring)) }
                     }
+                    Rectangle().fill(Color(token: Tokens.border)).frame(height: 1).padding(.leading, 40)
+                    // No check mark: the host cannot tell yet whether the extension is loaded, so the row only offers.
+                    // No detail line either: the window's height holds three rows only without one.
+                    PermissionRow(
+                        title: "Caret for Chrome", optional: true, detail: nil,
+                        granted: false, animated: animated, actionTitle: "Add to Chrome…", announcesState: false
+                    ) { send(.addToChrome) }
                 }
             }
             .padding(.top, 18)
@@ -558,6 +573,9 @@ struct PermissionRow: View {
     var detail: String?
     var granted: Bool
     var animated: Bool
+    var actionTitle = "Open System Settings"
+    /// False for a row whose state the host cannot read (Caret for Chrome): VoiceOver hears no "on" or "off".
+    var announcesState = true
     var open: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -594,13 +612,15 @@ struct PermissionRow: View {
             if granted {
                 Text("On").font(.system(size: 13)).foregroundStyle(Color(token: Tokens.secondary))
             } else {
-                Button("Open System Settings", action: open).buttonStyle(OnboardingButtonStyle(kind: .secondary))
+                Button(actionTitle, action: open).buttonStyle(OnboardingButtonStyle(kind: .secondary))
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        // 10, not 12: with Caret for Chrome as a third row, 12 made the permissions step taller than
+        // the 460 pt window under v3's serif title (the bar was pushed down and the title up, I5).
+        .padding(.vertical, 10)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(title), \(granted ? "on" : "off")")
+        .accessibilityLabel(announcesState ? "\(title), \(granted ? "on" : "off")" : title)
     }
 }
 

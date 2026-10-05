@@ -692,7 +692,7 @@ public final class SurfaceMachine {
                 showOffer(.popup(spec, highlight: ui.highlight), text: spec.header?.title.text,
                           figure: spec.figure == .needsYou ? .needsYou : .offering, at: shown, entering: entering)
             }
-        case .fill:
+        case .fill, .writing:
             break
         }
         publish()
@@ -708,7 +708,7 @@ public final class SurfaceMachine {
         switch offer.kind {
         case .action(let line): return .line(lineContent(line))
         case .popup(let popup): return .popup(popup.spec, highlight: OfferUI(initialFor: offer).highlight)
-        case .ghost, .fill: return nil
+        case .ghost, .fill, .writing: return nil
         }
     }
 
@@ -717,7 +717,7 @@ public final class SurfaceMachine {
         switch offer.kind {
         case .action(let line): return .compactLine(CompactOffer.line(line))
         case .popup(let popup): return .compactLine(CompactOffer.line(popup.spec, highlight: ui.highlight))
-        case .ghost, .fill: return nil
+        case .ghost, .fill, .writing: return nil
         }
     }
 

@@ -92,6 +92,11 @@ public final class HostRuntime {
     /// Comma-separated pids, as `CARET_ALLOW_PIDS` and `--allow-pids` take them.
     public nonisolated static func pids(_ raw: String?) -> Set<Int32>? { TargetPolicy.pids(from: raw) }
 
+    /// The same list, strictly: every entry a positive pid. The error says what is wrong with it.
+    public nonisolated static func allowedPIDs(_ raw: String?) throws -> Set<Int32> {
+        try TargetPolicy.strictPids(raw).get()
+    }
+
     /// `CARET_ALLOW_BUNDLES`, comma-separated bundle identifiers.
     public nonisolated static var allowedBundleIDsFromEnvironment: Set<String>? {
         guard let raw = ProcessInfo.processInfo.environment["CARET_ALLOW_BUNDLES"], !raw.isEmpty else { return nil }
@@ -108,6 +113,7 @@ public final class HostRuntime {
     private let coordinator: HostCoordinator
     private let fill: FillCoordinator
     private let surface: SurfaceCoordinator
+    private let writing: WritingCoordinator
     private let helper: HelperClient
     private let activity: ActivityCenter
     private let perch: PerchController
@@ -117,6 +123,13 @@ public final class HostRuntime {
     private let onboarding: OnboardingController
     private let memory: MemoryController
     private var engineTask: Task<Void, Never>?
+    private let servicesBox = ServicesBox()
+
+    /// The helper and reader the app shell started, and the bridge service (H4), for the debug socket's `services`.
+    public var services: CaretServices? {
+        get { servicesBox.services }
+        set { servicesBox.services = newValue }
+    }
 
     public init(configuration: Configuration = Configuration()) {
         self.configuration = configuration
@@ -134,6 +147,9 @@ public final class HostRuntime {
             headless: configuration.surfacesHeadless
         )
         self.surface = surface
+        let writing = WritingCoordinator(arbiter: arbiter, status: status, policy: policy)
+        self.writing = writing
+        writing.allowed = { MainActor.assumeIsolated { HostGate.allowsGhostText(SettingsStore.shared.settings) } }
         // Every host write asks this right before it acts; pause, stop, take over and the helper's
         // connection closing end it (S1 audit #2).
         let authority = HostAuthority()
@@ -146,11 +162,17 @@ public final class HostRuntime {
                         coordinator.insertionFinished(result)
                         fill.insertionFinished(result)
                         surface.insertionFinished(result)
+                        writing.insertionFinished(result)
                     }
                 }
             },
             onUndone: { result in
-                DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoFinished(result) } }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        fill.undoFinished(result)
+                        writing.undoFinished(result)
+                    }
+                }
             }
         )
         self.executor = executor
@@ -165,6 +187,7 @@ public final class HostRuntime {
                 coordinator.displaced(offer)
                 fill.displaced(offer)
                 surface.displaced(offer)
+                writing.displaced(offer)
             }
         }
         let onboarding = OnboardingController(mode: OnboardingController.Mode(rawValue: configuration.onboarding) ?? .off, testHooks: configuration.testHooks)
@@ -284,6 +307,7 @@ public final class HostRuntime {
             // The arbiter has one toast slot: a fill's or a line's toast that held it is gone now.
             surface.toastChanged()
             fill.toastChanged()
+            writing.toastChanged()
         }
         perch.ask.onUndoChanged = { _ in syncAskToast() }
         perch.onListChanged = { _ in syncAskToast() }
@@ -295,7 +319,10 @@ public final class HostRuntime {
         // what arrives next (A7 review).
         SettingsStore.shared.observe { settings in
             gateClient.update(GateSettings(settings, at: Self.nowMs()))
-            if !HostGate.allowsGhostText(settings) { coordinator.gateClosed() }
+            if !HostGate.allowsGhostText(settings) {
+                coordinator.gateClosed()
+                writing.gateClosed()
+            }
             if !settings.gate.allows(family: "fill") { fill.gateClosed() }
             if settings.paused {
                 authority.revokeAll("paused")
@@ -303,9 +330,19 @@ public final class HostRuntime {
             }
         }
         surface.client = helper
-        // The fill line and the fill pop-up share the arbiter's one toast slot.
-        surface.onToastChanged = { fill.toastChanged() }
-        fill.onToastShown = { surface.toastChanged() }
+        // The fill line, the fill pop-up and a writing fix share the arbiter's one toast slot.
+        surface.onToastChanged = {
+            fill.toastChanged()
+            writing.toastChanged()
+        }
+        fill.onToastShown = {
+            surface.toastChanged()
+            writing.toastChanged()
+        }
+        writing.onToastShown = {
+            surface.toastChanged()
+            fill.toastChanged()
+        }
         activity.client = helper
         let pauseClient = helper
         let writesNothing = configuration.surfacesHeadless
@@ -324,6 +361,7 @@ public final class HostRuntime {
                         coordinator.claimed(claim)
                         fill.claimed(claim)
                         surface.claimed(claim)
+                        writing.claimed(claim)
                     }
                 }
             },
@@ -333,6 +371,7 @@ public final class HostRuntime {
                         coordinator.offerChanged(reason, key: key)
                         fill.offerChanged(reason)
                         surface.offerChanged(reason)
+                        writing.offerChanged(reason)
                     }
                 }
             },
@@ -347,12 +386,22 @@ public final class HostRuntime {
                     }
                 } else {
                     executor.submitUndo(grant)
-                    DispatchQueue.main.async { MainActor.assumeIsolated { fill.undoStarted(grant) } }
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            fill.undoStarted(grant)
+                            writing.undoStarted(grant)
+                        }
+                    }
                 }
             },
             keyDown: { status.noteKeyDown($0) },
             navigated: { offerID, ui in
-                DispatchQueue.main.async { MainActor.assumeIsolated { surface.navigated(offerID: offerID, ui: ui) } }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        surface.navigated(offerID: offerID, ui: ui)
+                        writing.navigated(offerID: offerID, ui: ui)
+                    }
+                }
             },
             stopWork: { line in
                 DispatchQueue.main.async { MainActor.assumeIsolated { surface.stopWork(line) } }
@@ -360,7 +409,12 @@ public final class HostRuntime {
             realKey: { pid in pauser.key(pid: pid) },
             mouseDown: { point in pauser.click(at: point) },
             closedOffer: { offerID in
-                DispatchQueue.main.async { MainActor.assumeIsolated { surface.offerClosed(offerID) } }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        surface.offerClosed(offerID)
+                        writing.offerClosed(offerID)
+                    }
+                }
             }
         ))
         let tap = self.tap
@@ -371,6 +425,7 @@ public final class HostRuntime {
         let helper = self.helper
         let writeMethods = executor.writeMethods
         let testHooks = configuration.testHooks
+        let servicesBox = self.servicesBox
         let hooks = MainHooks(
             inject: { data in
                 MainActor.assumeIsolated {
@@ -411,6 +466,7 @@ public final class HostRuntime {
             settings: { words in MainActor.assumeIsolated { Self.settingsCommand(words) } },
             onboarding: { words in MainActor.assumeIsolated { onboarding.command(words) } },
             memory: { words in MainActor.assumeIsolated { memory.command(words) } },
+            services: { words in MainActor.assumeIsolated { Self.servicesCommand(words, services: servicesBox.services, testHooks: testHooks) } },
             testHooks: testHooks
         )
         socket = DebugStateSocket(path: configuration.socketPath) { command in
@@ -450,6 +506,12 @@ public final class HostRuntime {
     /// The menu's Set Up Caret: onboarding in its window.
     public func openOnboarding() { onboarding.open(drawing: true) }
 
+    /// Onboarding's Add to Chrome, which the app shell runs (`ChromeBridgeInstaller`).
+    public var onAddToChrome: () -> Void {
+        get { onboarding.onAddToChrome }
+        set { onboarding.onAddToChrome = newValue }
+    }
+
     /// The menu's What Caret Knows: the memory window.
     public func openMemory() { memory.open() }
 
@@ -457,8 +519,11 @@ public final class HostRuntime {
         try socket.start()
         AXRead.setGlobalMessagingTimeout(seconds: 0.25)
         if !tap.start() { status.increment("tap.createFailed") }
-        focus.onChange = { [coordinator] change in
+        InputMethodState.shared.start()
+        // The perch no longer follows focus: it sits on the task's window (v3 rim and perch).
+        focus.onChange = { [coordinator, writing] change in
             coordinator.handle(change)
+            writing.handle(change)
         }
         focus.start()
         helper.start()
@@ -499,6 +564,7 @@ public final class HostRuntime {
         helper.stop()
         fill.shutdown()
         surface.shutdown()
+        writing.shutdown()
         perch.shutdown()
         onboarding.close()
         memory.close()
@@ -551,6 +617,8 @@ public final class HostRuntime {
         let onboarding: @Sendable ([String]) -> String
         /// `memory ...` (`MemoryController.command`).
         let memory: @Sendable ([String]) -> String
+        /// `services` and `services restart` (`servicesCommand`).
+        let services: @Sendable ([String]) -> String
         /// The host was started with `--test-hooks`.
         let testHooks: Bool
     }
@@ -613,7 +681,7 @@ public final class HostRuntime {
     ///   activity more                  presses "and N more" under Done
     ///   control <taskId> <action>      presses a row's button (takeOver, resume, undo)
     ///   click <pid>                    a real click in <pid>, through the input pause
-    ///   perch-avoid x y w h | clear    stands in for a focused field there (global, top-left)
+    ///   perch-avoid                    refused: v3 has no corner perch to move aside (it sits on the task's window)
     static func perchCommand(_ words: [String], perch: PerchController, activity: ActivityCenter, pauser: InputPauser) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -647,6 +715,35 @@ public final class HostRuntime {
         }
     }
 
+    /// The services, over the debug socket. Main thread.
+    ///
+    ///   services            the helper's and the reader's state, restarts and the bridge (`CaretServices.report`)
+    ///   services restart    the menu's Restart after Caret stopped (test hooks)
+    static func servicesCommand(_ words: [String], services: CaretServices?, testHooks: Bool) -> String {
+        guard let services else { return #"{"error":"no services: the app shell did not start any"}"# }
+        guard words.count > 1 else { return services.report() }
+        guard words[1] == "restart" else { return #"{"error":"usage: services [restart]"}"# }
+        guard testHooks else { return #"{"error":"services restart is a test hook: start the host with --test-hooks"}"# }
+        guard services.stoppedReason != nil else { return #"{"error":"the services are not stopped"}"# }
+        services.restart()
+        return services.report()
+    }
+
+    /// Why the debug socket refuses `words`, or nil. Commands that act for the user need `--test-hooks`: `key` routes a
+    /// key through the tap to the claim and undo callbacks, `control` presses a row's button, `click` clicks in an app,
+    /// and `settings set` changes the user's settings. The socket is the user's own (mode 0600), but any process of the
+    /// user's can open it, and the host now runs at every login (CodeRabbit on PR #9). Reads stay open.
+    nonisolated static func testHookRefusal(_ words: [String], testHooks: Bool) -> String? {
+        guard !testHooks, let verb = words.first else { return nil }
+        let name: String
+        switch verb {
+        case "key", "control", "click": name = verb
+        case "settings" where words.count > 1 && words[1] == "set": name = "settings set"
+        default: return nil
+        }
+        return "{\"error\":\"\(name) is a test hook: start the host with --test-hooks\"}"
+    }
+
     nonisolated static func nowMs() -> Int64 { Int64((Date().timeIntervalSince1970 * 1000).rounded()) }
 
     nonisolated static func jsonString(_ text: String) -> String {
@@ -661,6 +758,7 @@ public final class HostRuntime {
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let words = command.split(separator: " ").map(String.init)
+        if let refusal = testHookRefusal(words, testHooks: hooks.testHooks) { return Data((refusal + "\n").utf8) }
         switch words.first ?? "state" {
         case "ping":
             return Data("{\"ok\":true}\n".utf8)
@@ -715,6 +813,9 @@ public final class HostRuntime {
             let parts = command.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true).map(String.init)
             let reply = DispatchQueue.main.sync { hooks.ask(parts.count == 3 && parts[1] == "type" ? parts : words) }
             return Data((reply + "\n").utf8)
+        case "services":
+            let reply = DispatchQueue.main.sync { hooks.services(words) }
+            return Data((reply + "\n").utf8)
         case "placement-bounds":
             let reply = DispatchQueue.main.sync { hooks.placementBounds(words) }
             return Data((reply + "\n").utf8)
@@ -755,6 +856,7 @@ public final class HostRuntime {
             info.fill = offer.kind.fillOrigin.map {
                 DebugState.FillInfo(proposalId: $0.proposalID, windowId: $0.windowID, fieldKey: $0.fieldKey, source: $0.sourceCaption)
             }
+            info.writing = offer.kind.writing.map(DebugState.WritingOfferInfo.init)
             return info
         }
         var counters = fields.counters
@@ -787,6 +889,7 @@ public final class HostRuntime {
             state.authorityLastRevoke = info.lastReason
         }
         state.ghostFits = fields.ghostFits
+        state.writing = fields.writing
         return state
     }
 }
@@ -822,4 +925,9 @@ enum TestKeys {
 @MainActor
 private final class AskToast {
     var id: UInt64?
+}
+
+/// Holds the app shell's services for the debug socket hook, which is built before the shell sets them. Main thread.
+final class ServicesBox: @unchecked Sendable {
+    var services: CaretServices?
 }

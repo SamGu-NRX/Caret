@@ -12,7 +12,8 @@ import { fixtureExecutable } from "../scripts/fixture-path.ts";
 const SCRIPT = fileURLToPath(new URL("../../apps/screen-reader/scripts/bundle-fixture.sh", import.meta.url));
 const plist = (app: string, key: string): string => execFileSync("/usr/libexec/PlistBuddy", ["-c", `Print :${key}`, join(app, "Contents/Info.plist")], { encoding: "utf8" }).trim();
 
-describe("bundle-fixture.sh", () => {
+// The script calls plutil and the test reads the bundle with PlistBuddy; both exist only on macOS.
+describe.skipIf(process.platform !== "darwin")("bundle-fixture.sh", () => {
   let dir = "";
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 

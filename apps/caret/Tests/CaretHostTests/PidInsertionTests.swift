@@ -53,6 +53,36 @@ final class PidInsertionTests: XCTestCase {
         XCTAssertEqual(TargetPolicy.pids(from: "41, 42"), [41, 42])
     }
 
+    /// What `--allow-pids` and `CARET_ALLOW_PIDS` accept: a missing or mistyped list is refused, never read as "any".
+    func testTheAllowedPidListIsReadStrictly() {
+        XCTAssertEqual(TargetPolicy.strictPids("41, 42"), .success([41, 42]))
+        XCTAssertEqual(TargetPolicy.strictPids("7"), .success([7]))
+        XCTAssertEqual(TargetPolicy.strictPids(nil), .failure(.empty))
+        XCTAssertEqual(TargetPolicy.strictPids(""), .failure(.empty))
+        XCTAssertEqual(TargetPolicy.strictPids("  "), .failure(.empty))
+        XCTAssertEqual(TargetPolicy.strictPids("41,abc"), .failure(.notAPid("abc")))
+        XCTAssertEqual(TargetPolicy.strictPids("41,,42"), .failure(.notAPid("")))
+        XCTAssertEqual(TargetPolicy.strictPids("0"), .failure(.notAPid("0")))
+        XCTAssertEqual(TargetPolicy.strictPids("-5"), .failure(.notAPid("-5")))
+        XCTAssertEqual(TargetPolicy.strictPids("--surfaces"), .failure(.notAPid("--surfaces")))
+        XCTAssertThrowsError(try HostRuntime.allowedPIDs(nil)) { XCTAssertEqual("\($0)", "needs a comma-separated list of pids") }
+    }
+
+    /// The debug socket's acting commands need --test-hooks; reads do not (CodeRabbit on PR #9).
+    func testActingDebugCommandsNeedTestHooks() {
+        for words in [["key", "tab", "41"], ["control", "task-1", "undo"], ["click", "41"], ["settings", "set", "paused", "true"]] {
+            let refusal = HostRuntime.testHookRefusal(words, testHooks: false)
+            XCTAssertNotNil(refusal, "\(words) went through without test hooks")
+            XCTAssertTrue(refusal?.contains("is a test hook") == true)
+            XCTAssertNil(HostRuntime.testHookRefusal(words, testHooks: true), "\(words) refused with test hooks")
+        }
+        XCTAssertEqual(HostRuntime.testHookRefusal(["settings", "set", "x", "y"], testHooks: false),
+                       #"{"error":"settings set is a test hook: start the host with --test-hooks"}"#)
+        for words in [["state"], ["ping"], ["perch"], ["settings"], ["services"], ["activity", "open"], [String]()] {
+            XCTAssertNil(HostRuntime.testHookRefusal(words, testHooks: false), "\(words) is a read and stays open")
+        }
+    }
+
     func testTheDebugHookKeysCarryTheirTarget() {
         XCTAssertEqual(TestKeys.key("tab", pid: 7), .tab(to: 7))
         XCTAssertEqual(TestKeys.key("cmd-z", pid: 7)?.isUndo, true)

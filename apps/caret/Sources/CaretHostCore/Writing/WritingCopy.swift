@@ -43,6 +43,13 @@ public enum WritingCopy {
     /// The line's key hints: "Tab fix", "↓ more".
     public static let fixHint = "fix"
     public static let moreHint = "more"
+    /// The hint on a line whose two answers disagree: Tab fixes nothing until one is picked.
+    public static let chooseHint = "choose"
+
+    /// "address or dress".
+    public static func either(_ choices: [String]) -> String {
+        choices.map(visible).joined(separator: " or ")
+    }
     public static let original = "Original"
     public static let fixAll = "Fix all in this paragraph"
 
@@ -71,6 +78,37 @@ public enum WritingCopy {
         text.allSatisfy({ $0 == " " }) ? String(repeating: "␣", count: text.count) : text
     }
 
+    // MARK: After Tab and ⌘Z
+
+    /// Why Tab changed nothing, by the executor's refusal code. Short enough for one line.
+    public static func notFixed(_ code: String) -> String {
+        switch code {
+        case "writeRefused", "writeIgnored": return "This app didn't take the fix, so nothing changed."
+        case "composing": return "Caret doesn't fix text while an input method is on."
+        case "revoked": return "Caret is paused, so nothing changed."
+        default: return "The text changed, so nothing was fixed."
+        }
+    }
+
+    public static let undoneLead = "Undone"
+    public static let undoFailed = "The text changed after the fix, so it was left as it is."
+
+    /// The line after ⌘Z took a fix back: what came back, as words.
+    public static func undone(_ alternative: WritingOffer.Alternative) -> LineContent {
+        let text: String
+        switch alternative.kind {
+        case .fixAll: text = fixedAll(alternative.diff.count)
+        default:
+            let change = alternative.diff.first
+            text = "“\(visible(change?.original ?? ""))” is back"
+        }
+        return LineContent(figure: .done, lead: undoneLead, text: text, emphasis: .plain)
+    }
+
+    public static func error(_ text: String) -> LineContent {
+        LineContent(figure: .error, text: text, emphasis: .plain)
+    }
+
     // MARK: VoiceOver
 
     /// The line, spoken: what is wrong, the fix, and the keys.
@@ -86,6 +124,11 @@ public enum WritingCopy {
         case 2: return "two spaces"
         default: return "\(text.count) spaces"
         }
+    }
+
+    /// A line whose answers disagree, spoken: what is wrong and both choices, with no Tab.
+    public static func spokenChoice(reason: String, original: String, choices: [String]) -> String {
+        "\(reason). Replace \(spoken(original)) with \(choices.map(spoken).joined(separator: " or ")). Down Arrow shows the choices."
     }
 
     public static func spokenAlternative(_ label: String, number: Int?, selected: Bool) -> String {

@@ -36,6 +36,8 @@ describe("shadow logger", () => {
     helper = new Helper({ store, askJev: null, shadow: true, allowBackgroundFocus: false, publish: (m) => published.push(m) });
   });
   afterEach(() => {
+    helper.shutdown();
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -126,7 +128,8 @@ describe("shadow logger", () => {
     void helper.handleReader(form(4000, "dana.whitfield@example.com", ""));
     helper.shutdown();
     store.close();
-    for (const f of readdirSync(dir)) {
+    // Every file under the directory, the markdown memory folder included (M1).
+    for (const f of readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(dir.length + 1))) {
       const bytes = readFileSync(join(dir, f)).toString("latin1");
       for (const secret of ["dana", "QX-77120", "Reply to", "textfield:email"]) expect(bytes.includes(secret), `${f} has ${secret}`).toBe(false);
     }

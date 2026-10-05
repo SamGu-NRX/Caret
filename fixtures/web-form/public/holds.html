@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Synthetic holds</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+  label { display: inline-block; min-width: 180px; }
+  p { margin: 6px 0; }
+  #hdept-listbox { position: absolute; background: #fff; border: 1px solid #888; margin: 0; padding: 4px; list-style: none; }
+</style>
+</head>
+<body>
+<h1>Holds</h1>
+<!-- W3: fields whose own handlers stop the page (a synchronous request the acceptance run answers when it chooses) at
+     one stage of Caret's write, so a revoke can land exactly between two stages. Every name and value is invented. -->
+<form id="holds">
+  <p><label for="h_focus">Hold on focus</label><input id="h_focus" name="h_focus"></p>
+  <p><label for="h_input">Hold on input</label><input id="h_input" name="h_input"></p>
+  <p><label for="h_select">Hold select</label>
+    <select id="h_select" name="h_select"><option value="">Choose a size</option><option value="s">Small</option><option value="l">Large</option></select></p>
+  <p><label for="h_check">Hold checkbox</label><input id="h_check" name="h_check" type="checkbox"></p>
+  <p><label for="hdept">Hold department</label><input id="hdept" name="hdept" role="combobox" aria-expanded="false" aria-controls="hdept-listbox" aria-autocomplete="list" autocomplete="off"></p>
+  <p><label for="h_click">Click here</label><input id="h_click" name="h_click"></p>
+  <p><label for="h_disable">Disable on focus</label><input id="h_disable" name="h_disable"></p>
+  <p><label for="h_multi">Several sizes</label>
+    <select id="h_multi" name="h_multi" multiple size="3"><option value="s" selected>Small</option><option value="m" selected>Medium</option><option value="l">Large</option></select></p>
+  <p><label for="h_tomulti">Becomes several</label>
+    <select id="h_tomulti" name="h_tomulti"><option value="">Choose a colour</option><option value="r">Red</option><option value="g">Green</option></select></p>
+  <fieldset disabled><legend>Locked section</legend><p><label for="h_fieldset">In a locked section</label><input id="h_fieldset" name="h_fieldset"></p></fieldset>
+</form>
+<script src="/holds.js"></script>
+<script src="/fixture.js"></script>
+</body>
+</html>

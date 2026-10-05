@@ -182,22 +182,22 @@ final class WritingOfferTests: XCTestCase {
     // MARK: Priority
 
     func testPriorityOverOrdinaryCompletion() {
-        let line = WritingOffer.Slot(producer: .correction, ownsTab: true, navigating: false)
+        let line = WritingOffer.Slot(producer: .correction, holdsKeys: true, navigating: false)
         XCTAssertFalse(WritingOffer.incomingWins(.completion, over: line), "completion waits while the correction line holds Tab")
         XCTAssertFalse(WritingOffer.incomingWins(.wordFinding, over: line))
         XCTAssertTrue(WritingOffer.incomingWins(.correction, over: line), "a newer correction replaces the older")
         XCTAssertTrue(WritingOffer.incomingWins(.explicitRequest, over: line))
-        XCTAssertTrue(WritingOffer.incomingWins(.correction, over: WritingOffer.Slot(producer: .completion, ownsTab: true, navigating: false)))
-        XCTAssertTrue(WritingOffer.incomingWins(.wordFinding, over: WritingOffer.Slot(producer: .passiveRewrite, ownsTab: true, navigating: false)))
+        XCTAssertTrue(WritingOffer.incomingWins(.correction, over: WritingOffer.Slot(producer: .completion, holdsKeys: true, navigating: false)))
+        XCTAssertTrue(WritingOffer.incomingWins(.wordFinding, over: WritingOffer.Slot(producer: .passiveRewrite, holdsKeys: true, navigating: false)))
     }
 
     func testAQuietMarkHoldsNothing() {
-        let mark = WritingOffer.Slot(producer: .correction, ownsTab: false, navigating: false)
+        let mark = WritingOffer.Slot(producer: .correction, holdsKeys: false, navigating: false)
         XCTAssertTrue(WritingOffer.incomingWins(.completion, over: mark))
     }
 
     func testNothingButAnExplicitRequestReplacesANavigatedOffer() {
-        let navigated = WritingOffer.Slot(producer: .completion, ownsTab: true, navigating: true)
+        let navigated = WritingOffer.Slot(producer: .completion, holdsKeys: true, navigating: true)
         XCTAssertFalse(WritingOffer.incomingWins(.passiveRewrite, over: navigated))
         XCTAssertFalse(WritingOffer.incomingWins(.correction, over: navigated))
         XCTAssertTrue(WritingOffer.incomingWins(.explicitRequest, over: navigated))
@@ -205,8 +205,52 @@ final class WritingOfferTests: XCTestCase {
 
     func testOfferSlotReportsNavigation() throws {
         var offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
-        XCTAssertEqual(offer.slot, WritingOffer.Slot(producer: .correction, ownsTab: true, navigating: false))
+        XCTAssertEqual(offer.slot, WritingOffer.Slot(producer: .correction, holdsKeys: true, navigating: false))
         _ = offer.send(.down)
         XCTAssertTrue(offer.slot.navigating)
+    }
+
+    // MARK: - A correction whose two answers disagree (lead decision 2)
+
+    func choiceMark(_ text: String) -> WritingCorrection {
+        let r = (text as NSString).range(of: "adress")
+        return WritingCorrection(
+            span: UTF16Span(r), original: "adress", replacement: "address", otherReplacements: ["dress"],
+            kind: .spelling, reason: "Not in the dictionary", source: .spellChecker, needsChoice: true
+        )
+    }
+
+    func testTabTakesNeitherAnswerUntilTheListIsOpen() throws {
+        let text = "Can you adress the feedback?"
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: [choiceMark(text)], checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
+        XCTAssertFalse(offer.ownsTab)
+        XCTAssertTrue(offer.holdsKeys, "the line still takes ↓ and Esc")
+        XCTAssertEqual(offer.send(.tab), .passThrough)
+        XCTAssertEqual(offer.linePreview.replacement, "address or dress")
+        XCTAssertEqual(offer.lineHints.map(\.key), ["↓"])
+        XCTAssertTrue(offer.spokenLine.contains("“address” or “dress”"), offer.spokenLine)
+        XCTAssertEqual(offer.send(.down), .handled)
+        XCTAssertTrue(offer.ownsTab, "open, the highlighted row is the pick")
+        XCTAssertEqual(offer.send(.down), .handled)
+        guard case .apply(let edit) = offer.send(.tab) else { return XCTFail("Tab on the open list applies the highlighted row") }
+        XCTAssertEqual(edit.replacement, "dress")
+    }
+
+    func testCommandDigitPicksEitherAnswer() throws {
+        let text = "Can you adress the feedback?"
+        var offer = try XCTUnwrap(WritingOffer.correction(marks: [choiceMark(text)], checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
+        XCTAssertEqual(offer.send(.commandDigit(1)), .passThrough, "no numbered row shows on the line")
+        _ = offer.send(.down)
+        guard case .apply(let edit) = offer.send(.commandDigit(1)) else { return XCTFail("⌘1 picks the first answer") }
+        XCTAssertEqual(edit.replacement, "address")
+    }
+
+    func testFixAllLeavesAMarkThatNeedsAChoice() throws {
+        let text = "We was sure you adress it, and the the rest."
+        let marks = [mark("was", in: text, "were"), choiceMark(text), mark("the the", in: text, "the")]
+        let offer = try XCTUnwrap(WritingOffer.correction(marks: marks, checkedRevision: UTF16Text.digest(text), live: live(text), now: t0))
+        let fixAll = try XCTUnwrap(offer.alternatives.first { $0.kind == .fixAll })
+        XCTAssertEqual(fixAll.diff.map(\.original), ["was", "the the"])
+        XCTAssertEqual(fixAll.edit?.replacement, "were sure you adress it, and the")
     }
 }

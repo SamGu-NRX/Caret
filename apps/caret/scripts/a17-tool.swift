@@ -18,6 +18,10 @@
 //   a17-tool type <pid> <text>             HID keystrokes, only while <pid> is frontmost
 //   a17-tool cmdz <pid>                    HID ⌘Z, only while <pid> is frontmost
 //   a17-tool newdoc <pid>                  HID ⌘N, only while <pid> is frontmost: a fresh undo history
+//   a17-tool key <pid> <name>              one HID key, only while <pid> is frontmost: tab, down, up,
+//                                          esc, cmd1, cmd2, cmd3 (T2's writing acceptance)
+//   a17-tool windows <pid>                 the app's on-screen windows: number and frame (global,
+//                                          top-left points), for `screencapture -l`
 //
 // Each prints one JSON object.
 import AppKit
@@ -186,6 +190,25 @@ case "newdoc":
     post(45, .maskCommand)
     usleep(900_000)
     emit(["value": value(p) ?? NSNull()])
+case "key":
+    let p = pid(1)
+    let keys: [String: (CGKeyCode, CGEventFlags)] = [
+        "tab": (48, []), "down": (125, []), "up": (126, []), "esc": (53, []),
+        "cmd1": (18, .maskCommand), "cmd2": (19, .maskCommand), "cmd3": (20, .maskCommand),
+    ]
+    guard args.count > 2, let (code, flags) = keys[args[2]] else { emit(["error": "key <pid> tab|down|up|esc|cmd1|cmd2|cmd3"]) }
+    guard front(p) else { emit(["error": "not frontmost; no key sent"]) }
+    post(code, flags)
+    usleep(300_000)
+    emit(["value": value(p) ?? NSNull()])
+case "windows":
+    let p = pid(1)
+    let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+    let mine = list.filter { ($0[kCGWindowOwnerPID as String] as? Int).map(pid_t.init) == p }.compactMap { w -> [String: Any]? in
+        guard let number = w[kCGWindowNumber as String] as? Int, let b = w[kCGWindowBounds as String] as? [String: Double] else { return nil }
+        return ["number": number, "frame": [b["X"] ?? 0, b["Y"] ?? 0, b["Width"] ?? 0, b["Height"] ?? 0], "layer": w[kCGWindowLayer as String] as? Int ?? 0]
+    }
+    emit(["windows": mine])
 default:
     emit(["error": "unknown verb \(verb)"])
 }

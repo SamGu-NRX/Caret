@@ -22,6 +22,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { positiveInt } from "./flags.ts";
 import { ScreenModel, type WindowState } from "../src/model.ts";
 import type { AppRef, Node, Snapshot } from "../src/protocol.ts";
 import * as privacy from "../src/privacy.ts";
@@ -32,7 +33,7 @@ import { snap } from "../test/builders.ts";
 const { values: a } = parseArgs({ options: { out: { type: "string" }, rounds: { type: "string", default: "60" }, modes: { type: "string" }, "no-arrival": { type: "boolean", default: false } } });
 if (a.out === undefined) throw new Error("--out is required");
 const OUT = a.out;
-const ROUNDS = Number(a.rounds);
+const ROUNDS = positiveInt("rounds", a.rounds);
 mkdirSync(OUT, { recursive: true });
 
 const WINDOWS = 8;
@@ -200,7 +201,7 @@ writeFileSync(join(OUT, "results.json"), `${JSON.stringify({ at: new Date().toIS
 const md = [
   "# SnippetLedger on eight windows of 5,000 lines",
   "",
-  `\`node --expose-gc scripts/ledger-bench.ts --out DIR --rounds ${ROUNDS}\` in the helper, ${new Date().toISOString().slice(0, 16)}Z, one-minute load average ${load[0]?.toFixed(1)} before and ${loadAfter[0]?.toFixed(1)} after (this Mac was shared). ${ROUNDS} rounds per row; four of the windows are Messages chats. ${readAtArrival ? "Each window's line table was read as its snapshot arrived; *Arrival* is that, per snapshot." : "No line table was read at arrival."}`,
+  `\`node ${(globalThis as { gc?: unknown }).gc === undefined ? "" : "--expose-gc "}scripts/ledger-bench.ts --out DIR --rounds ${ROUNDS}\` in the helper, ${new Date().toISOString().slice(0, 16)}Z, one-minute load average ${load[0]?.toFixed(1)} before and ${loadAfter[0]?.toFixed(1)} after (this Mac was shared). ${ROUNDS} rounds per row; four of the windows are Messages chats. ${readAtArrival ? "Each window's line table was read as its snapshot arrived; *Arrival* is that, per snapshot." : "No line table was read at arrival."}`,
   "",
   "| Screen before the ledger | First take wall p50 / p95 / max ms | First take CPU p50 / p95 / max ms | 40 takes wall p50 / p95 / max ms | 40 takes CPU p95 ms | Taken | Arrival p50 / p95 / max ms |",
   "|---|---:|---:|---:|---:|---:|---:|",

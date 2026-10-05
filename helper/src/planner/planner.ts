@@ -20,10 +20,12 @@ import { randomInt } from "node:crypto";
 import type { ScreenModel, WindowState } from "../model.ts";
 import type { Node, PlanWindow } from "../protocol.ts";
 import type { AskJev, JevRequest, JevResult } from "../fill/jev.ts";
-import { FILL_CUTOFF, FILLABLE_ROLES, shuffled } from "../fill/fill.ts";
+import { FILL_CUTOFF, FILLABLE_ROLES, neverTypedNode, shuffled } from "../fill/fill.ts";
 import { describeCandidate, generateCandidates } from "../fill/candidates.ts";
 import { describeField } from "../fill/descriptor.ts";
 import { addressParts, misfit } from "../fill/kinds.ts";
+import { fieldPart, splitAddress, splitName } from "../fill/derive.ts";
+import { inWebArea } from "../fill/controls.ts";
 import { SnippetLedger, type Declared } from "../privacy.ts";
 import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { instructionValues } from "./spans.ts";
@@ -77,6 +79,10 @@ export interface PlanDraft {
   /** Fields (and `press`) left as they are because the asks disagreed or agreed below the cutoff. */
   withheld: { name: string; why: "disagree" | "lowConfidence" }[];
   jev: { calls: number; costUsd: number; latencyMs: number };
+  /** Form controls an Ask leaves to the user with the value to set (ask.ts); the pop-up lists them. Absent for the planner's own plans. */
+  controls?: readonly { key: string; name: string; value: string; display: string }[];
+  /** Fields an Ask left to the user because Caret never types them, as a sentence (ask.ts); null or absent for none. */
+  leftToYou?: string | null;
 }
 
 interface Option {
@@ -85,7 +91,7 @@ interface Option {
   describe: string;
 }
 
-interface Field {
+export interface Field {
   id: string;
   node: Node;
   name: string;
@@ -116,6 +122,49 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   };
 
   const w = await chooseWindow(instruction, model, o, rand, cutoff, ask, answers);
+  try {
+    return await planIn(w, instruction, model, memory, o, rand, cutoff, ask, answers, jev);
+  } catch (e) {
+    if (e instanceof PlannerError && e.windowId === null) e.windowId = w.window.windowId;
+    throw e;
+  }
+}
+
+/**
+ * The window an instruction is about, as planTask chooses it: the one the host names, the only window with a
+ * field or a button, or Jev's choice among their titles (both asks agreeing at the cutoff). For Ask (ask.ts).
+ */
+export async function taskWindow(instruction: string, model: ScreenModel, o: Pick<PlanTaskOptions, "askJev" | "windowId" | "rand" | "cutoff">): Promise<{ window: WindowState; jev: PlanDraft["jev"] }> {
+  const jev = { calls: 0, costUsd: 0, latencyMs: 0 };
+  const ask = async (a: JevRequest, b: JevRequest): Promise<[JevResult, JevResult]> => {
+    let r: [JevResult, JevResult];
+    try {
+      r = await Promise.all([o.askJev(a), o.askJev(b)]);
+    } catch (e) {
+      throw new PlannerError("jevFailed", `the Jev request failed: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+    }
+    jev.calls += 2;
+    jev.costUsd += r[0].costUsd + r[1].costUsd;
+    jev.latencyMs += Math.max(r[0].latencyMs, r[1].latencyMs);
+    return r;
+  };
+  const w = await chooseWindow(instruction, model, { ...o, offerKey: "" }, o.rand ?? randomInt, o.cutoff ?? PLAN_CUTOFF, ask, {});
+  return { window: w, jev };
+}
+
+/** planTask's work once the window is chosen. */
+async function planIn(
+  w: WindowState,
+  instruction: string,
+  model: ScreenModel,
+  memory: PlannerMemory,
+  o: PlanTaskOptions,
+  rand: (n: number) => number,
+  cutoff: number,
+  ask: (a: JevRequest, b: JevRequest) => Promise<[JevResult, JevResult]>,
+  answers: Record<string, AskPair>,
+  jev: PlanDraft["jev"],
+): Promise<PlanDraft> {
   const fields = writableFields(w);
   const buttons = labelledButtons(w);
   const ledger = new SnippetLedger(model.windows.values());
@@ -136,11 +185,8 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   // evidence/screen/b17/planner-heldout-live; a fix tuned on that set). So a field is left out when the
   // instruction names another section that has a field of the same label. A label only one section has
   // ("Phone" under Contact details) is still named by its own words.
-  const sectionsSaid = new Set(fields.flatMap((f) => (f.section !== null && relevance(instruction, f.section) > 0 ? [f.section] : [])));
-  const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
-  const outranked = (f: Field): boolean =>
-    f.section !== null && !sectionsSaid.has(f.section) && fields.some((g) => g !== f && g.section !== null && sectionsSaid.has(g.section) && same(g.label, f.label));
-  const named = new Set(fields.filter((f) => (relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.label)) && !outranked(f)).map((f) => f.node.key));
+  const outranked = outrankedFields(instruction, fields);
+  const named = new Set(fields.filter((f) => (relevance(instruction, f.name) > 0 || namesShortLabel(instruction, f.label)) && !outranked.has(f.node.key)).map((f) => f.node.key));
   const wholeForm = asksToFillForm(instruction);
   const askedFields = fields.filter((f) => taken.has(f.node.key) && (wholeForm || named.has(f.node.key)));
   const askedButtons = buttons.filter((b) => taken.has(b.key));
@@ -230,10 +276,21 @@ export async function planTask(instruction: string, model: ScreenModel, memory: 
   // the write: forgetting it after accepting the plan stops that write (B17 fix-check).
   const steps2 = plan.steps.map((s, i) => {
     const t = checked.writes.find((wr) => wr.step === i)?.trace;
-    return t?.from === "memory" ? { ...s, memory: t.id } : s;
+    return t?.from === "memory" ? { ...s, memory: t.part === undefined ? t.id : `${t.id}#${t.part}` } : s;
   });
   const withSources: Plan = { ...plan, steps: steps2, ...(Object.keys(sources).length === 0 ? {} : { sources }) };
   return { plan: withSources, slots, checked, answers, withheld, jev };
+}
+
+/**
+ * The fields, by node key, that the instruction rules out by naming another section with a field of the same
+ * label: "billing street and billing town" rules out Shipping Street. The planner and the code-mode writer's
+ * check (codeplan.ts) both use it, so a writer cannot fill a field the planner would have left (B24 review).
+ */
+export function outrankedFields(instruction: string, fields: readonly Field[]): Set<string> {
+  const sectionsSaid = new Set(fields.flatMap((f) => (f.section !== null && relevance(instruction, f.section) > 0 ? [f.section] : [])));
+  const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+  return new Set(fields.filter((f) => f.section !== null && !sectionsSaid.has(f.section) && fields.some((g) => g !== f && g.section !== null && sectionsSaid.has(g.section) && same(g.label, f.label))).map((f) => f.node.key));
 }
 
 /** Words that say what to do rather than where; they do not make a field or button relevant. */
@@ -268,7 +325,10 @@ export function asksToFillForm(instruction: string): boolean {
     // "the form field Name" names one field, so "form" followed by "field" is not the whole form.
     /\b(?:fill|complete)(?:\s+(?:in|out|up))?\s+(?:(?:the|this|that|my|whole|entire|rest|of|remaining|other|all)\s+)*(?:form(?!\s+field\b)|fields|everything)\b/.test(s) ||
     /\bfill\s+(?:it|them|everything)\s+(?:all\s+)?(?:in|out)\b/.test(s) ||
-    /\bfill\s+(?:in|out)\s+(?:all|everything)\b/.test(s)
+    /\bfill\s+(?:in|out)\s+(?:all|everything)\b/.test(s) ||
+    // B24's blind instructions: "fill the rest of this from my note", "fill in whatever you know about me".
+    /\bfill\s+(?:(?:in|out)\s+)?(?:the\s+)?rest\b/.test(s) ||
+    /\bfill\s+(?:(?:in|out)\s+)?(?:whatever|what)\s+you\s+(?:can|know)\b/.test(s)
   );
 }
 
@@ -314,11 +374,14 @@ export function fieldName(w: WindowState, n: Node): string {
   return [d.section, d.label ?? d.nearest ?? d.placeholder].filter((x) => x !== null).join(" ") || "field";
 }
 
-function writableFields(w: WindowState): Field[] {
+export function writableFields(w: WindowState): Field[] {
   const out: Field[] = [];
   for (const n of w.nodes.values()) {
     if (out.length >= MAX_PLAN_FIELDS) break;
-    if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure")) continue;
+    // A field Caret never types (an SSN, a card number, a password or a code) is the user's, as fill leaves it (B25).
+    if (n.editable !== true || !FILLABLE_ROLES.has(n.role) || n.states?.includes("secure") || neverTypedNode(w, n) !== null) continue;
+    // A web page's combobox (react-select) takes a pick from its list, not typed text: a named hand-off (B24).
+    if (n.role === "AXComboBox" && inWebArea(w, n)) continue;
     const d = describeField(w, n);
     out.push({ id: `f${out.length + 1}`, node: n, name: fieldName(w, n), section: d.section, label: d.label ?? d.nearest ?? d.placeholder ?? "field", descriptor: d.text });
   }
@@ -388,13 +451,33 @@ function valueOptions(instruction: string, model: ScreenModel, w: WindowState, m
   const spans = instructionValues(instruction);
   if (ledger.plan(spans)) for (const s of spans) add(s, `"${s}" (written in the instruction)`);
   for (const m of memory) if (ledger.plan([m.text, m.label])) add(m.text, `"${m.text}" (from the user's memory: ${m.label})`);
+  // A remembered name's first and last parts, split by code (fill/derive.ts, B24), for First and Last name
+  // fields: "fill my name and email" on a form with split name fields found no value for either (Q1 bug 11).
+  for (const m of memory) {
+    // Only for an entry whose text went into the question above, so the part's description declares nothing new.
+    if (!/\bname\b/i.test(m.label) || !seen.has(m.text)) continue;
+    const s = splitName(m.text);
+    if (s.kind !== "split") continue;
+    for (const [part, text] of [["first name", s.first], ["middle name", s.middle], ["last name", s.last]] as const) {
+      if (text !== null) add(text, `"${text}" (the ${part} in the user's memory: ${m.label} "${m.text}")`);
+    }
+  }
   const cands = generateCandidates(model, w.window.windowId, MAX_PLAN_VALUES, now, ledger);
   for (const c of cands) add(c.text, describeCandidate(c));
   // A whole address fits no City or Street field (kinds.ts misfit), so its parts are offered too: B17's and
   // B18's held-out sets asked for the city or street of an address the windows show only whole (a change
   // tuned on those sets). Each part is a span of the same line, so it traces to it. They have their own
   // budget after the values above, so a screen of addresses cannot push out its other values.
+  // A form with its own Apt / Unit field gets the street line without the unit, and the unit, state and ZIP code
+  // apart (fill/derive.ts splitAddress, B24): the corpus's rental form took "4410 Speedway Apt 2" in Street
+  // address beside an empty Apt / Unit field (asks-dev-3).
+  const unitField = writableFields(w).some((f) => fieldPart(f.label) === "unit");
   for (const c of cands) {
+    const split = unitField ? splitAddress(c.text) : null;
+    if (split !== null) {
+      for (const [k, v] of Object.entries(split)) if (v !== undefined) add(v, `"${v}" (the ${k} of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);
+      continue;
+    }
     const parts = addressParts(c.text);
     if (parts === null) continue;
     add(parts.street, `"${parts.street}" (the street line of ${describeCandidate(c)})`, MAX_PLAN_VALUES + MAX_ADDRESS_PARTS);

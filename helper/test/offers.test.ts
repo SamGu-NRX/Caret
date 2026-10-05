@@ -163,6 +163,8 @@ function desk(): ScreenModel {
 function grounded(key: string, v: string, src: { windowId: string; nodeKey: string; appName: string; windowTitle: string }): FillField {
   return {
     key,
+    control: "text",
+    handoff: null,
     frame: null,
     descriptor: "",
     choice: "c1",

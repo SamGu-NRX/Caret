@@ -31,8 +31,21 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 /** A typed name: one to six words of letters, with apostrophes, hyphens and periods; no digits or @. */
 const NAME = /^[\p{L}][\p{L}'’.-]*(?: [\p{L}][\p{L}'’.-]*){0,5}$/u;
 const NAME_WORD = "name";
-/** Words that say how a field is filled, not what it holds: "Full name (required)", "Email address". */
+/**
+ * Words that say how a field is filled, not what it holds: "Full name (required)", "Email address". B24 added
+ * the words that say which of the user's own addresses a form wants ("Work email", "Primary email"): on the
+ * real-form corpus a demo request's "Work email" was offered no memory and took a colleague's address from
+ * an open mail instead (evidence/screen/b24/before).
+ */
 const PLAIN = new Set(["full", "legal", "address", "required", "optional", "enter", "here", "please"]);
+/**
+ * Words that say which of the user's own emails or names a field wants. A field may use one when the entry's
+ * label has none (the user gave one email) or has the same one: an entry labelled "Work email" never fills
+ * "Personal email".
+ */
+const QUALIFIERS = new Set(["work", "business", "personal", "primary", "preferred", "best"]);
+/** Words of a field that asks for one part of the user's name (B24, fill/derive.ts): "First name", "Last name / Surname". */
+const NAME_PART_WORDS = new Set(["first", "given", "middle", "last", "surname", "family", "forename"]);
 
 /** What an entry can fill, or null: an email when the value is one address, a name when the label says Name and the value reads as one. */
 export function aboutKind(label: string, value: string): AboutKind | null {
@@ -73,6 +86,22 @@ export function fieldAsksFor(a: AboutValue, fieldName: string | null): boolean {
     if (!ws.has(NAME_WORD)) return false;
     own.add(NAME_WORD);
   }
-  for (const w of ws) if (!own.has(w) && !PLAIN.has(w)) return false;
+  const qualified = [...own].some((w) => QUALIFIERS.has(w));
+  for (const w of ws) if (!own.has(w) && !PLAIN.has(w) && !(QUALIFIERS.has(w) && !qualified)) return false;
+  return true;
+}
+
+/**
+ * Whether a field asks for one part of the user's name (B24): its words are a name part's ("First name",
+ * "Last name / Surname") and otherwise what fieldAsksFor allows, so "Guest first name" and "Emergency contact
+ * last name" never see the user's name. Fill offers the part code split from a Name entry (derive.ts).
+ */
+export function fieldAsksForNamePart(a: AboutValue, fieldName: string | null): boolean {
+  if (a.kind !== "name") return false;
+  const ws = new Set(words(fieldName));
+  if (![...ws].some((w) => NAME_PART_WORDS.has(w))) return false;
+  const own = new Set(words(a.label));
+  const qualified = [...own].some((w) => QUALIFIERS.has(w));
+  for (const w of ws) if (!own.has(w) && !PLAIN.has(w) && !NAME_PART_WORDS.has(w) && w !== NAME_WORD && !(QUALIFIERS.has(w) && !qualified)) return false;
   return true;
 }

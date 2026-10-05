@@ -9,6 +9,9 @@ let keytype = "../../packages/keytype/Packages"
 // The screen track's Swift mirror of helper/src/protocol.ts, used by path and not edited, so the
 // host decodes helper messages with the same types the reader encodes them with.
 let screenReader = "../screen-reader"
+// The page bridge's XPC contract and the host's relay to page.sock (W3), used by path and not edited: the host vends
+// the service caret-bridge connects to (CaretHost/Services/PageBridgeVendor.swift).
+let bridge = "../../bridge"
 
 let package = Package(
     name: "CaretHost",
@@ -31,6 +34,7 @@ let package = Package(
         .package(path: "\(keytype)/ModelManagement"),
         .package(path: "\(keytype)/ProfileBuilder"),
         .package(path: screenReader),
+        .package(path: bridge),
     ],
     targets: [
         // Pure decision logic: offers, the Tab arbiter, the insertion guard, latency stats and the
@@ -59,6 +63,8 @@ let package = Package(
                 .product(name: "TextInsertion", package: "TextInsertion"),
                 .product(name: "ModelManagement", package: "ModelManagement"),
                 .product(name: "ProfileBuilderCore", package: "ProfileBuilder"),
+                .product(name: "CaretBridgeXPC", package: "bridge"),
+                .product(name: "CaretPageProtocol", package: "bridge"),
             ],
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),

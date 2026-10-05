@@ -11,6 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { positiveNumber } from "./flags.ts";
 import { ScreenModel } from "../src/model.ts";
 import { loadJevKey, makeJevClient, type AskJev } from "../src/fill/jev.ts";
 import { askAttend, eventCandidate } from "../src/offers/event-card.ts";
@@ -20,7 +21,7 @@ const { values: a } = parseArgs({ options: { out: { type: "string" }, "max-usd":
 if (a.out === undefined) throw new Error("--out is required");
 const OUT = resolve(a.out);
 mkdirSync(OUT, { recursive: true });
-const MAX_USD = Number(a["max-usd"]);
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 process.env.TZ = "America/Chicago";
 
 interface Golden {
@@ -32,9 +33,11 @@ const now = new Date(Date.parse(golden.now));
 
 let cost = 0;
 let calls = 0;
+/** Thrown by ask once the budget is spent, so the loop stops asking and still writes its report. */
+class BudgetStop extends Error {}
 const real = makeJevClient(() => loadJevKey());
 const ask: AskJev = async (req) => {
-  if (cost >= MAX_USD) throw new Error(`stopped at the $${MAX_USD} budget`);
+  if (cost >= MAX_USD) throw new BudgetStop(`stopped at the $${MAX_USD} budget`);
   const r = await real(req);
   calls++;
   cost += r.costUsd;
@@ -42,8 +45,12 @@ const ask: AskJev = async (req) => {
 };
 
 const rows: { id: string; sentence: string; want: string | null; codePasses: boolean; asks: string[] | null; yes: boolean | null; agrees: boolean | null }[] = [];
+/** Sentences whose asks failed (a Jev error, or the budget), left out of rows. */
+const errors: { id: string; error: string }[] = [];
+let stopped = false;
 for (const s of golden.sentences) {
-  const c = eventCandidate(s.sentence, s.spans.map((x) => x.text), [], now);
+  if (stopped) break;
+  const c = eventCandidate(s.sentence, s.spans.map((x) => x.text), [], { now, timeZone: "America/Chicago", locale: "en-US" });
   if (c === null) {
     rows.push({ id: s.id, sentence: s.sentence, want: s.attend, codePasses: false, asks: null, yes: null, agrees: s.attend === null ? true : null });
     continue;
@@ -60,7 +67,15 @@ for (const s of golden.sentences) {
   });
   const w = model.windows.get("6160-4");
   if (w === undefined) throw new Error("no window");
-  const r = await askAttend(ask, model, w, s.sentence, "typed");
+  let r: Awaited<ReturnType<typeof askAttend>>;
+  try {
+    r = await askAttend(ask, model, w, s.sentence, "typed");
+  } catch (e) {
+    errors.push({ id: s.id, error: e instanceof Error ? e.message : String(e) });
+    stopped = e instanceof BudgetStop;
+    process.stdout.write(`${s.id}: error: ${errors.at(-1)?.error}\n`);
+    continue;
+  }
   const yes = r?.yes ?? null;
   rows.push({ id: s.id, sentence: s.sentence, want: s.attend, codePasses: true, asks: r === null ? null : r.asks.map((x) => `${x.choice} ${x.confidence.toFixed(2)}`), yes, agrees: yes === null ? null : yes === (s.attend === "yes") });
   process.stdout.write(`${s.id}: ${r === null ? "not asked (privacy)" : `${r.asks.map((x) => x.choice).join("/")} -> ${yes ? "offer" : "no offer"}`}${s.attend === null ? " (fixture expected no ask)" : ""}\n`);
@@ -77,12 +92,14 @@ const md = [
   `- Of the 20 that should make an offer: ${positives.filter((r) => r.yes === true).length} got two yeses from live Jev`,
   `- Of the 20 distractors: ${rows.filter((r) => r.id.startsWith("d") && r.yes === true).length} got two yeses (would be offered); ${rows.filter((r) => r.id.startsWith("d") && !r.codePasses).length} stopped by code before any ask`,
   `- Live answers agreeing with the fixture's on the asked sentences: ${asked.filter((r) => r.agrees === true).length} of ${asked.length}`,
-  `- Jev: ${calls} calls, $${cost.toFixed(5)}`,
+  `- Jev: ${calls} calls, $${cost.toFixed(5)} (budget $${MAX_USD}); errors: ${errors.length}${stopped ? "; stopped at the budget before every sentence was asked" : ""}`,
+  ...errors.map((e) => `  - ${e.id}: ${e.error}`),
   "",
   "| Id | Sentence | Fixture | Code passes | Asks | Offer |",
   "| --- | --- | --- | --- | --- | --- |",
   ...rows.map((r) => `| ${r.id} | ${r.sentence} | ${r.want ?? "not asked"} | ${r.codePasses ? "yes" : "no"} | ${r.asks?.join(", ") ?? "-"} | ${r.yes === null ? "-" : r.yes ? "yes" : "no"} |`),
 ];
 writeFileSync(join(OUT, "event-eval.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "event-eval.json"), JSON.stringify({ rows, calls, cost }, null, 2) + "\n");
+writeFileSync(join(OUT, "event-eval.json"), JSON.stringify({ rows, errors, stopped, calls, cost }, null, 2) + "\n");
 console.log(md.slice(0, 10).join("\n"));
+process.exitCode = errors.length > 0 ? 1 : 0;

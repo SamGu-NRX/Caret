@@ -21,6 +21,11 @@ public enum Surface: Equatable, Sendable {
     case working(stoppable: Bool)
     case toast
     case errorLine
+    /// A writing correction's line under the error. `tabFixes` is `WritingOffer.ownsTab`: false
+    /// for a correction that needs a choice, whose Tab stays the app's.
+    case writingLine(tabFixes: Bool)
+    /// A writing correction's alternatives, open, with `rows` rows.
+    case writingList(rows: Int)
 }
 
 /// A key-down reduced to the classes the ownership table talks about.
@@ -134,6 +139,19 @@ public enum KeyOwnership {
             return key == .commandZ || key == .escape
         case .errorLine:
             return key == .escape
+        case .writingLine(let tabFixes):
+            // ⌥→ stays the app's: it moves the caret a word, and a fix has no next word to take.
+            switch key {
+            case .tab: return tabFixes
+            case .down, .escape: return true
+            default: return false
+            }
+        case .writingList(let rows):
+            switch key {
+            case .tab, .up, .down, .escape: return true
+            case .commandDigit(let n): return n <= min(rows, WritingOffer.numberedRows)
+            default: return false
+            }
         }
     }
 }

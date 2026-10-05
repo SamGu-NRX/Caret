@@ -111,6 +111,9 @@ public enum OfferKind: Equatable, Sendable {
     case action(ActionLine)
     /// Help bigger than a sentence (`SURFACES.md` section 4).
     case popup(PopupOffer)
+    /// A spelling, grammar or punctuation fix of a range of the field (`WritingOffer`). The offer
+    /// carries its own navigation state, which the arbiter updates with each key.
+    case writing(WritingOffer)
 
     public var name: String {
         switch self {
@@ -118,7 +121,13 @@ public enum OfferKind: Equatable, Sendable {
         case .fill: return "fill"
         case .action: return "action"
         case .popup: return "popup"
+        case .writing: return "writing"
         }
+    }
+
+    public var writing: WritingOffer? {
+        if case .writing(let offer) = self { return offer }
+        return nil
     }
 
     public var fillOrigin: FillOrigin? {

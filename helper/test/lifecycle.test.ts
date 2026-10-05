@@ -90,7 +90,9 @@ describe("taking control back (B22)", () => {
   afterEach(async () => {
     host.close();
     reader.close();
+    helper.shutdown();
     await server.close();
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });

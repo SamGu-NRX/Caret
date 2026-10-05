@@ -44,6 +44,8 @@ final class WritingCorpusTests: XCTestCase {
         var cleanCases = 0
         var cleanCasesFlagged = 0
         var cleanFalseCorrections = 0
+        /// Marks whose checker answers disagree: offered as a choice, never applied by Tab.
+        var needsChoice = 0
         var notes: [String] = []
     }
 
@@ -105,9 +107,11 @@ final class WritingCorpusTests: XCTestCase {
         if native != nil { report += ["", "Disagreements, with NSSpellChecker:"] + combined.notes }
         let out = report.joined(separator: "\n")
         print(out)
-        // Measured 0 on the first, blind run (2026-10-04); the static rules must stay there. The
-        // system checker's numbers depend on macOS and are reported, not asserted.
+        // Measured 0 on the first, blind run (2026-10-04); the static rules must stay there.
         XCTAssertEqual(staticOnly.cleanFalseCorrections, 0, "a static rule corrected a clean sentence")
+        // With the system checker everything is reported, not asserted: its answers move between
+        // runs and with macOS's dictionary (the lead's rerun at 3887f61), and this eval does not
+        // gate. T1 measured 3 false corrections in 2 clean cases; T2's eval-3 measured 0.
         if let dir = ProcessInfo.processInfo.environment["CARET_WRITING_EVAL_OUT"] {
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             try out.write(toFile: (dir as NSString).appendingPathComponent("corpus-eval.txt"), atomically: true, encoding: .utf8)
@@ -135,7 +139,13 @@ final class WritingCorpusTests: XCTestCase {
             t.cleanFalseCorrections += found.count
         }
         for (_, e) in expected { t.expected[e.kind, default: 0] += 1 }
-        for f in found { t.found[f.kind, default: 0] += 1 }
+        for f in found {
+            t.found[f.kind, default: 0] += 1
+            if f.needsChoice {
+                t.needsChoice += 1
+                t.notes.append("  \(item.id) needs a choice: “\(f.original)” to “\(f.replacement)” or “\(f.otherReplacements.first ?? "")”")
+            }
+        }
         var used = Set<Int>()
         for (span, e) in expected {
             let want = apply(span, e.replacement, to: text)
@@ -171,6 +181,7 @@ final class WritingCorpusTests: XCTestCase {
             "## \(title)",
             "False corrections on clean sentences: \(t.cleanFalseCorrections) in \(t.cleanCasesFlagged) of \(t.cleanCases) clean cases.",
             "Flagged the right text with a different fix: \(t.wrongFix).",
+            "Offered as a choice with no Tab (the checker's answers disagree): \(t.needsChoice).",
             "| Kind | Precision | Recall |",
             "| --- | --- | --- |",
         ]

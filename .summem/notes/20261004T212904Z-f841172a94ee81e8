@@ -1,0 +1,1 @@
+T2: macOS 26.6's en_AU spell dictionary accepts 'seperate' and 'truely'; NativeChecker uses US/GB/CA as regional witnesses and en-AU only when the user lists it. In context NSSpellChecker can autocorrect to its 2nd guess ('adress' -> dress while guess 1 is address).

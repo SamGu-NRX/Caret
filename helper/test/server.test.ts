@@ -72,7 +72,9 @@ describe("helper socket", () => {
   });
 
   afterEach(async () => {
+    helper.shutdown();
     await server.close();
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -128,7 +130,7 @@ describe("helper socket", () => {
     // A consumer can also ask directly.
     send(consumer.s, { type: "fillRequest", v: PROTOCOL_VERSION, windowId: FORM, fieldKey: EMAIL });
     expect(((await consumer.next()) as { type: string }).type).toBe("fillProposal");
-    expect(jevCalls).toBe(4); // two asks per proposal
+    expect(jevCalls).toBe(8); // two proposals, each in two stages of two asks (B24: whose details, then values)
     reader.s.destroy();
     consumer.s.destroy();
   });
@@ -198,6 +200,7 @@ describe("executor over the socket", () => {
   let dir: string;
   let store: Store;
   let server: HelperServer;
+  let helper: Helper;
   let path: string;
 
   beforeEach(async () => {
@@ -205,7 +208,7 @@ describe("executor over the socket", () => {
     path = join(dir, "s.sock");
     store = new Store(join(dir, "data"));
     let s: HelperServer | null = null;
-    const helper = new Helper({
+    helper = new Helper({
       store,
       askJev: null,
       shadow: false,
@@ -219,7 +222,9 @@ describe("executor over the socket", () => {
   });
 
   afterEach(async () => {
+    helper.shutdown();
     await server.close();
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });

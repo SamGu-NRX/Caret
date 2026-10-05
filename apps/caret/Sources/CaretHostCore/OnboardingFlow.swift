@@ -218,6 +218,8 @@ public final class OnboardingFlow {
         /// The host read the grants again (it polls while the window is up).
         case permissions(OnboardingPermissions)
         case openSystemSettings(Pane)
+        /// Add to Chrome on the permissions screen (H4): the host explains, then installs on the user's yes.
+        case addToChrome
         case key(TryItKey)
         case firstLookReply(FirstLookReply)
         /// Progress of the first look's taken offer, whose task id is its key.
@@ -252,6 +254,8 @@ public final class OnboardingFlow {
         /// (`MemoryBook.dropTyped(labels:)`).
         case forgetTyped([String])
         case openSystemSettings(Pane)
+        /// Start Add to Chrome (`ChromeBridgeInstaller`). Never sent at launch, only on the user's click.
+        case addToChrome
         case askFirstLook(FirstLookRequest)
         /// Take the first look's offer: the helper runs it as the task named by its key.
         case accept(OfferAccept)
@@ -343,6 +347,9 @@ public final class OnboardingFlow {
         case .openSystemSettings(let pane):
             guard state.step == .permissions else { return }
             output(.openSystemSettings(pane))
+        case .addToChrome:
+            guard state.step == .permissions else { return }
+            output(.addToChrome)
         case .key(let key):
             switch state.step {
             case .tryIt: tryItKey(key)

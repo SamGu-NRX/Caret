@@ -388,13 +388,14 @@ describe("skills in the helper", () => {
     expect(asked).toHaveLength(1);
   });
 
-  it("sends each skill's wrote, in the host's shape (memory.ndjson's last line), and empties it when the skill goes back on Tab", async () => {
+  it("sends each skill's wrote, in the host's shape (memory.ndjson host-memory-9), and empties it when the skill goes back on Tab", async () => {
     setRule("writeElsewhere", "actIfApproved");
     await keep();
     const r = await caretRun();
     finish(r);
-    const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/memory.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { entries?: { fields: Record<string, unknown> }[] });
-    const hostFields = golden.at(-1)?.entries?.[0]?.fields ?? {};
+    const golden = readFileSync(fileURLToPath(new URL("../fixtures/golden/memory.ndjson", import.meta.url)), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { requestId?: string; entries?: { fields: Record<string, unknown> }[] });
+    const hostFields = golden.find((l) => l.requestId === "host-memory-9")?.entries?.[0]?.fields;
+    if (hostFields === undefined) throw new Error("memory.ndjson has no host-memory-9 reply");
     const [skill] = skills();
     expect(skill!.fields.wrote).toEqual(["writeElsewhere"]);
     expect(Object.keys(skill!.fields).sort()).toEqual(Object.keys(hostFields).sort());

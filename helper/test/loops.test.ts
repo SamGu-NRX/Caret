@@ -52,6 +52,8 @@ describe("loop recognizer over the helper's transfers", () => {
     seen = 0;
   });
   afterEach(() => {
+    helper.shutdown();
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });

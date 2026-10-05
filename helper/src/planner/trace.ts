@@ -3,6 +3,8 @@
 // the source; nothing derived (a reformatted date, a sum, a guess) traces, so it is refused.
 import { nodeText, type ScreenModel } from "../model.ts";
 import { flat } from "../privacy.ts";
+import { splitName } from "../fill/derive.ts";
+import { labelKind, valueKind, type SensitiveKind } from "../memory/sensitive.ts";
 
 /** A memory entry's value as the planner may use it: an About value or a person's name. */
 export interface MemoryValue {
@@ -10,11 +12,32 @@ export interface MemoryValue {
   /** What the entry is, as the user named it ("Work email", or a person's alias). */
   label: string;
   text: string;
+  /** Whose details the entry holds when the helper knows: the user's (an About entry) or someone else's (a person). */
+  whose?: "user" | "other";
+}
+
+/**
+ * The kind of secret a value is, or that the instruction calls it, by memory's classifier (memory/sensitive.ts): its
+ * shape, or the words around it in the instruction ("my password hunter2", "hunter2 is my password"). Null when it is
+ * none; the planner and Ask then may write it (B25 review: "Put my password hunter2 in Notes" was written).
+ */
+export function secretIn(value: string, instruction: string): SensitiveKind | null {
+  const shape = valueKind(value);
+  if (shape !== null) return shape;
+  const v = value.trim();
+  if (v === "") return null;
+  for (let at = instruction.indexOf(v); at >= 0; at = instruction.indexOf(v, at + 1)) {
+    const before = instruction.slice(Math.max(0, at - 40), at).split(/\s+/u).filter((w) => w !== "").slice(-4).join(" ");
+    const after = instruction.slice(at + v.length, at + v.length + 40).split(/\s+/u).filter((w) => w !== "").slice(0, 4);
+    const k = labelKind(before) ?? after.map((_, i) => labelKind(after.slice(0, i + 1).join(" "))).find((x) => x !== null) ?? null;
+    if (k !== null) return k;
+  }
+  return null;
 }
 
 export type Trace =
   | { from: "window"; windowId: string; nodeKey: string | null }
-  | { from: "memory"; id: string }
+  | { from: "memory"; id: string; part?: "first" | "middle" | "last" }
   | { from: "instruction" };
 
 const WORD = /[\p{L}\p{N}]/u;
@@ -57,6 +80,14 @@ export function traceValue(value: string, model: ScreenModel, memory: readonly M
     }
   }
   for (const m of memory) if (flat(m.text) === v) return { from: "memory", id: m.id };
+  // A first, middle or last name code split from a remembered name (fill/derive.ts, B24): "Riley" for First
+  // name from Name "Riley Okafor". Only those parts, never another substring of a memory value.
+  for (const m of memory) {
+    const s = splitName(flat(m.text));
+    if (s.kind !== "split") continue;
+    const part = s.first === v ? "first" : s.middle === v ? "middle" : s.last === v ? "last" : null;
+    if (part !== null) return { from: "memory", id: m.id, part };
+  }
   if (occursBounded(flat(instruction), v)) return { from: "instruction" };
   return null;
 }

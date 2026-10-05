@@ -455,7 +455,36 @@ public struct FillAsk: Codable, Equatable, Sendable {
 /// Why no value was proposed: the asks disagreed, agreed below the cutoff, or a window's privacy budget
 /// cut a value of the field's kind, so the field was not asked or its pick not proposed. A value from
 /// memory is also `lowConfidence` when the asks did not both say the field wants the user's own details (B18).
-public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut }
+/// B24 added `wrongKind` (the value is not the kind the field takes), `otherPerson` (the field wants one
+/// person's details and the value is another's) and `ambiguous` (code could not read the value without guessing).
+public enum FillWithheld: String, Codable, Sendable { case disagree, lowConfidence, sourceCut, wrongKind, otherPerson, ambiguous }
+
+/// What a field is (B24): a text field the helper's executor writes, or a control the user sets from the
+/// proposal's `handoff`. `combobox` is a web page's custom dropdown, named and left with no value.
+public enum FillControl: String, Codable, Sendable { case text, date, time, select, radio, checkbox, combobox }
+
+/// The value for a control Caret does not write: an option, "checked", or an ISO date or 24-hour time, with
+/// how to say it and where it came from. A field with one has no `value`, so it is never written.
+public struct FillHandoff: Codable, Equatable, Sendable {
+    public var value: String
+    public var display: String
+    public var source: FillSource?
+    public var memory: FillMemory?
+    public init(value: String, display: String, source: FillSource?, memory: FillMemory?) {
+        self.value = value; self.display = display; self.source = source; self.memory = memory
+    }
+    enum CodingKeys: String, CodingKey { case value, display, source, memory }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        value = try c.decode(String.self, forKey: .value); display = try c.decode(String.self, forKey: .display)
+        source = try c.decodeNullable(FillSource.self, forKey: .source); memory = try c.decodeNullable(FillMemory.self, forKey: .memory)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(value, forKey: .value); try c.encode(display, forKey: .display)
+        try c.encode(source, forKey: .source); try c.encode(memory, forKey: .memory)
+    }
+}
 
 /// A value that came from memory rather than a window: an About entry the user typed into Caret (B17).
 /// `says` is the source line after "from": "what you told Caret".
@@ -463,15 +492,22 @@ public struct FillMemory: Codable, Equatable, Sendable {
     public var id: String
     public var label: String
     public var says: String
-    public init(id: String, label: String, says: String) {
+    /// B24: the part of a remembered name the value is ("first", "middle", "last"); nil for the whole entry.
+    public var part: String?
+    public init(id: String, label: String, says: String, part: String? = nil) {
         self.id = id
         self.label = label
         self.says = says
+        self.part = part
     }
 }
 
 public struct FillField: Codable, Equatable, Sendable {
     public var key: String
+    /// Text when absent: a helper before B24 proposed text fields only.
+    public var control: FillControl
+    /// For a control other than text, the value the user sets; nil when none is proposed.
+    public var handoff: FillHandoff?
     public var frame: Frame?
     public var descriptor: String
     public var choice: String
@@ -486,10 +522,12 @@ public struct FillField: Codable, Equatable, Sendable {
     /// Two: the first ask, and the second with candidates shuffled and the field reworded. None when the
     /// field was not asked (withheld as sourceCut, or nothing could be offered for it).
     public var asks: [FillAsk]
-    enum CodingKeys: String, CodingKey { case key, frame, descriptor, choice, confidence, value, source, memory, withheld, asks }
+    enum CodingKeys: String, CodingKey { case key, control, handoff, frame, descriptor, choice, confidence, value, source, memory, withheld, asks }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         key = try c.decode(String.self, forKey: .key); frame = try c.decodeNullable(Frame.self, forKey: .frame)
+        control = try c.decodeIfPresent(FillControl.self, forKey: .control) ?? .text
+        handoff = try c.decodeIfPresent(FillHandoff.self, forKey: .handoff)
         descriptor = try c.decode(String.self, forKey: .descriptor); choice = try c.decode(String.self, forKey: .choice)
         confidence = try c.decode(Double.self, forKey: .confidence)
         value = try c.decodeNullable(String.self, forKey: .value); source = try c.decodeNullable(FillSource.self, forKey: .source)
@@ -499,10 +537,13 @@ public struct FillField: Codable, Equatable, Sendable {
         if asks.count != 2 && asks.count != 0 { throw ProtocolError("asks must hold two entries or none, got \(asks.count)") }
         if source != nil && memory != nil { throw ProtocolError("a fill value comes from a window or from memory, not both") }
         if (value == nil) != (source == nil && memory == nil) { throw ProtocolError("a fill value needs its source or memory entry, and neither comes without a value") }
+        if control != .text && value != nil { throw ProtocolError("a \(control.rawValue) is never written: its value comes as a handoff") }
+        if control == .text && handoff != nil { throw ProtocolError("a text field's value is written, not handed off") }
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(key, forKey: .key); try c.encode(frame, forKey: .frame); try c.encode(descriptor, forKey: .descriptor)
+        try c.encode(key, forKey: .key); try c.encode(control, forKey: .control); try c.encode(handoff, forKey: .handoff)
+        try c.encode(frame, forKey: .frame); try c.encode(descriptor, forKey: .descriptor)
         try c.encode(choice, forKey: .choice); try c.encode(confidence, forKey: .confidence)
         try c.encode(value, forKey: .value); try c.encode(source, forKey: .source); try c.encode(memory, forKey: .memory)
         try c.encode(withheld, forKey: .withheld); try c.encode(asks, forKey: .asks)
@@ -1046,6 +1087,7 @@ public enum Message: Codable, Equatable, Sendable {
     case planRequest(PlanRequest), planProposal(PlanProposal), calendarGrant(CalendarGrant)
     case skillOffer(SkillOffer), skillAnswer(SkillAnswer), memoryReply(MemoryReply), userPress(UserPress)
     case helperAuth(HelperAuth)
+    case pageEngine(PageEngineState)
 
     public init(from decoder: Decoder) throws {
         let t = try decoder.container(keyedBy: Envelope.self).decode(String.self, forKey: .type)
@@ -1085,6 +1127,7 @@ public enum Message: Codable, Equatable, Sendable {
         case MemoryReply.type: self = .memoryReply(try MemoryReply(from: decoder))
         case UserPress.type: self = .userPress(try UserPress(from: decoder))
         case HelperAuth.type: self = .helperAuth(try HelperAuth(from: decoder))
+        case PageEngineState.type: self = .pageEngine(try PageEngineState(from: decoder))
         default: throw ProtocolError("unknown message type \(t)")
         }
     }
@@ -1126,6 +1169,7 @@ public enum Message: Codable, Equatable, Sendable {
         case .memoryReply(let m): try m.encode(to: encoder)
         case .userPress(let m): try m.encode(to: encoder)
         case .helperAuth(let m): try m.encode(to: encoder)
+        case .pageEngine(let m): try m.encode(to: encoder)
         }
     }
 }

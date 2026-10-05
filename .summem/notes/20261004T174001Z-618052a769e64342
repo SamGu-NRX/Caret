@@ -1,1 +1,0 @@
-A17: host and helper goldens both used host-memory-7 (B22 offerOnItsOwn vs A16 wrote line); the host keeps the wrote line as host-memory-8, and the helper's copy still has two host-memory-7 replies.

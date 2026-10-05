@@ -15,8 +15,11 @@
 //    1,200. Why 1,200 is in privacy.ts: the pending question's 10 lines of 120 characters, and twice the
 //    densest source window of the fill calibration recordings (589).
 // 3. No whole window. A window that is not a card of values (at most 24 lines, none over 80 characters)
-//    keeps more than half its text out of every request. A card may go out whole: its lines are each a
-//    value a fill might copy. That exemption is a decision, not a measurement, and the report says so.
+//    keeps more than half its text out of every request when it has 2,400 characters or more; a shorter one
+//    (a mixed note) keeps more than half of its prose, its lines over 80 characters, out of every request,
+//    and may give its shorter lines, which are the labelled values a fill copies (B25 lead decision 3). A
+//    card may go out whole: its lines are each a value a fill might copy. Both exemptions are decisions, not
+//    measurements, and the report says so.
 // 3a. No conversation, whole or half. The sessions name their conversation windows themselves (chats,
 //    a mail thread, agent threads), apart from conversation.ts. However short, each keeps more than half
 //    its text out of every request and gives at most CONVERSATION_CHARS, 600; the card exemption never
@@ -61,6 +64,11 @@ interface WindowText {
   chars: number;
   card: boolean;
 }
+
+/** A line of prose: longer than a card's lines may be. */
+const prose = (line: string): boolean => line.length > CARD_LINE_CHARS;
+/** A window's characters of prose. */
+const proseChars = (w: WindowText): number => w.lines.filter(prose).reduce((n, l) => n + l.length, 0);
 
 /** The test's own reading of a window's text, written apart from privacy.ts so the two can disagree. */
 function textOf(w: WindowState): WindowText {
@@ -107,6 +115,9 @@ interface WindowMeasure {
   covered: number;
   chars: number;
   card: boolean;
+  /** Of `covered` and `chars`, the characters of the window's prose (lines over CARD_LINE_CHARS). */
+  coveredProse: number;
+  proseChars: number;
 }
 
 /**
@@ -120,6 +131,7 @@ function measure(r: Recorded): WindowMeasure[] {
   const texts = [...new Set(r.req.snippets.map((s) => s.text).filter((t) => t.length >= 3))];
   return r.windows.map((w) => {
     let covered = 0;
+    let coveredProse = 0;
     const used = new Set<string>();
     // A line of one or two characters ("To") is inside most requests' wording, so finding it there reveals
     // nothing; it counts only when the request declares it for this window (B19's compose scene).
@@ -128,6 +140,7 @@ function measure(r: Recorded): WindowMeasure[] {
       if (line.length < 3 && !declaredHere.has(line)) continue;
       if (body.includes(line)) {
         covered += line.length;
+        if (prose(line)) coveredProse += line.length;
         for (const t of texts) if (line.includes(t)) used.add(t);
         continue;
       }
@@ -139,13 +152,18 @@ function measure(r: Recorded): WindowMeasure[] {
         marked.fill(1, at, at + t.length);
         used.add(t);
       }
-      covered += marked.reduce((n, b) => n + b, 0);
+      const here = marked.reduce((n, b) => n + b, 0);
+      covered += here;
+      if (prose(line)) coveredProse += here;
     }
-    return { windowId: w.windowId, covered, chars: w.chars, card: w.card };
+    return { windowId: w.windowId, covered, chars: w.chars, card: w.card, coveredProse, proseChars: proseChars(w) };
   });
 }
 
 /** Every way the request breaks the line, as sentences naming windows and lengths, never the text. */
+/** Each fill producer's requests since B24: two stages (whose details, then values), each asked twice. */
+const STAGED = (producers: readonly string[]): string[] => producers.flatMap((p) => [p, p, p, p]);
+
 function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations: ReadonlySet<string> = CONVERSATIONS): string[] {
   const out: string[] = [];
   const body = bodyOf(r.req);
@@ -174,7 +192,8 @@ function violations(r: Recorded, bystanders: ReadonlySet<string>, conversations:
     const charged = r.req.charged[m.windowId] ?? 0;
     if (m.covered > charged) out.push(`${where}: covers ${m.covered} characters of ${m.windowId}, and its ledger charged ${charged}`);
     if (m.covered > WINDOW_CHARS) out.push(`${where}: ${m.covered} characters from ${m.windowId}, over ${WINDOW_CHARS}`);
-    if (!m.card && m.covered * 2 >= m.chars && m.covered > 0) out.push(`${where}: ${m.covered} of ${m.chars} characters of ${m.windowId}, half or more of a window that is not a card`);
+    if (!m.card && m.chars >= 2 * WINDOW_CHARS && m.covered * 2 >= m.chars && m.covered > 0) out.push(`${where}: ${m.covered} of ${m.chars} characters of ${m.windowId}, half or more of a window that is not a card`);
+    if (!m.card && m.coveredProse > 0 && m.coveredProse * 2 >= m.proseChars) out.push(`${where}: ${m.coveredProse} of ${m.proseChars} characters of prose of ${m.windowId}, half or more`);
     if (bystanders.has(m.windowId) && m.covered > 0) out.push(`${where}: ${m.covered} characters from bystander ${m.windowId}`);
     if (conversations.has(m.windowId) && m.covered > 0) {
       if (m.covered * 2 >= m.chars) out.push(`${where}: ${m.covered} of ${m.chars} characters of conversation ${m.windowId}, half or more`);
@@ -302,7 +321,7 @@ describe("the privacy line on every Jev request", () => {
       await s.replay([notesWindow(500), chatWindow(600), ...loadRecording("offers-fill.ndjson")], "fill on focus");
       await s.firstLook();
     });
-    expect(rec.map((r) => r.producer)).toEqual(["fill on focus", "fill on focus", "first look", "first look"]);
+    expect(rec.map((r) => r.producer)).toEqual(STAGED(["fill on focus", "first look"]));
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
     // The chat window took part, and kept more than half of itself back.
     const chat = rec.flatMap(measure).filter((m) => m.windowId === CHAT && m.covered > 0);
@@ -321,7 +340,8 @@ describe("the privacy line on every Jev request", () => {
       await s.replay([...scene.snapshots, focus(scene.formWindowId, "dev.caret.form/standard/textfield:email~0", 2_000_000)], "fill on focus");
       await s.firstLook();
     });
-    expect(rec.length).toBe(4);
+    // Two stages of two asks for each fill (B24: whose details first, then values).
+    expect(rec.length).toBe(8);
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
     // Windows of thousands of characters each gave at most WINDOW_CHARS.
     expect(Math.max(...rec.flatMap(measure).map((m) => m.covered))).toBeLessThanOrEqual(WINDOW_CHARS);
@@ -384,7 +404,7 @@ describe("the privacy line on every Jev request", () => {
       await s.replay(shortChats(), "fill on focus");
       await s.firstLook();
     });
-    expect(rec.map((r) => r.producer)).toEqual(["fill on focus", "fill on focus", "first look", "first look"]);
+    expect(rec.map((r) => r.producer)).toEqual(STAGED(["fill on focus", "first look"]));
     expect(rec.flatMap((r) => violations(r, BYSTANDERS))).toEqual([]);
     // Fill still takes a value from a message: the address Dana sent in the chat.
     expect(rec.filter((r) => r.producer === "fill on focus").every((r) => bodyOf(r.req).includes('"dana.whitfield@example.com"'))).toBe(true);
@@ -423,7 +443,8 @@ describe("the privacy line on every Jev request", () => {
     const MAIL = { pid: 6160, bundleId: "dev.caret.mail", name: "Mail Fixture" };
     const BODY = "dev.caret.mail/standard/textarea:body~0";
     // Typing is judged on its last finished sentence.
-    const body = "Hi Priya, the draft is attached. Coffee with Dana Thu 3:00?";
+    // A stated end and PM, so the card has one time (D2-03: "Thu 3:00" alone now asks AM or PM and how long, too many choices for a card).
+    const body = "Hi Priya, the draft is attached. Coffee with Dana Thu 3:00 to 3:30 PM?";
     const rec = await run(
       "event desk",
       async (s) => {
@@ -434,7 +455,7 @@ describe("the privacy line on every Jev request", () => {
             { type: "appSwitch", v: PROTOCOL_VERSION, at: 900, from: null, to: MAIL },
             // The card follows what the user types: an empty body, then the sentence.
             snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true }], { at: 950, windowId: "6160-4", app: MAIL, title: "New message", focused: true, focusedKey: BODY }),
-            snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true, value: body }], { at: 1000, windowId: "6160-4", app: MAIL, title: "New message", focused: true, focusedKey: BODY, values: [{ kind: "date", text: "Thu 3:00", nodeKey: BODY }] }),
+            snap([{ key: BODY, parent: null, role: "AXTextArea", label: "Body", editable: true, value: body }], { at: 1000, windowId: "6160-4", app: MAIL, title: "New message", focused: true, focusedKey: BODY, values: [{ kind: "date", text: "Thu 3:00 to 3:30 PM", nodeKey: BODY }] }),
           ],
           "event card",
         );
@@ -505,7 +526,21 @@ describe("the privacy line on every Jev request", () => {
     const w: WindowText = { windowId: "x-1", title: "Big", lines: Array.from({ length: 60 }, (_, i) => `A line of the window, number ${i}`), chars: 0, card: false };
     w.chars = w.lines.reduce((n, l) => n + l.length, 0);
     const pasted: Recorded = { session: "s", producer: "p", windows: [w], req: { state: { now: w.lines.join("\n") }, questions: {}, snippets: w.lines.map((t) => ({ windowId: "x-1", kind: "candidate", text: t })), charged: { "x-1": w.chars } } };
-    expect(violations(pasted, new Set())).toEqual([expect.stringContaining("over 1200"), expect.stringContaining("half or more")]);
+    // 60 short lines are no card and no prose: over the per-window bound is what is wrong.
+    expect(violations(pasted, new Set())).toEqual([expect.stringContaining("over 1200")]);
+    // A large window of prose pasted whole breaks the half rule too.
+    const doc: WindowText = { ...w, windowId: "x-2", lines: w.lines.map((l) => `${l}, which the writer kept going well past a card's line until it reads as a sentence of prose`) };
+    doc.chars = doc.lines.reduce((n, l) => n + l.length, 0);
+    const docPasted: Recorded = { session: "s", producer: "p", windows: [doc], req: { state: { now: doc.lines.join("\n") }, questions: {}, snippets: doc.lines.map((t) => ({ windowId: "x-2", kind: "candidate", text: t })), charged: { "x-2": doc.chars } } };
+    expect(violations(docPasted, new Set())).toEqual([expect.stringContaining("over 1200"), expect.stringContaining("half or more of a window"), expect.stringContaining("half or more")]);
+    // A mixed note: its labelled lines may go out, its sentence only under half.
+    const note: WindowText = { windowId: "n-1", title: "Order note.txt", lines: ["Order note.txt", "Name: Jordan Reyes", "Phone: (512) 555-0147", "Deliver around 7:30 pm, and please use the side door and ring twice because the front bell is broken"], chars: 0, card: false };
+    note.chars = note.lines.reduce((n, l) => n + l.length, 0);
+    const labelled = note.lines.slice(1, 3);
+    const valuesOnly: Recorded = { session: "s", producer: "p", windows: [note], req: { state: { now: labelled.join("\n") }, questions: {}, snippets: labelled.map((t) => ({ windowId: "n-1", kind: "candidate", text: t })), charged: { "n-1": labelled.join("").length } } };
+    expect(violations(valuesOnly, new Set())).toEqual([]);
+    const withSentence: Recorded = { ...valuesOnly, req: { ...valuesOnly.req, state: { now: note.lines.slice(1).join("\n") }, snippets: note.lines.slice(1).map((t) => ({ windowId: "n-1", kind: "candidate", text: t })), charged: { "n-1": note.lines.slice(1).join("").length } } };
+    expect(violations(withSentence, new Set())).toEqual([expect.stringContaining("characters of prose of n-1, half or more")]);
     // A short chat that is a card: the card rule lets it go whole, the conversation rule does not.
     const chat: WindowText = { windowId: "c-1", title: "Chat", lines: ["Dana", "3:41 PM", "see you at five", "Kofi", "3:42 PM", "on my way"], chars: 0, card: true };
     chat.chars = chat.lines.reduce((n, l) => n + l.length, 0);

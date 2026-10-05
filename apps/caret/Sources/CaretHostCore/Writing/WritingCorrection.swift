@@ -56,10 +56,14 @@ public struct WritingCorrection: Hashable, Sendable {
     /// Why, in plain words, for the expanded offer and VoiceOver.
     public var reason: String
     public var source: Source
+    /// The checker's two answers disagree (its first guess and its autocorrection), so neither is
+    /// the fix: both show as alternatives, and Tab applies nothing until the user opens the list
+    /// and picks one (lead decision 2 of 2026-10-04, after T1's "adress" to "dress").
+    public var needsChoice: Bool
 
     public init(
         span: UTF16Span, original: String, replacement: String, otherReplacements: [String] = [],
-        kind: Kind, reason: String, source: Source
+        kind: Kind, reason: String, source: Source, needsChoice: Bool = false
     ) {
         self.span = span
         self.original = original
@@ -68,6 +72,7 @@ public struct WritingCorrection: Hashable, Sendable {
         self.kind = kind
         self.reason = reason
         self.source = source
+        self.needsChoice = needsChoice
     }
 
     /// Distance in UTF-16 units from the caret to this correction; 0 when the caret touches or is

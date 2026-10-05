@@ -10,7 +10,7 @@ import { TransferDetector, type Transfer } from "./transfers.ts";
 import { ShadowLogger } from "./shadow.ts";
 import type { Store } from "./store.ts";
 import type { AskJev, JevRequest } from "./fill/jev.ts";
-import { FillError, formAsksFor, formFields, proposeFill } from "./fill/fill.ts";
+import { describeInput, emptyInput, FillError, formAsksFor, formFields, memoryValue, parseMemoryRef, proposeFill } from "./fill/fill.ts";
 import {
   HOST_OFFER_TYPES,
   HelperMessage,
@@ -23,6 +23,11 @@ import {
   type FirstLook,
   type FirstLookReply,
   type Focus,
+  type MemoryDocument,
+  type MemoryDocumentReply,
+  type MemoryDocumentRequest,
+  type MemoryNotRight,
+  type MemoryProvenance,
   type MemoryReply,
   type MemoryRequest,
   type OfferAccept,
@@ -48,13 +53,15 @@ import type { Change, WindowState } from "./model.ts";
 import { Executor, type Authorization, type ExecutorDeps, type Revocation, type TaskEvent, type TaskResult, type UndoResult } from "./executor/executor.ts";
 import { ReaderCalendar, SocketReaderLink, type CalendarPort, type ReaderLink, type UrlOpener } from "./executor/means.ts";
 import { RecoveryJournal, type JournalRecord } from "./executor/journal.ts";
-import { MemoryStore } from "./patterns/memory.ts";
+import { MemoryError, MemoryStore } from "./patterns/memory.ts";
+import { MemoryConflictError, MemoryDocumentError, type DocumentInfo } from "./memory/documents.ts";
+import type { DocId } from "./memory/parse.ts";
 import { PatternEngine } from "./patterns/engine.ts";
 import { TaskRegistry, TransitionError } from "./tasks/registry.ts";
 import { PendingWatcher } from "./tasks/pending.ts";
 import { Audit } from "./audit.ts";
 import { HostOfferRegistry, acceptRefusal, type AcceptHandler, type AcceptResult, type HostOffer } from "./offers/registry.ts";
-import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, type GroundedProposal } from "./offers/fill-popup.ts";
+import { buildFillPopup, fieldLabel, fillPlan, fillPopupEligible, recheckFill, writtenFields, type GroundedProposal } from "./offers/fill-popup.ts";
 import { aboutValues, type AboutValue } from "./fill/about.ts";
 import type { PopupSpecT } from "./popup.ts";
 import { describeField } from "./fill/descriptor.ts";
@@ -66,6 +73,15 @@ import { expired } from "./offers/lifetimes.ts";
 import { offerField } from "./offers/field.ts";
 import { planTask, requestedWindow, type PlanDraft, type PlanTaskOptions } from "./planner/planner.ts";
 import { PlannerError, validatePlan } from "./planner/validate.ts";
+import { planWithCode } from "./planner/codeplan.ts";
+import { planAsk } from "./planner/ask.ts";
+import { jevIntentMaker, writerIntentMaker } from "./planner/intent-makers.ts";
+import { splitName } from "./fill/derive.ts";
+import type { WriterPort } from "./writer/port.ts";
+import type { PlanErrorCode } from "./protocol.ts";
+
+/** The planner's failures that mean it could not ground the instruction, after which the code-mode writer is tried. */
+const CODE_PLAN_AFTER: ReadonlySet<PlanErrorCode> = new Set(["unsure", "nothingToDo"]);
 import { planError, proposed } from "./planner/proposal.ts";
 import type { MemoryValue } from "./planner/trace.ts";
 
@@ -87,12 +103,29 @@ export interface HelperOptions {
   /** Replaces the socket link to the reader, for tests that simulate the reader in process. */
   readerLink?: ReaderLink;
   /**
+   * The reader's socket link when `readerLink` wraps it (the page engines' RoutedReaderLink, main.ts): the reader's
+   * verbResults are answered here, and a reader counts as connected only from its hello, as without `readerLink`.
+   */
+  readerAnswers?: SocketReaderLink;
+  /**
+   * Whether a page engine is connected for this browser process (engines/registry.ts forBrowser). A reader focus in
+   * such a browser then asks for no fill: that browser's pages are filled from the page engine (engines/page-focus.ts).
+   */
+  pageCovers?: (pid: number) => boolean;
+  /**
    * Where calendar end states are written: a port, "reader" for the reader's EventKit adapter over the
    * same link the executor acts through (ReaderCalendar), or null for none.
    */
   calendar?: CalendarPort | "reader" | null;
   /** Memory entries, the decision log and reactions. Defaults to a store beside `store`'s database. */
   memory?: MemoryStore;
+  /**
+   * The markdown memory folder for the default store (M1). Defaults to "Memory" inside the data directory, so a
+   * helper on a temporary directory never opens the user's real folder; main.ts passes the app's.
+   */
+  memoryDir?: string;
+  /** Watch the memory folder for edits (main.ts); reads check revisions either way. */
+  watchMemory?: boolean;
   /** Where runs are saved before each act, for recovery after a crash (B23). Defaults to one beside `store`'s database. */
   journal?: RecoveryJournal;
   urls?: UrlOpener | null;
@@ -109,6 +142,16 @@ export interface HelperOptions {
   eventCalendar?: string;
   /** Fault-injection seam for the planner evaluation; see PlanTaskOptions.beforeCheck. Never set in normal use. */
   plannerHooks?: Pick<PlanTaskOptions, "beforeCheck">;
+  /**
+   * The code-mode plan writer (writer/, B24). When set, an instruction the deterministic planner cannot ground
+   * (unsure or nothing to do) goes to it (planner/codeplan.ts). Absent: those instructions fail as before.
+   */
+  writer?: WriterPort | null;
+  /**
+   * How an Ask's instruction becomes an intent (B25, planner/ask.ts): Jev's staged questions, or the writer's
+   * strict JSON through this port. Absent or null: Ask runs the planner, then the code-mode writer, as before B25.
+   */
+  ask?: { maker: "jev" } | { maker: "writer"; writer: WriterPort } | null;
   /** Fault-injection seams for the executor evaluation; see ExecutorDeps. */
   executorHooks?: Pick<ExecutorDeps, "beforeStep" | "beforeAct" | "targetCutoff">;
   /** Replaces the level's offers per hour (OfferGate), for fixture evaluations that make dozens of offers in minutes. Never set in normal use. */
@@ -178,12 +221,21 @@ export class Helper {
   private readonly inflight = new Set<string>();
   /** When each About entry was added through memoryRequest add, by id: the newer entries a form has not been asked about (B21). */
   private readonly aboutAddedAt = new Map<string, number>();
+  /**
+   * The memory entries each offer was built from, by offer key (a patternOffer's id): taking it confirms the noticed
+   * ones (lead decision 3), and its memoryProvenance names them.
+   */
+  private readonly offerMemory = new Map<string, string[]>();
   /** Forms whose fill was in flight when an About entry was added; the focused field is asked about again when that fill ends. */
   private readonly refillAfter = new Set<string>();
   /** Recent proposals, by id: the window and each proposed field's value, so fillResult can be checked and matched. */
   private readonly proposals = new Map<string, { at: number; windowId: string; values: Map<string, string>; labels: Map<string, string>; app: string | null }>();
   /** Every Jev request goes through this, which records it as a use of "Read and prepare" (B17). Null when Jev is off. */
   private readonly ask: AskJev | null;
+  /** The configured plan writer, wrapped so each request is recorded (recordRead). */
+  private readonly writer: WriterPort | null;
+  /** How an Ask makes its intent; the writer's port is wrapped like the plan writer's. Null: the planner as before B25. */
+  private readonly askConfig: { maker: "jev" } | { maker: "writer"; writer: WriterPort } | null;
   /** What the last "Read and prepare" use's request declared, so the two asks of one question, which declare the same text, count once. */
   private lastRead: { declared: string; at: number } | null = null;
   /** Offers already recorded as a use of "Show in Caret's UI", by key; bounded. */
@@ -270,7 +322,7 @@ export class Helper {
     this.now = opts.now ?? Date.now;
     this.offers = new HostOfferRegistry(this.now);
     this.gate = new OfferGate(opts.settings ?? DEFAULT_SETTINGS, { load: () => opts.store.offerTimes(), record: (at) => opts.store.recordOffer(at) }, opts.offersPerHour ?? null);
-    this.readerConnected = opts.readerLink !== undefined;
+    this.readerConnected = opts.readerLink !== undefined && opts.readerAnswers === undefined;
     if (opts.audit === true && (!opts.shadow || opts.askJev !== null)) throw new Error("the audit runs only in shadow mode with Jev off");
     const jev = opts.askJev;
     // Recorded once the request has gone and been answered, or as failed: a client that throws before
@@ -288,6 +340,25 @@ export class Helper {
               throw e;
             }
           };
+    // The plan writer's requests are recorded as Jev's are, from the declarations the planner attached, whether
+    // the plan then succeeds or not (fix-check review).
+    const recorded = (writer: WriterPort, who: string): WriterPort => ({
+      route: writer.route,
+      write: async (req) => {
+        try {
+          const r = await writer.write(req);
+          this.recordRead({ snippets: req.disclosed ?? [] }, "done", who);
+          return r;
+        } catch (e) {
+          this.recordRead({ snippets: req.disclosed ?? [] }, "failed", who);
+          throw e;
+        }
+      },
+    });
+    const writer = opts.writer ?? null;
+    this.writer = writer === null ? null : recorded(writer, "the plan writer");
+    const askOpt = opts.ask ?? null;
+    this.askConfig = askOpt === null || askOpt.maker === "jev" ? askOpt : { maker: "writer", writer: recorded(askOpt.writer, "the intent writer") };
     this.mode = opts.shadow ? "shadow" : "live";
     this.transfers = new TransferDetector(this.model, this.text);
     this.shadowLogger = new ShadowLogger(this.model, this.text, opts.store);
@@ -303,7 +374,16 @@ export class Helper {
       onTask: (e) => this.onTaskEvent(e),
       onUse: (u) => this.memory.recordUse(u.action, { at: this.now(), says: u.says, app: u.app, outcome: u.outcome }),
       // Any active About or people entry: a fill copies typed About values (trimmed when kept), a plan copies any.
-      memoryHolds: (id, value) => this.memory.text(id) === value,
+      // A plan may write a first, middle or last name code split from a remembered name (B24): the entry must
+      // still give exactly that part, by the same split, not any substring.
+      memoryHolds: (ref, value) => {
+        const { id, part } = parseMemoryRef(ref);
+        const text = this.memory.text(id);
+        if (text === null || text === undefined) return false;
+        // A whole value stays exact; a part is the same part by the same split (fix-check review: a name that
+        // changed from "Riley Ade Okafor" to "Morgan Riley" must not still give "Riley" as a first name).
+        return memoryValue(text, part) === value;
+      },
       authorize: (a) => this.authorize(a),
       ...(opts.warn === undefined ? {} : { warn: opts.warn }),
       // The in-progress skill marker rides on each saved run: the skill it counts for, if any.
@@ -322,7 +402,17 @@ export class Helper {
       },
       ...opts.executorHooks,
     });
-    this.memory = opts.memory ?? new MemoryStore(opts.store.dir);
+    this.memory =
+      opts.memory ??
+      new MemoryStore(opts.store.dir, {
+        ...(opts.memoryDir === undefined ? {} : { documents: opts.memoryDir }),
+        watch: opts.watchMemory === true,
+        warn: (line) => opts.warn?.(line),
+      });
+    if (this.memory.migration.outcome === "failed") opts.store.count("memory.migration_failed", 1);
+    if (this.memory.migration.outcome === "migrated" || this.memory.migration.outcome === "resumed") opts.store.count("memory.migrated", this.memory.migration.moved);
+    // An edit in an editor or the memory window withdraws the offers that used it and revokes tasks that copy it.
+    this.memory.onOutsideChange = (changes) => this.memoryChangedOutside(changes);
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
     this.patterns = new PatternEngine({
@@ -474,9 +564,18 @@ export class Helper {
     return null;
   }
 
+  private readonly readerListeners = new Set<(m: ReaderMessage) => void>();
+
+  /** Sees every reader message before the helper handles it (the page engines' presence signal, main.ts). Returns the way to stop. */
+  onReaderMessage(l: (m: ReaderMessage) => void): () => void {
+    this.readerListeners.add(l);
+    return () => this.readerListeners.delete(l);
+  }
+
   /** Returns the fill proposal promise when the message triggered one, for tests and evals. */
   handleReader(m: ReaderMessage): Promise<FillProposal | null> | null {
     const store = this.opts.store;
+    for (const l of this.readerListeners) l(m);
     switch (m.type) {
       case "hello":
         // A new reader numbers windows from scratch and walks everything again, so the old session's
@@ -553,7 +652,9 @@ export class Helper {
           this.openApp.onFocus(m);
           this.onFillFocus(m);
         }
-        const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus);
+        // A browser with a page engine is filled from the engine's own page window, not from Accessibility's view of it.
+        const pageCovered = !m.windowId.startsWith("page:") && this.opts.pageCovers?.(m.app.pid) === true;
+        const triggers = this.mode === "live" && m.editable && m.empty && m.key !== null && (m.frontmost || this.opts.allowBackgroundFocus) && !pageCovered;
         if (!triggers || m.key === null) return null;
         return this.fill(m.windowId, m.key, false);
       }
@@ -583,7 +684,7 @@ export class Helper {
         store.count("reader.pasteboard_change", 1, m.at);
         return null;
       case "verbResult":
-        this.socketLink?.answer(m);
+        (this.socketLink ?? this.opts.readerAnswers)?.answer(m);
         return null;
       case "userInput":
         this.executor.onUserInput(m);
@@ -716,8 +817,8 @@ export class Helper {
     const out: MemoryValue[] = [];
     for (const e of [...this.memory.list("about"), ...this.memory.list("people")]) {
       if (e.status === "paused") continue;
-      if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value });
-      else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name });
+      if (e.kind === "about") out.push({ id: e.id, label: e.fields.label, text: e.fields.value, whose: "user" });
+      else if (e.kind === "people") out.push({ id: e.id, label: e.fields.alias, text: e.fields.name, whose: "other" });
     }
     return out;
   }
@@ -743,7 +844,20 @@ export class Helper {
     while (this.idTaken(offerKey)) offerKey = `plan-${++this.planSeq}-${m.requestId}`;
     const session = this.readerSession;
     let draft: PlanDraft;
-    try {
+    const askConfig = this.askConfig;
+    if (askConfig !== null) {
+      // B25: an intent, checked by code, then the scoped fill or the planner (planner/ask.ts).
+      try {
+        const windowId = requestedWindow(this.model, m);
+        const maker = askConfig.maker === "jev" ? jevIntentMaker(ask) : writerIntentMaker(askConfig.writer, () => offerKey);
+        const d = await planAsk(m.instruction, this.model, { values: () => this.plannerMemory() }, this.aboutValues(), { askJev: ask, maker, writer: this.writer, offerKey, now: this.now(), ...(windowId === null ? {} : { windowId }), ...this.opts.plannerHooks });
+        store.count(`plan.ask_${d.route}`, 1);
+        draft = d;
+      } catch (e) {
+        if (!(e instanceof PlannerError)) throw e;
+        return fail(e.code, e.message);
+      }
+    } else try {
       const windowId = requestedWindow(this.model, m);
       draft = await planTask(m.instruction, this.model, { values: () => this.plannerMemory() }, {
         askJev: ask,
@@ -753,8 +867,22 @@ export class Helper {
         ...this.opts.plannerHooks,
       });
     } catch (e) {
-      if (e instanceof PlannerError) return fail(e.code, e.message);
-      throw e;
+      if (!(e instanceof PlannerError)) throw e;
+      // An instruction the planner could not ground goes to the code-mode writer, when one is configured (B24).
+      // The plan it builds is checked by the same validatePlan and offered the same way; on failure the
+      // planner's own error stands, with the writer's reason added.
+      const writer = this.writer;
+      const windowId = CODE_PLAN_AFTER.has(e.code) && writer !== null ? (e.windowId ?? requestedWindow(this.model, m)) : null;
+      if (writer === null || windowId === null) return fail(e.code, e.message);
+      store.count("plan.codeMode", 1);
+      try {
+        draft = await planWithCode(m.instruction, this.model, { values: () => this.plannerMemory() }, { writer, askJev: ask, offerKey, windowId, now: this.now() });
+        store.count("plan.codeModeProposed", 1);
+      } catch (e2) {
+        if (!(e2 instanceof PlannerError)) throw e2;
+        store.count(`plan.codeMode_${e2.code}`, 1);
+        return fail(e.code, `${e.message}; the plan writer did not help either: ${e2.message}`);
+      }
     }
     // Window ids start over with a new reader; a plan drafted in the old session names other windows now.
     if (session !== this.readerSession) return fail("unknownWindow", "the reader restarted while Caret planned, so the plan's window ids no longer apply");
@@ -769,6 +897,7 @@ export class Helper {
     const checked = HelperMessage.safeParse(msg);
     if (!checked.success) return fail("schema", `the proposal's pop-up failed the protocol check: ${checked.error.issues[0]?.message ?? "invalid"}`);
     this.offers.record(msg, () => this.acceptPlan(offerKey));
+    this.rememberOfferMemory(offerKey, msg);
     this.recordShownOffer(offerKey, w.window.windowId, specSays(spec));
     const expect = { [w.window.windowId]: Object.fromEntries(draft.checked.writes.map((wr) => [wr.node.key, wr.node.value ?? ""])) };
     this.planOffers.set(offerKey, { at: this.now(), draft, instruction: m.instruction, expect });
@@ -835,9 +964,128 @@ export class Helper {
    * Takes, dismisses or silences a pattern offer. Resolves when a taken offer's plan has run. `session`: the
    * host session it came from (HelperServer), which a taken offer's run is bound to; absent in process.
    */
-  handleOffer(m: OfferControl, session?: string): Promise<TaskResult | null> {
-    if (m.action === "take") this.bindNew(m.offerId, session);
-    return this.patterns.control(m);
+  async handleOffer(m: OfferControl, session?: string): Promise<TaskResult | null> {
+    if (m.action !== "take") return this.patterns.control(m);
+    const stale = this.checkMemoryBeforeAccept(m.offerId);
+    if (stale !== null) {
+      this.error(`offer ${m.offerId}: ${stale}`);
+      return null;
+    }
+    this.bindNew(m.offerId, session);
+    const used = this.offerMemory.get(m.offerId) ?? [];
+    const out = await this.patterns.control(m);
+    if (out !== null) this.confirmMemory(used);
+    return out;
+  }
+
+  /**
+   * Right before an offer is taken, the memory files are checked by content, not by stat (plan section 6): an edit
+   * the watcher has not reported yet withdraws what it invalidates now. Returns why this offer can no longer be
+   * taken, or null.
+   */
+  private checkMemoryBeforeAccept(offerId: string): string | null {
+    const changes = [...this.memory.takeOutsideChanges(), ...this.memory.verify()];
+    if (changes.length === 0) return null;
+    const used = new Set(this.offerMemory.get(offerId) ?? []);
+    this.memoryChangedOutside(changes);
+    const hit = changes.find((c) => used.has(c.id));
+    return hit === undefined ? null : `what it uses from memory (${hit.id}) changed since it was offered`;
+  }
+
+  /** The user took an offer: the noticed facts it was built from are confirmed (lead decision 3). */
+  private confirmMemory(ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    // An accept resolves when its run ends, which can be after the helper shut its store: a failed confirmation is
+    // said, never thrown into a promise nobody awaits.
+    try {
+      const confirmed = this.memory.confirm(ids);
+      if (confirmed.length > 0) this.opts.store.count("memory.confirmed", confirmed.length);
+    } catch (e) {
+      this.opts.warn?.(`memory: confirming ${ids.join(", ")} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * Memory changed outside Caret: in an editor, the memory window's editor, or by "Not right". Offers built from a
+   * changed entry are withdrawn as stale, an edited skill's offers too, and every live task is checked again, so one
+   * that copies a changed value or runs a changed skill is revoked before its next act (S1 audit #4).
+   */
+  private memoryChangedOutside(changes: readonly { id: string; kind: string }[]): void {
+    if (changes.length === 0) return;
+    this.opts.store.count("memory.outside_change", changes.length);
+    for (const c of changes) this.withdrawMemoryOffers(c.id);
+    this.patterns.memoryChanged(changes);
+    this.executor.recheck();
+  }
+
+  /** "Not right" on an offer, about one fact it used (memoryNotRight, lead decision 3). The reply goes to the asker only. */
+  handleMemoryNotRight(m: MemoryNotRight): MemoryReply {
+    const reply = (entries: MemoryReply["entries"], error: string | null): MemoryReply => ({ type: "memoryReply", v: PROTOCOL_VERSION, requestId: m.requestId, error, entries });
+    try {
+      const kind = this.memory.get(m.memoryId).kind;
+      const e = this.memory.notRight(m.memoryId, m.correction, Math.max(this.now(), Date.now()));
+      this.opts.store.count(m.correction === null ? "memory.not_right_forget" : "memory.not_right_fix", 1);
+      this.memoryChangedOutside([{ id: m.memoryId, kind }]);
+      return reply(e === null ? [] : [e], null);
+    } catch (e) {
+      if (e instanceof MemoryError) return reply([], e.message);
+      throw e;
+    }
+  }
+
+  /** The memory window's documents: list, read, or save from its editor (memoryDocumentRequest). To the asker only. */
+  handleMemoryDocument(m: MemoryDocumentRequest): MemoryDocumentReply {
+    const base = { type: "memoryDocumentReply", v: PROTOCOL_VERSION, requestId: m.requestId, folder: this.memory.folder } as const;
+    const wire = (d: DocumentInfo): MemoryDocument => ({ doc: d.doc, file: d.file, path: d.path, revision: d.revision, bytes: d.bytes, diagnostics: d.diagnostics.map((x) => ({ line: x.line, field: x.field, severity: x.severity, message: x.message })) });
+    const fail = (error: string, conflict: { revision: string | null } | null = null, documents: MemoryDocument[] = []): MemoryDocumentReply => ({ ...base, error, conflict, documents, text: null });
+    try {
+      switch (m.op) {
+        case "list":
+          return { ...base, error: null, conflict: null, documents: this.memory.documents().map(wire), text: null };
+        case "read": {
+          const r = this.memory.readDocument(m.doc as DocId);
+          return { ...base, error: null, conflict: null, documents: [wire(r.info)], text: r.text };
+        }
+        case "save": {
+          const info = this.memory.saveDocument(m.doc as DocId, m.baseRevision ?? null, m.text ?? "");
+          this.opts.store.count("memory.document_saved", 1);
+          // The user's edits reach offers and tasks before the reply goes out.
+          this.memoryChangedOutside(this.memory.takeOutsideChanges());
+          return { ...base, error: null, conflict: null, documents: [wire(info)], text: null };
+        }
+      }
+    } catch (e) {
+      if (e instanceof MemoryConflictError) {
+        this.opts.store.count("memory.save_conflict", 1);
+        let current: MemoryDocument[] = [];
+        try {
+          current = [wire(this.memory.readDocument(m.doc as DocId).info)];
+        } catch {
+          // The reply still says there was a conflict.
+        }
+        return fail(e.message, { revision: e.current }, current);
+      }
+      if (e instanceof MemoryDocumentError || e instanceof MemoryError) return fail(e.message);
+      throw e;
+    }
+  }
+
+  /** The noticed facts a plan proposal was built from, sent with it to its asker; null when it used none. */
+  provenanceFor(offerKey: string | null): MemoryProvenance | null {
+    return offerKey === null ? null : this.provenance(offerKey);
+  }
+
+  private provenance(offerKey: string): MemoryProvenance | null {
+    const facts = this.memory.noticedAmong(this.offerMemory.get(offerKey) ?? []);
+    if (facts.length === 0) return null;
+    const now = this.now();
+    return {
+      type: "memoryProvenance",
+      v: PROTOCOL_VERSION,
+      at: now,
+      offerKey,
+      facts: facts.map((f) => ({ memoryId: f.id, kind: f.kind, label: f.label, says: noticedSays(f.noticed.app, f.noticed.at, now), noticed: { app: f.noticed.app, windowTitle: f.noticed.window, at: f.noticed.at } })),
+    };
   }
 
   /**
@@ -849,6 +1097,8 @@ export class Helper {
    */
   async handleOfferAccept(m: OfferAccept, session?: string): Promise<TaskResult | null> {
     if (this.mode !== "live") return this.refuseAccept(m.offerId, "the helper is in shadow mode and does not act");
+    const stale = this.checkMemoryBeforeAccept(m.offerId);
+    if (stale !== null) return this.refuseAccept(m.offerId, stale);
     const r = this.offers.get(m.offerId);
     if (r === undefined) return this.refuseAccept(m.offerId, "no such offer, or it expired");
     if (r.accepted) return this.refuseAccept(m.offerId, "already accepted");
@@ -857,13 +1107,16 @@ export class Helper {
     if (r.accept === null) return this.refuseAccept(m.offerId, "the offer has nothing to run");
     r.accepted = true;
     this.bindNew(m.offerId, session);
+    const used = this.offerMemory.get(m.offerId) ?? [];
     let out: AcceptResult;
     try {
       out = await r.accept(m);
     } catch (e) {
       return this.refuseAccept(m.offerId, e instanceof Error ? e.message : String(e));
     }
-    return "refused" in out ? this.refuseAccept(m.offerId, out.refused) : out;
+    if ("refused" in out) return this.refuseAccept(m.offerId, out.refused);
+    this.confirmMemory(used);
+    return out;
   }
 
   /** Esc on running work: a stop for the task the offer started. */
@@ -927,6 +1180,14 @@ export class Helper {
   private addedSince(since: number, w: WindowState, key: string): boolean {
     const fresh = this.aboutValues().filter((a) => (this.aboutAddedAt.get(a.id) ?? -Infinity) >= since);
     return formAsksFor(w, key, fresh);
+  }
+
+  /** Notes which memory entries an offer was built from, by the refs its message carries. */
+  private rememberOfferMemory(offerKey: string, m: unknown): void {
+    const ids = new Set<string>();
+    memoryRefs(m, ids);
+    if (ids.size > 0) this.offerMemory.set(offerKey, [...ids]);
+    else this.offerMemory.delete(offerKey);
   }
 
   private withdrawMemoryOffers(memoryId: string): void {
@@ -1244,14 +1505,16 @@ export class Helper {
       // no per-field insert for a fillResult to report, and the proposal is not kept for one. An
       // explicit fillRequest asks for the proposal itself (scripts/fill-eval.ts reads its fields), so it
       // always gets one.
-      if (!explicit && fillPopupEligible(p)) {
-        if (this.fillOverBeforeShown(p, formKey, focuses) !== null) {
+      // The pop-up runs the fields Caret writes; a form's selects, boxes, dates and times are hand-offs (B24).
+      const written = writtenFields(p);
+      if (!explicit && fillPopupEligible(written)) {
+        if (this.fillOverBeforeShown(written, formKey, focuses) !== null) {
           store.count("fill.popup_stale", 1, now);
           return p;
         }
         store.count("fill.popup", 1, now);
-        if (this.publish(buildFillPopup(this.model, p), () => this.acceptFill(p))) {
-          this.fillPopups.set(p.id, { p, form: formKey });
+        if (this.publish(buildFillPopup(this.model, written), () => this.acceptFill(written))) {
+          this.fillPopups.set(written.id, { p: written, form: formKey });
           // The hour runs from when the offer is shown, not from when it was asked for.
           this.gate.spoke(this.now());
         }
@@ -1292,13 +1555,17 @@ export class Helper {
     const trigger = w?.nodes.get(p.triggerKey);
     if (w === undefined || trigger === undefined || (trigger.value ?? "") !== "") return null;
     const fields = p.fields.filter((f) => {
-      const n = w.nodes.get(f.key);
-      if (n === undefined || (n.value ?? "") !== "" || describeField(w, n).text !== f.descriptor) return false;
-      if (f.memory !== null) {
-        const now = this.aboutNow(f.memory.id);
-        return now !== null && now.value === f.value && now.label === f.memory.label;
+      // Read the way proposeFill read it, so a control is judged by its own rules (B24 review).
+      const input = emptyInput(w, f.key);
+      if (input === null || describeInput(w, input) !== f.descriptor) return false;
+      const memory = f.memory ?? f.handoff?.memory ?? null;
+      const value = f.value ?? f.handoff?.value ?? null;
+      if (memory !== null) {
+        const now = this.aboutNow(memory.id);
+        return now !== null && memoryValue(now.value, memory.part) === value && now.label === memory.label;
       }
-      return f.source === null || this.model.windows.has(f.source.windowId);
+      const source = f.source ?? f.handoff?.source ?? null;
+      return source === null || this.model.windows.has(source.windowId);
     });
     return { ...p, fields };
   }
@@ -1393,9 +1660,19 @@ export class Helper {
         return false;
       }
       this.offers.record(m as HostOffer, accept ?? null);
-    } else if (m.type === "offerWithdrawn") this.offers.remove(m.id);
+    } else if (m.type === "offerWithdrawn") {
+      this.offers.remove(m.id);
+      this.offerMemory.delete(m.id);
+    }
     this.opts.publish(m);
     this.recordShown(m);
+    // Right after an offer built from a noticed fact: where that fact came from, for the offer's "Not right".
+    if (HOST_OFFER_TYPES.has(m.type) || m.type === "patternOffer") {
+      const key = m.type === "patternOffer" ? m.id : String((m as HostOffer).offerKey);
+      this.rememberOfferMemory(key, m);
+      const p = this.provenance(key);
+      if (p !== null) this.opts.publish(p);
+    }
     // A first look's key that reports this offer ends with it.
     if (m.type === "offerWithdrawn") {
       for (const [k, f] of [...this.firstLooks]) if (f.underlying === m.id) this.withdrawFirstLook(k, m.reason === "reoffered" ? "stale" : m.reason);
@@ -1408,13 +1685,13 @@ export class Helper {
    * snippets), and what the user told Caret. The second ask of a question declares the same text and is
    * not counted again; the comparison is kept in memory only.
    */
-  private recordRead(req: JevRequest, outcome: "done" | "failed"): void {
+  private recordRead(req: Pick<JevRequest, "snippets">, outcome: "done" | "failed", to = "Jev"): void {
     const apps = [...new Set(req.snippets.flatMap((x) => (x.windowId === MEMORY_SNIPPETS || x.windowId === "plan" ? [] : [this.model.windows.get(x.windowId)?.app.name ?? "a closed window"])))];
     const told = req.snippets.some((x) => x.windowId === MEMORY_SNIPPETS);
     const planned = req.snippets.some((x) => x.windowId === "plan");
     const parts = [...(apps.length === 0 ? [] : [`snippets from ${andList(apps)}`]), ...(told ? ["what you told Caret"] : []), ...(planned ? ["your instruction"] : [])];
     const what = parts.length === 0 ? "a question with no screen text" : andList(parts);
-    const says = outcome === "done" ? (parts.length === 0 ? `Asked Jev ${what}` : `Sent ${what} to Jev`) : `Tried to send ${what} to Jev; the request failed`;
+    const says = outcome === "done" ? (parts.length === 0 ? `Asked ${to} ${what}` : `Sent ${what} to ${to}`) : `Tried to send ${what} to ${to}; the request failed`;
     const at = this.now();
     const declared = `${outcome}\u0002${req.snippets.map((x) => `${x.windowId}\u0000${x.text}`).sort().join("\u0001")}`;
     if (this.lastRead !== null && this.lastRead.declared === declared && at - this.lastRead.at < READ_REPEAT_MS) return;
@@ -1483,6 +1760,42 @@ function andList(xs: readonly string[]): string {
 }
 
 /** Whether a value anywhere in an offer message is a {memory: id} ref to this entry (popup.ts PopupRef). */
+/**
+ * Every memory id an offer message refers to: a popup ref {memory}, a pattern cell's memory list, a fill field's
+ * memory {id}.
+ */
+function memoryRefs(v: unknown, out: Set<string>): void {
+  if (Array.isArray(v)) {
+    for (const x of v) memoryRefs(x, out);
+    return;
+  }
+  if (v === null || typeof v !== "object") return;
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (k === "memory") {
+      if (typeof x === "string") out.add(x);
+      else if (Array.isArray(x)) {
+        for (const y of x) if (typeof y === "string") out.add(y);
+      } else if (x !== null && typeof x === "object" && typeof (x as { id?: unknown }).id === "string") out.add((x as { id: string }).id);
+    }
+    memoryRefs(x, out);
+  }
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "from what Caret noticed in Mail, Tue": the app when known, and the day in words near now, else the date. */
+export function noticedSays(app: string | null, at: number, now: number): string {
+  const day = (t: number): number => {
+    const d = new Date(t);
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000;
+  };
+  const ago = day(now) - day(at);
+  const d = new Date(at);
+  const when = ago === 0 ? "today" : ago === 1 ? "yesterday" : ago > 1 && ago < 7 ? (WEEKDAYS[d.getDay()] as string) : `${MONTHS[d.getMonth()] as string} ${d.getDate()}${d.getFullYear() === new Date(now).getFullYear() ? "" : `, ${d.getFullYear()}`}`;
+  return `from what Caret noticed${app === null ? "" : ` in ${app}`}, ${when}`;
+}
+
 function refersToMemory(v: unknown, id: string): boolean {
   if (Array.isArray(v)) return v.some((x) => refersToMemory(x, id));
   if (v === null || typeof v !== "object") return false;

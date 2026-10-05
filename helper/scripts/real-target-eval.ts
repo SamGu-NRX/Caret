@@ -8,7 +8,7 @@
 //
 //   node scripts/real-target-eval.ts --target T --bin ../apps/screen-reader/.build/debug --probe PATH --out DIR
 //        [--runs 20] [--safety-runs 10] [--means-runs 10] [--plans a,b] [--background | --front]
-//        [--electron DIR] [--candidates PATH] [--responder]
+//        [--electron DIR] [--candidates PATH] [--responder] [--max-usd 0.20]
 //
 // --candidates (web targets) adds B20's table of ways to write a field whose window is not key, each tried
 // alone by experiments/write-candidates.swift, built at PATH, and read back from the page. --responder
@@ -28,7 +28,8 @@
 // each read back from the target. Only processes this script started are ever signalled, and Chrome's
 // temporary profile is deleted at the end. It opens windows, so the caller holds gui.lock and checks the
 // GUI gates first; this script stops, closes its windows and reports `deferred: user active` as soon as
-// HID idle drops under 5 s. Needs CARET_ENV_FILE for Jev (the shipping plan's ambiguous targets).
+// HID idle drops under 5 s. Needs CARET_ENV_FILE for Jev (the shipping plan's ambiguous targets); live Jev stops
+// before spending more than --max-usd (scripts/spend.ts).
 import { execFile, spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -44,6 +45,8 @@ import type { TaskResult, UndoResult } from "../src/executor/executor.ts";
 import { GRANT_MAX_MS, PROTOCOL_VERSION, type AppSwitch, type HelperMessage, type ReaderVerb, type TaskProgress, type VerbResult } from "../src/protocol.ts";
 import { Cdp } from "./cdp.ts";
 import { fixtureExecutable } from "./fixture-path.ts";
+import { positiveNumber } from "./flags.ts";
+import { capJev, DEFAULT_MAX_USD } from "./spend.ts";
 import { userInput } from "./synthetic-input.ts";
 import { newLaunchSecret, sendSecret } from "../src/launch.ts";
 /** The secret caret-screen gets on its standard input and the in-process helper proves itself with (B23). */
@@ -65,8 +68,10 @@ const { values: a } = parseArgs({
     electron: { type: "string" },
     candidates: { type: "string" },
     responder: { type: "boolean", default: false },
+    "max-usd": { type: "string", default: DEFAULT_MAX_USD },
   },
 });
+const MAX_USD = positiveNumber("max-usd", a["max-usd"]);
 const TARGET = a.target;
 if (TARGET !== "textedit" && TARGET !== "webkit" && TARGET !== "chromium" && TARGET !== "electron") throw new Error("--target is textedit, webkit, chromium or electron");
 if (TARGET === "electron" && a.electron === undefined) throw new Error("--target electron needs --electron DIR (scripts/electron-setup.sh)");
@@ -238,15 +243,8 @@ class Aborted extends Error {}
 
 // MARK: - helper in process
 
-let jevCalls = 0;
-let jevCost = 0;
-const realJev = makeJevClient(() => loadJevKey());
-const askJev: AskJev = async (req) => {
-  const r = await realJev(req);
-  jevCalls++;
-  jevCost += r.costUsd;
-  return r;
-};
+const jev = capJev(makeJevClient(() => loadJevKey()), MAX_USD);
+const askJev: AskJev = jev.ask;
 const progress: TaskProgress[] = [];
 const errors: string[] = [];
 const switches: AppSwitch[] = [];
@@ -1120,9 +1118,9 @@ if (candidates.length > 0) {
 }
 md.push("", `## Frontmost app changes during the run`, "", switches.length === 0 ? "none" : switches.map((s) => `- ${new Date(s.at).toISOString()} ${s.from?.name ?? "?"} (${s.from?.pid ?? "?"}) -> ${s.to.name} (${s.to.pid})`).join("\n"));
 md.push("", `## Cleanup`, "", `Processes still carrying this run's temporary profile after Chrome exited, then stopped: ${leftoverHelpers}. Temporary folders kept because one did not exit in time: ${JSON.stringify(keptDirs)}. TextEdit processes before: [${textEditBefore.join(", ")}], after: [${textEditAfter.join(", ")}]. New entries in TextEdit's autosave and saved-state folders: ${JSON.stringify(autosave)}.`);
-md.push("", `Jev: ${jevCalls} calls, $${jevCost.toFixed(5)}. Helper errors: ${errors.length}.`);
+md.push("", `Jev: ${jev.calls()} calls, $${jev.usd().toFixed(5)} (budget $${MAX_USD}). Helper errors: ${errors.length}.`);
 writeFileSync(join(OUT, "real-target-eval.md"), md.join("\n") + "\n");
-writeFileSync(join(OUT, "real-target-eval.json"), JSON.stringify({ target: TARGET, background: BACKGROUND, front: FRONT, responder: RESPONDER, aborted, rows, means, candidates, safety: sr, progress, errors, switches, jevCalls, jevCost, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
+writeFileSync(join(OUT, "real-target-eval.json"), JSON.stringify({ target: TARGET, background: BACKGROUND, front: FRONT, responder: RESPONDER, aborted, rows, means, candidates, safety: sr, progress, errors, switches, jevCalls: jev.calls(), jevCost: jev.usd(), maxUsd: MAX_USD, targetChoices: helper.executor.targetChoices }, null, 2) + "\n");
 writeFileSync(join(OUT, "reader.log"), readerLog);
 console.log(md.join("\n"));
 process.exit(aborted === null ? 0 : 3);

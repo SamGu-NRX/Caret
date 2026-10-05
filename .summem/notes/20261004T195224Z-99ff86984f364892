@@ -1,1 +1,0 @@
-I3: host refuses the paste route when the prior clipboard holds a type outside ReconcilingClipboard.restorableTypes (file URL, private types): AX write instead, else fail clipboardUnrestorable. A17's VM probe lost a file-url item 5/5 while restore said restored.

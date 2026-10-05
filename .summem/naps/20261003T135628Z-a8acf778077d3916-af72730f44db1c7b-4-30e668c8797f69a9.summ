@@ -1,0 +1,1 @@
+B15-B16, A11: Chrome ignores AXSelectedTextRange writes on web inputs; rebuild CaretFixture.app after fixture changes; host memory contract is Fixtures/memory.ndjson (no helper add op); ImageRenderer can't draw TextField/ScrollView, use EntryField/ScrollingColumn.

@@ -7,7 +7,8 @@ binary="$here/../.build/Caret.app/Contents/MacOS/Caret"
 count="${1:-5}"
 export CARET_ALLOW_BUNDLES="${CARET_ALLOW_BUNDLES:-com.apple.TextEdit}"
 for i in $(seq 1 "$count"); do
-  "$binary" >/dev/null 2>&1 &
+  # A named helper socket keeps Caret from starting its own helper and reader (H4); this script measures trust only.
+  "$binary" --helper-socket "$HOME/.caret-run/sockets/screen.sock" >/dev/null 2>&1 &
   pid=$!
   trust=""
   # Wait for the engine so each launch is a full start, not just a socket answer.

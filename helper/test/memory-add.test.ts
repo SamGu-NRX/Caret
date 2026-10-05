@@ -21,13 +21,18 @@ const line = (requestId: string, type: "memoryRequest" | "memoryReply"): Record<
 };
 
 describe("the host's memory contract, line by line", () => {
+  it("gives each line its own request id and type", () => {
+    const ids = lines.map((l) => `${String(l.type)} ${String(l.requestId)}`);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("parses every request losslessly", () => {
     for (const l of lines.filter((x) => x.type === "memoryRequest")) expect(MemoryRequest.parse(l)).toEqual(l);
   });
 
   // The lead's request for the host's permissions page: each skill says which write rules its runs wrote under.
   it("carries a skill's wrote in the host's shape, and refuses it in any other kind of entry", () => {
-    const host = lines.at(-1) as { entries: { kind: string; fields: Record<string, unknown> }[] };
+    const host = line("host-memory-9", "memoryReply") as { entries: { kind: string; fields: Record<string, unknown> }[] };
     expect(host.entries[0]?.fields.wrote).toEqual(["writeElsewhere"]);
     expect(MemoryReply.parse(host)).toEqual(host);
     const list = line("host-memory-1", "memoryReply") as { entries: { kind: string; fields: Record<string, unknown> }[] };
@@ -46,7 +51,7 @@ describe("the host's memory contract, line by line", () => {
   });
 
   it("parses every reply losslessly, the list's permission uses and ops included", () => {
-    for (const id of ["host-memory-1", "host-memory-2", "host-memory-3", "host-memory-4", "host-memory-5", "host-memory-6"]) {
+    for (const id of ["host-memory-1", "host-memory-2", "host-memory-3", "host-memory-4", "host-memory-5", "host-memory-6", "host-memory-7", "host-memory-9"]) {
       const l = line(id, "memoryReply");
       expect(MemoryReply.parse(l), id).toEqual(l);
     }
@@ -86,6 +91,11 @@ describe("memoryRequest add", () => {
     expect(e.says).toBe("Name: Dana Whitfield (you typed this)");
   });
 
+  it("answers the host's refused permission edit with its reply line", () => {
+    const got = MemoryReply.parse(helper.handleMemory(MemoryRequest.parse(line("host-memory-5", "memoryRequest"))));
+    expect(got).toEqual(line("host-memory-5", "memoryReply"));
+  });
+
   it("names add among its ops on a list reply, as the host's list line does, and on no other reply", () => {
     const hostOps = (line("host-memory-1", "memoryReply") as { ops: string[] }).ops;
     const listed = ask("list");
@@ -120,7 +130,8 @@ describe("memoryRequest add", () => {
   it("refuses what is not a typed About entry, saying what was wrong, and stores nothing", () => {
     const refusals: [Record<string, unknown>, Record<string, unknown>, RegExp][] = [
       [{ label: "Name", value: "Dana", source: "typed" }, { id: "about-1" }, /takes no id/],
-      [{ alias: "Dana", name: "Dana Reyes" }, { kind: "people" }, /About entries you typed, not people/],
+      // M1: add also keeps a person (memory-markdown.test.ts); other kinds are still refused.
+      [{ rule: "format", valueKind: "phone", template: "###-###-####" }, { kind: "preference" }, /About entries and people you tell Caret, not preference/],
       [{ label: "Name", value: "Dana", source: "typed" }, { kind: undefined }, /without a kind/],
       [{ label: "Name", value: "Dana", source: "contacts" }, {}, /source/],
       [{ label: "Name", value: "Dana" }, {}, /source/],

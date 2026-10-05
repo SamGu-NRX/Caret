@@ -14,10 +14,15 @@
     "schema": "node src/export-schema.ts"
   },
   "dependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
+    "@js-temporal/polyfill": "0.5.1",
+    "acorn": "8.18.0",
+    "quickjs-emscripten-core": "0.32.0",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/node": "26.6.4",
+    "rolldown": "1.2.12",
     "typescript": "7.0.2",
     "vitest": "5.0.3"
   }

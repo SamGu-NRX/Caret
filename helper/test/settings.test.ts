@@ -14,6 +14,9 @@ import { ConsumerMessage, HelperMessage, PROTOCOL_VERSION, type Focus, type Help
 import { DEFAULT_SETTINGS, LEVELS, OfferGate } from "../src/offers/settings.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { FIXTURE_APP, MAIL_APP, focus, jevPickingText, snap, text } from "./builders.ts";
+
+/** Jev calls one fill makes: since B24, whose details first and then values, each asked twice (fill.ts). A held ask stops after the first stage's two. */
+const PER_FILL = 4;
 import { LineClient, SocketReader, loadRecording } from "./socket-reader.ts";
 
 const HOUR = 60 * 60 * 1000;
@@ -229,7 +232,7 @@ describe("settings over the socket take effect on the next decision", () => {
     host.send(settings({ paused: false }));
     focusName();
     const popup = await host.waitFor<{ offerKey: string }>((m) => m.type === "popup");
-    expect(jevCalls).toBe(2);
+    expect(jevCalls).toBe(PER_FILL);
 
     host.send(settings({ paused: true }));
     await host.waitFor((m) => m.type === "offerWithdrawn" && m.id === popup.offerKey && m.reason === "settings");
@@ -276,7 +279,7 @@ describe("settings over the socket take effect on the next decision", () => {
     clock = shownAt + HOUR - 60_000;
     focusName();
     await settled();
-    expect(jevCalls).toBe(2);
+    expect(jevCalls).toBe(PER_FILL);
     clock = shownAt + HOUR + 1;
     focusName();
     await host.waitFor((m) => m.type === "popup" && m.offerKey !== first.offerKey);
@@ -299,12 +302,12 @@ describe("settings over the socket take effect on the next decision", () => {
     clock += 60_000;
     focusName();
     await settled();
-    expect([jevCalls, popups().length]).toEqual([2, 1]);
+    expect([jevCalls, popups().length]).toEqual([PER_FILL, 1]);
 
     clock += HOUR;
     focusName();
     await host.waitFor((m) => m.type === "popup" && m.offerKey !== first.offerKey);
-    expect(jevCalls).toBe(4);
+    expect(jevCalls).toBe(2 * PER_FILL);
     store.flush();
     expect(store.counts()).toMatchObject({ "fill.held_roleOff": 1, "fill.held_hourlyBudget": 1 });
   });

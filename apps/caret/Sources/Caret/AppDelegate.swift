@@ -8,8 +8,15 @@ import CaretHostCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let runtime: HostRuntime
+    /// The helper, the reader and the bridge service Caret.app runs (H4).
+    private let services: CaretServices
+    private let home: CaretHome
+    /// `--nmh-dir`: where Add to Chrome writes in a run with its own home.
+    private let manifestDirectory: String?
     private var statusItem: NSStatusItem?
     private let stateItem = NSMenuItem(title: "Starting", action: nil, keyEquivalent: "")
+    /// Shown only after the helper or the reader crashed past the restart rule; choosing it starts both again.
+    private let stoppedItem = NSMenuItem(title: "Caret stopped. Restart", action: nil, keyEquivalent: "")
     /// Under the state: another running app also takes Tab (`OtherTabOwners`), so Tab may never
     /// reach Caret. Hidden while none runs.
     private let tabOwnerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -24,8 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private let showsStatusItem: Bool
 
-    init(configuration: HostRuntime.Configuration, showsStatusItem: Bool = true) {
+    init(configuration: HostRuntime.Configuration, services: CaretServices, home: CaretHome, manifestDirectory: String?,
+         showsStatusItem: Bool = true) {
         runtime = HostRuntime(configuration: configuration)
+        self.services = services
+        self.home = home
+        self.manifestDirectory = manifestDirectory
         self.showsStatusItem = showsStatusItem
         super.init()
     }
@@ -45,12 +56,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.working = working
             self?.refreshGlyph()
         }
+        runtime.services = services
+        runtime.onAddToChrome = { [weak self] in
+            guard let self else { return }
+            ChromeBridgeInstaller.run(home: self.home, manifestOverride: self.manifestDirectory)
+        }
+        services.onChange = { [weak self] in self?.refreshStopped() }
         do {
+            // The debug socket is how a second host is refused; take it before starting any helper or reader.
             try runtime.start()
         } catch {
             FileHandle.standardError.write(Data("caret: \(error)\n".utf8))
             exit(1)
         }
+        services.start()
         if showsStatusItem { installStatusItem() }
     }
 
@@ -59,6 +78,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isTerminating = true
         Task {
             await runtime.shutdown()
+            await services.stop()
+            // Quit exits 0, which tells launchd (KeepAlive SuccessfulExit false) not to start Caret again.
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -69,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isTerminating = true
         Task {
             await runtime.shutdown()
+            await services.stop()
             exit(0)
         }
     }
@@ -96,6 +118,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func setUp(_ sender: NSMenuItem) {
         runtime.openOnboarding()
+    }
+
+    @objc private func restartServices(_ sender: NSMenuItem) {
+        services.restart()
+    }
+
+    @objc private func addToChrome(_ sender: NSMenuItem) {
+        ChromeBridgeInstaller.run(home: home, manifestOverride: manifestDirectory)
+    }
+
+    private func refreshStopped() {
+        stoppedItem.isHidden = services.stoppedReason == nil
+        stoppedItem.toolTip = services.stoppedReason
     }
 
     @objc private func togglePause(_ sender: NSMenuItem) {
@@ -151,6 +186,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tabOwnerItem.isEnabled = false
         tabOwnerItem.isHidden = true
         menu.addItem(tabOwnerItem)
+        stoppedItem.action = #selector(restartServices(_:))
+        stoppedItem.target = self
+        menu.addItem(stoppedItem)
+        refreshStopped()
         // Pause stops every offer, ghost text included; work already accepted goes on.
         pauseItem.action = #selector(togglePause(_:))
         pauseItem.target = self
@@ -163,6 +202,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let setUpItem = NSMenuItem(title: "Set Up Caret…", action: #selector(setUp(_:)), keyEquivalent: "")
         setUpItem.target = self
         menu.addItem(setUpItem)
+        // Never at first launch: the user chooses it here or in onboarding (H4).
+        let chromeItem = NSMenuItem(title: "Add to Chrome…", action: #selector(addToChrome(_:)), keyEquivalent: "")
+        chromeItem.target = self
+        menu.addItem(chromeItem)
         let activityItem = NSMenuItem(title: "Activity", action: #selector(showActivity(_:)), keyEquivalent: "")
         activityItem.target = self
         menu.addItem(activityItem)

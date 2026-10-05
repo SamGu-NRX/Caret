@@ -19,7 +19,7 @@ extension SurfaceMachine {
             app = world.appName(pid: pid) ?? "the app"
             let spec = claim.choice.revealed.map { popup.spec.applyingReveal(of: $0) } ?? popup.spec
             if let rows = spec.fillRows { fill = FillWork(rows: rows, source: OfferLifecycle.sourcePhrase(popup.sourceApps)) }
-        case .ghost, .fill:
+        case .ghost, .fill, .writing:
             app = world.appName(pid: pid) ?? "the app"
         }
         let now = clock.now

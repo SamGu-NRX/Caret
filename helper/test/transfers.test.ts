@@ -36,6 +36,7 @@ describe("transfer detection on the recorded synthetic session", () => {
     replay(helper, SESSION);
   });
   afterEach(() => {
+    helper.memory.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -70,7 +71,8 @@ describe("transfer detection on the recorded synthetic session", () => {
     expect(rows[0]?.valueHash).toBe(store.hash("dana.whitfield@example.com"));
     expect(rows.map((r) => r.length)).toEqual([26, 12, 14]);
     store.close();
-    for (const f of readdirSync(dir)) {
+    // Every file under the directory, the markdown memory folder included (M1).
+    for (const f of readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name).slice(dir.length + 1))) {
       const bytes = readFileSync(join(dir, f)).toString("latin1");
       for (const secret of ["dana.whitfield", "555-0142", "ORD-2026", "Order confirmation", "Call me after lunch"]) {
         expect(bytes.includes(secret), `${f} contains ${secret}`).toBe(false);
