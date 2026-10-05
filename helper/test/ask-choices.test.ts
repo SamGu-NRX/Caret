@@ -294,6 +294,80 @@ describe("re-check: the fields a continued Ask fills must read as the question s
   });
 });
 
+describe("second re-check: what a continued Ask compares, and when (B29)", () => {
+  const W = `${P}/webarea:~0`;
+  const formSnap = (m: ScreenModel, edit: (ns: Node[]) => Node[], extra: Node[] = [], at = 1100): void => {
+    m.apply(snap(edit(page(extra)), { at, windowId: "form", title: "Apply", app: { pid: 7002, bundleId: "com.google.Chrome", name: "Google Chrome" }, focused: true }));
+  };
+  const relabel = (key: string, label: string) => (ns: Node[]): Node[] => ns.map((n) => (n.key === key ? { ...n, label } : n));
+  const sourceQ = async (instruction: string, x: (s: IntentSnapshot) => Partial<AskIntent>, m: ScreenModel): Promise<Q> =>
+    questionOf(await fail(planAsk(instruction, m, memory, about, { askJev: jevBy(() => null).ask, maker: maker(x), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
+  const ref = (s: IntentSnapshot, name: string): string => s.fields.find((f) => f.name === name)?.ref ?? "?";
+
+  it("sees a field relabelled while Jev chose its value", async () => {
+    const instruction = "put the landlord phone in";
+    const m = desk();
+    const q = await sourceQ(instruction, (x) => ({ route: "ask", why: "whichSource", fields: [ref(x, "Landlord phone")], sources: [] }), m);
+    const j = jevBy((x) => (x.includes("'Landlord phone'") ? "(512) 555-0193" : null));
+    let once = false;
+    const changing: AskJev = async (req) => {
+      if (!once) ((once = true), formSnap(m, relabel(KEY("landlord phone"), "Recovery phone")));
+      return j.ask(req);
+    };
+    const note = q.options.find((c) => c.option.kind === "window" && c.option.title === "Rental notes.txt")?.option.id as string;
+    const e = await fail(answer(q, [note], { model: m, ask: changing, instruction }));
+    expect(once).toBe(true);
+    expect(e.message).toBe(SAYS.windowChanged);
+  });
+
+  it("keeps the first question's record through a second question", async () => {
+    const instruction = "fill the landlord phone";
+    const m = desk();
+    const q1 = questionOf(await fail(planAsk(instruction, m, memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "ask", why: "whichFields", scope: "none", sources: [], open: ["fields", "source"] }), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
+    formSnap(m, relabel(KEY("landlord phone"), "Recovery phone"));
+    const phone = q1.options.find((c) => c.option.label === "Landlord phone")?.option.id as string;
+    const q2 = questionOf(await fail(answer(q1, [phone], { model: m, ask: jevBy(() => null).ask, instruction }))) as Q;
+    expect(q2.part).toBe("source");
+    const note = q2.options.find((c) => c.option.kind === "window" && c.option.title === "Rental notes.txt")?.option.id as string;
+    const e = await fail(answer(q2, [note], { model: m, ask: jevBy((x) => (x.includes("phone") ? "(512) 555-0193" : null)).ask, instruction }));
+    expect(e.message).toBe(SAYS.windowChanged);
+  });
+
+  it.each([
+    ["a placeholder appeared", (ns: Node[]) => ns.map((n) => (n.key === KEY("landlord phone") ? { ...n, placeholder: "Someone else's phone" } : n)), [] as Node[]],
+    ["a filled field's value changed", (ns: Node[]) => ns.map((n) => (n.key === KEY("notes") ? { ...n, value: "Ring twice" } : n)), [] as Node[]],
+  ])("refuses when %s", async (_, edit, extra) => {
+    const instruction = "fill the landlord phone and the notes";
+    const m = desk();
+    const q = await sourceQ(instruction, (x) => ({ route: "ask", why: "whichSource", fields: [ref(x, "Landlord phone"), ref(x, "Notes")], sources: [] }), m);
+    formSnap(m, edit, extra);
+    const note = q.options.find((c) => c.option.kind === "window" && c.option.title === "Rental notes.txt")?.option.id as string;
+    const e = await fail(answer(q, [note], { model: m, ask: jevBy((x) => (x.includes("phone") ? "(512) 555-0193" : null)).ask, instruction }));
+    expect(e.message).toBe(SAYS.windowChanged);
+  });
+
+  it("refuses when an option's value changed under an unchanged label", async () => {
+    const SELECT = `${P}/popupbutton:country~0`;
+    const country = (v: string): Node[] => [node(SELECT, "AXPopUpButton", { parent: W, label: "Country", frame: [100, 400, 200, 20] }), node(`${SELECT}/menuitem:~0`, "AXMenuItem", { parent: SELECT, value: "Canada" }), node(`${SELECT}/menuitem:~1`, "AXMenuItem", { parent: SELECT, value: v })];
+    const instruction = "set the country";
+    const m = desk({ extra: country("Mexico") });
+    const q = await sourceQ(instruction, (x) => ({ route: "ask", why: "whichSource", fields: [ref(x, "Country")], sources: [] }), m);
+    formSnap(m, (ns) => ns, country("Peru"));
+    const e = await fail(answer(q, [q.options[0]?.option.id as string], { model: m, ask: jevBy(() => "Canada").ask, instruction }));
+    expect(e.message).toBe(SAYS.windowChanged);
+  });
+
+  it("goes on when a field the user did not pick is gone", async () => {
+    const instruction = "fill the landlord name and phone";
+    const m = desk();
+    const q = questionOf(await fail(planAsk(instruction, m, memory, about, { askJev: jevBy(() => null).ask, maker: maker((x) => ({ route: "ask", why: "whichFields", fields: [ref(x, "Landlord name"), ref(x, "Landlord phone")] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }))) as Q;
+    formSnap(m, (ns) => ns.filter((n) => n.key !== KEY("landlord phone")));
+    const name = q.options.find((c) => c.option.label === "Landlord name")?.option.id as string;
+    const d = await answer(q, [name], { model: m, ask: jevBy((x) => (x.includes("'Landlord name'") ? "Gary Pruitt" : null), () => "user").ask, instruction });
+    expect(d.checked.writes.map((w) => w.node.key)).toEqual([KEY("landlord name")]);
+  });
+});
+
 describe("Ask asks whose details, with the user and the people on screen (B29)", () => {
   const instruction = "add his cell number in the landlord phone";
 

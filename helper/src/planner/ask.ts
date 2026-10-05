@@ -133,28 +133,47 @@ const changed = (what: string): never => {
   throw new SaidError("unknownWindow", SAYS.windowChanged, `since Caret asked, ${what}`);
 };
 
-/** What a field is, as a continued Ask compares it: its name, section, control, role, whether it holds text, and its options. */
-function fieldSeen(snap: IntentSnapshot, f: IntentField): string {
-  const role = snap.window.nodes.get(f.key)?.role ?? "";
-  const options = [...snap.window.nodes.values()].filter((c) => c.parent === f.key).map((c) => `${c.role}:${c.label ?? ""}`);
-  return JSON.stringify([f.name, f.section, f.control, role, f.filled, options]);
+/**
+ * What a field is, as a continued Ask compares it: what fill reads of it (its name, section, label, nearest text and
+ * placeholder, control, role and subrole), its exact value, and each child's role, label and value (a select's options,
+ * a radio group's buttons). Second re-check: a placeholder, an option's value and a changed value all got past a
+ * fingerprint of name, section and "holds text".
+ */
+function fieldSeen(w: WindowState, f: IntentField): string {
+  const n = w.nodes.get(f.key);
+  if (n === undefined) return "gone";
+  const d = describeField(w, n);
+  const children = [...w.nodes.values()].filter((c) => c.parent === f.key).map((c) => [c.role, c.label ?? null, c.value ?? null]);
+  return JSON.stringify([f.name, f.section, d.label, d.nearest, d.placeholder, f.control, n.role, n.subrole ?? null, n.value ?? "", children]);
+}
+
+/** What a question records of the form; a later question of the same Ask keeps the first one's record of each field. */
+function seenOf(snap: IntentSnapshot, earlier: AskResume["seen"] | undefined): AskResume["seen"] {
+  const now = Object.fromEntries(snap.fields.map((f) => [f.key, fieldSeen(snap.window, f)]));
+  return earlier === undefined ? { title: snap.window.window.title, fields: now } : { title: earlier.title, fields: { ...now, ...earlier.fields } };
 }
 
 /**
  * Refuses a continued Ask when the form's title, or any field it is about to fill, no longer reads as the question saw
- * it. Only the fields in the final scope count: an unpicked field may change freely (re-check).
+ * it. Only the fields in the final scope count: an unpicked field may change or go (re-check). Run on a snapshot taken
+ * after the fill's last model call, so a change made while Jev answered is seen too (second re-check).
  */
-function checkSeen(r: AskResume, snap: IntentSnapshot, fields: readonly IntentField[]): void {
+function checkSeen(r: AskResume, snap: IntentSnapshot, keys: readonly string[]): void {
   if (snap.window.window.title !== r.seen.title) changed("the form's title changed");
-  for (const f of fields) if (r.seen.fields[f.key] !== fieldSeen(snap, f)) changed(`the field '${f.name}' changed`);
+  for (const key of keys) {
+    const f = snap.fields.find((x) => x.key === key);
+    if (f === undefined || r.seen.fields[key] !== fieldSeen(snap.window, f)) changed(`the field '${f?.name ?? key}' changed`);
+  }
 }
 
 /** An intent read against a later snapshot of the same form: each ref by what it stood for. */
-function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot): AskIntent {
+function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot, fieldsPicked: boolean): AskIntent {
   const field = (r: string): string => {
     const key = refs.fields[r];
     return snap.fields.find((f) => f.key === key)?.ref ?? changed(`the field ${r} is gone`);
   };
+  // Fields the user picked replace the intent's own (applyFixed): one of those that is gone does not matter (re-check).
+  const kept = (r: string): boolean => !fieldsPicked || snap.fields.some((f) => f.key === refs.fields[r]);
   const source = (r: string): string => {
     const id = refs.windows[r];
     if (id === undefined) return r; // any, memory, instruction, missing
@@ -168,11 +187,11 @@ function remapIntent(intent: AskIntent, refs: SnapRefs, snap: IntentSnapshot): A
   const section = refs.sections[intent.section];
   return {
     ...intent,
-    fields: intent.fields.map(field),
+    fields: intent.fields.filter(kept).map(field),
     sources: intent.sources.map(source),
     whose: whose(intent.whose),
     section: section === undefined ? intent.section : (snap.sections.find((x) => x.name === section)?.ref ?? changed(`the section ${intent.section} is gone`)),
-    literals: intent.literals.map((l) => ({ ...l, field: field(l.field) })),
+    literals: intent.literals.filter((l) => kept(l.field)).map((l) => ({ ...l, field: field(l.field) })),
   };
 }
 
@@ -266,7 +285,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
   try {
     snap = intentSnapshot(instruction, model, w, memory.values());
     // A continued Ask reads the maker's intent against the form as it is now, and asks the maker nothing.
-    made = resume === undefined ? await o.maker.make(snap) : { intent: remapIntent(resume.intent, resume.refs, snap), use: resume.maker };
+    made = resume === undefined ? await o.maker.make(snap) : { intent: remapIntent(resume.intent, resume.refs, snap, fixed.fields !== undefined), use: resume.maker };
     intent = applyFixed(made.intent, fixed, snap);
   } catch (e) {
     if (e instanceof PlannerError) throw new AskRefused(e, null, null);
@@ -289,7 +308,7 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
         maker: use,
         makerName,
         fixed,
-        seen: { title: w.window.title, fields: Object.fromEntries(snap.fields.map((f) => [f.key, fieldSeen(snap, f)])) },
+        seen: seenOf(snap, resume?.seen),
       },
     };
   };
@@ -373,15 +392,6 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
   }
 
-  // A continued Ask fills only a form that still reads as the question saw it, field by field in the final scope.
-  if (resume !== undefined && checked.route === "fill") {
-    try {
-      checkSeen(resume, snap, [...checked.fields, ...checked.leftToYou]);
-    } catch (e) {
-      return refused(e);
-    }
-  }
-
   if (checked.route === "plan") {
     try {
       const d = await planTask(instruction, model, memory, { askJev, offerKey: o.offerKey, windowId: w.window.windowId, now, ...(o.rand === undefined ? {} : { rand: o.rand }), ...(o.beforeCheck === undefined ? {} : { beforeCheck: o.beforeCheck }) });
@@ -398,12 +408,32 @@ export async function planAsk(instruction: string, model: ScreenModel, memory: P
     }
   }
 
+  // Checked before the fill too, so a form that changed while the question was open is said as such, and no Jev call
+  // is spent on it.
+  if (resume !== undefined && checked.route === "fill") {
+    try {
+      checkSeen(resume, snap, [...checked.fields, ...checked.leftToYou].map((f) => f.key));
+    } catch (e) {
+      return refused(e);
+    }
+  }
   let p: FillProposal;
   try {
     p = await proposeFill(model, askJev, w.window.windowId, checked.trigger, now, { about, scope: checked.scope, newId: () => o.offerKey, ...(o.rand === undefined ? {} : { rand: o.rand }) });
   } catch (e) {
     if (e instanceof FillError) return refused(new SaidError("nothingToDo", SAYS.nothingOnScreen, `the fill found nothing: ${e.message}`));
     return refused(e);
+  }
+  // A continued Ask fills only a form that still reads as the question saw it, field by field in the final scope, read
+  // after the fill's last call to Jev.
+  if (resume !== undefined) {
+    try {
+      const now = model.windows.get(w.window.windowId);
+      if (now === undefined) throw new SaidError("unseenWindow", SAYS.windowClosed, `window ${w.window.windowId} closed while Caret planned`);
+      checkSeen(resume, intentSnapshot(instruction, model, now, memory.values()), [...checked.fields, ...checked.leftToYou].map((f) => f.key));
+    } catch (e) {
+      return refused(e);
+    }
   }
   const nameOf = new Map(checked.fields.map((f) => [f.key, f]));
   const name = (f: FillField): string => nameOf.get(f.key)?.name ?? f.descriptor;
