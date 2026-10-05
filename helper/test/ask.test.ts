@@ -820,4 +820,25 @@ describe("a grounded whole-form scope (B28)", () => {
   ] as const)("B28b review: %j voids name trust", async (instruction, names) => {
     expect((await refusal(askWith(instruction, greenhouse(), () => "no", listOf(...names)).run)).message).toBe(SAYS.whichFields);
   });
+
+  // B28b re-check (astra a289e1777901b58d1) on 4ecb59c.
+  it("B28b re-check: a section named by words is not trusted when the instruction names a field in it", async () => {
+    const m = greenhouse({ "Contact information": ["Email", "Phone", "Graduation Date (MM/YYYY)"] }, undefined, ["Email", "Phone", "Graduation Date (MM/YYYY)"]);
+    const { jev, run } = askWith("fill only Email in the contact section", m, (q) => (q.includes("'Email'") ? "yes" : "no"), sectionNamed("Contact information"));
+    expect(written(await run)).toEqual([GKEY("email")]);
+    expect(new Set(confirmed(jev))).toEqual(new Set(["Email", "Phone", "Graduation Date (MM/YYYY)"]));
+  });
+
+  it("B28b re-check: a label that reads as both a name and a phone is not contact info", async () => {
+    const label = "Name of your mobile phone";
+    const m = greenhouse({ "Contact information": ["Email", label] }, undefined, ["Email", label]);
+    const { jev, run } = askG("do my contact info", m, () => "no");
+    expect((await run).fill?.fields.map((f) => f.key)).toEqual([GKEY("email")]);
+    expect(confirmed(jev)).toEqual([label, label]);
+  });
+
+  it.each(["fill in the email, defer phone", "fill in the email, phone tomorrow"])("B28b re-check: %j voids name trust", async (instruction) => {
+    const m = greenhouse({ "Contact information": ["Email", "Phone", "Graduation Date (MM/YYYY)"] }, undefined, ["Email", "Phone", "Graduation Date (MM/YYYY)"]);
+    expect((await refusal(askWith(instruction, m, () => "no", listOf("Email", "Phone")).run)).message).toBe(SAYS.whichFields);
+  });
 });

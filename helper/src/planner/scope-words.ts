@@ -92,12 +92,14 @@ const PLAIN_CONTACT_WORDS: ReadonlySet<string> = new Set([
  * link or an address, and no kind that is not; and its name holds only PLAIN_CONTACT_WORDS. "Graduation Date" (a
  * date) is not; "LinkedIn Profile" names no kind fill knows (kinds.ts matches "link" only as a whole word), so it is
  * not either, and goes to Jev. An address part may also read as an ID, since kinds.ts takes "code" and "number" for
- * one: "ZIP code", "Unit number".
+ * one: "ZIP code", "Unit number". A label read as a part of a name and as a kind of value at once ("Name of your
+ * mobile phone", the B28b re-check) is neither plainly.
  */
 export function isContactField(f: FieldWords): boolean {
   if (!f.typed || !words(f.name).every((w) => PLAIN_CONTACT_WORDS.has(w))) return false;
   const kinds = fieldKinds(f.labelWords);
   const part = fieldPart(f.name);
+  if ((part === "first" || part === "middle" || part === "last" || part === "full") && kinds.size > 0) return false;
   if ([...kinds].some((k) => !CONTACT_KINDS.has(k) && !(k === "id" && part !== null))) return false;
   return kinds.size > 0 || part !== null;
 }
@@ -219,6 +221,7 @@ export const EXCLUSION_WORDS: readonly string[] = [
   "unchanged", "blank", "empty", "alone", "save for",
   // B28b review: restrictions that put a field off or make it optional.
   "bar", "later", "optional", "unless", "less", "sans", "w/o", "wait", "hold",
+  "defer", "defers", "deferred", "postpone", "postponed", "tomorrow", "afterwards", "afterward",
   "dont", "doesnt", "didnt", "isnt", "arent", "wasnt", "werent", "cant", "cannot", "wont", "shouldnt", "wouldnt", "couldnt", "mustnt", "neednt", "aint", "havent", "hasnt",
 ];
 

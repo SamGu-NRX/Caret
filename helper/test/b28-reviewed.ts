@@ -31,6 +31,10 @@ export const REVIEWED: readonly [string, string?][] = [
   ["only email, phone later"],
   ["fill everything bar phone"],
   ["fill in the email, phone is optional"],
+  // B28b re-check.
+  ["fill only Email in the contact section"],
+  ["fill in the email, defer phone"],
+  ["fill in the email, phone tomorrow"],
   // Review 5: quote characters the quote rule missed, a restriction inside the form's title, and a period before "in"
   // that let "in my email" be read as where to copy from.
   ["fill in ＂everything＂"],

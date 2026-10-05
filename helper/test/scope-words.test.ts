@@ -229,7 +229,7 @@ describe("what a section phrase asks for by its meaning", () => {
   });
 
   it("reads anything else, a field fill knows no kind for, and a non-text control as not", () => {
-    for (const l of ["Graduation Date (MM/YYYY)", "LinkedIn Profile", "Date of birth", "School name", "Company name", "Job title", "Salary", "Notes", "Last day", "Portfolio URL", "Work email", "Emergency contact phone", "Family size", "Reference email"]) expect(isContactField(f(l)), l).toBe(false);
+    for (const l of ["Graduation Date (MM/YYYY)", "LinkedIn Profile", "Date of birth", "School name", "Company name", "Job title", "Salary", "Notes", "Last day", "Portfolio URL", "Work email", "Emergency contact phone", "Family size", "Reference email", "Name of your mobile phone"]) expect(isContactField(f(l)), l).toBe(false);
     expect(isContactField(f("Email", false))).toBe(false);
   });
 

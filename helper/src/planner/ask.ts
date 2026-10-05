@@ -377,7 +377,10 @@ async function confirmScope(
   // writer listed Email and Phone for "fill out the email and not phone", and gave the whole section for "do the
   // contact section except phone", and both were written without a question (B28b lead decision 1).
   const excluding = exclusionsIn(instruction).length > 0;
-  const unsure = excluding ? checked.fields : scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
+  // A section named by its words is not asked for whole when the instruction also names a field in it: "fill only
+  // Email in the contact section" (B28b re-check).
+  const namesInSection = scope === "section" && checked.fields.some(named);
+  const unsure = excluding || namesInSection ? checked.fields : scope === "list" ? checked.fields.filter((f) => !named(f)) : [];
   // When Jev does not confirm the whole form, the fields the instruction names are what is left, each confirmed by
   // Jev: "Fill only Email; do not change Phone" names Phone too.
   const fallback = whole && scope !== "section" ? checked.fields.filter(named) : [];
