@@ -7,9 +7,9 @@
 //      composition, nothing legal to do, or a request the privacy budgets refuse.
 //   2. Router 1: the outcome question, a Choice over the outcomes legal now, and after it, in its own request, the task
 //      question when a producer listed a task with evidence its code checked (judge.ts TASK_QUESTION). At most one
-//      request in flight. In one field, Router 1 starts at most once per ROUTER1_COOLDOWN_MS after an answer was used there; a
-//      field no answer has decided yet starts at once (brief R3: the cooldown limits repeats, not entering a field). A
-//      context that changes meanwhile replaces the one waiting (it is not queued), and a reply for a context that is no
+//      request in flight. In the field the user is in, Router 1 starts at most once per ROUTER1_COOLDOWN_MS once an
+//      answer there was used; entering a field, and deciding one no answer has decided yet, start at once (brief R3:
+//      the cooldown limits repeats, not entering a field). A context that changes meanwhile replaces the one waiting (it is not queued), and a reply for a context that is no
 //      longer current is dropped. No retry. A low-confidence answer abstains; a call that failed or timed out, an answer
 //      that cannot be read (missing, forged, nonfinite) and a stale reply decide `error` (R2 lead decision 1), so the host
 //      can tell "the router said no" from "the router did not answer" and fall back. The outcome is published without
@@ -39,10 +39,12 @@ import { PrivacyRefusal, ROUTER1_FLOOR, ROUTER2_FLOOR, router1Request, router2Re
 import { freeze, realRoutes, type Outcome, type Registry, type Route, type RouteCandidate } from "./routes.ts";
 
 /**
- * In one field, Router 1 starts at most once in this long after an answer there was used. From plan section 3 (the
- * two-second rule); not measured here. Entering a field is not held by it (brief R3): before, a field focused within two
- * seconds of any call waited out the rest, and 6 of 12 focus changes 400 to 1200 ms apart missed the host's 600 ms
- * budget (evidence/screen/r3/focus, focus-entry-before.json).
+ * In the field the user is in, Router 1 starts at most once in this long once an answer there was used, counted from the
+ * last start. From plan section 3 (the two-second rule); not measured here. Entering a field is not held by it, nor is a
+ * field whose every answer so far went stale (brief R3): before, a field focused within two seconds of any call waited
+ * out the rest, and 6 of 12 focus changes 400 to 1200 ms apart missed the host's 600 ms budget (evidence/screen/r3/focus,
+ * focus-entry-before.json). Going back and forth between fields is entering each, so only the one request in flight
+ * bounds it.
  */
 export const ROUTER1_COOLDOWN_MS = 2000;
 /** Fields Caret never routes for: a search box takes queries, not values or prose. Written, not measured. */
@@ -57,8 +59,11 @@ const DECISIONS_KEEP = 2000;
 /** The route a chosen candidate logs as: its kind, or "workflow:<producer>". */
 const routeOf = (c: RouteCandidate): string => (c.workflow === undefined ? c.kind : `workflow:${c.workflow}`);
 
-/** The field a context is about, for the cooldown: the reader session, the document and the focused element. */
-const fieldOf = (ctx: RoutingContext): string => [ctx.readerSession, ctx.pid, ctx.windowId, ctx.title, ctx.field?.key ?? ""].join("\u0000");
+/**
+ * The field a context is about, for the cooldown: the reader session, the window and the focused element. Not the title:
+ * a title that changes while the user stays in one field (an unread count) is no new field (review F3).
+ */
+const fieldOf = (ctx: RoutingContext): string => [ctx.readerSession, ctx.pid, ctx.windowId, ctx.field?.key ?? ""].join("\u0000");
 
 /** Appends to a bounded record, dropping the oldest. */
 function keep<T>(xs: T[], x: T): void {
@@ -184,7 +189,7 @@ interface Current {
   decided: boolean;
   /** The act check beside a kept write session: its answer is logged, not published. */
   beside: boolean;
-  /** For an act check beside a kept write session, the session's id. */
+  /** The write session this context is in (an act check beside it) or opened (its outcome was write). */
   session: number | null;
   /** Candidates already run for this context, which its decision does not let go. */
   taken: RouteCandidate[];
@@ -216,8 +221,8 @@ export class RoutingCoordinator {
   /** The context waiting for the request slot or the cooldown; always the newest. */
   private waiting = false;
   private inflight: Promise<void> | null = null;
-  /** The field of the last Router 1 answer that was used (not stale), and when that call started. */
-  private lastAnswer: { field: string; at: number } | null = null;
+  /** The field Router 1 last started in, when, and whether an answer there was used since the user entered it. */
+  private visit: { field: string; at: number; answered: boolean } | null = null;
   private cancelTimer: (() => void) | null = null;
   private focus: FocusSeen | null = null;
   private host: HostEditing | null = null;
@@ -542,8 +547,8 @@ export class RoutingCoordinator {
   private pump(): void {
     const c = this.cur;
     if (this.stoppedAt !== null || c === null || !this.waiting || this.inflight !== null) return;
-    const last = this.lastAnswer;
-    const wait = last !== null && last.field === fieldOf(c.ctx) ? last.at + ROUTER1_COOLDOWN_MS - this.deps.now() : 0;
+    const v = this.visit;
+    const wait = v !== null && v.answered && v.field === fieldOf(c.ctx) ? v.at + ROUTER1_COOLDOWN_MS - this.deps.now() : 0;
     if (wait > 0) {
       if (this.cancelTimer === null) {
         this.deps.count?.("route.cooldown_wait");
@@ -604,13 +609,14 @@ export class RoutingCoordinator {
       if (built.taskPrivacy) return this.finish(c, { outcome: "abstain", by: "local", local: "privacy", refused: null, route: null, confidence: null, answered: null });
       throw new Error(`routing: context ${c.gen} has nothing to ask Router 1 (legal ${c.legal.join(", ")})`);
     }
-    // A task is put to Router 1 once per write session: the session's next context does not ask it again.
-    if (task !== null && c.beside) this.writeSession?.asked.add(task.cand.id);
+    const field = fieldOf(c.ctx);
+    const now = this.deps.now();
+    if (this.visit?.field === field) this.visit.at = now;
+    else this.visit = { field, at: now, answered: false };
     if (built.outcome !== null) {
-      const t0 = this.deps.now();
       const o = await this.ask1(c, built.outcome, "outcome");
       if (o === null || this.stale(c, "router1", o)) return;
-      this.lastAnswer = { field: fieldOf(c.ctx), at: t0 };
+      this.answered(c);
       if (!o.ok && o.why !== "lowConfidence") return this.refused(c, 1, o);
       // The task's held offer waits for its own question, whatever the outcome.
       if (task !== null) c.taken.push(task.cand);
@@ -620,13 +626,16 @@ export class RoutingCoordinator {
       if (task === null || this.stoppedAt !== null || (c.gen !== this.gen && this.carried(c, task.cand.id) === null)) return;
     }
     if (task === null) return;
-    const t0 = this.deps.now();
+    // Recorded as the request starts, so the session's next context does not ask it again (review F1).
+    const w = this.writeSession;
+    if (w !== null && c.session === w.id) w.asked.add(task.cand.id);
     const t = await this.ask1(c, task.built, "task");
     if (t === null) return;
+    const act = t.ok && t.choice === "act";
     if (c.gen !== this.gen) {
-      // A task checked beside a kept write session is about its sentence: while the session goes on and the context now
-      // lists the same task, the answer is still about the moment (the host's report of a sentence end the reader walked
-      // first opens the next context; R2's latency session dropped every such answer).
+      // A task asked in a write session is about its sentence: while the session goes on and the context now lists the
+      // same task, the answer is still about the moment (the host's report of a sentence end the reader walked first
+      // opens the next context; R2's latency session dropped every such answer).
       const carried = this.carried(c, task.cand.id);
       if (carried === null) {
         if (!c.decided) return void this.stale(c, "router1", t);
@@ -635,20 +644,29 @@ export class RoutingCoordinator {
         this.deps.count?.("route.stale_drop");
         return;
       }
-      this.lastAnswer = { field: fieldOf(c.ctx), at: t0 };
-      if (!c.decided) return this.taskAlone(c, t, carried, false);
-      if (t.ok && t.choice === "act") this.aside(c, carried, t.confidence);
+      this.answered(c);
+      // Released without touching the current context's other offers; the task itself is let go when not chosen (F2).
+      if (!c.decided) this.taskAlone(c, t, carried, false);
+      else if (act) this.aside(c, carried, t.confidence);
+      if (!act) carried.drop?.();
       return;
     }
-    if (built.outcome === null) this.lastAnswer = { field: fieldOf(c.ctx), at: t0 };
-    if (!c.decided) return this.taskAlone(c, t, task.cand, true);
+    if (built.outcome === null) {
+      this.answered(c);
+      return this.taskAlone(c, t, task.cand, true);
+    }
     // The outcome is out: a chosen task is offered beside it, and one not chosen is let go.
-    if (t.ok && t.choice === "act") return this.aside(c, task.cand, t.confidence);
+    if (act) return this.aside(c, task.cand, t.confidence);
     if (!t.ok) {
       bump(this.stats.refused, `router1_task_${t.why}`);
       this.deps.count?.(`route.refused1_task_${t.why}`);
     }
     task.cand.drop?.();
+  }
+
+  /** An answer about `c` was used: from now on, starts in its field wait out the cooldown. */
+  private answered(c: Current): void {
+    if (this.visit !== null && this.visit.field === fieldOf(c.ctx)) this.visit.answered = true;
   }
 
   /** One Router 1 request; null when routing stopped while it was out. */
@@ -671,7 +689,11 @@ export class RoutingCoordinator {
         return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
       case "write": {
         const f = c.ctx.field;
-        if (f !== null) this.writeSession = { id: ++this.sessions, gen: c.gen, windowId: c.ctx.windowId, key: f.key, at: this.deps.now(), textRevision: c.ctx.textRevision, asked: new Set(c.reg.task === null ? [] : [c.reg.task.id]) };
+        if (f !== null) {
+          this.writeSession = { id: ++this.sessions, gen: c.gen, windowId: c.ctx.windowId, key: f.key, at: this.deps.now(), textRevision: c.ctx.textRevision, asked: new Set() };
+          // The session this context opened carries the task it is about to ask (review F1).
+          c.session = this.writeSession.id;
+        }
         return this.finish(c, { outcome, by: "router1", local: null, refused: null, route: null, confidence, answered });
       }
       case "ask": {
@@ -686,13 +708,13 @@ export class RoutingCoordinator {
   }
 
   /**
-   * The current context's candidate with this task's id, when it is an act check in the same write session as `c`;
-   * null otherwise.
+   * The current context's candidate with this task's id, when `c` was in, or opened, the write session the current
+   * context keeps; null otherwise.
    */
   private carried(c: Current, taskId: string): RouteCandidate | null {
     const cur = this.cur;
     const w = this.writeSession;
-    if (!c.beside || cur === null || !cur.beside || w === null || c.session !== w.id || cur.session !== w.id) return null;
+    if (cur === null || !cur.beside || w === null || c.session !== w.id || cur.session !== w.id) return null;
     return cur.candidates.find((x) => x.id === taskId) ?? null;
   }
 

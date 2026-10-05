@@ -121,13 +121,14 @@ await sleep(100);
 /** routeDecision arrival times by text revision (performance.now()), first one only; and the first naming the body. */
 const arrived = new Map<string, { at: number; outcome: string | null }>();
 let bound: { at: number; outcome: string | null } | null = null;
-/** Calendar offers, by arrival time. */
-const calendar: number[] = [];
+/** Calendar offers by the sentence each quotes (its end state's source), first arrival only. */
+const calendar = new Map<string, number>();
 host.onMessage = (m) => {
-  const d = m as { type: string; textRevision?: string; outcome?: string | null; windowId?: string; key?: string | null; app?: string };
+  const d = m as { type: string; textRevision?: string; outcome?: string | null; windowId?: string; key?: string | null; app?: string; endState?: { ref?: { derived?: { quote?: string }[] } } };
   if (d.type === "routeDecision" && d.textRevision !== undefined && !arrived.has(d.textRevision)) arrived.set(d.textRevision, { at: performance.now(), outcome: d.outcome ?? null });
   if (d.type === "routeDecision" && bound === null && d.windowId === WIN && d.key === BODY && d.outcome !== null) bound = { at: performance.now(), outcome: d.outcome ?? null };
-  if (d.type === "action" && d.app === "Calendar") calendar.push(performance.now());
+  const quote = d.endState?.ref?.derived?.[0]?.quote;
+  if (d.type === "action" && d.app === "Calendar" && quote !== undefined && !calendar.has(quote)) calendar.set(quote, performance.now());
 };
 
 void helper.handleReader({ type: "appSwitch", v: PROTOCOL_VERSION, at: Date.now(), from: null, to: NOTES });
@@ -140,6 +141,8 @@ const revision = (): string => `r${++rev}`;
 for (let i = 0; ON && i < 300 && bound === null; i++) await sleep(20);
 const focusDecision = bound as { at: number; outcome: string | null } | null;
 const rows: { sentence: number; event: boolean; arrivalMs: number | null; waitMs: number; outcome: string | null; calendarMs: number | null }[] = [];
+/** When each sentence's routingContext was sent. */
+const sentAt = new Map<string, number>();
 /** The reader's typed values, as its detector would report them in the same walk as the text that holds them. */
 const valuesIn = (t: string): TypedValue[] => SENTENCES.flatMap((s) => (s.when !== undefined && t.includes(s.when) ? [{ kind: "date" as const, text: s.when, nodeKey: BODY }] : []));
 for (const [i, s] of SENTENCES.entries()) {
@@ -157,17 +160,17 @@ for (const [i, s] of SENTENCES.entries()) {
   for (let k = 0; k < 150 && !arrived.has(r); k++) await sleep(10);
   const got = arrived.get(r);
   const arrivalMs = got === undefined ? null : got.at - sent;
-  const before = calendar.length;
   rows.push({ sentence: i + 1, event: s.when !== undefined, arrivalMs: arrivalMs === null ? null : Number(arrivalMs.toFixed(2)), waitMs: ON ? Number(Math.min(arrivalMs ?? BUDGET_MS, BUDGET_MS).toFixed(2)) : 0, outcome: got?.outcome ?? null, calendarMs: null });
-  const row = rows.at(-1) as (typeof rows)[number];
-  // A Calendar offer for this sentence arrives before the next sentence is typed, or not at all.
-  void (async () => {
-    for (let k = 0; k < 400 && calendar.length === before; k++) await sleep(10);
-    if (calendar.length > before) row.calendarMs = Number(((calendar[before] as number) - sent).toFixed(1));
-  })();
+  sentAt.set(s.text, sent);
   await sleep(KEY_MS * 3);
 }
+// Each card is matched to the sentence it quotes, timed from that sentence's routingContext.
 await sleep(4000);
+for (const [i, s] of SENTENCES.entries()) {
+  const at = calendar.get(s.text);
+  const row = rows[i];
+  if (at !== undefined && row !== undefined) row.calendarMs = Number((at - (sentAt.get(s.text) as number)).toFixed(1));
+}
 await helper.routing?.idle();
 await helper.routedSettled;
 const q = (xs: number[], p: number): number | null => {
@@ -194,7 +197,7 @@ const summary = {
   routerCalls,
   spendUsd: Number(spend.toFixed(6)),
   stats: helper.routing === null ? null : { ...helper.routing.stats, callMs: undefined, entryMs: undefined },
-  calendarOffers: calendar.length,
+  calendarOffers: calendar.size,
   eventCards: rows.filter((r) => r.event).map((r) => ({ sentence: r.sentence, calendarMs: r.calendarMs })),
 };
 writeFileSync(join(a.out, `latency-${a.mode}${a.label === "" ? "" : `-${a.label}`}.json`), JSON.stringify({ ...summary, rows, decisions }, null, 2) + "\n");

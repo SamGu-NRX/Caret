@@ -165,6 +165,11 @@ describe("the routing coordinator", () => {
       onDecision: (d) => decisions.push(d),
     });
 
+  /** Lets replies that were released be read, without waiting for a call that is still held. */
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+
   beforeEach(() => {
     model = new ScreenModel();
     clock = new Clock();
@@ -342,9 +347,6 @@ describe("the routing coordinator", () => {
           offerWhen: "Offer it when the user is arranging something they will attend.",
         },
       });
-    const flush = async (): Promise<void> => {
-      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
-    };
     const writing = async (): Promise<void> => {
       jev.router1 = () => ({ choice: "write", confidence: 0.9 });
       show("Dear Dana, the deck");
@@ -374,6 +376,9 @@ describe("the routing coordinator", () => {
       expect(Object.keys(first.questions)).toEqual(["outcome"]);
       expect(Object.keys((first.questions.outcome as { criteria: Record<string, string> }).criteria)).toEqual(["abstain", "write"]);
       expect((first.state as Record<string, unknown>).offer).toBeUndefined();
+      // The other fields' labels stay with the outcome question, so the task's sentence fits its window's budget first.
+      expect((first.state as Record<string, unknown>).form).toBeDefined();
+      expect((second.state as Record<string, unknown>).form).toBeUndefined();
       expect(Object.keys(second.questions)).toEqual(["task"]);
       const q = second.questions.task as { instructions: string; criteria: Record<string, string> };
       expect(Object.keys(q.criteria)).toEqual(["abstain", "act"]);
@@ -501,6 +506,60 @@ describe("the routing coordinator", () => {
       expect([again.ran, again.dropped]).toEqual([0, 1]);
     });
 
+    it("takes a task answer at Router 1's floor and not below it", async () => {
+      hostWrites = false;
+      for (const [confidence, ran] of [[0.5, 1], [0.49, 0]] as const) {
+        const ev = checked(`event:${confidence}`);
+        cands = [ev];
+        jev.task = () => ({ choice: "act", confidence });
+        clock.advance(ROUTER1_COOLDOWN_MS);
+        show("", confidence === 0.5 ? 1 : 2);
+        await coord.idle();
+        expect(ev.ran, String(confidence)).toBe(ran);
+      }
+    });
+
+    it("carries the task of the context that opened the write session through the host's report of the same sentence end (review F1)", async () => {
+      const ev = checked();
+      cands = [ev];
+      jev.holding = true;
+      jev.router1 = () => ({ choice: "write", confidence: 0.9 });
+      jev.task = () => ({ choice: "act", confidence: 0.8 });
+      show("Dear Dana. Lunch with Priya tomorrow at noon.");
+      jev.release();
+      await flush();
+      expect(coord.writing).toEqual({ windowId: NOTE, key: BODY(0) });
+      // The task's request is out when the host reports the sentence end the reader walked first.
+      expect(jev.routerCalls()).toHaveLength(2);
+      coord.hostEditing({ windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "h1" }, true);
+      coord.observe();
+      expect(jev.routerCalls()).toHaveLength(2);
+      jev.release();
+      await coord.idle();
+      expect(ev.ran).toBe(1);
+      expect(coord.stats.staleDrops).toBe(0);
+      expect(decisions.map((d) => [d.outcome, d.by, d.published])).toEqual([
+        ["write", "router1", true],
+        ["write", "session", true],
+        ["act", "router1", false],
+      ]);
+    });
+
+    it("lets a carried task go when Router 1 does not choose it (review F2)", async () => {
+      await writing();
+      const ev = checked();
+      cands = [ev];
+      jev.holding = true;
+      jev.task = () => ({ choice: "abstain", confidence: 0.9 });
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      show("Dear Dana, the deck is ready. Lunch with Priya tomorrow at noon.");
+      coord.hostEditing({ windowId: NOTE, key: BODY(0), selection: "caret", composing: false, textRevision: "h2" }, true);
+      coord.observe();
+      jev.release();
+      await coord.idle();
+      expect([ev.ran, ev.dropped]).toEqual([0, 1]);
+    });
+
     it("lets a forged task answer fail the decision when the task was the only question", async () => {
       hostWrites = false;
       cands = [checked()];
@@ -554,6 +613,59 @@ describe("the routing coordinator", () => {
       await coord.idle();
       expect(jev.routerCalls()).toHaveLength(3);
     });
+  });
+
+  describe("the cooldown inside one field (review F3)", () => {
+    it("counts a window title that changes under the user's field as the same field", async () => {
+      show("One. ", 0);
+      await coord.idle();
+      clock.advance(500);
+      // The same window and field under a new title (an unread count): a new document context, not a new field.
+      const nodes: Node[] = [0, 1, 2].map((n) => ({ key: BODY(n), parent: null, role: "AXTextArea", label: `Body ${n}`, editable: true, ...(n === 0 ? { value: "One. " } : {}) }));
+      model.apply(snap(nodes, { at: clock.at, windowId: NOTE, app: NOTES, focused: true, focusedKey: BODY(0), title: "Notes (1)" }));
+      coord.observe();
+      expect(coord.context?.title).toBe("Notes (1)");
+      expect(jev.routerCalls()).toHaveLength(1);
+      clock.advance(ROUTER1_COOLDOWN_MS - 501);
+      expect(jev.routerCalls()).toHaveLength(1);
+      clock.advance(1);
+      await coord.idle();
+      expect(jev.routerCalls()).toHaveLength(2);
+    });
+
+    it("waits from the last start, not the last used answer, once the field has an answer", async () => {
+      show("One. ", 0);
+      await coord.idle();
+      clock.advance(ROUTER1_COOLDOWN_MS);
+      jev.holding = true;
+      coord.memoryChanged();
+      coord.observe();
+      expect(jev.routerCalls()).toHaveLength(2);
+      // Another change while that call is out: its reply goes stale, and the next start still waits two seconds from it.
+      coord.memoryChanged();
+      coord.observe();
+      jev.release();
+      await flush();
+      expect(jev.routerCalls()).toHaveLength(2);
+      jev.holding = false;
+      clock.advance(ROUTER1_COOLDOWN_MS - 1);
+      expect(jev.routerCalls()).toHaveLength(2);
+      clock.advance(1);
+      await coord.idle();
+      expect(jev.routerCalls()).toHaveLength(3);
+    });
+  });
+
+  it("keeps act legal for a registry that is only the overflow handoff (review F4)", async () => {
+    hostWrites = false;
+    cands = Array.from({ length: MAX_WORKFLOWS + 1 }, (_, i) => candidate(`w${i}`));
+    jev.router1 = (req) => {
+      expect(Object.keys((req.questions.outcome as { criteria: Record<string, string> }).criteria)).toEqual(["abstain", "act"]);
+      return { choice: "act", confidence: 0.9 };
+    };
+    show("Hello. ");
+    await coord.idle();
+    expect(decisions.at(-1)).toMatchObject({ outcome: "act", by: "single", route: `handoff: ${HANDOFF_OVERFLOW}` });
   });
 
   describe("offers the user consented to (R2 decision 2)", () => {

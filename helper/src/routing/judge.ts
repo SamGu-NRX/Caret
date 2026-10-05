@@ -178,7 +178,8 @@ export interface Built1 {
 export function router1Request(model: ScreenModel, ctx: RoutingContext, legal: readonly Outcome[], reg: Registry): Built1 {
   const acts = reg.routes.flatMap((r) => (r.candidate === null ? [] : [r.candidate]));
   const asking = legal.includes("ask") && reg.question !== null ? [reg.question] : [];
-  const options = legal.filter((o) => o !== "act" || acts.length > 0);
+  // Act stays an option while the registry lists any route, the overflow handoff included; the task is asked apart.
+  const options = legal.filter((o) => o !== "act" || reg.routes.length > 0);
   let outcome: Built<Outcome> | null = null;
   if (options.length > 1) {
     const t = describe(model, ctx, [...acts, ...asking]);
