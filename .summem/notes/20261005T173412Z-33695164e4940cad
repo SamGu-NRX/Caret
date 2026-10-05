@@ -1,0 +1,1 @@
+G2: a goal value's display names its source window's title, so live qwen3.8 matched v.display.includes('ORD-...') to the sender's email; goal-prompt.ts now says pick values by their quoted part.

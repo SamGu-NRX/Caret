@@ -283,6 +283,46 @@ export function cannedGoalWriter(scripts: CannedStep[][]): WriterPort & { reques
   };
 }
 
+// MARK: - what the measurement runners count
+
+/**
+ * Goal plans the scene refused for `code` (lower.ts GoalRefusal; "draft" is any of drafts.ts's checks, Jev's claim
+ * check included), read from the helper's counts. B30's runner matched warnings against /draft|recipient|add people/,
+ * which missed "Caret couldn't confirm you asked to say ..." and counted recipient refusals as drafts'.
+ */
+export function goalRefusals(sc: Pick<GoalScene, "store">, code: string): number {
+  sc.store.flush();
+  return sc.store.counts()[`goal.refused_${code}`] ?? 0;
+}
+export const draftRefusals = (sc: Pick<GoalScene, "store">): number => goalRefusals(sc, "draft");
+
+// MARK: - a stand-in for Jev
+
+/**
+ * A stand-in for Jev, for desk runs that are not about Jev's judgment. Every choice question whose options include
+ * "yes" is answered `belongs(question)` (true by default) at `p`; a question about whose details a field or value is
+ * gets "unclear", which vetoes nothing; every yes/no question gets `noul`. `calls` counts requests, `claimCalls` those
+ * with yes/no questions (drafts.ts confirmClaims), `asked` keeps each choice question's instructions.
+ */
+export function standInJev(o: { p?: number; noul?: number; belongs?: (instructions: string) => boolean } = {}): AskJev & { calls: number; claimCalls: number; asked: string[] } {
+  const f = Object.assign(
+    async (req: Parameters<AskJev>[0]) => {
+      f.calls++;
+      if (Object.keys(req.nouls ?? {}).length > 0) f.claimCalls++;
+      const answers: Record<string, { choice: string; confidence: number }> = {};
+      for (const [id, q] of Object.entries(req.questions)) {
+        const text = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+        f.asked.push(text);
+        if ("yes" in q.criteria) answers[id] = { choice: (o.belongs ?? (() => true))(text) ? "yes" : "no", confidence: o.p ?? 0.95 };
+        else answers[id] = { choice: "unclear" in q.criteria ? "unclear" : (Object.keys(q.criteria)[0] ?? ""), confidence: o.p ?? 0.95 };
+      }
+      return { model: "jev-stand-in", answers, nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, o.noul ?? 0.99])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
+    },
+    { calls: 0, claimCalls: 0, asked: [] as string[] },
+  );
+  return f;
+}
+
 // MARK: - a helper on the desk
 
 export interface GoalScene {
@@ -297,6 +337,8 @@ export interface GoalScene {
   /** What the helper warned about (a refused goal's detail goes here). */
   warnings: string[];
   session: string;
+  /** The helper's store: its counts say why goals were refused (goal.refused_<code>). */
+  store: Store;
   /** Plans a goal and returns its reply, recorded in `goals`. */
   request(instruction: string, requestId?: string): Promise<GoalProgress>;
   /** Accepts the latest preview of `goalId` (its segment and digest) from `from` (the scene's host by default), with `over` replacing any field. */
@@ -362,6 +404,7 @@ export function goalScene(o: {
     goals,
     warnings,
     session,
+    store,
     async request(instruction, requestId = `r${goals.length + 1}`) {
       const r = await helper.handleGoalRequest({ type: "goalRequest", v: PROTOCOL_VERSION, requestId, instruction, at: desk.at }, session);
       goals.push(r);

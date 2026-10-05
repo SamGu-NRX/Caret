@@ -8,14 +8,15 @@ import { buildInventory } from "../src/goals/inventory.ts";
 import { lowerGoal } from "../src/goals/lower.ts";
 import { runCodePlan } from "../src/codemode/sandbox.ts";
 import { macClock } from "../src/offers/event-time.ts";
-import { areaKey, button, buttonKey, cannedProgram, caseWindow, detailsWindow, fieldKey, goalScene, line, MAIL, mailWindow, replyWindow, SUPPORT, textKey, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { areaKey, button, buttonKey, cannedProgram, standInJev, caseWindow, detailsWindow, fieldKey, goalScene, line, MAIL, mailWindow, replyWindow, SUPPORT, textKey, wizardWindow, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
   for (const s of scenes.splice(0)) await s.close();
 });
+/** A desk scene; Jev's stand-in confirms every value unless the test brings its own (G2: no Jev writes nothing). */
 const scene = (o: Parameters<typeof goalScene>[0]): GoalScene => {
-  const s = goalScene(o);
+  const s = goalScene({ askJev: standInJev(), ...o });
   scenes.push(s);
   return s;
 };
@@ -427,7 +428,7 @@ describe("review: what may press, and when a segment may act", () => {
     const inv = buildInventory(sc.helper.model, { instruction: "file a support case", windows: ["7171-1"], memory: [], calendar: null, clock: macClock(new Date(sc.desk.at)), now: sc.desk.at, readerSession: 1 });
     const ran = await runCodePlan(cannedProgram(inv.snapshots, [TO_SUPPORT[0] as CannedStep]), inv.snapshots, async () => null, { multiWindow: true });
     if (!ran.ok) throw new Error(ran.detail);
-    const plan = lowerGoal("goal-frozen", "file a support case", ran.plan, inv.inventory);
+    const plan = await lowerGoal("goal-frozen", "file a support case", ran.plan, inv.inventory, { askJev: standInJev(), ledger: inv.ledger });
     const offered = sc.helper.goals.propose(plan, sc.session, "r-frozen");
     const seg = plan.segments[0] as (typeof plan.segments)[number];
     seg.slots.v0 = "ORD-SOMETHING-ELSE";

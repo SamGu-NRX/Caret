@@ -1,0 +1,1 @@
+D2-02/B27: no routing = producers self-trigger; routed producers hold offers until chosen (await routing.idle, routedSettled). Router 1 answers within ~0.05 of the 0.5 floor flip run to run; diff per moment. Failed fills reach the user only via Helper.fillFailed.

@@ -113,7 +113,7 @@ const askJev: AskJev = async (req: JevRequest) => {
   if (spend.usd >= SPEND_LIMIT) throw new Error(`spend limit $${SPEND_LIMIT} reached`);
   // The routers send without retry (judge.ts); B25's Jev intent maker also names a question "route", so the flag tells them apart.
   const router = req.retry429 === false;
-  const which = router && "outcome" in req.questions ? "router1" : router && "route" in req.questions ? "router2" : "producer";
+  const which = router && ("outcome" in req.questions || "task" in req.questions) ? "router1" : router && "route" in req.questions ? "router2" : "producer";
   const r = await jevClient(req);
   if (a.dump && which !== "producer") appendFileSync(join(OUT, "router-requests.ndjson"), `${JSON.stringify({ moment: current, which, state: req.state, questions: req.questions, answers: r.answers })}\n`);
   spend.usd += r.costUsd;
@@ -208,6 +208,8 @@ interface Row {
   routerCalls: number;
   latencyMs: number | null;
   offered: string[];
+  /** Routes of tasks Router 1 chose beside the published decision (R3), as "act/<route>". */
+  beside: string[];
   note: string | null;
 }
 const rows: Row[] = [];
@@ -351,11 +353,12 @@ for (const m of moments) {
       routerCalls: spend.calls.router1 + spend.calls.router2 - routerBefore,
       latencyMs: d === undefined ? null : d.latencyMs,
       offered: published,
+      beside: decisions.filter((x) => !x.published && x.by !== "consent" && x.outcome === "act").map((x) => `act/${routeOf(x) ?? "?"}`),
       note,
     });
     const r = rows.at(-1) as Row;
     const ok = r.got.outcome === r.expected.outcome && (r.expected.outcome !== "act" || r.got.route === r.expected.route);
-    process.stdout.write(`${ok ? "ok  " : "MISS"} ${m.id} ${m.category} expected ${m.expected.outcome}${m.expected.route === null ? "" : `/${m.expected.route}`} got ${r.got.outcome}${r.got.route === null ? "" : `/${r.got.route}`} (${r.by}${r.local === null ? "" : `:${r.local}`}${r.refused === null ? "" : ` ${r.refused}`}) $${spend.usd.toFixed(4)}\n`);
+    process.stdout.write(`${ok ? "ok  " : "MISS"} ${m.id} ${m.category} expected ${m.expected.outcome}${m.expected.route === null ? "" : `/${m.expected.route}`} got ${r.got.outcome}${r.got.route === null ? "" : `/${r.got.route}`}${r.beside.length === 0 ? "" : ` beside ${r.beside.join(",")}`} (${r.by}${r.local === null ? "" : `:${r.local}`}${r.refused === null ? "" : ` ${r.refused}`}) $${spend.usd.toFixed(4)}\n`);
   } catch (e) {
     process.stdout.write(`ERROR ${m.id}: ${e instanceof Error ? e.message : String(e)}\n`);
   } finally {
@@ -374,6 +377,9 @@ const per = OUTCOMES.map((o) => {
   return { outcome: o, tp, said, truth, precision: said === 0 ? null : tp / said, recall: truth === 0 ? null : tp / truth };
 });
 const actWrong = rows.filter((r) => r.got.outcome === "act" && r.expected.outcome !== "act");
+// A task offered beside the published decision is an act too, behind Tab like every other (R3).
+const besideWrong = rows.filter((r) => r.beside.length > 0 && r.expected.outcome !== "act");
+const besideRight = rows.filter((r) => r.expected.outcome === "act" && r.got.outcome !== "act" && r.beside.includes(`act/${r.expected.route}`));
 const bothAct = rows.filter((r) => r.got.outcome === "act" && r.expected.outcome === "act");
 const routeRight = bothAct.filter((r) => r.got.route === r.expected.route).length;
 const exact = rows.filter((r) => r.got.outcome === r.expected.outcome && (r.expected.outcome !== "act" || r.got.route === r.expected.route)).length;
@@ -409,6 +415,7 @@ const md = [
   "",
   `${rows.length} moments of ${corpus.moments.length}; exact (outcome, and route for act) ${exact}/${rows.length}. Jev spend $${spend.usd.toFixed(4)}: Router 1 ${spend.calls.router1} calls, Router 2 ${spend.calls.router2}, producers ${spend.calls.producer}.`,
   `Acted when it should not have: ${actWrong.length}${actWrong.length === 0 ? "" : ` (${actWrong.map((r) => `${r.id} expected ${r.expected.outcome}`).join(", ")})`}. Route right where both said act: ${routeRight}/${bothAct.length}.`,
+  `Tasks offered beside the published decision: ${rows.filter((r) => r.beside.length > 0).length}; where act was expected and the published decision was not act, the expected route beside it: ${besideRight.length}${besideRight.length === 0 ? "" : ` (${besideRight.map((r) => r.id).join(", ")})`}; beside where act was not expected: ${besideWrong.length}${besideWrong.length === 0 ? "" : ` (${besideWrong.map((r) => `${r.id} expected ${r.expected.outcome}`).join(", ")})`}.`,
   `Router call latency ms p50 ${q(spend.routerMs, 0.5)?.toFixed(0)}, p95 ${q(spend.routerMs, 0.95)?.toFixed(0)}; route entry (breakpoint to decision) for router-decided moments p50 ${q(rows.flatMap((r) => (r.by === "router1" || r.by === "router2" || r.by === "single") && r.latencyMs !== null ? [r.latencyMs] : []), 0.5)}, p95 ${q(rows.flatMap((r) => (r.by === "router1" || r.by === "router2" || r.by === "single") && r.latencyMs !== null ? [r.latencyMs] : []), 0.95)}, for local decisions p50 ${q(rows.flatMap((r) => r.by === "local" && r.latencyMs !== null ? [r.latencyMs] : []), 0.5)}, p95 ${q(rows.flatMap((r) => r.by === "local" && r.latencyMs !== null ? [r.latencyMs] : []), 0.95)}${a["real-clock"] ? " (wall clock)" : " (the eval's fake clock, which does not advance during calls: see the call latency)"}. Router input tokens mean ${(spend.routerTokens.reduce((x, y) => x + y, 0) / Math.max(1, spend.routerTokens.length)).toFixed(0)}.`,
   "",
   "| Outcome | Said | Truth | Right | Precision | Recall |",
@@ -427,9 +434,9 @@ const md = [
   `| --- | ${OUTCOMES.map(() => "---:").join(" | ")} | ---: |`,
   ...confusion.map((c) => `| ${c.join(" | ")} |`),
   "",
-  "| Moment | Category | Expected | Got | By | Local / refused | Answered | Conf | Router calls | Offered | Note |",
-  "| --- | --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- |",
-  ...rows.map((r) => `| ${r.id} | ${r.category} | ${r.expected.outcome}${r.expected.route === null ? "" : `/${r.expected.route}`} | ${r.got.outcome}${r.got.route === null ? "" : `/${r.got.route}`} | ${r.by} | ${r.local ?? r.refused ?? ""} | ${r.answered ?? ""} | ${r.confidence?.toFixed(2) ?? ""} | ${r.routerCalls} | ${r.offered.join(", ")} | ${r.note ?? ""} |`),
+  "| Moment | Category | Expected | Got | Beside | By | Local / refused | Answered | Conf | Router calls | Offered | Note |",
+  "| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- |",
+  ...rows.map((r) => `| ${r.id} | ${r.category} | ${r.expected.outcome}${r.expected.route === null ? "" : `/${r.expected.route}`} | ${r.got.outcome}${r.got.route === null ? "" : `/${r.got.route}`} | ${r.beside.join(", ")} | ${r.by} | ${r.local ?? r.refused ?? ""} | ${r.answered ?? ""} | ${r.confidence?.toFixed(2) ?? ""} | ${r.routerCalls} | ${r.offered.join(", ")} | ${r.note ?? ""} |`),
   "",
 ];
 const stem = `corpus-${hostWrites ? "on" : "off"}${a["ask-maker"] === "jev" ? "-askjev" : ""}${a["real-clock"] ? "-clock" : ""}`;

@@ -537,6 +537,195 @@ export function noClaim(s: string, basis: DraftBasis): boolean {
   return NAME_ONLY.test(rest) && !STARTERS.has(first) && nameIn(basis, wordsOf(rest));
 }
 
+// MARK: - restatements
+
+/** Contractions written out, so "I'm" is "i am" and "can't" holds "not" on both sides. */
+const CONTRACTIONS: readonly [RegExp, string][] = [
+  [/\bwon't\b/gu, "will not"],
+  [/\bshan't\b/gu, "shall not"],
+  [/\bcan't\b|\bcannot\b/gu, "can not"],
+  [/n't\b/gu, " not"],
+  [/'m\b/gu, " am"],
+  [/'re\b/gu, " are"],
+  [/'ll\b/gu, " will"],
+  [/'ve\b/gu, " have"],
+  [/'d\b/gu, " would"],
+  [/'s\b/gu, ""],
+];
+/** Words a restatement may add or leave out: articles and "please". Pronouns, prepositions and "not" are content. */
+const FILLER = new Set(["a", "an", "the", "please"]);
+/**
+ * Words that change what a clause of the instruction means: a negation, a condition or a turn ("do not send", "if it
+ * works", "in or out"). A sentence of the instruction with one of these in any other clause than the restated words'
+ * gives no restatement. An open list, on the fail-open side; FRAME below is the closed rule that does the work.
+ */
+const TURNS = new Set(["not", "no", "never", "nor", "neither", "without", "unless", "if", "except", "only", "when", "whenever", "once", "until", "after", "before", "instead", "rather", "whether", "or", "but", "maybe", "might", "probably", "avoid", "stop", "refuse", "dont", "cant", "wont", "didnt", "doesnt", "isnt"]);
+
+/**
+ * Words that open what the user asks Caret to say ("saying I'm in", "tell her I'll be there", "a reply that I paid").
+ * Closed on purpose: restated words after anything else are left to Jev.
+ */
+const SAYING = new Set(["say", "saying", "tell", "telling", "reply", "replying", "respond", "responding", "answer", "answering", "write", "writing", "with", "that"]);
+/** Whom a saying word may name before what is said: "tell her I'm in" (a name the instruction gives, too). */
+const ADDRESSEE = new Set(["her", "him", "them", "me", "us", "you", "everyone", "everybody", "all"]);
+/**
+ * The only words that may stand before restated words in their clause, besides names: asking for a message and whom
+ * it goes to ("draft a reply to Priya saying", "write her a short note that"). Closed on purpose: "avoid saying",
+ * "I deny that" and "never make this promise" are not a request to say what follows, so they go to Jev.
+ */
+const FRAME = new Set([...SAYING, ...ADDRESSEE, "draft", "compose", "send", "rsvp", "response", "message", "email", "mail", "note", "text", "short", "quick", "brief", "back", "to", "for", "confirmation"]);
+/**
+ * Words another clause of the restated words' sentence may open with: a request for another step of the goal ("copy
+ * her address into To and draft ..."). Closed on purpose: a clause that opens any other way ("provided you refund me",
+ * "assuming it works") may qualify what is said, so the sentence goes to Jev.
+ */
+const STEP_VERBS = new Set(["copy", "add", "put", "fill", "paste", "enter", "type", "insert", "use", "take", "draft", "write", "compose", "reply", "answer", "respond", "tell", "say", "address", "schedule", "create", "book", "set", "leave", "open"]);
+/** Words that make a request conditional wherever they stand in the instruction: none of its sentences restates then. */
+const CONDITIONS = new Set(["if", "unless", "provided", "providing", "assuming", "only", "when", "whenever", "once", "until", "otherwise", "except", "suppose", "supposing", "whether", "after", "before", "later"]);
+
+/** A text's content words in order: folded, contractions written out, filler dropped; `w` lower case, `cased` as written. */
+function contentWords(t: string): { w: string; cased: string }[] {
+  let s = folded(t).replace(/[’‘]/gu, "'");
+  for (const [re, to] of CONTRACTIONS) s = s.replace(new RegExp(re.source, "giu"), to);
+  return (s.match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu) ?? []).map((x) => ({ w: x.toLowerCase(), cased: x })).filter((x) => !FILLER.has(x.w));
+}
+
+/**
+ * The instruction's sentences, each cut into clauses at commas and at "and", "then" and "also". Neither cut is made
+ * inside double quotes, so a quoted reply stays whole with what asks for it; with unbalanced quotes the whole
+ * instruction is one clause.
+ */
+function clausesOf(instruction: string): string[][] {
+  const t = folded(instruction).replace(/[“”]/gu, '"');
+  if ((t.match(/"/gu) ?? []).length % 2 !== 0) return [[t.replace(/"/gu, " ")]];
+  const sentences: string[][] = [];
+  let clause = "";
+  let clauses: string[] = [];
+  let quoted = false;
+  const endClause = (): void => {
+    if (clause.trim() !== "") clauses.push(clause);
+    clause = "";
+  };
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i] as string;
+    if (c === '"') {
+      quoted = !quoted;
+      clause += " ";
+      continue;
+    }
+    if (!quoted && /[.!?;\n]/u.test(c)) {
+      endClause();
+      if (clauses.length > 0) sentences.push(clauses);
+      clauses = [];
+      continue;
+    }
+    if (!quoted && c === ",") {
+      endClause();
+      continue;
+    }
+    const joiner = quoted ? null : /^\s(?:and|then|also)\s/iu.exec(t.slice(i));
+    if (joiner !== null) {
+      endClause();
+      i += joiner[0].length - 2;
+      continue;
+    }
+    clause += c;
+  }
+  endClause();
+  if (clauses.length > 0) sentences.push(clauses);
+  return sentences;
+}
+
+/**
+ * Whether a draft sentence only restates the user's instruction (G2 lead decision 3). After a greeting and a name the
+ * basis shows are set aside, its content words must be the last words of one clause of the instruction, in the same
+ * order with nothing between them. Before them in that clause stand only FRAME words and names the instruction gives
+ * (never its clause's first word), with a SAYING word, or one and an addressee, right before them. No other clause of
+ * that sentence holds a TURNS word. Such a sentence says what the user asked Caret to say, so Jev is not asked to
+ * confirm it; drafts.ts's fact checks still run.
+ *
+ * Order, the clause's end and the closed FRAME are the rule because a set of the instruction's words can recombine
+ * into a claim the user did not make ("Friday works" from "I can't do Friday but Monday works"), and B30's reviews
+ * found every token allowlist of this kind failing open. G2's review found suffixes after "Avoid saying", "I deny
+ * that" and a quoted example passing an earlier version that allowed any words before a saying word.
+ */
+export function restates(sentence: string, instruction: string, basis: DraftBasis): boolean {
+  let t = folded(sentence).trim();
+  const opener = OPENER.exec(t);
+  if (opener !== null) t = t.slice(opener[0].length);
+  // A name the basis shows, as the person addressed: "Priya, I'm in." and "I'm in, Priya!"
+  const vocative = (name: string): boolean => NAME_ONLY.test(name) && !STARTERS.has((name.split(" ")[0] ?? "").toLowerCase()) && nameIn(basis, wordsOf(name));
+  t = t.replace(/^[\s,.!]+/u, "");
+  const lead = /^([^,]+),\s*/u.exec(t);
+  if (lead !== null && vocative((lead[1] ?? "").trim())) t = t.slice(lead[0].length);
+  const tail = /,\s*([^,]+?)[\s.!?]*$/u.exec(t);
+  if (tail !== null && vocative((tail[1] ?? "").trim())) t = t.slice(0, tail.index);
+  const said = contentWords(t).map((x) => x.w);
+  if (said.length === 0) return false;
+  // Inside quotes the user wrote the reply itself: only the whole quote is a restatement of it. Its own first words
+  // are what is asked to be said ('saying "Tell her I'll pay"' asks to say all of that, not "I'll pay").
+  for (const q of folded(instruction).replace(/[“”]/gu, '"').match(/"[^"]*"/gu) ?? []) {
+    const quoted = contentWords(q).map((x) => x.w);
+    const inside = quoted.some((_, i) => said.every((w, j) => quoted[i + j] === w));
+    if (inside && quoted.length !== said.length) return false;
+  }
+  const sentences = clausesOf(instruction);
+  if (sentences.some((clauses) => clauses.some((c) => contentWords(c).some((x) => CONDITIONS.has(x.w))))) return false;
+  for (const clauses of sentences) {
+    const words = clauses.map(contentWords);
+    for (const [k, clause] of words.entries()) {
+      const at = clause.length - said.length;
+      if (at < 1 || said.some((w, i) => clause[at + i]?.w !== w)) continue;
+      // Every other clause of the sentence asks for another step and turns nothing.
+      if (words.some((other, j) => j !== k && (!STEP_VERBS.has(other[0]?.w ?? "") || other.some((x) => TURNS.has(x.w))))) continue;
+      const before = clause.slice(0, at);
+      if (before.some((x) => TURNS.has(x.w))) continue;
+      // A name: a capitalized word, not all capitals, that is not the first of its clause ("Avoid saying ..." and
+      // "NOT saying ..." name no one).
+      const name = (x: { cased: string }, i: number): boolean => i > 0 && /^\p{Lu}\p{Ll}/u.test(x.cased);
+      if (!before.every((x, i) => FRAME.has(x.w) || name(x, i))) continue;
+      const last = before[at - 1] as { w: string; cased: string };
+      const addressee = ADDRESSEE.has(last.w) || name(last, at - 1);
+      if (SAYING.has(last.w) || (addressee && SAYING.has(before[at - 2]?.w ?? ""))) return true;
+    }
+  }
+  return false;
+}
+
+/** Verbs that put something on a calendar. */
+const EVENT_VERBS = new Set(["add", "put", "schedule", "book", "create", "set", "block", "save", "make", "note"]);
+/** Words for what such a verb puts there: each singular one an event, a plural or "both" at least two. */
+const EVENT_ONE = new Set(["meeting", "event", "appointment", "call", "session", "invite", "invitation"]);
+const EVENT_MANY = new Set(["meetings", "events", "appointments", "calls", "sessions", "invites", "invitations", "both"]);
+/** Negations that cancel a clause's request ("do not put it on my calendar"). */
+const NEGATIONS = new Set(["not", "no", "never", "nor", "neither", "without", "dont", "avoid", "stop", "refuse", "skip"]);
+/** Conditions that make a sentence's request wait on something; "after" and "before" may only say when an event is. */
+const EVENT_CONDITIONS = new Set([...CONDITIONS].filter((w) => w !== "after" && w !== "before" && w !== "later"));
+
+/**
+ * How many calendar events the instruction asks for, at least (G2); 0 when it asks for none. A sentence asks when a
+ * clause of it holds a verb that puts something on a calendar, its clauses without a negation are read together
+ * ("add the Priya meeting and the Morgan meeting to my calendar"), and it has no condition. It asks for as many
+ * events as it names singly, at least two for a plural or "both", and one when it names only the calendar. A goal
+ * whose plan adds fewer is not done (lower.ts, runs.ts). Word lists, not measured: a request they miss leaves the goal
+ * as it was before G2, and one they misread makes it partial, never done.
+ */
+export function eventsAsked(instruction: string): number {
+  let n = 0;
+  for (const clauses of clausesOf(instruction)) {
+    const words = clauses.map(contentWords);
+    if (words.some((c) => c.some((x) => EVENT_CONDITIONS.has(x.w)))) continue;
+    const positive = words.filter((c) => !c.some((x) => NEGATIONS.has(x.w)));
+    if (!positive.some((c) => c.some((x) => EVENT_VERBS.has(x.w)))) continue;
+    const all = positive.flat();
+    const one = all.filter((x) => EVENT_ONE.has(x.w)).length;
+    const many = all.some((x) => EVENT_MANY.has(x.w)) ? 2 : 0;
+    const calendar = all.some((x) => x.w === "calendar") ? 1 : 0;
+    n += Math.max(one, many, calendar);
+  }
+  return n;
+}
+
 const CONFIRM_WORDS = [
   (instr: string, s: string): string => `The user asked: "${instr}". Caret drafted this sentence for the user to send: "${s}". Does the sentence say only what the user asked to say, with no promise, commitment, refusal, apology, date or condition the user did not ask for?`,
   (instr: string, s: string): string => `Sentence Caret drafted: "${s}". The user's request: "${instr}". Is every promise, commitment, refusal, date and condition in this sentence one the user asked for?`,
@@ -549,7 +738,7 @@ const CONFIRM_WORDS = [
  * declarations; a request carries those its text holds.
  */
 export async function confirmClaims(instruction: string, drafts: readonly { text: string; basis: DraftBasis }[], askJev: AskJev | null, snippets: readonly Snippet[]): Promise<{ calls: number; costUsd: number }> {
-  const claims = [...new Set(drafts.flatMap((d) => sentencesOf(d.text).filter((s) => !noClaim(s, d.basis))))];
+  const claims = [...new Set(drafts.flatMap((d) => sentencesOf(d.text).filter((s) => !noClaim(s, d.basis) && !restates(s, instruction, d.basis))))];
   if (claims.length === 0) return { calls: 0, costUsd: 0 };
   if (askJev === null) throw new DraftRefused("unchecked", `Caret can't check the draft's sentence ${q(claims[0] as string)} right now`, claims[0] as string);
   const req = (wording: 0 | 1): JevRequest => {

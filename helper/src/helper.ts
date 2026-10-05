@@ -87,7 +87,7 @@ import { planWithCode } from "./planner/codeplan.ts";
 import { GoalRuns } from "./goals/runs.ts";
 import { planGoal } from "./goals/propose.ts";
 import { GoalError, type DonePress } from "./goals/lower.ts";
-import type { GoalPlan } from "./goals/plan.ts";
+import type { GoalPlan, LeftItem } from "./goals/plan.ts";
 import { macClock } from "./offers/event-time.ts";
 import { planAsk } from "./planner/ask.ts";
 import { fillSays, SaidError, SAYS, saysFor } from "./planner/says.ts";
@@ -105,7 +105,7 @@ import type { MemoryValue } from "./planner/trace.ts";
 import { AskAsks, AskRefused, wireOptions, type AskDraft, type AskGoal, type AskOptions, type AskQuestionDraft } from "./planner/ask.ts";
 import type { AskFixed } from "./planner/intent.ts";
 import { RoutingCoordinator, type Decision } from "./routing/coordinator.ts";
-import { ASK_ROUTES, type RouteCandidate } from "./routing/routes.ts";
+import { ASK_ROUTES, type RouteCandidate, type TaskEvidence } from "./routing/routes.ts";
 import { ConsentLedger, type Consent } from "./routing/consent.ts";
 import type { RoutingContext } from "./routing/context.ts";
 import { FILLABLE_ROLES, neverTypedNode } from "./fill/fill.ts";
@@ -113,7 +113,7 @@ import { fieldKinds, valueKinds, words } from "./fill/kinds.ts";
 import { labelledLines } from "./fill/candidates.ts";
 import { fieldAsksFor } from "./fill/about.ts";
 import type { ValueKind } from "./protocol.ts";
-import { sentences, type EventCandidate } from "./offers/event-card.ts";
+import { OFFER_WHEN, sentences, type EventCandidate, type SentenceSource } from "./offers/event-card.ts";
 import { nodeText } from "./model.ts";
 import { createHash } from "node:crypto";
 
@@ -507,7 +507,7 @@ export class Helper {
       bind: (taskId, session) => this.bindNew(taskId, session),
       memoryHolds: (ref, value) => this.memoryHolds(ref, value),
       ...(opts.pageDocument === undefined ? {} : { pageDocument: opts.pageDocument }),
-      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.pressed),
+      replan: (r) => this.replanGoal(r.goalId, r.instruction, r.pressed, r.owed),
     });
     this.journal = opts.journal ?? new RecoveryJournal(opts.store.dir);
     this.memory.routineSightings = this.gate.rules.routineSightings ?? (LEVELS.balanced.routineSightings as number);
@@ -1116,7 +1116,7 @@ export class Helper {
     return [...(user === null ? [] : [user]), ...rest].map((w) => w.window.windowId);
   }
 
-  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null): ReturnType<typeof planGoal> {
+  private goalPlan(goalId: string, instruction: string, done: readonly DonePress[] = [], first: string | null = null, carried: readonly LeftItem[] = []): ReturnType<typeof planGoal> {
     const writer = this.writer;
     if (writer === null) throw new GoalError("nothingToDo", "no plan writer is configured");
     const calendar = this.executorHasCalendar ? (this.opts.eventCalendar ?? "Caret") : null;
@@ -1133,14 +1133,15 @@ export class Helper {
       readerSession: this.readerSession,
       ...(this.opts.pageDocument === undefined ? {} : { pageDocument: this.opts.pageDocument }),
       done,
+      carried,
     });
   }
 
   /** A fresh plan for a stopped goal's instruction, from the screen as it is now; null when none can be offered. */
-  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[]): Promise<GoalPlan | null> {
+  private async replanGoal(goalId: string, instruction: string, done: readonly DonePress[], carried: readonly LeftItem[]): Promise<GoalPlan | null> {
     if (this.writer === null || this.mode !== "live" || this.gate.settings.paused) return null;
     try {
-      return await this.goalPlan(goalId, instruction, done);
+      return await this.goalPlan(goalId, instruction, done, null, carried);
     } catch (e) {
       if (!(e instanceof GoalError)) throw e;
       this.opts.warn?.(`goal ${goalId}: no fresh plan: ${e.message}`);
@@ -2098,7 +2099,8 @@ export class Helper {
               workflow: "event",
               says: `Add to Calendar the event this sentence the user just finished arranges: "${last}"`,
               plain: "Add to Calendar the event in the sentence the user just finished",
-              quotes: [{ window: w, kind: "candidate", texts: [last] }],
+              quotes: [{ window: w, kind: "candidate", texts: [last, c.person] }],
+              evidence: eventEvidence(c, "typed", "the user typed it in this field"),
               relevance: 2,
               ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the sentence means, since it leaves the start open" } } : {}),
               run: () => this.startRouted(this.events.judge(w, key, last, offerField(w, key), "typed")),
@@ -2122,7 +2124,8 @@ export class Helper {
           workflow: "event",
           says: `Add to Calendar the event this line just heard in ${l.w.app.name} arranges: "${l.sentence}"`,
           plain: `Add to Calendar the event in a line just heard in ${l.w.app.name}`,
-          quotes: [{ window: l.w, kind: "candidate", texts: [l.sentence] }],
+          quotes: [{ window: l.w, kind: "candidate", texts: [l.sentence, c.person] }],
+          evidence: eventEvidence(c, "conversation", `it is a new line in a ${l.w.app.name} conversation the user is in, perhaps written by someone else`),
           relevance: 1,
           ...(startOpen(c) ? { question: { fact: "eventStart", says: "which time the line means, since it leaves the start open" } } : {}),
           run: () => {
@@ -2525,6 +2528,23 @@ function fillEvidence(model: ScreenModel, w: WindowState, fields: readonly Node[
  * different moments (AM or PM, which day, a repeated hour). A start that is known with only the length open is the
  * event route itself: the card offers the lengths in its own picker and adds nothing until one is chosen (D2-03).
  */
+/**
+ * What the event card's code checked before listing a sentence, for Router 1's task question (routes.ts `evidence`): the
+ * person it found, the time it resolved from the reader's typed values, and where the sentence came from (`where`: typed
+ * in the field, or a line of a window conversation.ts recognised). The sentence and the person are quoted through the
+ * candidate's `quotes`.
+ */
+function eventEvidence(c: EventCandidate, source: SentenceSource, where: string): TaskEvidence {
+  // A card that asks is listed as a task only when its choices share one start (startOpen): the sentence gave no end.
+  const when = c.time.kind === "resolved" ? c.time.time.says : `${c.time.choices.map((t) => t.says).join(" or ")}, the sentence giving no end`;
+  return {
+    task: "Add an event to the user's calendar",
+    sentence: c.sentence,
+    found: `Code found in it the person "${c.person}" and the time ${when}; ${where}.`,
+    offerWhen: OFFER_WHEN[source],
+  };
+}
+
 function startOpen(c: EventCandidate): boolean {
   return c.time.kind === "ask" && new Set(c.time.choices.map((t) => t.start)).size > 1;
 }

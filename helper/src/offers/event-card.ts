@@ -168,6 +168,15 @@ const WORDINGS: Record<SentenceSource, readonly [string, string]> = {
   ],
 };
 
+/**
+ * When the user wants a card offered, for Router 1's task question (routing/judge.ts): the same cases the attend asks
+ * answer no to, which the router's question needs too or it cannot tell them apart (evidence/screen/r3/task-wording).
+ */
+export const OFFER_WHEN: Record<SentenceSource, string> = {
+  typed: "Offer it when the user is arranging something they will attend. Do not offer it for something over, cancelled, declined, only wondered about, or for other people without the user.",
+  conversation: "Offer it when the line arranges something the user of this computer will attend; someone else may have written it. Do not offer it for something over, cancelled, declined, only wondered about, or for other people without the user.",
+};
+
 /** One of the two asks. `declared` is the sentence as its window's ledger took it. */
 export function buildAttendRequest(sentence: string, wording: 0 | 1, declared: { snippets: JevRequest["snippets"]; charged: JevRequest["charged"] }, source: SentenceSource = "typed"): JevRequest {
   return {

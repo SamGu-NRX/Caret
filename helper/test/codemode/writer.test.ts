@@ -6,7 +6,7 @@ import { PlanningSnapshotSchema } from "../../src/codemode/types.ts";
 import { listModels } from "../../src/writer/chat.ts";
 import { CANDIDATES, GATEWAY_GPT_OSS_120B, GROQ_GPT_OSS_120B, GROQ_QWEN_3_8_27B, WRITER_ROUTE } from "../../src/writer/config.ts";
 import { extractProgram, PLAN_API, planUserMessage } from "../../src/writer/plan-prompt.ts";
-import { GOAL_API } from "../../src/writer/goal-prompt.ts";
+import { GOAL_API, GOAL_SYSTEM } from "../../src/writer/goal-prompt.ts";
 import { makeWriterPort } from "../../src/writer/port.ts";
 import { CANNED_PROGRAM, FORM, MAIL } from "./fixtures.ts";
 import { WRITER_CORPUS } from "./writer-corpus.ts";
@@ -36,6 +36,22 @@ describe("plan prompt", () => {
     expect(documented).toEqual(exposed);
     // A single-window plan's writer never reads draft(), which the worker refuses outside a goal (B30).
     expect([...PLAN_API.matchAll(/^\s+(\w+)\(/gm)].map((m) => m[1]).sort()).toEqual(exposed.filter((x) => x !== "draft"));
+  });
+
+  test("the goal API says which targets fill takes and which press takes (G2)", () => {
+    // Each line replaced in PLAN_API is gone from GOAL_API, so a reworded PLAN_API cannot silently keep the old text.
+    expect(GOAL_API).not.toContain("put a value into a fillable target");
+    expect(GOAL_API).not.toContain("press a target, expecting one of its allowedPressEffects");
+    expect(GOAL_API).toContain("A target whose canFill is\n   * false is a button: press() it, never fill() it.");
+    // G2 live (gpt-oss-20b, c103deb): one program passed a value object, another a value ref of a window it never read.
+    expect(GOAL_API).toContain("if (order) caret.fill(field.ref, order.ref);");
+    expect(GOAL_API).toContain("A field\n   * has none and is never pressed.");
+    expect(GOAL_SYSTEM).toContain("fill() takes only fields; press() takes only buttons.");
+    expect(GOAL_SYSTEM).toContain("Never put a value into another target because the right one is missing.");
+    // G2 live (qwen3.8, 69df243): a program picked the sender's email for Order number by a substring of its display,
+    // which names the mail's title; another drafted text into the calendar.
+    expect(GOAL_SYSTEM).toContain("Choose a value by its quoted part only.");
+    expect(GOAL_SYSTEM).toContain('takes only a listed event value (its display starts "the event"), never a draft.');
   });
 
   test("the inventory carries labels and refs, not value origins", () => {

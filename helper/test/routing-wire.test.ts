@@ -134,17 +134,16 @@ describe("route decisions through the helper and the server", () => {
     expect(write).toMatchObject({ windowId: DOC, key: BODY, route: null });
     expect(write.expires).toBeGreaterThan(write.at);
 
-    // The host reports the field: its selection was unknown to the helper, so the write ends and is decided again.
+    // The host reports a plain caret, which the helper already took its "unknown" to mean (RouteFollower sends no
+    // context for one): the same context, so the write holds and no decision is sent (R3).
+    const sentBefore = decisions(host).length;
     advance(2000);
     host.send({ type: "routingContext", v: PROTOCOL_VERSION, at: clock, windowId: DOC, key: BODY, selection: "caret", composing: false, textRevision: "r30", breakpoint: null });
-    const deciding = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.outcome === null);
-    // The end carries the host's own latest revision, which the host checks a decision against (review).
-    expect(deciding).toMatchObject({ key: BODY, textRevision: "r30" });
-    expect(deciding.context).toBeGreaterThan(write.context);
-    advance(2000);
+    await new Promise((r) => setTimeout(r, 50));
     await settle();
-    const next = await host.waitFor<RouteDecision>((m) => m.type === "routeDecision" && m.context === deciding.context && m.outcome !== null);
-    expect(next).toMatchObject({ outcome: "write", textRevision: "r30" });
+    expect(decisions(host)).toHaveLength(sentBefore);
+    expect(helper.routing?.writing).toEqual({ windowId: DOC, key: BODY });
+    const next = write;
     // A sentence end the host saw before the reader's walk keeps the session: write again for the new context, at
     // once and with no router call, and no null decision first (R2 decision 3).
     const before = decisions(host).length;

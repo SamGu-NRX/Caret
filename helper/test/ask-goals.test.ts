@@ -7,7 +7,7 @@ import { PROTOCOL_VERSION, type GoalProgress } from "../src/protocol.ts";
 import { WRITER_ROUTE } from "../src/writer/config.ts";
 import type { WriterPort } from "../src/writer/port.ts";
 import type { PlanningSnapshot } from "../src/codemode/types.ts";
-import { areaKey, cannedProgram, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, SUPPORT, type CannedStep, type GoalScene } from "./goal-desk.ts";
+import { areaKey, cannedProgram, caseWindow, detailsWindow, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, SUPPORT, type CannedStep, type GoalScene } from "./goal-desk.ts";
 
 const ORDER = "ORD-2026-48213";
 const PROBLEM = "The desk lamp arrived with a cracked base and does not switch on.";
@@ -35,9 +35,15 @@ function askAndGoalWriter(route: string): WriterPort & { kinds: string[] } {
     },
   };
 }
-/** Jev that is never asked anything on these paths: a call fails the test. */
-const silentJev: AskJev = async () => {
-  throw new Error("Jev was asked");
+/**
+ * Jev that is asked only the goal's value gate on these paths (G2, goals/gates.ts), and confirms each value there; any
+ * other question (an intent, a claim) fails the test.
+ */
+const confirming = standInJev();
+const silentJev: AskJev = async (req) => {
+  const task = typeof req.state === "string" ? req.state : String(req.state.task);
+  if (task !== "Caret checks each value a drafted plan would write before offering the plan.") throw new Error(`Jev was asked: ${task}`);
+  return confirming(req);
 };
 
 const scenes: GoalScene[] = [];
@@ -61,7 +67,7 @@ describe("Ask's plan route for a host that runs goal plans", () => {
     const preview = viaAsk as Extract<GoalProgress, { event: "segment" }>;
     expect(preview).toMatchObject({ event: "segment", requestId: "a1", segment: 0, segments: 2, reason: "start" });
     expect(sc.writer2.kinds).toEqual(["intent", "goal"]);
-    const direct = goalScene({ scripts: [STEPS], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1" });
+    const direct = goalScene({ scripts: [STEPS], windows: [mailWindow(), caseWindow(), detailsWindow()], userWindow: "7171-1", askJev: standInJev() });
     scenes.push(direct);
     const viaGoal = await direct.request(INSTRUCTION);
     expect(viaGoal).toMatchObject({ event: "segment", steps: preview.steps, digest: preview.digest, where: preview.where });

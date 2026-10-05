@@ -8,7 +8,7 @@
 {"type":"goalProgress","v":1,"at":1790000002060,"goalId":"goal-1-r1","requestId":null,"event":"step","segment":1,"taskId":"goal-1-r1:s1","step":1,"steps":4,"phase":"verified","says":"To: priya.raman@northwind.example"}
 {"type":"goalProgress","v":1,"at":1790000002060,"goalId":"goal-1-r1","requestId":null,"event":"step","segment":1,"taskId":"goal-1-r1:s1","step":2,"steps":4,"phase":"verified","says":"Message: The desk lamp arrived with a cracked base and does not switch on."}
 {"type":"goalProgress","v":1,"at":1790000002060,"goalId":"goal-1-r1","requestId":null,"event":"step","segment":1,"taskId":"goal-1-r1:s1","step":3,"steps":4,"phase":"handoff","says":"'Send' reads as outbound; you press it"}
-{"type":"goalProgress","v":1,"at":1790000002060,"goalId":"goal-1-r1","requestId":null,"event":"finished","outcome":"handoff","verified":3,"skipped":0,"says":"Ready: 3 done. 'Send' reads as outbound; you press it."}
+{"type":"goalProgress","v":1,"at":1790000002060,"goalId":"goal-1-r1","requestId":null,"event":"finished","outcome":"handoff","verified":3,"skipped":0,"left":[],"says":"Ready: 3 done. 'Send' reads as outbound; you press it."}
 {"type":"goalAccept","v":1,"goalId":"goal-1-r1","segment":1,"digest":"33291205e29ec33e4f8526d8c44442539a3f0c3140daf6716a0fdec213a7dea5","at":1790000003060}
 {"type":"error","v":1,"at":1790000003060,"message":"goalAccept refused: segment 2 of goal goal-1-r1 was already accepted; nothing runs twice"}
 {"type":"goalRequest","v":1,"requestId":"r2","instruction":"reply to Priya with the problem","at":1790000004080}

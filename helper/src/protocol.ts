@@ -1919,8 +1919,10 @@ const GoalHead = {
  * window or the calendar, `afterReveal`: a press showed new fields, `freshPlan`: replanned after a stop) and `replaces`
  * names the goal it was replanned from. `step`: one step verified, already true, or handed to the user, with the
  * executor task it ran in. `stopped`: the goal stopped; `freshPlan` names the replanned goal offered in its place, or
- * null. `finished`: every segment ran; `outcome` is `done` only when every step Caret makes was verified and none is
- * left to the user, `handoff` when the last step is the user's (a draft is ready; the user sends it).
+ * null. `finished`: every segment ran; `outcome` is `done` only when every step Caret makes was verified and nothing is
+ * left to the user, `handoff` when what is left is only the user's own part (the press that sends a ready draft, a
+ * message's recipient), `partial` when a write the plan meant was dropped or a field the form requires is still empty
+ * (G2). `left` says each thing left, in the preview's words; empty exactly when done.
  */
 export const GoalProgress = z.discriminatedUnion("event", [
   z.object({
@@ -1955,14 +1957,17 @@ export const GoalProgress = z.discriminatedUnion("event", [
     says: z.string().min(1).max(600),
     freshPlan: z.string().min(1).max(240).nullable(),
   }),
-  z.object({
-    ...GoalHead,
-    event: z.literal("finished"),
-    outcome: z.enum(["done", "handoff"]),
-    verified: z.number().int().nonnegative(),
-    skipped: z.number().int().nonnegative(),
-    says: z.string().min(1).max(600),
-  }),
+  z
+    .object({
+      ...GoalHead,
+      event: z.literal("finished"),
+      outcome: z.enum(["done", "handoff", "partial"]),
+      verified: z.number().int().nonnegative(),
+      skipped: z.number().int().nonnegative(),
+      left: z.array(z.string().min(1).max(300)).max(24),
+      says: z.string().min(1).max(600),
+    })
+    .refine((m) => (m.outcome === "done") === (m.left.length === 0) || m.outcome === "handoff", { message: "done leaves nothing, and partial names what it leaves", path: ["left"] }),
 ]);
 export type GoalProgress = z.infer<typeof GoalProgress>;
 
