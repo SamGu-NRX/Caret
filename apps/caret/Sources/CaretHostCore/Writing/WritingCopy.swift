@@ -19,6 +19,8 @@ public enum WritingCopy {
     public static let notInDictionary = "Not in the dictionary"
     public static let grammar = "Grammar"
 
+    public static let noSpaceAfterComma = "No space after the comma"
+
     public static func spaceBefore(_ mark: Character) -> String {
         "Space before the \(markName(mark))"
     }

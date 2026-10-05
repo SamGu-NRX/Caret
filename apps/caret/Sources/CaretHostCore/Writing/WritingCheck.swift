@@ -2,8 +2,9 @@ import Foundation
 
 /// The static writing rules: clear errors with one right answer, checked over the last sentence.
 ///
-/// Covered: a repeated word, two spaces between words, a space before punctuation, a lowercase
-/// first word after a finished sentence, and "a" or "an" against the next word's sound. Never
+/// Covered: a repeated word, two spaces between words, a space before punctuation, no space after
+/// a comma between words, a lowercase first word after a finished sentence, and "a" or "an"
+/// against the next word's sound. Never
 /// style: no wordiness, tone, passive voice, or comma preferences. When a rule cannot tell
 /// (an abbreviation, an acronym, "herb", a letter used as a label), it says nothing.
 ///
@@ -37,7 +38,7 @@ public enum WritingCheck {
 
         var found = scan.doubledSpaces()
         if isEnglish(language) {
-            found += scan.doubledWords() + scan.spacesBeforePunctuation() + scan.articles()
+            found += scan.doubledWords() + scan.spacesBeforePunctuation() + scan.missingSpacesAfterComma() + scan.articles()
             if let capital = scan.sentenceCapital() { found.append(capital) }
         }
         return resolveOverlaps(found.filter { c in !protected.contains { $0.overlaps(c.span) } })
@@ -283,6 +284,46 @@ private struct Scan {
             ))
         }
         return out
+    }
+
+    // MARK: No space after a comma
+
+    /// "lunch,we": a comma with a word of two or more letters on each side and no space after it.
+    /// Digits on either side ("1,000", "v2,beta") and one-letter labels ("rows A,B") say nothing;
+    /// links, addresses and code are protected spans. T2's decision 2 had dropped this case, since
+    /// the spell checker's only answer for it was an autocorrection; a rule has one right answer.
+    func missingSpacesAfterComma() -> [WritingCorrection] {
+        var out: [WritingCorrection] = []
+        for i in first..<table.count where chars[i] == "," {
+            guard letters(before: i) >= 2, letters(after: i + 1) >= 2 else { continue }
+            out.append(WritingCorrection(
+                span: table.span(i, i + 1), original: ",", replacement: ", ",
+                kind: WritingRule.spaceAfterComma.kind, reason: WritingCopy.noSpaceAfterComma,
+                source: .rule(.spaceAfterComma)
+            ))
+        }
+        return out
+    }
+
+    /// Letters in the word that ends just before `index`, or 0 when it is not a plain word: the run
+    /// must start after a space, an opening bracket or quote, or at the sentence start. "example.com,"
+    /// and "v2," are parts of tokens, not words.
+    private func letters(before index: Int) -> Int {
+        var n = 0
+        var k = index - 1
+        while k >= first, chars[k].isLetter { n += 1; k -= 1 }
+        if k >= first, !(chars[k].isWhitespace || Self.openers.contains(chars[k])) { return 0 }
+        return n
+    }
+
+    /// Letters in the word that starts at `index`, or 0 when it is not a plain word: the run must
+    /// end at a space, the sentence's end, or a mark that ends a word.
+    private func letters(after index: Int) -> Int {
+        var n = 0
+        var k = index
+        while k < table.count, chars[k].isLetter { n += 1; k += 1 }
+        if k < table.count, !(chars[k].isWhitespace || Self.spacedMarks.contains(chars[k]) || Self.closers.contains(chars[k])) { return 0 }
+        return n
     }
 
     // MARK: Capital after a finished sentence

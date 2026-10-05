@@ -89,13 +89,15 @@ public enum WritingRule: String, Codable, CaseIterable, Sendable {
     case doubledWord
     case doubledSpace
     case spaceBeforePunctuation
+    /// "lunch,we" to "lunch, we".
+    case spaceAfterComma
     case sentenceCapital
     case article
 
     public var kind: WritingCorrection.Kind {
         switch self {
         case .doubledWord, .article: return .grammar
-        case .doubledSpace, .spaceBeforePunctuation, .sentenceCapital: return .punctuation
+        case .doubledSpace, .spaceBeforePunctuation, .spaceAfterComma, .sentenceCapital: return .punctuation
         }
     }
 }

@@ -22,9 +22,28 @@ final class WritingCheckTests: XCTestCase {
         XCTAssertEqual(found.first?.2, rule, text, file: file, line: line)
     }
 
-    private func assertClean(_ text: String, language: String = "en", file: StaticString = #filePath, line: UInt = #line) {
-        let found = fixes(text, language: language)
+    private func assertClean(_ text: String, language: String = "en", whole: Bool = false, file: StaticString = #filePath, line: UInt = #line) {
+        let found = fixes(text, language: language, whole: whole)
         XCTAssertTrue(found.isEmpty, "\(text) should be clean: \(found)", file: file, line: line)
+    }
+
+    // MARK: No space after a comma (H5: static again after T2's decision 2 dropped it)
+
+    func testNoSpaceAfterACommaBetweenWords() {
+        assertFix("After lunch,we can review the slides.", ",", ", ", .spaceAfterComma)
+        assertFix("Thanks for the notes,they help.", ",", ", ", .spaceAfterComma)
+    }
+
+    func testCommasThatNeedNoSpace() {
+        assertClean("We raised $1,000 for the trip.")
+        assertClean("Check rows A,B and the totals.")
+        assertClean("Use the v2,beta build today.")
+        assertClean("Thanks, we can talk later.")
+        assertClean("Email dana@example.com,then call.", whole: true)
+    }
+
+    func testNoSpaceAfterACommaIsEnglishOnly() {
+        XCTAssertTrue(fixes("Nous avons fini,puis nous sommes partis.", language: "fr").isEmpty)
     }
 
     // MARK: Repeated words
