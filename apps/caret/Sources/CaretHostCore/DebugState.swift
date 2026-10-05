@@ -409,6 +409,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         public var lineText: String?
         /// Headless only: the pop-up on the panel, as `SlipSpeech.popup` says it.
         public var popupSpoken: String?
+        /// H8: a shown event card's destination line ("Adding to Work").
+        public var eventDestination: String?
         /// Seconds the accepted work has run.
         public var working: Double?
         /// The offer key (and helper task id) of the accepted work.

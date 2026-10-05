@@ -160,6 +160,17 @@ final class CalendarPermissionFlowTests: XCTestCase {
         ]))
     }
 
+    /// The debug state names the shown card's destination, as the card does.
+    func testTheShownCardsDestinationIsInTheDebugState() throws {
+        let offer = HelperOffer.action(EventCardCopy.destined(try EventCardCopyTests.offer(), line: "Adding to Work"))
+        play(rig(FakeCalendars()), Transition("a destined card shown", [
+            .screen { $0.front() },
+            .offer(offer),
+            .expect(.shown("event-1")),
+            .expect(.custom("eventDestination", { $0.machine.debugInfo().eventDestination == "Adding to Work" })),
+        ]))
+    }
+
     /// An offer shown, read or let go never asks: only a Tab on the card does.
     func testShowingAnEventCardNeverAsks() throws {
         let calendars = FakeCalendars()

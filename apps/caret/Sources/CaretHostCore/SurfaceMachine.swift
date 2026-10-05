@@ -1048,6 +1048,8 @@ public final class SurfaceMachine {
             info.candidates = shown.offer.candidates.count > 1 || shown.offer.kind == .ghost ? shown.offer.candidates : nil
             info.ui = snapshot.current?.id == shown.offerID ? snapshot.ui : nil
             if case .ghost = shown.offer.kind { info.caretPresentation = shown.presentation.rawValue }
+            // H8: where Tab would put a shown event card's event, as its card says it.
+            if case .action(let line) = shown.offer.kind, line.eventCard, let card = line.variants { info.eventDestination = EventCardCopy.destinationLine(card) }
         }
         info.figure = figure?.rawValue
         info.character = world.character.rawValue
