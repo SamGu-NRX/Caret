@@ -1,0 +1,1 @@
+B29: page number fields (type=number, inputmode numeric/decimal -> PAGE_SUBROLE.number) compare as numbers for undo identity only, through executor.ts canonicalDecimal; Number() made 9007199254740993 equal 9007199254740992.

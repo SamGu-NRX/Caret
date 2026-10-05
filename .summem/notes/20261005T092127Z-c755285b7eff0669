@@ -1,0 +1,1 @@
+B29: Ask questions with choices (planner/choices.ts) go only to a consumer whose hello lists askChoices; AskAsks extends AskRefused, so any other caller reads the old refusal sentence.
