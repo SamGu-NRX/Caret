@@ -260,3 +260,31 @@ describe("the H10 golden lines (fixtures/golden/page-field.ndjson), which the ho
     expect(FillAll.safeParse({ ...req, fieldKey: "" }).success).toBe(false);
   });
 });
+
+describe("the window the user just left, for a page (H10)", () => {
+  const snap = (windowId: string, at: number, o: { kind?: string; app?: typeof chrome } = {}) => ({
+    type: "snapshot" as const, v: 1 as const, seq: at, at, reason: "focus" as const, app: o.app ?? chrome,
+    window: { windowId, kind: o.kind ?? "standard", title: windowId, frame: null }, focused: true, root: null, nodes: [], values: [], focusedKey: null,
+    stats: { walkMs: 0, visited: 0, truncated: false },
+  });
+  const note = { pid: 7001, bundleId: "com.apple.TextEdit", name: "TextEdit" };
+
+  it("is the window before the browser came to the front, not the browser's own toolbar window", () => {
+    const m = new ScreenModel();
+    m.apply(snap("7001-1", 1, { app: note }));
+    m.apply(snap("4100-1", 2));
+    m.apply(snap(W, 3, { kind: "page" }));
+    expect(m.windowBefore(W)).toBe("7001-1");
+    // The browser's own window still has its own history: a native target is not changed.
+    expect(m.windowBefore("4100-1")).toBe("7001-1");
+  });
+
+  it("is another tab of the same browser when the user came from it", () => {
+    const m = new ScreenModel();
+    m.apply(snap("7001-1", 1, { app: note }));
+    m.apply(snap("page:eng1:6", 2, { kind: "page" }));
+    m.apply(snap("4100-1", 3));
+    m.apply(snap(W, 4, { kind: "page" }));
+    expect(m.windowBefore(W)).toBe("page:eng1:6");
+  });
+});

@@ -1,6 +1,7 @@
 // The screen model: the latest compacted tree of every open window, as the reader last saw it,
 // and the change log of what differed between one walk of a window and the next.
 import type { AppRef, Node, Snapshot, TypedValue, WindowRef } from "./protocol.ts";
+import { PAGE_WINDOW_KIND } from "./engines/windows.ts";
 
 export interface WindowState {
   app: AppRef;
@@ -139,12 +140,22 @@ export class ScreenModel {
    * focused (a fill requested for a background form), the most recently focused other window.
    */
   windowBefore(windowId: string): string | null {
+    // H10: a page and the reader's window of its browser (the same process; Accessibility shows only the browser's
+    // toolbar) come to the front together, the reader's first. Coming to a form in Chrome from a note, the window just
+    // left was that toolbar, so fill described the note to Jev as only "visited" and its anchor rule never applied; in
+    // the VM run (evidence/host/h10/vm/runs/20261005T211305Z-56749) both asks picked the note's values and every one was
+    // withheld at 0.65 to 0.77. The browser's own window is never where a page's values come from: it is passed over.
+    const target = this.windows.get(windowId);
+    const browserChrome = (id: string): boolean => {
+      const w = this.windows.get(id);
+      return target !== undefined && target.window.kind === PAGE_WINDOW_KIND && w !== undefined && w.app.pid === target.app.pid && w.window.kind !== PAGE_WINDOW_KIND;
+    };
     let i = this.focusHistory.length - 1;
     const last = this.focusHistory.findLastIndex((e) => e.windowId === windowId);
     if (last >= 0) i = last - 1;
     for (; i >= 0; i--) {
       const e = this.focusHistory[i];
-      if (e !== undefined && e.windowId !== windowId && this.windows.has(e.windowId)) return e.windowId;
+      if (e !== undefined && e.windowId !== windowId && this.windows.has(e.windowId) && !browserChrome(e.windowId)) return e.windowId;
     }
     return null;
   }
