@@ -38,7 +38,27 @@ final class RoutingTests: XCTestCase {
         XCTAssertEqual(kinds, [
             "skip:hello", "skip:routingContext", "decision:write", "skip:routingContext", "decision:null", "decision:act",
             "skip:routingContext", "decision:abstain", "skip:routingContext", "decision:act", "decision:abstain",
+            // R2: a failed decision, a write session a sentence end keeps, and a stale context.
+            "skip:routingContext", "decision:error", "skip:routingContext", "decision:write", "skip:routingContext", "decision:write",
+            "skip:routingContext", "decision:null", "decision:error",
         ])
+    }
+
+    /// R2's failed decisions (golden lines 13 and 20): the outcome is `error` and `failure` says how.
+    func testAFailedDecisionDecodesWithItsFailure() throws {
+        let lines = try Self.lines()
+        guard case .routeDecision(let timedOut) = try HelperInbound.decode(lines[12]) else { return XCTFail("line 13 is a routeDecision") }
+        XCTAssertEqual(timedOut, RouteDecision(
+            at: 1790000030001, context: 17, windowId: "4242-1", key: "dev.caret.notes/standard/textarea:body~0",
+            textRevision: "r40", outcome: .error, route: nil, failure: .timeout, expires: 1790001830001
+        ))
+        guard case .routeDecision(let stale) = try HelperInbound.decode(lines[19]) else { return XCTFail("line 20 is a routeDecision") }
+        XCTAssertEqual(stale.outcome, .error)
+        XCTAssertEqual(stale.failure, .stale)
+        guard case .routeDecision(let write) = try HelperInbound.decode(lines[2]) else { return XCTFail("line 3 is a routeDecision") }
+        XCTAssertNil(write.failure)
+        // Every failure protocol.ts's RouteFailure names.
+        XCTAssertEqual(RouteDecision.Failure.allCases.map(\.rawValue), ["failed", "timeout", "missing", "forged", "nonfinite", "stale"])
     }
 
     func testDecisionFieldsMatchTheGoldenLines() throws {
@@ -109,6 +129,16 @@ final class RoutingTests: XCTestCase {
         refused(try line(RouteDecision.type) { $0.removeObject(forKey: "outcome") }, "outcome is nullable, not optional")
         refused(try line(RouteDecision.type) { $0["textRevision"] = String(repeating: "r", count: 65) }, "revision is at most 64")
         refused(try line(RoutingContext.type) { $0.removeObject(forKey: "breakpoint") }, "breakpoint is nullable, not optional")
+        // routing-wire.test.ts:49-55 (R2): a failed decision says why, and only a failed decision does.
+        let failed = 6
+        XCTAssertNoThrow(try HelperInbound.decode(line(RouteDecision.type, failed) { _ in }))
+        refused(try line(RouteDecision.type, failed) { $0.removeObject(forKey: "failure") }, "an error says its failure")
+        refused(try line(RouteDecision.type, failed) { $0["failure"] = "lowConfidence" }, "unknown failure")
+        refused(try line(RouteDecision.type, failed) { $0["route"] = "fillAll" }, "an error names no route")
+        refused(try line(RouteDecision.type) { $0["failure"] = "failed" }, "a write says no failure")
+        refused(try line(RouteDecision.type, 1) { $0["failure"] = "stale" }, "a null outcome says no failure")
+        // zod's optional: absent, never null.
+        refused(try line(RouteDecision.type, failed) { $0["failure"] = NSNull() }, "failure is optional, not nullable")
     }
 
     func testTheHelloAsksForRoutingOnlyWhileTheSettingIsOn() throws {

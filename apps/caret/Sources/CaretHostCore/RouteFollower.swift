@@ -24,7 +24,9 @@ import Foundation
 ///
 /// When routing is unavailable the host behaves as before the router: the setting is off, the helper
 /// is not connected or its hello did not take routing, or no decision arrives within
-/// `decisionBudgetMs` (a helper without Jev, or one from before D2-02, never sends one).
+/// `decisionBudgetMs` (a helper without Jev, or one from before D2-02, never sends one). A decision
+/// whose outcome is `error` (R2: the router failed for that context) counts as that context's missed
+/// budget, so it shows help at once and three in a row make routing unavailable, as misses do.
 ///
 /// Pure: times are milliseconds since the epoch passed in, so every transition is tested without a
 /// clock. Main thread only in the app.
@@ -75,6 +77,8 @@ public final class RouteFollower {
         case expired
         /// No field is focused (ghost text needs one anyway).
         case noField
+        /// The router failed for this context (R2's `error` decision): as when its decision misses the budget.
+        case error
     }
 
     public enum Quiet: String, Equatable, Sendable {
@@ -155,6 +159,8 @@ public final class RouteFollower {
         var phase: Phase
         /// This deciding phase's miss was counted.
         var missed = false
+        /// Why the router failed, while an `error` decision holds.
+        var failure: RouteDecision.Failure?
 
         var bound: Bool { windowId != nil && key != nil }
     }
@@ -355,11 +361,9 @@ public final class RouteFollower {
         case .deciding(let since):
             let until = since + Self.decisionBudgetMs
             if nowMs < until { return .wait(untilMs: until) }
-            if !f.missed {
-                field?.missed = true
-                stats.misses &+= 1
-                misses += 1
-                if !proven || misses >= Self.missesBeforeUnavailable { unavailable = true }
+            if var missed = field {
+                countMiss(&missed)
+                field = missed
             }
             return unavailable ? .allow(.unavailable) : .allow(.budget)
         case .decided(let outcome, _, let expires):
@@ -369,6 +373,7 @@ public final class RouteFollower {
             case .abstain: return .quiet(.abstain)
             case .ask: return .quiet(.ask)
             case .act: return .quiet(.act)
+            case .error: return .allow(.error)
             }
         }
     }
@@ -399,7 +404,8 @@ public final class RouteFollower {
         }
         return DebugState.RoutingInfo(
             enabled: enabled, linked: linked, unavailable: unavailable, gate: gate, phase: phase, route: route,
-            windowId: field?.windowId, key: field?.key, budgetMs: Self.decisionBudgetMs, stats: stats, entry: entryLatency.summary()
+            failure: field?.failure?.rawValue, windowId: field?.windowId, key: field?.key, budgetMs: Self.decisionBudgetMs, stats: stats,
+            entry: entryLatency.summary()
         )
     }
 
@@ -478,6 +484,15 @@ public final class RouteFollower {
 
     private func apply(_ d: RouteDecision, to f: inout Field, nowMs: Int64) {
         lastContext = d.context
+        f.failure = d.failure
+        count(\.applied, d.outcome?.rawValue ?? "deciding")
+        if d.outcome == .error {
+            // The router failed for this context: its miss, counted once whether the budget ran out
+            // first or not. Only a decision the router made says routing works again.
+            countMiss(&f)
+            f.phase = .decided(outcome: .error, route: nil, expiresMs: d.expires)
+            return
+        }
         // A decision that applies says routing works for the field the user is in.
         misses = 0
         unavailable = false
@@ -489,7 +504,15 @@ public final class RouteFollower {
             f.phase = .deciding(sinceMs: nowMs)
         }
         f.missed = false
-        count(\.applied, d.outcome?.rawValue ?? "deciding")
+    }
+
+    /// The field's context missed its decision: counted once per context.
+    private func countMiss(_ f: inout Field) {
+        guard !f.missed else { return }
+        f.missed = true
+        stats.misses &+= 1
+        misses += 1
+        if !proven || misses >= Self.missesBeforeUnavailable { unavailable = true }
     }
 
     /// A field the user just focused: the newest kept decision that names it applies now.

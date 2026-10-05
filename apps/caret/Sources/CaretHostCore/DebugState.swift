@@ -686,6 +686,8 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// `deciding`, or the decision's outcome, and its route for `act`.
         public var phase: String?
         public var route: String?
+        /// Why the router failed, while an `error` decision holds (R2).
+        public var failure: String?
         /// The helper's ids for the focused field, once a decision named it.
         public var windowId: String?
         public var key: String?
@@ -694,10 +696,10 @@ public struct DebugState: Codable, Equatable, Sendable {
         /// Breakpoint or focus to the decision that settled it, as the host saw it.
         public var entry: LatencyRecorder.Summary
 
-        public init(enabled: Bool, linked: Bool, unavailable: Bool, gate: String, phase: String?, route: String?, windowId: String?, key: String?,
-                    budgetMs: Int64, stats: RouteFollower.Stats, entry: LatencyRecorder.Summary) {
+        public init(enabled: Bool, linked: Bool, unavailable: Bool, gate: String, phase: String?, route: String?, failure: String? = nil,
+                    windowId: String?, key: String?, budgetMs: Int64, stats: RouteFollower.Stats, entry: LatencyRecorder.Summary) {
             self.enabled = enabled; self.linked = linked; self.unavailable = unavailable; self.gate = gate; self.phase = phase; self.route = route
-            self.windowId = windowId; self.key = key; self.budgetMs = budgetMs; self.stats = stats; self.entry = entry
+            self.failure = failure; self.windowId = windowId; self.key = key; self.budgetMs = budgetMs; self.stats = stats; self.entry = entry
         }
     }
 

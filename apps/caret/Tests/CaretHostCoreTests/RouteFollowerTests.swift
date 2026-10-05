@@ -18,9 +18,10 @@ final class RouteFollowerTests: XCTestCase {
     }
 
     private func decision(_ outcome: RouteDecision.Outcome?, context: Int, at: Int64, key: String? = nil, windowId: String? = nil,
-                          revision: String, route: String? = nil, expires: Int64? = nil) -> RouteDecision {
+                          revision: String, route: String? = nil, failure: RouteDecision.Failure = .failed, expires: Int64? = nil) -> RouteDecision {
         RouteDecision(at: at, context: context, windowId: windowId ?? doc, key: key ?? bodyKey, textRevision: revision,
-                      outcome: outcome, route: outcome == .act ? (route ?? "fillAll") : nil, expires: expires ?? at + 1_800_000)
+                      outcome: outcome, route: outcome == .act ? (route ?? "fillAll") : nil, failure: outcome == .error ? failure : nil,
+                      expires: expires ?? at + 1_800_000)
     }
 
     /// A follower linked to a routing helper, in the notes body, bound by a write decision.
@@ -386,6 +387,68 @@ final class RouteFollowerTests: XCTestCase {
         }
         XCTAssertEqual(f.stats.misses, 4)
         XCTAssertTrue(f.isUnavailable)
+    }
+
+    /// R2: the router failed for this context (`outcome: "error"`). The host shows help at once, as
+    /// when a decision misses the budget, without waiting out the rest of the budget, and the failure
+    /// counts as that context's miss.
+    func testAFailedDecisionShowsHelpAsAMissedBudgetDoes() throws {
+        let f = written()
+        let ctx = try XCTUnwrap(f.observe(read("Plans for the week. "), nowMs: t0 + 1000))
+        XCTAssertEqual(f.gate(nowMs: t0 + 1001), .wait(untilMs: t0 + 1000 + RouteFollower.decisionBudgetMs))
+        let failed = decision(.error, context: 4, at: t0 + 1100, revision: ctx.textRevision, failure: .timeout)
+        XCTAssertEqual(f.receive(failed, nowMs: t0 + 1101).0, .applied)
+        XCTAssertEqual(f.gate(nowMs: t0 + 1102), .allow(.error), "before the budget runs out")
+        XCTAssertEqual(f.gate(nowMs: t0 + 1000 + RouteFollower.decisionBudgetMs + 1), .allow(.error), "and after it, once")
+        XCTAssertEqual(f.stats.misses, 1)
+        XCTAssertEqual(f.stats.applied["error"], 1)
+        let info = f.debugInfo(nowMs: t0 + 1200)
+        XCTAssertEqual(info.gate, "allow:error")
+        XCTAssertEqual(info.phase, "error")
+        XCTAssertEqual(info.failure, "timeout")
+        // The next sentence waits for its own decision again, and a decision the router made applies.
+        let next = try XCTUnwrap(f.observe(read("Plans for the week. Lunch. "), nowMs: t0 + 2000))
+        XCTAssertEqual(f.gate(nowMs: t0 + 2001), .wait(untilMs: t0 + 2000 + RouteFollower.decisionBudgetMs))
+        XCTAssertEqual(f.receive(decision(.abstain, context: 5, at: t0 + 2100, revision: next.textRevision), nowMs: t0 + 2101).0, .applied)
+        XCTAssertEqual(f.gate(nowMs: t0 + 2102), .quiet(.abstain))
+        XCTAssertNil(f.debugInfo(nowMs: t0 + 2103).failure)
+    }
+
+    /// A late failure for a context whose budget already ran out is that context's one miss, not two;
+    /// and failures, like misses, make routing unavailable after three in a row. Only a decision the
+    /// router made brings it back.
+    func testFailuresCountAsMissesOncePerContextAndOnlyARealDecisionResetsThem() throws {
+        let f = written()
+        var at = t0 + 1000
+        var text = "Plans for the week"
+        var context = 4
+        func sentence() throws -> RoutingContext {
+            text += ". Then"
+            _ = f.observe(read(text), nowMs: at)
+            text += ". "
+            return try XCTUnwrap(f.observe(read(text), nowMs: at + 10))
+        }
+        let late = try sentence()
+        XCTAssertEqual(f.gate(nowMs: at + 10 + RouteFollower.decisionBudgetMs), .allow(.budget))
+        XCTAssertEqual(f.receive(decision(.error, context: context, at: at + 3000, revision: late.textRevision, failure: .timeout), nowMs: at + 3001).0, .applied)
+        XCTAssertEqual(f.stats.misses, 1, "the late failure is the same context's miss")
+        XCTAssertEqual(f.gate(nowMs: at + 3002), .allow(.error))
+        for n in 2...RouteFollower.missesBeforeUnavailable {
+            at += 5000
+            context += 1
+            let c = try sentence()
+            XCTAssertEqual(f.receive(decision(.error, context: context, at: at + 50, revision: c.textRevision), nowMs: at + 51).0, .applied)
+            let expected: RouteFollower.Gate = n < RouteFollower.missesBeforeUnavailable ? .allow(.error) : .allow(.unavailable)
+            XCTAssertEqual(f.gate(nowMs: at + 52), expected, "failure \(n)")
+        }
+        XCTAssertTrue(f.isUnavailable)
+        at += 5000
+        context += 1
+        let c = try sentence()
+        XCTAssertEqual(f.gate(nowMs: at + 11), .allow(.unavailable), "no wait while routing is unavailable")
+        XCTAssertEqual(f.receive(decision(.write, context: context, at: at + 50, revision: c.textRevision), nowMs: at + 51).0, .applied)
+        XCTAssertFalse(f.isUnavailable)
+        XCTAssertEqual(f.gate(nowMs: at + 52), .allow(.write))
     }
 
     func testTurningTheSettingOffAnswersAllowAtOnceAndSendsNothing() {

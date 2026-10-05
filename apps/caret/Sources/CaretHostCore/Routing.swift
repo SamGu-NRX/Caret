@@ -56,11 +56,17 @@ public struct RoutingContext: Codable, Equatable, Sendable {
 }
 
 /// Helper to host: the router's decision for one context. A null outcome means a breakpoint ended the
-/// last decision and a new one is under way.
+/// last decision and a new one is under way. `error` (R2) means the router failed for this context, and
+/// `failure` says how; the host then shows what it shows with no router (`RouteFollower`).
 public struct RouteDecision: Codable, Equatable, Sendable {
     public static let type = "routeDecision"
 
-    public enum Outcome: String, Codable, Sendable { case abstain, write, ask, act }
+    public enum Outcome: String, Codable, Sendable { case abstain, write, ask, act, error }
+
+    /// protocol.ts's RouteFailure. `failed`: the Jev call or the router's code threw; `timeout`: the
+    /// call ran out of time; `missing`, `forged`, `nonfinite`: Jev answered nothing, an option nobody
+    /// listed, or a confidence outside 0 to 1; `stale`: the answer came after the context changed.
+    public enum Failure: String, Codable, CaseIterable, Sendable { case failed, timeout, missing, forged, nonfinite, stale }
 
     public var at: Int64
     /// Increasing within one helper process: a lower number is an older decision.
@@ -72,22 +78,27 @@ public struct RouteDecision: Codable, Equatable, Sendable {
     public var outcome: Outcome?
     /// For `act` only: "fillAll", "workflow:event" and so on.
     public var route: String?
+    /// For `error` only, and always there.
+    public var failure: Failure?
     public var expires: Int64
 
-    public init(at: Int64, context: Int, windowId: String, key: String?, textRevision: String, outcome: Outcome?, route: String?, expires: Int64) {
+    public init(at: Int64, context: Int, windowId: String, key: String?, textRevision: String, outcome: Outcome?, route: String?,
+                failure: Failure? = nil, expires: Int64) {
         self.at = at; self.context = context; self.windowId = windowId; self.key = key
-        self.textRevision = textRevision; self.outcome = outcome; self.route = route; self.expires = expires
+        self.textRevision = textRevision; self.outcome = outcome; self.route = route; self.failure = failure; self.expires = expires
     }
 
-    enum CodingKeys: String, CodingKey { case type, v, at, context, windowId, key, textRevision, outcome, route, expires }
+    enum CodingKeys: String, CodingKey { case type, v, at, context, windowId, key, textRevision, outcome, route, failure, expires }
 
     /// Every key, nulls written out, in protocol.ts's order, so a golden line re-encodes to itself.
+    /// `failure` is zod's optional: written only on an error decision.
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(Self.type, forKey: .type); try c.encode(Proto.version, forKey: .v)
         try c.encode(at, forKey: .at); try c.encode(context, forKey: .context); try c.encode(windowId, forKey: .windowId)
         try c.encode(key, forKey: .key); try c.encode(textRevision, forKey: .textRevision)
-        try c.encode(outcome, forKey: .outcome); try c.encode(route, forKey: .route); try c.encode(expires, forKey: .expires)
+        try c.encode(outcome, forKey: .outcome); try c.encode(route, forKey: .route)
+        try c.encodeIfPresent(failure, forKey: .failure); try c.encode(expires, forKey: .expires)
     }
 
     public init(from decoder: Decoder) throws {
@@ -103,9 +114,13 @@ public struct RouteDecision: Codable, Equatable, Sendable {
         outcome = try RoutingWire.nullable(c, Outcome.self, .outcome)
         route = try RoutingWire.nullable(c, String.self, .route)
         if let route, !(1...80).contains(route.count) { throw ProtocolError("routeDecision route must be 1 to 80 characters") }
+        // zod's optional: absent or a known failure, never null.
+        failure = try c.decodeIfPresent(Failure.self, forKey: .failure)
+        if c.contains(.failure) && failure == nil { throw ProtocolError("routeDecision failure is null; leave it out instead") }
         expires = try c.decode(Int64.self, forKey: .expires)
         if route != nil && outcome != .act { throw ProtocolError("only an act decision names a route") }
         if outcome == .write && key == nil { throw ProtocolError("a write decision names its field") }
+        if (outcome == .error) != (failure != nil) { throw ProtocolError("an error decision, and only one, says its failure") }
     }
 }
 
