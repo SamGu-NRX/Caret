@@ -315,6 +315,8 @@ export function goalScene(o: {
   askJev?: AskJev;
   /** How an Ask makes its intent (HelperOptions.ask); none by default. */
   ask?: HelperOptions["ask"];
+  /** Whether the helper has a calendar to add events to; true by default. */
+  calendar?: boolean;
 }): GoalScene {
   const dir = mkdtempSync(join(tmpdir(), "caret-goal-"));
   const store = new Store(join(dir, "data"));
@@ -332,7 +334,7 @@ export function goalScene(o: {
     shadow: false,
     allowBackgroundFocus: false,
     readerLink: desk,
-    calendar,
+    ...(o.calendar === false ? {} : { calendar }),
     writer: o.writer ?? writer,
     now: () => desk.at,
     publish: (m) => {
