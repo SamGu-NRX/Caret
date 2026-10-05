@@ -7558,6 +7558,24 @@
                     "properties": {
                       "kind": {
                         "type": "string",
+                        "const": "memory"
+                      },
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
                         "const": "you"
                       },
                       "id": {

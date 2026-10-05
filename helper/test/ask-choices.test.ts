@@ -131,6 +131,18 @@ describe("Ask asks which fields, with the fields that fit as choices (B29)", () 
     expect(JSON.stringify(j.seen.map((r) => r.questions))).not.toContain("'Landlord name'");
   });
 
+  it("reads a field's kind from its section heading too: Month, Day and Year under 'Date of birth' fit 'my birthday'", async () => {
+    const W = `${P}/webarea:~0`;
+    const dob = [
+      node(`${P}/group:date of birth~0`, "AXGroup", { parent: W, label: "Date of birth" }),
+      field(`${P}/group:date of birth/textfield:month~0`, "", { parent: `${P}/group:date of birth~0`, label: "Month", frame: [100, 400, 60, 20] }),
+      field(`${P}/group:date of birth/textfield:day~0`, "", { parent: `${P}/group:date of birth~0`, label: "Day", frame: [170, 400, 60, 20] }),
+      field(`${P}/group:date of birth/textfield:year~0`, "", { parent: `${P}/group:date of birth~0`, label: "Year", frame: [240, 400, 60, 20] }),
+    ];
+    const e = await fail(planAsk("fill in my birthday", desk({ extra: dob }), memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "ask", why: "whichFields", scope: "none" }), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
+    expect(labels(questionOf(e))).toEqual(["Month", "Day", "Year"]);
+  });
+
   it("refuses as before when more fields fit than one question lists", async () => {
     const many = Array.from({ length: 9 }, (_, i) => field(KEY(`extra ${i}`), "", { parent: `${P}/webarea:~0`, label: `Extra ${i}`, frame: [100, 300 + i * 30, 200, 20] }));
     const e = await fail(planAsk("fill this out", desk({ extra: many }), memory, about, { askJev: jevBy(() => null).ask, maker: maker({ route: "ask", why: "whichFields", scope: "none" }), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
@@ -168,7 +180,7 @@ describe("Ask asks where to copy from, with the windows that hold such values (B
     expect(e.message).toBe(SAYS.whichSource);
     const q = questionOf(e) as Q;
     expect(q).toMatchObject({ part: "source", text: "Where should Caret copy from?", pick: "one" });
-    expect(labels(q)).toEqual(["Rental notes.txt", "Draft.txt"]);
+    expect(labels(q)).toEqual(["Rental notes.txt", "Draft.txt", "memory"]);
     const j = jevBy((s) => (s.includes("'Landlord phone'") ? "(415) 555-0162" : null));
     const d = await answer(q, ["o2"], { ask: j.ask, instruction });
     expect(d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("landlord phone"), "(415) 555-0162"]]);
@@ -178,7 +190,20 @@ describe("Ask asks where to copy from, with the windows that hold such values (B
 
   it("never lists a window the instruction rules out", async () => {
     const e = await fail(planAsk("put in the landlord's phone, without using Draft.txt", desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ route: "ask", why: "whichSource", fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"], sources: [] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
-    expect(labels(questionOf(e))).toEqual(["Rental notes.txt"]);
+    expect(labels(questionOf(e))).toEqual(["Rental notes.txt", "memory"]);
+  });
+
+  it("offers what the user told Caret last; that pick reads no window at all", async () => {
+    const instruction = "put my name in";
+    const e = await fail(planAsk(instruction, desk(), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ route: "ask", why: "whichSource", fields: [s.fields.find((f) => f.name === "Full name")?.ref ?? "?"], sources: [] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
+    const q = questionOf(e) as Q;
+    expect(q.options.at(-1)?.option).toEqual({ kind: "memory", id: `o${q.options.length}` });
+    const j = jevBy((s) => (s.includes("'Full name'") ? "Elena Vance" : null), () => "user");
+    const d = await answer(q, [`o${q.options.length}`], { ask: j.ask, instruction });
+    expect(d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("full name"), "Elena Vance"]]);
+    const sent = JSON.stringify(j.seen);
+    expect(sent).not.toContain("Rental notes");
+    expect(sent).not.toContain("Dana Whitfield");
   });
 });
 
@@ -195,6 +220,11 @@ describe("Ask asks whose details, with the user and the people on screen (B29)",
     const d = await answer(q, ["o2"], { model: desk({ mail: true }), ask: j.ask, instruction });
     expect(d.checked.writes.map((w) => [w.node.key, w.value])).toEqual([[KEY("landlord phone"), "(512) 555-0177"]]);
     expect(JSON.stringify(j.seen.map((r) => r.state))).toContain("Gary Pruitt");
+  });
+
+  it("lists a person once, by the longest name: 'Gary' in the instruction and 'Gary Pruitt' on a mail", async () => {
+    const e = await fail(planAsk("put Gary's cell in the landlord phone", desk({ mail: true }), memory, about, { askJev: jevBy(() => null).ask, maker: maker((s) => ({ route: "ask", why: "whichPerson", fields: [s.fields.find((f) => f.name === "Landlord phone")?.ref ?? "?"] })), writer: null, offerKey: "ask-1", windowId: "form", now: 2000 }));
+    expect(questionOf(e)?.options.map((c) => c.option)).toEqual([{ kind: "you", id: "o1" }, { kind: "person", id: "o2", name: "Gary Pruitt" }]);
   });
 
   it("refuses as before when no one is named in the instruction or on screen", async () => {

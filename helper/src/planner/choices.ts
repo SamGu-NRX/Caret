@@ -7,8 +7,9 @@
 //     names by their words, the meaning of a section phrase such as "contact info", else the kinds of value it names),
 //     or every empty field when it says nothing that fits; many may be picked, at most MAX_ASK_OPTIONS listed.
 //   - source: the open windows, other than any the instruction rules out, whose text holds a value of a kind or label
-//     the fields in scope want; one is picked.
-//   - person: the user, or someone the instruction or an open mail names; one is picked.
+//     the fields in scope want, and what the user told Caret when it holds something; one is picked. Memory is not in
+//     the lead's list: B24's "my name and email please" comes from it, and no window could be the right answer.
+//   - person: the user, or someone the instruction or an open mail names (a name once, its longest form); one is picked.
 //
 // Nothing is listed past MAX_ASK_OPTIONS: an Ask whose candidates do not fit is refused as before.
 import type { ScreenModel } from "../model.ts";
@@ -71,6 +72,12 @@ function labelWords(snap: IntentSnapshot, f: IntentField): (string | null)[] {
 }
 
 /**
+ * The words a field's kind is read from here: its label words and its section's heading, so Month and Year under "Date
+ * of birth" are dates for "my birthday" (B24's ask-04 offered only Day). Only for choosing options; fill reads kinds as before.
+ */
+const kindWords = (snap: IntentSnapshot, f: IntentField): (string | null)[] => [...labelWords(snap, f), f.section];
+
+/**
  * The empty fields that fit the instruction, in document order: those it names by their words or by their section's,
  * and those a section phrase's meaning takes; else those of a kind of value it names; else every empty field.
  */
@@ -91,7 +98,7 @@ export function fittingFields(snap: IntentSnapshot): IntentField[] {
   const kinds = fieldKinds([fw]);
   const name = fieldTerms([fw]).has(NAME_TERM);
   const byKind = all.filter((f) => {
-    const words = labelWords(snap, f);
+    const words = kindWords(snap, f);
     return [...fieldKinds(words)].some((k) => kinds.has(k)) || (name && fieldTerms(words).has(NAME_TERM));
   });
   return byKind.length > 0 ? byKind : all;
@@ -128,25 +135,21 @@ function sourceChoices(snap: IntentSnapshot, model: ScreenModel, scoped: readonl
       .map((c) => c.source.windowId),
   );
   const windows = snap.windows.filter((w) => holds.has(w.windowId) && !excluded.has(w.windowId));
-  if (windows.length === 0) return no("no open window holds a value the fields in scope want");
-  return {
-    choices: {
-      part: "source",
-      text: ASKS.source,
-      pick: "one",
-      options: windows.slice(0, MAX_ASK_OPTIONS).map((w, i) => ({ option: { kind: "window", id: `o${i + 1}`, app: w.app, title: w.title }, fixes: { source: w.windowId } })),
-    },
-    why: null,
-  };
+  const memory = snap.memory.length > 0;
+  if (windows.length === 0 && !memory) return no("no open window holds a value the fields in scope want, and Caret was told nothing");
+  const options: Choice[] = windows.slice(0, MAX_ASK_OPTIONS - (memory ? 1 : 0)).map((w, i) => ({ option: { kind: "window", id: `o${i + 1}`, app: w.app, title: w.title }, fixes: { source: { kind: "window", windowId: w.windowId } } }));
+  if (memory) options.push({ option: { kind: "memory", id: `o${options.length + 1}` }, fixes: { source: { kind: "memory" } } });
+  return { choices: { part: "source", text: ASKS.source, pick: "one", options }, why: null };
 }
 
 /** The user, then each person the instruction names, then each sender an open mail shows, once each. */
 function personChoices(snap: IntentSnapshot): ChoicesResult {
+  const all = [...snap.persons.map((p) => p.span), ...snap.windows.flatMap((w) => (w.from === null ? [] : [w.from]))].map((n) => n.trim()).filter((n) => n !== "");
+  // "Ines" in the instruction and "Ines Lindqvist" on a mail are one person: a name whose words begin a longer one goes.
+  const words = (n: string): string[] => n.toLowerCase().split(/\s+/u);
+  const within = (a: string, b: string): boolean => a.length < b.length && words(a).every((w, i) => words(b)[i] === w);
   const names: string[] = [];
-  for (const n of [...snap.persons.map((p) => p.span), ...snap.windows.flatMap((w) => (w.from === null ? [] : [w.from]))]) {
-    const t = n.trim();
-    if (t !== "" && !names.some((x) => x.toLowerCase() === t.toLowerCase())) names.push(t);
-  }
+  for (const t of all) if (!all.some((o) => within(t, o)) && !names.some((x) => x.toLowerCase() === t.toLowerCase())) names.push(t);
   if (names.length === 0) return no("no one is named in the instruction or on screen");
   const options: Choice[] = [{ option: { kind: "you", id: "o1" }, fixes: { person: { kind: "user" } } }];
   for (const name of names.slice(0, MAX_ASK_OPTIONS - 1)) options.push({ option: { kind: "person", id: `o${options.length + 1}`, name }, fixes: { person: { kind: "person", name } } });

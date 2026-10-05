@@ -1671,12 +1671,13 @@ export const ASK_CHOICES_CAPABILITY = "askChoices";
 /**
  * One choice of an askQuestion, typed by what it fixes. `id` is the helper's, valid for that question only; the host
  * sends it back and never a field key or window id. `field`: a field of the form (its label, and its section's
- * heading). `window`: an open window to copy from, as the user knows it. `you`: the user's own details. `person`:
- * someone named in the instruction or on screen.
+ * heading). `window`: an open window to copy from, as the user knows it. `memory`: what the user told Caret about
+ * themselves. `you`: the user's own details. `person`: someone named in the instruction or on screen.
  */
 export const AskOption = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("field"), id: z.string().min(1), label: z.string().min(1), section: z.string().nullable() }),
   z.object({ kind: z.literal("window"), id: z.string().min(1), app: z.string(), title: z.string() }),
+  z.object({ kind: z.literal("memory"), id: z.string().min(1) }),
   z.object({ kind: z.literal("you"), id: z.string().min(1) }),
   z.object({ kind: z.literal("person"), id: z.string().min(1), name: z.string().min(1) }),
 ]);
@@ -1684,7 +1685,7 @@ export type AskOption = z.infer<typeof AskOption>;
 
 /**
  * Helper to the asker, in place of a planProposal (B29): the Ask needs one part settled, and code listed that part's
- * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window) or `person` (whose
+ * real choices from the screen. `part` says which: `fields` (pick one or more), `source` (one window, or memory) or `person` (whose
  * details). `text` is the question as the user reads it. Answered with askAnswer naming `questionId` and the picks,
  * once, before `expires`; the answer's reply is a planProposal or another askQuestion. `window` is the form.
  */
@@ -1703,7 +1704,7 @@ export const AskQuestion = z
     expires: ms,
   })
   .superRefine((m, ctx) => {
-    const kinds = { fields: ["field"], source: ["window"], person: ["you", "person"] }[m.part];
+    const kinds = { fields: ["field"], source: ["window", "memory"], person: ["you", "person"] }[m.part];
     const pick = m.part === "fields" ? "many" : "one";
     const problem = m.pick !== pick
       ? `a ${m.part} question picks ${pick}`

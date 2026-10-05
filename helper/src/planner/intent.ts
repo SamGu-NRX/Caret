@@ -55,7 +55,8 @@ export interface AskIntent {
  */
 export interface AskFixed {
   fields?: readonly string[];
-  source?: string;
+  /** A window by id, or what the user told Caret. */
+  source?: { kind: "window"; windowId: string } | { kind: "memory" };
   person?: { kind: "user" } | { kind: "person"; name: string };
 }
 
@@ -355,7 +356,7 @@ export function checkIntent(intent: AskIntent, snap: IntentSnapshot, fixed: AskF
     instruction: snap.instruction,
     person,
     literals,
-    consented: new Set([...named, ...(fixed.source === undefined ? [] : [fixed.source])]),
+    consented: new Set([...named, ...(fixed.source?.kind === "window" ? [fixed.source.windowId] : [])]),
     first: [...new Set(snap.named.flatMap((n) => n.names))],
   };
   // The fill engine's trigger: the focused field when it is in scope, else the first field in scope.

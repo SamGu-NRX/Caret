@@ -180,7 +180,8 @@ function applyFixed(intent: AskIntent, fixed: AskFixed, snap: IntentSnapshot): A
     open = open.filter((p) => p !== "fields");
   }
   if (fixed.source !== undefined) {
-    const ref = snap.windows.find((w) => w.windowId === fixed.source)?.ref ?? changed("the window you picked is gone");
+    const src = fixed.source;
+    const ref = src.kind === "memory" ? "memory" : (snap.windows.find((w) => w.windowId === src.windowId)?.ref ?? changed("the window you picked is gone"));
     it = { ...it, sources: [ref] };
     open = open.filter((p) => p !== "source");
   }
