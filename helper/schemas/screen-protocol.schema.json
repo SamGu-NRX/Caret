@@ -7890,6 +7890,11 @@
                       "says": {
                         "type": "string",
                         "minLength": 1,
+                        "maxLength": 900
+                      },
+                      "drafted": {
+                        "type": "string",
+                        "minLength": 1,
                         "maxLength": 600
                       }
                     },
@@ -7998,7 +8003,7 @@
                 "says": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 600
+                  "maxLength": 900
                 }
               },
               "required": [

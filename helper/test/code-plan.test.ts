@@ -126,7 +126,7 @@ describe("lowering", () => {
     const ran = await runCodePlan(cannedProgram(inv.snapshots, [{ press: { window: "Re: Order", target: "Send", effect: "e:reveal" } }]), inv.snapshots, async () => null, { multiWindow: true });
     expect(!ran.ok && ran.kind === "violation" && ran.detail).toMatch(/no allowed press effect e:reveal/);
     // Lowering on its own, given a draft that names e:reveal for Send: a hand-off, said as a warning, never a press.
-    const draft: DraftPlan = { basedOn: "s1", window: "w1", choices: [], programDigest: "a".repeat(64), steps: [{ ref: "step:1", kind: "fill", target: "t1", value: "v1" }, { ref: "step:2", kind: "press", target: send?.ref ?? "", effect: "e:reveal" }] };
+    const draft: DraftPlan = { basedOn: "s1", window: "w1", choices: [], drafts: [], programDigest: "a".repeat(64), steps: [{ ref: "step:1", kind: "fill", target: "t1", value: "v1" }, { ref: "step:2", kind: "press", target: send?.ref ?? "", effect: "e:reveal" }] };
     const g = lowerGoal("goal-send", "x", { ...draft, steps: [{ ref: "step:1", kind: "fill", target: inv.snapshots[0]?.targets.find((t) => t.label === "To")?.ref ?? "", value: [...inv.inventory.values.values()].find((v) => v.text.includes("@"))?.ref ?? "" }, draft.steps[1] as DraftPlan["steps"][number]] }, inv.inventory);
     const last = g.segments[0]?.steps.at(-1);
     expect([last?.kind, last?.handoff, last?.effect]).toEqual(["handoff", "outbound", null]);
@@ -164,12 +164,12 @@ describe("lowering", () => {
 const win = { kind: "window" as const, windowId: "w-a", pid: 10, bundleId: "dev.caret.a", appName: "A", title: "Form A", number: null, windowKind: "standard", page: false };
 const page = { ...win, windowId: "page:e1:3", bundleId: "com.google.Chrome", appName: "Chrome", title: "Apply", windowKind: "page", page: true };
 const tgt = (ref: string, over: Partial<TargetBinding> = {}): TargetBinding => ({ ref, domain: win, key: `k-${ref}`, role: "AXTextField", label: `Field ${ref}`, control: "text", value: "", options: null, ...over });
-const val = (ref: string, text: string, over: Partial<ValueBinding> = {}): ValueBinding => ({ ref, text, display: `"${text}"`, origin: { kind: "span", snapshot: "s1", source: "w-src", startUTF16: 0, endUTF16: text.length, digest: "d" }, source: { windowId: "w-src", key: "src", revision: "r" }, memory: null, event: null, ...over });
+const val = (ref: string, text: string, over: Partial<ValueBinding> = {}): ValueBinding => ({ ref, text, display: `"${text}"`, origin: { kind: "span", snapshot: "s1", source: "w-src", startUTF16: 0, endUTF16: text.length, digest: "d" }, source: { windowId: "w-src", key: "src", revision: "r" }, memory: null, event: null, draft: null, sender: false, ...over });
 
 function inventory(targets: TargetBinding[], values: ValueBinding[]): GoalInventory {
-  return { readerSession: 1, targets: new Map(targets.map((t) => [t.ref, t])), values: new Map(values.map((v) => [v.ref, v])), revisions: new Map([["w-a", "r1"]]), documents: new Map() };
+  return { readerSession: 1, targets: new Map(targets.map((t) => [t.ref, t])), values: new Map(values.map((v) => [v.ref, v])), revisions: new Map([["w-a", "r1"]]), documents: new Map(), windowRefs: new Map(), texts: new Map() };
 }
-const draft = (steps: DraftPlan["steps"]): DraftPlan => ({ basedOn: "s1", window: "w1", steps, choices: [], programDigest: "b".repeat(64) });
+const draft = (steps: DraftPlan["steps"]): DraftPlan => ({ basedOn: "s1", window: "w1", steps, choices: [], drafts: [], programDigest: "b".repeat(64) });
 const refusal = (f: () => unknown): string => {
   try {
     f();

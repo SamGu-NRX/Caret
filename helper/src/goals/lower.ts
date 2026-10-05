@@ -18,12 +18,15 @@ import type { Plan, Step, WindowSel } from "../executor/schema.ts";
 import { matchOption } from "../fill/controls.ts";
 import { misfit } from "../fill/kinds.ts";
 import { pressVerdict, YOURS_EFFECT, type HandoffWhy } from "./capabilities.ts";
+import { checkDraftText, DraftRefused, recipientField, subjectField, type DraftBasis } from "./drafts.ts";
+import { createHash } from "node:crypto";
+import { saysPress } from "../planner/says.ts";
 import { executable, goalDigest, segmentDigest, type GoalDomain, type GoalInventory, type GoalPlan, type GoalSegment, type GoalStep, type SegmentReason, type TargetBinding, type ValueBinding } from "./plan.ts";
 
 /** Segments one goal may have. Assumed: the scenes need two or three; more is more acceptances than a user follows. */
 export const MAX_SEGMENTS = 4;
 
-export type GoalRefusal = "schema" | "unsupportedStep" | "stepAfterHandoff" | "wrongKind" | "notEmpty" | "tooManySegments" | "nothingToDo" | "replay";
+export type GoalRefusal = "schema" | "unsupportedStep" | "stepAfterHandoff" | "wrongKind" | "notEmpty" | "tooManySegments" | "nothingToDo" | "replay" | "draft" | "recipient";
 
 /** A press an earlier plan for the same goal made and verified (runs.ts StepReceipt). */
 export interface DonePress {
@@ -49,7 +52,39 @@ function named(t: TargetBinding): string {
   return t.label === "" ? "a field" : `'${t.label}'`;
 }
 
+/** What a draft's facts are checked against: the instruction, its basis windows as frozen, and its basis values' texts. */
+export function frozenBasis(instruction: string, v: ValueBinding, inv: GoalInventory): DraftBasis {
+  const windows = (v.draft?.windows ?? []).flatMap((id) => {
+    const t = inv.texts.get(id);
+    return t === undefined ? [] : [t];
+  });
+  return { instruction, windows, memory: v.draft?.texts ?? [] };
+}
+
+/**
+ * Who a message goes to is the user's (B30): a Cc or Bcc field is never written, and a To field takes only an address
+ * its source shows as the sender of the message being answered. Checked for every value, copied or drafted.
+ */
+function recipientCheck(t: TargetBinding, v: ValueBinding): void {
+  const r = recipientField(t.label);
+  if (r === "copy") throw new GoalError("recipient", "Caret doesn't add people to a message. Add them yourself", `${t.ref} <- ${v.ref}`);
+  if (r === "to" && (v.draft !== null || !v.sender)) throw new GoalError("recipient", `Caret puts only the sender of the message you're answering in ${named(t)}`, `${t.ref} <- ${v.ref}`);
+}
+
+/** A drafted value's own checks (goals/drafts.ts), against the field it goes in and its frozen basis. */
+function draftCheck(t: TargetBinding, v: ValueBinding, basis: DraftBasis): void {
+  if (t.control !== "text") throw new GoalError("wrongKind", `Caret writes drafts only in a text field, and ${named(t)} is not one`, `${t.ref} <- ${v.ref}`);
+  if (subjectField(t.label)) throw new GoalError("draft", "Caret doesn't write subject lines", `${t.ref} <- ${v.ref}`);
+  try {
+    checkDraftText(v.text, basis);
+  } catch (e) {
+    if (e instanceof DraftRefused) throw new GoalError("draft", e.says, `${e.why}: ${v.ref}`);
+    throw e;
+  }
+}
+
 function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "says" | "writes" | "handoff"> {
+  recipientCheck(t, v);
   if (t.control === "calendar") {
     if (v.event === null) throw new GoalError("wrongKind", `${v.display} is not an event Caret can add to a calendar`, `${t.ref} <- ${v.ref}`);
     return { kind: "calendar", says: `Add '${v.event.title}' to your ${t.label} calendar, ${v.event.says}`, writes: null, handoff: null };
@@ -92,8 +127,25 @@ function lowerFill(t: TargetBinding, v: ValueBinding): Pick<GoalStep, "kind" | "
  * Lowers a sandbox plan against the inventory its snapshots came from. Throws GoalError with the first check that
  * fails. The result is not yet accepted: each segment runs only after an acceptance that names its digest.
  */
-export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan, inv: GoalInventory, done: readonly DonePress[] = []): GoalPlan {
+export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan, inv: GoalInventory, done: readonly DonePress[] = [], writerModel = ""): GoalPlan {
   if (!/^[0-9a-f]{64}$/.test(draft.programDigest)) throw new GoalError("schema", "the plan has no program behind it", draft.programDigest);
+  // Drafted texts (B30) as values: their basis is the windows and values the program named, by what they stood for.
+  // Memory a fill of this plan copies is part of every draft's basis ("memory the plan used").
+  const usedMemory = draft.steps.flatMap((s) => (s.kind === "fill" ? [inv.values.get(s.value)] : [])).flatMap((v) => (v !== undefined && v.origin.kind === "memory" ? [v.text] : []));
+  const drafted = new Map<string, ValueBinding>();
+  for (const d of draft.drafts) {
+    const windows: string[] = [];
+    const texts: string[] = [...usedMemory];
+    for (const ref of d.from) {
+      const w = inv.windowRefs.get(ref);
+      const v = inv.values.get(ref);
+      if (w !== undefined) windows.push(w);
+      else if (v !== undefined) texts.push(v.text);
+      else throw new GoalError("schema", "a draft names a basis the snapshot did not list", `${d.ref} from ${ref}`);
+    }
+    const digest = createHash("sha256").update(d.text).digest("hex");
+    drafted.set(d.ref, { ref: d.ref, text: d.text, display: d.text, origin: { kind: "draft", draftId: d.ref, model: writerModel, basis: d.from, digest }, source: null, memory: null, event: null, draft: { windows: [...new Set(windows)], texts }, sender: false });
+  }
   const steps: GoalStep[] = [];
   const warnings: string[] = [];
   /** A press's waitFor, merged into it: only the effect of the press right before may be waited for. */
@@ -109,9 +161,13 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
     if (t === undefined) throw new GoalError("schema", "the plan names a target the snapshot did not list", s.target);
     const index = steps.length;
     if (s.kind === "fill") {
-      const v = inv.values.get(s.value);
+      const v = inv.values.get(s.value) ?? drafted.get(s.value);
       if (v === undefined) throw new GoalError("schema", "the plan names a value the snapshot did not list", s.value);
       if (steps.some((x) => x.target.ref === t.ref && x.kind !== "calendar")) throw new GoalError("schema", `the plan fills ${named(t)} twice`, t.ref);
+      if (v.draft !== null) {
+        recipientCheck(t, v);
+        draftCheck(t, v, frozenBasis(instruction, v, inv));
+      }
       const lowered = lowerFill(t, v);
       steps.push({ ref: s.ref, index, target: t, value: lowered.kind === "handoff" ? null : v, effect: null, ...lowered });
       lastPress = null;
@@ -137,7 +193,11 @@ export function lowerGoal(goalId: string, instruction: string, draft: DraftPlan,
     lastPress = step;
   }
   const acting = steps.filter((x) => x.kind !== "handoff");
-  if (acting.length === 0) throw new GoalError("nothingToDo", "the plan leaves every step to you, so there is nothing for Caret to do");
+  if (acting.length === 0) {
+    // A plan that only hands the user a send, submit, pay or delete is said as an Ask says it (B26 lead decision 3).
+    const press = steps.find((x) => x.kind === "handoff" && x.handoff !== null && x.handoff !== "unverifiable" && x.handoff !== "system");
+    throw new GoalError("nothingToDo", press?.handoff == null ? "the plan leaves every step to you, so there is nothing for Caret to do" : saysPress(press.handoff, press.target.label));
+  }
   const segments = cut(draft.programDigest, steps, warnings);
   if (segments.length > MAX_SEGMENTS) throw new GoalError("tooManySegments", `the plan needs ${segments.length} separate acceptances; Caret offers at most ${MAX_SEGMENTS}`);
   return { goalId, instruction, programHash: draft.programDigest, segments, warnings, digest: goalDigest(draft.programDigest, segments.map((x) => x.digest), warnings), inventory: inv };

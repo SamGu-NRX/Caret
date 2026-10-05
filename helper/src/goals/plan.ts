@@ -46,6 +46,13 @@ export interface ValueBinding {
   memory: string | null;
   /** A calendar event code derived from `sentence` (event-card.ts), which its source must still show; null for every other value. */
   event: { title: string; start: string; end: string; says: string; sentence: string } | null;
+  /**
+   * Text the writer composed (B30, goals/drafts.ts): the windows, by id, and the values' texts the program named as its
+   * basis, which every fact in it must come from with the instruction. Null for a value code read or derived.
+   */
+  draft: { windows: string[]; texts: string[] } | null;
+  /** An email address its source shows on a From, Reply-To or Sender line: the one address a To field may take. */
+  sender: boolean;
 }
 
 /** Everything a program's refs may stand for, kept on the host side of the sandbox. */
@@ -58,6 +65,10 @@ export interface GoalInventory {
   revisions: ReadonlyMap<string, string>;
   /** Each page window's document generation when frozen (its frames' documents), by window id. */
   documents: ReadonlyMap<string, string>;
+  /** The window id behind each snapshot's window ref ("w2"), for a draft's `from` (B30). */
+  windowRefs: ReadonlyMap<string, string>;
+  /** Each frozen window's title and text, by window id: what a draft's facts are checked against. Never sent. */
+  texts: ReadonlyMap<string, { title: string; text: string }>;
 }
 
 export type GoalStepKind = "write" | "calendar" | "press" | "handoff";
@@ -140,7 +151,7 @@ export function segmentDigest(programHash: string, s: Omit<GoalSegment, "digest"
         kind: x.kind,
         says: x.says,
         target: { domain: x.target.domain, key: x.target.key, role: x.target.role, label: x.target.label, control: x.target.control, precondition: x.target.value },
-        value: x.value === null ? null : { text: x.value.text, origin: x.value.origin, source: x.value.source, memory: x.value.memory, event: x.value.event },
+        value: x.value === null ? null : { text: x.value.text, origin: x.value.origin, source: x.value.source, memory: x.value.memory, event: x.value.event, draft: x.value.draft },
         writes: x.writes,
         effect: x.effect,
         handoff: x.handoff,

@@ -223,6 +223,8 @@ export function wizardWindow(reveal = true): DeskWindow {
 export type CannedStep =
   | { fill: { window: string; target: string; value: string } }
   | { press: { window: string; target: string; effect: string } }
+  /** B30: text the program drafts and fills into a target, naming as its basis the windows titled exactly `from`. */
+  | { draft: { window: string; target: string; text: string; from: string[] } }
   | { ask: true };
 
 /**
@@ -247,6 +249,15 @@ export function cannedProgram(snapshots: readonly PlanningSnapshot[], steps: rea
   const made = steps.map((s, i) => {
     if ("fill" in s) return `  const s${i} = caret.fill(${JSON.stringify(target(s.fill.window, s.fill.target))} as TargetRef, ${JSON.stringify(value(s.fill.value))} as ValueRef);`;
     if ("press" in s) return `  const s${i} = caret.press(${JSON.stringify(target(s.press.window, s.press.target))} as TargetRef, ${JSON.stringify(s.press.effect)} as EffectRef);`;
+    if ("draft" in s) {
+      const from = s.draft.from.map((t) => {
+        const w = snapshots.find((x) => x.title === t);
+        if (w === undefined) throw new Error(`no window titled '${t}'`);
+        return w.window;
+      });
+      return `  const d${i} = caret.draft(${JSON.stringify(s.draft.text)}, ${JSON.stringify(from)} as WindowRef[]);
+  const s${i} = caret.fill(${JSON.stringify(target(s.draft.window, s.draft.target))} as TargetRef, d${i});`;
+    }
     return `  const s${i} = caret.ask("q1" as QuestionRef);`;
   });
   return `async function main(caret: CaretPlanAPI): Promise<PlanRef> {\n${reads.join("\n")}\n${made.join("\n")}\n  return caret.plan({ basedOn: ${JSON.stringify(snapshots[0]?.snapshot ?? "s1")} as SnapshotRef, steps: [${steps.map((_, i) => `s${i}`).join(", ")}] });\n}`;

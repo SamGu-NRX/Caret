@@ -8,7 +8,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import type { QuickJSContext, QuickJSDeferredPromise, QuickJSHandle, QuickJSRuntime } from "quickjs-emscripten-core";
 import { INITIAL_BYTES, newCappedModule } from "./quickjs.ts";
-import type { ChooseReply, ChooseRequest, ChoiceRecord, PlanStep, PlanningSnapshot, RefusalKind, RunStats, SandboxOutcome, WorkerInput } from "./types.ts";
+import type { ChooseReply, ChooseRequest, ChoiceRecord, PlanStep, PlanningSnapshot, ProgramDraft, RefusalKind, RunStats, SandboxOutcome, WorkerInput } from "./types.ts";
 
 /** A step as an API call describes it, before the registry gives it a ref. */
 type StepBody = { [K in PlanStep["kind"]]: Omit<Extract<PlanStep, { kind: K }>, "ref"> }[PlanStep["kind"]];
@@ -90,6 +90,7 @@ const values = new Set<string>();
 const questions = new Map<string, { snapshot: PlanningSnapshot; question: PlanningSnapshot["questions"][number] }>();
 const steps = new Map<string, PlanStep>();
 const choices: ChoiceRecord[] = [];
+const drafts: ProgramDraft[] = [];
 let asks = 0;
 let plan: { ref: string; basedOn: string; steps: PlanStep[] } | null = null;
 /** Set while plan() reads its argument, whose getters can call back into the API. */
@@ -307,6 +308,26 @@ const fns: [string, QuickJSHandle][] = [
     }),
   ],
   [
+    "draft",
+    api("draft", (t, f) => {
+      if (!input.drafts) throw new Violation("this plan cannot draft text");
+      if (plan !== null || planning) throw new Violation("no drafts can be added after plan()");
+      if (drafts.length >= limits.drafts) throw new Violation(`a plan has at most ${limits.drafts} drafts`);
+      if (t === undefined || vm.typeof(t) !== "string") throw new Violation("text must be a string");
+      const len = stringLength(t);
+      if (len > limits.draftCopyChars) throw new Violation(`text is ${len} characters long; a draft is far shorter`);
+      const text = vm.getString(t);
+      const from = refArrayArg(f, "from", limits.draftBasis);
+      // The basis is what the program read: a window it called readWindow on, or a value one of those listed.
+      const read = new Set([...issuedSnapshots.values()].map((x) => x.window));
+      for (const ref of from) if (!read.has(ref) && !values.has(ref)) throw new Violation(`from names ${ref}, which is not a window or value this program read`);
+      const ref = `d${drafts.length + 1}`;
+      drafts.push({ ref, text, from });
+      values.add(ref);
+      return vm.newString(ref);
+    }),
+  ],
+  [
     "plan",
     api("plan", (d) => {
       if (plan !== null) throw new Violation("plan was already called");
@@ -452,7 +473,7 @@ async function run(): Promise<SandboxOutcome> {
       return { ok: false, kind, detail: cap(detail), stats: s };
     }
     if (o.plan.steps.length !== steps.size) return { ok: false, kind: "violation", detail: "steps were registered after plan()", stats: s };
-    return { ok: true, plan: { basedOn: o.plan.basedOn, window: issuedSnapshots.get(o.plan.basedOn)!.window, steps: o.plan.steps, choices, programDigest: input.programDigest }, stats: s };
+    return { ok: true, plan: { basedOn: o.plan.basedOn, window: issuedSnapshots.get(o.plan.basedOn)!.window, steps: o.plan.steps, choices, drafts, programDigest: input.programDigest }, stats: s };
   };
   const fail = (name: string, message: string) => {
     const [kind, detail] = classify(name, message);

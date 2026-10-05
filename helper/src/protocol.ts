@@ -1769,11 +1769,16 @@ export const PageEngineState = z.object({
 });
 export type PageEngineState = z.infer<typeof PageEngineState>;
 
-/** One step of a goal as the user reads it: what it does, and whether Caret does it or hands it over. */
+/**
+ * One step of a goal as the user reads it: what it does, and whether Caret does it or hands it over. `drafted` (B30) is
+ * present only on a write of text Caret composed rather than copied: the whole text, which `says` also holds after the
+ * field's name. A host shows it marked as Caret's, with an Edit action; it is written only on acceptance.
+ */
 export const GoalStepView = z.object({
   index: z.number().int().nonnegative(),
   kind: z.enum(["write", "calendar", "press", "handoff"]),
-  says: z.string().min(1).max(600),
+  says: z.string().min(1).max(900),
+  drafted: z.string().min(1).max(600).optional(),
 });
 export type GoalStepView = z.infer<typeof GoalStepView>;
 
@@ -1830,7 +1835,7 @@ export const GoalProgress = z.discriminatedUnion("event", [
     step: z.number().int().nonnegative(),
     steps: z.number().int().positive(),
     phase: z.enum(["verified", "skipped", "handoff"]),
-    says: z.string().min(1).max(600),
+    says: z.string().min(1).max(900),
   }),
   z.object({
     ...GoalHead,

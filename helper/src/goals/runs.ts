@@ -21,7 +21,8 @@ import type { Change, ScreenModel } from "../model.ts";
 import type { Executor, Revocation, TaskResult } from "../executor/executor.ts";
 import { nodeText } from "../model.ts";
 import { PROTOCOL_VERSION, type GoalAccept, type GoalProgress, type GoalStopReason, type StopReason, type TaskProgress } from "../protocol.ts";
-import { windowRevision } from "./inventory.ts";
+import { basisText, windowRevision } from "./inventory.ts";
+import { checkDraftText, DraftRefused } from "./drafts.ts";
 import { executable, segmentDigest, type GoalPlan, type GoalSegment, type GoalStep } from "./plan.ts";
 import type { DonePress } from "./lower.ts";
 
@@ -273,6 +274,8 @@ export class GoalRuns {
     for (const s of seg.steps) {
       const v = s.value;
       if (v === null) continue;
+      const draftMoved = this.draftMoved(run, s);
+      if (draftMoved !== null) return draftMoved;
       if (v.memory !== null && !this.deps.memoryHolds(v.memory, v.text)) return { reason: "sourceChanged", says: `what you told Caret for '${s.target.label}' changed or is gone` };
       if (v.source === null) continue;
       const sw = this.deps.model.windows.get(v.source.windowId);
@@ -280,6 +283,30 @@ export class GoalRuns {
       const want = v.event?.sentence ?? v.text;
       const typed = sw?.values.some((x) => x.nodeKey === v.source?.key && x.text === want) === true;
       if (sw === undefined || node === undefined || (!nodeText(node).includes(want) && !typed)) return { reason: "sourceChanged", says: `the window Caret copies '${s.target.label}' from no longer shows it` };
+    }
+    return null;
+  }
+
+  /**
+   * For a drafted value (B30): why its facts no longer hold, or null. Every window it was drafted from must still be open,
+   * and the draft must pass goals/drafts.ts's code checks against those windows as they read now: a fact that left the
+   * screen leaves the draft unsupported.
+   */
+  private draftMoved(run: Run, s: GoalStep): { reason: GoalStopReason; says: string } | null {
+    const d = s.value?.draft;
+    if (d === null || d === undefined || s.value === null) return null;
+    const moved = { reason: "sourceChanged" as const, says: `what Caret's draft for '${s.target.label}' was based on changed` };
+    const windows: { title: string; text: string }[] = [];
+    for (const id of d.windows) {
+      const w = this.deps.model.windows.get(id);
+      if (w === undefined) return moved;
+      windows.push(basisText(w));
+    }
+    try {
+      checkDraftText(s.value.text, { instruction: run.plan.instruction, windows, memory: d.texts });
+    } catch (e) {
+      if (e instanceof DraftRefused) return moved;
+      throw e;
     }
     return null;
   }
@@ -456,7 +483,7 @@ export class GoalRuns {
       digest: seg.digest,
       expires: run.expires,
       where: d.kind === "window" ? { kind: "window", app: d.appName, title: d.title } : { kind: "calendar", calendar: d.calendar },
-      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says })),
+      steps: seg.steps.map((s) => ({ index: s.index, kind: s.kind, says: s.says, ...(s.value?.draft == null ? {} : { drafted: s.value.text }) })),
       warnings: run.cursor.segment === 0 ? run.plan.warnings : [],
     };
   }
@@ -512,8 +539,11 @@ export class GoalRuns {
       if (w !== undefined && [...w.nodes.values()].some((n) => n.role === "AXSheet")) return { reason: "dialog", says: `a sheet opened over '${d.title}'` };
     }
     for (const s of seg.steps) {
+      if (run.cursor.receipts.some((r) => r.step === s.index)) continue;
+      const draftMoved = this.draftMoved(run, s);
+      if (draftMoved !== null) return draftMoved;
       const src = s.value?.source;
-      if (src === undefined || src === null || run.cursor.receipts.some((r) => r.step === s.index)) continue;
+      if (src === undefined || src === null) continue;
       const sw = this.deps.model.windows.get(src.windowId);
       const node = sw?.nodes.get(src.key);
       const want = s.value?.event?.sentence ?? s.value?.text ?? "";
