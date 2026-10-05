@@ -1079,6 +1079,8 @@ const GOAL_PROBLEM = "The desk lamp arrived with a cracked base and does not swi
 const GOAL_MAIL = { pid: 6161, bundleId: "dev.caret.mailfixture", name: "Mail Fixture" };
 const GOAL_MAIL_LINES = ["From: Priya Raman <priya.raman@northwind.example>", `Order number: ${GOAL_ORDER}`, `Problem: ${GOAL_PROBLEM}`];
 const goalMailKey = (i: number): string => `${GOAL_MAIL.bundleId}/standard/statictext:line ${i}~0`;
+/** The field and value pairs canned Jev confirms for D2-06's goals (G2's value gate). */
+const GOAL_BELONGS: readonly [string, string][] = [["Order number", GOAL_ORDER], ["Description", GOAL_PROBLEM]];
 const TO_SUPPORT_PAGE: CannedStep[] = [
   { fill: { window: "Support request", target: "Order number", value: GOAL_ORDER } },
   { fill: { window: "Support request", target: "Description", value: "cracked base" } },
@@ -2095,6 +2097,15 @@ async function main(): Promise<number> {
       Object.entries(req.questions).map(([k, q]) => {
         if (k.endsWith("_whose") || (mixed && k.endsWith("_owner"))) return [k, { choice: "user", confidence: 0.95 }];
         const ins = typeof q.instructions === "string" ? q.instructions : JSON.stringify(q.instructions);
+        // G2: a goal asks Jev whether each value belongs in its field (goals/gates.ts, Ask's question). Canned Jev says
+        // yes only to the D2-06 page scenes' own pairs, and no to every other value.
+        if ("yes" in q.criteria && "no" in q.criteria) {
+          // The field and the value the question is about, read from either wording of Ask's question (codeplan.ts
+          // verifyWrites), never from the instruction it quotes.
+          const field = /(?:has the field|Field:) '([^']+)'/u.exec(ins)?.[1];
+          const value = /(?:right one for it\? |^Value: )"([^"]*)"/u.exec(ins)?.[1];
+          return [k, { choice: GOAL_BELONGS.some(([f, v]) => f === field && v === value) ? "yes" : "no", confidence: 0.95 }];
+        }
         const want = mixed ? MIXED_PICKS[/Label: '([^']+)'/.exec(ins)?.[1] ?? ""] : undefined;
         const pick = Object.entries(q.criteria).find(([, t]) => (want === undefined ? t?.includes('"robin@example.test"') : t?.startsWith(`"${want}"`)))?.[0];
         return [k, pick === undefined ? { choice: "none", confidence: 0.9 } : { choice: pick, confidence: 0.95 }];

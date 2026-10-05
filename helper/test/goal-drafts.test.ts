@@ -8,23 +8,14 @@ import type { PlanningSnapshot } from "../src/codemode/types.ts";
 import type { AskJev } from "../src/fill/jev.ts";
 import { YOURS_EFFECT } from "../src/goals/capabilities.ts";
 import { GoalProgress, PROTOCOL_VERSION } from "../src/protocol.ts";
-import { areaKey, button, fieldKey, goalScene, MAIL, mailWindow, replyWindow, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
+import { areaKey, button, draftRefusals, fieldKey, goalScene, MAIL, mailWindow, replyWindow, standInJev, textArea, textField, type CannedStep, type DeskWindow, type GoalScene } from "./goal-desk.ts";
 
 const EMAIL = "priya.raman@northwind.example";
 const MESSAGE = areaKey(MAIL, "Message");
 const TO = fieldKey(MAIL, "To");
 
-/** Jev that answers every yes/no with `p`. */
-const jevYes = (p = 0.99): AskJev & { calls: number } => {
-  const f = Object.assign(
-    async (req: Parameters<AskJev>[0]) => {
-      f.calls++;
-      return { model: "jev-test", answers: {}, nouls: Object.fromEntries(Object.keys(req.nouls ?? {}).map((id) => [id, p])), inputTokens: 10, latencyMs: 1, costUsd: 0 };
-    },
-    { calls: 0 },
-  );
-  return f;
-};
+/** Jev that answers every yes/no with `p` and confirms every copied value (G2's value gate). */
+const jevYes = (p = 0.99): ReturnType<typeof standInJev> => standInJev({ noul: p });
 
 const scenes: GoalScene[] = [];
 afterEach(async () => {
@@ -104,7 +95,7 @@ describe("a goal that drafts a reply", () => {
   it("asks Jev about each claim, and is refused when Jev doubts one or is not there", async () => {
     const j = jevYes();
     await scene([REPLY], { askJev: j }).request("draft a reply to Priya saying I'm in");
-    expect(j.calls).toBe(2);
+    expect(j.claimCalls).toBe(2);
     const doubted = await scene([REPLY], { askJev: jevYes(0.5) }).request("draft a reply to Priya saying I'm in");
     expect(refusedSays(doubted)).toBe(`Caret couldn't confirm you asked to say "Hi Priya, I'm in for Thursday, October 8 at 3:00 PM."`);
     const alone = await scene([REPLY], { askJev: null }).request("draft a reply to Priya saying I'm in");
@@ -260,5 +251,58 @@ describe("third check: recipients", () => {
     const mail: DeskWindow = { ...mailWindow(), nodes: [button(MAIL, "Reply"), ...mailWindow().nodes] };
     const g = await scene([[{ fill: { window: "Re: Order", target: "To", value: EMAIL } }]], { windows: [mail, replyWindow()] }).request("reply to Priya");
     expect(g.event).toBe("segment");
+  });
+});
+
+describe("G2: a draft that only restates the instruction", () => {
+  /** Jev that confirms every copied value and doubts every claim: a draft that reaches it is refused. */
+  const doubting = (): ReturnType<typeof standInJev> => standInJev({ noul: 0 });
+  const reply = (text: string): CannedStep[][] => [[{ draft: { window: "Re: Order", target: "Message", text, from: [] } }]];
+
+  it.each([
+    ["the instruction's own words", "draft an RSVP saying I'm in for the workshop", "I'm in for the workshop."],
+    ["a greeting and a name before them", "draft a reply to Priya saying I'm in", "Hi Priya, I'm in."],
+    ["a name after them", "draft a reply to Priya saying I'm in", "I'm in, Priya!"],
+    ["a quoted reply", 'draft a reply to Priya saying "I\'m in"', "I'm in."],
+  ])("is accepted without asking Jev: %s", async (_, instruction, text) => {
+    const j = doubting();
+    const g = await scene(reply(text), { askJev: j }).request(instruction);
+    expect(g.event === "segment" && g.steps.at(-1)).toEqual({ index: 1, kind: "write", says: `Message: ${text}`, drafted: text });
+    expect(j.claimCalls).toBe(0);
+  });
+
+  it.each([
+    ["words in another order", "tell her I can't do Friday but Monday works", "Friday works."],
+    ["the instruction's words cut off before a condition", "draft a reply saying I'm in if the time works", "I'm in."],
+    ["the instruction's words after a negation", "do not tell her I'm in", "I'm in."],
+    ["the instruction's words after a condition", "if Priya confirms the time, reply saying I'm in", "I'm in."],
+    ["a word the instruction does not say", "draft a reply to Priya saying I'm in", "I'm in, see you soon."],
+  ])("still goes to Jev, and is refused when Jev doubts it: %s", async (_, instruction, text) => {
+    const j = doubting();
+    const g = await scene(reply(text), { askJev: j }).request(instruction);
+    expect(refusedSays(g)).toMatch(/^Caret couldn't confirm you asked to say /);
+    expect(j.claimCalls).toBe(2);
+  });
+
+  it("keeps the fact checks as strict: a restated time or amount still needs its source", async () => {
+    const time = await scene(reply("I'm in at 4."), { askJev: doubting() }).request("draft a reply saying I'm in");
+    expect(refusedSays(time)).toBe(`The draft says "at 4", which isn't in your instruction or the windows Caret read`);
+    const money = await scene(reply("The $500 quote works."), { askJev: doubting() }).request('draft a reply saying "the $500 quote works"');
+    expect(refusedSays(money)).toBe(`The draft says "$500", and no window Caret read shows that amount`);
+  });
+});
+
+describe("G2: the B30 runner's draft-refusal count", () => {
+  it("counts a draft Jev's claim check refused, and no other refusal", async () => {
+    const claim = scene([REPLY], { askJev: jevYes(0.5) });
+    expect(refusedSays(await claim.request("draft a reply to Priya saying I'm in"))).toMatch(/^Caret couldn't confirm you asked to say/);
+    expect(draftRefusals(claim)).toBe(1);
+    const fact = scene([[{ draft: { window: "Re: Order", target: "Message", text: "I'm in at 4.", from: [] } }]]);
+    await fact.request("draft a reply saying I'm in");
+    expect(draftRefusals(fact)).toBe(1);
+    // A recipient refusal is not a draft's.
+    const cc = scene([REPLY]);
+    await cc.request("draft a reply to Priya saying I'm in and cc Dana");
+    expect(draftRefusals(cc)).toBe(0);
   });
 });

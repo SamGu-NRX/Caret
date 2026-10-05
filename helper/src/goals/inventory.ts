@@ -15,6 +15,7 @@ import type { MemoryValue } from "../planner/trace.ts";
 import { SnippetLedger, WINDOW_CHARS } from "../privacy.ts";
 import { RESOLVER_VERSION } from "../values/resolve.ts";
 import { allowedEffects } from "./capabilities.ts";
+import { owedFields, type OwedField } from "./left.ts";
 import type { GoalControl, GoalDomain, GoalInventory, TargetBinding, ValueBinding, ValueOrigin } from "./plan.ts";
 
 /** Windows one goal may act in. With the calendar, that is the writer's four snapshots (PlanInputSchema). */
@@ -86,6 +87,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   const documents = new Map<string, string>();
   const windowRefs = new Map<string, string>();
   const texts = new Map<string, { title: string; text: string; message: string }>();
+  const owed = new Map<string, OwedField[]>();
   const snapshots: PlanningSnapshot[] = [];
   let t = 0;
   let v = 0;
@@ -100,7 +102,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
         ? { kind: "memory", entryId: x.memory, fileRevision: "", digest: digest(x.text) }
         : { kind: "span", snapshot, source: x.window?.window.windowId ?? "instruction", startUTF16: 0, endUTF16: x.text.length, digest: digest(x.text) };
     const source = x.window !== null && x.key !== null ? { windowId: x.window.window.windowId, key: x.key, revision: windowRevision(x.window) } : null;
-    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null };
+    return { ref, text: x.text, display: x.display, origin, source, memory: x.memory, event: null, draft: null, owner: x.owner };
   };
 
   windows.forEach((w, i) => {
@@ -108,6 +110,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     revisions.set(w.window.windowId, windowRevision(w));
     windowRefs.set(`w${i + 1}`, w.window.windowId);
     texts.set(w.window.windowId, basisText(w));
+    owed.set(w.window.windowId, owedFields(w));
     const doc = o.pageDocument?.(w.window.windowId) ?? null;
     if (doc !== null) documents.set(w.window.windowId, doc);
     const title = w.window.title.slice(0, 200);
@@ -123,14 +126,14 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
     };
     for (const f of writableFields(w)) {
       if ((f.node.value ?? "") !== "") continue;
-      bind({ key: f.node.key, role: f.node.role, label: f.name, control: "text", value: "", options: null }, true, []);
+      bind({ key: f.node.key, role: f.node.role, label: f.name, own: f.label, placeholder: f.node.placeholder ?? null, control: "text", value: "", options: null }, true, []);
     }
     // A page's controls the page engine sets (D2-04, W2). Boxes are left out: a goal plan never ticks one.
     if (domain.kind === "window" && domain.page) {
       for (const c of formControls(w)) {
         const control = CONTROL[c.control];
         if (control === undefined || c.label === null) continue;
-        bind({ key: c.node.key, role: c.node.role, label: c.label, control, value: "", options: c.options }, true, [], c.options === null ? c.label : `${c.label} (one of: ${c.options.join(", ")})`);
+        bind({ key: c.node.key, role: c.node.role, label: c.label, own: c.label, placeholder: c.node.placeholder ?? null, control, value: "", options: c.options }, true, [], c.options === null ? c.label : `${c.label} (one of: ${c.options.join(", ")})`);
       }
     }
     let buttons = 0;
@@ -138,7 +141,7 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
       const label = (n.label ?? "").trim();
       if (n.role !== "AXButton" || label === "" || n.states?.includes("disabled") || buttons >= MAX_BUTTONS) continue;
       buttons++;
-      bind({ key: n.key, role: n.role, label, control: "button", value: "", options: null }, false, allowedEffects({ label, role: n.role, windowKind: w.window.kind, bundleId: w.app.bundleId, page: domain.kind === "window" && domain.page }));
+      bind({ key: n.key, role: n.role, label, own: label, placeholder: null, control: "button", value: "", options: null }, false, allowedEffects({ label, role: n.role, windowKind: w.window.kind, bundleId: w.app.bundleId, page: domain.kind === "window" && domain.page }));
     }
     const own = i === 0 ? listed.filter((x) => x.window === null) : [];
     const fromHere = listed.filter((x) => x.window === w);
@@ -175,10 +178,10 @@ export function buildInventory(model: ScreenModel, o: InventoryOptions): Invento
   if (o.calendar !== null) {
     const ref = `t${++t}`;
     const domain: GoalDomain = { kind: "calendar", calendar: o.calendar };
-    targets.set(ref, { ref, domain, key: "calendar", role: "calendar", label: o.calendar, control: "calendar", value: "", options: null });
+    targets.set(ref, { ref, domain, key: "calendar", role: "calendar", label: o.calendar, own: o.calendar, placeholder: null, control: "calendar", value: "", options: null });
     snapshots.push({ snapshot: `s${snapshots.length + 1}`, window: `w${snapshots.length + 1}`, revision: "calendar", title: `Calendar '${o.calendar}'`, targets: [{ ref, label: o.calendar, kind: "calendar", canFill: true, options: [], allowedPressEffects: [] }], values: [], questions: [] });
   }
-  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts }, ledger };
+  return { snapshots, inventory: { readerSession: o.readerSession, targets, values, revisions, documents, windowRefs, texts, owed }, ledger };
 }
 
 /** Events code reads from a source window's sentences: a resolved time and a person, as an event card would offer. */
@@ -206,6 +209,7 @@ function eventsIn(w: WindowState, people: readonly MemoryValue[], clock: EventCl
         memory: null,
         event: { title: c.title, start: time.start, end: time.end, says: time.says, sentence },
         draft: null,
+        owner: null,
       });
     }
   }
